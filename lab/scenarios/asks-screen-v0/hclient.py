@@ -7,6 +7,7 @@ SCRIPT holds one action per line:
     sleep S            wait S seconds
     keys TEXT          send TEXT as typed; Python escapes allowed (\\x1b[Z is Shift+Tab, \\x1b[B is down)
     wheel up|down X Y  one wheel notch at cell X, Y (1-based), as SGR mouse (herdr's client enables it)
+    click X Y          a left-button press and release at cell X, Y (1-based), as SGR mouse
     read NAME          save the pane's visible text (pane $PANE) to $OUTDIR/NAME.txt
     run CMD            run a shell command (for example: add a card to the fixture store while the screen is open)
 The client answers herdr's start-up queries as Ghostty 1.4.0 does (from herdr-image-v1's kterm.py).
@@ -72,6 +73,12 @@ for line in open(script):
     elif op == "wheel":
         way, x, y = arg.split()
         os.write(fd, f"\x1b[<{64 if way == 'up' else 65};{x};{y}M".encode())
+        pump(0.3)
+    elif op == "click":
+        x, y = arg.split()
+        os.write(fd, f"\x1b[<0;{x};{y}M".encode())
+        pump(0.05)
+        os.write(fd, f"\x1b[<0;{x};{y}m".encode())
         pump(0.3)
     elif op == "read":
         import subprocess

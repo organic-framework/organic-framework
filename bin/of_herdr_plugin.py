@@ -5,6 +5,8 @@ sidebar readable become part of OF's herdr plugin, applied by themselves when a 
 someone runs `of apply`. herdr runs these hooks:
 
 - `startup`: once after the herdr server restores its session (the agents it resumes come back unnamed).
+- `asks` (a pane entrypoint, not a hook): the owner's questions screen, opened as a popup by
+  `herdr plugin pane open --plugin organic-framework --entrypoint asks` from a key, a panel's button or a script.
 - `agent-detected`: whenever herdr detects an agent in a pane (event `pane.agent_detected`): of spawn, a capacity
   move or resume, or a `claude` started by hand. herdr reports the agent's session a moment after it detects the
   agent, and `of apply` binds a position by that session, so the hook waits for it (at most SESSION_WAIT_S).
@@ -135,8 +137,14 @@ def main(argv):
         else:
             s = wait_session(pane)
             log(f"agent detected in {pane}: session {s or 'not reported within ' + str(SESSION_WAIT_S) + ' s'}")
+    elif what == "asks":
+        # The questions screen as the plugin's popup ([[panes]] asks in herdr-plugin.toml). Any process can open it:
+        # herdr plugin pane open --plugin organic-framework --entrypoint asks (the manifest's placement is popup).
+        # OF_ASKS_OF names another bin/of to run, for a trial build (passed with --env).
+        of = os.environ.get("OF_ASKS_OF") or os.path.join(HERE, "of")
+        os.execv(sys.executable, [sys.executable, of, "asks", "--watch"])
     else:
-        print("usage: of_herdr_plugin.py startup|agent-detected", file=sys.stderr)
+        print("usage: of_herdr_plugin.py startup|agent-detected|asks", file=sys.stderr)
         return 2
     coalesced(of_apply)
     return 0

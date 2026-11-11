@@ -82,6 +82,12 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   through the file `of_home` in the plugin's config dir (`herdr plugin config-dir organic-framework`), else the
   folder above the plugin. It looks for Python 3 with PyYAML in `$OF_PYTHON`, then on `PATH`, then in the usual
   Homebrew places.
+- **The questions screen as a popup.** The pane entrypoint `asks` (placement popup, 90% x 85%) runs `of asks
+  --watch`. Any process, a key or a panel's button opens it over everything with `herdr plugin pane open --plugin
+  organic-framework --entrypoint asks`. Leave out `--placement`, so the manifest's popup applies; `--env
+  OF_ASKS_OF=<bin/of>` runs a trial build. herdr answers `ui_busy` while another popup, Settings or Copy mode is
+  open. A click in a pane reaches its program as a mouse report when the program turned mouse reporting on, also
+  when the pane is not focused: the first click lands (checked in `lab/scenarios/asks-screen-v0`, `click.script`).
 - **What a plugin cannot do in herdr 0.9.5.** It cannot bind keys or set sidebar rows; those stay in herdr's
   `config.toml` (prefix+a for the questions, the red per-workspace question counter). Its CLI cannot open a
   plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.

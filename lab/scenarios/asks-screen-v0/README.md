@@ -47,3 +47,13 @@ From a fresh fixture, every step above again, plus `money3.script`:
 - Unchanged and passing: the arrows wrap; Tab and Shift+Tab; `g`, `G`, `?` and Esc; the wheel over the queue and over
   a long card; layout B paging and wrap; the trial popup opens and Esc closes it; the money card asks for a second
   press, and another key cancels with nothing recorded.
+
+## Clicks and the popup from a process (2026-11-12, build 5f83ad0, `click.script`)
+
+For the always-visible questions panel the founder asked for (a button that opens the popup by mouse):
+- A click on a queue row in the focused pane selects that row. After a split put the focus in the pane below, a
+  click on a row of the questions pane selected that row at once: the first click reaches an unfocused pane's
+  program. Pane borders appear once there are two panes, which moves the content down one line.
+- `herdr plugin pane open --plugin organic-framework --entrypoint asks --env OF_ASKS_OF=<the build's bin/of>`,
+  run as a plain process, answered `ok` and opened the build as a popup (a second process of the screen); Esc
+  closed it. The plugin was a copy linked into the lab herdr only.

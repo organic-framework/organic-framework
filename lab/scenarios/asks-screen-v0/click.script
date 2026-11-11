@@ -1,0 +1,20 @@
+# asks-screen-v0: does a click reach the program in a pane (focused, then not focused), and can a process open the
+# questions popup through the plugin's pane entrypoint (the panel's button)?
+run herdr --session ax pane run w1:p1 "env OF_AUTOMATION=1 /opt/homebrew/bin/python3 $ASKS_OF asks --watch"
+sleep 6
+read 60-open
+click 30 9
+read 61-click-focused-row
+run herdr --session ax pane split --pane w1:p1 --direction down --focus > $OUTDIR/split.json 2>&1
+sleep 2
+read 62-after-split
+click 30 5
+read 63-click-unfocused-row
+click 30 6
+read 64-click-again
+run herdr --session ax plugin pane open --plugin organic-framework --entrypoint asks --env OF_ASKS_OF=$ASKS_OF > $OUTDIR/open.json 2>&1
+sleep 4
+run pgrep -fl "asks-inbox/bin/of asks --watch" > $OUTDIR/65-procs.txt
+keys \x1b
+sleep 2
+run pgrep -fl "asks-inbox/bin/of asks --watch" > $OUTDIR/66-procs-after-esc.txt
