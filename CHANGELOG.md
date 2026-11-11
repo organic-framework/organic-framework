@@ -14,15 +14,26 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 ### Added
 
 - `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
+- `of init --language`: the language agents use with the organization's head, one explicit setting kept in `~/.config/of/owner.yaml`.
+- A default model and effort per organization: `of init` writes `agents: {model: opus, effort: xhigh}` on the organization's entry in `orgs.yaml` (`--model` and `--effort` change it). `of spawn` starts with it unless `--model` or the new `--effort` says otherwise; `of resume-command` falls back to it when a session names neither.
+- Hand-overs carry a basis: `of handover propose --basis` takes an ask id, a quoted source, evidence or `inference`, and a title or done-when that states an obligation is refused without one. `of handover note` adds a note to an open hand-over without changing its state.
+- `of diff` move_position: a position moves between two units delegated alike, and each delegation's list follows it.
+- `of model usage`: a delegated unit's month per position, day and model.
+- `of grant rekey`: the grant-signing key moves into the owner's 1Password SSH agent, and grants are signed through it from then on.
+- The diagnosis rule `unsourced-requirement`: a claim that drives work lost its basis on the way.
 
 ### Changed
 
+- Grants signed with the old HMAC signature are no longer trusted.
+- The guard takes `executors*.txt` and file names with the misspelling `secrtets` for secret files.
+- The conductor's and the onboarding lead's briefs: do everything they can themselves, and say at each step in plain words what they do and why.
 - The README follows the OF design: the photograph and the type of the design, light and dark; "install it with your agent" comes first.
 - No agent asks the organization's head to run a command. The head may talk to agents through Remote Control, the desktop or the mobile app, where a command typed into the chat does not run. The conductor asks in words and starts the onboarding lead itself; what only the head can do (a login, trusting the folder) is a step in words with its place. Without herdr, every agent but the conductor starts in a detached `screen` session. `INSTALL.md` tells the installing agent the same.
 
 ### Fixed
 
 - The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
+- Capacity: a probe that got no reading (the network down) no longer moves sessions ahead of a stop, and `of capacity balance` makes no move while the API does not answer.
 
 ## 0.1.0 - 2026-11-11
 
