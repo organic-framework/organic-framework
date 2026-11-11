@@ -106,6 +106,31 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class BasisTest(unittest.TestCase):
+    """docs/handover.md §1.1 (the founder's incident of 2026-11-11 16:58Z: an unconfirmed inference travelled as a
+    must and merged as a "compliance requirement")."""
+
+    def test_an_obligation_needs_a_basis_in_one_of_four_forms(self):
+        p = of_handover.basis_problem
+        self.assertIn("states an obligation ('compliance')", p(None, "add the compliance log", "a PR merged"))
+        self.assertIn("'must'", p("", "rotate keys", "it must run nightly"))
+        self.assertIsNone(p(None, "fix x", "tests pass"))  # no obligation stated: no basis needed
+        for ok in ("ask:0fd223f2", 'source:PCI DSS 4.0 §8.3.6 "passwords at least 12 characters"',
+                   "evidence:commit 4e3d84a", "inference"):
+            self.assertIsNone(p(ok, "a required change", "done"), ok)
+        for bad in ("ask:the founder said so", "source:the contract", "because", "evidence:"):
+            self.assertIn("is none of the forms", p(bad, "a required change", "done"), bad)
+
+    def test_the_offer_shows_the_basis_before_accepting(self):
+        h = of_handover.project([PROPOSED])["H1"]
+        self.assertIn("Basis: none given", of_handover.offer_text(h))
+        rows = [ev("proposed", "2026-11-06T10:00:00Z", id="H2", **{"from": "a"}, to="b", title="a required log",
+                   done_when="merged", basis="inference")]
+        h = of_handover.project(rows)["H2"]
+        self.assertEqual(h["basis"], "inference")
+        self.assertIn("Basis: inference (unconfirmed: the requester's own reasoning)", of_handover.offer_text(h))
+
+
 class ProposeSpooledTest(unittest.TestCase):
     """acme_org, 2026-11-06: of handover propose crashed (KeyError) when the store was busy and the event spooled."""
 

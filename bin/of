@@ -3599,7 +3599,8 @@ def cmd_handover(args):
             return 0
         for h in sorted(rows, key=lambda h: h["proposed_at"]):
             print(f"  {h['id'][-8:]}  {h['state']:<10} {h['from']:<22} -> {h['to']:<22} "
-                  f"{'!' if h['priority'] == 'blocking' else ' '} {h['title'][:60]}")
+                  f"{'!' if h['priority'] == 'blocking' else ' '} {h['title'][:60]}"
+                  + (f"\n            basis: {h['basis'][:100]}" if h.get("basis") else ""))
         print(f"{len(rows)} hand-over(s)" + ("" if args.all else " open"))
         return 0
     me_p = _me(positions, args.sender)
@@ -3609,6 +3610,10 @@ def cmd_handover(args):
             raise OfError('usage: of handover propose <position> "<title>" --done-when "<checkable criteria>"')
         if not args.done_when:
             raise OfError("--done-when is required: checkable criteria (tests pass, a PR merged, a file exists)")
+        basis = getattr(args, "basis", None)
+        why = of_handover.basis_problem(basis, args.title, args.done_when)  # docs/handover.md §1.1
+        if why:
+            raise OfError(why)
         to = _resolve_position(args.ref, positions, me_p)
         verify = _resolve_position(args.verify, positions, me_p) if args.verify not in (None, "requester") else "requester"
         scope = {k: v for k, v in (("systems", args.systems), ("paths", args.paths)) if v}
@@ -3616,6 +3621,8 @@ def cmd_handover(args):
                    "verify": verify, "due": args.due, "priority": "blocking" if args.blocking else "normal",
                    "mandate": args.mandate or next((p.get("mandate") for p in positions if p["name"] == me), None),
                    "scope": scope or None, "context": args.context or []}
+        if basis:
+            payload["basis"] = of_hook_mask(basis.strip())
         rec = of_events.record("handover_proposed", payload, position=me)
         payload["id"] = rec["of.event.id"]
         rec["of.payload"]["id"] = rec["of.event.id"]  # record() keeps its own JSON-safe copy of the payload
@@ -5028,6 +5035,9 @@ def main(argv=None):
     ho.add_argument("ref", nargs="?", help="propose: the receiving position; otherwise the hand-over id (or its end)")
     ho.add_argument("title", nargs="?")
     ho.add_argument("--done-when", dest="done_when", help="checkable done criteria (required to propose)")
+    ho.add_argument("--basis", help="why the work is owed: 'ask:<id>' | 'source:<what> \"<quote>\"' | "
+                                    "'evidence:<ref>' | 'inference'; required when the title or --done-when states an "
+                                    "obligation (docs/handover.md §1.1)")
     ho.add_argument("--verify", help="requester (default) or a verifier position")
     ho.add_argument("--due", help="YYYY-MM-DD")
     ho.add_argument("--blocking", action="store_true", help="you wait on it")

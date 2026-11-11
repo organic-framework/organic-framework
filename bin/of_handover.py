@@ -17,6 +17,7 @@ pane: `of.handover_offered`, where the response window starts) and expires.
 
 import calendar
 import json
+import re
 import time
 import uuid
 
@@ -80,7 +81,7 @@ def project(rows):
                         "title": p.get("title"), "done_when": p.get("done_when"),
                         "verify": p.get("verify") or "requester", "due": p.get("due"),
                         "priority": p.get("priority") or "normal", "mandate": p.get("mandate"),
-                        "scope": p.get("scope"), "context": p.get("context") or [],
+                        "scope": p.get("scope"), "context": p.get("context") or [], "basis": p.get("basis"),
                         "proposed_at": r["ts"], "offered_at": None, "since": r["ts"], "history": [],
                         "rejections": 0, "result": None, "ignored": []}
             out[hid]["history"].append((r["ts"], "proposed", p.get("from"), None))
@@ -175,9 +176,34 @@ def due_actions(handovers, now, window_of, offered_ok):
     return out
 
 
+# docs/handover.md §1.1 (of_architect cfda02c; the founder's incident of 2026-11-11 16:58Z: an unconfirmed inference
+# travelled as a must and merged as a "compliance requirement"): why the work is owed.
+BASIS = re.compile(r'^(?:ask:[0-9a-f]{6,40}|source:\S.*"[^"]+"\s*$|evidence:\S.*|inference)$', re.S)
+OBLIGATION = re.compile(r"(?i)\b(must|required|requirements?|compliance|compliant|mandated|mandatory)\b")
+BASIS_HELP = ("--basis 'ask:<id>' (an owner's decision), 'source:<law, contract, standard or document> \"<the quote>\"', "
+              "'evidence:<a commit, metric, log or report>', or 'inference' (your own reasoning, unconfirmed)")
+
+
+def basis_problem(basis, title, done_when):
+    """Why a proposal's basis is not acceptable, or None (docs/handover.md §1.1)."""
+    if basis:
+        return None if BASIS.match(basis.strip()) else f"--basis {basis!r} is none of the forms: {BASIS_HELP}"
+    said = OBLIGATION.search(f"{title or ''}\n{done_when or ''}")
+    if said:
+        return (f"the hand-over states an obligation ({said.group(0)!r}) without saying why it is owed; add "
+                f"{BASIS_HELP}, or reword it without the obligation")
+    return None
+
+
+def basis_kind(basis):
+    return (basis or "").split(":", 1)[0] or "none"
+
+
 def offer_text(h):
     lines = [f"Hand-over {h['id'][-8:]} from {h['from']}: {h['title']}",
              f"Done when: {h['done_when']}",
+             f"Basis: {h.get('basis') or 'none given'}" + (" (unconfirmed: the requester's own reasoning)"
+                                                           if basis_kind(h.get('basis')) == "inference" else ""),
              f"Verifier: {verifier(h)}" + (f" · due {h['due']}" if h.get("due") else "")
              + (" · BLOCKING (the requester waits)" if h["priority"] == "blocking" else "")]
     if h.get("context"):
