@@ -1204,8 +1204,9 @@ def write_plugin_choices(choices, path=None, check=None):
         if not sep or not family or not name:
             raise ValueError(f"--plugin takes family=name, not {item!r}")
         if _family(family) in PLUGINS_LATER:
-            raise ValueError(f"{family} is the organization's choice, made when it first needs one, on its owner's card, "
-                             f"and recorded in its registry as plugins: {family} with the ask id (docs/registry.md, "
+            fam = _family(family)
+            raise ValueError(f"{fam} is the organization's choice, made when it first needs one, on its owner's card, "
+                             f"and recorded in its registry as plugins: {fam} with the ask id (docs/registry.md, "
                              "Plugins; docs/agent-secrets.md §13.2); of init does not choose it for this machine")
         check(family, name)
         doc[family] = name
