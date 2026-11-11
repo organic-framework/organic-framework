@@ -28,6 +28,8 @@ The person's machine records `surface: remote` in `~/.config/of/owner.yaml` (bes
 | 6 | **The onboarding's remote path**: `of init --surface remote`, agents started in tmux, the conductor's brief with §2's steps. | `of_onboarding` | a new organization's head runs the onboarding from the conductor's chat alone |
 | 7 | **The lab proof**, `lab-remote-v0`: a person reaches only the conductor's session; a card is answered, a medium diff approved, a `machine` task shown as waiting, a message delivered to an agent in tmux, a stuck thread surfaced. | `of_lab` | the scenario passes on a clean VM |
 
+The conductor finds the event id of the person's words with `of prompts --mine`: the recorded prompts of its own session, with their ids (`of_platform`, asked by `of_onboarding` for provisional positions). Rows 1 and 2 and provisional positions all use it.
+
 ## 4. What stays at the machine
 
 - **Signing a grant**: the founder's key and Touch ID.
