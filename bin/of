@@ -245,6 +245,12 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             problems += [(f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" if pr.startswith(WARN)
                           else f"{org}:registry/positions.yaml: {pr}") for pr in check_provisional(
                 doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")], org_grants)]
+            try:  # the organization's plugin choices (docs/plugins.md §2)
+                import of_family
+                problems += [(f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" if pr.startswith(WARN)
+                              else f"{org}:registry/positions.yaml: {pr}") for pr in of_family.check_org(doc)]
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"{org}:registry/positions.yaml: plugins: the check could not run ({e})")
             problems += [f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" for pr in check_evidence(
                 doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")])]
     for org, path, _ in org_registries(orgs_file):
@@ -4006,6 +4012,36 @@ def _org_owner(positions, org):
     return own["name"] if own else "founder"
 
 
+def cmd_plugins(args):
+    """of plugins [list|detect] [--org O]: the families of the plugin mechanism (docs/plugins.md; bin/of_family.py),
+    their implementations and where each comes from, and the choice in force; `detect` proposes from what this
+    machine has."""
+    import of_family
+    try:
+        import of_plugins  # noqa: F401 - registers of-server's built-in seams
+    except Exception:  # noqa: BLE001
+        pass
+    doc = None
+    if args.org:
+        regs = {o: p for o, p, _ in org_registries()}
+        if args.org not in regs:
+            raise OfError(f"no organization {args.org!r} in orgs.yaml")
+        doc = yaml.safe_load(open(regs[args.org])) or {}
+    if args.action == "detect":
+        lines = of_family.propose()
+        print("\n".join(lines) if lines else "nothing to propose: no unchosen family has an implementation that "
+              "finds its product on this machine")
+        return 0
+    for fam in sorted(of_family.FAMILIES):
+        f = of_family.FAMILIES[fam]
+        impls = of_family.implementations(fam)
+        name, _, src = of_family.choice(fam, doc)
+        chosen = f"{name} ({src})" if name else "none chosen"
+        print(f"{fam:<10} {chosen:<28} {', '.join(f'{k} [{v}]' for k, v in sorted(impls.items())) or '-'}   "
+              f"({f.owner}: {f.doc})")
+    return 0
+
+
 def cmd_prompts(args):
     """of prompts --mine [--last N] [--all]: this session's recorded prompts typed by a person, newest first, each with
     its event id, UTC time and first line. A conductor cites the id of the head's yes as provisional.event
@@ -5289,6 +5325,11 @@ def main(argv=None):
                      "replaces OF's escalated copy, or escalates it now; his answer reaches you and the asker")
     ak2.add_argument("--from", dest="sender")
     ak2.set_defaults(fn=cmd_ask)
+    pg = sub.add_parser("plugins", help="of plugins [list|detect] [--org O]: the plugin families, their "
+                                        "implementations and the choice in force (docs/plugins.md)")
+    pg.add_argument("action", nargs="?", default="list", choices=["list", "detect"])
+    pg.add_argument("--org", help="show the choice in force for this organization's data")
+    pg.set_defaults(fn=cmd_plugins)
     pr = sub.add_parser("prompts", help="of prompts --mine [--last N]: this session's prompts typed by a person, with "
                                         "their event ids (a provisional position cites its yes)")
     pr.add_argument("--mine", action="store_true", help="the calling session's prompts (required)")

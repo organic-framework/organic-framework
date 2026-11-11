@@ -319,15 +319,28 @@ REGISTRY = {
 }
 DEFAULT_PLUGINS = {"storage": "sqlite", "buffer": "disk", "blobs": "fs", "identity": "machine_keys"}
 
+# The four seams are families of the plugin mechanism shared with the client (bin/of_family.py, docs/plugins.md §2):
+# the classes above are their built-ins, and a shipped (bin/plugins/<seam>/) or installed (entry point
+# organic_framework.<seam>) implementation is found the same way. The choice stays in server.yaml.
+import of_family  # noqa: E402
+
+for _seam, _impls in REGISTRY.items():
+    for _name, _cls in _impls.items():
+        of_family.register(_seam, _name, _cls)
+
 
 def load(cfg, ship_cfg):
     """Instantiate the configured plugins; an unknown name is a startup error, not a fallback."""
     chosen = dict(DEFAULT_PLUGINS, **(cfg.get("plugins") or {}))
     out = {}
     for seam, name in chosen.items():
-        impl = REGISTRY.get(seam, {}).get(name)
+        try:
+            impl = of_family.implementation(seam, name)
+        except of_family.PluginError:
+            impl = None
         if impl is None:
-            raise SystemExit(f"of-server: unknown {seam} plugin {name!r}; known: {sorted(REGISTRY.get(seam, {}))}")
+            raise SystemExit(f"of-server: unknown {seam} plugin {name!r}; known: "
+                             f"{sorted(of_family.implementations(seam)) if seam in of_family.FAMILIES else []}")
         if seam == "storage":
             out[seam] = impl(cfg, ship_cfg)
         elif seam == "identity":
