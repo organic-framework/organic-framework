@@ -355,10 +355,13 @@ def chat_view(conn, asks):
     import of_asks
     mine = sorted(_queue(asks, "founder"), key=lambda a: a["ts"])
     cards, steps, waiting = [], [], []
+    by_id = {a["event_id"]: a for a in mine}
     for g in of_asks.group(mine):
         a = g["first"]
+        members = [by_id[i] for i in g["ask_ids"] if i in by_id]
         tag = f"[{a['event_id'][-8:]}] {', '.join(g['who'])}, waiting {of_asks.age(g['since'])}"
-        how = in_chat(a)
+        # the whole group, as check() reads it: one held ask keeps the card at the machine (finding 9)
+        how = "waiting" if any(in_chat(m) == "waiting" for m in members) else in_chat(a)
         if how == "answer":
             opts = _options_of(conn, a)
             cards.append(f"  {tag}: {a['text']}" + ("".join(f"\n      {i}) {o}" for i, o in enumerate(opts, 1))))
@@ -366,9 +369,10 @@ def chat_view(conn, asks):
             steps.append(f"  {tag} ({where_of(a)}): {a['text']}\n" +
                          "\n".join("      " + ln for ln in str(a.get("steps") or "").splitlines() if ln.strip()))
         else:
-            held = held_tags(a)
+            held = list(dict.fromkeys(t for m in members for t in held_tags(m)))
+            diff = next((m.get("diff_id") for m in members if m.get("diff_id")), None)
             what = "a task at the machine" if a.get("task") else (
-                f"diff {a['diff_id']} to approve at the machine" if a.get("diff_id") else
+                f"diff {diff} to approve at the machine" if diff else
                 f"a card tagged {', '.join(held)}, answered at the machine" if held
                 else f"a {(a.get('kind') or '').split(':')[0]} in a pane")
             waiting.append(f"  {tag} ({what}): {a['text'][:160]}")
