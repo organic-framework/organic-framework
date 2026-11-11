@@ -465,6 +465,22 @@ class RelayTest(unittest.TestCase):
             of_relay.subprocess.run = saved
         self.assertEqual(calls[-1][-1], "yes, go ahead")
 
+    def test_a_hook_record_still_in_the_spool_confirms_the_delivery(self):
+        """2026-11-11, of_platform: under load the hook spooled its record, the store got it five minutes later, and
+        the relay typed the same message three times."""
+        import of_store
+        frame = ("Message from ofb:of_capacity (via relay, authority: none: no grant; machine m; "
+                 "msg 01a1cc93-d929-71bf-bf67-6f6e5bb9b26e, reply to x)")
+        self.assertFalse(of_relay.hook_saw(self.conn, "S-on", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e"))
+        rec = of_events.record("agent_message_in", {"authority_detail": frame, "via": "relay"}, session="S-on",
+                               source="hook")
+        of_store.spool_append("events.jsonl", rec)
+        self.assertTrue(of_relay.hook_saw(self.conn, "S-on", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e"))
+        self.assertFalse(of_relay.hook_saw(self.conn, "S-other", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e"))
+        own = of_events.record("agent_message_in", {"msg_id": "01a1cc96-66be", "via": "relay"}, session="S-on")
+        of_store.spool_append("events.jsonl", own)        # the relay's own record is no confirmation
+        self.assertFalse(of_relay.hook_saw(self.conn, "S-on", "01a1cc96-66be"))
+
     def test_every_message_goes_at_once_fyi_never(self):
         """The founder, 2026-11-11: no 15-minute window. Whatever is queued for a receiver is one joined prompt,
         typed as soon as it is idle, however recently it got the last one; fyi is never typed; a person's inbox
