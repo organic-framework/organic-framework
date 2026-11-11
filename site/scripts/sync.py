@@ -37,6 +37,7 @@ KEEP = {"index.mdx"}  # the landing page is written by hand, in site/src/content
 # understand why, look up the machinery; then the design records. Each page: (source, slug, sidebar label).
 PAGES = [
     ("Start here", [
+        ("INSTALL.md", "install", "Install with your agent"),
         ("README.md", "quickstart", "Quickstart"),
         ("docs/guide.md", "guide", "Guide"),
         ("FEATURES.md", "features", "What works today"),

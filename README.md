@@ -6,10 +6,20 @@
   <img alt="Organic Framework. Run your AI agents as an organization: positions with mandates, every session recorded, one place to see and steer them." src=".github/readme/header-light.svg" width="100%">
 </picture>
 
-**[Quickstart](#quickstart-profile-1-one-machine)** &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)
+**[Install with your agent](#install-it-with-your-agent)** &nbsp;·&nbsp; [Quickstart by hand](#quickstart-profile-1-one-machine) &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)
 <!-- /site:skip -->
 
 Organic Framework (OF) is for people who run many AI agents. It gives each agent a position, with a canonical name, a system, a role and a mandate. It records every session. It lets you see and steer the whole organization from one place, on top of your agent runtime ([herdr](https://herdr.dev)) and harness (Claude Code first).
+
+## Install it with your agent
+
+Give your coding agent (Claude Code, for example) this repository's link and say:
+
+> Install Organic Framework from https://github.com/organic-framework/organic-framework, following its INSTALL.md.
+
+It asks you a few questions, installs OF, and stops where only you can act: logging in to Claude Code, trusting the new folder, and talking to your conductor. If you have a machine that stays on, such as a home server or a second computer, it suggests running herdr and the agents there, reached from your laptop over Tailscale. **Agents:** your guide is [`INSTALL.md`](INSTALL.md), in full detail. The quickstart below is the same install by hand.
+
+## What OF gives you
 
 | | |
 |---|---|
@@ -29,7 +39,8 @@ Target: from nothing to your organization's structure in a repository, your cond
 ```bash
 git clone <this repository> ~/organic-framework
 ln -s ~/organic-framework/bin/of ~/.local/bin/of     # or anywhere on your PATH
-python3 -m pip install --user pyyaml                 # if missing
+python3 -c "import yaml" || python3 -m pip install --user --break-system-packages pyyaml
+                                                     # Debian/Ubuntu: sudo apt install python3-yaml
 
 of init my-org --owner "Your Name" --path ~/code/my-project   # repeat --path for each directory of this organization
                                                      # not in a terminal (a script, CI): add --yes

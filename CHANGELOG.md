@@ -11,7 +11,17 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
+
+### Changed
+
+- The README follows the OF design: the photograph and the type of the design, light and dark; "install it with your agent" comes first.
+
+### Fixed
+
+- The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
 
 ## 0.1.0 - 2026-11-11
 
