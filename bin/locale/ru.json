@@ -224,5 +224,6 @@
  "opening the questions…": "открываю вопросы…",
  "could not open: {why}": "не открылось: {why}",
  "Press {keys} to open them.": "Нажми {keys}, чтобы открыть.",
- "The questions open with of asks --watch.": "Вопросы открываются командой of asks --watch."
+ "The questions open with of asks --watch.": "Вопросы открываются командой of asks --watch.",
+ "herdr shows another popup, Settings or Copy mode: close it, then try again": "в herdr открыто другое окно, настройки или режим копирования: закрой и попробуй снова"
 }

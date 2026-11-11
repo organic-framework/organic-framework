@@ -7,8 +7,10 @@ open it with the mouse". It shows, read-only:
   For your hands, Everything else; Snoozed and Handed over when they hold anything);
 - the longest wait and the top card of the most urgent stream;
 - how to open the questions (the key herdr binds to `of asks --watch`, read from its config: "Ctrl-B, then a") and a
-  button. A click on the button, Enter or o opens the popup through the opener herdr provides (`popup_open` in
-  ~/.config/of/asks.yaml, an argv); without one the button says which keys to press.
+  button. A click on the button (also in a pane without the focus), Enter or o opens the popup over everything
+  through OF's herdr plugin (of_herdr_plugin.open_questions, with this bin/of, so a trial build opens itself), or
+  through `popup_open` in ~/.config/of/asks.yaml when the machine sets another opener; while herdr shows another
+  popup, Settings or Copy mode the button's line says so.
 It refreshes as the popup does (views.seq, a full reload every REFRESH_S) and fits its pane: one line per part when
 wide, one stream per line when narrow.
 """
@@ -83,10 +85,10 @@ def summary(items, overlay=None, now=None):
 
 
 class Panel:
-    def __init__(self, scr, loader, seq=None, initial=None, keys=None, open_cmd=None, run_cmd=None):
+    def __init__(self, scr, loader, seq=None, initial=None, keys=None, open_cmd=None, run_cmd=None, popup=None):
         self.scr, self.loader, self.seq = scr, loader, seq
         self.items, self.over = initial or ([], {})
-        self.keys, self.open_cmd = keys, open_cmd
+        self.keys, self.open_cmd, self.popup = keys, open_cmd, popup
         self.run_cmd = run_cmd or (lambda argv: subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                                                                  stderr=subprocess.DEVNULL, start_new_session=True))
         self.bg = {"data": None, "busy": False}
@@ -166,6 +168,14 @@ class Panel:
                 self.msg = tr("opening the questions…")
             except Exception as e:  # noqa: BLE001
                 self.msg = tr("could not open: {why}", why=f"{type(e).__name__}: {e}"[:60])
+        elif self.popup:
+            try:
+                ok, why = self.popup()
+            except Exception as e:  # noqa: BLE001
+                ok, why = False, f"{type(e).__name__}: {e}"[:60]
+            self.msg = tr("opening the questions…") if ok else (
+                tr("herdr shows another popup, Settings or Copy mode: close it, then try again") if why == "ui_busy"
+                else tr("could not open: {why}", why=why))
         else:
             self.msg = tr("Press {keys} to open them.", keys=self.keys) if self.keys else \
                 tr("The questions open with of asks --watch.")
@@ -229,8 +239,12 @@ def main(of_path, positions=None):
         finally:
             own.close()
 
+    def popup():  # OF's herdr plugin opens the questions over everything, with this bin/of (a trial opens itself)
+        import of_herdr_plugin
+        return of_herdr_plugin.open_questions(of_path)
+
     def run(scr):
         Panel(scr, loader, seq=of_listen.seq, initial=([x for _, g in T.read_cache() for x in g], {}),
-              keys=open_keys(of_path=of_path), open_cmd=opener()).run()
+              keys=open_keys(of_path=of_path), open_cmd=opener(), popup=popup).run()
     curses.wrapper(run)
     return 0
