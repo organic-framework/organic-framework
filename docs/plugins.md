@@ -11,6 +11,7 @@ Status: **design**, 2026-11-11, by `of_architect`. The founder, about 19:00Z: "w
 ## 2. The mechanism
 
 - **A family** is a Python class with a few methods (§3), a registry of named implementations, and a contract test suite that every implementation passes (`tests/contracts/<family>/`, run by `of_lab`).
+- **An organization's secrets store is chosen at its first need**, not at install, on one card to its owner (docs/agent-secrets.md §13.2); until then its credentials are files.
 - **Choosing.** A machine's choices live in `~/.config/of/plugins.yaml` (`<family>: <name>` plus that implementation's settings). A choice that belongs to an organization, such as where its secrets live, sits in the organization's registry (`plugins:`), so every machine and colleague of that organization uses the same one. The organization's choice wins over the machine's for its own data.
 - **Loading.** OF loads implementations it ships (`bin/plugins/<family>/<name>.py`) and, from installed Python packages, entry points in the group `organic_framework.<family>`. It never loads code from a folder an agent can write: the guard denies agents writes to installed plugin code, so a plugin cannot be planted by an agent. A plugin runs with OF's own rights; installing one is the owner's act.
 - **Naming references.** Where a record names something inside a product, it uses the family's URI form: a credential's `ref` is `<backend>://<path>` (for example `op://acme-obs/grafana/credential`, `keychain://acme/grafana-viewer`, `vault://secret/acme/grafana#token`, `aws-sm://acme/grafana`), so a registry says which backend holds it and moves between backends by changing the ref.
@@ -19,7 +20,7 @@ Status: **design**, 2026-11-11, by `of_architect`. The founder, about 19:00Z: "w
 
 | Family | What it does for OF | Methods (outline) | Ships with | Owner |
 |---|---|---|---|---|
-| `secrets` | where credentials live; the broker reads and writes through it | `read(ref)` into a process only, `write(ref, value)`, `exists(ref)`, `list(scope)` names only, `bootstrap()` | 1Password service accounts; macOS Keychain; an env file for a lab. Candidates: Bitwarden, LastPass, HashiCorp Vault, AWS Secrets Manager and KMS, Google Secret Manager | `of_server` |
+| `secrets` | where credentials live; the broker reads and writes through it | the store interface of docs/agent-secrets.md §13.3: `ref` form, `container`, `read` and `write` with the position's own identity, `plan`, `enforces_boundary`, `audit`, `value_commands` | 1Password service accounts; macOS Keychain; an env file for a lab. Candidates: Bitwarden, LastPass, HashiCorp Vault, AWS Secrets Manager and KMS, Google Secret Manager | `of_server` |
 | `runtime` | the panes agents run in: list, read, deliver text when idle, label, focus | `agents()`, `read(pane)`, `deliver(pane, text)`, `label(pane, …)`, `focus(pane)` | herdr; tmux; none (a terminal, inbox only) | `of_herdr` |
 | `harness` | the agent program: start and resume a session, its hooks, its transcripts, its accounts | `start(…)`, `resume(session)`, `install_hooks()`, `transcripts()`, `accounts()` | Claude Code. Candidate: Codex | `of_platform`, accounts with `of_capacity` |
 | `code_host` | work records: merged changes and their authors | `merged(since)`, `authors(paths, since)`, `pr(id)` | git (local); GitHub. Candidates: GitLab, Bitbucket | `of_platform` |

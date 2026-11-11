@@ -290,6 +290,22 @@ positions:
 - **`account_bound: true`**: the tool works only on the Claude accounts where it is signed in. A move goes only to such an account (`of capacity`).
 - `of tools check` (inside `of registry check`) validates: ids, `kind` and the fields it needs, `scope` values, `acts_as`, `keeper` (a position of the organization), each `credential.id` (in the Credentials catalogue), a file credential's path in the command, no secret-shaped value in `env` or `headers`, no `vault` key, an OAuth `mcp-remote` marked `account_bound`, and every tool a position or unit names.
 
+## Plugins (2026-11-11, `of_architect`; docs/plugins.md)
+
+An organization's choices of the outside products that hold its data, so every machine and colleague of the organization uses the same one. A machine's own choices live in `~/.config/of/plugins.yaml`; the organization's win for its data.
+
+```yaml
+plugins:
+  secrets:
+    name: 1password          # 1password | bitwarden | vault | aws-sm | gcp-sm | sops | keychain (docs/agent-secrets.md §13.4)
+    chosen: "29ea1baa"       # the owner's ask id; required
+    settings: {}             # the implementation's own settings, never a secret value
+```
+
+- **Absent means no product chosen.** For `secrets` that means files: credentials under the credential roots, named by `paths` (Credentials, below), until the owner chooses at the first need (docs/agent-secrets.md §13.2).
+- **A credential's `ref` names its store** in the store's own form (`op://`, `bws://`, `vault://`, `aws-sm://`, `gcp-sm://`, `sops://`, `keychain://`); `of registry check` refuses a `ref` whose store is not the organization's chosen one.
+- `chosen` is required: the store is the owner's decision, never a default.
+
 ## Credentials (2026-11-11, `of_architect`; from a user organization's structure keeper through `of_server`)
 
 Every agent runs as one OS user, so a file's mode keeps no position from another position's credentials. The guard denied credential files by name and missed some names (`*.header`, `*.password`, until 2026-11-11). A credentials catalogue lets the guard deny by default instead.
