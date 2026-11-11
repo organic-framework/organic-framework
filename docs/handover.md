@@ -29,7 +29,10 @@ A **hand-over** is a piece of work that one position asks another position to do
 | `priority` | `blocking` (the requester waits), `normal` |
 | `expected_dT` | optional: why it matters, in throughput terms (feeds the owner's ranking) |
 | `context` | references, not copies: briefs, files, PRs, earlier hand-overs |
+| `basis` | **why the work is owed**: `ask:<id>` (an owner's decision), `source:<law, contract, standard or document> "<the quote>"`, `evidence:<a commit, metric, log or report>`, or `inference` (the requester's own reasoning, unconfirmed). Required when the title or `done_when` states an obligation (must, required, requirement, compliance, mandated); the receiver sees it in the offer before it accepts (2026-11-11, from a user organization: a watcher's unconfirmed inference travelled as a must and merged as a "compliance requirement"). |
 | `scope` | optional `{systems: [...], paths: [...]}`. While the hand-over is accepted, the mandate router gives work in this scope the verdict `in_handover:<id>` rather than `owned_by:X`. This is what makes the wrong-task rate computable. |
+
+**A basis never grows on the way.** Whoever passes work on (a further hand-over, a PR, a commit message, a brief, a registry line) carries its `basis` unchanged and cites it. An `inference` stays an inference until an owner's ask or a cited source confirms it, and text built on it says "unconfirmed"; it is never written as a requirement, a rule or a decision. A receiver declines or returns work stated as an obligation without a basis. The same rule holds for claims about people (docs/registry.md, People: evidence).
 
 ### 1.2 Lifecycle (events)
 
@@ -42,7 +45,7 @@ proposed ──► accepted ──► delivered ──► verified ──► clo
 
 | Event | Written by | Rule |
 |---|---|---|
-| `of.handover_proposed` | requester (`of handover propose`) | `done_when` required |
+| `of.handover_proposed` | requester (`of handover propose`) | `done_when` required; `basis` required for an obligation (§1.1) |
 | `of.handover_accepted` / `declined` | receiver | **must answer within the receiver's response window**. The window is counted from delivery into the receiver's pane. The default is 30 minutes; a position can override it with the registry field `response_window`. `of pulse` nudges once the window has passed. |
 | `of.handover_blocked` | receiver | names what it waits on (owner, peer, external) |
 | `of.handover_delivered` | receiver | links the result (PR, file, report) |
