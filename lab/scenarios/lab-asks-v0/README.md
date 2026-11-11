@@ -3,8 +3,8 @@
 Scores the two stages that find a question an agent leaves in its pane instead of filing it with `of ask`:
 the detectors (`bin/of_classify.py`, q-v0 to q-v5), which pick closing messages as candidates, and the judge
 (`bin/of_judge.py`, a small model), which decides whether the agent waits on its owner. A miss at either stage
-loses the question. Kept by `of_asks`; started on 2026-11-10 after the founder's "There was a question and it did not reach
-the panel" (ci_keeper; `reports/asks-losses-2026-11-07-10.md`).
+loses the question. Kept by `of_asks`; started on 2026-11-10 after the founder's "Вот был вопрос, а он не попал в
+панель" (ci_keeper; `reports/asks-losses-2026-11-07-10.md`).
 
 ## Cases
 
@@ -27,7 +27,7 @@ describe this set, not the daily stream; the results below were measured on the 
 | silver | 89 | The recorded verdict and Opus (the j-v3 prompt) agree; no one checked |
 
 Labelling rule: `owner_question` when the agent waits on the founder's answer to something not filed with
-`of ask`, also when it only points at it ("a question about 1Password" in a WAITING ON line, a status note "awaiting
+`of ask`, also when it only points at it ("вопрос про 1Password" in a WAITING ON line, a status note "awaiting
 owner answers"); a reminder of an ask already filed, by any position, is `not_a_question`.
 
 ## Running it
@@ -41,7 +41,7 @@ owner answers"); a reminder of an ask already filed, by any position, is `not_a_
 `pipeline` asks whether the stages as built would put a case on the founder's list: the gate (a detector fires,
 or every closing message), the judge's rules before the model, and the judge by a majority of `--runs` calls; it
 exits 1 when a labelled question is lost. `cards` is the stop rule (of_architect, 2026-11-11): of the pane cards OF
-filed for agents (`source: pane`, from 2026-11-10 20:45Z), the share that ended withdrawn or answered "not a question".
+filed for agents (`source: pane`, from 2026-11-10 20:45Z), the share that ended withdrawn or answered "не вопрос".
 Above 1 in 5, the judge is tightened before judge.yaml `gate: all` opens the gate; it exits 1 then.
 
 Run the paid commands with `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_SOCKET_PATH` unset (AGENTS.md: a nested
@@ -71,7 +71,7 @@ The judge:
 
 j-v4 (2026-11-11, hand-over `cc2ed950`): a proposal that waits on the owner's yes is a question; other positions'
 asks the message names are listed; the filed-ids rule clears a message only when it asks nothing else, also not
-when an item with no id stands beside the ids ("a question about 1Password"); a wait on another position's "yes" is no
+when an item with no id stands beside the ids ("вопрос про 1Password"); a wait on another position's «да» is no
 wait on the owner. A first run, before the last two changes, gave 0.81 and 0.86. Most of the seven false positives
 are the of_asks readings that acme_org has not checked yet.
 `pipeline --ids asks-117`: lost at the gate with the detectors; with `--gate all`, on the list in 5 runs of 5.
@@ -81,12 +81,12 @@ Haiku's verdicts vary between runs by a few cases; compare versions on more than
 ## What the misses show
 
 1. **The filed-ids rule clears new questions.** A message that names a filed ask and also asks something new
-   without "?" is cleared as "names only asks already filed": acme_org's "a question about 1Password" (never filed)
-   beside its card ids, three times; of_platform's "write down who runs the Solana bots"
+   without "?" is cleared as "names only asks already filed": acme_org's "вопрос про 1Password" (never filed)
+   beside its card ids, three times; of_platform's "напиши, как правильно записать, кто ведёт Solana-ботов"
    beside 8ee7f1bc.
 2. **A pointer to an unfiled question reads as a reminder.** ci_keeper's notes "registry cache #1063 awaiting
    owner answers" (15:37Z, 15:52Z, 16:07Z) were judged status: the model assumes the questions were filed.
-3. **Reminders of another position's ask.** The prompt lists only the agent's own filed asks, so "your 'yes' on
+3. **Reminders of another position's ask.** The prompt lists only the agent's own filed asks, so "ваше «да» на
    e0e53b7f" (filed by another position) reads as new when the message has other content.
 
 Next (j-v4): list to the model every open founder ask the message names, by any position; tell it that a question

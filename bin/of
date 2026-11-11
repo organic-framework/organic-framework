@@ -2234,6 +2234,28 @@ def cmd_asks(args):
     import of_store
     conn = of_store.connect()
     asks = of_asks.project(of_asks.load(conn))
+    if args.action == "answer":  # the person's answer given in their conductor's chat (bin/of_asks_chat.py)
+        import of_asks_chat
+        positions = _load_quiet()
+
+        def pane_of(name):
+            try:
+                return next((a["pane_id"] for p, a in bind(positions, live_agents())[0] if p["name"] == name), None)
+            except OfError:
+                return None
+        relayed_by = _asks_actor()
+        try:
+            out = of_asks_chat.answer(conn, asks, positions, args.id, args.prompt, pane_of, option=args.option,
+                                      text=args.text, relayed_by=None if relayed_by == "owner" else relayed_by)
+        except ValueError as e:
+            raise OfError(f"not recorded: {e}")
+        print("\n".join(out))
+        _reconcile_ask_tokens(positions)
+        return 0
+    if getattr(args, "chat", False) and args.action == "list":
+        import of_asks_chat
+        print(of_asks_chat.chat_view(conn, asks))
+        return 0
     if args.action == "answered":
         import of_events
         if not args.id:
@@ -2275,7 +2297,9 @@ def cmd_asks(args):
     shown = asks if args.all else [a for a in of_asks.for_owner(asks) if a["state"] == "open"]
     shown.sort(key=lambda a: a["ts"])  # the oldest wait first
     if args.json:
-        print(json.dumps(shown, ensure_ascii=False, indent=2))
+        import of_asks_chat  # how the conductor presents each in a chat: answer, steps, or waiting for the machine
+        print(json.dumps([dict(a, in_chat=of_asks_chat.in_chat(a)) if a["state"] == "open" else a for a in shown],
+                         ensure_ascii=False, indent=2))
         return 0
     panes = {}
     try:
@@ -3148,6 +3172,10 @@ def cmd_ask(args):
     refusal = of_ask_text.check(args.question, opts, args.task)
     if refusal:
         raise OfError(refusal)
+    import of_asks_chat  # where the person can do a task: phone, browser or machine (docs/remote.md §3 row 4)
+    refusal = of_asks_chat.check_where(args.where, args.task, args.command)
+    if refusal:
+        raise OfError(refusal)
     task = of_hook_mask(args.task) if args.task else None
     text = of_hook_mask(args.question or (task or "").strip().splitlines()[0][:200])
     import of_classify
@@ -3171,7 +3199,8 @@ def cmd_ask(args):
         **({"escalate_rule": esc_rule} if esc_rule else {}), **({"asked_to": args.to} if rerouted else {}),
         "blocking": bool(args.blocking), "topic_key": _topic_key(text), **({"due": _due(args.due)} if args.due else {}),
         "questions": [{"question": text, "options": opts}], "classifications": {"q-v0": True, "q-v1": True},
-        **({"task": True, "steps": task, "command": of_hook_mask(args.command) if args.command else None} if task else {}),
+        **({"task": True, "steps": task, "command": of_hook_mask(args.command) if args.command else None,
+            "where": "machine" if args.command else (args.where or "machine")} if task else {}),
         **({"work": _work(me.get("_org"), args.work)} if args.work else {}),
         **({"escalated_from": src["event_id"]} if src else {})},
         position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender))
@@ -5025,13 +5054,23 @@ def main(argv=None):
     imp.add_argument("--since", help="github: merged on or after this date (default: the day before the last import)")
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
-    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "send-outbox", "judge", "deliver"],
-                    default="list", help="deliver [<position>]: type the founder's answers not yet in the pane")
+    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "send-outbox", "judge",
+                                                  "deliver"],
+                    default="list", help="deliver [<position>]: type the founder's answers not yet in the pane; "
+                    "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
+                    "their conductor's chat, recorded only when that prompt is their own and names the card or "
+                    "quotes its option")
     ak.add_argument("id", nargs="?")
     ak.add_argument("reason", nargs="*")
     ak.add_argument("--all", action="store_true", help="also answered, denied, superseded and expired asks")
     ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a)")
     ak.add_argument("--json", action="store_true")
+    ak.add_argument("--chat", action="store_true", help="the owner's queue as the conductor tells it in a chat: cards, "
+                    "tasks for a phone or a browser, and what waits for the machine")
+    ak.add_argument("--option", type=int, help="answer: the card's option the person chose (1..N)")
+    ak.add_argument("--text", help="answer: the person's words, as typed in the prompt")
+    ak.add_argument("--prompt", help="answer: the event id of the person's prompt in the conductor's session "
+                    "(of prompts --mine prints it)")
     ak.add_argument("--pending", action="store_true", help="judge: the candidates the Stop hook queued")
     ak.add_argument("--pane", help="judge: the asking agent's pane, for the correction")
     ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts, write nothing")
@@ -5134,6 +5173,10 @@ def main(argv=None):
     ak2.add_argument("--task", help="work the owner must do with his own hands (a key, a login, a payment, a UI click), "
                                     "step by step; an answer does not close it, you do after checking: --done-task")
     ak2.add_argument("--command", help="with --task: the command for the owner to paste")
+    ak2.add_argument("--where", choices=["phone", "browser", "machine"],
+                     help="with --task: where the person can do it: phone (a link or an app), browser, or machine "
+                          "(a terminal, a key, Touch ID; the default, and always with --command). A person who "
+                          "reaches OF only through their conductor's chat gets a machine task as waiting")
     ak2.add_argument("--work", help="the work (registry works:) this ask belongs to (docs/works.md)")
     ak2.add_argument("--tags", help="escalation tags: prod_change:<system>+<system>,money,security_incident,"
                                     "irreversible,window_go:<system> (default: guessed from the text)")

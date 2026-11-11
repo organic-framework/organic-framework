@@ -4,7 +4,8 @@ The owner reads a question card (the question, its options, who asks, how long i
 asker's last message before it, links) and answers in place: an option (1..9) or free text. The
 answer:
 - closes the ask and its duplicates from the same group: `of.agent_question_answered`
-  {ask_id, ask_ids, answer, via: asks-ui, by: owner};
+  {ask_id, ask_ids, answer, via: asks-ui, by: owner} (an answer given in the person's conductor's chat is
+  recorded the same way with via: conductor and delivered the same way: bin/of_asks_chat.py);
 - goes into the pane of every asker in the group in the frame "Answer from the founder to your question <id>: …",
   declared as the owner's own words (origin human, channel asks-ui), not as a tool's injection.
 
@@ -209,6 +210,19 @@ def card(conn, item, positions):
 
 def frame(ask_id, answer):
     return f"Answer from the founder to your question {ask_id[-8:]}: {answer}"
+
+
+TYPED_VIAS = ("asks-ui", "conductor")  # answers typed into the asker's pane: the popup's, and the conductor's chat's
+
+
+def typed_answer(p, ask_id):
+    """What the asker's pane gets for an answer event's payload: the frame, and for an answer given in the person's
+    conductor's chat (of_asks_chat) the person's own words under it, so the asker sees what the answer rests on."""
+    text = frame(ask_id, p.get("answer") or "")
+    if p.get("via") == "conductor" and p.get("quote"):
+        text += f"\n(Given in the conductor's chat at {str(p.get('prompt_ts') or '')[11:16]}Z, in these words: " \
+                f"\u00ab{' '.join(str(p['quote']).split())[:600]}\u00bb)"
+    return text
 
 
 def answer_mark(ask_id):
@@ -484,7 +498,7 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             p = json.loads(payload or "{}")
         except ValueError:
             continue
-        if p.get("via") != "asks-ui" or not p.get("answer") or p.get("keys") or p.get("verdict"):
+        if p.get("via") not in TYPED_VIAS or not p.get("answer") or p.get("keys") or p.get("verdict"):
             continue  # a dialog's keys, a not-a-question verdict: nothing to type
         if (of_asks.seconds_since(ts, now) or 0) < min_age:
             continue
@@ -496,7 +510,7 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             seen.add(same)
             if (not only or position == only) and not delivered(conn, position, marks, ts):
                 out.append({"key": f"answer:{eid}:{position}", "position": position, "marks": marks, "since": ts,
-                            "text": frame(ids[0], p["answer"]) + _late(ts, now, "the founder answered",
+                            "text": typed_answer(p, ids[0]) + _late(ts, now, "the founder answered",
                                                                        busy=busy_since(conn, position, ts, now)),
                             "sender": "owner", "channel": "asks-ui"})
     open_ids = {a["event_id"] for a in asks if a.get("state") == "open"}

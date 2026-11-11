@@ -168,7 +168,8 @@ def project(rows):
                     if p_.get("done_task"):
                         ask.update(state="done", closed_by=r["event_id"], closed_at=r["ts"])
                     else:
-                        ask.update(claimed_at=None, claim=None, reopened=(p_.get("note") or "")[:300])
+                        ask.update(claimed_at=None, claim=None, reopened=(p_.get("note") or "")[:300],
+                                   reopened_at=r["ts"])  # an answer from a chat must be later (of_asks_chat)
         if name == "of.state_declared" and (r["payload"] or {}).get("state") in ("working", "done"):
             # carrying on with other work does not answer an ask (of ask itself suggests `of status working`):
             # declared asks stay open until answered, withdrawn or reconciled; a heuristic one has moved on
@@ -254,7 +255,10 @@ def project(rows):
             if (r["payload"] or {}).get("task"):
                 pl_ = r["payload"] or {}
                 ask.update(task=True, kind="task", steps=(pl_.get("steps") or "")[:4000], command=pl_.get("command"),
-                           claimed_at=None, claim=None)
+                           claimed_at=None, claim=None,
+                           # where the person can do it (docs/remote.md §3 row 4): none or a command = at the machine
+                           where="machine" if pl_.get("command") or pl_.get("where") not in ("phone", "browser")
+                           else pl_["where"])
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask

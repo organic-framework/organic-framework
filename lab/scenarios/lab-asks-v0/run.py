@@ -15,7 +15,7 @@ runs on the Mac only (docs/lab.md, Level 2); it prints only scores and event ids
     run.py pipeline [--gate detectors|all] [--ids asks-117] [--runs 3]
                                            would the stages as built put each case on the founder's list (gate,
                                            rules, judge by majority); exit 1 when a labelled question is lost
-    run.py cards [--since D]               the stop rule: pane cards OF filed that ended withdrawn or "not a question"
+    run.py cards [--since D]               the stop rule: pane cards OF filed that ended withdrawn or "не вопрос"
                                            (exit 1 above 1 in 5: tighten the judge before the gate opens)
     run.py sample [--since D] [--n 60] [--seed S]
                                            propose cases: every judged owner_question and skipped candidate since D,
@@ -321,7 +321,7 @@ def cmd_pipeline(args):
 
 def cmd_cards(args):
     """The stop rule (of_architect, 2026-11-11): of the pane cards OF filed (source pane) since --since, the share
-    that ended withdrawn or answered "not a question". Above 1 in 5, tighten the judge before the gate opens. Exit 1 then."""
+    that ended withdrawn or answered "не вопрос". Above 1 in 5, tighten the judge before the gate opens. Exit 1 then."""
     import collections
     import of_asks
     conn = connect()
@@ -338,13 +338,13 @@ def cmd_cards(args):
     for a in cards:
         st = a["state"]
         if st == "answered" and answer.get(a["event_id"], "").strip().lower().startswith(of_judge.NOT_A_QUESTION):
-            st = "not a question"
+            st = "не вопрос"
         n[st] += 1
     closed = len(cards) - n["open"]
-    false = n["withdrawn"] + n["not a question"]
+    false = n["withdrawn"] + n["не вопрос"]
     rate = false / closed if closed else float("nan")
     print(f"lab-asks-v0 cards since {args.since}: {len(cards)} pane cards, {closed} closed, "
-          f"{false} withdrawn or \"not a question\" ({rate:.2f} of closed; the stop rule is 0.20)  "
+          f"{false} withdrawn or \"не вопрос\" ({rate:.2f} of closed; the stop rule is 0.20)  "
           + ", ".join(f"{k} {v}" for k, v in sorted(n.items())))
     return 1 if closed and rate > 0.2 else 0
 

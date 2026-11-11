@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.abspath(BIN))
 import of_conductor_panel as P  # noqa: E402
 import of_events  # noqa: E402
 import of_store  # noqa: E402
-from of_locale import tr  # noqa: E402
 
 MAX_RGBA = 16 * 1024 * 1024
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -166,11 +165,11 @@ def main():
                     html = page_html(ledger, conn, positions, cache, width_css)
                 finally:
                     conn.close()
-                steady = "\n".join(x for x in words.split("\n")[1:] if tr("movement") not in x)
+                steady = "\n".join(x for x in words.split("\n")[1:] if "движение" not in x)
                 key = hashlib.sha1(f"{steady}{cols}x{rows}x{cw}x{ch}".encode()).hexdigest()
                 fetched, geom = time.time(), (cols, rows, cw, ch)
                 if key != shown:
-                    w(f"\033[{rows};1H\033[2K\033[38;2;142;142;147m  {tr('updating…')}\033[0m")
+                    w(f"\033[{rows};1H\033[2K\033[38;2;142;142;147m  обновляю…\033[0m")
                     # a tile is a whole number of rows and at most MAX_RGBA as RGBA
                     max_rows = MAX_RGBA // (cols * cw * 4 * ch)
                     tile_css = max(1, max_rows) * ch // dpr
@@ -189,9 +188,9 @@ def main():
             frame = (offset_rows, cols, rows, shown)
             if tiles and frame != placed:
                 place(tiles, offset_rows * ch, view_rows, cols, ch, dpr)
-                hint = (tr("  wheel · ↑↓ · PgUp/PgDn   lines {a}–{b} of {c}   ·   of_herdr sketch: a picture in the panel's pixels, {n} parts",
-                           a=offset_rows + 1, b=min(offset_rows + view_rows, max_off + view_rows), c=max_off + view_rows, n=len(tiles))
-                        if max_off else tr("  of_herdr sketch: a picture in the panel's pixels"))
+                hint = (f"  колесо · ↑↓ · PgUp/PgDn   строки {offset_rows + 1}–{min(offset_rows + view_rows, max_off + view_rows)}"
+                        f" из {max_off + view_rows}   ·   набросок of_herdr: картинка в пикселях панели, {len(tiles)} част."
+                        if max_off else "  набросок of_herdr: картинка в пикселях панели")
                 w(f"\033[{rows};1H\033[2K\033[38;2;99;99;102m{hint[:cols - 1]}\033[0m")
                 placed = frame
             r, _, _ = select.select([fd], [], [], 1.0)

@@ -1,7 +1,7 @@
 # herdr-image-v1: which way a pane image reaches Ghostty, and why the conductor panel's picture failed
 
 Built on 2026-11-11 by `of_herdr` for the founder's question about the requests screen (conductor request R7,
-20:30Z): "Is this a bug in herdr or in Ghostty?" It replaces the conclusion of `herdr-image-v0`.
+20:30Z): "Это ошибка в herdr или в Ghostty?" It replaces the conclusion of `herdr-image-v0`.
 
 ## Why v0's conclusion was wrong
 
@@ -86,7 +86,7 @@ scrolls:
 In the lab: one 2412x1728 tile went by file and was placed in 0.26 s. A one-row scroll sent only placements, plus
 the next tile once by file when it came into view. The whole session sent 27 KB through the terminal.
 
-It ran in the founder's session in a tab of its own ("a panel sketch", made with `--no-focus`). There his pane
+It ran in the founder's session in a tab of its own ("набросок панели", made with `--no-focus`). There his pane
 gave 5408x748-pixel tiles (16.2 MB each).
 
 Limits of the sketch:

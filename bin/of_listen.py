@@ -669,7 +669,7 @@ class DeliverProcessor(Processor):
         def due(pos, marks, ask=None, state=None):
             self.due.setdefault(pos, []).append({"marks": marks, "since": r["ts"], "ask": ask, "state": state, "n": 0})
         if n == "of.agent_question_answered":
-            if p.get("via") == "asks-ui" and p.get("answer") and not p.get("keys") and not p.get("verdict"):
+            if p.get("via") in aa.TYPED_VIAS and p.get("answer") and not p.get("keys") and not p.get("verdict"):
                 for pos, _, ids in aa.recipients(conn, p.get("ask_ids") or [p.get("ask_id")]):
                     due(pos, [aa.answer_mark(a) for a in ids])
         elif n == "of.agent_question":

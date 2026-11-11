@@ -101,8 +101,5 @@
  "{name} {gib} GiB": "{name} {gib} ГиБ",
  "{n} days ago": "{n} дн назад",
  "{n} min ago": "{n} мин назад",
- "{n} task(s) wait for your hands": "{n} задач(и) ждут твоих рук",
- "updating…": "обновляю…",
- "  wheel · ↑↓ · PgUp/PgDn   lines {a}–{b} of {c}   ·   of_herdr sketch: a picture in the panel's pixels, {n} parts": "  колесо · ↑↓ · PgUp/PgDn   строки {a}–{b} из {c}   ·   набросок of_herdr: картинка в пикселях панели, {n} част.",
- "  of_herdr sketch: a picture in the panel's pixels": "  набросок of_herdr: картинка в пикселях панели"
+ "{n} task(s) wait for your hands": "{n} задач(и) ждут твоих рук"
 }
