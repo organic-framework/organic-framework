@@ -1,0 +1,11 @@
+# asks-screen-v0, part 3 at 160x45: a card longer than the screen, scrolled by the wheel over the card
+run python3 $HARNESS/addcard.py 3 90000 900
+sleep 3
+keys g
+read 30-long-card-top
+wheel down 120 20
+wheel down 120 20
+wheel down 120 20
+read 31-long-card-wheel-down
+wheel up 120 20
+read 32-long-card-wheel-up

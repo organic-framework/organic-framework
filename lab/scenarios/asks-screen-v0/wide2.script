@@ -1,0 +1,19 @@
+# asks-screen-v0, part 2 at 160x45, the screen still open from wide.script (selection on the first card)
+keys jjjjj
+read 20-at-q03
+run python3 $HARNESS/addcard.py 2 36000
+sleep 3
+read 21-older-card-above
+keys k
+read 22-long-card
+wheel down 120 20
+wheel down 120 20
+wheel down 120 20
+read 23-long-card-wheel
+keys \x02A
+sleep 4
+run pgrep -fl "asks-inbox/bin/of asks --watch" > $OUTDIR/24-popup-processes.txt
+read 24-pane-under-popup
+keys \x1b
+sleep 2
+run pgrep -fl "asks-inbox/bin/of asks --watch" > $OUTDIR/25-after-esc.txt

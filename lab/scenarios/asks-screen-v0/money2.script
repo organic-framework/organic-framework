@@ -1,0 +1,8 @@
+# asks-screen-v0: on a money card (Q10), 1 asks for a second press; another key cancels; nothing recorded
+keys jjj
+read 53-on-q10
+keys 1
+read 54-after-1
+keys x
+sleep 1
+read 55-after-other-key

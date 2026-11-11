@@ -1,0 +1,31 @@
+# asks-screen-v0, layout A at 160x45 (a Retina Ghostty's 80% popup is about this size)
+run herdr --session ax pane run w1:p1 "env OF_AUTOMATION=1 /opt/homebrew/bin/python3 $ASKS_OF asks --watch"
+sleep 6
+read 01-open
+keys \x1b[A
+read 02-up-from-first-wraps
+keys \x1b[B
+read 03-down-back-to-first
+keys jjjjj
+read 04-sixth
+run python3 $HARNESS/addcard.py 1
+sleep 3
+read 05-new-card-arrived
+keys \t
+read 06-tab
+keys \x1b[Z
+read 07-shift-tab
+wheel down 30 15
+read 08-wheel-over-queue
+wheel down 120 15
+wheel down 120 15
+read 09-wheel-over-card
+keys G
+read 10-last
+keys g
+read 11-first
+keys ?
+read 12-help
+keys \x1b
+sleep 1
+read 13-esc-closes-help
