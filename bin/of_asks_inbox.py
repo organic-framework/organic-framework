@@ -484,8 +484,11 @@ class Inbox:
         self.scr.erase()
         # top: the streams and their counts
         x = 0
-        for s in self.tabs(g):
-            label = f" ● {stream_name(s, self.search or '')} {len(g.get(s) or [])} "
+        tabs = self.tabs(g)
+        full = {s: f" ● {stream_name(s, self.search or '')} {len(g.get(s) or [])} " for s in tabs}
+        short = sum(T.dwidth(v) + 1 for v in full.values()) > w - 1  # narrow: the others as their dot and count
+        for s in tabs:
+            label = full[s] if s == self.cur or not short else f" ● {len(g.get(s) or [])} "
             a = self.attr.get(COLOR[s], 0)
             if s == self.cur:
                 a |= curses.A_REVERSE | curses.A_BOLD
@@ -507,6 +510,11 @@ class Inbox:
             self.draw_list(its, idx, body_top, body_h, lw)
             for y in range(body_top, body_top + body_h):
                 self.put(y, lw + 1, "│", curses.A_DIM)
+            above, below = self.row.get(("more", self.cur), (0, 0))
+            if above:
+                self.put(body_top, lw + 1, "▲", curses.A_BOLD)
+            if below:
+                self.put(body_top + body_h - 1, lw + 1, "▼", curses.A_BOLD)
             card_x, card_w = lw + 3, max(20, w - lw - 5)
         self.lw = 0 if narrow else lw
         if item:
@@ -524,8 +532,7 @@ class Inbox:
         if line:
             self.put(h - 3, 0, line, self.attr.get("red", 0) if line.startswith(tr("not sent: {why}", why=""))
                      else curses.A_BOLD)
-        self.put(h - 2, 0, tr("↑↓ select · 1-9 answer · r write · h snooze · d hand over · / search · Tab stream · "
-                              "? help · Esc back"), curses.A_DIM)
+        self.put(h - 2, 0, keys_line(w), curses.A_DIM)
         self.scr.refresh()
         return its, idx
 
@@ -533,12 +540,16 @@ class Inbox:
         top = self.row.get(self.cur, 0)
         k = key_of(its[idx]) if its else None
         anchor = self.row.get(("anchor", self.cur))
-        if anchor and anchor[0] == k:  # the same card: it keeps its row when cards arrive above it (the design: the
-            top = idx - anchor[1]      # list never jumps while he reads)
-        top = max(0, min(top, idx, max(0, len(its) - height)))
+        if anchor and anchor[0] == k:
+            # the same card keeps its row when cards arrive above it, also when the queue fits the screen (the design:
+            # the list never jumps while he reads; of_herdr's harness, 2026-11-12): what went above is marked ▲
+            top = max(0, min(idx - anchor[1], idx))
+        else:
+            top = max(0, min(top, idx, max(0, len(its) - height)))
         if idx >= top + height:
             top = idx - height + 1
         self.row[self.cur], self.row[("anchor", self.cur)] = top, (k, idx - top)
+        self.row[("more", self.cur)] = (top, max(0, len(its) - top - height))
         for i, x in enumerate(its[top:top + height]):
             k = key_of(x)
             st = self.out.state(k)
@@ -891,6 +902,13 @@ class Inbox:
                 continue
             if not self.handle(ch):
                 return
+
+
+def keys_line(w):
+    """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there."""
+    forms = [tr("↑↓ select · 1-9 answer · r write · h snooze · d hand over · / search · Tab stream · ? help · Esc back"),
+             tr("↑↓ select · 1-9 answer · Tab stream · ? help · Esc back"), "↑↓ 1-9 r h d / Tab ? Esc"]
+    return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
 
 
 def help_rows():
