@@ -484,6 +484,34 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
     return "yes" if str(answer).strip().lower() in words else "no"
 
 
+def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which):
+    """Link OF's herdr plugin (of_herdr's, bin/of_herdr_plugin.py), which names each agent by its position when herdr
+    sees it and after every herdr restart. It changes the person's herdr, so it is said first and asked like the
+    hooks; undone with `herdr plugin unlink organic-framework`. Returns True when linked; never fails the init."""
+    if not which("herdr"):
+        out("  herdr: not installed here, nothing to link")
+        return False
+    out("  herdr: OF's plugin names each agent by its position when herdr sees it and after every herdr restart. "
+        "Linking adds it to your herdr; herdr plugin unlink organic-framework removes it.")
+    try:
+        if not _ask("Link OF's plugin into herdr?", yes):
+            out("  not linked: of apply names the agents when you run it; python3 bin/of_herdr_plugin.py install "
+                "links it later")
+            return False
+    except NoTTY as e:
+        out(f"  not linked: {e}")
+        return False
+    if install is None:
+        import of_herdr_plugin
+        install = of_herdr_plugin.install
+    try:
+        ok, note = install(os.path.dirname(HERE))
+    except Exception as e:  # noqa: BLE001 - said plainly; agents still get names from of apply
+        ok, note = False, f"{type(e).__name__}: {e}"
+    out(f"  herdr plugin: {note}" if ok else f"  herdr plugin NOT linked: {note} (of apply still names the agents)")
+    return ok
+
+
 def write_capacity_settings(settings):
     """(written, kept), lists of keys: of_capacity's writer merges the package's settings into capacity.yaml, keeps its
     lines and comments, and never overwrites a key already set (of_capacity.write_defaults, 9b70593)."""
@@ -1041,13 +1069,14 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         out(f"  its agents start on {entry['agents'].get('model')}, effort {entry['agents'].get('effort')} "
             "(agents: in that file; of init --model/--effort changes it)")
 
-    out("\n6. The recorder hooks (additive; your existing hooks stay)")
+    out("\n6. The recorder hooks (additive; your existing hooks stay), and OF's plugin in herdr")
     failed = False
     try:
         hooks("install", cfg_dir, yes=yes, out=out)
     except NoTTY as e:
         out(f"  NOT installed: {e}")
         failed = True
+    link_herdr_plugin(yes, out)
 
     out("\n7. The server (profile 1: this machine, SQLite storage)")
     import of_client
