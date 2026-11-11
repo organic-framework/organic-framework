@@ -1,6 +1,6 @@
-# Agents' secrets that follow the position (1Password)
+# Agents' secrets that follow the position
 
-Status: **approved with changes** by `of_architect` (msg `01a1cab8`, 2026-11-11; the changes are in), by `of_server`. Hand-over `7ae99eac` from `of_architect`, from the founder's request through `of_conductor` (hand-over `df9d6584`). Points marked **schema**, **API** or **event** are agreed with `of_architect`; the schema paragraphs go into registry.md with the build. The founder's decisions are one card (§11). **Built** (2026-11-11): the broker (`bin/of_server_secrets.py`, `POST /v1/secrets/use`), `of secret run` and `of secret plan` (`bin/of_secret.py`), `ref` and `rotate_days` in the catalogue, the guard's deny of the token folder (guard.md G1.10); tests `tests/test_secrets_broker.py`. Next: break-glass grants, `of secret rotate|handover|review`, the `of.secret_*` events (with `of_platform`), then the lab proof (§10).
+Status: **approved with changes** by `of_architect` (msg `01a1cab8`, 2026-11-11; the changes are in), by `of_server`. Hand-over `7ae99eac` from `of_architect`, from the founder's request through `of_conductor` (hand-over `df9d6584`). Points marked **schema**, **API** or **event** are agreed with `of_architect`; the schema paragraphs go into registry.md with the build. The founder's decisions are one card (§11). **Built** (2026-11-11): the broker (`bin/of_server_secrets.py`, `POST /v1/secrets/use`), `of secret run` and `of secret plan` (`bin/of_secret.py`), `ref` and `rotate_days` in the catalogue, the guard's deny of the token folder (guard.md G1.10); tests `tests/test_secrets_broker.py`. Next: break-glass grants, `of secret rotate|handover|review`, the `of.secret_*` events (with `of_platform`), then the lab proof (§10). **The store is the organization's choice** (founder, 2026-11-11, §13): sections 4 to 7 describe the 1Password store, one of several; the broker and the hand-over do not depend on the store. Building waits on the founder's decision on the broker (card `379274c4`).
 
 Frame: the credentials catalogue ([`registry.md`](registry.md), Credentials), the guard ([`guard.md`](guard.md) G9, G14), tool profiles (RFC 0004 §3.1), the identity-store rules (RFC 0003 §1a), of-server on several machines ([`server-several-machines.md`](server-several-machines.md)), moves ([`capacity.md`](capacity.md)).
 
@@ -222,3 +222,92 @@ One card, numbered, each point with a default he can accept as is:
 - **One service account per organization** (today). Rejected: any holder of any position reaches every vault of the organization.
 - **A service account per holder** (per machine or per person). Rejected: vault access is fixed at creation and only people create service accounts (§4), so every move would need the founder's hands.
 - **1Password Connect**, a self-hosted server that 1Password compares with service accounts (1password.dev/secrets-automation.md). Not evaluated here: the broker gives per-holder control on the server OF already runs, without another service.
+
+## 13. The store is the organization's choice
+
+### 13.1 What was asked
+
+The founder, 2026-11-11 ~18:56Z, through `of_conductor` (msg `01a1cbf2`): "far from everyone uses 1Password as their secrets store, so at some stage we have to let them choose what the secrets store will be; and probably the later that is done, the better." `of_conductor`'s frame: a store interface with 1Password as one option and the stores companies commonly run; chosen at the first moment a position actually needs a secret, not at install; the guard names the chosen store's commands, not only `op`.
+
+### 13.2 When it is chosen: at the first need
+
+- **Not at install.** `of init` asks nothing about secrets. An organization starts with **files**: credentials under its credential root, the catalogue's `paths`, and the guard's G14, as today (§2).
+- **The first need is the moment.** It is the first of these:
+  1. a structure keeper adds a credential with a store reference (`ref`) to the catalogue;
+  2. a credential's keeper asks to move a file credential into a store (`of secret plan --org O`);
+  3. a position runs `of secret run` in an organization that has no store yet.
+  At that moment OF files **one card** for the organization's owner, once (§13.7). Until the answer, `of secret run` refuses with "this organization has not chosen its secrets store yet; card <id>", and the files keep working.
+- **An organization that already chose keeps its choice.** The first user organization chose 1Password for its agents' secrets (ask `29ea1baa`, 2026-11-07; AGENTS.md, a service account per organization). It is recorded as its store when the schema lands, with no new card.
+
+### 13.3 What the broker needs from a store
+
+The broker (§5.3), the hand-over (§5.4), the record (§5.7) and the review do not change with the store. They call one interface, implemented once per store (an adapter in `bin/of_secret_stores.py`, **API** to agree with `of_architect`):
+
+| Operation | What it does |
+|---|---|
+| `ref` form | the catalogue's reference for this store, validated by `of registry check` (below) |
+| `container(ref)` | the unit the store scopes access by: a vault, a project, a path, a name prefix, a file |
+| `read(ref, identity)` | the value, read with **the position's own identity** in this store; never logged |
+| `write(ref, value, identity)` | a keeper's rotation, with an identity that may write that container |
+| `plan(position, read, write)` | the steps a person runs once to create the position's identity with exactly those containers, and where its secret goes (the broker's identity file, with a silent read) |
+| `enforces_boundary` | whether the store itself stops one position's identity from reading another's containers (§5.3, "1Password itself enforces the vault boundary") |
+| `audit` | where the store's own record of reads is, for the cross-check of §5.7 |
+| `value_commands` | the command forms that print a stored value, for the guard (§13.6) |
+
+### 13.4 The stores
+
+Each row is checked against the store's own documentation before its adapter is built, as §4 did for 1Password; the cells below are the design's assumptions, not yet that check.
+
+| Store | `ref` | Position identity | Boundary the store enforces | Who creates the identity | The store's own audit |
+|---|---|---|---|---|---|
+| **1Password** (service accounts) | `op://<org>-<system>/<item>/<field>` | a service account per position | vaults; fixed at creation (§4) | an owner or administrator (§4) | Item Usage Report; Events API on Business (§4) |
+| **Bitwarden Secrets Manager** | `bws://<project>/<secret id>` | a machine account per position, with an access token | projects, read or read-write per project | an organization administrator | the organization's event logs (to check which plans) |
+| **HashiCorp Vault** (or OpenBao) | `vault://<mount>/<org>/<system>/<name>#<field>` | an AppRole per position, with a policy over its paths | policies; editable later, so a mandate change needs no new identity | a Vault administrator | audit devices |
+| **AWS Secrets Manager** | `aws-sm://<region>/of/<org>/<system>/<name>#<key>` | an IAM role per position, assumed by the broker host | IAM policies on the secrets' names or tags; editable later | an AWS administrator, best in the organization's infrastructure code | CloudTrail (`GetSecretValue`) |
+| **GCP Secret Manager** | `gcp-sm://<project>/<secret>[@<version>]` | a service account per position | IAM on each secret (or on labels, with conditions); editable later | a project administrator | Cloud Audit Logs, data access (switched on per project) |
+| **sops with age** (encrypted files in the organization's repository) | `sops://<file>#<key path>` | an age key per position, held by the broker | the file's recipients: a position's key decrypts only the files it is a recipient of | the structure keeper edits the recipients; `sops updatekeys` re-encrypts | none beyond git history (who changed a file); the broker's record is the only read log |
+| **The OS keychain** (macOS keychain, Linux secret service) | `keychain://<service>/<account>` | none: the OS user | none between positions; the broker's check only | nobody | none; the broker's record only |
+| **Files** (no store chosen) | (none: `paths`) | none | none; the guard's G14 stops accidents, not a process | nobody | none |
+
+What follows from the table:
+- **A store that enforces the boundary is preferred** (1Password, Bitwarden, Vault, AWS, GCP, sops). With the keychain or files, a bug in the broker's own check reaches every position's credentials; that is acceptable only for a solo owner's single machine, and the card says so.
+- **Only 1Password fixes access at creation.** With Vault, AWS or GCP a mandate change edits a policy instead of creating an identity, and an administrator's script (never the broker) can rotate a position's identity, so §5.5's "by a person, in the web interface" is 1Password's case only.
+- **The names keep the design's units.** "One vault per system" (§5.1) becomes one container per system in any store: a vault, a project, a path, a name prefix, a file. The rule "split a container when its readers differ" stays wherever the boundary is per container.
+
+### 13.5 What changes in the design
+
+| Section | With another store |
+|---|---|
+| §4, §7 (1Password's facts and limits) | one such table per store, from its documentation, before its adapter is built |
+| §5.1 vaults | containers per system, named in the store's form |
+| §5.2 service accounts | a position identity in the store, only for positions that use credentials; `of secret plan` prints the store's own steps |
+| §5.3 broker | unchanged; `read` goes through the adapter; the identity file holds the store's secret (a token, an AppRole secret, an age key) |
+| §5.4 hand-over | unchanged: the broker reads the holder at each use |
+| §5.5 rotation | values unchanged; the identity's rotation as the store allows (above) |
+| §5.6 break-glass | level 3 lives wherever the company keeps its root credentials; OF records its use only |
+| §5.7 audit | the store's own audit column above, as the cross-check |
+
+### 13.6 The guard
+
+- **Values printed** (G6) already covers `vault kv get` and `vault read`, `aws secretsmanager get-secret-value`, `gcloud secrets versions access`, `sops -d` to stdout, `op read` and `op item get`, and the keychain with `-w` (G11). **To add**, each after the usual 21-day replay: Bitwarden (`bws secret get` and `list`, `bw get` and `bw list items`), `secret-tool lookup`, `age -d` to stdout, `aws secretsmanager batch-get-secret-value`, and `aws ssm get-parameter(s) --with-decryption`.
+- **The chosen store's own command line** (G9 today names `op`) becomes one rule per store, read from the organization's registry: the store's command line runs only from the broker and the organization's committed scripts, with the organization's identity variable set (`OP_SERVICE_ACCOUNT_TOKEN`, `BWS_ACCESS_TOKEN`, `VAULT_TOKEN` or an AppRole login, the broker's `AWS_PROFILE`, a position's `GOOGLE_APPLICATION_CREDENTIALS`, `SOPS_AGE_KEY_FILE`). Without it, the command would act as the person signed in on the machine, as a bare `op` reaches the founder's own 1Password (G9's reason).
+- **The identity files** stay a credential root that the guard denies to every session (G1.10, G14), whatever the store.
+
+### 13.7 The owner's card at the first need
+
+One card for the organization's owner, in the owner's language through the locale layer, standing on its own (AGENTS.md):
+1. **The decision:** where the organization keeps its agents' secrets.
+2. **Why now:** the first credential needs moving (which one, for which position); until the answer it stays a file.
+3. **The options**, ranked by what the organization already runs: a store CLI found on its machines, the cloud of its systems in the systems map, a store named in its existing references. Each option gives its consequence: whether the store keeps positions apart by itself, who must create identities and how often, and its cost if it is a paid product. Recommended: the store the company already runs and audits; with none, sops with age in the organization's repository (no service to run, a boundary per file); the keychain only for a solo owner on one machine.
+4. **What happens next:** the structure keeper records the answer (**schema** below) and `of secret plan` prints the first identity's steps as a task for the owner's hands.
+
+**Schema** (to agree with `of_architect`): an organization's registry gets `secrets: {store: 1password|bitwarden|vault|aws-sm|gcp-sm|sops|keychain, chosen: <ask id>, settings: {…}}`, with settings such as a Vault address, a region or a project. Absent means files. `of registry check`: every `ref` has the chosen store's form, and its container belongs to the organization (§5.1, for any store).
+
+### 13.8 Build order
+
+After the founder's decision on the broker (card `379274c4`):
+1. the store interface, with the files baseline and the refusal of §13.2;
+2. the 1Password adapter, moving today's `_op_read` behind the interface, unchanged in behaviour;
+3. the first-need card, `secrets:` in the schema, and `of registry check`;
+4. the guard rules of §13.6 for the chosen stores, each after its replay;
+5. other adapters when an organization chooses that store, each with its facts table, a stub in the lab proof (§10, step 0 against the stub) and, where possible, a real leg.
