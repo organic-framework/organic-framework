@@ -428,6 +428,88 @@ class MoveAndOwnsTest(unittest.TestCase):
         self.assertIn("'vibes' is not a kind of work", "\n".join(p))
 
 
+POS_REG = """organization: mt
+positions:
+  - name: tp_owner
+    system: ops
+    role: owner
+    kind: manager
+    owner: founder
+    summary: "units owner"
+    status: active
+  - name: feed_keeper
+    system: feed
+    role: keeper
+    kind: keeper
+    owner: founder
+    summary: "token prices"
+    status: active
+  - name: cat_keeper
+    system: catalogue
+    role: keeper
+    kind: keeper
+    owner: founder
+    summary: "catalogue"
+    status: active
+
+units:
+  shop:
+    owner: tp_owner
+    systems: [feed]
+  catalogue:
+    owner: tp_owner
+    systems: [catalogue]
+  company:
+    owner: acme_owner
+    systems: [ops]
+
+systems:
+  feed: {keeper: feed_keeper}
+  catalogue: {keeper: cat_keeper}
+  ops: {keeper: tp_owner}
+
+delegations:
+  - id: del-shop
+    unit: shop
+    positions: [feed_keeper]   # counted in shop's budget
+    from_owner: acme_owner
+    to_owner: tp_owner
+  - id: del-catalogue
+    unit: catalogue
+    positions:
+    - cat_keeper
+    from_owner: acme_owner
+    to_owner: tp_owner
+"""
+
+
+class MovePositionTest(unittest.TestCase):
+    """docs/handover.md, move_position (a user organization, 2026-11-11: a position moved between two units delegated
+    to the same owner was still counted in the old unit's budget)."""
+
+    MOVE = {"op": "move_position", "position": "feed_keeper", "from_unit": "shop", "to_unit": "catalogue"}
+
+    def test_the_unit_and_both_delegation_lists_in_their_style(self):
+        new, problems = of_diff.preview(dict(diff("mandate_rewrite", self.MOVE), tier="medium"), POS_REG)
+        self.assertEqual(problems, [])
+        doc = yaml.safe_load(new)
+        self.assertEqual(next(p for p in doc["positions"] if p["name"] == "feed_keeper")["unit"], "catalogue")
+        self.assertEqual(doc["delegations"][0]["positions"], [])
+        self.assertEqual(doc["delegations"][1]["positions"], ["cat_keeper", "feed_keeper"])
+        self.assertIn("positions: []   # counted in shop's budget", new)  # the flow list keeps its comment
+        self.assertIn("    - feed_keeper", new)                             # the block list stays a block list
+
+    def test_refusals(self):
+        _, p = of_diff.preview(dict(diff("mandate_rewrite", self.MOVE), tier="low"), POS_REG)
+        self.assertIn("medium tier at least", "\n".join(p))
+        other = dict(self.MOVE, to_unit="company")  # company is not delegated: authority changes hands
+        _, p = of_diff.preview(dict(diff("mandate_rewrite", other), tier="medium"), POS_REG)
+        self.assertIn("reverse diff of shop's delegation", "\n".join(p))
+        wrong = dict(self.MOVE, position="cat_keeper")
+        _, p = of_diff.preview(dict(diff("mandate_rewrite", wrong), tier="medium"), POS_REG)
+        self.assertIn("cat_keeper is in unit catalogue, not shop", "\n".join(p))
+
+
 class AddUnitTest(unittest.TestCase):
     """acme_org, 2026-11-11: a spawn diff could not add the units company and compliance; they were added by hand."""
 

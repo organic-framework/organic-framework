@@ -355,6 +355,37 @@ def move_system(text, system, frm, to):
     return "\n".join(lines)
 
 
+def move_position(text, position, frm, to):
+    """Set `position`'s unit to `to`, and move its name from the positions list of each delegation of unit `frm` to
+    that of each delegation of unit `to`, in place, each list in its own style; every other line and comment stays
+    (docs/handover.md, move_position; a user organization, 2026-11-11: a position moved between two units delegated
+    to the same owner was still counted in the old unit's budget)."""
+    text = set_fields(text, position, {"unit": to})
+    lines = text.split("\n")
+    if _top_span(lines, "delegations"):
+        for unit, fn in ((frm, lambda xs: [x for x in xs if x != position]),
+                         (to, lambda xs: xs if position in xs else xs + [position])):
+            s, e = _top_span(lines, "delegations")
+            starts = [i for i in range(s + 1, e) if re.match(r"^  - id:", lines[i])]
+            for j, st in enumerate(starts):
+                end = starts[j + 1] if j + 1 < len(starts) else e
+                if any(re.match(rf"^    unit:\s*['\"]?{re.escape(unit)}['\"]?\s*(#.*)?$", lines[i]) for i in range(st, end)):
+                    try:
+                        _list_edit(lines, st + 1, end, 4, "positions", fn)
+                    except ValueError:
+                        pass  # a delegation without a positions list
+    return "\n".join(lines)
+
+
+def _unit_delegation(doc, unit):
+    """The unit's active delegation: the last record of the unit whose to_owner is the unit's owner, else its last
+    record; None when the unit is not delegated (docs/registry.md, Delegations)."""
+    recs = [x for x in doc.get("delegations") or [] if isinstance(x, dict) and x.get("unit") == unit]
+    owner = ((doc.get("units") or {}).get(unit) or {}).get("owner")
+    act = [x for x in recs if x.get("to_owner") == owner]
+    return (act or recs or [None])[-1]
+
+
 UNIT_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
@@ -518,6 +549,38 @@ def plan(d, doc):
             edits.append((lambda t, a=sid, b=frm, e=to: move_system(t, a, b, e), f"move system {sid}: {frm} -> {to}"
                           + (f" (and delegation {', '.join(touched)})" if touched else "")))
             continue
+        if op == "move_position":  # docs/handover.md: one diff only when no authority changes hands
+            units = doc.get("units") or {}
+            pn, frm, to = c.get("position"), c.get("from_unit"), c.get("to_unit")
+            if not pn or not frm or not to:
+                problems.append(f"changes.registry[{i}]: move_position takes {{op, position, from_unit, to_unit}}")
+                continue
+            p = next((x for x in doc.get("positions") or [] if isinstance(x, dict) and x.get("name") == pn), None)
+            if p is None:
+                problems.append(f"changes.registry[{i}]: no position {pn!r}")
+                continue
+            for u in (frm, to):
+                if u not in units:
+                    problems.append(f"changes.registry[{i}]: no unit {u!r}")
+            if frm == to:
+                problems.append(f"changes.registry[{i}]: from_unit and to_unit are the same")
+            here = p.get("unit") or next((u for u, r in units.items() if p.get("system") in ((r or {}).get("systems")
+                                                                                               or [])), None)
+            if here != frm:
+                problems.append(f"changes.registry[{i}]: {pn} is in unit {here or 'none'}, not {frm}")
+            a, b = _unit_delegation(doc, frm), _unit_delegation(doc, to)
+            if (a is None) != (b is None) or (a and b and (a.get("from_owner"), a.get("to_owner"))
+                                              != (b.get("from_owner"), b.get("to_owner"))):
+                problems.append(f"changes.registry[{i}]: units {frm} and {to} are not delegated by the same delegator "
+                                f"to the same delegatee, so moving {pn} changes who holds authority over it: a reverse "
+                                f"diff of {frm}'s delegation, then a high-tier delegate or amend_delegation for {to}")
+            if d.get("tier") not in ("medium", "high"):
+                problems.append(f"changes.registry[{i}]: move_position is medium tier at least: the owner approves "
+                                f"that {pn} falls under {to}'s envelope and budget")
+            edits.append((lambda t, a_=pn, b_=frm, e_=to: move_position(t, a_, b_, e_),
+                          f"move position {pn}: {frm} -> {to}"
+                          + (f" (delegations {a.get('id')} -> {b.get('id')})" if a and b else "")))
+            continue
         if kind == "spawn":
             v = c.get("value") or {}
             if op != "add" or not isinstance(v, dict):
@@ -674,6 +737,17 @@ def preview(d, registry_text):
             if (got.get("name"), got.get("owner")) != (c.get("name"), c.get("owner")) or \
                     set(got.get("systems") or []) != set(c.get("systems") or []):
                 problems.append(f"after the edit, unit {c['id']} does not read back as written")
+    for c in (d.get("changes") or {}).get("registry") or []:
+        if isinstance(c, dict) and c.get("op") == "move_position":
+            pn, frm, to = c.get("position"), c.get("from_unit"), c.get("to_unit")
+            got = next((x for x in new.get("positions") or [] if isinstance(x, dict) and x.get("name") == pn), {})
+            if got.get("unit") != to:
+                problems.append(f"after the edit, {pn} is not in unit {to}")
+            for x in new.get("delegations") or []:
+                if isinstance(x, dict) and "positions" in x and (
+                        (x.get("unit") == frm and pn in (x.get("positions") or [])) or
+                        (x.get("unit") == to and pn not in (x.get("positions") or []))):
+                    problems.append(f"after the edit, delegation {x.get('id')} does not list {pn} as moved")
     for u, rec in (new.get("units") or {}).items():
         if u not in moved | delegated and rec != (doc.get("units") or {}).get(u):
             problems.append(f"the edit changed unit {u}, which the diff does not name")
@@ -704,11 +778,14 @@ def preview(d, registry_text):
     before_del = {(x or {}).get("id"): x or {} for x in doc.get("delegations") or []}
     named = {c.get("id") for c in (d.get("changes") or {}).get("registry") or [] if isinstance(c, dict)}
     named |= {rid for rid, rec in before_del.items() if rec.get("unit") in moved}  # move_system edits their systems
+    pmoved = {u for c in (d.get("changes") or {}).get("registry") or [] if isinstance(c, dict)
+              and c.get("op") == "move_position" for u in (c.get("from_unit"), c.get("to_unit"))}
+    named |= {rid for rid, rec in before_del.items() if rec.get("unit") in pmoved}  # move_position edits their lists
     for rid, rec in before_del.items():
         if rid not in named and rid in after_del and after_del[rid] != rec:
             problems.append(f"the edit changed delegation {rid}, which the diff does not name")
-    untouched = set(before) - {c.get("name") for c in (d.get("changes") or {}).get("registry") or []
-                               if isinstance(c, dict)}
+    untouched = set(before) - {c.get("name") or c.get("position") for c in (d.get("changes") or {}).get("registry")
+                               or [] if isinstance(c, dict)}
     for n in untouched:
         if before[n] != after.get(n):
             problems.append(f"the edit changed position {n}, which the diff does not name")
