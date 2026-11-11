@@ -103,13 +103,20 @@ class ScreenTest(unittest.TestCase):
         self.report("started")
         ok, err = of_relay.herdr_deliver(PANE, "hello from @of_platform\nsecond line", "S1", "ofb:of_x")
         self.assertEqual((ok, err), (True, None))
-        self.assertEqual(self.typed(), ["hardcopy", "readbuf", "paste", "stuff"])
+        self.assertEqual(self.typed(), ["hardcopy", "register", "readbuf", "paste", "stuff"])
+        self.assertEqual(self.calls[-4][6:], ["register", ".", ""])     # emptied first: a failed read pastes nothing
         self.assertEqual(self.calls[-1][1:], ["-S", STY, "-p", "0", "-X", "stuff", "\r"])
         self.assertEqual(self.pasted, [b"\x1b[200~Message from ofb:of_x (via of, authority: none)\n"
                                        b"hello from \xef\xbc\xa0of_platform\nsecond line\x1b[201~"])
         ev = json.loads(self.conn.execute("SELECT payload FROM event WHERE name = 'of.injected_prompt'").fetchone()[0])
         self.assertEqual((ev["target_session"], ev["mentions_neutralized"]), ("S1", 1))  # declared before typing
-        self.assertEqual(os.listdir(os.path.join(self.tmp.name, "screen-windows", "io")), [])  # no file left
+        io = os.path.join(self.tmp.name, "screen-windows", "io")
+        kept = [n for n in os.listdir(io) if n.startswith("paste-")]
+        self.assertEqual(len(kept), 1)                     # kept: the session reads it after -X returns (#8)
+        old = os.path.join(io, kept[0])
+        os.utime(old, (0, 0))
+        of_relay.herdr_deliver(PANE, "next", "S1", "ofb:of_x")
+        self.assertFalse(os.path.exists(old))              # swept by a later delivery
 
     def test_a_message_cannot_close_the_paste_or_press_keys(self):
         self.report("started")

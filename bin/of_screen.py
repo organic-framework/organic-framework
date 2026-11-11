@@ -36,6 +36,7 @@ import of_tmux
 
 PREFIX = "screen:"
 SUBMIT_DELAY_S = 0.3  # herdr 0.9.5 waits 300 ms between a prompt's text and its Enter (AGENT_PROMPT_SUBMIT_DELAY)
+PASTE_KEEP_S = 120    # a paste file outlives its delivery: `screen -X` returns before the session reads the file
 PASTE_START, PASTE_END = b"\x1b[200~", b"\x1b[201~"
 _STY = re.compile(r"\d+\.[A-Za-z0-9_.-]+")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")  # every C0 and C1 control but tab and line feed
@@ -253,17 +254,37 @@ def clean(text):
     return _CONTROL.sub("", (text or "").replace("\r\n", "\n").replace("\r", "\n"))
 
 
+def _sweep(folder, now=None):
+    """Remove the paste files older than PASTE_KEEP_S."""
+    now = now or time.time()
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        try:
+            if name.startswith("paste-") and now - os.path.getmtime(path) > PASTE_KEEP_S:
+                os.unlink(path)
+        except OSError:
+            pass
+
+
 def prompt(pane, text, run=_run, sleep=time.sleep):
     """Type `text` into the agent's input box and submit it: one bracketed paste through screen's paste buffer, then
-    Enter after SUBMIT_DELAY_S. Returns (ok, error)."""
+    Enter after SUBMIT_DELAY_S. Returns (ok, error).
+
+    `screen -X` returns when the command is sent, not when the session has run it (of_release's review, finding #8,
+    2026-11-11). The session runs its commands in order, so readbuf comes before paste; but a paste file removed
+    before the session reads it made readbuf fail, and paste then typed the previous message again (checked on
+    screen 4.00.03). So the paste buffer is emptied first (`register . ""`), a failed read pastes nothing, and the
+    file stays until a later delivery sweeps it (PASTE_KEEP_S)."""
     d = _record(pane)
     if not d:
         return False, "no live screen agent in this window"
-    fd, path = tempfile.mkstemp(prefix="paste-", dir=_private())
+    folder = _private()
+    _sweep(folder)
+    fd, path = tempfile.mkstemp(prefix="paste-", dir=folder)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(PASTE_START + clean(text).encode("utf-8") + PASTE_END)
-        for args in (("readbuf", path), ("paste", ".")):
+        for args in (("register", ".", ""), ("readbuf", path), ("paste", ".")):
             r = run(*_target(d), *args)
             if r.returncode != 0:
                 return False, (r.stderr or r.stdout or f"screen {args[0]} failed").strip()[:200]
@@ -271,11 +292,6 @@ def prompt(pane, text, run=_run, sleep=time.sleep):
         return send_enter(pane, d, run=run)
     except (OSError, subprocess.SubprocessError) as e:
         return False, f"screen: {type(e).__name__}: {e}"[:200]
-    finally:
-        try:
-            os.unlink(path)  # read by now: readbuf and paste are handled in order, before the Enter
-        except OSError:
-            pass
 
 
 def send_enter(pane, d=None, run=_run):
