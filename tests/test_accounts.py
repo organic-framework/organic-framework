@@ -45,8 +45,8 @@ class Accounts(unittest.TestCase):
 
     def test_add_makes_the_folder_keeps_the_others_and_files_one_login_task(self):
         tasks = []
-        of_accounts.add("work", home=self.home, logged_in=False, ask=lambda t, s: tasks.append((t, s)) or "id1",
-                        log=lambda m: None)
+        of_accounts.add("work", home=self.home, logged_in=False,
+                        ask=lambda t, s: tasks.append((t, s)) or (True, "id1"), log=lambda m: None)
         d = self.h(".claude-work")
         self.assertTrue(os.path.isdir(d))
         self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
@@ -63,6 +63,24 @@ class Accounts(unittest.TestCase):
             of_accounts.add("other", "~/.claude-a", home=self.home, logged_in=True, log=lambda m: None)
         with self.assertRaises(of_accounts.AccountError):
             of_accounts.add("Bad.Name", home=self.home, logged_in=True, log=lambda m: None)
+
+    def test_a_task_that_could_not_be_filed_is_never_reported_as_filed(self):
+        """of_platform's review of PR 22: on a machine with no of_capacity position, `of ask --from of_capacity`
+        failed, and add reported the task anyway. Now the steps are printed and add fails."""
+        for ask in (lambda t, s: (False, "of: no position 'of_capacity'"),
+                    lambda t, s: (_ for _ in ()).throw(RuntimeError("relay down"))):
+            lines = []
+            with self.assertRaises(of_accounts.AccountError):
+                of_accounts.add("work", home=self.home, logged_in=False, ask=ask, log=lines.append)
+            self.assertIn("could not be filed", lines[-1])
+            self.assertIn("of claude --account work --dangerously-skip-permissions", lines[-1])  # the steps themselves
+        self.assertIn("work", [e["name"] for e in of_accounts.load()])  # the folder is made and listed all the same
+
+    def test_the_task_is_filed_as_the_caller(self):
+        calls = []
+        run = lambda argv, **kw: calls.append(argv) or type("R", (), {"returncode": 1, "stdout": "", "stderr": "of: x"})()  # noqa: E731
+        self.assertEqual(of_accounts._file_task("t", "s", of_bin="of", run=run), (False, "of: x"))
+        self.assertNotIn("--from", calls[0])
 
     def test_remove_stops_using_it_and_keeps_the_folder(self):
         of_accounts.remove("a", home=self.home, log=lambda m: None)
@@ -113,6 +131,10 @@ class OfClaude(unittest.TestCase):
         argv, env = of_accounts.launch(["--resume", "s1"], env={}, **self.kw)  # no account holds it: the chooser
         self.assertEqual(argv[1:], ["--resume", "s1"])
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.join(self.home, ".claude-a"))
+
+    def test_account_is_ours_only_as_the_first_argument(self):
+        argv, env = of_accounts.launch(["-p", "--account", "a"], env={}, **self.kw)  # Claude Code's own arguments
+        self.assertEqual(argv[1:], ["-p", "--account", "a"])
 
     def test_a_set_config_dir_is_kept_without_account(self):
         argv, env = of_accounts.launch(["-p", "hi"], env={"CLAUDE_CONFIG_DIR": "/elsewhere"}, **self.kw)
