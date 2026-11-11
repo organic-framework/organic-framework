@@ -4674,13 +4674,17 @@ def main(argv=None):
     if argv and argv[0] == "secret":  # the agents' secrets broker (docs/agent-secrets.md): of_server's module, as is
         import of_secret
         return of_secret.main(argv[1:])
+    if argv and argv[0] == "tools":  # a position's tools, bound to the position (docs/tools.md): of_tools's module
+        import of_tools
+        return of_tools.main(argv[1:])
     ap = argparse.ArgumentParser(prog="of", description="Organic Framework CLI v0 (over herdr)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     # dispatched above, before this parser: listed here so that `of --help` names them (of_docs, 2026-11-11)
     for name, text in (("model", "the organization model and its measures (of_studio; of model --help)"),
                        ("studio", "the Studio page (of_studio; of studio --help)"),
                        ("works", "the works map and each work's state (= of model works)"),
-                       ("secret", "a position's credential through the agents' secrets broker (of secret --help)")):
+                       ("secret", "a position's credential through the agents' secrets broker (of secret --help)"),
+                       ("tools", "a position's MCP servers, plugins and connectors (of tools inventory|check|plan)")):
         sub.add_parser(name, help=text, add_help=False)
     a = sub.add_parser("apply", help="name live holders in herdr and set their tokens")
     a.add_argument("--dry-run", "-n", action="store_true", help="print the herdr commands only")
