@@ -196,8 +196,13 @@ class RemoteApprovalTest(unittest.TestCase):
                                                               session="S-o", hold=False)[0])
                 self.assertIn("approved by acme_owner", of._remote_approval(conn, e, said("approve sd-1", session="S-h"),
                                                                            pos, session="S-h", hold=False)[0])
-                self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1 a1b2c3d4"), pos, session="S-c", hold=False)[0])
-                self.assertIn("name a digest", of._remote_approval(conn, e, said("yes sd-1 ffffeeee"), pos,
+                self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1 digest a1b2c3d4"), pos, session="S-c",
+                                                      hold=False)[0])
+                self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1, card 0fd223f2"), pos, session="S-c",
+                                                      hold=False)[0])  # a card id is no digest (finding 7)
+                self.assertIn("name a digest", of._remote_approval(
+                    conn, e, said("yes sd-1 digest a1b2c3d4 digest ffffeeee"), pos, session="S-c", hold=False)[0])
+                self.assertIn("name a digest", of._remote_approval(conn, e, said("yes sd-1 digest ffffeeee"), pos,
                                                                    session="S-c", hold=False)[0])
                 high = dict(e, diff={"id": "sd-1", "tier": "high", "org": "acme"})
                 self.assertIn("approved at the machine",
