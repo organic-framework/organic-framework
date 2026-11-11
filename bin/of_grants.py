@@ -30,6 +30,12 @@ def canonical(grant):
 
 
 GRANT_KEY = os.path.expanduser("~/.config/of/grant_ed25519")
+# The grant key in the owner's 1Password (the founder, ask 0fd223f2, 2026-11-11): its private half never touches a
+# file; `of grant` signs through 1Password's SSH agent, which asks for Touch ID. The pinned public key stays at
+# GRANT_KEY + ".pub", which every verifier on this machine reads; STAGED_PIN is where the owner saves the new public
+# key before `of grant rekey` moves every grant to it.
+STAGED_PIN = os.path.expanduser("~/.config/of/grant_1password.pub")
+AGENT_SOCK = "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 NAMESPACE = "of-grant"
 ED = "ssh-ed25519:"
 
@@ -63,9 +69,36 @@ def sign(grant, key):
     return "hmac-sha256:" + hmac.new(key, canonical(grant), hashlib.sha256).hexdigest()
 
 
-def sign_ed25519(grant, key_path=GRANT_KEY):
-    """`ssh-ed25519:<base64 of the armored SSHSIG>`, made with ssh-keygen; the private key
-    never leaves the tenant's machine."""
+def pin_path():
+    return GRANT_KEY + ".pub"
+
+
+def agent_sock():
+    return os.path.expanduser(os.environ.get("OF_GRANT_AGENT_SOCK") or AGENT_SOCK)
+
+
+def signs_with_agent():
+    """True once the private key file is gone and the pinned key is the one in the owner's 1Password."""
+    return not os.path.exists(GRANT_KEY) and os.path.exists(pin_path())
+
+
+def sign_ed25519(grant, key_path=None):
+    """`ssh-ed25519:<base64 of the armored SSHSIG>`, made with ssh-keygen: with the private key file while one exists,
+    else through the owner's SSH agent with the pinned public key (sign_with_agent)."""
+    key_path = key_path or GRANT_KEY
+    if not os.path.exists(key_path) and key_path == GRANT_KEY and os.path.exists(pin_path()):
+        return sign_with_agent(grant)
+    return _ssh_sign(grant, key_path, no_agent_env())
+
+
+def sign_with_agent(grant, pub_path=None, sock=None):
+    """Sign through the owner's SSH agent: `ssh-keygen -Y sign -f <public key>`, whose private half the agent holds
+    ("may refer to … a public key with the private half available via ssh-agent", ssh-keygen(1)). 1Password asks
+    for Touch ID. Only `of grant` in the owner's own terminal calls this (bin/of refuses an agent session)."""
+    return _ssh_sign(grant, pub_path or pin_path(), dict(os.environ, SSH_AUTH_SOCK=sock or agent_sock()))
+
+
+def _ssh_sign(grant, key_path, env):
     import base64
     import subprocess
     import tempfile
@@ -74,7 +107,7 @@ def sign_ed25519(grant, key_path=GRANT_KEY):
         with open(msg, "wb") as fh:
             fh.write(canonical(grant))
         r = subprocess.run(["ssh-keygen", "-Y", "sign", "-q", "-f", key_path, "-n", NAMESPACE, msg],
-                           capture_output=True, text=True, env=no_agent_env())
+                           capture_output=True, text=True, env=env)
         if r.returncode != 0:
             raise RuntimeError(f"ssh-keygen sign failed: {r.stderr.strip()[:200]}")
         with open(msg + ".sig", "rb") as fh:
@@ -540,6 +573,60 @@ def contact_grants(org, position, orgs_file=None, keys=None, now_iso=None):
         if valid(g, keys, now_iso)[0]:
             out[c[0].strip().lower()] = g.get("id")
     return out
+
+
+GRANTS_HEADER = "# Signed grants (docs/registry.md, Grants). Edit only with `of grant`; a hand edit breaks the signature.\n"
+
+
+def rekey(staged=None, orgs_file=None, sock=None):
+    """Move every grant to the key in the owner's 1Password (ask 0fd223f2): check that his SSH agent offers the staged
+    public key, re-sign every grant of every listed organization with it and check each signature, and only then
+    write the files, pin the new key in place of the old and remove the old private key file. Returns
+    ([changed grants files], number of grants, the new key's line). Nothing is written when any step fails."""
+    import subprocess
+    import yaml
+    staged = staged or STAGED_PIN
+    sock = sock or agent_sock()
+    with open(staged) as fh:
+        line = next((x.strip() for x in fh if x.strip()), "")
+    parts = line.split()
+    if len(parts) < 2 or parts[0] != "ssh-ed25519":
+        raise ValueError(f"{staged} must hold one ssh-ed25519 public key line")
+    listed = subprocess.run(["ssh-add", "-L"], env=dict(os.environ, SSH_AUTH_SOCK=sock), capture_output=True,
+                            text=True)
+    if parts[1] not in listed.stdout:
+        raise RuntimeError("1Password's SSH agent does not offer this key: turn on its SSH agent (Settings, Developer) "
+                           "and keep the key in a vault the agent serves")
+    keys, docs, n = Keys(ed25519=[" ".join(parts[:2])]), {}, 0
+    for org, path in sorted(_org_grants_paths(orgs_file or os.environ.get("OF_ORGS")
+                                              or os.path.expanduser("~/.config/of/orgs.yaml")).items()):
+        if not os.path.exists(path):
+            continue
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        for g in doc.get("grants") or []:
+            g.pop("signature", None)
+            g["signature"] = sign_with_agent(g, staged, sock)
+            if not verify(g, keys):
+                raise RuntimeError(f"{org}: grant {g.get('id')}: the new signature does not verify")
+            n += 1
+        docs[path] = doc
+    for path, doc in docs.items():
+        tmp = f"{path}.{os.getpid()}"
+        with open(tmp, "w") as fh:
+            fh.write(GRANTS_HEADER)
+            yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, path)
+    tmp = f"{pin_path()}.{os.getpid()}"
+    with open(tmp, "w") as fh:
+        fh.write(line + "\n")
+    os.replace(tmp, pin_path())
+    for old in (GRANT_KEY, staged):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return sorted(docs), n, line
 
 
 def missing_issued(grants_by_org, events):

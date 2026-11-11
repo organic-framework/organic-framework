@@ -4130,25 +4130,30 @@ def _now_iso():
 
 
 def _grant_keys():
-    """What this machine trusts for grants: its own pinned grant public key (the tenant's), plus
-    the legacy HMAC key only where the tenant master key is present."""
+    """What this machine trusts for grants: its own pinned grant public key (the tenant's). The legacy HMAC key is
+    retired (hand-over 4c7ac78f): no grant carries one, and whoever can verify an HMAC can also forge it."""
     import of_grants
     pins = []
-    if os.path.exists(of_grants.GRANT_KEY + ".pub"):
-        with open(of_grants.GRANT_KEY + ".pub") as fh:
+    if os.path.exists(of_grants.pin_path()):
+        with open(of_grants.pin_path()) as fh:
             pins = [line for line in fh.read().splitlines() if line.strip()]
-    try:
-        legacy = of_grants.purpose_key("of/grant/v1")
-    except FileNotFoundError:
-        legacy = None
-    return of_grants.Keys(ed25519=pins, hmac_key=legacy)
+    return of_grants.Keys(ed25519=pins)
+
+
+def _owners_terminal(what):
+    """Signing through the owner's 1Password happens only in his own terminal: never from an agent's session (Claude
+    Code sets CLAUDECODE in its tools' environment) or a service (OF_AUTOMATION=1). The guard denies it too (G13)."""
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or \
+            os.environ.get("OF_AUTOMATION") == "1":
+        raise OfError(f"{what} signs with the key in the owner's 1Password: run it in his own terminal tab, never "
+                      "from an agent's session or a service")
 
 
 def _ensure_grant_key():
     """The tenant's grant signing key (Ed25519, OpenSSH), made on first use; it never leaves here."""
     import subprocess
     import of_grants
-    if not os.path.exists(of_grants.GRANT_KEY):
+    if not os.path.exists(of_grants.GRANT_KEY) and not os.path.exists(of_grants.pin_path()):
         os.makedirs(os.path.dirname(of_grants.GRANT_KEY), mode=0o700, exist_ok=True)
         env = dict(os.environ, SSH_AUTH_SOCK="")  # never an SSH agent (the founder's is 1Password)
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "of tenant grant key",
@@ -4158,11 +4163,29 @@ def _ensure_grant_key():
 
 
 def cmd_grant(args):
-    """Issue or revoke a signed grant (tenant only: signs with ~/.config/of/grant_ed25519)."""
+    """Issue or revoke a signed grant, or move every grant to the key in the owner's 1Password (rekey). Tenant only:
+    it signs with the key file while one exists, else through 1Password's SSH agent (Touch ID)."""
     import of_events
     import of_grants
+    if args.action == "rekey":
+        _owners_terminal("of grant rekey")
+        paths, n, line = of_grants.rekey()
+        fp = __import__("subprocess").run(["ssh-keygen", "-lf", of_grants.pin_path()], capture_output=True,
+                                          text=True).stdout.split()[1:2]
+        of_events.emit("grant_key_rotated", {"grants": n, "files": len(paths), "fingerprint": (fp or [None])[0]})
+        print(f"re-signed {n} grants in {len(paths)} files with the key in 1Password ({(fp or ['?'])[0]}); "
+              f"pinned it in {of_grants.pin_path()}; the old key file is removed.")
+        for p in paths:
+            print(f"  changed: {p} (its organization's structure keeper commits it)")
+        print("Pin the same public key on every other server (trusted_grant_keys): it is the line in "
+              f"{of_grants.pin_path()}.")
+        return 0
+    if of_grants.signs_with_agent():
+        _owners_terminal(f"of grant {args.action}")
     _ensure_grant_key()
     key = _grant_keys()
+    if not args.org:
+        raise OfError("of grant issue|revoke needs --org")
     path = of_grants.grants_path(args.org)
     doc = yaml.safe_load(open(path)) if os.path.exists(path) else None
     doc = doc or {"grants": []}
@@ -4863,8 +4886,8 @@ def main(argv=None):
     ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts, write nothing")
     ak.set_defaults(fn=cmd_asks)
     gr = sub.add_parser("grant", help="issue or revoke a signed grant (tenant only)")
-    gr.add_argument("action", choices=["issue", "revoke"])
-    gr.add_argument("--org", required=True)
+    gr.add_argument("action", choices=["issue", "revoke", "rekey"])
+    gr.add_argument("--org")
     gr.add_argument("--id")
     gr.add_argument("--subject", help='a position, or "*" for every position of the organization (a deny only)')
     gr.add_argument("--except", dest="except_", help='with --subject "*": positions it does not apply to, a,b')

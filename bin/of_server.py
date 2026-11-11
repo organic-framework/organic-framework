@@ -63,8 +63,8 @@ DEFAULTS = {
     # keys listed in an organization's repository are never trusted by themselves.
     "trusted_grant_keys": [],
     "trusted_grant_keys_file": "~/.config/of/grant_ed25519.pub",
-    # Legacy HMAC grant signatures, verified with the master key; false wherever the master is absent.
-    "grant_legacy_hmac": True,
+    # Legacy HMAC grant signatures, verified with the master key: retired, since no grant carries one.
+    "grant_legacy_hmac": False,   # retired 2026-11-11 (hand-over 4c7ac78f): no grant carries an HMAC
     # Where grants come from on a server with no checkout of the organizations' repositories:
     # {org: path to registry/grants.yaml}, kept fresh by a git-sync sidecar. Absent: orgs.yaml.
     "grants_files": None,

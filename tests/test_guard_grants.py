@@ -201,6 +201,24 @@ class GrantGuardTest(unittest.TestCase):
         self.assertIsNone(of_guard.critical_deny("Write", {"file_path": "/x/registry/positions.yaml"}))
 
 
+class GrantKeyGuardTest(unittest.TestCase):
+    """Hand-over 4c7ac78f: the pinned key is the anchor of every verifier here, and the owner's 1Password SSH agent
+    signs only for his own `of grant`."""
+
+    def test_the_pin_the_staged_key_rekey_and_the_owners_agent_are_denied(self):
+        sock = "~/Library/Group Containers/2BUA8C4S2C.com.1" + "password/t/agent.sock"
+        for cmd in ("of grant rekey", "echo ssh-ed25519 AAAA > ~/.config/of/grant_ed25519.pub",
+                    "cp /tmp/k.pub ~/.config/of/grant_1password.pub",
+                    "ssh-keygen -Y sign -f ~/.config/of/grant_ed25519.pub -n of-grant msg",
+                    f"SSH_AUTH_SOCK='{sock}' ssh-add -L", f"ssh -o IdentityAgent='{sock}' host"):
+            self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+        self.assertTrue(of_guard.critical_deny("Write", {"file_path": os.path.expanduser(
+            "~/.config/of/grant_ed25519.pub")}))
+        for cmd in ("cat ~/.config/of/grant_ed25519.pub", "ssh-keygen -lf ~/.config/of/grant_ed25519.pub",
+                    "of grant --help"):
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+
+
 class HookTest(KeyCase):
     """The hook applies an organization's deny grants to its sessions (of_hook._org_guard)."""
 

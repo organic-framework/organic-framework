@@ -999,8 +999,15 @@ def _op_deny(head, args):
 # Grants are the tenant's (G13; docs/registry.md, Organization rules; of_architect, 4a14716, 2026-11-09): an
 # organization's rules are signed deny grants, so an agent that could issue or revoke a grant, sign with the tenant's
 # grant key, or rewrite a grants file or the guard's kept denies could lift the rule that limits it.
-_GRANT_FILES = re.compile(r"(?:^|/)(?:registry/grants\.yaml|\.local/state/of/guard-grants\.json)$")
-_GRANT_KEY_NAME = re.compile(r"(?:^|/)grant_ed25519$")
+# The pinned grant public key is the anchor every verifier on this machine trusts: an agent that wrote its own key
+# there could sign grants this machine accepts (hand-over 4c7ac78f, 2026-11-11). So is the staged key `of grant rekey`
+# reads.
+_GRANT_FILES = re.compile(r"(?:^|/)(?:registry/grants\.yaml|\.local/state/of/guard-grants\.json|"
+                          r"\.config/of/grant_ed25519\.pub|\.config/of/grant_1password\.pub)$")
+_GRANT_KEY_NAME = re.compile(r"(?:^|/)grant_(?:ed25519|ed25519\.pub|1password\.pub)$")
+# The owner's 1Password SSH agent: only his own `of grant`, in his terminal, signs through it; an agent naming its
+# socket could put a Touch ID prompt in front of him for a signature he did not start.
+_OWNER_AGENT = re.compile(r"2BUA8C4S2C\.com\.1password|com\.1password/t/agent\.sock", re.I)
 _GRANT_SIGN_CODE = re.compile(r"\b(?:sign_ed25519|cmd_grant)\s*\(")
 _REMOVERS = {"rm", "unlink", "shred", "truncate", "mv"}
 _COPIERS = {"cp", "install", "rsync", "ln", "ditto"}
@@ -1031,7 +1038,9 @@ def _grant_deny(head, args, stext):
     words = args
     if head in _INTERPRETERS and args and os.path.basename(args[0]) == "of":  # python3 bin/of grant issue
         head, words = "of", args[1:]
-    if head == "of" and words[:1] == ["grant"] and len(words) > 1 and words[1] in ("issue", "revoke") and \
+    if _OWNER_AGENT.search(stext):
+        return GRANT_DENY, "the owner's 1Password SSH agent"
+    if head == "of" and words[:1] == ["grant"] and len(words) > 1 and words[1] in ("issue", "revoke", "rekey") and \
             not any(w in ("-h", "--help") for w in words):
         return GRANT_DENY, "of grant " + words[1]
     if head == "ssh-keygen" and "-Y" in args and "sign" in args and \
