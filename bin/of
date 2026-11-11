@@ -1182,15 +1182,27 @@ def live_agents():
 
 
 def live_agents_or_none(warn=True):
-    """herdr's agents, or [] with one warning when herdr is not installed or not running: `of who`
-    still lists the positions from the registries (lab-quickstart Q1)."""
+    """herdr's agents and the agents in tmux or screen (bin/of_tmux.py, bin/of_screen.py: machines without herdr,
+    docs/remote.md §3 row 5), for the commands that only read them or type through the relay (`of who`, the relay,
+    routed asks). Without herdr, one warning: `of who` still lists the positions from the registries (lab-quickstart
+    Q1). Commands that change herdr's panes (`of apply`, `of go`, views) keep live_agents(): a tmux or screen pane is
+    never theirs."""
+    import of_screen
+    import of_tmux
+    tmux = []
+    for mod in (of_tmux, of_screen):
+        try:
+            tmux += mod.agents()
+        except Exception:  # noqa: BLE001 - a broken report never hides herdr's agents
+            pass
     try:
-        return live_agents()
+        return live_agents() + tmux
     except OfError as e:
         if warn:
-            print(f"of: herdr unavailable ({e}); showing the registry only. Agents get names, states and the "
-                  "desk when they run in herdr panes (README).", file=sys.stderr)
-        return []
+            print(f"of: herdr unavailable ({e}); showing the registry" + (" and the agents in tmux or screen" if tmux else
+                  " only") + ". Agents get names, states and the desk when they run in herdr panes (README).",
+                  file=sys.stderr)
+        return tmux
 
 
 def agent_session(a):
@@ -2906,7 +2918,7 @@ def cmd_send(args):
     # presence first, with everything this machine holds for that server plus the sender.
     import of_relay_client
     try:
-        local = of_relay_client.local_holders(positions, bind, live_agents())
+        local = of_relay_client.local_holders(positions, bind, live_agents_or_none(warn=False))
     except OfError:
         local = {}
     body = of_relay_client.presence_bodies(local, servers, default).get(server, [])
@@ -3526,10 +3538,25 @@ def cmd_diff(args):
         return 0
     if not args.target:
         raise OfError(f"usage: of diff {args.action} <file|id>")
+    if args.action == "approve" and getattr(args, "prompt", None):  # docs/remote.md §3 row 2
+        e = _diff_events(conn).get(args.target)
+        if not e or e["state"] != "proposed":
+            raise OfError(f"no proposed diff {args.target!r} (of diff list)")
+        why, prompt = _remote_approval(conn, e, args.prompt, _load_quiet())
+        if why:
+            raise OfError(f"not approved: {why}")
+        d = e["diff"]
+        of_events.emit("diff_approved", {"id": d["id"], "digest": e["digest"], "by": "owner", "via": "remote",
+                                         "prompt": args.prompt, "session": prompt["session_id"],
+                                         "machine": of_events.machine_id()})
+        print(f"approved {d['id']} on the owner's words in prompt {args.prompt[-8:]}; its author applies it with "
+              f"`of diff apply {d['id']}`")
+        return 0
     if args.action == "approve":
         import sys as _s
         if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_AUTOMATION") or not _s.stdin.isatty():
-            raise OfError("only the owner approves, from a terminal: not from an agent session or a script")
+            raise OfError("only the owner approves, from a terminal: not from an agent session or a script; from "
+                          "the owner's conductor, `--prompt <event id>` of their recorded yes (docs/remote.md)")
         e = _diff_events(conn).get(args.target)
         if not e or e["state"] != "proposed":
             raise OfError(f"no proposed diff {args.target!r} (of diff list)")
@@ -3913,6 +3940,40 @@ def _topic_key(text):
 def of_hook_mask(text):
     import of_hook
     return of_hook.mask(text or "")
+
+
+def _remote_approval(conn, e, prompt_id, positions, session=None):
+    """(None, prompt) when the person's recorded prompt approves the proposed diff `e`, else (the reason, prompt).
+    docs/remote.md §3 row 2 and §5: the person's own words, recorded by the hook as an of.human_prompt of origin human,
+    in the session that holds their organization's conductor, which runs this command; later than the proposal; naming
+    the diff's id and saying a plain yes. Tiers up to medium; a high tier stays at the machine (§4)."""
+    import of_classify
+    d = e["diff"]
+    if d.get("tier") not in ("low", "medium"):
+        return (f"{d['id']} is tier {d.get('tier')}: a high-tier diff is approved at the machine, in a terminal, by "
+                "the owner reading its exact text (docs/remote.md §4)"), None
+    row = conn.execute("SELECT ts, session_id, payload FROM event WHERE event_id = ? AND name = 'of.human_prompt'",
+                       (prompt_id,)).fetchone()
+    if not row:
+        return f"{prompt_id} is no recorded prompt (of prompts --mine lists yours)", None
+    prompt = {"ts": row[0], "session_id": row[1], **json.loads(row[2] or "{}")}
+    if prompt.get("origin") not in (None, "human"):
+        return f"prompt {prompt_id[-8:]} was not typed by a person (origin {prompt.get('origin')})", prompt
+    me = session if session is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not me or prompt["session_id"] != me:
+        return "the prompt must be in the session that runs this command: the person's conductor", prompt
+    holder = next((p for p in positions if session_of(p) == me), None)
+    if not holder or (holder.get("role") != "conductor" and not str(holder.get("name", "")).endswith("_conductor")):
+        return "only the person's conductor points to their words; this session holds no conductor position", prompt
+    proposed = e.get("proposed_at") or e.get("ts") or ""
+    if proposed and prompt["ts"] < proposed:
+        return f"the prompt ({prompt['ts'][:19]}Z) is older than the proposal ({proposed[:19]}Z)", prompt
+    text = str(prompt.get("text") or "")
+    if d["id"] not in text:
+        return f"the person's words do not name the diff {d['id']}", prompt
+    if not of_classify.approves(text):
+        return "the person's words are not a plain yes (a no, a not or a condition counts as no approval)", prompt
+    return None, prompt
 
 
 def cmd_prompts(args):
@@ -5216,6 +5277,8 @@ def main(argv=None):
     df.add_argument("action", choices=["check", "propose", "approve", "apply", "list"])
     df.add_argument("target", nargs="?", help="a diff file (YAML with diff:) or a proposed diff's id")
     df.add_argument("--from", dest="sender")
+    df.add_argument("--prompt", help="approve: the event id of the owner's recorded yes in their conductor's chat "
+                                     "(of prompts --mine); tiers up to medium (docs/remote.md)")
     df.add_argument("--ask", help="propose: the owner's question in his language, standing on its own "
                     "(default: built from the English hypothesis); options stay approve|reject")
     df.set_defaults(fn=cmd_diff)

@@ -5,9 +5,10 @@ One loop per machine:
 - every 60 s, PUT this machine's live holders to each organization's server (only that
   organization's holders; positions held by people are reported with kind "human");
 - long-poll each server for messages to positions on this machine;
-- deliver each message once (deduplicated by msg_id): into the agent's pane through herdr, after
-  the agent is idle, preceded by an `injected_prompt` declaration so the collector records the
-  sender; or, for a position held by a person, into the local inbox (`of inbox`);
+- deliver each message once (deduplicated by msg_id): into the agent's pane through herdr (or tmux, for an
+  agent without herdr: bin/of_tmux.py, owner of_herdr), after the agent is idle, preceded by an
+  `injected_prompt` declaration so the collector records the sender; or, for a position held by a
+  person, into the local inbox (`of inbox`);
 - ack `delivered` only after delivery; `deferred` (retry_after 30 s) when the agent stays busy for a
   few seconds, so one busy receiver never blocks the others or outlives the lease; else `failed`
   with the reason.
@@ -22,7 +23,19 @@ import threading
 import time
 
 import of_events
+import of_screen
 import of_store
+import of_tmux
+
+
+def _term(pane):
+    """The module that drives an agent outside herdr, of_tmux or of_screen (docs/remote.md §3 row 5), or None for a
+    herdr pane."""
+    if of_tmux.is_tmux(pane):
+        return of_tmux
+    if of_screen.is_screen(pane):
+        return of_screen
+    return None
 
 PRESENCE_EVERY = 60
 # Holders are re-read this often; presence is published at once when who holds what changed (a session bound,
@@ -131,13 +144,22 @@ def dialog_open(screen):
 
 def pane_input(pane):
     """The input box's text ('' when empty), '[dialog]' when a dialog is open, None when the pane cannot be read."""
-    r = subprocess.run(["herdr", "pane", "read", pane, "--source", "visible", "--lines", "60", "--format", "ansi"],
-                       capture_output=True, text=True, timeout=15)
-    if r.returncode != 0:
+    term = _term(pane)
+    if term:
+        out = term.screen(pane)
+    else:
+        r = subprocess.run(["herdr", "pane", "read", pane, "--source", "visible", "--lines", "60", "--format", "ansi"],
+                           capture_output=True, text=True, timeout=15)
+        out = r.stdout if r.returncode == 0 else None
+    if out is None:
         return None
-    if dialog_open(r.stdout):
+    if dialog_open(out):
         return "[dialog]"
-    return input_box_text(r.stdout)
+    box = input_box_text(out)
+    if box and term is of_screen and of_screen.attached(pane) is False \
+            and not (_PASTE_ONLY.fullmatch(box) or _FRAMED.match(box)):
+        return ""  # a hardcopy has no dim: in a detached session nobody types, so this is a suggestion (of_screen)
+    return box
 
 
 def _stuck_path():
@@ -249,12 +271,16 @@ def press_held_enter(pane, last):
     path = os.path.join(of_events.STATE_DIR, "injections.jsonl")
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
         fh.write(json.dumps(mark) + "\n")
-    r = subprocess.run(["herdr", "pane", "send-keys", pane, "Enter"], capture_output=True, text=True, timeout=10)
+    if _term(pane):
+        ok = _term(pane).send_enter(pane)[0]
+    else:
+        ok = subprocess.run(["herdr", "pane", "send-keys", pane, "Enter"], capture_output=True, text=True,
+                            timeout=10).returncode == 0
     doc = _read_typed()
     if pane in doc:
         doc[pane]["enter"] = time.time()
         _write_typed(doc)
-    return r.returncode == 0
+    return ok
 
 
 DELIVER_WAIT_S = 5   # a short wait: a busy receiver defers the message, it never holds the lease
@@ -287,8 +313,16 @@ def herdr_deliver(pane, text, session=None, sender=None, wait_s=DELIVER_WAIT_S, 
     (False, reason). human_channel (e.g. "asks-ui"): the text is the owner's own words carried by
     a tool, so the collector records origin human on that channel, not an injection."""
     # idle or done only: a blocked agent shows a dialog, and typed text would answer it
-    w = subprocess.run(wait_argv(pane, wait_s, working_ok), capture_output=True, text=True, timeout=wait_s + 30)
-    if w.returncode != 0:
+    term = _term(pane)
+    if term:  # an agent without herdr, in tmux or screen (docs/remote.md §3 row 5): its hook's reported state
+        ok, st = term.wait(pane, ("idle", "done") + (("working",) if working_ok else ()), wait_s)
+        if not ok:
+            return (("deferred", f"agent busy ({st}, not idle or done within {wait_s}s)") if st else
+                    (False, f"no live agent in this {term.PREFIX.rstrip(':')} pane"))
+        w = None
+    else:
+        w = subprocess.run(wait_argv(pane, wait_s, working_ok), capture_output=True, text=True, timeout=wait_s + 30)
+    if w is not None and w.returncode != 0:
         err = (w.stderr or w.stdout or "").strip()
         if "timeout" in err.lower() or "timed out" in err.lower() or not err:
             return "deferred", f"agent busy (not idle or done within {wait_s}s)"
@@ -320,10 +354,14 @@ def herdr_deliver(pane, text, session=None, sender=None, wait_s=DELIVER_WAIT_S, 
     path = os.path.join(of_events.STATE_DIR, "injections.jsonl")
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
         fh.write(json.dumps(mark) + "\n")
-    r = subprocess.run(["herdr", "agent", "prompt", pane, text], capture_output=True, text=True, timeout=60)
-    if r.returncode == 0:
+    if term:
+        ok, err = term.prompt(pane, text)
+    else:
+        r = subprocess.run(["herdr", "agent", "prompt", pane, text], capture_output=True, text=True, timeout=60)
+        ok, err = r.returncode == 0, (r.stderr.strip()[:200] or None)
+    if ok:
         note_typed(pane, text, mark)
-    return (r.returncode == 0), (r.stderr.strip()[:200] or None)
+    return ok, err
 
 
 _SEEN = {}  # path -> (ids, bytes read so far, inode)

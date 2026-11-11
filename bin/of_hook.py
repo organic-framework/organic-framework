@@ -265,6 +265,7 @@ def _peer_body(prompt):
 
 # ------------------------------------------------------------ position index
 
+_SESSION = None  # the session this hook call reports for (tmux_state); None for a subagent's call
 _PRE_TOOL = False  # this process answers a PreToolUse (the guard): it reads the index cache, never the YAML
 
 
@@ -426,11 +427,24 @@ def herdr_call(method, params):
 def herdr_state(state, message=None):
     pane = os.environ.get("HERDR_PANE_ID")
     if not pane:
+        tmux_state(state, message)
         return
     params = {"pane_id": pane, "source": HERDR_SOURCE, "agent": "claude", "state": state, "seq": time.time_ns()}
     if message:
         params["message"] = message[:200]
     herdr_call("pane.report_agent", params)
+
+
+def tmux_state(state, message=None):
+    """An agent without herdr runs in tmux (docs/remote.md §3 row 5): the same states go to its pane's report, which
+    the relay and `of who` read (bin/of_tmux.py; owner of_herdr). Also 'started', 'compacted' and 'ended'. An agent
+    in a screen window (macOS ships screen, not tmux) reports the same way (bin/of_screen.py; owner of_server)."""
+    if os.environ.get("TMUX_PANE") and not os.environ.get("HERDR_PANE_ID"):
+        import of_tmux
+        of_tmux.report(state, _SESSION, message)
+    elif os.environ.get("STY") and not os.environ.get("HERDR_PANE_ID"):
+        import of_screen
+        of_screen.report(state, _SESSION, message)
 
 
 # -------------------------------------------------------------------- event
@@ -465,6 +479,16 @@ def write(kind, payload, hook, sess, index):
     if os.environ.get("HERDR_PANE_ID"):
         extra["of.workplace"] = {"runtime": "herdr", "pane": os.environ.get("HERDR_PANE_ID"),
                                  "tab": os.environ.get("HERDR_TAB_ID"), "workspace": os.environ.get("HERDR_WORKSPACE_ID")}
+    elif os.environ.get("TMUX_PANE"):
+        import of_tmux
+        where = of_tmux._where(os.environ)
+        if where:
+            extra["of.workplace"] = {"runtime": "tmux", "pane": of_tmux.pane_id(*where)}
+    elif os.environ.get("STY"):
+        import of_screen
+        where = of_screen._where(os.environ)
+        if where:
+            extra["of.workplace"] = {"runtime": "screen", "pane": of_screen.pane_id(*where)}
     if name_org[2] and name_org[2] != name_org[1]:
         extra["of.serves"] = name_org[2]
     if hook.get("agent_id"):  # a subagent's call: the hook's session id is the parent's (docs/events.md)
@@ -524,8 +548,9 @@ ASK_DIALOG_DENY = ("Organic Framework: a position never asks its owner in a dial
 
 
 def handle(event, hook):
-    global OUTPUT, _PRE_TOOL
+    global OUTPUT, _PRE_TOOL, _SESSION
     sid = hook.get("session_id")
+    _SESSION = None if hook.get("agent_id") else sid  # a subagent's call never reports its parent's pane state
     sess = load_session(sid)
     subagent = bool(hook.get("agent_id"))
     tool = hook.get("tool_name")
@@ -557,11 +582,13 @@ def handle(event, hook):
         sess.update(model=hook.get("model") or sess.get("model"), started=time.time())
         changed = True
         write("session_start", {"source": hook.get("source"), "title": hook.get("session_title")}, hook, sess, index)
+        tmux_state("compacted" if hook.get("source") == "compact" else "started")
         _holder_check(hook, index, sess)
         _mandate_context(hook, index, sess)
         _memory_warning(hook, index)
     elif event == "SessionEnd":
         write("session_end", {"reason": hook.get("reason")}, hook, sess, index)
+        tmux_state("ended")
     elif event == "UserPromptSubmit":
         prompt = hook.get("prompt") or ""
         if DENY_SECRETS_FLAG:  # gated on --deny-secrets (the whole secrets policy rides one flag)
