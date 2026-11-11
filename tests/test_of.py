@@ -626,33 +626,44 @@ class InitStructureTest(unittest.TestCase):
         i.merge_structure(doc, self.built())
         self.assertEqual(i.existing_owner(doc, "acme"), ("alex", "Alex"))
         self.assertIsNone(i.existing_owner({"positions": []}, "acme"))
+        quiet = lambda *a: None
         with tempfile.TemporaryDirectory() as repo:
-            old = {"AGENTS.md": "old rules", "registry/briefs/acme_conductor.md": "old brief",
-                   "registry/briefs/acme_org.md": "their own edits", "onboarding/charter.md": "their charter"}
-            for rel, text in old.items():
-                os.makedirs(os.path.dirname(os.path.join(repo, rel)) or repo, exist_ok=True)
-                with open(os.path.join(repo, rel), "w") as fh:
-                    fh.write(text)
-            new = {"AGENTS.md": "new rules", "registry/briefs/acme_conductor.md": "new brief",
-                   "registry/briefs/acme_org.md": "new keeper brief", "onboarding/charter.md": "template"}
-            done, kept = i.refresh_files(repo, new, out=lambda *a: None, stamp="T",
-                                         edited=lambda r, rel: rel == "registry/briefs/acme_org.md")
-            self.assertEqual(done, ["AGENTS.md", "registry/briefs/acme_conductor.md"])
-            self.assertEqual(kept, ["registry/briefs/acme_org.md"])
             read = lambda rel: open(os.path.join(repo, rel)).read()
-            self.assertEqual(read("registry/briefs/acme_conductor.md"), "new brief")
-            self.assertEqual(read("onboarding/.before-refresh-T/registry/briefs/acme_conductor.md"), "old brief")
-            self.assertEqual(read("registry/briefs/acme_org.md"), "their own edits")
-            self.assertEqual(read("registry/briefs/acme_org.md.package-new"), "new keeper brief")
+            v1 = {"AGENTS.md": "rules v1", "registry/briefs/acme_conductor.md": "brief v1",
+                  "registry/briefs/acme_org.md": "keeper v1", "onboarding/charter.md": "template v1"}
+            state = {}
+            i.write_files(repo, v1, out=quiet, state=state)
+            with open(os.path.join(repo, "registry/briefs/acme_org.md"), "w") as fh:
+                fh.write("keeper v1, with our edits")  # edited before any commit
+            with open(os.path.join(repo, "onboarding/charter.md"), "w") as fh:
+                fh.write("their charter")
+            v2 = {"AGENTS.md": "rules v2", "registry/briefs/acme_conductor.md": "brief v2",
+                  "registry/briefs/acme_org.md": "keeper v2", "onboarding/charter.md": "template v2"}
+            done, kept = i.refresh_files(repo, v2, out=quiet, stamp="T1", state=state)
+            self.assertEqual(done, ["AGENTS.md", "registry/briefs/acme_conductor.md"])
+            self.assertEqual(kept, ["registry/briefs/acme_org.md"])  # its hash is not the one init wrote
+            self.assertEqual(read("registry/briefs/acme_org.md"), "keeper v1, with our edits")
+            self.assertEqual(read("registry/briefs/acme_org.md.package-new"), "keeper v2")
+            self.assertEqual(read("onboarding/.before-refresh-T1/registry/briefs/acme_conductor.md"), "brief v1")
             self.assertEqual(read("onboarding/charter.md"), "their charter")  # a working document: never touched
-            git = ["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", repo]
-            subprocess.run(git[:-2] + ["init", "-q", repo], check=True)
-            subprocess.run(git + ["add", "AGENTS.md"], check=True)
-            subprocess.run(git + ["commit", "-qm", "init"], check=True)
-            self.assertFalse(i.org_edited(repo, "AGENTS.md"))  # one commit, clean
-            with open(os.path.join(repo, "AGENTS.md"), "a") as fh:
-                fh.write("\nour push rule")
-            self.assertTrue(i.org_edited(repo, "AGENTS.md"))  # changed since
+            v3 = dict(v2, **{"registry/briefs/acme_conductor.md": "brief v3"})
+            done, _ = i.refresh_files(repo, v3, out=quiet, stamp="T2", state=state)
+            self.assertEqual(done, ["registry/briefs/acme_conductor.md"])  # a second refresh still refreshes
+            with open(os.path.join(repo, "registry/briefs/acme_conductor.md"), "w") as fh:
+                fh.write("brief v0")  # no record of this one: unknown, kept...
+            fresh = {}
+            _, kept = i.refresh_files(repo, v3, out=quiet, stamp="T3", state=fresh)
+            self.assertIn("registry/briefs/acme_conductor.md", kept)
+            done, _ = i.refresh_files(repo, v3, out=quiet, stamp="T4", state={},  # ...unless an earlier package wrote it
+                                      history=lambda rel, text: text == "brief v0")
+            self.assertEqual(done, ["registry/briefs/acme_conductor.md"])
+            i.ignore_refresh_copies(repo)
+            i.ignore_refresh_copies(repo)
+            self.assertEqual(read(".gitignore").count("onboarding/.before-refresh-*/"), 1)
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError) as e:
+                i.write_plugin_choices(["secrets=keychain"], os.path.join(d, "plugins.yaml"), check=lambda f, n: None)
+            self.assertIn("organization's choice", str(e.exception))
 
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init

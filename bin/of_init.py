@@ -496,9 +496,9 @@ def merge_structure(doc, built):
     return added
 
 
-def write_files(repo, files, out=print):
+def write_files(repo, files, out=print, state=None):
     """Write the package's files into the repository; a file that exists (a brief someone edited, a charter being
-    filled) is never overwritten."""
+    filled) is never overwritten. state: {path: sha256} of what of init wrote (package_state), updated here."""
     for rel, text in files.items():
         path = os.path.join(repo, rel)
         if os.path.exists(path):
@@ -506,7 +506,48 @@ def write_files(repo, files, out=print):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as fh:
             fh.write(text)
+        if state is not None:
+            state[rel] = _sha(text)
         out(f"  + {rel}")
+
+
+# What of init wrote, by content hash, so a re-run with --refresh can tell the package's untouched files from the
+# organization's edits (of_architect's review of PR 3: a commit count errs both ways).
+PACKAGE_STATE = "onboarding/.package-state.json"
+REFRESH_IGNORE = ("onboarding/.before-refresh-*/", "*.package-new")
+
+
+def _sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def load_state(repo):
+    try:
+        with open(os.path.join(repo, PACKAGE_STATE)) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(repo, state):
+    path = os.path.join(repo, PACKAGE_STATE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(dict(sorted(state.items())), fh, indent=1)
+        fh.write("\n")
+
+
+def ignore_refresh_copies(repo):
+    """Keep --refresh's copies out of the organization's commits: add them to its .gitignore."""
+    path = os.path.join(repo, ".gitignore")
+    have = open(path).read().splitlines() if os.path.exists(path) else []
+    add = [x for x in REFRESH_IGNORE if x not in have]
+    if add:
+        with open(path, "a") as fh:
+            fh.write(("\n" if have and have[-1] else "") + "# of init --refresh: copies for the structure keeper\n"
+                     + "\n".join(add) + "\n")
 
 
 def existing_owner(doc, prefix):
@@ -526,23 +567,30 @@ def refreshable(files):
     return ["AGENTS.md", "onboarding/README.md"] + sorted(r for r in files if r.startswith("registry/briefs/"))
 
 
-def org_edited(repo, rel, run=subprocess.run):
-    """Whether the organization changed one of init's files after init wrote it: more than one commit touched it, or
-    it has changes not committed. A file never committed counts as not edited (its copy is kept anyway)."""
-    if not os.path.isdir(os.path.join(repo, ".git")):
+def brief_history(of_repo, brief_rel, values, run=subprocess.run):
+    """A function telling whether a text equals this brief as an earlier version of the package wrote it, filled with
+    these values: for organizations set up before the package recorded its hashes (0.1.0). It reads the versions of
+    bench/onboarding/<brief_rel> in this clone's git history; outside git it knows none."""
+    path = f"bench/onboarding/{brief_rel}"
+    shas = run(["git", "-C", of_repo, "log", "--format=%H", "--", path], capture_output=True, text=True).stdout.split()
+
+    def known(text):
+        for sha in shas:
+            r = run(["git", "-C", of_repo, "show", f"{sha}:{path}"], capture_output=True, text=True)
+            if r.returncode == 0 and fill(r.stdout, values) == text:
+                return True
         return False
-    g = ["git", "-C", repo]
-    commits = run(g + ["log", "--format=%h", "--", rel], capture_output=True, text=True).stdout.split()
-    tracked = run(g + ["ls-files", "--error-unmatch", "--", rel], capture_output=True, text=True).returncode == 0
-    dirty = run(g + ["status", "--porcelain", "--", rel], capture_output=True, text=True).stdout.strip()
-    return len(commits) > 1 or (tracked and bool(dirty))
+    return known
 
 
-def refresh_files(repo, files, out=print, stamp=None, edited=org_edited):
-    """Bring the package's files up to date: each that differs is copied to onboarding/.before-refresh-<stamp>/ and
-    overwritten, unless the organization edited it; then the new version goes beside it as <file>.package-new for
-    its structure keeper to merge. Returns (refreshed, kept)."""
+def refresh_files(repo, files, out=print, stamp=None, state=None, history=None):
+    """Bring the package's files up to date. A file is the package's, untouched, when its content has the hash of init
+    recorded (state), or, with no record, when history(rel, text) knows it as an earlier version of the package; then
+    it is copied to onboarding/.before-refresh-<stamp>/ and overwritten, and its record updated. Any other is the
+    organization's: kept, with the package's version beside it as <file>.package-new for its structure keeper to
+    merge. Returns (refreshed, kept)."""
     stamp = stamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    state = {} if state is None else state
     refreshed, kept = [], []
     for rel in refreshable(files):
         path = os.path.join(repo, rel)
@@ -551,8 +599,11 @@ def refresh_files(repo, files, out=print, stamp=None, edited=org_edited):
         with open(path) as fh:
             old = fh.read()
         if old == files[rel]:
+            state[rel] = _sha(old)
             continue
-        if edited(repo, rel):
+        rec = state.get(rel)
+        untouched = rec == _sha(old) if rec else bool(history and history(rel, old))
+        if not untouched:
             with open(path + ".package-new", "w") as fh:
                 fh.write(files[rel])
             kept.append(rel)
@@ -564,6 +615,7 @@ def refresh_files(repo, files, out=print, stamp=None, edited=org_edited):
             fh.write(old)
         with open(path, "w") as fh:
             fh.write(files[rel])
+        state[rel] = _sha(files[rel])
         refreshed.append(rel)
         out(f"  ↻ {rel}")
     return refreshed, kept
@@ -769,9 +821,11 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     if not os.path.exists(os.path.join(repo, ".git")) and shutil.which("git"):
         subprocess.run(["git", "init", "-q", repo], check=False)
     agents_md = os.path.join(repo, "AGENTS.md")
+    state = load_state(repo)
     if not os.path.exists(agents_md):
         with open(agents_md, "w") as fh:
             fh.write(AGENTS_MD.format(**values))
+        state["AGENTS.md"] = _sha(AGENTS_MD.format(**values))
     out(f"  {repo}")
 
     # docs/conductor.md §5 and the onboarding package: the owner's conductor is the first position, then the unit
@@ -802,12 +856,21 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
             built["files"]["onboarding/README.md"] = run_readme(load_package(pkg_dir), run, values, by_hand)
         if refresh:
             files = dict(built["files"], **{"AGENTS.md": AGENTS_MD.format(**values)})
-            refreshed, _ = refresh_files(repo, files, out)
+            pkg = load_package(pkg_dir)
+            briefs = {f"registry/briefs/{fill(r['position'], values)}.md": r["brief"]
+                      for r in pkg["roles"] if r.get("position")}
+            of_repo = os.path.dirname(os.path.abspath(pkg_dir.rstrip("/")))
+            of_repo = os.path.dirname(of_repo) if os.path.basename(of_repo) == "bench" else of_repo
+            hist = {rel: brief_history(of_repo, b, values) for rel, b in briefs.items()}
+            refreshed, _ = refresh_files(repo, files, out, state=state,
+                                         history=lambda rel, text: rel in hist and hist[rel](text))
+            ignore_refresh_copies(repo)
             if refreshed:
                 out("  running agents keep the brief they started with: their conductor tells each to read it again "
                     "(of send <position> \"your brief changed; read it again\"); the old files are under "
                     "onboarding/.before-refresh-*")
-        write_files(repo, built["files"], out)
+        write_files(repo, built["files"], out, state)
+        save_state(repo, state)
         out(f"  {prefix}_conductor is the first position; nothing is running yet.")
         if by_hand:
             why = "surface remote" if surface == "remote" else "no herdr here"
@@ -1132,6 +1195,10 @@ def write_plugin_choices(choices, path=None, check=None):
         family, name = family.strip(), name.strip()
         if not sep or not family or not name:
             raise ValueError(f"--plugin takes family=name, not {item!r}")
+        if family in PLUGINS_LATER:
+            raise ValueError(f"{family} is the organization's choice, made when it first needs one, on its owner's card, "
+                             f"and recorded in its registry as plugins: {family} with the ask id (docs/registry.md, "
+                             "Plugins; docs/agent-secrets.md §13.2); of init does not choose it for this machine")
         check(family, name)
         doc[family] = name
     os.makedirs(os.path.dirname(path), exist_ok=True)
