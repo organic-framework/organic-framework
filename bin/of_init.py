@@ -660,7 +660,7 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None):
+         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=()):
     import yaml
     display = display_name(org)
     org = _name(org)
@@ -837,6 +837,20 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     else:
         out("  not installed (--no-service): run `of relay run` and `of listen run` yourself, each kept running")
 
+    out("\n9. Plugins: what this machine has (docs/plugins.md; OF assumes no product)")
+    if plugins:
+        try:
+            chosen = write_plugin_choices(plugins)
+            out(f"  chosen: {', '.join(f'{k}: {v}' for k, v in chosen.items())} ({_config_path('plugins.yaml')})")
+        except Exception as e:  # noqa: BLE001 - a wrong family or name is the person's to fix, said plainly
+            failed = True
+            out(f"  NOT written: {e}")
+    lines = plugin_proposals()
+    for line in lines:
+        out(f"  {line}")
+    if not lines and not plugins:
+        out("  nothing to choose now")
+
     out("\nDone. Next:")
     out("  of registry check     # validate the registry")
     if by_hand and f"{prefix}_conductor" in by_hand:
@@ -1004,6 +1018,48 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
             out(f"  {u['name']}: NOT running ({u['what']}). Its unit is {path}; see {log}. "
                 f"`of {' '.join(u['args'])}` runs it in the foreground and shows why.")
     return failed
+
+
+# Families whose choice waits until the work needs it (the founder, 2026-11-11 ~18:56Z: where secrets are kept is
+# chosen as late as possible, when the first secret is needed; the conductor asks then).
+PLUGINS_LATER = ("secrets",)
+
+
+def plugin_proposals(propose=None):
+    """docs/plugins.md §1: what this machine has, per family without a choice (of_family.propose), less the
+    families chosen later (PLUGINS_LATER)."""
+    if propose is None:
+        try:
+            import of_family
+            propose = of_family.propose
+        except ImportError:
+            return []
+    return [line for line in propose() if line.split(":", 1)[0].strip() not in PLUGINS_LATER]
+
+
+def write_plugin_choices(choices, path=None, check=None):
+    """Write --plugin family=name choices to ~/.config/of/plugins.yaml, keeping its other keys. check(family, name)
+    raises when the family or the implementation does not exist (of_family.implementation)."""
+    import yaml
+    path = path or _config_path("plugins.yaml")
+    if check is None:
+        import of_family
+        check = of_family.implementation
+    doc = {}
+    if os.path.exists(path):
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    for item in choices:
+        family, sep, name = item.partition("=")
+        family, name = family.strip(), name.strip()
+        if not sep or not family or not name:
+            raise ValueError(f"--plugin takes family=name, not {item!r}")
+        check(family, name)
+        doc[family] = name
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+    return doc
 
 
 def _started(what, url="http://127.0.0.1:18200/v1/health", wait_s=8):
