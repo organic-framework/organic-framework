@@ -1,0 +1,17 @@
+# Organic Framework's herdr plugin (owner of_herdr; docs/herdr.md, "The OF herdr plugin").
+# It names agents by their positions by itself: after herdr restores its session, and whenever herdr detects an
+# agent in a pane. Install by linking this folder: herdr plugin link <this folder>; remove: herdr plugin unlink
+# organic-framework. Keys stay in herdr's own config.toml: herdr plugins cannot bind keys.
+id = "organic-framework"
+name = "Organic Framework"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Names each agent by its position and lays out panes by organization, unit and role"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["sh", "run.sh", "startup"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["sh", "run.sh", "agent-detected"]
