@@ -255,9 +255,39 @@ Rules:
 - Asks and declared states reach a goal through their work (`--work`). Studio groups works, their open asks and their progress under each goal, in rank order.
 - `of registry check` validates the ids, `rank` (unique integers), `state`, `decided` (present), the dates, and each work's `goal` (an existing goal).
 
-## Tools (proposal, 2026-11-07, `of_architect`)
+## Tools (2026-11-11, `of_tools`; method in [`tools.md`](tools.md))
 
-A top-level `tools:` catalogue of the tool services the organization's agents may use (MCP servers, plugins, connectors), and a `tools:` list on each position naming the ones it may use. OF generates each session's MCP config from the position's list at launch, whatever Claude account the session runs on, and resolves credentials from the organization's vault into that process alone. A tool names the identity it acts as, its scope, its keeper, and whether it is bound to one Claude account. Full design: [`rfc/0004-tool-profiles.md`](rfc/0004-tool-profiles.md). The check is built with the launcher (RFC 0004 §4, steps 2 and 3).
+A top-level `tools:` catalogue names the tools the organization's agents may use: MCP servers, plugins and claude.ai connectors. Positions and units name tools from it. OF generates each session's tool configuration from the position's list at every start, whatever Claude account the session runs on (`of_tools.launch_parts`; tools.md §4).
+
+```yaml
+tools:
+  <id>:                       # [a-z][a-z0-9_-]{0,47}
+    kind: mcp-stdio           # mcp-stdio | mcp-remote | plugin | connector
+    command: [program, args…] # mcp-stdio
+    env: {NAME: value}        # mcp-stdio; names and plain settings only, never a secret value
+    url: https://…            # mcp-remote and connector; a plugin's own server, to allow it by URL
+    headers: {NAME: value}    # mcp-remote; names and plain settings only, never a secret value
+    plugin: name@marketplace  # plugin
+    credential: {id: <credential id>, env: NAME | file: NAME}   # from the credentials catalogue below
+    account_bound: true       # its sign-in lives in one Claude account (always true for a connector)
+    default: true             # every position of the organization has it
+    acts_as: "…"              # the identity the tool acts as
+    scope: read               # read | write | act-as-person, or a list of them
+    keeper: <position>        # owns the integration, its credential and its rotation
+
+units:
+  <unit>: {tools: [<id>, …]}  # the unit's defaults
+
+positions:
+  - name: <position>
+    tools: [<id>, -<id>]      # adds to the defaults; -<id> removes one
+```
+
+- A position's tools are the catalogue's `default: true` tools, then its unit's, then its own; `-<id>` removes one given earlier.
+- **A tool names its credential by id** from the Credentials catalogue (below), with how the server takes it: `env:` the value, `file:` the path of a temporary file. A credential with a `ref` reaches only the server's own process through `of secret run`; one still kept in a file is read by the server itself, and the command names its path. A tool never carries a vault reference or a value. The position must list the credential too.
+- **`scope: write`** names the mandate line that needs it, in a comment. **`act-as-person`** (a tool that sends, posts, pays or signs as a person) needs the owner's yes, cited by its ask id in a comment.
+- **`account_bound: true`**: the tool works only on the Claude accounts where it is signed in. A move goes only to such an account (`of capacity`).
+- `of tools check` (inside `of registry check`) validates: ids, `kind` and the fields it needs, `scope` values, `acts_as`, `keeper` (a position of the organization), each `credential.id` (in the Credentials catalogue), a file credential's path in the command, no secret-shaped value in `env` or `headers`, no `vault` key, an OAuth `mcp-remote` marked `account_bound`, and every tool a position or unit names.
 
 ## Credentials (2026-11-11, `of_architect`; from a user organization's structure keeper through `of_server`)
 

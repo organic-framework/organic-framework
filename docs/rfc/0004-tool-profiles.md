@@ -1,5 +1,7 @@
 # RFC 0004: tool profiles, MCP access per position, independent of accounts
 
+> **Superseded in part, 2026-11-11.** The founder started `of_tools` to build this (card `e960a7c7`). Where they differ, [`tools.md`](../tools.md) and docs/registry.md, Tools, rule: a tool names its credential from the credentials catalogue by id, never an inline vault reference; the value reaches only the tool's server process; sessions get `allowedMcpServers` and `enabledPlugins` in their settings instead of `--strict-mcp-config`, which hides account-bound tools; scope is `read`, `write` or `act-as-person`, with catalogue, unit and position defaults.
+
 | | |
 |---|---|
 | Status | **Draft**, 2026-11-07 |
