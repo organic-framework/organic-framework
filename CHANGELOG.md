@@ -15,6 +15,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 - `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
 - `of init --language`: the language agents use with the organization's head, one explicit setting kept in `~/.config/of/owner.yaml`.
+- One locale layer: every string OF shows a person is English in the code and comes in their language (`language` in `~/.config/of/owner.yaml`) from a catalogue, `bin/locale/<lang>.json`; a missing entry shows the English. Russian is the first catalogue.
 - A default model and effort per organization: `of init` writes `agents: {model: opus, effort: xhigh}` on the organization's entry in `orgs.yaml` (`--model` and `--effort` change it). `of spawn` starts with it unless `--model` or the new `--effort` says otherwise; `of resume-command` falls back to it when a session names neither.
 - Hand-overs carry a basis: `of handover propose --basis` takes an ask id, a quoted source, evidence or `inference`, and a title or done-when that states an obligation is refused without one. `of handover note` adds a note to an open hand-over without changing its state.
 - `of diff` move_position: a position moves between two units delegated alike, and each delegation's list follows it.
