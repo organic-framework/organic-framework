@@ -2595,7 +2595,7 @@ IMPORT_MIN_FREE = 50 * 10 ** 9  # of_architect, 2026-11-06: alert below 50 GB fr
 
 def cmd_import(args):
     import time
-    if args.source == "git":  # local commits on main as work records, for an organization that never pushes
+    if args.source == "git":  # local commits on each default branch as work records, for an organization that never pushes
         import of_github
         import of_store
         if not args.org:

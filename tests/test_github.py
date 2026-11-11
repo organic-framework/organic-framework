@@ -271,7 +271,8 @@ class DefaultBranchTest(unittest.TestCase):
         import subprocess
         path = os.path.join(root, name)
         os.makedirs(path)
-        git = lambda *a: subprocess.run(["git", "-C", path, "-c", "commit.gpgsign=false", "-c", "user.email=t@t",
+        git = lambda *a: subprocess.run(["git", "-C", path, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+                                         "-c", "user.email=t@t",
                                          "-c", "user.name=t", *a], capture_output=True, text=True, check=True)
         git("init", "-q", "-b", branch)
         with open(os.path.join(path, "a"), "w") as fh:
@@ -312,6 +313,16 @@ class DefaultBranchTest(unittest.TestCase):
                 n = of_github.import_local(conn, "o", {}, [m, d], "2020-01-01", works={}, log=said.append,
                                            branches={"d": "develop"})
                 self.assertEqual(n, 1)  # d now, on the branch orgs.yaml names
+                home = os.path.expanduser("~")
+                e, git_e = self.repo(root, "e", "develop")
+                git_e("branch", "master")
+                key = ("~" + e[len(home):]) if e.startswith(home) else e  # a path as orgs.yaml writes it
+                n = of_github.import_local(conn, "o", {}, [e], "2020-01-01", works={}, log=said.append,
+                                           branches={key: "develop"})
+                self.assertEqual(n, 1)  # of_studio's review of PR 12: a ~ path key matches the expanded root
+                self.assertEqual(of_github.import_local(conn, "o", {}, [e], "2020-01-01", works={}, log=said.append,
+                                                        branches=["develop"]), 0)  # not a mapping: ignored, said
+                self.assertTrue(any("is not a mapping" in x for x in said))
                 conn.close()
             finally:
                 of_events.STATE_DIR = saved
