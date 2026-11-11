@@ -10,6 +10,7 @@ only: nothing here prints or logs one, and an error carries `op`'s exit code, ne
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -73,10 +74,13 @@ class OnePassword:
         """Set the field to VALUE through a template on standard input, so the value is never on a command line."""
         vault, item, section, field = self.parse(ref)
         doc = json.loads(self._run(["item", "get", item, "--vault", vault, "--format", "json"], identity) or "{}")
-        hit = next((f for f in doc.get("fields") or [] if (f.get("label") or f.get("id")) == field and
-                    (section is None or ((f.get("section") or {}).get("label") or "") == section)), None)
-        if hit is None:
+        hits = [f for f in doc.get("fields") or [] if (f.get("label") or f.get("id")) == field and
+                (section is None or ((f.get("section") or {}).get("label") or "") == section)]
+        if not hits:
             raise StoreError(f"no field {field} in item {item} of vault {vault}")
+        if len(hits) > 1:  # as `op read` refuses it: name the section (of_architect, review of PR 20)
+            raise StoreError(f"field {field} is in several sections of item {item}; the reference must name one")
+        hit = hits[0]
         hit["value"] = value
         self._run(["item", "edit", item, "--vault", vault, "--template", "/dev/stdin"], identity,
                   stdin=json.dumps(doc))
@@ -99,11 +103,12 @@ class OnePassword:
         these vaults, its token going straight into the broker's identity file (docs/agent-secrets.md §5.2)."""
         vaults = {v: "read_items" for v in reads}
         vaults.update({v: "read_items,write_items" for v in writes})
-        flags = " ".join(f"--vault {v}:{how}" for v, how in sorted(vaults.items()))
+        flags = " ".join(f"--vault {shlex.quote(f'{v}:{how}')}" for v, how in sorted(vaults.items()))
         target = os.path.join(identity_dir, org, f"{position}.token")
+        q = shlex.quote  # a shell line the owner runs: a space in a vault or a folder must not move the token
         return {"identity_file": target,
-                "steps": [f"umask 077; mkdir -p {os.path.dirname(target)} && op service-account create "
-                          f"of-{org}-{position} {flags} --raw > {target}"]}
+                "steps": [f"umask 077; mkdir -p {q(os.path.dirname(target))} && op service-account create "
+                          f"{q(f'of-{org}-{position}')} {flags} --raw > {q(target)}"]}
 
 
 PLUGIN = OnePassword

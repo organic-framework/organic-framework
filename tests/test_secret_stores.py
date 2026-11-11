@@ -161,6 +161,35 @@ for _name in sorted(of_family.implementations(FAMILY)):
     globals()[_cls] = type(_cls, (SecretStoreContract, unittest.TestCase), {"name": _name})
 
 
+class OnePasswordDetailsTest(unittest.TestCase):
+    """of_architect's review of PR 20: the bootstrap line is quoted; a write needs one field."""
+
+    def test_the_bootstrap_line_keeps_a_space_in_a_vault_or_a_folder(self):
+        import shlex
+        cls = of_family.implementation(FAMILY, "1password")
+        out = cls({"op": "op"}).bootstrap("acme", "obs_keeper", ["acme obs"], ["acme-k8s"], "/srv/of ids")
+        words = shlex.split(out["steps"][0].split("&&", 1)[1])
+        self.assertIn("acme obs:read_items", words)
+        self.assertIn("acme-k8s:read_items,write_items", words)
+        self.assertEqual(words[-1], "/srv/of ids/acme/obs_keeper.token")
+        self.assertEqual(words[-2], ">")
+        self.assertEqual(out["identity_file"], "/srv/of ids/acme/obs_keeper.token")
+
+    def test_a_field_in_two_sections_needs_the_section(self):
+        store, who, ref, _, _ = fixture("1password", "/tmp")
+        store.runner.items[("acme-obs", "grafana-viewer")] = {"credential": "a"}
+
+        def two(argv, env=None, input=None, **k):  # two fields with one label, in two sections
+            if argv[1:3] == ["item", "get"]:
+                return R(0, json.dumps({"fields": [{"label": "credential", "value": "a", "section": {"label": "x"}},
+                                                   {"label": "credential", "value": "b", "section": {"label": "y"}}]}))
+            return R(0, "")
+        store.runner = two
+        with self.assertRaises(Exception) as e:
+            store.write(ref, "new", who)
+        self.assertIn("several sections", str(e.exception))
+
+
 class GuardCoversTheStores(unittest.TestCase):
     """docs/agent-secrets.md §13.6, hand-over 3512db81: the guard names every store's commands. Each implementation
     declares its own command line (CLI) and the forms that print a stored value (VALUE_COMMANDS); the guard denies
