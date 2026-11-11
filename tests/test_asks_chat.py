@@ -243,6 +243,18 @@ class ForgedOrStaleTest(ChatTest):
                       session="S6", ts="2026-11-11T10:00:40Z")
         self.assertEqual(self.check(ok, self.prompt(f"{ok[-8:]} yes"), option=1)["answer"], "yes")
 
+    def test_words_hold_a_card_whatever_was_declared(self):
+        """of_release's review 2026-11-11, finding 2: a pane card stores no tags, and --tags none stores nothing."""
+        pane = self.ask("Pay 90 USD to the operator?", ["yes", "no"], source="pane", tags=[])
+        self.refused(pane, self.prompt(f"{pane[-8:]} yes"), "tagged money", option=1)
+        none = self.ask("Restart the production cluster now?", ["yes", "no"], tags=[], tags_declared=True,
+                        position="of_b", session="S2", ts="2026-11-11T10:00:30Z")
+        self.refused(none, self.prompt(f"{none[-8:]} yes"), "tagged prod_change", option=1)
+        self.assertEqual(of_asks_chat.in_chat({x["event_id"]: x for x in self.asks()}[none]), "waiting")
+        opt = self.ask("Which way?", ["wait", "pay 90 USD now"], position="of_unit_owner", session="S6",
+                       ts="2026-11-11T10:00:40Z")
+        self.refused(opt, self.prompt(f"{opt[-8:]} wait"), "tagged money", option=1)  # its options count too
+
     def test_a_routed_card_to_a_person_takes_that_persons_conductor(self):
         r = self.ask("Merge the release?", ["yes", "no"], to="of_alex")
         self.refused(r, self.prompt(f"{r[-8:]} yes"), "not in the session", option=1)

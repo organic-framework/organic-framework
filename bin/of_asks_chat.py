@@ -44,10 +44,15 @@ DIFF_HOLD = (f"diff approvals from the chat are on hold {STORE_LIMIT}: approve i
              "`of diff approve <id>` in a terminal")
 
 
-def held_tags(ask):
-    """The names of the ask's tags that keep an answer from the chat away until the store is safe. A tag is stored as
-    {tag, source, systems} (of_classify.parse_tags, tags_of), or as a plain "name[:systems]"."""
+def held_tags(ask, options=()):
+    """The names of the ask's tags that keep an answer from the chat away until the store is safe: the stored ones
+    ({tag, source, systems} from of_classify.parse_tags or tags_of, or a plain "name[:systems]") and, whatever was
+    declared, the ones of_classify.tags_of finds in its words (of_release's review 2026-11-11, finding 2: a pane card
+    stores no tags and `--tags none` stores nothing, so a money or production question passed)."""
+    import of_classify
     names = [str(t.get("tag") or "") if isinstance(t, dict) else str(t).split(":", 1)[0] for t in ask.get("tags") or []]
+    words = " ".join([str(ask.get("text") or ""), str(ask.get("steps") or ""), *[str(o) for o in options]])
+    names += [t["tag"] for t in of_classify.tags_of(words)]
     return [n for n in dict.fromkeys(names) if n in HELD_TAGS]
 
 
@@ -222,7 +227,9 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
         raise ValueError(f"ask {first['event_id'][-8:]} is a {kind.split(':')[0]} in a pane: it is answered at the "
                          "machine, never from the chat")
     by_id = {a["event_id"]: a for a in asks}
-    held = sorted({t for i in g["ask_ids"] for t in held_tags(by_id.get(i) or {})})
+    first_opts = _options_of(conn, first)
+    held = sorted({t for i in g["ask_ids"] for t in held_tags(by_id.get(i) or {}, first_opts if i == first["event_id"]
+                                                               else ())})
     if held:
         raise ValueError(f"ask {first['event_id'][-8:]} is tagged {', '.join(held)}: it is answered at the machine "
                          f"(the popup), not from the chat, {STORE_LIMIT}")
