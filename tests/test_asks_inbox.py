@@ -123,6 +123,15 @@ class StoreTest(unittest.TestCase):
         self.assertIn(f"handed to you; ask {a[-8:]}", todo[0]["text"])
         self.assertIn(f"of asks answered {a[-8:]}", todo[0]["text"])
         self.assertIn("Options: yes | no", todo[0]["text"])
+        # no fixed position name (of_herdr's review of PR 26): without a conductor in the registry, the owner himself
+        self.assertNotIn("of_conductor", todo[0]["text"])
+        self.assertIn("ask the founder yourself (of ask)", todo[0]["text"])
+        regs = [{"name": "of_b", "_org": "ofb"},
+                {"name": "acme_conductor", "role": "conductor", "owner": "acme_owner", "_org": "acme"},
+                {"name": "acme_owner", "owner": "acme_owner", "holder": {"runtime": "human"}, "_org": "acme"},
+                {"name": "ofb_conductor", "role": "conductor", "owner": "founder", "_org": "ofb"}]
+        named = [x for x in of_asks_answer.pending(self.conn, asks, regs, now=now) if x["key"].startswith("handed:")]
+        self.assertIn("If it is not yours to settle, tell ofb_conductor.", named[0]["text"])
         self.add("human_prompt", {"origin": "injected", "text": todo[0]["text"]}, "2026-11-11T10:11:00Z",
                  position="of_b", session="S2")
         later = of_asks_answer.pending(self.conn, asks, [{"name": "of_b"}], now=now + 120)

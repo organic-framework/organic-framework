@@ -274,12 +274,26 @@ def handed_mark(ask_id):
     return f"handed to you; ask {ask_id[-8:]}"
 
 
-def handed_frame(asker, ask_id, text, opts):
-    """A card the owner handed to a position in his window (key d, of_asks_inbox): it settles it for him."""
+def handed_frame(asker, ask_id, text, opts, conductor=None):
+    """A card the owner handed to a position in his window (key d, of_asks_inbox): it settles it for him. conductor:
+    the owner's conductor in the receiver's organization (receiver_conductor), whom it tells when the card is not its
+    to settle; without one, it asks the owner itself (of_herdr's review of PR 26: no fixed position name)."""
+    back = (f"tell {conductor}" if conductor else
+            "ask the founder yourself (of ask) and close this card with its id")
     return (f"The founder hands you a card to settle ({handed_mark(ask_id)}), asked by {asker}: {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")
             + f"\n[answer {asker}: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then close his card: of asks "
-              f"answered {ask_id[-8:]} \"what you decided\". If it is not yours to settle, tell of_conductor.]")
+              f"answered {ask_id[-8:]} \"what you decided\". If it is not yours to settle, {back}.]")
+
+
+def receiver_conductor(positions, receiver):
+    """The owner's conductor as the receiver's organization knows it (of_asks_chat.conductors): one in the receiver's
+    own organization first, else any that serves the owner; None when the registry has none."""
+    import of_asks_chat
+    cs = of_asks_chat.conductors(positions, "founder", receiver)
+    org = next((p.get("_org") for p in positions if p.get("name") == receiver), None)
+    mine = [c for c in cs if org and c.get("_org") == org]
+    return ((mine or cs or [{}])[0]).get("name")
 
 
 def escalated_mark(ask_id):
@@ -546,7 +560,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             continue
         q, _, asker, _ = ask_details(conn, ids[0])
         out.append({"key": f"handed:{eid}:{to}", "position": to, "marks": [handed_mark(ids[0])], "since": ts,
-                    "text": handed_frame(asker or "?", ids[0], full_question(q, ""), options(q))
+                    "text": handed_frame(asker or "?", ids[0], full_question(q, ""), options(q),
+                                         receiver_conductor(positions, to))
                     + _late(ts, now, "the founder handed it"), "sender": "owner", "channel": None})
     units = {x["name"]: x.get("_unit") for x in positions}
     for eid, ts, asker, payload in conn.execute(
