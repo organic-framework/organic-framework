@@ -3951,6 +3951,16 @@ def mcp_servers(d, now=None, run=None):
 # in: fill, relief, plan and a move by hand go only to such an account; rescue prefers one and moves anyway (a
 # stopped session cannot work at all). A missing sign-in is the founder's task, one per account.
 
+def api_online():
+    """Whether the API answers a TCP connect (of_net.online, cached a minute); True when that cannot be told. A move
+    resumes the session on the new account: over a dropped link the resume can leave it dead (2026-11-11)."""
+    try:
+        import of_net
+        return bool(of_net.online())
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def tool_docs():
     """{org: registry doc} of the organizations with a `tools:` catalogue; {} when none or unreadable."""
     try:
@@ -4206,7 +4216,9 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
         # goes too, after the stopped ones. Within the hour a window reopens before most idle holders get work, and
         # each move costs a resume
         until = blocked_until(acct[d], now)
-        doomed = bool(until) and until - now >= ahead
+        # a probe with no reading (logged_in None: a timeout, a dropped link) is no evidence the account refuses work:
+        # only its stopped sessions go (2026-11-11: the founder's Mac on a mobile hotspot, of_platform's check)
+        doomed = bool(until) and until - now >= ahead and acct[d].get("logged_in") is not None
         for s in sessions.get(d, []):
             p = pos_by_session.get(s["session"])
             is_stopped = s["session"] in stopped
@@ -4579,9 +4591,12 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                    failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib)
     untrusted = {}
+    offline = bool(plan_) and not dry_run and not api_online()
+    if offline:
+        log("balance: the API does not answer a connect (of_net.online); no moves this run, the plan waits")
     for m in plan_:
         log(f"balance: {m['position']} {short(m['from'])} -> {short(m['to'])} (${m['rate']:.0f}/h; {m['reason']})")
-        if dry_run:
+        if dry_run or offline:
             continue
         p = next((x for x in positions if x["name"] == m["position"]), None)
         note = ("of_capacity's balancer moved you to use model capacity that would otherwise expire unused "

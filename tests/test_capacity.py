@@ -702,6 +702,20 @@ class Rescue(unittest.TestCase):
                     {"session": "idle", "status": "idle"}, {"session": "busy", "status": "busy"}],
             "/gg": [], "/ap": [], "/cl": [{"session": "k8s_keeper", "status": "idle"}]}
 
+    def test_a_probe_with_no_reading_moves_nothing_ahead(self):
+        # 2026-11-11, the founder's Mac on a mobile hotspot: a dropped link makes a probe fail (logged_in None). That is
+        # no evidence the account refuses work, so its idle holders are not moved ahead; a stopped one still goes.
+        rows = self.rows()
+        rows[0] = {"config_dir": "/mm", "logged_in": None, "status": None, "windows": {}, "observed_at": None,
+                   "error": "probe timed out after 60s"}
+        pol = dict(POLICY, rescue_ahead_min=60)
+        m = of_capacity.rescue_plan(rows, self.SESS, self.POS, {}, pol, self.NOW)
+        self.assertEqual([x["from"] for x in m], ["/cl"])  # /cl's refusal is a reading: its holder goes ahead
+        m = of_capacity.rescue_plan(rows, self.SESS, self.POS, {"st1": self.NOW - 600}, pol, self.NOW)
+        self.assertEqual([x["position"] for x in m if x["from"] == "/mm"], ["st1"])
+        self.assertNotIn("/mm", of_capacity.accepting_accounts(rows, self.SESS, {}, self.NOW))  # nor a target
+        self.assertEqual(of_capacity.proposals(rows, set(), now=self.NOW, policy=pol), [])  # nor a card
+
     def test_stopped_sessions_go_to_accounts_that_accept_work_most_headroom_first(self):
         pol = dict(self.STOPS_ONLY, rescue_step=30)
         stopped = {"st1": self.NOW - 600, "st2": self.NOW - 300, "busy": self.NOW - 60}
