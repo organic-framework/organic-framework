@@ -113,7 +113,7 @@ class PaneCardTest(unittest.TestCase):
             of_events.emit, of_judge.route = saved
         q = sent[0]["questions"][0]
         self.assertEqual(q["question"], "Ротировать ключ сегодня?")
-        self.assertEqual(q["options"], ["да", "нет", "не вопрос"])
+        self.assertEqual(q["options"], ["да", "нет", of_judge.not_a_question()])
         self.assertEqual(sent[0]["estimates_cut"], ["~5 мин", "около 2 минут"])
 
 

@@ -101,21 +101,21 @@ if __name__ == "__main__":
 class CardUiTest(unittest.TestCase):
     def test_card_lines_keep_everything(self):
         import of_asks_tui
-        long_q = "Какой минимальный размер части для загрузки в хранилище? " * 6
-        ctx = "\n".join(f"Абзац {i}: " + "слово " * 30 for i in range(20)) + "\nЭто последнее предложение целиком."
+        long_q = "What is the smallest part size for the upload to the store? " * 6
+        ctx = "\n".join(f"Paragraph {i}: " + "word " * 30 for i in range(20)) + "\nThis is the whole last sentence."
         c = {"who": ["data_ledger"], "position": "data_ledger", "system": "data", "since": None,
              "kind": "question (heuristic)", "question": long_q, "options": ["a", "b"], "context": ctx,
              "links": [], "answerable": True}
         lines = of_asks_tui.card_lines(c, 60)
         text = " ".join(ln for ln, _ in lines)
-        self.assertIn("Какой минимальный размер", text)
-        self.assertIn("Это последнее предложение целиком.", text)
+        self.assertIn("What is the smallest part size", text)
+        self.assertIn("This is the whole last sentence.", text)
         self.assertTrue(all(len(ln) <= 60 for ln, _ in lines))
 
     def test_last_paragraph_is_whole(self):
         import of_asks_answer
-        msg = "Сделал X.\n\nВопрос: какой минимальный размер части брать, 5 МБ или 64 МБ?\n\nДальше: Y."
-        self.assertEqual(of_asks_answer.last_paragraph(msg), "Вопрос: какой минимальный размер части брать, 5 МБ или 64 МБ?")
+        msg = "Did X.\n\nQuestion: which part size to take, 5 MB or 64 MB?\n\nNext: Y."
+        self.assertEqual(of_asks_answer.last_paragraph(msg), "Question: which part size to take, 5 MB or 64 MB?")
 
     def test_keys_after_send_do_not_leak(self):
         import curses
@@ -291,8 +291,8 @@ class PopupUxTest(unittest.TestCase):
             saved = of_events.STATE_DIR
             of_events.STATE_DIR = d
             try:
-                of_asks_answer.save_draft({"ids": ["A-open"], "who": ["a"]}, "да")
-                of_asks_answer.save_draft({"ids": ["A-closed"], "who": ["b"]}, "нет")
+                of_asks_answer.save_draft({"ids": ["A-open"], "who": ["a"]}, "yes")
+                of_asks_answer.save_draft({"ids": ["A-closed"], "who": ["b"]}, "no")
                 self.assertEqual(of_asks_answer.archive_drafts({"A-open"}), ["A-closed"])
                 self.assertEqual([x["ask_id"] for x in of_asks_answer.unsent_drafts()], ["A-open"])
                 self.assertEqual(len(os.listdir(os.path.join(of_asks_answer.drafts_dir(), "archive"))), 1)
@@ -320,7 +320,7 @@ class PopupUxTest(unittest.TestCase):
     def test_answer_leaves_at_once_and_u_takes_it_back(self):
         sent = self.run_popup([ord("a"), ord("u"), 0.3, ord("q")])
         self.assertEqual(sent, [])  # undone inside the window: never sent
-        self.assertTrue(any("отправлено ✓ · u — отменить" in " ".join(f) for f in self.lines))
+        self.assertTrue(any("sent ✓ · u to undo" in " ".join(f) for f in self.lines))
         self.assertTrue(any("q1?" in " ".join(f) for f in self.lines[-2:]))  # back in the list
 
     def test_sent_after_the_window_and_q_never_drops(self):
@@ -328,7 +328,7 @@ class PopupUxTest(unittest.TestCase):
         self.assertEqual(sent, [("answered", "A1")])
         sent = self.run_popup([ord("a"), ord("q")])  # q inside the window: sent, not dropped
         self.assertEqual(sent, [("answered", "A1")])
-        hidden_frame = next(f for f in self.lines if any("отправлено ✓" in t for t in f))
+        hidden_frame = next(f for f in self.lines if any("sent ✓" in t for t in f))
         self.assertFalse(any("q1?" in t for t in hidden_frame))  # gone from the list at once
 
     def test_q_leaves_at_once_and_the_sender_delivers(self):
@@ -380,7 +380,7 @@ class PopupUxTest(unittest.TestCase):
         with _tf.TemporaryDirectory() as d:
             of_events.STATE_DIR = d
             try:
-                of_asks_tui.to_outbox([{"what": "answer", "text": "да", "item": {"ids": ["X"], "who": ["a"]}}])
+                of_asks_tui.to_outbox([{"what": "answer", "text": "yes", "item": {"ids": ["X"], "who": ["a"]}}])
                 sent = []
                 n = of_asks_tui.send_outbox(lambda it, text: (sent.append(text), (True, "ok"))[1], None, lambda ids: False)
                 self.assertEqual((n, sent, of_asks_tui.outbox_waiting(older_than_s=0)), (0, [], []))
@@ -412,16 +412,16 @@ class PopupUxTest(unittest.TestCase):
                             lambda what, x: (sent.append((what, x["ids"][0])), (True, "ok"))[1], None, None)
         finally:
             of_asks_tui.load = orig
-        self.assertTrue(any("Сделать тебе" in t for f in self.lines for t in f))
-        self.assertTrue(any("Сделал?" in t for f in self.lines for t in f))
+        self.assertTrue(any("For you to do" in t for f in self.lines for t in f))
+        self.assertTrue(any("Done?" in t for f in self.lines for t in f))
         self.assertEqual(sent, [("answered", "T1")])  # n declined; y claimed once
 
     def test_the_answer_input_keeps_its_own_layout(self):
         """The founder's screenshot: a task's steps ran over the input. Fixed rows, nothing from the card."""
         import of_asks_tui
-        steps = "Шаги:\n" + "\n".join(f"{i}. Перевести 90 USD с основного счёта на счёт оператора, проверить" for i in range(12))
-        title = "Answer to storefront_checkout: Перевести 90 USD на счёт оператора\n\n" + steps
-        typed = list("Перевёл, транзакция подтверждена в обозревателе блоков, хеш в канале ") * 2
+        steps = "Steps:\n" + "\n".join(f"{i}. Move 90 USD from the main account to the operator's account, check it" for i in range(12))
+        title = "Answer to storefront_checkout: Move 90 USD to the operator's account\n\n" + steps
+        typed = list("Moved it, the transaction is confirmed in the block explorer, the hash is in the channel ") * 2
 
         class Scr:
             def __init__(self):
@@ -456,28 +456,28 @@ class PopupUxTest(unittest.TestCase):
         scr = Scr()
         got = of_asks_tui.edit(scr, title)
         self.assertEqual(got, "".join(typed).strip())
-        self.assertTrue(scr.rows[0].startswith("Answer to storefront_checkout: Перевести 90 USD"))
+        self.assertTrue(scr.rows[0].startswith("Answer to storefront_checkout: Move 90 USD"))
         self.assertNotIn(2, scr.rows)  # the empty row between the keys and the input
-        self.assertFalse(any("Шаги" in t for t in scr.rows.values()))
+        self.assertFalse(any("Steps" in t for t in scr.rows.values()))
         self.assertTrue(all(y >= 3 for y in scr.rows if y not in (0, 1)))
 
     def test_copy_targets(self):
         import of_asks_tui
         task = {"task": True, "command": "gh api -X POST /apps/x/keys", "steps": "1. …"}
         self.assertEqual(of_asks_tui.copy_target({}, task), "gh api -X POST /apps/x/keys")
-        c = {"options": ["нет, перенести", "да, запускать (рекомендую: окно короткое)"], "question": "q"}
-        self.assertEqual(of_asks_tui.copy_target(c, {}), "да, запускать (рекомендую: окно короткое)")
+        c = {"options": ["no, move it", "yes, run it (recommended: the window is short)"], "question": "q"}
+        self.assertEqual(of_asks_tui.copy_target(c, {}), "yes, run it (recommended: the window is short)")
         sent = []
         orig = of_asks_tui.subprocess.run
         of_asks_tui.subprocess.run = lambda argv, **k: sent.append((argv, k["input"]))
         saved = os.environ.pop("SSH_TTY", None)
         try:
-            self.assertEqual(of_asks_tui.copy_text("текст"), "pbcopy")
+            self.assertEqual(of_asks_tui.copy_text("text"), "pbcopy")
         finally:
             of_asks_tui.subprocess.run = orig
             if saved is not None:
                 os.environ["SSH_TTY"] = saved
-        self.assertEqual(sent, [(["pbcopy"], "текст".encode())])
+        self.assertEqual(sent, [(["pbcopy"], "text".encode())])
 
     def test_order(self):
         import of_asks_tui
@@ -491,8 +491,8 @@ class PopupUxTest(unittest.TestCase):
         got = of_asks_tui.order(xs, now=now)
         self.assertEqual([x["ids"][0] for x in got], ["block", "soon", "old", "late", "free"])
         self.assertEqual([x["section"] for x in got], ["urgent", "urgent", "normal", "normal", "panes"])
-        self.assertEqual(of_asks_tui.countdown(iso(now + 38 * 60 + 5), now=now), "через 38 мин")
-        self.assertEqual(of_asks_tui.countdown(iso(now - 12 * 60), now=now), "просрочено 12 мин")
+        self.assertEqual(of_asks_tui.countdown(iso(now + 38 * 60 + 5), now=now), "in 38 min")
+        self.assertEqual(of_asks_tui.countdown(iso(now - 12 * 60), now=now), "overdue 12 min")
 
 
 class SideChatTest(unittest.TestCase):
@@ -517,9 +517,9 @@ class SideChatTest(unittest.TestCase):
 class NotAQuestionTest(AnswerTest):
     def test_n_closes_and_labels(self):
         import of_asks_answer
-        q = {"detected_by": "heuristic", "classifications": {"q-v2": True}, "questions": [{"question": "Проверю?"}]}
+        q = {"detected_by": "heuristic", "classifications": {"q-v2": True}, "questions": [{"question": "Shall I check?"}]}
         a1 = self.add("agent_question", q, "2026-11-01T10:00:05Z")
-        item = {"who": ["of_a"], "text": "Проверю?", "ids": [a1], "kind": "question (heuristic)"}
+        item = {"who": ["of_a"], "text": "Shall I check?", "ids": [a1], "kind": "question (heuristic)"}
         self.assertIn("not a question", of_asks_answer.not_a_question(item))
         states = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
         self.assertEqual(states[a1], "not_a_question")
@@ -553,12 +553,12 @@ class RedeliverTest(AnswerTest):
         saved = of_asks_answer.deliver
         of_asks_answer.deliver = lambda pane, text, session, **k: typed.append((pane, text)) or "delivered into the pane"
         try:
-            ok, out = of_asks_answer.answer(self.conn, item, "да", self.positions(), lambda name: "pane-" + name)
+            ok, out = of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda name: "pane-" + name)
         finally:
             of_asks_answer.deliver = saved
         self.assertTrue(ok)
-        self.assertEqual(typed, [("pane-of_a", of_asks_answer.frame(a1, "да")),
-                                 ("pane-of_b", of_asks_answer.frame(a2, "да"))])
+        self.assertEqual(typed, [("pane-of_a", of_asks_answer.frame(a1, "yes")),
+                                 ("pane-of_b", of_asks_answer.frame(a2, "yes"))])
         self.assertIn("of_b: delivered", out)
 
     def test_a_recorded_answer_is_ok_even_when_typing_fails(self):
@@ -567,7 +567,7 @@ class RedeliverTest(AnswerTest):
         saved = of_relay_client.herdr_deliver
         of_relay_client.herdr_deliver = lambda *a, **k: (False, "herdr agent wait failed (rc 1)")
         try:
-            ok, out = of_asks_answer.answer(self.conn, item, "да", self.positions(), lambda name: "p")
+            ok, out = of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda name: "p")
         finally:
             of_relay_client.herdr_deliver = saved
         self.assertTrue(ok)  # recorded: the popup must not bring it back red to be answered twice
@@ -575,7 +575,7 @@ class RedeliverTest(AnswerTest):
         self.assertEqual(of_asks_answer.unsent_drafts(), [])
 
     def answered(self, a1, a2, ts="2026-11-01T11:00:00Z", **extra):
-        self.add("agent_question_answered", {"ask_id": a1, "ask_ids": [a1, a2], "answer": "да", "via": "asks-ui",
+        self.add("agent_question_answered", {"ask_id": a1, "ask_ids": [a1, a2], "answer": "yes", "via": "asks-ui",
                                              "by": "owner", **extra}, ts, session=None, position=None)
 
     def test_pending_lists_each_asker_until_its_prompt_is_recorded(self):
@@ -584,9 +584,9 @@ class RedeliverTest(AnswerTest):
         now = self.now("2026-11-01T11:30:00Z")
         got = of_asks_answer.pending(self.conn, [], self.positions(), now)
         self.assertEqual([d["position"] for d in got], ["of_a", "of_b"])
-        self.assertTrue(got[0]["text"].startswith(of_asks_answer.frame(a1, "да")))
+        self.assertTrue(got[0]["text"].startswith(of_asks_answer.frame(a1, "yes")))
         self.assertIn("at 11:00Z", got[0]["text"])  # 30 min after the answer: it says when he answered
-        self.add("human_prompt", {"origin": "human", "channel": "asks-ui", "text": of_asks_answer.frame(a1, "да")},
+        self.add("human_prompt", {"origin": "human", "channel": "asks-ui", "text": of_asks_answer.frame(a1, "yes")},
                  "2026-11-01T11:00:02Z")
         self.assertEqual([d["position"] for d in of_asks_answer.pending(self.conn, [], self.positions(), now)],
                          ["of_b"])
@@ -613,10 +613,10 @@ class RedeliverTest(AnswerTest):
         self.answered(a1, a2, ts="2026-11-01T11:00:01Z")
         got = of_asks_answer.pending(self.conn, [], self.positions(), self.now("2026-11-01T11:30:00Z"))
         self.assertEqual([d["position"] for d in got], ["of_a", "of_b"])
-        self.assertTrue(of_asks_answer.recorded_already(self.conn, [a1, a2], "да", now=self.now("2026-11-01T11:05:00Z")))
-        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1, a2], "нет", now=self.now("2026-11-01T11:05:00Z")))
-        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1], "да", now=self.now("2026-11-01T11:05:00Z")))
-        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1, a2], "да", now=self.now("2026-11-01T11:20:00Z")))
+        self.assertTrue(of_asks_answer.recorded_already(self.conn, [a1, a2], "yes", now=self.now("2026-11-01T11:05:00Z")))
+        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1, a2], "no", now=self.now("2026-11-01T11:05:00Z")))
+        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1], "yes", now=self.now("2026-11-01T11:05:00Z")))
+        self.assertFalse(of_asks_answer.recorded_already(self.conn, [a1, a2], "yes", now=self.now("2026-11-01T11:20:00Z")))
 
     def test_answering_twice_records_and_types_once(self):
         _, _, item = self.group()
@@ -624,8 +624,8 @@ class RedeliverTest(AnswerTest):
         saved = of_asks_answer.deliver
         of_asks_answer.deliver = lambda pane, text, session, **k: typed.append(pane) or "delivered into the pane"
         try:
-            first = of_asks_answer.answer(self.conn, item, "да", self.positions(), lambda name: "pane-" + name)
-            again = of_asks_answer.answer(self.conn, item, "да", self.positions(), lambda name: "pane-" + name)
+            first = of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda name: "pane-" + name)
+            again = of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda name: "pane-" + name)
         finally:
             of_asks_answer.deliver = saved
         self.assertTrue(first[0] and again[0])
@@ -697,7 +697,7 @@ class RedeliverTest(AnswerTest):
 
     def rewrite(self, aid, at="2026-11-01T12:03:00Z"):
         return self.add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
-                                           "escalated_from": aid, "questions": [{"question": "Перезапустить бота?"}]},
+                                           "escalated_from": aid, "questions": [{"question": "Restart the bot?"}]},
                         at, session="SO", position="of_owner")
 
     def test_a_rewrite_supersedes_the_copy_and_both_hear_the_answer(self):
@@ -804,7 +804,7 @@ class RedeliverTest(AnswerTest):
         self.answered(a1, a2)
         q = {"detected_by": "declared", "questions": [{"question": "And the p3 window?"}]}
         a3 = self.add("agent_question", q, "2026-11-01T10:30:00Z")
-        self.add("agent_question_answered", {"ask_id": a3, "ask_ids": [a3], "answer": "вт 10:00", "via": "asks-ui",
+        self.add("agent_question_answered", {"ask_id": a3, "ask_ids": [a3], "answer": "Tue 10:00", "via": "asks-ui",
                                              "by": "owner"}, "2026-11-01T11:01:00Z", session=None, position=None)
         routed = {"detected_by": "declared", "to": "of_a", "questions": [{"question": "Restart?"}]}
         r = self.add("agent_question", routed, "2026-11-01T10:40:00Z", session="SU", position="of_unit")

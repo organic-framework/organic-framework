@@ -182,7 +182,7 @@ def card(conn, item, positions):
     elif kind.startswith("question (heuristic)"):  # asked in the pane, confirmed by the judge (bin/of_judge.py)
         q = (first.get("text") if first.get("judged") else None) or (last_paragraph(full) if full else q)
         opts = list(first.get("options") or []) or opts
-        if not opts and full:  # the (а)/(б) options of the closing text: pick one with 1..9
+        if not opts and full:  # the lettered options ((a)/(b)) of the closing text: pick one with 1..9
             import of_classify
             opts = of_classify.options_of(full)
     if kind.startswith("blocked:"):  # a blocking screen: its own options (keys), its own snippet
@@ -246,11 +246,18 @@ def escalated_note(asker, ask_id, rule):
     # 2026-11-09: a unit owner settled a routed request itself in 20 s and said so in its pane; the
     # founder's copy stayed open, and he does not read panes
     return (f"\n[OF escalated it to the founder ({rule}): it is on his queue in {asker}'s words. Do not file it again. "
-            f"Your rewrite for him, in Russian and standing on its own, replaces that copy: "
+            f"Your rewrite for him, in {owner_language()} and standing on its own, replaces that copy: "
             f"of ask \"…\" --escalates {ask_id[-8:]}. His answer reaches you and {asker}. "
             f"If you settle it yourself, answer {asker} (of send {asker} --reply-to {ask_id[-8:]} \"…\") and close the "
             f"founder's copy: of asks answered {ask_id[-8:]} \"what you did\".]")
 
+
+def owner_language():
+    """The owner's language by name, for text that tells an agent how to write to him (bin/of_locale.py)."""
+    import of_judge
+    import of_locale
+    lang = of_locale.language()
+    return of_judge.LANGUAGES.get(lang, lang)
 
 def inbox_only(p):
     """A routed ask that went to the receiver's inbox (of send --fyi) and is never typed into its pane: a usage-limit

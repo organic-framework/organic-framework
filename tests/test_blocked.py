@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
 class ListIsNotMenuTest(unittest.TestCase):
     def test_numbered_text_with_the_prompt_open(self):
-        screen = ("  1. Карточки вопросов: что, почему сейчас.\n  2. AWS. Любые изменения через aws_keeper.\n\n"
+        screen = ("  1. Question cards: what, why now.\n  2. AWS. Any change through aws_keeper.\n\n"
                   "✻ Cogitated for 10s\n" + "─" * 40 + "\n❯\n" + "─" * 40 + "\n  ⏵⏵ bypass permissions on · 2 shells\n")
         self.assertIsNone(of_blocked.detect(screen))
         self.assertEqual(of_blocked.detect(MENU)["type"], "menu")

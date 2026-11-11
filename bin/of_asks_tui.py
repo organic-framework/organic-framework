@@ -17,7 +17,7 @@ Home/End), its options, who asks and how long it waits, links; 1..9 pick an opti
 free answer, b a side chat through a read-only fork of the session (bin/of_side_chat.py), g go, Esc back.
 
 Answers are optimistic: the item leaves the list at once and the next question opens; the bottom line
-says "отправлено ✓ · u — отменить" for 5 s, and the answer is sent only after that (u takes it back). A
+says "sent ✓ · u to undo" (in the person's language, bin/of_locale.py) for 5 s, and the answer is sent only after that (u takes it back). A
 failed send brings the item back marked red with the reason; q sends whatever is pending, never drops it.
 Keys typed meanwhile are flushed, so nothing leaks into the next card. Answers: bin/of_asks_answer.py.
 """
@@ -30,6 +30,8 @@ import subprocess
 import sys
 import textwrap
 import time
+
+from of_locale import tr
 
 REFRESH_S = 5       # the full reload: a safety net; the listener's views.seq signal drives refreshes
 SEQ_POLL_MS = 250   # how often the popup looks at views.seq (one stat)
@@ -67,14 +69,14 @@ def order(items, now=None):
 
 
 def countdown(due, now=None):
-    """'через 38 мин' / 'через 2 ч 05 мин' / 'просрочено 12 мин'."""
+    """'in 38 min' / 'in 2 h 05 min' / 'overdue 12 min', in the person's language."""
     t = _ts(due)
     if t is None:
         return ""
     d = int(t - (now or time.time()))
     m = abs(d) // 60
-    span = f"{m // 60} ч {m % 60:02d} мин" if m >= 60 else f"{m} мин"
-    return f"через {span}" if d >= 0 else f"просрочено {span}"
+    span = tr("{h} h {m:02d} min", h=m // 60, m=m % 60) if m >= 60 else tr("{m} min", m=m)
+    return tr("in {span}", span=span) if d >= 0 else tr("overdue {span}", span=span)
 
 
 def load(positions, conn, from_log=False):
@@ -270,7 +272,8 @@ def copy_target(c, item):
     if item.get("task"):
         return item.get("command") or item.get("steps") or item.get("text") or ""
     opts = c.get("options") or []
-    rec = next((o for o in opts if re.search(r"(?i)рекоменд|recommend", o)), None)
+    import of_ask_text
+    rec = next((o for o in opts if of_ask_text.RECOMMENDED.search(o)), None)
     return rec or (opts[0] if opts else c.get("question") or "")
 
 
@@ -481,8 +484,8 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
     tail_pane, tail = None, None
     pending, hidden, errors = [], set(), {}  # answers waiting for their undo window; items they hide; failures
     expanded = {"panes": True}
-    confirm_task = None  # the task whose "Сделал?" waits for y
-    copied_at = 0.0      # when "скопировано" was shown (it goes after 2 s)
+    confirm_task = None  # the task whose "Done?" waits for y
+    copied_at = 0.0      # when "copied" was shown (it goes after 2 s)
 
     def key_of(x):
         return (x["ids"] or [None])[0] or (x.get("kind") or "registry", tuple(x["who"]))
@@ -505,9 +508,10 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
     def with_task(card, x):
         """A task's card: the steps and the command to paste, under the title."""
         if x.get("task"):
-            card = dict(card, question=(x.get("text") or "") + "\n\nШаги:\n" + (x.get("steps") or "")
-                        + (f"\n\nКоманда:\n{x['command']}" if x.get("command") else "")
-                        + "\n\nКогда сделаешь: a в списке → «Сделал?» → y. Агент проверит результат и закроет задачу.")
+            card = dict(card, question=(x.get("text") or "") + "\n\n" + tr("Steps:") + "\n" + (x.get("steps") or "")
+                        + ("\n\n" + tr("Command:") + f"\n{x['command']}" if x.get("command") else "")
+                        + "\n\n" + tr("When done: a in the list → «Done?» → y. The agent checks the result and "
+                                       "closes the task."))
         return card
 
     def open_card(x):
@@ -562,7 +566,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 if not p["ok"]:
                     hidden.discard(p["key"])
                     errors[p["key"]] = str(p["status"] or "not sent")[:100]
-                    msg = f"не отправлено: {errors[p['key']]}"
+                    msg = tr("not sent: {why}", why=errors[p['key']])
         present = {key_of(x) for _, g in data for x in g}
         for k in list(hidden):  # a sent answer stays hidden until the list itself drops the item
             if k not in present and not any(p["key"] == k for p in pending):
@@ -576,7 +580,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
             return False
         pending.remove(p)
         hidden.discard(p["key"])
-        sel_id, msg = p["key"], "отменено"
+        sel_id, msg = p["key"], tr("cancelled")
         return True
 
     def flush():
@@ -600,7 +604,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
         if not p:
             return None
         left = max(0, int(UNDO_S - (time.time() - p["at"]) + 0.99))
-        return f"отправлено ✓ · u — отменить ({left} с)"
+        return tr("sent ✓ · u to undo ({s} s)", s=left)
 
     def next_question():
         its = items()
@@ -615,7 +619,8 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 open_ids = {i for _, items in data for it in items for i in it.get("ids") or []}
                 gone = archive(open_ids)
                 if gone:
-                    msg = f"{len(gone)} черновик(ов) убрано в архив: вопрос уже закрыт ({', '.join(g[-8:] for g in gone)})"
+                    msg = tr("{n} draft(s) archived: the question is closed already ({ids})", n=len(gone),
+                             ids=", ".join(g[-8:] for g in gone))
         if bg.pop("reload", False):
             reload()
         if seq:  # the listener's signal: a view changed
@@ -657,8 +662,8 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                      curses.color_pair(1) | curses.A_BOLD)
             y, idx, section = 2, 0, None
             n_fold = sum(1 for x in its if x.get("section") == "panes")
-            labels = {"task": "Сделать тебе", "urgent": "Срочно", "normal": "Waiting on you",
-                      "panes": "Спросили в панели, без of ask (распознал Haiku; без уведомлений)",
+            labels = {"task": tr("For you to do"), "urgent": tr("Urgent"), "normal": "Waiting on you",
+                      "panes": tr("Asked in a pane, without of ask (recognized by Haiku; no notifications)"),
                       "registry": "Registry-declared (no notifications)"}
             for r in rows:
                 if y >= h - 3:
@@ -672,15 +677,16 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                         y += 1
                 attr = curses.A_REVERSE if idx == sel else 0
                 if r == "fold":
-                    _put(stdscr, y, 0, f" ▸ ещё {n_fold} из панелей (Enter раскрыть)", attr | curses.A_DIM)
+                    _put(stdscr, y, 0, tr(" ▸ {n} more from panes (Enter to expand)", n=n_fold), attr | curses.A_DIM)
                 else:
                     if r["kind"] != "registry":
                         attr |= curses.color_pair(1)
                     when = countdown(r.get("due")) if r.get("due") else _age(r["since"])
                     err = f"  ✗ {errors[key_of(r)]}" if key_of(r) in errors else ""
                     if r.get("task"):
-                        err += ("  ✓ ты сказал: сделал — ждёт проверки" if r.get("claimed_at")
-                                else ("  ↺ не принято: " + r["reopened"][:60] if r.get("reopened") else "  (Enter: шаги)"))
+                        err += (tr("  ✓ you said: done — waiting for the check") if r.get("claimed_at")
+                                else (tr("  ↺ not accepted: ") + r["reopened"][:60] if r.get("reopened")
+                                      else tr("  (Enter: steps)")))
                     _put(stdscr, y, 0, f" {when:>14}  {', '.join(r['who'])[:30]:<30}  {r['text']}{err}", attr)
                 y += 1
                 idx += 1
@@ -689,13 +695,15 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 _put(stdscr, 1, 0, f"{len(pend)} unsent answer(s) kept as drafts: d sends them", curses.A_BOLD)
             line = undo_line() or msg
             if line:  # _put never writes the last row (curses), so the status line is the one above it
-                _put(stdscr, h - 2, 0, line, curses.color_pair(1) if line.startswith("не отправлено") else curses.A_DIM)
+                _put(stdscr, h - 2, 0, line, curses.color_pair(1) if line.startswith(tr("not sent: {why}", why=""))
+                     else curses.A_DIM)
             stdscr.refresh()
             ch = stdscr.getch()
             if confirm_task is not None and ch != -1:
-                if ch in (ord("y"), ord("Y"), ord("д"), ord("Д")):
+                import of_ask_text
+                if ch in tuple(ord(k) for k in of_ask_text.YES_KEYS):
                     queue(confirm_task, "answered")  # the claim: the asker confirms or reopens after checking
-                    msg = "отмечено: сделал · агент проверит результат"
+                    msg = tr("marked: done · the agent checks the result")
                 else:
                     msg = ""
                 confirm_task = None
@@ -726,10 +734,10 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 return
             elif ch == ord("s") and studio:
                 studio(rows[sel] if rows and rows[sel] != "fold" else None, lambda m: studio_note.update(m=m))
-                msg = "Studio: открываю…"
+                msg = tr("Studio: opening…")
             elif rows and rows[sel] != "fold" and ch == ord("a") and rows[sel].get("task") and rows[sel]["ids"]:
-                confirm_task = rows[sel]  # a task is not answered by a key: "Сделал?" first
-                msg = "Сделал? y — да (агент проверит результат), любая другая клавиша — нет"
+                confirm_task = rows[sel]  # a task is not answered by a key: "Done?" first
+                msg = tr("Done? y for yes (the agent checks the result), any other key for no")
             elif rows and rows[sel] != "fold" and ch in (ord("a"), ord("w")) and rows[sel]["ids"]:
                 nxt = ids[sel + 1] if sel + 1 < len(ids) else (ids[sel - 1] if sel else None)
                 queue(rows[sel], "answered" if ch == ord("a") else "withdraw")
@@ -737,7 +745,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
             continue
 
         # the card: drawn from its own snapshot; the list refresh never redraws it
-        if copied_at and time.time() - copied_at > 2 and msg.startswith(("скопировано", "не скопировано")):
+        if copied_at and time.time() - copied_at > 2 and msg.startswith((tr("copied"), tr("not copied: {why}", why=""))):
             msg, copied_at = "", 0.0
         h, w = stdscr.getmaxyx()
         if tail_pane:
@@ -762,7 +770,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
             if nxt:
                 open_card(nxt)
             else:
-                mode, msg = "list", "больше вопросов нет"
+                mode, msg = "list", tr("no more questions")
         if ch == ord("u") and undo():
             mode = "list"
         elif ch in (27, ord("q")):
@@ -799,7 +807,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 answered_go_next(text)
         elif ch == ord("a") and it.get("task") and c.get("ids"):
             mode, confirm_task = "list", it
-            msg = "Сделал? y — да (агент проверит результат), любая другая клавиша — нет"
+            msg = tr("Done? y for yes (the agent checks the result), any other key for no")
         elif ch in (ord("a"), ord("w")) and c.get("ids"):
             queue(it, "answered" if ch == ord("a") else "withdraw")
             nxt = next_question()
@@ -815,14 +823,14 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
             reload()
         elif ch == ord("s") and studio:
             studio(it, lambda m: studio_note.update(m=m))
-            msg = "Studio: открываю…"
+            msg = tr("Studio: opening…")
         elif ch in (ord("c"), ord("C")):
             text = copy_target(c, it) if ch == ord("c") else "\n".join(t for t, _ in card_lines(c, 100000))
             try:
                 copy_text(text)
-                msg, copied_at = "скопировано", time.time()
+                msg, copied_at = tr("copied"), time.time()
             except Exception as e:  # noqa: BLE001
-                msg, copied_at = f"не скопировано: {type(e).__name__}", time.time()
+                msg, copied_at = tr("not copied: {why}", why=type(e).__name__), time.time()
         elif ch == ord("b") and c.get("ids"):
             chat_screen(stdscr, c)
             curses.flushinp()

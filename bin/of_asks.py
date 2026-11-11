@@ -143,7 +143,7 @@ def project(rows):
                 else ("not_a_question" if p_.get("verdict") == "not_a_question" else "answered")
             named = [by_id.get(x) for x in p_.get("ask_ids") or [p_.get("ask_id")]]
             # a founder's task is claimed only by the founder's own answer: an event that also names an ask to
-            # another position is that position's closure, never his "сделал" (2026-11-07, task bd12d0)
+            # another position is that position's closure, never his "done" (2026-11-07, task bd12d0)
             owners_own = all(x is None or x.get("to") in OWNER_ADDRESSES for x in named)
             for aid in p_.get("ask_ids") or [p_.get("ask_id")]:
                 ask = by_id.get(aid)
@@ -151,7 +151,7 @@ def project(rows):
                     # a task is work for the owner, not a question: an answer is his claim that it is done; it
                     # stays open until the asker checks the result (of status --done-task) or withdraws it
                     if st == "answered" and p_.get("by") in ("owner", "founder") and owners_own:
-                        ask.update(claimed_at=r["ts"], claim=(p_.get("answer") or "сделал")[:200])
+                        ask.update(claimed_at=r["ts"], claim=(p_.get("answer") or "done")[:200])
                     continue
                 if ask and ask["state"] in ("open", "candidate"):  # a candidate too: the popup's n, of asks answered
                     ask.update(state=st, closed_by=r["event_id"], closed_at=r["ts"])
@@ -388,7 +388,8 @@ def _kind(r):
 
 def _n_options(r):
     """How many options the asker offered (0: a free question, e.g. an agent ending its turn with one). A heuristic
-    question written before its options were stored: the (а)/(б) options in its stored closing text."""
+    question written before its options were stored: the lettered options ((a)/(b), Latin or Cyrillic) in its stored
+    closing text."""
     qs = (r["payload"] or {}).get("questions") or []
     q0 = qs[0] if qs and isinstance(qs[0], dict) else {}
     if "options" not in q0 and (r["payload"] or {}).get("detected_by") == "heuristic":

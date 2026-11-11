@@ -1327,7 +1327,7 @@ positions:
         self.assertEqual((a[card]["state"], a[card]["to"], a[card]["source"]), ("open", "founder", "pane"))
         self.assertEqual(a[cand]["state"], "superseded")  # the candidate is replaced by the card
         row = self.conn.execute("SELECT payload FROM event WHERE event_id = ?", (card,)).fetchone()[0]
-        self.assertEqual(self.json.loads(row)["questions"][0]["options"], ["да", "нет", "не вопрос"])
+        self.assertEqual(self.json.loads(row)["questions"][0]["options"], ["да", "нет", self.oj.not_a_question()])
         self.assertEqual(self.typed, [])  # the founder started the turn: the note waits for the pulse
         # the session goes on: a hand-over, a turn, a declared status, a peer's message
         self.add("human_prompt", {"origin": "injected", "text": "Hand-over 2759a172 from of_conductor"})

@@ -8,12 +8,14 @@ text by rules (q-v0..q-v4) filled it with false items; agents that asked in thei
    hook stays within its 5 s and never blocks the agent. With judge.yaml `gate: all` it queues every turn of a
    position's session (`turn: true`, no candidate written).
 2. A small model (Haiku through `claude -p`: no tools, no hooks, no MCP, no session file, the agent's own account)
-   reads the message and answers: does the agent wait on the owner, and what is the decision, in one Russian line.
+   reads the message and answers: does the agent wait on the owner, and what is the decision, in one line in the
+   owner's language (bin/of_locale.py; the founder's is Russian).
    The verdict is `of.agent_question_judged`; a candidate the judge clears never reaches anyone.
 3. When the agent waits on the owner and filed no `of ask`, OF files the question for it at once, where its own
    `of ask` would go (the founder, or its unit owner in a delegated unit): `of.agent_question` {source: pane}, an ask
    like any other, kept until answered or withdrawn, never closed because the session went on (hand-over cc2ed950,
-   reports/asks-pane-questions-2026-11-11.md). Its last option is "не вопрос". OF tells the agent once: at once after
+   reports/asks-pane-questions-2026-11-11.md). Its last option is "not a question", in the owner's language. OF tells
+   the agent once: at once after
    a turn a peer or a tool started; after CORRECT_HUMAN_MIN when the founder started it (he may answer right there,
    and his words in that session answer it).
    A position the owner converses with in its pane (registry `owner_chat: true`) is skipped before the model.
@@ -82,10 +84,20 @@ question is in one of the lists of asks already filed (the agent's own, or anoth
 names);
 - waiting on something other than the owner: CI, a deploy, a time window, another agent.
 
-question: when waits_owner is true, the decision in one plain Russian line that the owner can answer without \
+question: when waits_owner is true, the decision in one plain {language} line that the owner can answer without \
 any other context; otherwise "". options: the choices the agent offered, short, in its words ([] if none). \
 reason: one short English sentence why."""
 
+
+LANGUAGES = {"en": "English", "ru": "Russian"}  # the owner's language, named for the model
+
+
+def system():
+    """SYSTEM with the owner's language (bin/of_locale.py): the card's question is written in it. With the founder's
+    Russian the prompt is j-v4's word for word."""
+    import of_locale
+    lang = of_locale.language()
+    return SYSTEM.replace("{language}", LANGUAGES.get(lang, lang))
 
 def config():
     """~/.config/of/judge.yaml: enabled (default true), model, command (an argv for another engine; the user
@@ -117,7 +129,8 @@ ORIGINS = {"human": "the founder, typing in this pane", "paste": "the founder, p
 
 def user_prompt(text, position=None, origin=None, peer=None, filed=(), named=()):
     """filed: [(ask id, text)] the agent's own open asks; named: [(ask id, text, position)] other positions' open asks
-    for the founder that the message names by id (j-v4: "ваше «да» на e0e53b7f" read as new when another filed it)."""
+    for the founder that the message names by id (j-v4: "your «yes» on e0e53b7f" read as new when another filed
+    it)."""
     who = ORIGINS.get(origin or "", "unknown")
     if origin == "peer" and peer:
         who += f" ({peer})"
@@ -138,7 +151,7 @@ def command(cfg):
         return list(cfg["command"]), True
     import of_capacity
     return [of_capacity.claude_bin(), "-p", PROMPT_SLOT, "--model", str(cfg.get("model") or MODEL), "--tools", "",
-            "--system-prompt", SYSTEM, "--json-schema", json.dumps(SCHEMA), "--output-format", "json",
+            "--system-prompt", system(), "--json-schema", json.dumps(SCHEMA), "--output-format", "json",
             "--no-session-persistence", "--settings", '{"disableAllHooks": true}', "--strict-mcp-config",
             "--disable-slash-commands", "--max-turns", "3"], False
 
@@ -354,7 +367,7 @@ def only_filed_ids(conn, text, now=None):
     WAITING ON listed asks already on the founder's queue, and the model filed it twice as a new card for him). The
     message has no question mark, names at least one 8-character id, every such id is an ask OF knows (any state, the
     last KNOWN_DAYS days: a decision cited by its id counts), one of them at least is open for the founder, and
-    without the lines that name them it asks the owner nothing (j-v4: a keeper's "вопрос про 1Password", never filed,
+    without the lines that name them it asks the owner nothing (j-v4: a keeper's "question about 1Password", never filed,
     stood beside its card ids and was cleared three times)."""
     if "?" in text:
         return None
@@ -376,7 +389,7 @@ _UNFILED_ITEM = re.compile(r"(?i)\b(?:вопрос\w*|question\w*|решени\w
 def says_more(text, ids):
     """Does the message ask the owner something besides these ids: on the lines that name none of them (q-v5's
     requests and owner headings, or a waiting note), or as an item with no id in a list that names them ("WAITING ON:
-    от тебя — `0fd223f2`, `2c43429e`, вопрос про 1Password": a question never filed)?"""
+    from you — `0fd223f2`, `2c43429e`, question about 1Password": a question never filed)?"""
     import of_classify
     lines = (text or "").splitlines()
     rest = "\n".join(ln for ln in lines if not any(i in ln for i in ids))
@@ -494,7 +507,20 @@ def session_moved(conn, session, after):
 
 # ------------------------------------------------------------------ one candidate
 
-NOT_A_QUESTION = "не вопрос"  # the last option of every pane card: the founder's one key for a false card
+NOT_A_QUESTION = "not a question"  # the last option of every pane card, as the English source of the locale layer
+
+
+def not_a_question():
+    """That option in the owner's language: the founder's one key for a false card."""
+    import of_locale
+    return of_locale.tr(NOT_A_QUESTION)
+
+
+def is_not_a_question(text):
+    """An option or an answer that is that key, in English or in the owner's language (cards filed before the locale
+    layer carry it in his language): the judge drops it from the model's options, lab-asks-v0 counts it."""
+    t = " ".join(str(text or "").lower().split())
+    return any(t.startswith(k) for k in {NOT_A_QUESTION, not_a_question().lower()})
 
 
 def file_pane_ask(c, verdict):
@@ -504,8 +530,8 @@ def file_pane_ask(c, verdict):
     of effort or duration in its words is cut from the card (bin/of_ask_text.py), not refused. Returns (ask id, to)."""
     to, did, p = route(c.get("position"))
     import of_ask_text  # no estimate of effort or duration on his card (founder, 2026-11-11): cut, never refused
-    opts = [of_ask_text.drop(o) for o in (verdict.get("options") or []) if o.strip().lower() != NOT_A_QUESTION]
-    opts = [o for o in opts if o][:8] + [NOT_A_QUESTION]
+    opts = [of_ask_text.drop(o) for o in (verdict.get("options") or []) if not is_not_a_question(o)]
+    opts = [o for o in opts if o][:8] + [not_a_question()]
     text = c.get("text") or ""
     question = verdict.get("question") or text[-300:]
     cut = of_ask_text.estimates(question) + [e for o in verdict.get("options") or [] for e in of_ask_text.estimates(o)]

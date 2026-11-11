@@ -337,7 +337,7 @@ def cmd_cards(args):
     n = collections.Counter()
     for a in cards:
         st = a["state"]
-        if st == "answered" and answer.get(a["event_id"], "").strip().lower().startswith(of_judge.NOT_A_QUESTION):
+        if st == "answered" and of_judge.is_not_a_question(answer.get(a["event_id"], "")):
             st = "not a question"
         n[st] += 1
     closed = len(cards) - n["open"]

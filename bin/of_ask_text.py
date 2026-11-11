@@ -95,6 +95,12 @@ def _clause(text, start, end, width=80):
     return before, after[:m.start()] if m else after
 
 
+# What people type, used by the asks popup (bin/of_asks_tui.py), kept here with the other patterns of the founder's
+# words so the screens hold English only (AGENTS.md, Language; organic-framework 5462bab):
+RECOMMENDED = re.compile(r"(?i)рекоменд|recommend")  # the option the asker recommends, copied by c
+YES_KEYS = "yYдД"  # the keys that confirm "Done?" for a task, on a Latin or a Russian keyboard layout
+
+
 def estimates(text):
     """The phrases of `text` that estimate effort or duration, in order (the module's docstring has the marks)."""
     return [(text or "")[a:b] for a, b in _spans(text or "")]
