@@ -37,6 +37,7 @@ FAKE_OP = textwrap.dedent('''\
 
 REGISTRY = """
 organization: t
+plugins: {{secret_stores: {{name: onepassword, chosen: ask00001}}}}
 credentials:
   grafana-viewer:
     ref: "op://t-obs/grafana-viewer/credential"
@@ -266,6 +267,13 @@ class ClientTest(unittest.TestCase):
         problems = of_credentials.check(self.orgs)
         self.assertTrue(any("not one of t's" in p for p in problems), problems)
         self.assertTrue(any("legacy-file: needs ref" in p for p in problems), problems)
+        for line, why in (('plugins: {secret_stores: {name: keychain, chosen: ask00002}}', "chose keychain"),
+                          ('plugins: {}', "has chosen no secret store")):
+            text = REGISTRY.format(reader="S1").replace("plugins: {secret_stores: {name: onepassword, chosen: "
+                                                        "ask00001}}", line)
+            with open(os.path.join(self.tmp.name, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write(text)
+            self.assertTrue(any(why in p for p in of_credentials.check(self.orgs)), line)
 
 
 if __name__ == "__main__":

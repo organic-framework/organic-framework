@@ -245,6 +245,50 @@ def authorities_problems(rel, entries):
     return out
 
 
+def secret_stores():
+    """{scheme: (name, class)} of the secret_stores implementations found (docs/agent-secrets.md §13.3)."""
+    import of_family
+    out = {}
+    for name in of_family.implementations("secret_stores"):
+        try:
+            cls = of_family.implementation("secret_stores", name)
+        except Exception:  # noqa: BLE001 - a store that cannot load names no scheme
+            continue
+        if getattr(cls, "SCHEME", None):
+            out[cls.SCHEME] = (name, cls)
+    return out
+
+
+def ref_problem(ref, doc, org):
+    """Why a credential's `ref` is wrong, or None (docs/agent-secrets.md §13; docs/registry.md, Plugins): it is
+    `<store>://<path>` of a store OF knows, the organization chose that store (`plugins: {secret_stores: …}`; with
+    none chosen a credential stays a file), the store's own parser accepts it, and its container is the
+    organization's (`<org>-<system>`) where the store has containers per organization."""
+    import of_family
+    if not isinstance(ref, str) or "://" not in ref:
+        return "ref must be a reference <store>://<path>, never a value"
+    stores = secret_stores()
+    scheme = ref.split("://", 1)[0]
+    if scheme not in stores:
+        return f"ref's store {scheme}:// is not one OF knows ({', '.join(f'{s}://' for s in sorted(stores))})"
+    name, cls = stores[scheme]
+    chosen = of_family.choice("secret_stores", doc, machine={})[0]
+    if not chosen:
+        return (f"{org} has chosen no secret store (plugins: secret_stores in its registry); until it does, a "
+                "credential is a file (paths)")
+    if name != chosen:
+        return f"ref is a {name} reference, and {org} chose {chosen} (plugins: secret_stores)"
+    try:
+        cls.parse(ref)
+    except Exception as e:  # noqa: BLE001 - the store's own words on its reference form
+        return f"ref: {e}"
+    if getattr(cls, "ENFORCES_BOUNDARY", False):  # its containers are the organization's: <org>-<system>
+        container = str(cls.parse(ref)[0])
+        if not container.lower().startswith(f"{org.lower()}-"):
+            return f"ref's container {container!r} is not one of {org}'s (<org>-<system>)"
+    return None
+
+
 def check(orgs_file=None):
     """Problems in the catalogues, as `of registry check` prints them."""
     import yaml
@@ -278,17 +322,13 @@ def check(orgs_file=None):
                 problems.append(f"{where}: not a mapping of paths, acts_as and keeper")
                 continue
             paths, ref = c.get("paths"), c.get("ref")
-            if ref is not None:  # docs/agent-secrets.md §5.1: 1Password's secret reference, never a value
-                import of_server_secrets
-                m = of_server_secrets.REF_RE.match(ref) if isinstance(ref, str) else None
-                if not m:
-                    problems.append(f"{where}: ref must be a secret reference op://<vault>/<item>/<field> in letters,"
-                                    " digits, - _ . and spaces")
-                elif not m.group(1).lower().startswith(f"{str(doc.get('organization') or org).lower()}-"):
-                    problems.append(f"{where}: ref's vault {m.group(1)!r} is not one of {org}'s (<org>-<system>)")
+            if ref is not None:  # docs/agent-secrets.md §13: <store>://<path> of the store the organization chose
+                why = ref_problem(ref, doc, str(doc.get("organization") or org))
+                if why:
+                    problems.append(f"{where}: {why}")
                 elif ref.lower() in refs:
                     problems.append(f"{where}: ref names the same item as credential {refs[ref.lower()]}")
-                refs.setdefault(ref.lower(), cid)
+                refs.setdefault(str(ref).lower(), cid)
             if c.get("rotate_days") is not None and not (isinstance(c["rotate_days"], int) and c["rotate_days"] > 0):
                 problems.append(f"{where}: rotate_days must be a whole number of days")
             if paths is None and ref is not None:
