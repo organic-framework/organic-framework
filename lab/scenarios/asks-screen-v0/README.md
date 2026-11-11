@@ -57,3 +57,14 @@ For the always-visible questions panel the founder asked for (a button that open
 - `herdr plugin pane open --plugin organic-framework --entrypoint asks --env OF_ASKS_OF=<the build's bin/of>`,
   run as a plain process, answered `ok` and opened the build as a popup (a second process of the screen); Esc
   closed it. The plugin was a copy linked into the lab herdr only.
+
+## The questions panel (2026-11-12, build c4c7743, `panel.script`, `panel-click.script`)
+
+`of asks --panel` in a 131 x 20 pane (the lab's `asks.yaml` set `popup_open` to `herdr plugin pane open --plugin
+organic-framework --entrypoint asks --env OF_ASKS_OF=<the build's bin/of>`):
+- four lines: the streams with their counts, the longest wait with its asker and card, the first card, and the
+  button "Open the questions" with the key hint;
+- a mouse click on the button opened the questions popup (a process of `asks --watch` appeared); Esc closed it.
+
+**Finding:** the key hint reads `~/.config/herdr/config.toml` as written and ignores `XDG_CONFIG_HOME`, which herdr
+honours, so in the lab it said "Ctrl-B, then a" although the lab's binding for the build is prefix+shift+a.

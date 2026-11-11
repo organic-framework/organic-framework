@@ -1,0 +1,8 @@
+# asks-screen-v0: a mouse click on the panel's button opens the questions popup (popup_open in the lab's asks.yaml)
+click 35 6
+sleep 4
+run pgrep -fl "asks-inbox/bin/of asks --watch" | wc -l > $OUTDIR/71-popup-procs.txt
+keys \x1b
+sleep 2
+run pgrep -fl "asks-inbox/bin/of asks --watch" | wc -l > $OUTDIR/72-after-esc.txt
+read 73-panel-after

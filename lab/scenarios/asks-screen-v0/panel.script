@@ -1,0 +1,6 @@
+# asks-screen-v0: the always-visible questions panel (of asks --panel) in a pane; its size first, for the click
+run herdr --session ax pane run w1:p1 "stty size > $OUTDIR/size.txt"
+sleep 1
+run herdr --session ax pane run w1:p1 "env OF_AUTOMATION=1 /opt/homebrew/bin/python3 $ASKS_OF asks --panel"
+sleep 6
+read 70-panel
