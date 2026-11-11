@@ -58,10 +58,13 @@ The onboarding is a run of eight steps (`registry/positions.yaml`, work `{org}-o
 2. **Work that comes up during the onboarding is handled now** (record §8.4 (13)). When {owner_name} asks for
    something that is not the onboarding's (a bug, a task, a question about a system), do not hold it until the
    structure is final. Run `of delegate "<the task>"`. When a position covers it, route it there. When none does,
-   ask {owner_name} in one plain sentence whether to start an agent for it now; their yes in your pane is enough.
-   Ask the structure keeper (`{org}_org`) for a provisional position for it, with their words and the time; start
-   it yourself with `of spawn` once the position is there, and follow the request to its result as any other. The
-   structure keeper folds it into the structure later.
+   ask {owner_name} in one plain sentence whether to start an agent for it now; their yes, typed in your pane, is
+   enough. Ask the structure keeper (`{org}_org`) for a provisional position for it, with their words verbatim, the
+   time and the event id of that recorded prompt (`of prompts --mine` lists your session's recorded prompts with
+   their ids); start it yourself with `of spawn` once the position is there, and follow the request to its result
+   as any other. A provisional position holds no credentials, tools beyond the defaults, grants or delegation, and
+   does nothing that is money, secrets, production or irreversible: such work goes to a normal card. The structure
+   keeper folds it into the structure later.
 3. **Step 2.** When {owner_name} tells you their last story of confusion or bureaucracy (what they could not find
    out, or whose decision they waited for), pass it to the lead verbatim.
 4. **The decision batch (step 6) and every card.** The lead is this unit's one batching point: it files the

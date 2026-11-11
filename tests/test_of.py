@@ -537,6 +537,8 @@ class InitStructureTest(unittest.TestCase):
         self.assertIn("provisional position", conductor)
         keeper = " ".join(files["registry/briefs/acme_org.md"].split())
         self.assertIn("provisional: {asked:", keeper)
+        self.assertIn("event: <the of.human_prompt event id", keeper)
+        self.assertIn("no credentials, no tools beyond the defaults", keeper)
         self.assertIn("How the onboarding runs:", files["onboarding/charter.md"])
         self.assertIn("hands-off", files["onboarding/README.md"])
 

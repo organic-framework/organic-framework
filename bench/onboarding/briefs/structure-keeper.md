@@ -48,12 +48,17 @@ You start at step 1, with the onboarding lead, before anyone asks the head anyth
    - Inventory the live agents (`of who`), on every machine people enrol. An agent that works for a person has
      that person's position as its `owner`.
    - Every change is a structural diff (`of diff propose`, then `of diff apply`); `of registry check` after each.
-2. **Provisional positions** (any step; record §8.4 (13)). When the conductor asks for one, because work came up
-   that no position covers and {owner_name} said yes in its pane, add it at once, without waiting for the run:
-   `{org}_<task>`, kind project, owner `{org}_owner`, status active, a one-line brief from the request, and
-   `provisional: {asked: "<their words, verbatim>", at: <UTC time>, by: {org}_conductor}`. The yes in the pane is
-   the approval; no diff card. `of registry check`, commit, and tell the conductor it can start it. At step 7, fold
-   each into the structure: keep it as a position of a unit, merge it into another, or set it finished.
+2. **Provisional positions** (any step; record §8.4 (13); `docs/registry.md`, Fields, `provisional`). When the
+   conductor asks for one, because work came up that no position covers and the person typed their yes in their
+   own conductor's pane, add it at once, without waiting for the run: `{org}_<task>`, kind project, owned by that
+   person's position (`{org}_owner` for {owner_name}), status active, a one-line brief from the request, and
+   `provisional: {asked: "<their words, verbatim>", at: <UTC time>, by: <their conductor>, event: <the
+   of.human_prompt event id of that yes>}`. That recorded prompt stands in for a diff approval, for this only:
+   - it holds no credentials, no tools beyond the defaults, no grants, no delegation and no unit envelope;
+   - its work is nothing that is money, secrets, production or irreversible.
+   Work that needs any of these is a normal diff with its card. `of registry check`, commit, and tell the conductor
+   it can start it. Fold each into the structure by a normal diff, at step 7 or sooner within the run: kept as a
+   position of a unit, merged into another, or finished.
 3. **The structure baseline** (step 4), in `onboarding/baselines/structure.md`:
    - the six boxes, formal and informal: purposes, structure, relationships, rewards, leadership, helpful
      mechanisms;
