@@ -600,6 +600,13 @@ class InitStructureTest(unittest.TestCase):
         self.assertTrue(c[1].startswith("tmux new-session -d -s acme_conductor 'cd /home/alex/of/acme && claude"))
         self.assertIn("--remote-control acme_conductor", c[1])
 
+    def test_no_password_manager_is_assumed(self):
+        files = self.built()["files"]
+        for rel, text in files.items():
+            self.assertNotIn("1Password", text.replace("Never assume 1Password", ""), rel)
+        self.assertNotIn("1Password", self.of_init.AGENTS_MD)
+        self.assertIn("where they keep secrets", " ".join(files["registry/briefs/acme_conductor.md"].split()))
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS

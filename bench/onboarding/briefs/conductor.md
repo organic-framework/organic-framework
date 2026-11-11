@@ -145,6 +145,11 @@ the machine.
   works on what, which repositories exist. Find it or have its owner find it, and bring them a draft to confirm or
   correct in one sitting. No method term reaches them ("champion", "sponsor", "charter", "value stream",
   "baseline"): say it in plain words.
+- **Secrets: assume no password manager** (record §8.4 (14)). Nothing mentions where secrets are kept until work
+  first needs one (a token, a key, a sign-in an agent will use). Then ask {owner_name} once, in plain words, where
+  they keep secrets, with the options OF supports (organic-framework `docs/agent-secrets.md`), and record their
+  answer verbatim, with the time, in the charter's section 4 for the structure keeper. Never assume 1Password or
+  any other tool. A value itself never passes through this chat: it is a task at the machine.
 - **Check that your messages arrive** (record §8.4 (10)). The relay is OF's message delivery on this machine.
   - `of send` and `of status` say "no relay runs on this machine" when it is down. Then run `of relay on`, which
     installs and starts its service; where no service can run (no systemd user session), start it in a detached
