@@ -180,7 +180,9 @@ Rules:
 - **A person who leaves** gets `status: left`. Each of their positions gets a new holder or is closed (`swap_holder` or `close` diffs). Nothing about them is deleted from the history.
 - **People outside the organization** who are not on OF stay `external:<name>` (doers of works, `governed_by`).
 - **Their traces:** a person's machine ships the typed tier. Raw traces go only with that person's consent (docs/server-several-machines.md §4.7).
-- `of registry check` validates ids, `status`, that every `holder.person` names a listed person, and that a person's machine ids are enrolled (`of_platform`).
+- **Who does what needs evidence** (the founder, 2026-11-11 15:01Z: "откуда вообще эта информация взялась? Там же по коммитам, если посмотреть, будет видно, что не он занимается"; a user organization's registry had paraphrased his words "everything except Solana goes into our structure" as "a colleague keeps the Solana bots"). Every claim that a person holds a position, keeps or decides a system, or is a work's doer (`holder.person`, `keeper`, `governed_by: external:<who>`, `doers: [external:…]`) carries `evidence:` beside it: the authorship it rests on (commits or merged PRs in the system's repositories, with the window, for example `"git authors 2026-10-01..11-10: 41 of 47 commits"`), or the person's own word or the owner's word as an ask id. The owner's words are quoted verbatim, never paraphrased.
+- **The people map comes before any person's position.** The structure keeper builds it from the repositories (authors by system, by `of import git` and `of import github`) and has the owner confirm it on one card before a diff gives a person a position.
+- `of registry check` validates ids, `status`, that every `holder.person` names a listed person, and that a person's machine ids are enrolled (`of_platform`). It warns on a person-held claim without `evidence:` (`of_platform`).
 
 ## Works (2026-11-06, docs/works.md step 1)
 
