@@ -1163,7 +1163,15 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
 
 # Families whose choice waits until the work needs it (the founder, 2026-11-11 ~18:56Z: where secrets are kept is
 # chosen as late as possible, when the first secret is needed; the conductor asks then).
-PLUGINS_LATER = ("secrets",)
+PLUGINS_LATER = ("secret_stores",)  # of_family's name since b633781; `secrets` is its alias (of_family.canonical)
+
+
+def _family(name):
+    try:
+        import of_family
+        return of_family.canonical(name)
+    except (ImportError, AttributeError):
+        return name
 
 
 def plugin_proposals(propose=None):
@@ -1175,7 +1183,7 @@ def plugin_proposals(propose=None):
             propose = of_family.propose
         except ImportError:
             return []
-    return [line for line in propose() if line.split(":", 1)[0].strip() not in PLUGINS_LATER]
+    return [line for line in propose() if _family(line.split(":", 1)[0].strip()) not in PLUGINS_LATER]
 
 
 def write_plugin_choices(choices, path=None, check=None):
@@ -1195,7 +1203,7 @@ def write_plugin_choices(choices, path=None, check=None):
         family, name = family.strip(), name.strip()
         if not sep or not family or not name:
             raise ValueError(f"--plugin takes family=name, not {item!r}")
-        if family in PLUGINS_LATER:
+        if _family(family) in PLUGINS_LATER:
             raise ValueError(f"{family} is the organization's choice, made when it first needs one, on its owner's card, "
                              f"and recorded in its registry as plugins: {family} with the ask id (docs/registry.md, "
                              "Plugins; docs/agent-secrets.md §13.2); of init does not choose it for this machine")
