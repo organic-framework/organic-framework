@@ -419,8 +419,8 @@ class PanelTest(ScreenTest):
         import curses
         data = [item("A", "First plain question?", since="2026-11-10T08:00:00Z"),
                 item("C", "Pay 90 USD to the operator?"), item("D", "Log in to the console", task=True)]
-        self.mice = [(0, 3, 3, 0, curses.BUTTON1_PRESSED)]
-        box, ran = self.panel([0.05, curses.KEY_MOUSE, 0.05], data, open_cmd=["herdr-open", "asks"])
+        self.mice = [(0, 3, 3, 0, curses.BUTTON1_PRESSED), (0, 3, 3, 0, curses.BUTTON1_RELEASED)]
+        box, ran = self.panel([0.05, curses.KEY_MOUSE, curses.KEY_MOUSE, 0.05], data, open_cmd=["herdr-open", "asks"])
         frame = self.text(self.frames[0])
         self.assertIn("● Money and production 1", frame)
         self.assertIn("● For your hands 1", frame)
@@ -438,7 +438,7 @@ class PanelTest(ScreenTest):
         def popup():
             calls.append(1)
             return (True, None) if len(calls) == 1 else (False, "ui_busy")
-        box = P.Panel(self.scr([0.05, 10, 0.05, ord("o"), 0.05]), lambda: ([("Waiting on you", [])], {}),
+        box = P.Panel(self.scr([0.3, 10, 0.3, 0.3, ord("o"), 0.3]), lambda: ([("Waiting on you", [])], {}),
                       initial=([], {}), keys="Ctrl-B, then a", popup=popup)
         box.run()
         self.assertEqual(len(calls), 2)
@@ -456,8 +456,18 @@ class PanelTest(ScreenTest):
         finally:
             T.REFRESH_S = saved
 
+    def test_typed_text_opens_nothing(self):
+        """of_herdr, 2026-11-12: a restart typed into the panel's pane ('o' and Enter in a command) opened the popup."""
+        import of_asks_panel as P
+        calls = []
+        box = P.Panel(self.scr([0.3] + [ord(c) for c in "do of asks"] + [10, 0.3, 10, ord("o"), 0.3]),
+                      lambda: ([("Waiting on you", [])], {}), initial=([], {}),
+                      popup=lambda: calls.append(1) or (True, None))
+        box.run()
+        self.assertEqual(calls, [])
+
     def test_without_an_opener_the_button_says_the_keys(self):
-        box, ran = self.panel([0.05, 10, 0.05], [item("A", "First plain question?")])
+        box, ran = self.panel([0.3, 10, 0.3], [item("A", "First plain question?")])
         self.assertEqual(ran, [])
         self.assertTrue(any("Press Ctrl-B, then a to open them." in self.text(f) for f in self.frames))
 
@@ -473,7 +483,7 @@ class PanelTest(ScreenTest):
         import curses
         data = [item(c, f"Plain question {c}?", since=f"2026-11-11T0{i}:00:00Z", who=f"of_{c.lower()}")
                 for i, c in enumerate("ABCDEF", 1)] + [item("M", "Pay 90 USD to the operator?", who="of_m")]
-        self.mice = [(0, 5, 3, 0, curses.BUTTON1_PRESSED)]  # a click on a card row opens the questions too
+        self.mice = [(0, 5, 3, 0, curses.BUTTON1_RELEASED)]  # a click on a card row opens the questions too
         box, ran = self.panel([0.05, curses.KEY_MOUSE, 0.05], data, size=(12, 90), open_cmd=["open"])
         rows = [t for (y, x), t in sorted(self.frames[-1].items())]
         self.assertIn("● Money and production 1", rows)
