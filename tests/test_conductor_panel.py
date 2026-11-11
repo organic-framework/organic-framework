@@ -12,6 +12,8 @@ import of_events  # noqa: E402
 import of_store  # noqa: E402
 import of_views  # noqa: E402
 
+panel.LANG = "ru"  # these tests read the founder's panel, in Russian; LanguageTest covers English
+
 T0 = panel._ts("2026-11-10T20:00:00Z")
 LEDGER = {"requests": [
     {"id": "R1", "title_ru": "Онбординг Acme", "asked_at": "2026-11-10T19:20Z", "state": "open",
@@ -53,7 +55,7 @@ class PanelTest(unittest.TestCase):
         self.ev("handover_delivered", {"id": hid, "note": "Отчёт готов"}, "2026-11-10T19:31:54Z")
         self.ev("state_declared", {"state": "waiting", "waiting_on": "founder"}, "2026-11-10T19:32:00Z",
                 position="of_onboarding-research")
-        cache = {"note:" + panel._key("Отчёт готов"): "Отчёт готов, его проверяет дирижёр."}
+        cache = {"note:" + panel._key("ru", "Отчёт готов"): "Отчёт готов, его проверяет дирижёр."}
         text = panel.render(LEDGER, self.conn, now=T0, width=120, color=False, cache=cache)
         self.assertIn("Твои просьбы", text)
         self.assertIn("● Онбординг Acme", text)
@@ -145,6 +147,25 @@ class PanelTest(unittest.TestCase):
         self.assertIn("panel 'extra' is not placed", "\n".join(of_views.check(
             dict(v, panels={"requests": "x", "extra": "y"}), {"of_conductor"})))
         self.assertEqual(of_views.pinned_positions([v]), {"of_conductor"})
+
+
+class LanguageTest(unittest.TestCase):
+    """of_conductor and of_onboarding, 2026-11-11: a new organization's panel follows owner.yaml (English by default)
+    and reads the ledger's `title` (the conductor brief no longer writes title_ru)."""
+
+    def tearDown(self):
+        panel.LANG = "ru"
+
+    def test_english_by_default_and_the_title_field(self):
+        panel.LANG = "en"
+        self.assertEqual(panel.ago(None, 0), "—")
+        self.assertEqual(panel.ago(100, 100 + 600), "10 min ago")
+        self.assertEqual(panel._title({"title": "Fix the build"}), "Fix the build")
+        self.assertEqual(panel._title({"title_ru": "Старое"}), "Старое")
+        self.assertEqual(panel._title({}), "Untitled")
+        panel.LANG = "ru"
+        self.assertEqual(panel._title({}), "Без названия")
+        self.assertEqual(panel.ago(100, 100 + 600), "10 мин назад")
 
 
 if __name__ == "__main__":

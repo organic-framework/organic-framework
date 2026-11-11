@@ -1,5 +1,6 @@
 """The conductor's panel (hand-over a8ee7e96 from of_conductor, 2026-11-10): a small pane in its pinned view that
-refreshes itself and shows the founder, in Russian, each open request of the conductor's ledger with its owners,
+refreshes itself and shows the owner, in the language of ~/.config/of/owner.yaml (en by default; ru on the founder's
+machine), each open request of the conductor's ledger with its owners,
 each thread's live state, its last movement and a stuck flag.
 
 The ledger is of_conductor's (`~/.local/state/of/conductor/requests.yaml`, its schema in the file's header); the
@@ -29,14 +30,62 @@ STUCK_S = 2 * 3600
 ACCEPT_S = 3600
 CLOSED_SHOWN_S = 6 * 3600
 
+LANG = None  # the owner's language, from ~/.config/of/owner.yaml (of_spawn.owner_language); tests set it
+
+
+def lang():
+    """en or ru (of_conductor, 2026-11-11: a new organization's panel spoke Russian to an owner it should not)."""
+    global LANG
+    if LANG is None:
+        try:
+            import of_spawn
+            LANG = of_spawn.owner_language()
+        except Exception:  # noqa: BLE001
+            LANG = "en"
+    return LANG
+
+
+def L(ru, en):
+    return ru if lang() == "ru" else en
+
+
+def LANG_NAME():
+    return "Russian" if lang() == "ru" else "English"
+
+
+HANDOVER_EN = {"proposed": "handed over, not accepted yet", "offered": "handed over, not accepted yet",
+               "accepted": "accepted, in progress", "blocked": "blocked", "delivered": "delivered, awaiting review",
+               "verified": "done, checked", "closed": "done", "rejected": "delivery rejected, being redone",
+               "returned": "returned", "declined": "declined", "withdrawn": "withdrawn", "expired": "expired"}
+STATE_EN = {"working": "working", "waiting": "waiting", "idle": "free", "done": "finished"}
+LEDGER_EN = {"routed": "handed over", "accepted": "accepted", "working": "in progress", "delivered": "delivered",
+             "done": "done", "declined": "declined"}
+PLAIN_HANDOVER_EN = {"proposed": "handed over, not taken up yet", "offered": "handed over, not taken up yet",
+                     "accepted": "taken up", "blocked": "hit an obstacle", "delivered": "done, awaiting review",
+                     "verified": "done", "closed": "done", "rejected": "redoing it after review",
+                     "returned": "gave the task back", "declined": "declined", "withdrawn": "the task was withdrawn",
+                     "expired": "the time to answer ran out"}
+KIND_EN = {"stuck": "stuck", "founder": "waiting on you", "working": "in progress", "start": "not started yet",
+           "done": "done"}
+
+
+def _d(ru, en):
+    return ru if lang() == "ru" else en
+
+
+def _title(r):
+    """The request's title: `title` (the onboarding package's conductor brief, 000c95a), else the older `title_ru`."""
+    return r.get("title") or r.get("title_ru") or L("Без названия", "Untitled")
+
+
 HANDOVER_RU = {"proposed": "передано, ждёт принятия", "offered": "передано, ждёт принятия",
                "accepted": "принято, в работе", "blocked": "заблокировано", "delivered": "сдано, ждёт проверки",
-               "verified": "готово, проверено", "closed": "готово", "rejected": "сдача отклонена, переделка",
+               "verified": "готово, проверено", "closed": L("готово", "done"), "rejected": "сдача отклонена, переделка",
                "returned": "возвращено", "declined": "отказ", "withdrawn": "отозвано", "expired": "просрочено"}
 DONE = {"verified", "closed", "done", "declined", "withdrawn"}
 STATE_RU = {"working": "работает", "waiting": "ждёт", "idle": "свободен", "done": "закончил"}
-LEDGER_RU = {"routed": "передано", "accepted": "принято", "working": "в работе", "delivered": "сдано",
-             "done": "готово", "declined": "отказ"}
+LEDGER_RU = {"routed": "передано", "accepted": "принято", "working": L("в работе", "in progress"), "delivered": "сдано",
+             "done": L("готово", "done"), "declined": "отказ"}
 
 
 def ledger_path():
@@ -69,12 +118,12 @@ def ago(t, now):
         return "—"
     s = max(0, int(now - t))
     if s < 90:
-        return "только что"
+        return L("только что", "just now")
     if s < 3600:
-        return f"{s // 60} мин назад"
+        return L(f"{s // 60} мин назад", f"{s // 60} min ago")
     if s < 86400:
-        return f"{s // 3600} ч {s % 3600 // 60:02d} мин назад"
-    return f"{s // 86400} дн назад"
+        return L(f"{s // 3600} ч {s % 3600 // 60:02d} мин назад", f"{s // 3600} h {s % 3600 // 60:02d} min ago")
+    return L(f"{s // 86400} дн назад", f"{s // 86400} days ago")
 
 
 def _position(owner):
@@ -116,9 +165,9 @@ def owner_now(conn, position):
     t = None
     if row:
         p = json.loads(row[1] or "{}")
-        st = STATE_RU.get(p.get("state"), p.get("state"))
+        st = _d(STATE_RU, STATE_EN).get(p.get("state"), p.get("state"))
         if p.get("state") == "waiting" and p.get("waiting_on"):
-            st += f" ({'основателя' if p['waiting_on'] in ('founder', 'owner') else p['waiting_on']})"
+            st += f" ({L('основателя', 'the founder') if p['waiting_on'] in ('founder', 'owner') else p['waiting_on']})"
         note, t = p.get("reason") or p.get("note"), _ts(row[0])
     return st, note, t, _ts(turn[0]) if turn else None
 
@@ -162,7 +211,7 @@ def open_cards(conn, ids):
 
 PLAIN_HANDOVER = {"proposed": "передали, ещё не взял в работу", "offered": "передали, ещё не взял в работу",
                   "accepted": "взял в работу", "blocked": "упёрся в препятствие",
-                  "delivered": "сделал, ждёт проверки", "verified": "готово", "closed": "готово",
+                  "delivered": "сделал, ждёт проверки", "verified": L("готово", "done"), "closed": L("готово", "done"),
                   "rejected": "переделывает после проверки", "returned": "вернул задачу", "declined": "отказался",
                   "withdrawn": "задачу отозвали", "expired": "срок ответа вышел"}
 # Apple's system colors in 24-bit (the pane has COLORTERM=truecolor): the look the founder liked, in the text itself
@@ -171,9 +220,8 @@ TC = {"red": "38;2;255;69;58", "purple": "38;2;191;90;242", "amber": "38;2;255;2
 KIND_ICON = {"stuck": ("▲", "1;" + TC["red"]), "founder": ("◆", "1;" + TC["purple"]), "working": ("●", TC["amber"]),
              "start": ("○", TC["grey"]), "done": ("●", TC["green"])}
 KIND_ORDER = {"stuck": 0, "founder": 1, "working": 2, "start": 3, "done": 4}
-TRANSLATE_SYSTEM = ("You write for a busy business owner who knows nothing about software or AI agents. Russian "
-                    "only, plain everyday words, no jargon, no English terms, no ids, hashes, file names or commit "
-                    "numbers.")
+TRANSLATE_SYSTEM = ("You write for a busy business owner who knows nothing about software or AI agents. {lang} "
+                    "only, plain everyday words, no jargon, no ids, hashes, file names or commit numbers.")
 
 
 def thread_view(conn, th, now, asked=None):
@@ -182,27 +230,27 @@ def thread_view(conn, th, now, asked=None):
     owner = th.get("owner") or "?"
     pos = _position(owner)
     via, lstate = th.get("via"), th.get("state")
-    said, last, note, kind = LEDGER_RU.get(lstate, lstate or "?"), None, None, "working"
+    said, last, note, kind = _d(LEDGER_RU, LEDGER_EN).get(lstate, lstate or "?"), None, None, "working"
     finished = lstate in DONE or bool(th.get("result"))
     waiting_accept = False
     if via == "handover":
         hs, ht, hnote = handover_state(conn, str(th.get("handover") or ""))
         if hs:
-            said, last, note = PLAIN_HANDOVER.get(hs, hs), ht, hnote
+            said, last, note = _d(PLAIN_HANDOVER, PLAIN_HANDOVER_EN).get(hs, hs), ht, hnote
             finished = finished or hs in DONE
             waiting_accept = hs in ("proposed", "offered")
     elif via == "message":
         at = message_answer(conn, th.get("message"), owner)
-        said, last = ("ответил", at) if at else ("написали, ещё не ответил", None)
+        said, last = (L("ответил", "answered"), at) if at else (L("написали, ещё не ответил", "written to, no answer yet"), None)
         finished = finished or bool(at and lstate in ("done", "delivered"))
         waiting_accept = not at  # unless it moved since the request (below): then it works on it
     elif via == "records":
-        said, finished = "ответили по записям, никого не дёргали", True
+        said, finished = L("ответили по записям, никого не дёргали", "answered from the records, nobody disturbed"), True
     who = owner_now(conn, pos)
     moves = [x for x in (last, who[2], who[3]) if x]
     last = max(moves) if moves else None
     if via == "message" and waiting_accept and asked and last and last > asked:
-        waiting_accept, said = False, "работает, ещё не ответил"
+        waiting_accept, said = False, L("работает, ещё не ответил", "working, no answer yet")
     open_n, all_n = open_cards(conn, th.get("asks") or [])
     if finished:
         kind = "done"
@@ -245,7 +293,7 @@ def ask_model(prompt, schema, runner=subprocess.run):
     import of_capacity
     import of_case
     argv = [of_capacity.claude_bin(), "-p", prompt, "--model", "haiku", "--tools", "", "--system-prompt",
-            TRANSLATE_SYSTEM, "--json-schema", json.dumps(schema), "--output-format", "json",
+            TRANSLATE_SYSTEM.format(lang=LANG_NAME()), "--json-schema", json.dumps(schema), "--output-format", "json",
             "--no-session-persistence", "--settings", '{"disableAllHooks": true}', "--strict-mcp-config",
             "--disable-slash-commands", "--max-turns", "3"]
     try:
@@ -264,20 +312,20 @@ def fill_plain(views, positions, cache, runner=subprocess.run):
     want_names = {}
     for v in views:
         p = by.get(v["pos"]) or {}
-        k = "name:" + _key(v["pos"], p.get("summary"), p.get("contribution"))
+        k = "name:" + _key(lang(), v["pos"], p.get("summary"), p.get("contribution"))
         if k not in cache:
             want_names[k] = {"id": k, "position": v["pos"], "summary": p.get("summary") or "",
                              "what_it_does": " ".join(str(p.get("contribution") or "").split())[:400]}
     want_notes = {}
     for v in views:
         if v.get("note"):
-            k = "note:" + _key(v["note"])
+            k = "note:" + _key(lang(), v["note"])
             if k not in cache:
                 want_notes[k] = {"id": k, "text": " ".join(str(v["note"]).split())[:600]}
     added = False
     if want_names:
         got = ask_model(
-            "For each AI agent below, write a short Russian job title (2 to 4 words) that a person outside the work "
+            f"For each AI agent below, write a short {LANG_NAME()} job title (2 to 4 words) that a person outside the work "
             "understands, like a role in an ordinary company. Return the id with it.\n"
             + json.dumps(list(want_names.values()), ensure_ascii=False),
             {"type": "object", "required": ["items"], "additionalProperties": False, "properties": {"items": {
@@ -290,7 +338,7 @@ def fill_plain(views, positions, cache, runner=subprocess.run):
                 added = True
     if want_notes:
         got = ask_model(
-            "Each text below is an AI agent's note on what it is doing. Rewrite each as ONE short Russian sentence "
+            f"Each text below is an AI agent's note on what it is doing. Rewrite each as ONE short {LANG_NAME()} sentence "
             "(at most 90 characters) saying what happens now, in plain words for someone outside the work. Drop "
             "ids, hashes, file names and technical detail. Return the id with it.\n"
             + json.dumps(list(want_notes.values()), ensure_ascii=False),
@@ -307,11 +355,11 @@ def fill_plain(views, positions, cache, runner=subprocess.run):
 
 def plain_name(v, positions, cache):
     p = next((x for x in positions if x["name"] == v["pos"]), {})
-    return cache.get("name:" + _key(v["pos"], p.get("summary"), p.get("contribution"))) or v["pos"]
+    return cache.get("name:" + _key(lang(), v["pos"], p.get("summary"), p.get("contribution"))) or v["pos"]
 
 
 def plain_note(v, cache):
-    return cache.get("note:" + _key(v["note"])) if v.get("note") else None
+    return cache.get("note:" + _key(lang(), v["note"])) if v.get("note") else None
 
 
 def views_of(ledger, conn, now):
@@ -333,18 +381,19 @@ def render(ledger, conn, now=None, width=None, color=True, positions=(), cache=N
     width = max(60, width or shutil.get_terminal_size((100, 40)).columns)
     cache = cache if cache is not None else {}
     c = (lambda code, s: f"\033[{code}m{s}\033[0m") if color else (lambda code, s: s)
-    title = c("1;" + TC["text"], "Твои просьбы") + c(TC["dim"], f"   ·   что команда делает по ним   ·   обновлено "
-                                                                f"{time.strftime('%H:%M', time.localtime(now))}")
+    title = c("1;" + TC["text"], L("Твои просьбы", "Your requests")) + c(TC["dim"], L("   ·   что команда делает по ним   ·   обновлено ",
+                                                                  "   ·   what the team is doing about them   ·   updated ")
+                                                                + time.strftime('%H:%M', time.localtime(now)))
     if ledger.get("error"):
-        return "\n".join([title, "", c("33", "Не получается прочитать список просьб дирижёра.")])
+        return "\n".join([title, "", c("33", L("Не получается прочитать список просьб дирижёра.", "Cannot read the conductor's list of requests."))])
     rows = views_of(ledger, conn, now)
     if not rows:
-        return "\n".join([title, "", "Открытых просьб нет."])
+        return "\n".join([title, "", L("Открытых просьб нет.", "No open requests.")])
     n = {k: sum(1 for _, kind, _ in rows if kind == k) for k in KIND_ORDER}
     pill = lambda col, k, lab: c(TC[col] if k else TC["soft"], "●") + " " + c("1;" + TC["text"], str(k)) + " " + \
         c(TC["dim"], lab)  # noqa: E731
-    summary = [pill("amber", n["working"] + n["start"], "в работе"), pill("purple", n["founder"], "ждут тебя"),
-               pill("red", n["stuck"], "застряли"), pill("green", n["done"], "готово недавно")]
+    summary = [pill("amber", n["working"] + n["start"], L("в работе", "in progress")), pill("purple", n["founder"], L("ждут тебя", "waiting on you")),
+               pill("red", n["stuck"], L("застряли", "stuck")), pill("green", n["done"], L("готово недавно", "done lately"))]
     lines = [title, "", "     ".join(summary), c(TC["soft"], "─" * min(width, 100))]
     wrap = lambda s, ind: textwrap.wrap(s, width=max(30, min(width, 100) - ind), initial_indent=" " * ind,  # noqa: E731
                                         subsequent_indent=" " * ind)
@@ -355,7 +404,7 @@ def render(ledger, conn, now=None, width=None, color=True, positions=(), cache=N
         icon, col = KIND_ICON[kind]
         asked = _ts(r.get("asked_at"))
         when = time.strftime('%H:%M', time.localtime(asked)) if asked else ""
-        head = f"{icon} {r.get('title_ru') or 'Без названия'}"
+        head = f"{icon} {_title(r)}"
         lines.append("")
         lines.append(c(col, icon) + " " + c("1;" + TC["text"], head[2:]) + c(TC["soft"], f"   {when}" if when else ""))
         for t in tv:
@@ -365,23 +414,23 @@ def render(ledger, conn, now=None, width=None, color=True, positions=(), cache=N
             lines.append("    " + line)
             now_ru = plain_note(t, cache)
             if t["kind"] == "founder":
-                for q in t.get("card_titles") or ["вопрос в окне вопросов"]:
-                    lines += [c("1;" + TC["purple"], x) for x in wrap(f"Ждёт твоего ответа в окне вопросов: «{q}»", 6)]
+                for q in t.get("card_titles") or [L("вопрос в окне вопросов", "a question in the questions window")]:
+                    lines += [c("1;" + TC["purple"], x) for x in wrap(L(f"Ждёт твоего ответа в окне вопросов: «{q}»", f"Waits for your answer in the questions window: “{q}”"), 6)]
             if now_ru:
                 lines += [c(TC["dim"], x) for x in wrap(now_ru, 6)]
-            stamp = f"последнее движение {ago(t['last'], now)}"
+            stamp = L("последнее движение ", "last movement ") + ago(t['last'], now)
             if t["kind"] == "stuck":
-                stamp += " — ЗАСТРЯЛО, дирижёр разберётся"
+                stamp += L(" — ЗАСТРЯЛО, дирижёр разберётся", " — STUCK, the conductor will sort it out")
             lines.append(c("1;" + TC["red"] if t["kind"] == "stuck" else TC["soft"], "      " + stamp))
     if recent:
-        lines += ["", c(TC["dim"], "СДЕЛАНО ЗА ПОСЛЕДНИЕ ЧАСЫ")]
-        lines += [c(TC["green"], "  ●") + " " + c(TC["dim"], _cut(r.get('title_ru') or 'Без названия', min(width, 100) - 6))
+        lines += ["", c(TC["dim"], L("СДЕЛАНО ЗА ПОСЛЕДНИЕ ЧАСЫ", "DONE IN THE LAST HOURS"))]
+        lines += [c(TC["green"], "  ●") + " " + c(TC["dim"], _cut(_title(r), min(width, 100) - 6))
                   for r in recent[:5]]
         if len(recent) > 5:
-            lines.append(c(TC["soft"], f"    и ещё {len(recent) - 5}"))
-    lines += ["", c(TC["red"], "▲") + c(TC["soft"], " застряло   ") + c(TC["purple"], "◆") + c(TC["soft"], " ждёт тебя   ")
-              + c(TC["amber"], "●") + c(TC["soft"], " в работе   ") + c(TC["grey"], "○") + c(TC["soft"], " не начали   ")
-              + c(TC["green"], "●") + c(TC["soft"], " готово")]
+            lines.append(c(TC["soft"], L(f"    и ещё {len(recent) - 5}", f"    and {len(recent) - 5} more")))
+    lines += ["", c(TC["red"], "▲") + c(TC["soft"], L(" застряло   ", " stuck   ")) + c(TC["purple"], "◆") + c(TC["soft"], L(" ждёт тебя   ", " waiting on you   "))
+              + c(TC["amber"], "●") + c(TC["soft"], L(" в работе   ", " in progress   ")) + c(TC["grey"], "○") + c(TC["soft"], L(" не начали   ", " not started   "))
+              + c(TC["green"], "●") + c(TC["soft"], L(" готово", " done"))]
     return "\n".join(lines)
 
 
@@ -409,8 +458,8 @@ def _positions():
 APPLE = {"bg": "#000000", "card": "#111113", "line": "#232326", "text": "#f5f5f7", "dim": "#8e8e93",
          "green": "#30d158", "amber": "#ffd60a", "red": "#ff453a", "purple": "#bf5af2", "grey": "#636366"}
 KIND_DOT = {"stuck": "red", "founder": "purple", "working": "amber", "start": "grey", "done": "green"}
-KIND_RU = {"stuck": "застряло", "founder": "ждёт тебя", "working": "в работе", "start": "ещё не начали",
-           "done": "готово"}
+KIND_RU = {"stuck": "застряло", "founder": "ждёт тебя", "working": L("в работе", "in progress"), "start": "ещё не начали",
+           "done": L("готово", "done")}
 
 
 def _esc(s):
@@ -424,8 +473,8 @@ def render_html(ledger, conn, now=None, positions=(), cache=None, width=900, hei
     a = APPLE
     rows = [] if ledger.get("error") else views_of(ledger, conn, now)
     n = {k: sum(1 for _, kind, _ in rows if kind == k) for k in KIND_ORDER}
-    pills = [("в работе", n["working"] + n["start"], "amber"), ("ждут тебя", n["founder"], "purple"),
-             ("застряли", n["stuck"], "red"), ("готово недавно", n["done"], "green")]
+    pills = [(L("в работе", "in progress"), n["working"] + n["start"], "amber"), (L("ждут тебя", "waiting on you"), n["founder"], "purple"),
+             (L("застряли", "stuck"), n["stuck"], "red"), (L("готово недавно", "done lately"), n["done"], "green")]
     pill_html = "".join(
         f'<div class="pill"><span class="dot" style="background:{a[col] if cnt else a["grey"]}"></span>'
         f'<b>{cnt}</b><span>{_esc(lab)}</span></div>' for lab, cnt, col in pills)
@@ -440,9 +489,9 @@ def render_html(ledger, conn, now=None, positions=(), cache=None, width=900, hei
             now_ru = plain_note(t, cache)
             card_line = ""
             if t["kind"] == "founder":
-                card_line = "".join(f'<div class="ask">Ждёт твоего ответа в окне вопросов: «{_esc(q)}»</div>'
-                                    for q in (t.get("card_titles") or ["вопрос"]))
-            stuck = '<span class="stuck">застряло</span>' if t["kind"] == "stuck" else ""
+                card_line = "".join(L(f'<div class="ask">Ждёт твоего ответа в окне вопросов: «{_esc(q)}»</div>', f'<div class="ask">Waits for your answer in the questions window: “{_esc(q)}”</div>')
+                                    for q in (t.get("card_titles") or [L("вопрос", "a question")]))
+            stuck = L('<span class="stuck">застряло</span>', '<span class="stuck">stuck</span>') if t["kind"] == "stuck" else ""
             threads.append(
                 f'<div class="thread"><span class="dot" style="background:{a[KIND_DOT[t["kind"]]]}"></span>'
                 f'<div class="tb"><div class="who">{_esc(plain_name(t, positions, cache))}'
@@ -451,17 +500,17 @@ def render_html(ledger, conn, now=None, positions=(), cache=None, width=900, hei
                 + card_line + f'<div class="when">{_esc(ago(t["last"], now))}</div></div></div>')
         cards.append(
             f'<section class="card k-{kind}"><div class="head"><span class="dot big" '
-            f'style="background:{a[KIND_DOT[kind]]}"></span><h2>{_esc(r.get("title_ru") or "Без названия")}</h2>'
+            f'style="background:{a[KIND_DOT[kind]]}"></span><h2>{_esc(_title(r))}</h2>'
             f'<span class="asked">{time.strftime("%H:%M", time.localtime(asked)) if asked else ""}</span></div>'
             + "".join(threads) + "</section>")
     done_html = ""
     if recent:
-        done_html = ('<div class="done"><div class="label">Сделано за последние часы</div>'
+        done_html = (L('<div class="done"><div class="label">Сделано за последние часы</div>', '<div class="done"><div class="label">Done in the last hours</div>')
                      + "".join(f'<div class="dl"><span class="dot" style="background:{a["green"]}"></span>'
-                               f'{_esc(r.get("title_ru"))}</div>' for r in recent[:6]) + "</div>")
-    empty = '<div class="empty">Открытых просьб нет.</div>' if not cards else ""
+                               f'{_esc(_title(r))}</div>' for r in recent[:6]) + "</div>")
+    empty = L('<div class="empty">Открытых просьб нет.</div>', '<div class="empty">No open requests.</div>') if not cards else ""
     if ledger.get("error"):
-        empty = '<div class="empty">Не получается прочитать список просьб дирижёра.</div>'
+        empty = L('<div class="empty">Не получается прочитать список просьб дирижёра.</div>', '<div class="empty">Cannot read the conductor\'s list of requests.</div>')
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><style>
 html,body{{margin:0;background:{a['bg']};color:{a['text']};width:{width}px;height:{height}px;overflow:hidden;
 font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",sans-serif;
@@ -497,8 +546,8 @@ margin-bottom:10px}}
 .dl{{display:flex;align-items:center;gap:10px;color:#c7c7cc;font-size:15px;padding:5px 0}}
 .empty{{color:{a['dim']};font-size:18px;margin-top:40px}}
 </style></head><body><div class="wrap">
-<div class="top"><h1>Твои просьбы</h1><span class="time">обновлено {time.strftime('%H:%M', time.localtime(now))}</span></div>
-<div class="sub">Что команда делает по ним прямо сейчас</div>
+<div class="top"><h1>{L("Твои просьбы", "Your requests")}</h1><span class="time">{L("обновлено", "updated")} {time.strftime('%H:%M', time.localtime(now))}</span></div>
+<div class="sub">{L("Что команда делает по ним прямо сейчас", "What the team is doing about them now")}</div>
 <div class="pills">{pill_html}</div>
 {empty}{"".join(cards)}{done_html}
 </div></body></html>"""
@@ -579,17 +628,17 @@ def card_lines(ledger, conn, now=None, positions=(), cache=None, width=100, colo
     c = (lambda code, s: f"\033[{code}m{s}\033[0m") if color else (lambda code, s: s)
     w = max(48, min(width - 2, 104))
     inner = w - 4
-    out = ["", "  " + c("1;" + TC["text"], "Твои просьбы") + c(TC["dim"], f"  ·  обновлено {time.strftime('%H:%M', time.localtime(now))}"),
-           "  " + c(TC["dim"], "что команда делает по ним прямо сейчас"), ""]
+    out = ["", "  " + c("1;" + TC["text"], L("Твои просьбы", "Your requests")) + c(TC["dim"], L("  ·  обновлено ", "  ·  updated ") + time.strftime('%H:%M', time.localtime(now))),
+           "  " + c(TC["dim"], L("что команда делает по ним прямо сейчас", "what the team is doing about them now")), ""]
     if ledger.get("error"):
-        return out + ["  " + c(TC["amber"], "Не получается прочитать список просьб дирижёра.")]
+        return out + ["  " + c(TC["amber"], L("Не получается прочитать список просьб дирижёра.", "Cannot read the conductor's list of requests."))]
     rows = views_of(ledger, conn, now)
     n = {k: sum(1 for _, kind, _ in rows if kind == k) for k in KIND_ORDER}
     pill = lambda col, k, lab: c(TC[col] if k else TC["soft"], "●") + " " + c("1;" + TC["text"], str(k)) + " " + \
         c(TC["dim"], lab)  # noqa: E731
-    out.append("  " + "    ".join([pill("amber", n["working"] + n["start"], "в работе"),
-                                    pill("purple", n["founder"], "ждут тебя"), pill("red", n["stuck"], "застряли"),
-                                    pill("green", n["done"], "готово")]))
+    out.append("  " + "    ".join([pill("amber", n["working"] + n["start"], L("в работе", "in progress")),
+                                    pill("purple", n["founder"], L("ждут тебя", "waiting on you")), pill("red", n["stuck"], L("застряли", "stuck")),
+                                    pill("green", n["done"], L("готово", "done"))]))
     out.append("")
     edge = TC["soft"]
 
@@ -608,7 +657,7 @@ def card_lines(ledger, conn, now=None, positions=(), cache=None, width=100, colo
         asked = _ts(r.get("asked_at"))
         when = time.strftime('%H:%M', time.localtime(asked)) if asked else ""
         out.append("  " + c(bcol, "╭" + "─" * (w - 2) + "╮"))
-        title = _cut(r.get("title_ru") or "Без названия", inner - len(when) - 4)
+        title = _cut(_title(r), inner - len(when) - 4)
         head = c(col, icon) + " " + c("1;" + TC["text"], title)
         pad = inner - _vlen(head) - len(when)
         out.append("  " + c(bcol, "│") + " " + head + " " * max(1, pad) + c(TC["soft"], when) + " " + c(bcol, "│"))
@@ -620,25 +669,25 @@ def card_lines(ledger, conn, now=None, positions=(), cache=None, width=100, colo
             out += [x.replace(c(edge, "│"), c(bcol, "│")) for x in [box_line(first)]]
             out += [x.replace(c(edge, "│"), c(bcol, "│")) for x in wrap(t["said"], 4, TC["dim"])]
             if t["kind"] == "founder":
-                for q in t.get("card_titles") or ["вопрос в окне вопросов"]:
+                for q in t.get("card_titles") or [L("вопрос в окне вопросов", "a question in the questions window")]:
                     out += [x.replace(c(edge, "│"), c(bcol, "│"))
-                            for x in wrap(f"Ждёт твоего ответа в окне вопросов: «{q}»", 4, "1;" + TC["purple"])]
+                            for x in wrap(L(f"Ждёт твоего ответа в окне вопросов: «{q}»", f"Waits for your answer in the questions window: “{q}”"), 4, "1;" + TC["purple"])]
             now_ru = plain_note(t, cache)
             if now_ru:
                 out += [x.replace(c(edge, "│"), c(bcol, "│")) for x in wrap(now_ru, 4, TC["text"])]
-            stamp = f"движение {ago(t['last'], now)}" + ("  ·  застряло, дирижёр разберётся" if t["kind"] == "stuck" else "")
+            stamp = L("движение ", "movement ") + ago(t['last'], now) + (L("  ·  застряло, дирижёр разберётся", "  ·  stuck, the conductor will sort it out") if t["kind"] == "stuck" else "")
             out += [x.replace(c(edge, "│"), c(bcol, "│"))
                     for x in wrap(stamp, 4, TC["red"] if t["kind"] == "stuck" else TC["soft"])]
         out.append("  " + c(bcol, "╰" + "─" * (w - 2) + "╯"))
         out.append("")
     if recent:
-        out.append("  " + c(TC["dim"], "СДЕЛАНО ЗА ПОСЛЕДНИЕ ЧАСЫ"))
-        out += ["  " + c(TC["green"], "●") + " " + c(TC["dim"], _cut(r.get("title_ru") or "Без названия", w - 4))
+        out.append("  " + c(TC["dim"], L("СДЕЛАНО ЗА ПОСЛЕДНИЕ ЧАСЫ", "DONE IN THE LAST HOURS")))
+        out += ["  " + c(TC["green"], "●") + " " + c(TC["dim"], _cut(_title(r), w - 4))
                 for r in recent]
         out.append("")
-    out.append("  " + c(TC["red"], "▲") + c(TC["soft"], " застряло   ") + c(TC["purple"], "◆") + c(TC["soft"], " ждёт тебя   ")
-               + c(TC["amber"], "●") + c(TC["soft"], " в работе   ") + c(TC["grey"], "○") + c(TC["soft"], " не начали   ")
-               + c(TC["green"], "●") + c(TC["soft"], " готово"))
+    out.append("  " + c(TC["red"], "▲") + c(TC["soft"], L(" застряло   ", " stuck   ")) + c(TC["purple"], "◆") + c(TC["soft"], L(" ждёт тебя   ", " waiting on you   "))
+               + c(TC["amber"], "●") + c(TC["soft"], L(" в работе   ", " in progress   ")) + c(TC["grey"], "○") + c(TC["soft"], L(" не начали   ", " not started   "))
+               + c(TC["green"], "●") + c(TC["soft"], L(" готово", " done")))
     return out
 
 
@@ -681,7 +730,7 @@ def run_cards(every=30, out=sys.stdout, inp=sys.stdin):
             if frame != drawn:
                 body = lines[offset:offset + view]
                 more = len(lines) > view
-                hint = (f"  ↑↓ колесо мыши · PgUp/PgDn   {offset + 1}–{min(len(lines), offset + view)} из {len(lines)}"
+                hint = (L("  ↑↓ колесо мыши · PgUp/PgDn   ", "  ↑↓ mouse wheel · PgUp/PgDn   ") + f"{offset + 1}–{min(len(lines), offset + view)}" + L(" из ", " of ") + f"{len(lines)}"
                         if more else "")
                 out.write("\033[H\033[2J" + "\n".join(body) + f"\033[{rows};1H\033[{TC['soft']}m{hint}\033[0m")
                 out.flush()
@@ -747,7 +796,7 @@ def run(every=30, once=False, out=sys.stdout, text=True, cards=False):
             time.sleep(every)
             continue
         # redraw only when what it says (minutes aside) or the pane's size changed
-        steady = "\n".join(x for x in page[1].split("\n")[1:] if "движение" not in x)  # minutes passing redraw nothing
+        steady = "\n".join(x for x in page[1].split("\n")[1:] if L("движение", "movement") not in x)  # minutes passing redraw nothing
         key = hashlib.sha1((steady + f"{cols}x{rows}").encode()).hexdigest()
         if key != shown:
             png = os.path.join(work, "panel.png")
