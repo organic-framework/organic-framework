@@ -249,7 +249,7 @@ class MeasuresTest(unittest.TestCase):
             prompt(4, "2026-11-04T14:00Z", "s-op", "как дела?", cats=["status_poll"], reply_to="e3"),
             question(5, "2026-11-04T20:00Z", "s-search"),                 # open at the window's end
             question(6, "2026-11-04T09:00Z", "s-k8s"),                    # the colleague's, not the founder's
-            prompt(7, "2026-11-04T15:00Z", "s-op", "Ты — новая сессия", kind="brief"),
+            prompt(7, "2026-11-04T15:00Z", "s-op", "You are a new session", kind="brief"),
             prompt(8, "2026-11-04T14:00:30Z", "s-search", "как дела?", cats=["status_poll"]),  # copy: same minute + text
         ]
 
@@ -305,7 +305,7 @@ class MeasuresTest(unittest.TestCase):
 
     def test_carry_in_and_in_degree(self):
         rows = [question(110, "2026-11-03T22:00Z", "s-op"), prompt(111, "2026-11-04T02:00Z", "s-op", "ok"),
-                ev(112, "2026-11-04T05:00Z", "of.agent_message_in", "s-op", {"text": "Можешь глянуть PR?", "classifications": {"rq-v0": True}}),
+                ev(112, "2026-11-04T05:00Z", "of.agent_message_in", "s-op", {"text": "Can you look at the PR?", "classifications": {"rq-v0": True}}),
                 ev(113, "2026-11-04T05:01Z", "of.agent_message_in", "s-op", {"text": "FYI: deployed", "classifications": {"rq-v0": True}}),
                 ev(115, "2026-11-04T05:02Z", "of.agent_message_in", "s-op", {"text": "heads-up, done"}),
                 question(114, "2026-11-04T09:00Z", "s-search")]
@@ -410,8 +410,8 @@ class MeasuresTest(unittest.TestCase):
         self.assertEqual(o["depth_avg"], 2.0)
 
     def test_codex_prompts_counted_apart(self):
-        cx = dict(prompt(30, "2026-11-04T18:00Z", "c1", "сделай"), harness="codex")
-        cx2 = dict(prompt(31, "2026-11-04T18:00:20Z", "c1", "сделай"), harness="codex")   # a copy: same minute and text
+        cx = dict(prompt(30, "2026-11-04T18:00Z", "c1", "do it"), harness="codex")
+        cx2 = dict(prompt(31, "2026-11-04T18:00:20Z", "c1", "do it"), harness="codex")   # a copy: same minute and text
         m = of_model.build(DOC, [], at=self.B)
         g = M.gate(m, self.rows() + [cx, cx2], [], self.A, self.B)
         self.assertEqual(g["founder_messages_codex"], 1)
@@ -2289,7 +2289,7 @@ class FlowMeasureTest(unittest.TestCase):
         rows = [
             self.pr(1, 7, "2026-11-04T08:00Z", "2026-11-04T10:00Z"), self.pr(2, 7, "2026-11-04T08:00Z", "2026-11-04T10:00Z"),
             self.pr(3, 8, "2026-11-04T09:00Z", "2026-11-04T13:00Z"), self.pr(4, 9, "2026-11-04T12:00Z", "2026-11-04T12:01Z", "app/mergify"),
-            prompt(10, "2026-11-04T10:00Z", "s-op", "сделай"),                  # opens s-op's turn
+            prompt(10, "2026-11-04T10:00Z", "s-op", "do it"),                   # opens s-op's turn
             ev(11, "2026-11-04T10:12Z", "of.turn_end", "s-op"),                 # buckets 10:00, 10:05, 10:10
             ev(12, "2026-11-04T10:07Z", "of.turn_end", "s-k8s"),                # no prompt recorded: its own bucket
             decl(20, "2026-11-04T11:00Z", "s-k8s", "plat_owner", from_position="k8s_keeper"),
