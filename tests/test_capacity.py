@@ -3,6 +3,7 @@ the 30-minute probe cache, headroom and the target of a move."""
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_capacity  # noqa: E402
+import of_locale  # noqa: E402
 
 # Production positions are configuration (capacity.yaml `hold`); the tests name a set.
 POLICY = dict(of_capacity.POLICY, hold=["k8s_keeper", "storefront-hosts_keeper", "forecasting_keeper", "storefront_operator"])
@@ -429,11 +431,15 @@ class PlanAndWatch(unittest.TestCase):
             pos = [dict(p) for p in self.POS]
             sessions = {"/g": [{"session": "s1"}, {"session": "s2"}, {"session": "s3"}], "/e": [{"session": "s4"}]}
             kw["sessions_fn"] = lambda d: sessions.get(d, [])
-            of_capacity.watch(pos, asked.append, log=lambda m: None, **kw)
+            of_locale.set_language("en")  # another module pins ru at import
+            try:
+                of_capacity.watch(pos, asked.append, log=lambda m: None, **kw)
+            finally:
+                of_locale.set_language(None)
             self.assertEqual(len(asked), 1)
-            self.assertIn("с аккаунта /g (g@x)", asked[0])
-            self.assertIn("израсходовал 100% недели (порог 90%)", asked[0])
-            self.assertIn("Больше всего свободно на /d", asked[0])
+            self.assertIn("off the account /g (g@x)", asked[0])
+            self.assertIn("spent 100% of its week (threshold 90%)", asked[0])
+            self.assertIn("Most headroom: /d", asked[0])
             of_capacity.watch(pos, asked.append, log=lambda m: None, fresh=True, **kw)
             self.assertEqual(len(asked), 1)  # same window, same reset: asked already
             rows[0]["windows"]["seven_day"]["resets_at"] = "2026-11-15T09:00:00Z"
@@ -1314,12 +1320,50 @@ class StuckPane(unittest.TestCase):
     def test_the_owner_gets_a_task_naming_the_pane_and_the_safe_key(self):
         e = of_capacity.MoveError("aws_keeper: pid 7: the exit dialog ignored Enter twice; the exit dialog is still "
                                   "open in its pane: look at it now (wF:p12); the hand-over note was not used", stuck=True)
-        t = of_capacity.stuck_task("aws_keeper", e)
+        of_locale.set_language("en")
+        try:
+            t = of_capacity.stuck_task("aws_keeper", e)
+        finally:
+            of_locale.set_language(None)
         title = t.splitlines()[0]
         self.assertIn("wF:p12", title)
         self.assertIn("of go aws_keeper", t)
         self.assertIn("Esc", t)
-        self.assertIn("Не выбирайте «Move to background and exit»", t)
+        self.assertIn('Do not choose "Move to background and exit"', t)
+
+
+class OwnerTextsInTheOwnersLanguage(unittest.TestCase):
+    """The owner's cards are English in the code and come in the owner's language from the catalogue
+    (bin/of_locale.py; organic-framework 5462bab)."""
+
+    def tearDown(self):
+        of_locale.set_language(None)
+
+    def texts(self, lang):
+        of_locale.set_language(lang)
+        e = of_capacity.MoveError("x: the exit dialog is still open in its pane (wF:p12)", stuck=True)
+        row = {"config_dir": "/g", "account": "g@x", "positions": ["a", "b"], "logged_in": True,
+               "windows": {"seven_day": {"utilization": 100, "resets_at": "2026-11-15T09:00:00Z"}}}
+        target = {"config_dir": "/d", "account": "d@x", "logged_in": True, "windows": {"seven_day": {"utilization": 40}}}
+        return [of_capacity.stuck_task("aws", e), of_capacity.stuck_task("aws", "no pane named"),
+                *of_capacity.signin_task("/x", [("acme/slack", {})], "aws"),
+                of_capacity.signin_task("/x", [("acme/slack", {})], "aws", moved=True)[1],
+                of_capacity.ask_text(row, "seven_day 100% 90%", target),
+                of_capacity.ask_text(row, "five_hour 96% 95%", None)]
+
+    def test_english_by_default_the_catalogue_for_another_language(self):
+        en, ru = self.texts("en"), self.texts("ru")
+        cyr = re.compile("[\u0400-\u04ff]")
+        for a, b in zip(en, ru):
+            self.assertIsNone(cyr.search(a), a)
+            self.assertIsNotNone(cyr.search(b), b)
+            self.assertNotIn("{", a + b)  # every placeholder filled
+        self.assertIn("wF:p12", ru[0].splitlines()[0])
+        self.assertIn("of go aws", ru[0])
+        self.assertIn("/d (d@x, 60%)", ru[5])
+        self.assertIn("slack", ru[2])
+        self.assertNotIn("seven_day", ru[5] + en[5])  # the window's raw name never shows
+        self.assertNotIn("five_hour", ru[6] + en[6])
 
 
 class MoneyFirst(unittest.TestCase):

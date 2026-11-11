@@ -3270,30 +3270,34 @@ def ask_text(row, why, target):
     names = row.get("positions") or []
     by_org = row.get("by_org") or {}
     who = "; ".join(f"{o}: {len(ns)}" for o, ns in sorted(by_org.items())) if by_org else ", ".join(names)
-    t = (f" Most headroom: {short(target['config_dir'])} ({target.get('account')}, {headroom(target)}% free)."
-         if target else " No other logged-in account has headroom.")
+    from of_locale import tr
+    t = (tr("Most headroom: {dir} ({account}, {free}% free).", dir=short(target["config_dir"]),
+            account=target.get("account"), free=headroom(target))
+         if target else tr("No other logged-in account has headroom."))
     parts = why.split()
-    window = {"five_hour": "5-часового окна", "seven_day": "недели"}.get(w, w)
-    t = (f" Больше всего свободно на {short(target['config_dir'])} ({target.get('account')}, {headroom(target)}%)."
-         if target else " Свободного места нет ни на одном другом аккаунте.")
-    return (f"Перенести позиции с аккаунта {short(row['config_dir'])} ({row.get('account')}) на другой? "
-            f"Он израсходовал {parts[1] if len(parts) > 1 else '?'} {window} (порог {parts[-1]}), сброс {reset}; "
-            f"когда лимит кончится, его позиции встанут посреди работы. Позиций на нём: {len(names)} "
-            f"({who}).{t} Перенос идёт между ходами, в той же панели, с контекстом; порядок — `of capacity plan`.")
+    window = {"five_hour": tr("5-hour window|spent of"), "seven_day": tr("week|spent of")}.get(w, w)
+    return tr("Move the positions off the account {dir} ({account}) to another one? It has spent {used} of its "
+              "{window} (threshold {limit}), reset {reset}; when the limit runs out, its positions stop in the middle "
+              "of their work. Positions on it: {n} ({who}). {target} A move happens between turns, in the same pane, "
+              "with its context; the order: `of capacity plan`.",
+              dir=short(row["config_dir"]), account=row.get("account"), used=parts[1] if len(parts) > 1 else "?",
+              window=window, limit=parts[-1], reset=reset, n=len(names), who=who, target=t)
 
 
 def stuck_task(position, err):
     """The owner's task when a failed move could not put a pane back (MoveError.stuck)."""
+    from of_locale import tr
     pane = _re.search(r"\((w[^)]*|zellij [^)]*)\)", str(err))
-    where = pane.group(1) if pane else "её панель"
-    return (f"Закрыть диалог выхода в панели {position} ({where})\n"
-            f"Балансировщик of_capacity переносил {position} на другой аккаунт, выход не завершился, и закрыть "
-            f"диалог Claude Code «Background work is running» он не смог. Пока диалог открыт, позиция стоит, а "
-            f"сообщения, введённые в панель, теряются.\n"
-            f"1. `of go {position}`.\n"
-            f"2. В диалоге нажмите Esc или выберите «3. Stay». Не выбирайте «Move to background and exit»: "
-            f"сессия уйдёт в фон без панели.\n"
-            f"3. Ответьте of_capacity «готово»; он проверит панель и доведёт перенос позже.")
+    where = pane.group(1) if pane else tr("its pane")
+    return tr("Close the exit dialog in the pane of {position} ({where})\n"
+              "The balancer of_capacity was moving {position} to another account, its exit did not finish, and it "
+              "could not close Claude Code's dialog \"Background work is running\". While the dialog is open the "
+              "position stands still, and messages typed into its pane are lost.\n"
+              "1. `of go {position}`.\n"
+              "2. In the dialog press Esc or choose \"3. Stay\". Do not choose \"Move to background and exit\": the "
+              "session would go to the background without a pane.\n"
+              "3. Tell of_capacity it is done; it checks the pane and finishes the move later.",
+              position=position, where=where)
 
 
 def watch(positions, ask, log=print, **kw):
@@ -4006,35 +4010,22 @@ def missing_signins(position_name, d, docs=None, now=None, run=None):
 
 
 def signin_task(d, missing, position, moved=False, lang=None):
-    """(title, steps) of the founder's task to sign in to account-bound tools on one account."""
-    if lang is None:
-        try:
-            import of_spawn
-            lang = of_spawn.owner_language()
-        except Exception:  # noqa: BLE001
-            lang = "en"
+    """(title, steps) of the founder's task to sign in to account-bound tools on one account, in the owner's
+    language (of_locale) unless `lang` is given."""
+    from of_locale import tr
     acct = account_of(d) or short(d)
     names = ", ".join(i.split("/", 1)[-1] for i, _ in missing)
     line = ("claude" if is_default(d) else f"CLAUDE_CONFIG_DIR={short(d)} claude")
-    if lang == "ru":
-        why = (f"of_capacity перенёс {position} туда, потому что другого аккаунта с запасом не было; пока входа нет, "
-               f"эти инструменты в сессии недоступны." if moved else
-               f"Пока входа нет, of_capacity не переносит туда {position}.")
-        return (f"Войти в {names} в аккаунте {acct}",
-                f"Позиции {position} нужны {names}. Вход в такие инструменты хранится в каждом аккаунте Claude "
-                f"отдельно, а в аккаунте {acct} ({short(d)}) его нет. {why}\n"
-                f"1. В обычной вкладке терминала, не через «!» в сессии агента: {line}\n"
-                f"2. Введи /mcp, выбери {names} и пройди вход в браузере; затем /exit.\n"
-                f"3. Скажи «готово»: of_capacity проверит, что `claude mcp list` показывает Connected.")
-    why = (f"of_capacity moved {position} there because no other account had room; until the sign-in exists, these "
-           f"tools are missing in the session." if moved else
-           f"Until it exists, of_capacity does not move {position} there.")
-    return (f"Sign in to {names} in the account {acct}",
-            f"The position {position} needs {names}. Their sign-in is kept per Claude account, and the account {acct} "
-            f"({short(d)}) has none. {why}\n"
-            f"1. In a plain terminal tab, not with \"!\" inside an agent's session: {line}\n"
-            f"2. Type /mcp, choose {names} and sign in in the browser; then /exit.\n"
-            f"3. Say done: of_capacity checks that `claude mcp list` shows them Connected.")
+    kw = dict(position=position, names=names, acct=acct, dir=short(d), line=line)
+    why = (tr("of_capacity moved {position} there because no other account had room; until the sign-in exists, these "
+              "tools are missing in the session.", lang, **kw) if moved else
+           tr("Until it exists, of_capacity does not move {position} there.", lang, **kw))
+    return (tr("Sign in to {names} in the account {acct}", lang, **kw),
+            tr("The position {position} needs {names}. Their sign-in is kept per Claude account, and the account "
+               "{acct} ({dir}) has none. {why}\n"
+               "1. In a plain terminal tab, not with \"!\" inside an agent's session: {line}\n"
+               "2. Type /mcp, choose {names} and sign in in the browser; then /exit.\n"
+               "3. Say done: of_capacity checks that `claude mcp list` shows them Connected.", lang, why=why, **kw))
 
 
 SIGNIN_TASK_EVERY_S = 24 * 3600
@@ -4652,12 +4643,13 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         asked = set(cache.get("_trust_asked") or [])
         new_folders = {f: ps for f, ps in untrusted.items() if f not in asked}
         if new_folders and ask:
-            ask("Доверить эти папки на другом аккаунте Claude, чтобы балансировщик мог перенести их позиции? "
-                "Они не отмечены доверенными ни в одном аккаунте, поэтому перенос не начинается: сессия встала бы "
-                "на диалоге доверия к папке, а нажимать «Yes, I trust» инструмент не вправе. Папки и позиции: "
-                + "; ".join(f"{f} ({', '.join(ps)})" for f, ps in new_folders.items())
-                + ". Без решения эти позиции остаются на текущем аккаунте и встанут, когда его лимит кончится.",
-                "доверить на целевом аккаунте|оставить позиции на месте")
+            from of_locale import tr
+            ask(tr("Trust these folders in another Claude account, so the balancer can move their positions? No "
+                   "account marks them trusted, so no move starts: the session would stop on the folder-trust dialog, "
+                   "and the tool may not press \"Yes, I trust\". Folders and positions: {folders}. Without a decision "
+                   "these positions stay on their current account and stop when its limit runs out.",
+                   folders="; ".join(f"{f} ({', '.join(ps)})" for f, ps in new_folders.items())),
+                tr("trust them in the target account") + "|" + tr("leave the positions where they are"))
             cache["_trust_asked"] = sorted(asked | set(new_folders))
         save_cache(cache)
     return plan_
