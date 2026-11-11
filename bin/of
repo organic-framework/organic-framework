@@ -4312,7 +4312,8 @@ def _listener_runs_capacity():
 
 def _capacity_ask(text, options=None, task=None, due=None, blocking=False, positions=None):
     """The balancer's asks and tasks to the owner. Every field cmd_ask reads is set: a Namespace without `task`
-    raised AttributeError from 2026-11-06 (a2b0d44) to 2026-11-07, and no capacity ask reached the owner.
+    raised AttributeError from 2026-11-06 (a2b0d44) to 2026-11-07, and no capacity ask reached the owner. A task
+    keeps its title, as `of ask "<title>" --task "<steps>"` does (of_capacity's review of PR 23).
     The sender is the machine's capacity position (of_capacity.actor()). When no registry on this machine has that
     position (a colleague's machine with no capacity position; of_capacity, 2026-11-12), cmd_ask would refuse it and
     the ask would be lost: it is filed as a machine card instead, as the disk card is (bin/of_scratch.py)."""
@@ -4324,7 +4325,7 @@ def _capacity_ask(text, options=None, task=None, due=None, blocking=False, posit
     with open(os.devnull, "w") as null:
         saved, sys.stdout = sys.stdout, null
         try:
-            cmd_ask(argparse.Namespace(question=None if task else text, options=options, blocking=blocking,
+            cmd_ask(argparse.Namespace(question=text, options=options, blocking=blocking,
                                        to="founder", sender=sender, task=task, command=None, tags=None,
                                        due=due, work=None, where=None, escalates=None))
         finally:
@@ -4335,7 +4336,7 @@ def _capacity_card(sender, text, options=None, task=None, due=None, blocking=Fal
     """The balancer's ask as a machine card to the owner, with no registry position behind it."""
     import of_events
     steps = of_hook_mask(task) if task else None
-    question = of_hook_mask(text if not task else (steps or "").strip().splitlines()[0][:200])
+    question = of_hook_mask(text or (steps or "").strip().splitlines()[0][:200])
     opts = [o.strip() for o in (options or "").split("|") if o.strip()]
     return of_events.emit("agent_question", {
         "detected_by": "declared", "source": "capacity", "from_position": sender, "to": "founder",
