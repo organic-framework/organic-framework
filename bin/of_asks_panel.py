@@ -83,6 +83,7 @@ def opener():
 
 TALL_H = 8      # from this many rows: the first cards of each stream
 BURST_S = 0.12  # Enter or o this close to another key is typed text, not a press: it opens nothing
+SETTLE_S = 10   # a new build is taken only after its files stood still this long
 WIDE_W = 110    # from this many columns (and TALL_H rows): who waits on him and what he answered lately
 RECENT_H = 24   # the answers listed are this many hours old at most
 
@@ -120,6 +121,47 @@ def waiting_agents(items):
             s = x.get("since")
             by[w] = (n + 1, s if since is None or (s and s < since) else since)
     return sorted(((w, n, s) for w, (n, s) in by.items()), key=lambda t: t[2] or "~")
+
+
+class Restarter:
+    """When a long-lived panel takes a new build: its files changed, then stood still SETTLE_S, and the new build's
+    CLI starts and knows --panel. The founder's trial panel died at 21:23Z 2026-11-12 restarting in the middle of a
+    rebase, on a bin/of that did not know --panel yet (of_conductor, msg 01a1cc81)."""
+
+    def __init__(self, files, of_path, run=None, clock=None):
+        self.files, self.of_path = files, of_path
+        self.run, self.clock = run or subprocess.run, clock or time.time
+        self.born = self.seen = self.mtimes()
+        self.since = None
+
+    def mtimes(self):
+        out = []
+        for f in self.files:
+            try:
+                out.append(os.stat(f).st_mtime)
+            except OSError:
+                out.append(None)
+        return out
+
+    def due(self):
+        now_m = self.mtimes()
+        if now_m == self.born:
+            return False
+        if now_m != self.seen:  # still changing (a checkout or a rebase under way): wait for it to stand still
+            self.seen, self.since = now_m, self.clock()
+            return False
+        if self.clock() - self.since < SETTLE_S:
+            return False
+        import sys
+        try:
+            r = self.run([sys.executable, self.of_path, "asks", "--help"], capture_output=True, text=True, timeout=30,
+                         env=dict(os.environ, OF_AUTOMATION="1"))
+            ok = r.returncode == 0 and "--panel" in (r.stdout or "")
+        except Exception:  # noqa: BLE001 - the old build keeps running
+            ok = False
+        if not ok:
+            self.since = self.clock()  # try again later; the old build keeps running meanwhile
+        return ok
 
 
 def summary(items, overlay=None, now=None):
@@ -412,18 +454,8 @@ def main(of_path, positions=None):
             own.close()
 
     here = os.path.dirname(os.path.abspath(__file__))
-    files = [os.path.join(here, f) for f in ("of_asks_panel.py", "of_asks_inbox.py", "of_asks_tui.py", "of_locale.py",
-                                             os.path.join("locale", "ru.json"))]
-
-    def mtimes():
-        out = []
-        for f in files:
-            try:
-                out.append(os.stat(f).st_mtime)
-            except OSError:
-                out.append(None)
-        return out
-    born = mtimes()
+    restarter = Restarter([os.path.join(here, f) for f in ("of", "of_asks_panel.py", "of_asks_inbox.py", "of_asks_tui.py",
+                                                           "of_locale.py", os.path.join("locale", "ru.json"))], of_path)
 
     def popup():  # OF's herdr plugin opens the questions over everything, with this bin/of (a trial opens itself)
         import of_herdr_plugin
@@ -432,7 +464,7 @@ def main(of_path, positions=None):
     def run(scr):
         return Panel(scr, loader, seq=of_listen.seq, initial=([x for _, g in T.read_cache() for x in g], {}),
                      keys=open_keys(of_path=of_path), open_cmd=opener(), popup=popup,
-                     stale=lambda: mtimes() != born, keys_of=lambda: open_keys(of_path=of_path)).run()
+                     stale=restarter.due, keys_of=lambda: open_keys(of_path=of_path)).run()
     if curses.wrapper(run) == "restart":  # a pinned panel lives long: it takes a new build by itself
         import sys
         os.execv(sys.executable, [sys.executable] + sys.argv)
