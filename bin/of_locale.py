@@ -6,7 +6,7 @@ Every string in the code is English and is the key. A translation lives only in 
 
 API (for every module that shows text to a person: screens, panels, popups, cards, text typed into panes):
 - `tr(source, **kw)`: the source string in the person's language, `.format(**kw)` applied after the lookup, so a
-  catalogue entry keeps the placeholders: `tr("{n} min ago", n=5)` -> "5 мин назад". A missing entry falls back to
+  catalogue entry keeps the placeholders: `tr("{n} min ago", n=5)` gives the catalogue's entry for "{n} min ago" with 5 in it. A missing entry falls back to
   the English source. A context after "|" tells two uses of one English word apart: `tr("stuck|pill")`.
 - `language()`: "en" or a catalogue's language; `set_language(lang)` pins it (tests, a one-off render).
 - `catalogue(lang)`: the loaded entries.
