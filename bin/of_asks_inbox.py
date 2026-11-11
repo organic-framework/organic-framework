@@ -414,7 +414,7 @@ class Inbox:
         self.search, self.mode, self.confirm = None, "main", None
         self.msg, self.moved_at, self.note, self.studio_note = "", 0.0, {}, {}
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
-        self.attr, self.lw, self.cx, self.xtop = {}, 0, 0, 0
+        self.attr, self.lw, self.cx, self.xtop, self.tab_rects = {}, 0, 0, 0, []
 
     # data
     def refresh(self, force=False):
@@ -509,6 +509,7 @@ class Inbox:
         # top: the streams and their counts
         x = 0
         tabs = self.tabs(g)
+        self.tab_rects = []
         full = {s: f" ● {stream_name(s, self.search or '')} {len(g.get(s) or [])} " for s in tabs}
         short = sum(T.dwidth(v) + 1 for v in full.values()) > w - 1  # narrow: the others as their dot and count
         for s in tabs:
@@ -517,6 +518,7 @@ class Inbox:
             if s == self.cur:
                 a |= curses.A_REVERSE | curses.A_BOLD
             self.put(0, x, label, a)
+            self.tab_rects.append((x, x + T.dwidth(label), s))
             x += T.dwidth(label) + 1
         if self.bg["error"]:
             at = time.strftime("%H:%M", time.localtime(self.bg["good_at"])) if self.bg["good_at"] else "—"
@@ -527,7 +529,7 @@ class Inbox:
         item = its[idx] if its else None
         if narrow:
             if item:
-                self.put(1, 0, f"‹ {idx + 1} / {len(its)} ›  " + tr("←→ page"), curses.A_DIM)
+                self.put(1, 0, f"‹ {idx + 1} / {len(its)} ›  " + tr("↑↓ page · ←→ stream"), curses.A_DIM)
             card_x, card_w = 1, max(20, w - 3)
         else:
             lw = max(30, min(60, w * 2 // 5)) if w < WIDE_W else max(48, min(64, w * 28 // 100))
@@ -639,15 +641,27 @@ class Inbox:
                     ("", None), (tr("Esc cancels"), "dim")]
         if self.note.get("key") != k or self.note.get("mode") != self.mode:
             self.ctop, self.note = 0, {"key": k, "mode": self.mode}
-        self.ctop = max(0, min(self.ctop, max(0, len(rows) - height)))
         style = {"title": curses.A_BOLD, "dim": curses.A_DIM, "why": self.attr.get("amber", 0),
                  "head": curses.A_UNDERLINE, "option": 0, "recommended": self.attr.get("amber", 0) | curses.A_BOLD,
                  "text": 0}
-        for i, (ln, kind) in enumerate(rows[self.ctop:self.ctop + height]):
+        opts = [r for r in rows if r[1] in ("option", "recommended")]
+        body, foot = rows, []
+        if self.mode == "main" and opts and len(rows) > height and len(opts) <= max(3, height // 2):
+            # the options are what he acts on: kept at the foot of the card while the text above them scrolls
+            # (of_conductor, from his first trial: a long card showed only its first option)
+            body = [r for r in rows if r[1] not in ("option", "recommended")]
+            while body and not body[-1][0]:
+                body.pop()
+            foot = opts
+        bh = height - (len(foot) + 1 if foot else 1 if len(rows) > height else 0)
+        self.ctop = max(0, min(self.ctop, max(0, len(body) - bh)))
+        for i, (ln, kind) in enumerate(body[self.ctop:self.ctop + bh]):
             self.put(top_y + i, x0, ln, style.get(kind, 0))
-        if len(rows) > height:
-            self.put(top_y + height, x0, tr("lines {a}-{b} of {n} · J/K or Space scroll", a=self.ctop + 1,
-                                             b=min(len(rows), self.ctop + height), n=len(rows)), curses.A_DIM)
+        if len(body) > bh:  # where the text is, on the row between it and the options
+            self.put(top_y + bh, x0, tr("lines {a}-{b} of {n} · J/K or Space scroll", a=self.ctop + 1,
+                                        b=min(len(body), self.ctop + bh), n=len(body)), curses.A_DIM)
+        for i, (ln, kind) in enumerate(foot):
+            self.put(top_y + bh + 1 + i, x0, ln, style.get(kind, 0))
 
     # input
     def line_input(self, prompt, suggest=None):
@@ -750,6 +764,11 @@ class Inbox:
             return
         down = b & WHEEL_DOWN
         up = b & WHEEL_UP and not down
+        if y == 0 and b & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):  # a click on a stream's tab
+            hit = next((st for x0, x1, st in self.tab_rects if x0 <= x < x1), None)
+            if hit:
+                self.cur = hit
+            return
         on_list = self.lw and x < self.lw
         if (up or down) and on_list and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, -1 if up else 1, wrap=False)])
@@ -802,9 +821,9 @@ class Inbox:
             return False
         if ch == 27:
             self.search, self.cur = None, "holds"
-        elif ch in (curses.KEY_DOWN, ord("j"), curses.KEY_RIGHT) and its:
+        elif ch in (curses.KEY_DOWN, ord("j")) and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, 1)])
-        elif ch in (curses.KEY_UP, ord("k"), curses.KEY_LEFT) and its:
+        elif ch in (curses.KEY_UP, ord("k")) and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, -1)])
         elif ch == curses.KEY_NPAGE and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, max(1, h - 6), wrap=False)])
@@ -820,9 +839,11 @@ class Inbox:
             self.ctop = max(0, self.ctop - 1)
         elif ch == ord(" "):
             self.ctop += max(1, h - 7)
-        elif ch in (9, curses.KEY_BTAB):  # the streams that hold anything; the empty ones show their 0
+        elif ch in (9, curses.KEY_BTAB, curses.KEY_RIGHT, curses.KEY_LEFT):
+            # ← → and Tab: the streams that hold anything (the founder, ~21:10Z: switch them with the arrows); the empty
+            # ones show their 0
             tabs = [s for s in self.tabs(g) if g.get(s) or s == self.cur]
-            self.cur = tabs[step(len(tabs), tabs.index(self.cur), 1 if ch == 9 else -1)]
+            self.cur = tabs[step(len(tabs), tabs.index(self.cur), 1 if ch in (9, curses.KEY_RIGHT) else -1)]
         elif ord("1") <= ch <= ord("9") and item:
             self.answer(item, ch - ord("0"))
         elif ch == ord("u"):
@@ -949,8 +970,8 @@ class Inbox:
 
 def keys_line(w):
     """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there."""
-    forms = [tr("↑↓ select · 1-9 answer · r write · h snooze · d hand over · / search · Tab stream · ? help · Esc back"),
-             tr("↑↓ select · 1-9 answer · Tab stream · ? help · Esc back"), "↑↓ 1-9 r h d / Tab ? Esc"]
+    forms = [tr("↑↓ select · ←→ stream · 1-9 answer · r write · h snooze · d hand over · / search · ? help · Esc back"),
+             tr("↑↓ select · ←→ stream · 1-9 answer · ? help · Esc back"), "↑↓ ←→ 1-9 r h d / ? Esc"]
     return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
 
 
@@ -959,7 +980,7 @@ def help_rows():
             "↑ ↓  j k     " + tr("select; wraps from the first card to the last"),
             "PgUp PgDn    " + tr("a page of the queue"),
             "g G          " + tr("the first, the last card"),
-            "Tab ⇧Tab     " + tr("the next, the previous stream"),
+            "← → Tab      " + tr("the next, the previous stream (a click on its tab too)"),
             "1-9          " + tr("answer with that option (money or irreversible: press it twice)"),
             "r            " + tr("write your own answer"),
             "u            " + tr("take back the last answer while its seconds run"),

@@ -132,10 +132,10 @@ def summary(items, overlay=None, now=None):
 
 class Panel:
     def __init__(self, scr, loader, seq=None, initial=None, keys=None, open_cmd=None, run_cmd=None, popup=None,
-                 stale=None):
+                 stale=None, keys_of=None):
         self.scr, self.loader, self.seq = scr, loader, seq
         self.items, self.over = initial or ([], {})
-        self.keys, self.open_cmd, self.popup, self.stale = keys, open_cmd, popup, stale
+        self.keys, self.open_cmd, self.popup, self.stale, self.keys_of = keys, open_cmd, popup, stale, keys_of
         self.run_cmd = run_cmd or (lambda argv: subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                                                                  stderr=subprocess.DEVNULL, start_new_session=True))
         self.bg = {"data": None, "busy": False}
@@ -367,6 +367,8 @@ class Panel:
             if time.time() - self.last_full >= T.REFRESH_S:
                 if self.stale and self.stale():  # its code changed (a new build): start again on it
                     return "restart"
+                if self.keys_of:  # herdr's bindings may change while the panel lives (of_herdr, 2026-11-12)
+                    self.keys = self.keys_of()
                 self.refresh()
             self.draw()
             ch = self.scr.getch()
@@ -410,7 +412,7 @@ def main(of_path, positions=None):
     def run(scr):
         return Panel(scr, loader, seq=of_listen.seq, initial=([x for _, g in T.read_cache() for x in g], {}),
                      keys=open_keys(of_path=of_path), open_cmd=opener(), popup=popup,
-                     stale=lambda: mtimes() != born).run()
+                     stale=lambda: mtimes() != born, keys_of=lambda: open_keys(of_path=of_path)).run()
     if curses.wrapper(run) == "restart":  # a pinned panel lives long: it takes a new build by itself
         import sys
         os.execv(sys.executable, [sys.executable] + sys.argv)
