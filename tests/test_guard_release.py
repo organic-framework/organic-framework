@@ -54,6 +54,25 @@ class WritesTest(unittest.TestCase):
                     f"gh api graphql -f query='mutation {{ updateRef(input: {{}}) }}' -F owner={FW}"):
             self.assertTrue(self.writes(cmd), cmd)
 
+    def test_the_bypasses_found_in_review(self):
+        """of_architect's review of PR 6: a push option's value, a remote added on the line, a remote set for the
+        call, and a GraphQL merge by node id."""
+        fw_url = f"https://github.com/{FW}.git"
+        for cmd, cwd in (("git push -o x origin main", self.fw), ("git push --push-option=ci.skip origin main", self.fw),
+                         (f"git remote add fw {fw_url} && git push fw main", self.other),
+                         (f"git remote set-url origin {fw_url}; git push origin main", self.other),
+                         (f"git config remote.up.url {fw_url} && git push up HEAD:main", self.other),
+                         (f"git -c remote.up.url={fw_url} push up main", self.other),
+                         ("git push nowhere main", self.fw),
+                         ("gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"PR_k\"}) "
+                          "{ clientMutationId } }'", self.other),
+                         ("gh api graphql -F query=@m.graphql -f q='mutation{updateRef(input:{refId:\"R\"}){ref{id}}}'",
+                          self.other)):
+            self.assertTrue(self.writes(cmd, cwd=cwd), cmd)
+        for cmd in ("git push -o ci.skip origin main", "gh api graphql -f query='mutation { addComment(input: {}) "
+                    "{ clientMutationId } }'"):
+            self.assertEqual(self.writes(cmd, cwd=self.other), [], cmd)
+
     def test_reading_comments_and_reviews_are_not(self):
         for cmd in ("git fetch", "git pull", "git log origin/main", "gh pr view 12", "gh pr diff 12",
                     "gh pr comment 12 -b 'Verdict: approve'", "gh pr list", f"gh api repos/{FW}/rulesets",

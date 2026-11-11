@@ -46,6 +46,22 @@ class HooksTest(unittest.TestCase):
                     "git -C docs commit -m x"):
             self.assertFalse(self.deny(cmd), cmd)
 
+    def test_the_bypasses_found_in_review(self):
+        """of_architect's review of PR 6: an abbreviation, and core.hooksPath set through the environment."""
+        cfg = os.path.join(self.tmp.name, "gitconfig")
+        with open(cfg, "w") as fh:
+            fh.write("[core]\n\thooksPath = /tmp/none\n")
+        for cmd in ("git commit --no-veri -m x", "git commit --no-verif -m x", "git push --no-veri origin main",
+                    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x",
+                    "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=Core.HooksPath GIT_CONFIG_VALUE_0=/x; git commit -m x",
+                    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/x'\" git commit -m x",
+                    f"GIT_CONFIG_GLOBAL={cfg} git commit -m x", "GIT_CONFIG_GLOBAL=/no/such/file git commit -m x",
+                    "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push"):
+            self.assertTrue(self.deny(cmd), cmd)
+        for cmd in ("GIT_CONFIG_GLOBAL=/dev/null git commit -m x", "GIT_CONFIG_NOSYSTEM=1 git commit -m x",
+                    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x"):
+            self.assertFalse(self.deny(cmd), cmd)
+
     def test_another_repository_keeps_its_own_hook_rules(self):
         self.assertFalse(self.deny("git commit --no-verify -m x", cwd=self.other))
         self.assertFalse(self.deny("rm .git/hooks/pre-commit", cwd=self.other))
