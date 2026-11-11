@@ -176,6 +176,34 @@ def set_view(request=None):
     return (False, (err or {}).get("code") or str(err)) if err else (True, None)
 
 
+KEEP_FIRST_S, KEEP_MAX_S, KEEP_STEADY_S = 2, 60, 60
+
+
+def keep(cmd, name="the panel", run=None, sleep=None, clock=None, say=None, max_runs=None):
+    """Run a pinned pane's program again whenever it exits, so a crash or a half-built update never leaves the pane at a
+    shell (the founder's questions panel died at 21:23Z when the build it ran from was rebased). It waits
+    KEEP_FIRST_S, doubling up to KEEP_MAX_S while the program keeps failing fast, and back to KEEP_FIRST_S after a run
+    longer than KEEP_STEADY_S, saying so in the pane. Ctrl-C stops it. Not for a popup: a popup would never close."""
+    from of_locale import tr
+    run, sleep, clock = run or subprocess.call, sleep or time.sleep, clock or time.monotonic
+    say = say or (lambda text: print(text, flush=True))
+    delay, runs = KEEP_FIRST_S, 0
+    try:
+        while max_runs is None or runs < max_runs:
+            started = clock()
+            code = run(cmd)
+            runs += 1
+            if clock() - started > KEEP_STEADY_S:
+                delay = KEEP_FIRST_S
+            say("\n" + tr("{name} stopped (exit {code}); it starts again in {s} s. Ctrl-C stops it.", name=tr(name),
+                           code=code, s=delay))
+            sleep(delay)
+            delay = min(delay * 2, KEEP_MAX_S)
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
 def install(of_home=None, run=None):
     """Link OF's herdr plugin for this user (herdr registers it in every session) and record OF's home in the plugin's
     config dir (`of_home`, which run.sh reads), for `of init` and for a person installing by hand. Idempotent.
@@ -246,6 +274,17 @@ def main(argv):
         print("Agents view set: " + VIEW["label"] if ok else f"Agents view not set: {why}",
               file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 1
+    elif what == "keep":  # keep [--name NAME] -- COMMAND...
+        rest = argv[1:]
+        name = "the panel"
+        if rest[:1] == ["--name"] and len(rest) > 1:
+            name, rest = rest[1], rest[2:]
+        if rest[:1] == ["--"]:
+            rest = rest[1:]
+        if not rest:
+            print("usage: of_herdr_plugin.py keep [--name NAME] -- COMMAND...", file=sys.stderr)
+            return 2
+        return keep(rest, name=name)
     elif what == "install":
         ok, note = install(argv[1] if len(argv) > 1 else None)
         print(("" if ok else "not installed: ") + note, file=sys.stdout if ok else sys.stderr)
@@ -257,7 +296,7 @@ def main(argv):
         of = os.environ.get("OF_ASKS_OF") or os.path.join(HERE, "of")
         os.execv(sys.executable, [sys.executable, of, "asks", "--watch"])
     else:
-        print("usage: of_herdr_plugin.py startup|agent-detected|asks|view|install [OF_HOME]", file=sys.stderr)
+        print("usage: of_herdr_plugin.py startup|agent-detected|asks|view|keep|install [OF_HOME]", file=sys.stderr)
         return 2
     coalesced(of_apply)
     return 0

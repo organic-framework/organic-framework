@@ -95,6 +95,11 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   OF_ASKS_OF=<bin/of>` runs a trial build. herdr answers `ui_busy` while another popup, Settings or Copy mode is
   open. A click in a pane reaches its program as a mouse report when the program turned mouse reporting on, also
   when the pane is not focused: the first click lands (checked in `lab/scenarios/asks-screen-v0`, `click.script`).
+- **A pinned panel that survives.** `of_herdr_plugin.py keep [--name NAME] -- COMMAND` runs a pinned pane's program
+  again whenever it exits. It waits 2 s, doubling up to 60 s while the program keeps failing, back to 2 s after a
+  run over a minute, and says so in the pane (in the owner's language); Ctrl-C stops it. The founder's questions
+  panel runs under it since it died at 21:23Z on 2026-11-11, when the build it ran from was rebased. A popup's
+  command must not use it: the popup would never close.
 - **What a plugin cannot do in herdr 0.9.5.** It cannot bind keys or set sidebar rows; those stay in herdr's
   `config.toml` (prefix+a for the questions, the red per-workspace question counter). Its CLI cannot open a
   plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.
