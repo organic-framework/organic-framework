@@ -62,9 +62,10 @@ The language is kept in `~/.config/of/owner.yaml`; without `--language`, `of ini
 
 `of init` asks before it adds OF's recorder hooks to the Claude Code settings. If you run it without a terminal, it stops there and installs nothing. Explain the change to the person first, in words: the hooks are added next to theirs, with a backup and a diff. When they agree, run it with `--yes`.
 
-It creates the organization's repository at `~/of/<org>`. In it are the registry, with the person's conductor as the first position and the onboarding unit, and `AGENTS.md`. It starts no agent. It also starts `of-server`, the local store, as a user service.
+It creates the organization's repository at `~/of/<org>`. In it are the registry, with the person's conductor as the first position and the onboarding unit, and `AGENTS.md`. It starts no agent. It also starts three user services: `of-server`, the local store; the relay, which delivers messages between agents; and the listener, whose pulse offers hand-overs and nudges agents that wait.
 
 **Check:**
+- `of init` printed `relay: running` and `listen: running`. If one says `NOT running`, `of init` exits with code 2: show the person, in plain words, that agents cannot pass messages (the conductor's first message to the onboarding lead would never arrive), read the log it names, and run the command it gives to see why.
 - `of registry check` passes. One warning about the structure keeper's confirmation is expected: the onboarding answers it.
 - `of server status` answers. If `of init` said that no user service could start (some Linux machines and containers), run `of server start`.
 

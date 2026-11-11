@@ -33,6 +33,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 ### Fixed
 
 - The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
+- On a new machine the relay never started, so agents' messages did not arrive. `of init` now installs the relay and the listener as user services and checks that each runs; it exits with code 2 when one does not.
 - Capacity: a probe that got no reading (the network down) no longer moves sessions ahead of a stop, and `of capacity balance` makes no move while the API does not answer.
 
 ## 0.1.0 - 2026-11-11

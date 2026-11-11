@@ -61,6 +61,7 @@ of spawn my-org_conductor --config-dir ~/.claude     # your conductor: the first
 5. It lists the organization in `~/.config/of/orgs.yaml`, with what its agents start on: Opus at effort `xhigh`, unless you give `--model` and `--effort`. It keeps the language your agents use with you in `~/.config/of/owner.yaml` (`--language`; without it, it asks, or uses English).
 6. It adds the recorder hooks to your Claude Code settings. The change is additive and comes with a backup and a diff.
 7. It enrolls this machine and starts `of-server` with SQLite storage, as a launchd or systemd user service, and says "up" only once the server answers. Where there is no systemd user session (some VMs and containers), it says so, and you start the server yourself (below).
+8. It installs the relay (message delivery between agents) and the listener (its pulse offers hand-overs and nudges) as user services, and checks that each runs: `relay: running`, `listen: running`. If one does not, it prints `NOT running` with its log and exits with code 2.
 
 Without a terminal on stdin, `of init` cannot ask before it writes your Claude settings: it then installs nothing there, says so and exits non-zero; pass `--yes` to agree in advance.
 
