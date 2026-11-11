@@ -77,6 +77,21 @@ def agent_sock():
     return os.path.expanduser(os.environ.get("OF_GRANT_AGENT_SOCK") or AGENT_SOCK)
 
 
+def owners_agent(sock):
+    """Is SOCK the owner's own 1Password SSH agent (not a test's or another agent's socket)?"""
+    return os.path.realpath(os.path.expanduser(sock or "")) == os.path.realpath(os.path.expanduser(AGENT_SOCK))
+
+
+def refuse_outside_owners_terminal(sock, what):
+    """AGENTS.md: automation never touches the owner's SSH agent. The one use is the owner's own `of grant` in his
+    terminal (ask 0fd223f2); from an agent's session (CLAUDECODE, CLAUDE_CODE_SESSION_ID) or a service
+    (OF_AUTOMATION=1) the owner's agent is refused here, whoever calls (of_release's review 2026-11-11, finding #10)."""
+    if owners_agent(sock) and (os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+                               or os.environ.get("OF_AUTOMATION") == "1"):
+        raise PermissionError(f"{what} uses the owner's 1Password SSH agent: only in his own terminal tab, never from "
+                              "an agent's session or a service")
+
+
 def signs_with_agent():
     """True once the private key file is gone and the pinned key is the one in the owner's 1Password."""
     return not os.path.exists(GRANT_KEY) and os.path.exists(pin_path())
@@ -95,7 +110,9 @@ def sign_with_agent(grant, pub_path=None, sock=None):
     """Sign through the owner's SSH agent: `ssh-keygen -Y sign -f <public key>`, whose private half the agent holds
     ("may refer to … a public key with the private half available via ssh-agent", ssh-keygen(1)). 1Password asks
     for Touch ID. Only `of grant` in the owner's own terminal calls this (bin/of refuses an agent session)."""
-    return _ssh_sign(grant, pub_path or pin_path(), dict(os.environ, SSH_AUTH_SOCK=sock or agent_sock()))
+    sock = sock or agent_sock()
+    refuse_outside_owners_terminal(sock, "signing a grant")
+    return _ssh_sign(grant, pub_path or pin_path(), dict(os.environ, SSH_AUTH_SOCK=sock))
 
 
 def _ssh_sign(grant, key_path, env):
@@ -592,6 +609,7 @@ def rekey(staged=None, orgs_file=None, sock=None):
     import yaml
     staged = staged or STAGED_PIN
     sock = sock or agent_sock()
+    refuse_outside_owners_terminal(sock, "of grant rekey")
     with open(staged) as fh:
         line = next((x.strip() for x in fh if x.strip()), "")
     parts = line.split()
