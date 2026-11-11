@@ -75,25 +75,30 @@ def _held_by_person(p):
     return h.get("runtime") == "human" or bool(h.get("person"))
 
 
-def conductors(positions, to):
-    """The conductor positions of the person a card waits on. A card to the founder or the owner: the owner's
-    conductor (role conductor, owned by founder or owner, or named <org>_conductor; a colleague's is
-    <org>_conductor-<person>, docs/conductor.md §4). A card routed to a position a person holds: the conductors that
-    position owns. A card routed to an agent has none: that agent answers it."""
-    import of_asks
-    target = None if to in of_asks.OWNER_ADDRESSES else str(to).rpartition(":")[2]
+TOP = ("founder", "owner")  # the organization's top owner, as a card's `to` and a position's `owner` name him
+
+
+def conductors(positions, to, asker=None):
+    """The conductors that serve the person a card waits on (of_architect's review of 3962757: a colleague's
+    conductor must not answer a card addressed to the founder). A card routed to a position a person holds: the
+    conductors that position owns. A card to the top owner (`to` founder, owner or none): a conductor owned by the
+    top owner by address (founder or owner; the founder's serves him across his organizations, docs/conductor.md
+    option A), or one owned by the head of the asker's organization, a person-held position that owns itself (the
+    head `of init` writes). Never by name alone. A card routed to an agent has none: that agent answers it."""
+    target = None if to in TOP or to is None else str(to).rpartition(":")[2]
+    by_name = {p.get("name"): p for p in positions}
     if target:
-        t = next((p for p in positions if p.get("name") == target), None)
+        t = by_name.get(target)
         if not t or not _held_by_person(t):
             return []
-    out = []
-    for p in positions:
-        if p.get("role") != "conductor" or p.get("status") in GONE:
-            continue
-        if (p.get("owner") == target) if target else \
-                (p.get("owner") in ("founder", "owner") or str(p.get("name")).endswith("_conductor")):
-            out.append(p)
-    return out
+        serves = {target}
+    else:
+        org = (by_name.get(asker) or {}).get("_org")
+        heads = {p["name"] for p in positions if org and p.get("_org") == org and _held_by_person(p)
+                 and p.get("owner") == p.get("name")}
+        serves = set(TOP) | heads
+    return [p for p in positions if p.get("role") == "conductor" and p.get("status") not in GONE
+            and p.get("owner") in serves]
 
 
 def prompt_row(conn, ref):
@@ -200,7 +205,7 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
         raise ValueError(f"ask {first['event_id'][-8:]} is a {kind.split(':')[0]} in a pane: it is answered at the "
                          "machine, never from the chat")
     who_for = first.get("to")
-    mine = conductors(positions, who_for)
+    mine = conductors(positions, who_for, first.get("position"))
     if not mine:
         raise ValueError(f"ask {first['event_id'][-8:]} waits on {who_for}, which no person's conductor answers "
                          f"(an agent answers it itself: of asks answered)")
@@ -260,7 +265,9 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
             raise ValueError(f"the prompt neither names the card (its id {first['event_id'][-8:]}) nor quotes one of "
                              "its options")
         answer, evidence = str(text).strip(), f"names {named}" if named else f"quotes option {quoted[0] + 1}"
-    return {"ids": ids, "answer": answer, "option": option, "prompt": p, "conductor": sorted(names)[0],
+    via = p["position"] if p["position"] in names else \
+        next(c["name"] for c in mine if (c.get("holder") or {}).get("session") == p["session_id"])
+    return {"ids": ids, "answer": answer, "option": option, "prompt": p, "conductor": via,
             "evidence": "the prompt " + evidence,
             "position": first.get("position"), "session": first.get("session_id")}
 

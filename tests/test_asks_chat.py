@@ -21,6 +21,11 @@ POSITIONS = [
     {"name": "of_conductor-alex", "role": "conductor", "owner": "of_alex", "holder": {"session": "C2"}, "_org": "ofb"},
     {"name": "of_alex", "role": "keeper", "owner": "founder", "holder": {"runtime": "human", "person": "alex"}},
     {"name": "of_a", "_org": "ofb"}, {"name": "of_b", "_org": "ofb"}, {"name": "of_unit_owner", "_org": "ofb"},
+    # another organization on the machine, built by of init: its head owns itself, its conductor is the head's
+    {"name": "acme_owner", "owner": "acme_owner", "holder": {"runtime": "human", "person": "dana"}, "_org": "acme"},
+    {"name": "acme_conductor", "role": "conductor", "owner": "acme_owner", "holder": {"session": "C3"}, "_org": "acme"},
+    {"name": "acme_a", "owner": "acme_owner", "_org": "acme"},
+    {"name": "x_conductor", "role": "conductor", "owner": "of_alex", "holder": {"session": "C4"}, "_org": "ofb"},
 ]
 
 
@@ -203,6 +208,22 @@ class ForgedOrStaleTest(ChatTest):
         p = self.add("permission_request", {"tool_name": "Bash", "summary": "rm"}, "2026-11-11T10:00:10Z",
                      session="S3", position="of_b", source="hook")
         self.refused(p, self.prompt(f"{p[-8:]} yes"), "answered at the machine", option=1)
+
+    def test_another_organizations_head_does_not_answer_the_founders_card(self):
+        """of_architect's review of 3962757: the conductor must serve the person the card is addressed to."""
+        self.refused(self.a, self.prompt(f"{self.a[-8:]} yes", session="C3", position="acme_conductor"),
+                     "not in the session", option=1)
+
+    def test_a_conductor_is_known_by_its_owner_never_by_its_name(self):
+        self.refused(self.a, self.prompt(f"{self.a[-8:]} yes", session="C4", position="x_conductor"),
+                     "not in the session", option=1)
+
+    def test_an_organizations_head_answers_its_own_cards(self):
+        c = self.ask("Start the onboarding?", ["yes", "no"], position="acme_a", session="S5", ts="2026-11-11T10:02:00Z")
+        ok = self.check(c, self.prompt(f"{c[-8:]} yes", session="C3", position="acme_conductor"), option=1)
+        self.assertEqual(ok["conductor"], "acme_conductor")
+        self.assertEqual(self.check(c, self.prompt(f"{c[-8:]} yes", ts="2026-11-11T10:05:10Z"), option=1)["conductor"],
+                         "of_conductor")  # the founder's own conductor, by address, serves him here too
 
     def test_a_routed_card_to_a_person_takes_that_persons_conductor(self):
         r = self.ask("Merge the release?", ["yes", "no"], to="of_alex")
