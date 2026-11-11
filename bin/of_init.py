@@ -419,8 +419,10 @@ def run_readme(pkg, run, values, by_hand=None):
              f"(`of spawn {org}_conductor`). It is your one window: tell it what you want, and it finds the agent "
              "that owns it and follows the request to a result.",
              "2. Your conductor asks you to tell it when you are ready to start the onboarding. When you say so, it "
-             f"starts the onboarding lead itself (`{org}_onboarding`). The lead drafts the charter "
-             "(`onboarding/charter.md`) with you, through your conductor. Nothing is read before you approve it.",
+             f"starts the onboarding lead itself (`{org}_onboarding`). The agents first find out themselves who "
+             "works on what and which repositories exist (who and what only, no content), then show you one draft "
+             "to confirm or correct: the people and their likely roles, and a one-page agreement on what OF reads "
+             "(`onboarding/charter.md`). You are never asked to write a list. No content is read before you agree.",
              "3. The other agents of the unit start later, in waves the lead sizes by capacity; the lead starts "
              "them.", "",
              "On a machine with no capacity snapshot yet, `of spawn` asks which Claude Code account to use: add "
@@ -598,6 +600,9 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Find it, then ask to confirm.** Never ask {owner_name} for what an agent can find (names, roles, who works on
+  what, which repositories exist): find it, draft it, and ask them to confirm or correct the draft in one sitting.
+  No method term reaches them ("champion", "sponsor", "charter", "value stream", "baseline"); say it plainly.
 - **Never ask {owner_name} to run a command.** They may reach you through Remote Control, the desktop or the
   mobile app, where a command typed into the chat does not run. Ask in words ("tell me when you are ready") and
   run commands yourself. What only they can do (log in, trust a folder, approve a key or a payment) is a step in

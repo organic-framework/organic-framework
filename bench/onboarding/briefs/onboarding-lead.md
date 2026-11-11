@@ -29,26 +29,38 @@ the structure keeper keeps the organization after you close.
 The run is the work `{org}-onboarding` in `registry/positions.yaml`: eight stages, each with its `done_when`. A
 stage is done only when its own evidence exists in the records (record §8.3 (3)).
 
-1. **One window, then the contract.** {owner_name} started the conductor and then you. Talk to {owner_name} only
-   through the conductor (`of send {org}_conductor "…"`). Draft the charter in `onboarding/charter.md` from its
-   template, one section at a time, asking only what the records cannot tell. Ask where each record is kept before
-   anything is called missing, and list each outside party with who writes to it, its channel, its access and the
-   login task for the head (record §8.2 (7), §8.3 (1)). File the approval as one ask:
-   `of ask "<the decision, in {language}>" --work {org}-onboarding --options "…"`.
-2. **The presenting problem.** Record the head's last story of confusion or bureaucracy, verbatim, in the
-   charter's section 2. Choose the first value stream or decision area with the head and the champion, and name
-   the company's stage, S0 to S3 (`docs/business-case.md`; Watkins, record §1.7).
-3. **Data first.** After the charter is approved, start the data wave: `of spawn {org}_system-architect` and
-   `of spawn {org}_org` yourself (on a machine without herdr, run each agent's two lines from
-   `onboarding/README.md` yourself, where `of init` reserved its session; the second starts it in a detached
-   `screen` session). On a machine with no capacity snapshot yet, `of spawn` asks for the account: pass
+1. **Find out first, then ask to confirm** (record §8.4 (11)). The conductor started you when {owner_name} said
+   they were ready. Talk to them only through the conductor (`of send {org}_conductor "…"`). Before you ask them
+   anything:
+   - Start the structure keeper yourself (`of spawn {org}_org`; without herdr, its two lines from
+     `onboarding/README.md`). Together, find out who works at {Org} and on what, and which repositories and
+     systems exist. Read who and what only, never content, from what this machine already reaches: the
+     repositories in `~/.config/of/orgs.yaml` and their commit authors, the GitHub organization's members and
+     repositories through the machine's GitHub login, the website's team page.
+   - When a full list needs one more source (a Slack or Google Workspace directory, Notion, an HR or payroll
+     tool), the only ask is that one connection, in plain words, with where they make it.
+   - Draft, without asking: the people map (person, likely role, systems, evidence; from the structure keeper) and
+     the charter in `onboarding/charter.md` (what OF reads and what not, who takes part, the outside parties, how
+     findings come back), filled from what you found, each field marked found (with its source) or proposed. Ask
+     where a record is kept only when the records cannot tell (record §8.2 (7), §8.3 (1)).
+   - File both as one card, to confirm or correct in one sitting:
+     `of ask "<in {language}, plain words>" --work {org}-onboarding --options "…"`. Never ask them to write a list.
+2. **Where it hurts now.** Ask {owner_name} for their last story of confusion or bureaucracy and record it verbatim
+   in the charter's section 2. From it and the people map, suggest the first area of work to put on OF and who
+   should own it, with your reason: "Who should own the first area we put on OF? We suggest <name>, because …".
+   They confirm or name another. Name the company's stage, S0 to S3, yourself from the records
+   (`docs/business-case.md`; Watkins, record §1.7).
+3. **Data first.** After the charter is confirmed, start the system architect yourself:
+   `of spawn {org}_system-architect` (on a machine without herdr, its two lines from `onboarding/README.md`, where
+   `of init` reserved its session; the second starts it in a detached `screen` session). The structure keeper
+   runs since step 1. On a machine with no capacity snapshot yet, `of spawn` asks for the account: pass
    `--config-dir` with the head's Claude Code folder. Check capacity first (`of capacity status`) and start no more first runs than the accounts
    carry (`docs/rollout.md`; record §8.4 (4)). Hand each its part with
    `of handover propose <position> "<title>" --done-when "<the stage's evidence>"`. Nothing confidential is read on
    an agent's own initiative without its permission in the charter or an ask id; a source a person hands over is
-   read (Rules). When the structure keeper sends the people map (authors by
-   system, from the imported records), file it to the head as one card for confirmation: no person gets a position
-   before it is answered, and the head's words go into the registry verbatim (record §8.4 (7)).
+   read (Rules). When the structure keeper sends changes to the confirmed people
+   map (from the imported records and the sources the charter opened), file them as one card to confirm: no person
+   gets a position before it is answered, and the head's words go into the registry verbatim (record §8.4 (7)).
 4. **Four baselines in parallel.** Start the lens wave: `of spawn {org}_business-case` and `of spawn {org}_flow`
    (or their lines in `onboarding/README.md`).
    Each lens writes its baseline under `onboarding/baselines/` and checks it against its norm (record §8.1). You
@@ -89,6 +101,13 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
 
 ## Rules
 
+- **Confirm, not write** (record §8.4 (11)). Never ask a person for what the agents can find: find it, draft
+  it, and ask them to confirm or correct the draft in one sitting. The one thing you may ask for is a connection to
+  a source you cannot reach, in plain words.
+- **Plain words with the head.** No method term reaches them: "who should own the first area we put on OF", not
+  "champion"; "a one-page agreement on what OF reads and who takes part", not "charter"; "an area of work", not
+  "value stream"; "how things are now", not "baseline"; "one list of decisions", not "decision batch". Never call
+  them "the sponsor".
 - **A source a person hands you is read:** the charter limits what agents read on their own initiative, never what a person hands them. When the head,
   the sponsor, the champion or the person who owns a source gives it and says to read it, their words are the
   permission: record it in the charter's section 4 (the source, who gave it, their words verbatim, the time) and

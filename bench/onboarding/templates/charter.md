@@ -2,23 +2,25 @@
 
 Status: **draft**, by `{org}_onboarding`. Approved by: _(the sponsor's ask id, once answered)_.
 
-The contract between the sponsor and the onboarding, agreed before any data is read. Sources: Block's entry and
+The agreement between {owner_name} and the onboarding on what OF reads and who takes part. The agents draft it
+from what they found themselves (who works on what, which repositories exist; no content), and {owner_name}
+confirms or corrects it in one sitting; they are never asked to write it (record §8.4 (11)). Sources: Block's entry and
 contracting (*Flawless Consulting*); TOGAF Phase A's Statement of Architecture Work; Martin and Osterling's charter
 (organic-framework `docs/onboarding-practice.md` §1.2–§1.4, step 1). The lead drafts it through the head's
 conductor and asks only what the records cannot tell.
 
 ## 1. The question and the scope
 
-- **Sponsor:** {owner_name} (`{org}_owner`).
+- **Decides:** {owner_name} (`{org}_owner`).
 - **The question the onboarding answers:** _(in the sponsor's words)_
 - **In scope:** _(the organization, units, systems or value streams)_
 - **Out of scope:** _(what the onboarding will not look at or change)_
 
-## 2. The presenting problem (step 2)
+## 2. Where it hurts now (step 2)
 
 - **The head's last story of confusion or bureaucracy, verbatim:** _(what they could not find out, or whose
   decision they waited for)_
-- **The first value stream or decision area:** _(chosen from the story)_
+- **The first area of work to put on OF:** _(suggested by the agents from the story and the people map; confirmed)_
 - **The stage of the company:** S0 idea, S1 started, S2 operating or S3 scaling (`docs/business-case.md`).
 
 ## 3. People
@@ -26,11 +28,14 @@ conductor and asks only what the records cannot tell.
 Each person here holds a position in the registry (`people:`), and each gets a conductor on joining
 (`docs/conductor.md` §3 and §5).
 
-| Person | Role in the onboarding | Position | Their conductor |
-|---|---|---|---|
-| {owner_name} | sponsor | `{org}_owner` | `{org}_conductor` |
-| _(name)_ | champion: owns the first value stream | _(`<stream>_champion`)_ | _(`{org}_conductor-<person>`)_ |
-| _(name)_ | _(who else the onboarding may ask)_ | | |
+Drafted by the agents from the people map (person, likely role, systems, evidence); confirmed or corrected by
+{owner_name}.
+
+| Person | Likely role, and the evidence | In the onboarding | Position | Their conductor |
+|---|---|---|---|---|
+| {owner_name} | the head | decides | `{org}_owner` | `{org}_conductor` |
+| _(name)_ | _(found: role, systems, source)_ | owns the first area we put on OF (suggested by the agents) | _(`<area>_champion`)_ | _(`{org}_conductor-<person>`)_ |
+| _(name)_ | _(found: role, systems, source)_ | _(may be asked about their part)_ | | |
 
 ## 4. What OF reads, and what it does not
 
@@ -44,15 +49,15 @@ Each person here holds a position in the registry (`people:`), and each gets a c
 
 Repositories: _(list)_
 
-This section limits what agents read on their own initiative, never what a person hands them. A source the head,
-the sponsor, the champion or its owner gives an agent with "read this" is read at once, and recorded here
+This section limits what agents read on their own initiative, never what a person hands them. A source {owner_name},
+the owner of the first area or the source's own owner gives an agent with "read this" is read at once, and recorded here
 (`docs/onboarding-practice.md` §8.4 (9)):
 
 | Source | Given by | Their words, verbatim | When (UTC) | Read by |
 |---|---|---|---|---|
 
-OF has no messages to people outside the organization, and it never interviews anyone outside the head and the
-champion unless this charter names them.
+OF has no messages to people outside the organization, and it never interviews anyone but {owner_name} and the
+owner of the first area unless this charter names them.
 
 ## 5. Where each record is kept (systems of record)
 

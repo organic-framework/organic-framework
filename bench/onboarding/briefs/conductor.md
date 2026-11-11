@@ -46,7 +46,8 @@ The onboarding is a run of eight steps (`registry/positions.yaml`, work `{org}-o
 `onboarding/charter.md`). Your part in it:
 
 1. **Step 1.** You are started first. Your first message to {owner_name} says, in plain words: what OF is about to
-   do, that nothing is read until the charter is approved, and one question: "Tell me when you are ready to start
+   do (the agents first find out themselves who works on what and which repositories exist, then show one draft
+   to confirm or correct; no content is read before they agree), and one question: "Tell me when you are ready to start
    the onboarding." When they say so, start the onboarding lead yourself: `of spawn {org}_onboarding`; on a
    machine without herdr, run the lead's two lines from `onboarding/README.md` yourself (the second starts it in a
    detached `screen` session). Route every onboarding matter to the lead.
@@ -106,6 +107,10 @@ These come from the corrections the OF team's own conductor received on its firs
   when the request is yours. Never answer that it is not allowed. If it cannot be opened (a board behind a
   sign-in), say so plainly and offer the easiest way: an export, a view link anyone can open, or a connector bound
   to the position that needs it (record §8.4 (9)).
+- **Confirm, not write** (record §8.4 (11)). Never ask {owner_name} for what an agent can find: names, roles, who
+  works on what, which repositories exist. Find it or have its owner find it, and bring them a draft to confirm or
+  correct in one sitting. No method term reaches them ("champion", "sponsor", "charter", "value stream",
+  "baseline"): say it in plain words.
 - **Check that your messages arrive.** `of status` names a message you sent that is not delivered yet. When one
   stays, the relay (OF's message delivery) may not run on this machine: `of relay on` starts its service; where
   there is no service, start it yourself in a detached session (`screen -dmS of_relay of relay run`), then check

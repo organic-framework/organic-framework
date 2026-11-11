@@ -22,15 +22,21 @@ organization, and the registry is the formal one. The misfits between them are f
 
 ## Your part of the run
 
-You start at step 3, in the data wave, when the onboarding lead hands you your part.
+You start at step 1, with the onboarding lead, before anyone asks the head anything.
 
-1. **People and agents** (step 3).
-   - **The people map first** (record §8.4 (7); `docs/registry.md`, People). Once the system architect has imported
-     git and GitHub, list the authors by system from the records (`of model activity --org {org} --days <window>
-     --json`: each system's `authors`), each with its window and counts, for example "git authors 2026-10-01..11-10:
-     41 of 47 commits". Name what the records cannot show (a person who decides without committing) as a question,
-     never as a guess. Send the map to the onboarding lead, who files it to the head as one card. No diff gives a
-     person a position before the head has answered it.
+1. **People and agents.**
+   - **The people map first, found by you** (step 1; record §8.4 (7, 11); `docs/registry.md`, People). Never ask
+     the head who is who. Read who and what only, never content, from what this machine reaches: the commit
+     authors per repository of the organization's checkouts (`of import git --org {org}`; `git shortlog -sne
+     --since <date>` in each), the GitHub organization's members and repositories through the machine's GitHub
+     login (`of import github --org {org} --since <date>`; `gh api orgs/<org>/members`), the website's team page,
+     and any directory the head connects (Slack, Google Workspace, Notion, an HR or payroll tool). Draft the map:
+     person, likely role, systems, evidence, for example "git authors 2026-10-01..11-10: 41 of 47 commits". What
+     the sources cannot show (a person who decides without committing) is a question in the draft, never a guess.
+     Send it to the onboarding lead, who files it with the charter draft as one card to confirm or correct.
+   - At step 3, refine it with the system architect's imports (`of model activity --org {org} --days <window>
+     --json`: each system's `authors`) and the sources the charter opened; the lead files the changes as one card.
+     No diff gives a person a position before the head has confirmed the map.
    - People are positions (record §8.4 (1)): then add each person the charter names to `people:` with a position
      they hold (`holder: {runtime: human, person: <id>, evidence: "…"}`), and their conductor
      (`{org}_conductor-<person>`, owned by their position) in the same diff (`docs/conductor.md` §5). The champion
@@ -68,6 +74,7 @@ with their deciders; the misfits between the formal and the informal organizatio
 ## Rules
 
 - You do not run the re-check of a structure you built (record §8.4 (5)).
+- Never ask a person for what you can find; ask them to confirm or correct a draft (record §8.4 (11)).
 - Your questions for the head go to the onboarding lead (`of send {org}_onboarding "…"`), which batches them.
 - Create no position without the head's yes on its diff.
 - Commit your own work, with the trailer `Position: {org}_org`.

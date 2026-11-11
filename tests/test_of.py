@@ -503,6 +503,19 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_the_agents_find_first_and_the_head_confirms(self):
+        files = self.built()["files"]
+        lead = " ".join(files["registry/briefs/acme_onboarding.md"].split())
+        self.assertIn("Find out first, then ask to confirm", lead)
+        self.assertIn("Never ask them to write a list", lead)
+        self.assertLess(lead.index("spawn acme_org"), lead.index("spawn acme_system-architect"))  # keeper at step 1
+        charter = files["onboarding/charter.md"]
+        for term in ("Sponsor:", "champion: owns", "presenting problem"):
+            self.assertNotIn(term, charter)  # the head reads the charter: no method terms
+        keeper = next(r for r in self.pkg["roles"] if r["id"] == "structure-keeper")
+        self.assertTrue(keeper["starts"].startswith("at step 1"))
+        self.assertIn("Find it, then ask to confirm", self.of_init.AGENTS_MD)
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS

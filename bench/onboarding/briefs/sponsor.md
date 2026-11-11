@@ -22,16 +22,14 @@ follows puts the decision with one accountable sponsor:
    from Remote Control or the Claude app. It is your one window: tell it what you want, and
    it finds the agent that owns it and follows the request to a result (`docs/conductor.md`). You may still type
    into any agent's pane when you choose to.
-2. **Approve the charter** (step 1). The onboarding lead drafts it through your conductor:
-   - the scope;
-   - the champion;
-   - what OF reads and what it does not;
-   - where each record is kept (its system of record);
-   - the outside parties, each with who writes to it, through which channel and with which access;
-   - how findings come back.
-   You approve it on one card (an ask).
+2. **Confirm one draft** (step 1). The agents first find out themselves who works on what and which repositories
+   exist, and show you one draft through your conductor: the people with their likely roles, what OF reads and
+   what not, where each record is kept, the outside parties, how findings come back. You confirm or correct it on
+   one card. You are never asked to write a list; the only thing you may be asked for is a connection to a source
+   they cannot reach, such as your team directory (record §8.4 (11)).
 3. **Tell your last story of confusion or bureaucracy** (step 2): what you could not find out, or whose decision you
-   waited for. It chooses where the onboarding looks first.
+   waited for. The agents then suggest the first area of work to put on OF and who should own it; you confirm or
+   name another.
 4. **Answer one decision batch** (step 6). The findings come back as one numbered card, each item with its
    consequence and a recommendation. Your conductor explains each item.
 5. **Approve each invasive batch of increments** (step 7): anything that restarts running agents, gives an agent a
