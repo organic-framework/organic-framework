@@ -118,5 +118,34 @@ class EvidenceTest(unittest.TestCase):
         self.assertEqual(len(out), 6)
 
 
+class ProvisionalTest(unittest.TestCase):
+    """docs/registry.md, Fields, provisional (of_architect 728ff7a): work that came up in an onboarding starts on a
+    position with no powers, on the person's own typed yes."""
+
+    PV = {"asked": "can someone look at the invoices", "at": "2026-11-11T18:05:00Z", "by": "acme_conductor",
+          "event": "01a1cbd3-0000-7000-8000-000000000001"}
+
+    def test_complete_and_powerless_or_a_problem(self):
+        ok = {"name": "acme_invoices", "kind": "project", "provisional": self.PV}
+        self.assertEqual(of.check_provisional({"organization": "acme"}, [ok]), [])
+        bad = {"name": "acme_x", "kind": "keeper", "provisional": {"asked": "x"}, "credentials": ["c"],
+               "tools": ["slack", "-superpowers"]}
+        doc = {"organization": "acme", "units": {"u": {"owner": "acme_x"}},
+               "delegations": [{"id": "d", "unit": "u", "to_owner": "acme_x"}]}
+        text = "\n".join(of.check_provisional(doc, [bad], [{"subject": "acme_x"}]))
+        for expected in ("needs at, by, event", "only a position of kind project",
+                         "holds credentials, tools beyond the defaults, a grant, a delegation, a unit"):
+            self.assertIn(expected, text)
+        self.assertFalse(any(x.startswith(of.WARN) for x in of.check_provisional(doc, [bad])))  # problems, not warnings
+
+    def test_still_provisional_after_the_run_warns(self):
+        p = {"name": "acme_invoices", "kind": "project", "provisional": self.PV}
+        done = {"organization": "acme", "works": {"acme-onboarding": {"state": "done"}}}
+        out = of.check_provisional(done, [p])
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith(of.WARN))
+        self.assertEqual(of.check_provisional({"organization": "acme", "works": {"acme-onboarding": {}}}, [p]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

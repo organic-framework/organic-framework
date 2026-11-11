@@ -237,6 +237,14 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                           else f"{org}:registry/positions.yaml: {pr}")
                          for pr in check_cells(doc, [p for p in doc.get("positions") or [] if isinstance(p, dict)
                                                      and p.get("name")])]
+            try:
+                import of_grants
+                org_grants = of_grants.load(orgs_file).get(org) or []
+            except Exception:  # noqa: BLE001 - grants are checked on their own below
+                org_grants = []
+            problems += [(f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" if pr.startswith(WARN)
+                          else f"{org}:registry/positions.yaml: {pr}") for pr in check_provisional(
+                doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")], org_grants)]
             problems += [f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" for pr in check_evidence(
                 doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")])]
     for org, path, _ in org_registries(orgs_file):
@@ -1028,6 +1036,50 @@ def check_evidence(doc, positions):
         ext = [d for d in (w.get("doers") or []) if isinstance(d, str) and d.startswith("external:")]
         if ext:
             out.append(f"{WARN}works: {wid}: doers {', '.join(ext)} without evidence; {hint}")
+    return out
+
+
+def check_provisional(doc, positions, grants=()):
+    """docs/registry.md, Fields, `provisional` (of_architect 728ff7a; of_onboarding's package dbb8a77; the founder,
+    2026-11-11): a position added before the structure was finished, on a yes the person typed in their conductor's
+    pane. Problems: a `provisional` without all of asked, at, by and event; a kind other than project; any power
+    beyond the defaults (credentials, its own tools, a grant, a delegation it owns, a unit it owns). A warning: one still
+    provisional after its onboarding run's work (`<org>-onboarding`) is done."""
+    out = []
+    names = {p["name"] for p in positions if isinstance(p, dict) and p.get("name")}
+    units = doc.get("units") if isinstance(doc.get("units"), dict) else {}
+    dels = [x for x in doc.get("delegations") or [] if isinstance(x, dict)]
+    works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
+    org = doc.get("organization")
+    run = works.get(f"{org}-onboarding") if org else None
+    run = run or next((w for wid, w in works.items() if str(wid).endswith("-onboarding") and isinstance(w, dict)), None)
+    for p in positions:
+        if not isinstance(p, dict) or "provisional" not in p:
+            continue
+        name, pv, tag = p.get("name"), p.get("provisional"), f"positions: {p.get('name')}: provisional"
+        missing = [k for k in ("asked", "at", "by", "event") if not (isinstance(pv, dict) and str(pv.get(k) or "").strip())]
+        if missing:
+            out.append(f"{tag}: needs {', '.join(missing)} (the person's words, the time, their conductor, the "
+                       "of.human_prompt event id of their yes)")
+        if p.get("kind") != "project":
+            out.append(f"{tag}: only a position of kind project may be provisional, not {p.get('kind')!r}")
+        powers = []
+        if p.get("credentials"):
+            powers.append("credentials")
+        if [t for t in p.get("tools") or [] if not str(t).startswith("-")]:
+            powers.append("tools beyond the defaults")
+        if any(isinstance(g, dict) and g.get("subject") == name and not g.get("revoked") for g in grants):
+            powers.append("a grant")
+        if any(x.get("to_owner") == name for x in dels):
+            powers.append("a delegation")
+        if any(isinstance(u, dict) and u.get("owner") == name for u in units.values()):
+            powers.append("a unit")
+        if powers:
+            out.append(f"{tag}: holds {', '.join(powers)}; a provisional position holds none until the structure "
+                       "keeper folds it into the structure by a diff")
+        if isinstance(run, dict) and run.get("state") == "done":
+            out.append(f"{WARN}{tag}: still provisional after the onboarding run's work is done; fold it into the "
+                       "structure by a diff (kept, merged or finished)")
     return out
 
 
