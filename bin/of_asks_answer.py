@@ -270,6 +270,18 @@ def routed_mark(ask_id):
     return f"delegated to you; ask {ask_id[-8:]}"
 
 
+def handed_mark(ask_id):
+    return f"handed to you; ask {ask_id[-8:]}"
+
+
+def handed_frame(asker, ask_id, text, opts):
+    """A card the owner handed to a position in his window (key d, of_asks_inbox): it settles it for him."""
+    return (f"The founder hands you a card to settle ({handed_mark(ask_id)}), asked by {asker}: {text}"
+            + (f"\nOptions: {' | '.join(opts)}" if opts else "")
+            + f"\n[answer {asker}: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then close his card: of asks "
+              f"answered {ask_id[-8:]} \"what you decided\". If it is not yours to settle, tell of_conductor.]")
+
+
 def escalated_mark(ask_id):
     """In the first line (the collector keeps 8 KB of a prompt), as routed_mark is."""
     return f"ask {ask_id[-8:]}; escalated to the founder"
@@ -521,6 +533,21 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
                                                                        busy=busy_since(conn, position, ts, now)),
                             "sender": "owner", "channel": "asks-ui"})
     open_ids = {a["event_id"] for a in asks if a.get("state") == "open"}
+    for eid, ts, payload in conn.execute(  # cards the owner handed to a position in his window (of_asks_inbox, d)
+            "SELECT event_id, ts, payload FROM event WHERE name = 'of.ask_handed' AND ts >= ? ORDER BY ts",
+            (since,)).fetchall():
+        try:
+            p = json.loads(payload or "{}")
+        except ValueError:
+            continue
+        ids, to = p.get("ask_ids") or [p.get("ask_id")], p.get("to")
+        if not to or not ids[0] or (only and to != only) or not any(i in open_ids for i in ids) \
+                or (of_asks.seconds_since(ts, now) or 0) < min_age or delivered(conn, to, [handed_mark(ids[0])], ts):
+            continue
+        q, _, asker, _ = ask_details(conn, ids[0])
+        out.append({"key": f"handed:{eid}:{to}", "position": to, "marks": [handed_mark(ids[0])], "since": ts,
+                    "text": handed_frame(asker or "?", ids[0], full_question(q, ""), options(q))
+                    + _late(ts, now, "the founder handed it"), "sender": "owner", "channel": None})
     units = {x["name"]: x.get("_unit") for x in positions}
     for eid, ts, asker, payload in conn.execute(
             "SELECT event_id, ts, position, payload FROM event WHERE name = 'of.agent_question' AND ts >= ? "
