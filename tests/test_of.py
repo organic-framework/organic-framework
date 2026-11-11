@@ -687,6 +687,19 @@ class InitStructureTest(unittest.TestCase):
         self.assertTrue(asked[0].startswith(of_locale.tr(i.CAPACITY_QUESTION, "ru", n=2, position="acme_capacity")))
         self.assertNotIn("This machine has", asked[0])
 
+    def test_herdr_plugin_linked_when_herdr_is_here(self):
+        i, said = self.of_init, []
+        self.assertFalse(i.link_herdr_plugin(True, said.append, install=lambda h: 1 / 0, which=lambda n: None))
+        self.assertIn("not installed here", said[-1])
+        homes = []
+        self.assertTrue(i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr",
+                                             install=lambda h: homes.append(h) or (True, "linked")))
+        self.assertTrue(any("herdr plugin unlink organic-framework" in x for x in said))  # said before it is done
+        self.assertEqual(homes, [os.path.dirname(i.HERE)])
+        self.assertFalse(i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr",
+                                              install=lambda h: (False, "herdr plugin link failed")))
+        self.assertIn("NOT linked: herdr plugin link failed", said[-1])
+
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
         for rel, text in files.items():
