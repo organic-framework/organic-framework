@@ -130,7 +130,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 
 ## Requirements and limits
 
-- **herdr** is the runtime OF sits on: names, panes, the desk and delivery into panes need it. Without it the registry and the recording work, and agents start in a terminal from the lines `of init` prints.
+- **herdr** is the runtime OF sits on: names, panes, the desk and delivery into panes need it. Without it the registry and the recording work, and agents start from the lines `of init` prints: the conductor in a terminal or a detached `screen` session, the others in detached `screen` sessions the conductor or the onboarding lead starts.
 - **Claude Code** is the only agent CLI whose sessions are recorded.
 - **macOS or Linux.** Windows is not tested.
 - **Python 3.11+** with PyYAML, and OpenSSH.

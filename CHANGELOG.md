@@ -18,6 +18,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 ### Changed
 
 - The README follows the OF design: the photograph and the type of the design, light and dark; "install it with your agent" comes first.
+- No agent asks the organization's head to run a command. The head may talk to agents through Remote Control, the desktop or the mobile app, where a command typed into the chat does not run. The conductor asks in words and starts the onboarding lead itself; what only the head can do (a login, trusting the folder) is a step in words with its place. Without herdr, every agent but the conductor starts in a detached `screen` session. `INSTALL.md` tells the installing agent the same.
 
 ### Fixed
 

@@ -27,7 +27,7 @@ More: [`ontology.md`](ontology.md), [`glossary.md`](glossary.md).
 
 1. **Create the organization.** `of init my-org --owner "Your Name" --path ~/code/my-project`. It writes the repository, your conductor's position first, and the onboarding unit, and it installs the recorder hooks after asking you. It starts no agent.
 2. **Start your conductor.** First open Claude Code once in the new folder and trust it (`cd ~/of/my-org && claude --dangerously-skip-permissions`, then `/exit`; the README's quickstart says why). Then `of spawn my-org_conductor --config-dir ~/.claude`, or the two lines `of init` printed if you have no herdr. From now on, talk to it.
-3. **Let the onboarding run.** Your conductor asks you to start the onboarding lead. The lead drafts a charter with you: the problem to solve and the data OF may read. The rest of the run is in `onboarding/README.md` in your new repository and in [`onboarding.md`](onboarding.md).
+3. **Let the onboarding run.** Your conductor asks you to say when you are ready, then starts the onboarding lead itself. The lead drafts a charter with you: the problem to solve and the data OF may read. The rest of the run is in `onboarding/README.md` in your new repository and in [`onboarding.md`](onboarding.md).
 4. **See your agents.** `of who` lists every position and its holder, those waiting on you first. `of apply` gives the herdr panes their names and labels.
 5. **Answer cards.** `of asks` lists the questions waiting on you, oldest first; the popup shows the same queue.
 

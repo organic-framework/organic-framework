@@ -3,8 +3,9 @@
 You are a coding agent (Claude Code, for example), and a person asked you to install Organic Framework (OF) from this repository. This page tells you what to ask, what to run, how to check each step, and where to stop for the person. The README's quickstart is the same install, written for a person doing it by hand.
 
 **Rules for you while you install:**
+- **The person may be remote.** They may drive you through Claude's Remote Control, the desktop or the mobile app, or over SSH from another computer, and a command typed into such a chat does not run. Never ask them to type or paste a command: run every command yourself.
 - Ask before you change anything outside the new folders: the person's Claude Code settings, their shell profile, a service on their machine.
-- Some steps only the person can do: logging in to Claude Code, answering Claude Code's trust dialog, and installing software that asks for their password. Stop there, say exactly what to do, and wait.
+- Some steps only the person can do: logging in to Claude Code, answering Claude Code's trust dialog, and installing software that asks for their password. Stop there, say in words what to do and where (which machine, which app, what to choose there), and wait. Show a command only to a person who says they sit at a terminal on that machine, in front of it or in an SSH session to it, and only for that terminal.
 - Never ask for, read or print a password, token or key.
 - Do not tell the person how long anything will take.
 - Run each check below. If a check fails, stop, show the output, and say what you think is wrong.
@@ -32,10 +33,10 @@ The details and a security checklist are in [`docs/remote-access.md`](docs/remot
 | Check | Passes when | If it fails |
 |---|---|---|
 | `python3 --version` | 3.11 or newer | Install a newer Python: Homebrew `brew install python` on macOS, the system's package manager on Linux. |
-| `python3 -c "import yaml"` | no output | Homebrew's or a recent Linux Python refuses a plain `pip install --user`. On macOS: `python3 -m pip install --user --break-system-packages pyyaml`. On Debian or Ubuntu: `sudo apt install python3-yaml` (the person types the password). |
+| `python3 -c "import yaml"` | no output | Homebrew's or a recent Linux Python refuses a plain `pip install --user`. Run `python3 -m pip install --user --break-system-packages pyyaml`. On Linux without pip (`python3 -m pip --version` fails), the system package (`python3-yaml` on Debian or Ubuntu) needs the person's password: their step, on this machine. |
 | `git --version` | prints a version | Install git. |
 | `ssh -V` | prints a version | Install OpenSSH. |
-| `claude --version` | prints a version | Install Claude Code (docs.claude.com). The person logs in: run `claude` once in a terminal and follow its login. |
+| `claude --version` | prints a version | Install Claude Code (docs.claude.com). Logging in is the person's step: on this machine, they start Claude Code in a terminal and follow its login. If you run in Claude Code on this machine, on the account from step 1.5, the login is done. |
 | `command -v herdr` | prints a path | Recommended: `brew install herdr` on macOS; other systems: herdr.dev. Without herdr, OF records sessions and keeps the registry, but agents get no names, no desk and no `of spawn`. |
 
 ## 4. Install the `of` command
@@ -54,7 +55,7 @@ of --help
 of init <org> --owner "<their name>" --path <folder> [--path <another folder>]
 ```
 
-`of init` asks before it adds OF's recorder hooks to the Claude Code settings. If you run it without a terminal, it stops there and installs nothing. Explain the change to the person first: the hooks are added next to theirs, with a backup and a diff. Then either the person runs the command in a terminal, or you add `--yes` once they agree.
+`of init` asks before it adds OF's recorder hooks to the Claude Code settings. If you run it without a terminal, it stops there and installs nothing. Explain the change to the person first, in words: the hooks are added next to theirs, with a backup and a diff. When they agree, run it with `--yes`.
 
 It creates the organization's repository at `~/of/<org>`. In it are the registry, with the person's conductor as the first position and the onboarding unit, and `AGENTS.md`. It starts no agent. It also starts `of-server`, the local store, as a user service.
 
@@ -64,13 +65,15 @@ It creates the organization's repository at `~/of/<org>`. In it are the registry
 
 ## 6. Trust the new folder: the person's step
 
-Claude Code asks whether you trust a folder the first time it runs there, and warns once per account before it runs without asking permission. `of spawn` answers neither for the person. If one of them is missing, `of init` prints this line, and the person runs it in a terminal:
+Claude Code asks whether you trust a folder the first time it runs there, and warns once per account before it runs without asking permission. No agent can answer either for the person, and `of spawn` stops without them. If one of them is missing, `of init` says so.
+
+Tell the person in words what to do and where, then wait: on this machine (in front of it, or in an SSH session to it from another computer), open a terminal, start Claude Code in the folder `~/of/<org>` in bypass mode, choose "Yes, I trust this folder", accept the bypass-permissions warning, and leave it with `/exit`. The line for that terminal, for a person who sits at it and never to be pasted into your chat:
 
 ```bash
 cd ~/of/<org> && claude --dangerously-skip-permissions
 ```
 
-They choose "Yes, I trust this folder", accept the bypass-permissions warning, and type `/exit`. Agents started by `of spawn` then run tools without asking each time, and OF's guard still stops the critical ones ([`docs/guard.md`](docs/guard.md)). If the person wants agents to ask before each tool, they run plain `claude` here instead, and you add `--no-bypass` to `of spawn` below.
+Agents started by `of spawn` then run tools without asking each time, and OF's guard still stops the critical ones ([`docs/guard.md`](docs/guard.md)). If the person wants agents to ask before each tool, they start plain `claude` there instead, and you add `--no-bypass` to `of spawn` below.
 
 ## 7. Start the person's conductor
 
@@ -80,15 +83,15 @@ With herdr:
 of spawn <org>_conductor --config-dir ~/.claude
 ```
 
-Use the account folder from step 1.5. Without herdr, `of init` printed two lines instead, which declare the conductor's brief and start it in a terminal. They are also in `~/of/<org>/onboarding/README.md`. The person runs them.
+Use the account folder from step 1.5. Without herdr, `of init` printed two lines instead: the first declares the conductor's brief, the second starts it. They are also in `~/of/<org>/onboarding/README.md`. You run them: the first as it is, the second detached, `screen -dmS <org>_conductor sh -c '<the second line>'`, with the line quoted for the shell (macOS ships `screen`; on Linux, install it). If the person sits at a terminal on this machine, they may run the second line there instead.
 
-**Check:** `of who` lists `<org>_conductor` with a live pane, if herdr runs.
+**Check:** with herdr, `of who` lists `<org>_conductor` with a live pane. Without herdr, `screen -ls` lists `<org>_conductor`, and the person talks to it on this machine with `screen -r <org>_conductor`.
 
 ## 8. Hand over to the person
 
 Tell them:
-- From now on they talk to their conductor, `<org>_conductor`. It is their one window to every agent ([`docs/conductor.md`](docs/conductor.md)). Its first job is the onboarding: it asks them to start the onboarding lead, which drafts the organization's charter with them ([`docs/onboarding.md`](docs/onboarding.md)).
-- Questions from agents come to them as cards: `of asks` lists them, and herdr's popup shows them.
+- From now on they talk to their conductor, `<org>_conductor`. It is their one window to every agent ([`docs/conductor.md`](docs/conductor.md)). Its first job is the onboarding: it asks them in words to say when they are ready to start it, then starts the onboarding lead itself, which drafts the organization's charter with them ([`docs/onboarding.md`](docs/onboarding.md)).
+- Questions from agents come to them as cards: their conductor brings them, herdr's popup shows them, and `of asks` lists them in a terminal on this machine.
 - Colleagues join the same structure as people holding positions, beside the agents ([`docs/registry.md`](docs/registry.md), People); their machines join with `of invite` and `of enroll`.
 - `~/of/<org>` is a git repository with their organization's structure. Keep it private: in their own git hosting, never in a public repository.
 - What works today, and how far each part has come: [`FEATURES.md`](FEATURES.md). Everyday commands: [`docs/guide.md`](docs/guide.md).
