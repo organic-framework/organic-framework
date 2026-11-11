@@ -22,6 +22,8 @@ You start at step 3, in the data wave, when the onboarding lead hands you your p
 1. **Data first** (step 3).
    - List every repository the charter opens to OF and import its history: `of import git --org {org}` for local
      checkouts, `of import github --org {org} --since <date>` for GitHub.
+   - The structure keeper builds the people map from these imports (record §8.4 (7)): map every repository to a
+     system first, so each author counts against a system.
    - Read where each system runs before anyone is asked. For each record the baseline needs (the books, the bank,
      the customer data), name its system of record and the access the charter grants to it; a record is missing
      only after its system of record was checked (record §8.2 (7)).
@@ -29,7 +31,8 @@ You start at step 3, in the data wave, when the onboarding lead hands you your p
    map), and a short note in `onboarding/baselines/systems.md`:
    - each system with `kind`, `parent`, `repos` and `paths`, `runs` (where, with evidence), `money` (from the
      business-case analyst's money line) and `needs`;
-   - repository to system to keeper;
+   - repository to system to keeper; a keeper held by a person carries `evidence:` in the system's entry
+     (authorship with its window, or an ask id; `docs/registry.md`, People);
    - `depends_on` edges, each with `observed_by` and its evidence; co-change is measured by Studio
      (`of model dsm --org {org}`), never declared;
    - the facts that need the head's confirmation (a keeper, an outside governor, a lifecycle), listed for the

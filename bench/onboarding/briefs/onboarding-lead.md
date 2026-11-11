@@ -38,7 +38,9 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
    yet, `of spawn` asks for the account: pass `--config-dir` with the head's Claude Code folder. Check capacity first (`of capacity status`) and start no more first runs than the accounts
    carry (`docs/rollout.md`; record §8.4 (4)). Hand each its part with
    `of handover propose <position> "<title>" --done-when "<the stage's evidence>"`. Nothing confidential is read
-   without its permission in the charter or an ask id.
+   without its permission in the charter or an ask id. When the structure keeper sends the people map (authors by
+   system, from the imported records), file it to the head as one card for confirmation: no person gets a position
+   before it is answered, and the head's words go into the registry verbatim (record §8.4 (7)).
 4. **Four baselines in parallel.** Start the lens wave: `of spawn {org}_business-case` and `of spawn {org}_flow`
    (or their lines in `onboarding/README.md`).
    Each lens writes its baseline under `onboarding/baselines/` and checks it against its norm (record §8.1). You

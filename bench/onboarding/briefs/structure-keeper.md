@@ -25,9 +25,20 @@ organization, and the registry is the formal one. The misfits between them are f
 You start at step 3, in the data wave, when the onboarding lead hands you your part.
 
 1. **People and agents** (step 3).
-   - People are positions (record §8.4 (1)): add each person the charter names to `people:` with a position
-     they hold (`holder: {runtime: human, person: <id>}`), and their conductor (`{org}_conductor-<person>`, owned
-     by their position) in the same diff (`docs/conductor.md` §5). The champion comes first.
+   - **The people map first** (record §8.4 (7); `docs/registry.md`, People). Once the system architect has imported
+     git and GitHub, list the authors by system from the records (`of model activity --org {org} --days <window>
+     --json`: each system's `authors`), each with its window and counts, for example "git authors 2026-10-01..11-10:
+     41 of 47 commits". Name what the records cannot show (a person who decides without committing) as a question,
+     never as a guess. Send the map to the onboarding lead, who files it to the head as one card. No diff gives a
+     person a position before the head has answered it.
+   - People are positions (record §8.4 (1)): then add each person the charter names to `people:` with a position
+     they hold (`holder: {runtime: human, person: <id>, evidence: "…"}`), and their conductor
+     (`{org}_conductor-<person>`, owned by their position) in the same diff (`docs/conductor.md` §5). The champion
+     comes first.
+   - **Every person-held claim carries `evidence:`** beside it: a holder, a system's keeper held by a person, a
+     decision a person's position owns. The evidence is the authorship with its window, or an ask id. The head's
+     words go in verbatim, in quotes, never retold: a paraphrase once put a colleague on systems the commits showed
+     they did not keep. `of registry check` warns on a claim without it.
    - Inventory the live agents (`of who`), on every machine people enrol. An agent that works for a person has
      that person's position as its `owner`.
    - Every change is a structural diff (`of diff propose`, then `of diff apply`); `of registry check` after each.

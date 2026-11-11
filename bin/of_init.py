@@ -307,6 +307,8 @@ def build_structure(pkg, values, pkg_dir=PACKAGE_DIR):
             p["mandate_exit"] = {"done_when": r["done_when"]}
         if r.get("held_by") == "person":
             p["holder"] = {"runtime": "human", "person": r.get("person") or values["owner_id"]}
+            if values.get("owner_evidence"):  # docs/registry.md, People: a person-held claim carries evidence
+                p["holder"]["evidence"] = values["owner_evidence"]
         p["package"] = {"name": pkg["package"], "version": pkg["version"], "role": r["id"]}  # docs/registry.md
         p["aliases"] = []
         positions.append(p)
@@ -413,6 +415,16 @@ def owner_identity(owner=None):
     return pid, name
 
 
+def owner_evidence(org, owner, owner_name, day=None):
+    """Where the head's holding of the owner's position comes from (docs/registry.md, People: every person-held claim
+    carries evidence; the founder, 2026-11-11): the command that named them, verbatim, with its date."""
+    import datetime
+    day = day or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    if owner:
+        return f'of init {org} --owner "{owner}", run on this machine on {day}'
+    return f"of init {org} without --owner, run on this machine on {day}: the login name {owner_name}"
+
+
 def hand_start(doc, conductor, repo, of_cmd="of"):
     """Without herdr, `of spawn` cannot open a pane: reserve the conductor's session id in the registry (nothing is
     started) and return the two lines that start it by hand in a terminal: declare the brief, then run claude in the
@@ -476,6 +488,10 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Who does what needs evidence.** A claim that a person holds a position, keeps a system or decides it carries
+  `evidence:` beside it: the authorship it rests on, with its window, or an ask id. The people map from the
+  repositories comes before any person's position, and {owner_name}'s words go in verbatim, never retold
+  (organic-framework `docs/registry.md`, People).
 - **What OF reads.** GitHub, the Claude Code sessions people choose to record, and the structure. Never the head's
   mail, chat or meetings; a confidential source only with a permission recorded by an ask id
   (`onboarding/charter.md`).
@@ -492,7 +508,8 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     org = _name(org)
     prefix = org_prefix(org)
     owner_id, owner_name = owner_identity(owner)
-    values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name}
+    values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
+              "owner_evidence": owner_evidence(org, owner, owner_name)}
     home = os.path.expanduser("~")
     out(f"Organic Framework: init for organization {org!r} (owner: {owner_name})\n")
     out("1. Prerequisites")

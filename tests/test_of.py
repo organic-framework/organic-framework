@@ -495,6 +495,18 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_the_heads_holding_carries_its_evidence(self):
+        ev = self.of_init.owner_evidence("acme", "Alex", "Alex", day="2026-11-11")
+        self.assertEqual(ev, 'of init acme --owner "Alex", run on this machine on 2026-11-11')
+        self.assertIn("without --owner", self.of_init.owner_evidence("acme", None, "alex", day="2026-11-11"))
+        doc = {"organization": "acme"}
+        self.of_init.merge_structure(doc, self.built(dict(self.values, owner_evidence=ev)))
+        owner = next(p for p in doc["positions"] if p["name"] == "acme_owner")
+        self.assertEqual(owner["holder"], {"runtime": "human", "person": "alex", "evidence": ev})
+        self.assertEqual(of.check_evidence(doc, doc["positions"]), [])  # docs/registry.md, People
+        data = next(s for s in doc["works"]["acme-onboarding"]["stages"] if s["id"] == "data")
+        self.assertIn("people map", data["done_when"])
+
     def test_conductor_start_trusts_the_folder_once(self):
         start = self.of_init.conductor_start
         lines = start("acme", "/home/alex/of/acme", "/home/alex/.claude")

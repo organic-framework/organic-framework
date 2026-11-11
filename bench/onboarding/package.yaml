@@ -76,7 +76,7 @@ roles:
   - id: champion
     title: Champion
     held_by: person
-    position: null  # named by the charter; the structure keeper adds the person, the position and its conductor by diff
+    position: null  # named by the charter; after the people map, the structure keeper adds the person, the position and its conductor by diff
     role: champion
     kind: keeper
     brief: briefs/champion.md
@@ -179,8 +179,10 @@ roles:
       - "record §1.5: socio-technical congruence (Cataldo, Herbsleb, Carley, 2008)"
       - "record §8.1 and §8.2 (4): the management functions and the lines of control"
       - "record §8.4 (1, 2): people are positions; each mandate against its work"
+      - "record §8.4 (7): the people map from authorship, confirmed by the head, before any person's position"
     evidence:
-      - "the registry of people, agents and positions"
+      - "the people map: authors by system with each window, confirmed by the head on one card"
+      - "the registry of people, agents and positions, each person-held claim with its evidence"
       - "current briefs; each mandate checked against the work done"
       - "the key decisions, each with one decider"
       - "the misfits between the formal and the informal organization"
@@ -218,6 +220,7 @@ rules:
   - "In a small company one agent may hold several lens roles (rfc/0007 allows the architect and the keeper to be one position). The lead and the conductor stay separate."
   - "The sponsor and the champion are people: every source puts the decision with an accountable sponsor (record §3, §6)."
   - "One batching point per unit files the head's cards; the lead is this unit's (record §8.3 (2))."
+  - "Who does what needs evidence: the people map from the repositories comes before any person's position, every person-held claim carries evidence: (authorship with its window, or an ask id), and the head's words go in verbatim (docs/registry.md, People; record §8.4 (7))."
 
 # The run: one work with eight stages (docs/registry.md, Works). Each stage's done_when is checked from the
 # records, never ticked by hand (record §8.3 (3)).
@@ -253,13 +256,14 @@ run:
         - "business-case.md: the stages S0 to S3"
     - id: data
       step: 3
-      title: "Data first: people, agents, machines, repositories and recorded sessions"
-      who: "the system architect and the structure keeper"
-      done_when: "every live agent, person and repository is visible (of who; the registry's people:; the systems map's repos); git and GitHub are imported; each source read has its permission named in the charter or recorded by an ask id"
+      title: "Data first: people, agents, machines, repositories and recorded sessions; the people map before any person's position"
+      who: "the system architect imports git and GitHub; the structure keeper builds the people map; the lead files its card; the head confirms it"
+      done_when: "every live agent, person and repository is visible (of who; the registry's people:; the systems map's repos); git and GitHub are imported; the people map (authors by system, each with its window, from of import git and of import github) is confirmed by the head on one card before a diff gives any person a position; every person-held claim carries evidence: (authorship with its window, or an ask id, the head's words verbatim); each source read has its permission named in the charter or recorded by an ask id"
       sources:
-        - "record §1.5: the Process Mining Manifesto (discovery); Tornhill's code history"
+        - "record §1.5: the Process Mining Manifesto (discovery); Tornhill's code history, authors per area"
         - "record §8.2 (7): the system of record and its permission"
         - "record §8.4 (1): people are positions"
+        - "record §8.4 (7): the people map from authorship first; each claim with its evidence"
     - id: baselines
       step: 4
       title: "Four baselines in parallel: business case, systems, structure, flow; each against its norm"
