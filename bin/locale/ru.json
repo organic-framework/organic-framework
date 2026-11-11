@@ -143,5 +143,8 @@
  "This machine has {n} Claude accounts. When one reaches its usage limit, the agents on it stop until it resets. Shall OF move them to an account that still has room, and add one agent of yours, {position}, that keeps watch over the accounts and asks you only when your hands or money are needed?": "На этой машине {n} аккаунтов Claude. Когда аккаунт доходит до своего лимита, агенты на нём стоят, пока лимит не сбросится. Переносить их на аккаунт, где ещё есть место, и добавить одного твоего агента, {position}, который следит за аккаунтами и обращается к тебе, только когда нужны твои руки или деньги?",
  "yes, move them and add {position} (recommended: no agent waits on a spent account while another has room)": "да, переносить и добавить {position} (рекомендую: ни один агент не ждёт на исчерпанном аккаунте, пока на другом есть место)",
  "no, not now: nothing is added, and agents on a spent account wait for it to reset; tell your conductor if you change your mind": "нет, не сейчас: ничего не добавляется, а агенты на исчерпанном аккаунте ждут сброса; если передумаешь, скажи своему дирижёру",
- "y": "д"
+ "y": "д",
+ "{name} stopped (exit {code}); it starts again in {s} s. Ctrl-C stops it.": "{name}: остановилась (код {code}); снова запустится через {s} с. Ctrl-C — остановить.",
+ "the questions panel": "Панель вопросов",
+ "the panel": "Панель"
 }

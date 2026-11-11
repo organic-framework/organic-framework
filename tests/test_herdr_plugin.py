@@ -123,6 +123,20 @@ class HookTest(unittest.TestCase):
         refused = lambda method, params: {"error": {"code": "plugin_not_found", "message": "not linked"}}
         self.assertEqual(plugin.set_view(request=refused), (False, "plugin_not_found"))
 
+    def test_keep_restarts_a_pinned_program_with_a_back_off(self):
+        t = [0.0]
+        said, slept, codes = [], [], iter([1, 1, 1, 0, 1])
+
+        def run(cmd):
+            t[0] += 70 if len(slept) == 3 else 1  # the fourth run lasts long: the wait goes back to the first
+            return next(codes)
+        plugin.keep(["x"], name="the questions panel", run=run, sleep=slept.append, clock=lambda: t[0],
+                    say=said.append, max_runs=5)
+        self.assertEqual(slept, [2, 4, 8, 2, 4])
+        self.assertIn("starts again in 2 s", said[0])
+        self.assertEqual(plugin.keep(["x"], run=lambda c: (_ for _ in ()).throw(KeyboardInterrupt()),
+                                     sleep=lambda s: None, say=lambda x: None), 130)  # Ctrl-C stops it
+
     def test_applies_are_coalesced(self):
         """After a herdr restart many agents are detected at once: one apply at a time, and exactly one more for
         everything that arrived during it."""
