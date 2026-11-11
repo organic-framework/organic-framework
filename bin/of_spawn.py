@@ -129,7 +129,7 @@ def settings_file(settings, sid, state_dir=None):
 
 
 def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=True, memory=None, deny=None,
-                   state_dir=None, tools=None):
+                   state_dir=None, tools=None, effort=None):
     """memory: the --settings JSON naming the position's memory directory (bin/of_memory.py, RFC 0006); deny: the
     credential deny rules (deny_rules); tools: (argv, settings keys) of the position's tool profile
     (of_tools.launch_parts). The settings go into one settings file (settings_file)."""
@@ -143,6 +143,8 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
     parts += [shlex.quote(a) for a in tool_argv]
     if model:
         parts += ["--model", model]
+    if effort:
+        parts += ["--effort", effort]
     if bypass:
         parts.append("--dangerously-skip-permissions")
     return " ".join(parts)
@@ -150,7 +152,7 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
 
 def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
          capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
-         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None):
+         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None):
     """Everything run() needs, or SpawnError. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
     the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
     (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
@@ -182,7 +184,7 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
             "bypass_ok": (not bypass) or bool(accepted(config_dir)) if accepted else True,
             "deny": list(deny or []),
             "command": launch_command(cwd, config_dir, sid, p["name"], default_dir, model, bypass, memory, deny,
-                                      tools=tools(p["name"], sid, config_dir) if tools else None)}
+                                      tools=tools(p["name"], sid, config_dir) if tools else None, effort=effort)}
 
 
 def git_root(path, exists=os.path.exists, isdir=os.path.isdir):

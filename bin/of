@@ -100,6 +100,20 @@ class OfError(Exception):
 
 # ---------------------------------------------------------------- registry
 
+def org_agents(org, orgs_file=ORGS_FILE):
+    """The organization's default model and effort for its agents' sessions: `agents: {model, effort}` on its
+    orgs.yaml entry, which of init writes (opus, xhigh; the founder, 2026-11-11). {} when unset."""
+    try:
+        with open(orgs_file) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    for o in doc.get("orgs") or []:
+        if isinstance(o, dict) and o.get("name") == org and isinstance(o.get("agents"), dict):
+            return {k: str(v) for k, v in o["agents"].items() if k in ("model", "effort") and v}
+    return {}
+
+
 def _org_paths(orgs_file=ORGS_FILE):
     with open(orgs_file) as fh:
         doc = yaml.safe_load(fh) or {}
@@ -1717,6 +1731,7 @@ def cmd_spawn(args):
     # RFC 0006: the position's own memory directory once of_capacity has seeded the directories and turned it on
     # (capacity.yaml position_memory: true, as for a move); before that a spawn would start without its lessons
     memory = of_memory.settings(p, make=not args.dry_run) if of_capacity.load_policy().get("position_memory") else None
+    agents = org_agents(p.get("_org"))  # the organization's default model and effort (of init writes them)
     # the credentials catalogue (docs/registry.md, Credentials): the session's own deny rules; the guard does the rest
     try:
         import of_credentials
@@ -1728,7 +1743,8 @@ def cmd_spawn(args):
         pl = of_spawn.plan(p, positions, live_agents(), bind, p.get("_systems") or {}, _org_paths().get(p["_org"]),
                            roots.get(p["_org"], ""), want_workspace, config_dir=args.config_dir, cwd=args.cwd,
                            capacity_rows=rows, best_target=of_capacity.best_target,
-                           trusted=lambda d, c: of_spawn.trusted_with_parents(d, c, of_capacity.trusted_key), model=args.model,
+                           trusted=lambda d, c: of_spawn.trusted_with_parents(d, c, of_capacity.trusted_key),
+                           model=args.model or agents.get("model"), effort=getattr(args, "effort", None) or agents.get("effort"),
                            bypass=not args.no_bypass, memory=memory, deny=deny, accepted=of_spawn.bypass_accepted,
                            tools=_tool_parts)
     except of_spawn.SpawnError as e:
@@ -1991,7 +2007,8 @@ def cmd_resume_command(args):
     deny = of_capacity.deny_for(p, log=lambda m: None) if p else None  # its credential deny rules, as of spawn
     d, _ = of_resume.newest_copy(args.session)
     tools = _tool_parts(p["name"], args.session, d, log=lambda m: None) if p and d else None  # its tool profile
-    line = of_resume.command(args.session, memory_dir=mem, deny=deny, tools=tools)
+    line = of_resume.command(args.session, memory_dir=mem, deny=deny, tools=tools,
+                             defaults=org_agents(p.get("_org")) if p else None)
     if not line:
         return 1
     print(line)
@@ -4801,7 +4818,8 @@ def main(argv=None):
     sp.add_argument("position")
     sp.add_argument("--config-dir", help="the account to run on (default: the most headroom, of capacity)")
     sp.add_argument("--cwd", help="the working folder (default: its system's first repository)")
-    sp.add_argument("--model")
+    sp.add_argument("--model", help="default: the organization's agents.model in orgs.yaml")
+    sp.add_argument("--effort", help="default: the organization's agents.effort in orgs.yaml")
     sp.add_argument("--no-bypass", action="store_true", help="without --dangerously-skip-permissions")
     sp.add_argument("--dry-run", "-n", action="store_true")
     sp.set_defaults(fn=cmd_spawn)

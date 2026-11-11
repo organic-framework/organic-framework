@@ -253,5 +253,15 @@ class ToolProfileTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class AgentDefaultsTest(unittest.TestCase):
+    """The founder, 2026-11-11: setup makes opus at xhigh the default; of init writes it on the organization's
+    orgs.yaml entry (agents: {model, effort}), of spawn starts with it unless told otherwise."""
+
+    def test_model_and_effort_on_the_launch_line(self):
+        cmd = plan(cwd="/w", model="opus", effort="xhigh")["command"]
+        self.assertIn("--model opus --effort xhigh", cmd)
+        self.assertNotIn("--effort", plan(cwd="/w")["command"])
+
+
 if __name__ == "__main__":
     unittest.main()

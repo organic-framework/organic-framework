@@ -89,6 +89,14 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(positions, [])  # no commit to stand in: skipped, as before
             self.assertIn("its positions are skipped", "\n".join(problems))
 
+    def test_org_agents_reads_the_entry(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "orgs.yaml")
+            with open(path, "w") as fh:
+                fh.write("orgs:\n  - {name: a, path: x, agents: {model: opus, effort: xhigh}}\n  - {name: b, path: y}\n")
+            self.assertEqual(of.org_agents("a", path), {"model": "opus", "effort": "xhigh"})
+            self.assertEqual(of.org_agents("b", path), {})
+
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
              "notes": {"Waits for runners_coordinator after the CA window.": None}}

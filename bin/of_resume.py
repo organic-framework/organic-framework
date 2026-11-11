@@ -51,11 +51,12 @@ def planned(sid, root=None):
     return {}
 
 
-def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None):
+def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_dir=None, tools=None, defaults=None):
     """The shell line that resumes `sid` as it ran, or None when no account holds it (the caller runs the bare one).
     deny: the position's credential deny rules (of_spawn.deny_rules), so a session herdr resumes keeps what of spawn
     gave it (of_capacity, 2026-11-11); with the memory directory they go in one settings file (of_spawn). tools:
-    (argv, settings keys) of the position's tool profile (of_tools.launch_parts, docs/tools.md §4)."""
+    (argv, settings keys) of the position's tool profile (of_tools.launch_parts, docs/tools.md §4). defaults: the
+    organization's {model, effort} (orgs.yaml agents), used only when the session names neither."""
     d, t = newest_copy(sid, dirs)
     if not d:
         return None
@@ -69,13 +70,14 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
         argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir)]
     argv += list(tool_argv)
     e = planned(sid, plan_root)
-    model = of_capacity.last_model(t) or e.get("model")
+    defaults = defaults or {}
+    model = of_capacity.last_model(t) or e.get("model") or defaults.get("model")
     if model:
         argv += ["--model", model]
         # the plan's effort even when the model changed since (of_capacity, 2026-11-10: acme_throughput-owner moved to
         # Fable at xhigh after the plan recorded Opus; the account's setting for Fable is empty, so a resume would
         # fall to Claude Code's default effort)
-        effort = e.get("effort") or of_capacity.effort_of(d, model)
+        effort = e.get("effort") or of_capacity.effort_of(d, model) or defaults.get("effort")
         if effort:
             argv += ["--effort", effort]
     if e.get("bypass") or of_capacity.ran_in_bypass(t):

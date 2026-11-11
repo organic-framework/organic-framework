@@ -52,6 +52,12 @@ class ResumeCommandTest(unittest.TestCase):
                          ("claude-opus-5-5", "xhigh"))
         self.assertEqual(argv[-1], of_capacity.BYPASS_FLAG)
 
+    def test_the_organization_default_only_when_the_session_names_none(self):
+        own = self.copy(".claude-d", [{"type": "user"}])  # a transcript with no model in it, and no plan
+        argv = shlex.split(of_resume.command(SID, [own], plan_root=os.path.join(self.home, "none"),
+                                             defaults={"model": "opus", "effort": "xhigh"}))
+        self.assertEqual((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]), ("opus", "xhigh"))
+
     def test_the_default_account_unsets_the_variable_and_an_unknown_session_gives_nothing(self):
         base = self.copy(".claude", [{"type": "user"}])
         orig = of_capacity.is_default
