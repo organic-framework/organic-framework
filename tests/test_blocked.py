@@ -59,6 +59,12 @@ class BlockedTest(unittest.TestCase):
         self.assertIsNone(of_blocked.detect(warn))
         self.assertEqual(of_blocked.detect(warn + LIMIT)["type"], "limit")  # a real stop on the same screen still is
 
+    def test_a_limit_line_before_a_finished_turn_is_history(self):
+        """2026-11-11, ask ce572545 (of_capacity): a scheduled run's old limit line above an idle prompt."""
+        old = LIMIT + "\n✻ Worked for 0s · done 6:27 PM\n\n> \n  ⏵⏵ bypass permissions on\n"
+        self.assertIsNone(of_blocked.detect(old))
+        self.assertEqual(of_blocked.detect(old + LIMIT)["type"], "limit")  # a new stop after it still is one
+
     def test_the_inbox_note_for_a_limit(self):
         d = of_blocked.detect(LIMIT)
         self.assertIn("limit", of_blocked.FYI)

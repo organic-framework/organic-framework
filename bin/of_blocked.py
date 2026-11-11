@@ -45,6 +45,15 @@ _LIMIT = re.compile(r"(?i)(usage limit|limit reached|5-hour limit|weekly limit|y
 # (2026-11-09, ask fb158869: accounting_keeper idle at its prompt became "stopped on a usage limit"); a stop says
 # "limit reached", "You've reached your …" or "usage limit".
 _LIMIT_WARNING = re.compile(r"(?i)you've used \d+\s*% of your")
+# A turn that ended after the limit line ("✻ Worked for 0s · done 6:27 PM") makes it history, not a stop
+# (of_capacity, 2026-11-11, ask ce572545: a scheduled run's old limit line above an idle prompt, the window reopened).
+_TURN_DONE = re.compile(r"(?i)\b[a-z]+ed for \d+\s*[smh]\b")
+
+
+def _limit_stop(lines):
+    """A usage-limit line that is still the session's state: no warning-only line, and no finished turn after it."""
+    hits = [i for i, ln in enumerate(lines) if _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln)]
+    return bool(hits) and not any(_TURN_DONE.search(ln) for ln in lines[hits[-1] + 1:])
 _LOGIN = re.compile(r"(?i)(please run /login|login required|not logged in|session expired.*log ?in|/login to)")
 _EXIT = re.compile(r"(?i)exit and stop tasks")
 # Claude Code's offer to compact (2026-11-10, of_capacity msg 01a1c64d; of_server msg 01a1c650): its rows have no
@@ -97,7 +106,7 @@ def detect(screen):
     elif _COMPACT.search(text):
         kind = "compact"
         opts = COMPACT_OPTIONS
-    elif _LIMIT.search("\n".join(ln for ln in lines if not _LIMIT_WARNING.search(ln))):
+    elif _limit_stop(lines):
         kind = "limit"
     elif _LOGIN.search(text):
         kind = "login"
