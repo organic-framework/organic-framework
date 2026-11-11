@@ -32,6 +32,20 @@ present at main `3962757` ("Remote answers and tasks with a place") - the run co
 | C4 | 5 | **A message delivered to a tmux agent.** a peer `of send`s the tmux agent | the relay delivers it into the agent's tmux pane (idle, empty input, declared injection, `bin/of_tmux.py`) with no one typing it. |
 | C5 | 3 | **A stuck thread surfaced.** a thread of the person's is left stuck | with `surface: remote`, the pulse's `remote_notes` sends the conductor one message about it, which the conductor passes to the person within its next turn. |
 
+### Negative cases (authority): the evidence must be the decision owner's own
+
+C1 and C2 accept an answer or an approval only as the decision owner's own words, recorded in the session that holds
+**their** conductor (`docs/remote.md` §5). Two forgeries must be **refused**:
+
+- **C1n / C2n-a — a colleague's conductor.** A conductor that is not the decision owner's (another org's, or one that
+  does not own the card or diff) giving `yes <id>` is refused: the prompt must be in the owner's own conductor session.
+- **C1n / C2n-b — a forged session id.** A session that only sets `CLAUDE_CODE_SESSION_ID` to the conductor's id, without
+  genuinely holding the position (`holder.session` + live presence), is refused: claiming the env var is not holding the
+  session.
+
+**Both pass today** (the answer/approval is wrongly accepted); `of_asks` is fixing them after of_architect's review of
+`3962757`. So each negative check asserts a refusal and **fails until the fix lands**, then guards the regression.
+
 ## Run (on a clean lab VM)
 
 ```
@@ -50,4 +64,7 @@ Heavy work stays in the VM (`AGENTS.md`: nothing heavy on the Mac). The run is r
 - Features: rows 1, 3, 4, 5 and row 2's `--prompt` are present at main `3962757`; the checks are wired to them
   directly. Exact outputs are read from each owner's module (`of_asks_chat.py`, `of_diff.py`, `of_pulse.remote_notes`,
   `of_tmux.py`); questions about a specific flag or output go to that owner, not through `of_architect`.
+- Known authority gaps (of_architect's review of `3962757`): a colleague's conductor and a session that only forges
+  `CLAUDE_CODE_SESSION_ID` are both wrongly accepted today; `of_asks` is fixing them. The two negative cases above
+  assert the refusal, so they fail until the fix and then guard it.
 - Blocked only on a free lab VM for the run (Mac load over the lab ceiling); the harness is built meanwhile.
