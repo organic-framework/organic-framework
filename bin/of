@@ -116,6 +116,16 @@ def org_agents(org, orgs_file=ORGS_FILE):
     return {}
 
 
+def _org_entry(org, orgs_file=ORGS_FILE):
+    """The organization's entry in orgs.yaml, {} when missing."""
+    try:
+        with open(orgs_file) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return next((o for o in doc.get("orgs") or [] if isinstance(o, dict) and o.get("name") == org), {})
+
+
 def _org_paths(orgs_file=ORGS_FILE):
     with open(orgs_file) as fh:
         doc = yaml.safe_load(fh) or {}
@@ -2606,7 +2616,7 @@ def cmd_import(args):
                 continue  # an organization whose systems name GitHub repositories keeps of import github
             try:
                 of_github.import_local(conn, org, doc.get("systems") or {}, roots.get(org) or [], args.since,
-                                       works=doc.get("works") or {})
+                                       works=doc.get("works") or {}, branches=_org_entry(org).get("branches") or {})
             except Exception as e:  # noqa: BLE001
                 print(f"{org}: {type(e).__name__}: {e}", file=sys.stderr)
                 rc = 1

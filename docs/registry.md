@@ -25,7 +25,10 @@ The framework defines the schema. Every organization that uses Organic Framework
       paths: [~/acme]
       hold: true                    # optional: `of apply` leaves this organization's panes alone
       drain_from: local             # optional, after a cutover to the organization's own server: local | <url> | [list]
+      branches: {storefront: develop}  # optional: a repository's default branch, when OF cannot tell it
   ```
+
+- `branches` (2026-11-11, `of_platform`; the founder: `of import git` read only `main`): `of import git` reads each checkout's default branch. It takes the branch named here for the repository (by its folder name or path), else the remote's default (`origin/HEAD`), else the one of `main`, `master`, `trunk` and `develop` that exists. When none resolves, or several exist with no `origin/HEAD`, it says so for that repository and reads nothing from it.
 
 - `drain_from` (2026-11-11, `of_server`, organic-framework 8d4ec61): after an organization's `server:` points at its own server, the relay still presents its holders to the old server named here and delivers the messages queued there, so none are stranded. Remove it by hand once the old queue is empty. It replaces a re-posting script, which would have needed the new server to accept messages on behalf of their senders ([`server-several-machines.md`](server-several-machines.md) §4.6).
 
