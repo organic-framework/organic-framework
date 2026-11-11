@@ -296,7 +296,7 @@ class RulesTest(unittest.TestCase):
              "holder": {"session": "s2"}},
             {"name": "fresh", "system": "x", "mandate_exit": {"review": "2026-11-04"}},
             {"name": "gone", "system": "x", "status": "parked", "mandate_functions": ["hr"]}]}
-        rows = [prompt(70, "2026-11-02T10:00Z", "s2", "как дела?")]
+        rows = [prompt(70, "2026-11-02T10:00Z", "s2", "how are things?")]
         m = of_model.build(doc, rows, at=self.B)
         d = of_diagnose.diagnose(m, rows, self.A, self.B)
         gaps = {i["evidence"]["function"] for i in d["issues"] if i["rule"] == "ap.function-gap"}
@@ -317,9 +317,9 @@ class RulesTest(unittest.TestCase):
         for i in range(10):   # 4 of 10 founder messages are plumbing: routing to k8s_keeper that names bot_operator
             cats = ["routing"] if i < 4 else []
             rows.append(ev(200 + i, f"2026-11-0{1 + i % 4}T1{i}:00Z", "of.human_prompt", "s-k8s_keeper",
-                           {"origin": "human", "text": f"передай bot_operator про пул {i}", "classifications": {of_measures_FA: fa(cats)}}))
+                           {"origin": "human", "text": f"tell bot_operator about pool {i}", "classifications": {of_measures_FA: fa(cats)}}))
         rows += [ev(220, "2026-11-02T10:00Z", "of.human_prompt", "s-acme_org",
-                    {"origin": "human", "text": "передай bot_operator", "classifications": {of_measures_FA: fa(["routing"])}})] * 1
+                    {"origin": "human", "text": "tell bot_operator", "classifications": {of_measures_FA: fa(["routing"])}})] * 1
         msg = lambda i, sender, sid, relayed: ev(i, "2026-11-03T10:00Z", "of.agent_message_in", sid,
                                                  {"text": f'<cross-session-message from="uds:x" from-name="{sender}">hi',
                                                   "classifications": {of_measures_FA: {"relayed": relayed}}})

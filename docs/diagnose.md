@@ -526,7 +526,7 @@ The first user organization's case (2026-11-10):
   - questions (a title ending in "?").
 - **Decider:** the structure keeper, through the daily keeper digest. The organization's structure keeper fixes its instance (`of_architect`, relay message 01a1cb93).
 - *p* = 0.6 (`strengthened`), 0.4 (`unsourced`); *m_decide* = 5 and 3 min. Severity medium and low.
-- **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML), but the run's loader takes only `needs` kinds today (`of_diagnose.kinds_needed`, `of_studio`). Until it takes `reads`, a returned hand-over can still fire, and a delivered result links nothing.
+- **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML); the run's loaders take `reads` kinds since organic-framework 4f018b9 (`of_studio`), and they never block a rule.
   - A merged PR's body and review count are not in work records yet. Until `of import github` stores them, the hand-over id and the obligation wording are read from titles only.
 - **Calibration** (2026-11-11, the 7 days to that evening):
   - The first user organization: 2 issues, both from the same watcher's hand-overs with "[confirm with counsel]" in the context.
@@ -578,7 +578,7 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | §3 | T and OE events per organization | app adapters |
 | 2.16–2.22 | The loop projection of §4.1 | RFC 0005 §8 steps 1–3 |
 | 2.25, 2.26 | `needs:` on systems and `owns:` on positions | RFC 0007 steps 1 and 3: the schema exists; each organization's system architect fills it |
-| 2.27 | A merged PR's body and review count on its work record; hand-over states and delivered results in the run's loader (`reads`) | `of import github` (`of_platform`); `of_diagnose.kinds_needed` (`of_studio`) |
+| 2.27 | A merged PR's body and review count on its work record | `of import github` (`of_platform`, asked 2026-11-11) |
 
 ### 4.1 What the loop rules read
 
@@ -692,26 +692,26 @@ Cron fires, injected notes and relay deliveries are not the owner's messages.
 
 *Defined 2026-11-06, at `of_architect`'s request: a status poll is the system failing to show the owner what he wanted. It is what the Works screen (Studio, 2026-11-06T13:39Z) and the inbox exist to remove.*
 
-**Definition.** A status poll is an owner message whose main act is to ask for the state of work in progress, or of the agent doing it. Examples:
-- progress, or how things stand: «как тут дела?», «какой прогресс по …?»;
-- what is left: «что у нас осталось?»;
-- what happened while the owner was away: «как прошла ночь?», «что случилось, пока меня не было?»;
-- whether a step is done: «ты уже смержил PR?», «как прошла миграция базы?»;
-- when it will be ready: «когда мы будем мигрировать мон?», «сколько ждать очередь?»;
-- what the agent waits for, or needs from the owner: «на что ты ждёшь моё да?», «какие ко мне вопросы?»;
-- impatience with progress: «чего так долго?».
+**Definition.** A status poll is an owner message whose main act is to ask for the state of work in progress, or of the agent doing it. The examples in this section are the owner's messages from the labelled week below, [2026-10-30T13:40Z, 2026-11-06T13:40Z), translated from Russian; the classifiers match the original wording. Examples:
+- progress, or how things stand: "how are things here?", "what's the progress on …?";
+- what is left: "what do we have left?";
+- what happened while the owner was away: "how did the night go?", "what happened while I was away?";
+- whether a step is done: "have you merged the PR yet?", "how did the database migration go?";
+- when it will be ready: "when do we migrate monitoring?", "how long is the wait in the queue?";
+- what the agent waits for, or needs from the owner: "what are you waiting for my yes on?", "what questions do you have for me?";
+- impatience with progress: "why is it taking so long?".
 
 **What still counts as a poll:**
-- An imperative whose only object is to report or gather that state: «расскажи, что случилось», «проанализируй сессии и скажи, какие ко мне вопросы», «узнай у сессии X, всё ли готово».
-- A greeting, a return note («я вернулся со спортзала») or an acknowledgement («окей», «отлично») in the same message.
+- An imperative whose only object is to report or gather that state: "tell me what happened", "go through the sessions and tell me what questions there are for me", "find out from session X whether everything is ready".
+- A greeting, a return note ("I'm back from the gym") or an acknowledgement ("okay", "great") in the same message.
 
 **What is not a poll:**
 
 | Label | The message… | Example |
 |---|---|---|
-| `instruction_with_poll` | also directs new work, decides, or gives new information besides the poll. It is an instruction, and the poll is secondary | «надо теперь донастроить …, что у нас тут осталось», «делай следующий шаг, ты зачем меня ждёшь?» |
-| `system_status` | asks for the state of a production system or a resource, not of work: alerts, limits, lost logs. A dashboard answers it, not the Works screen. Reported apart | «какой сейчас статус по лимитам?», «мы продолжаем терять логи или нет?» |
-| `question` | asks about design, mechanism or facts | «что делает DEFENDER?», «как ты видишь орг-структуру …?» |
+| `instruction_with_poll` | also directs new work, decides, or gives new information besides the poll. It is an instruction, and the poll is secondary | "now we need to finish setting up …, what do we have left here", "do the next step, why are you waiting for me?" |
+| `system_status` | asks for the state of a production system or a resource, not of work: alerts, limits, lost logs. A dashboard answers it, not the Works screen. Reported apart | "what's the status on the limits now?", "are we still losing logs or not?" |
+| `question` | asks about design, mechanism or facts | "what does <a tool> do?", "how do you see the org structure …?" |
 
 **The test for a question inside an instruction.** Remove the question. If what is left still asks the agent to do, decide or know something new, the message is an instruction. If only a greeting, an acknowledgement or a request to report is left, it is a poll.
 
@@ -723,7 +723,7 @@ The share is what moves when the owner's volume changes; the count is what the o
 
 **Classifier.** `fa-2026-11-05`'s `status_poll` (a phrase list) is pinned for the founder-load baseline and stays as it is.
 - On the hand-labelled week below it has precision 0.88 (38 of 43) and recall 0.75 (38 of 51).
-- It misses polls without its phrases: «какой статус по правкам?», «что с ней?», «ты уже смержил?», «что в итоге осталось …», «что нас сейчас останавливает, чтобы применить PR?», «какой прогноз по миграциям?».
+- It misses polls without its phrases: "what's the status on the fixes?", "what about it?", "have you merged yet?", "what's left in the end …", "what is stopping us now from applying the PR?", "what's the forecast for the migrations?".
 - It takes instructions that contain a poll phrase.
 
 `sp-v1` is this definition. Its implementation (`of_studio`) must reproduce the hand labels within ±3 on the labelled week before it replaces `fa`'s count in the Works prediction. The hand labels are app material, kept as event ids with labels in each organization's own repository.
@@ -751,25 +751,25 @@ The labels come from a scan by wording of all the week's messages, plus two poll
 
 A pasted message can be an approval or a relay. An answer to an ask can be an instruction. So `oa-v1` gives every owner message **one act** and two attributes.
 
-**Acts.** When a message holds several acts, the first in this table wins:
+**Acts.** When a message holds several acts, the first in this table wins. The examples are the owner's messages from the sample, translated from Russian:
 
 | Act | The owner… | Examples |
 |---|---|---|
-| `relay` | passes on another agent's output or request: pasted, or retold. Most of the text is that agent's, not the owner's. Plumbing, read by §2.2 | «Сессия CVE попросила перевести два вотчера …»; a pasted «Нужны четыре «да»: …» |
-| `correction` | says that the agent did, proposes or assumes something wrong, or challenges it. Read by §2.9 | «а зачем нам раннеры на столько гигабайт?», «не так», «исправь …» |
-| `instruction` | directs new work, or changes the direction of work: a goal, a requirement, a plan, a routing order | «сделай прокси отказоустойчивым», «посоветуйся с сессией, которая …» |
-| `decision` | chooses among options the agent offered, or answers its questions with content other than yes | «1. Окей 2. Ну это было бы хорошо сделать 3. размещаем в кластере» |
-| `approval` | consents to an action the agent proposed, possibly with a condition, and adds no new work. An imperative that only carries out the proposal is part of the approval | «давай применять», «подтверждаю evm-arb», «Да, согласен. Запиши это решение» |
+| `relay` | passes on another agent's output or request: pasted, or retold. Most of the text is that agent's, not the owner's. Plumbing, read by §2.2 | "The CVE session asked to move two watchers …"; a pasted "Four yeses needed: …" |
+| `correction` | says that the agent did, proposes or assumes something wrong, or challenges it. Read by §2.9 | "why do we need runners with that many gigabytes?", "not like that", "fix …" |
+| `instruction` | directs new work, or changes the direction of work: a goal, a requirement, a plan, a routing order | "make the proxy fault-tolerant", "consult the session that …" |
+| `decision` | chooses among options the agent offered, or answers its questions with content other than yes | "1. Okay 2. Well, that would be good to do 3. we put it in the cluster" |
+| `approval` | consents to an action the agent proposed, possibly with a condition, and adds no new work. An imperative that only carries out the proposal is part of the approval | "let's apply it", "I confirm <the bot>", "Yes, agreed. Record this decision" |
 | `status_poll` | §7.1 | |
 | `system_status` | §7.1 | |
-| `question` | asks about design, mechanism or facts | «что такое липкость?», «а он реально работает?» |
-| `information` | gives the agent facts it did not have: a person's feedback, an alert, a log | «От Вовы обратная связь: …»; a pasted alert |
+| `question` | asks about design, mechanism or facts | "what is stickiness?", "does it really work?" |
+| `information` | gives the agent facts it did not have: a person's feedback, an alert, a log | "Feedback from a colleague: …"; a pasted alert |
 
 **Attributes:**
 - **`pasted`**: the corrected origin is `paste`, or the text holds a `<pasted_content>` block.
   - With `paste_source` (ps-v0) at ≥ 0.5, the text is another session's output, and the act is `relay`.
   - Without a source, it comes from outside this machine (a person, a person's agent, an alert), and the act is read from the owner's own words around it.
-  - The hook misses some pastes typed as `human`, such as an agent's report copied in. Read them as pastes: agent prose in the third person, formal lists, «агент не нашёл …».
+  - The hook misses some pastes typed as `human`, such as an agent's report copied in. Read them as pastes: agent prose in the third person, formal lists, "the agent did not find …".
 - **`answers_ask`**: the message closes an ask (`closed_by` in the ask lifecycle, or `reply_to`). It is not an act: an answer can be a decision, an approval, an instruction or a correction.
 
 **Unit.** As in §7.1: per week, per organization and position, count and share of owner messages, for each act and attribute.
