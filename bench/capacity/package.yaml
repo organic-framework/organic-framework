@@ -1,0 +1,68 @@
+# The capacity package: one person's Claude Code accounts kept working (docs/accounts.md, part B).
+#
+# A Bench package (docs/framework.md, "Installing from Bench") with one role and no run. `of init` installs it when
+# the head's machine has two or more Claude accounts and the head says yes on one card (the step is of_onboarding's).
+# The role is optional: the services below need no position, and the balancer runs from the listener once
+# capacity.yaml says auto: true.
+#
+# Every role and rule names its source. "accounts" is docs/accounts.md, "capacity" is docs/capacity.md.
+#
+# Placeholders, filled by `of init`: {org} the organization's prefix, {Org} its display name, {owner_id} and
+# {owner_name} the person the position serves.
+
+package: capacity
+version: 1
+title: "Capacity: one person's Claude Code accounts, measured and balanced"
+record: docs/accounts.md
+
+roles:
+  - id: capacity
+    title: Capacity keeper
+    held_by: agent
+    # one per person, in that person's home organization (the founder, 2026-11-11 ~21:01Z, through of_conductor msg
+    # 01a1cc68: "one per person"); the head's is {org}_capacity, another person's {org}_capacity-{person id}
+    position: "{org}_capacity"
+    role: capacity
+    kind: keeper
+    owner: "{owner_id}"
+    throughput: sustain
+    summary: "{owner_name}'s Claude accounts: limits, moves, log-ins"
+    brief: briefs/capacity.md
+    serves: "{owner_id}"
+    sources:
+      - "accounts B4: one capacity position per person, serving the accounts of that person's machines across every organization they work in"
+      - "capacity, the invariant: no session stands on a usage limit while another account accepts work"
+      - "capacity, relief and fill: spend first the capacity that expires first"
+      - "docs/server-several-machines.md §4.3: only the machine that holds a position acts on it"
+    evidence:
+      - "of.capacity_stall events: every stall's duration, from the first stop to the move or the reopen"
+      - "of.capacity_balanced and of.holder_changed events: each move, its reason and its result"
+      - "the person's cards from this position: each a decision or a task for their hands, none a status report"
+
+# Written to ~/.config/of/capacity.yaml on the person's machine when they say yes. Rescue moves a session already
+# stopped on its limit; fill and relief, the predictive moves, wait for a second yes (capacity, "Relief and fill").
+settings:
+  position: "{org}:{org}_capacity"
+  auto: true
+  rescue_moves: 6
+  max_moves: 0
+  relief_moves: 0
+
+# What runs, and where it comes from. Nothing here is a new unit.
+services:
+  - name: the probe
+    what: "one minimal call on the cheapest model per account, at most every 30 minutes (of.capacity_snapshot)"
+    runs_in: "the listener's capacity processor and of pulse"
+  - name: the balancer
+    what: "rescue, then relief and fill, then the invariant's check; each run under a lock"
+    runs_in: "a detached process the listener starts when capacity.yaml says auto: true"
+  - name: the listener
+    what: "launchd on macOS, systemd on Linux, OF_AUTOMATION=1; installed by of init's listener step"
+    runs_in: "of init"
+
+rules:
+  - "Move a session only between turns, never a busy one; carry its crons, monitors and background tasks in the hand-over note (capacity, guards)"
+  - "A probe that fails on the network is no reading, never a spent account (capacity, 2026-11-11)"
+  - "Never choose the usage-credits option in a limit dialog, and never press a trust or Bypass Permissions confirmation: those are the person's (accounts A2)"
+  - "Work for the person's hands is one task per sitting: a log-in, a sign-in to a tool, a limit reset (AGENTS.md, Asking the founder)"
+  - "Money (another subscription, a plan change) reaches the person only as one ask with the numbers"

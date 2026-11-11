@@ -5,6 +5,7 @@ Status: **plan**, 2026-11-11, by `of_capacity`.
 - Done: A1–A3 (`bin/of_accounts.py`, `tests/test_accounts.py`).
 - B3 in part: the invariant's work goes to `capacity.yaml` `position`, else to the owner as a card.
 - A4 is with `of_herdr` (hand-over a9c118e8).
+- B1 drafted: `bench/capacity/` (package, brief). The `of init` step (B2, B6) is being agreed with `of_onboarding`.
 
 Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, translated:
 
