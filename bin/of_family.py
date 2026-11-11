@@ -62,7 +62,10 @@ def define(name, methods, owner, doc, default=None):
 
 
 # docs/plugins.md §3. The methods are the outline the families' owners fill in as they convert their part.
-define("secrets", ("read", "write", "exists", "list", "bootstrap"), "of_server",
+# "secret_stores", not "secrets": a folder or package named secrets is a secret path for the guard (G1.1) and Claude
+# Code's native deny rules, so no agent could read or edit the implementations (of_server, 2026-11-11). The old key
+# `secrets:` in plugins.yaml or a registry's plugins: is read as this family (ALIASES).
+define("secret_stores", ("read", "write", "exists", "list", "bootstrap"), "of_server",
        "where credentials live; the broker reads and writes through it")
 define("runtime", ("agents", "read", "deliver", "label", "focus"), "of_herdr",
        "the panes agents run in: list, read, deliver text when idle, label, focus")
@@ -77,6 +80,13 @@ define("storage", ("insert", "describe"), "of_server", "of-server's store", defa
 define("buffer", ("put", "get", "done", "dead", "revive"), "of_server", "of-server's queue", default="disk")
 define("blobs", ("put", "get"), "of_server", "of-server's files", default="fs")
 define("identity", ("verify",), "of_server", "of-server's machine identity", default="machine_keys")
+
+
+ALIASES = {"secrets": "secret_stores"}
+
+
+def canonical(family):
+    return ALIASES.get(family, family)
 
 
 def register(family, name, cls):
@@ -121,6 +131,7 @@ def _entry_points(family):
 def implementations(family):
     """{name: source} for a family: "builtin", "shipped" or "installed". A later source does not shadow an earlier
     one: OF's own built-ins first, then what it ships, then installed packages."""
+    family = canonical(family)
     if family not in FAMILIES:
         raise PluginError(f"no family {family!r}; families: {', '.join(sorted(FAMILIES))}")
     _server_builtins(family)
@@ -132,6 +143,7 @@ def implementations(family):
 
 def implementation(family, name):
     """The class of one implementation, or PluginError naming the options."""
+    family = canonical(family)
     _server_builtins(family)
     if name in _BUILTIN.get(family, {}):
         return _BUILTIN[family][name]
@@ -184,13 +196,17 @@ def _split(v):
 def choice(family, org_doc=None, machine=None):
     """(name, settings, source) for a family: the organization's `plugins:` first (its own data), then the machine's
     plugins.yaml, then OF's own default; (None, {}, None) when nothing chooses."""
+    family = canonical(family)
+    keys = [family] + [a for a, c in ALIASES.items() if c == family]
     org = (org_doc or {}).get("plugins") if isinstance((org_doc or {}).get("plugins"), dict) else {}
-    if org.get(family):
-        name, settings = _split(org[family])
+    hit = next((k for k in keys if org.get(k)), None)
+    if hit:
+        name, settings = _split(org[hit])
         return name, settings, "organization"
     machine = machine_choices() if machine is None else machine
-    if machine.get(family):
-        name, settings = _split(machine[family])
+    hit = next((k for k in keys if machine.get(k)), None)
+    if hit:
+        name, settings = _split(machine[hit])
         return name, settings, "machine"
     d = FAMILIES[family].default if family in FAMILIES else None
     return (d, {}, "default") if d else (None, {}, None)
@@ -198,6 +214,7 @@ def choice(family, org_doc=None, machine=None):
 
 def load(family, org_doc=None, machine=None, **kw):
     """An instance of the chosen implementation. No choice: PluginError naming the options and where to choose."""
+    family = canonical(family)
     name, settings, _ = choice(family, org_doc, machine)
     if not name:
         opts = ", ".join(sorted(implementations(family))) or "none installed yet"
@@ -208,6 +225,7 @@ def load(family, org_doc=None, machine=None, **kw):
 
 def detect(family):
     """The implementations whose product is on this machine (their classmethod detect() says so)."""
+    family = canonical(family)
     out = []
     for name in implementations(family):
         try:
@@ -262,6 +280,7 @@ def check_org(doc):
         return ["plugins: must map a family to an implementation name or {name: …, settings}"]
     out = []
     for fam, v in pl.items():
+        fam = canonical(fam)
         if fam not in FAMILIES:
             out.append(f"plugins: {fam!r} is no family; families: {', '.join(sorted(FAMILIES))}")
             continue
