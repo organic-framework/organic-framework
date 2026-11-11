@@ -566,8 +566,11 @@ SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*
                 ".local/state/of/redact-backup/**",
                 # the secrets broker's service-account tokens (docs/agent-secrets.md §5.3, of_architect's review a):
                 # on the founder's Mac the broker shares the agents' OS user, so the guard denies the whole folder
-                ".config/of/service-accounts/**", *_CRED_SUFFIXES)
-SECRET_EXCEPT = (".env.example", ".env.sample", ".env.template", "*.pub")
+                ".config/of/service-accounts/**",
+                # a user organization's security keeper (OFF-020, 2026-11-11): a funded private key in plaintext in an
+                # untracked executors.txt at a checkout's root; and a known misspelled secrets file (OFF-001)
+                "executors*.txt", "*secrtets*", *_CRED_SUFFIXES)
+SECRET_EXCEPT = (".env.example", ".env.sample", ".env.template", "*.pub", "*.example.txt")
 
 
 def _glob_rx(g):
@@ -600,7 +603,7 @@ DENY_READ_GLOBS = (".env", ".env.local", ".env.prod", ".env.production", ".env.d
                    "*.secret", "*.token", "*token*.txt", "credentials.json", "service-account*.json",
                    "*.kubeconfig", "kubeconfig*", "*_ed25519", "*_rsa", ".config/of/clickhouse/**",
                    ".config/of/grant_ed25519", ".local/state/of/redact-backup/**", ".config/of/service-accounts/**",
-                   *_CRED_SUFFIXES)
+                   "executors.txt", *_CRED_SUFFIXES)
 
 
 def deny_rules():

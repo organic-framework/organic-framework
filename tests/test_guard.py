@@ -343,6 +343,17 @@ class GuardBashTest(unittest.TestCase):
                                                {"file_path": "/Users/alex/.config/acme/pg/replication-password"}))
         self.assertIsNone(of_guard.critical_deny("Read", {"file_path": "/Users/alex/.config/acme/t2/plan.yaml"}))
 
+    def test_executors_files_and_a_misspelled_secrets_file_are_secret(self):
+        """G1.11: a user organization's security keeper found a funded private key in plaintext in an untracked
+        executors.txt (OFF-020, 2026-11-11), and a misspelled secrets file (OFF-001)."""
+        for p in ("/Users/alex/repo/executors.txt", "/Users/alex/repo/executors-mainnet.txt",
+                  "/Users/alex/c/arbitrum-secrtets.txt"):
+            self.assertTrue(of_guard.critical_deny("Read", {"file_path": p}), p)
+            self.assertTrue(of_guard.critical_deny("Bash", {"command": f"cat {p}"}), p)
+        for p in ("/Users/alex/repo/executors.example.txt", "/Users/alex/repo/executor.py",
+                  "/Users/alex/repo/executors.md"):
+            self.assertIsNone(of_guard.critical_deny("Read", {"file_path": p}), p)
+
     def test_an_env_file_elsewhere_warns_first(self):
         """docs/guard.md G1.9: name.env outside ~/.config/<org> is read by live flows (225 in 21 days: etcd.env over
         ssh, pins.env, grep -c on a key), so it warns with a note, and denies once ENV_FILE_MODE is "deny"."""
