@@ -147,15 +147,29 @@ class PluginCodeTest(unittest.TestCase):
             self.assertTrue(self.deny("Bash", {"command": f"echo /tmp/evil > {home}"}))
             self.assertTrue(self.deny("Write", {"file_path": home, "content": "/tmp/evil"}))
             self.assertFalse(self.deny("Bash", {"command": f"cat {home}"}))
-            lab = os.path.expanduser("~/.cache/of-herdr/lab1/xdg")
-            owner_sock = "/Users/alex/.config/herdr/herdr.sock"
+            saved_lab = of_guard.HERDR_LAB
+            of_guard.HERDR_LAB = os.path.join(self.tmp.name, "of-herdr")
+            lab = os.path.join(of_guard.HERDR_LAB, "lab1", "xdg")
+            os.makedirs(os.path.join(lab, "herdr"))
+            for f in (os.path.join(lab, "herdr.sock"), os.path.join(lab, "herdr", "herdr.sock")):
+                open(f, "w").close()                          # the lab's own sockets, real files inside it
+            owner_sock = os.path.join(self.tmp.name, "owner", "herdr.sock")
+            os.makedirs(os.path.dirname(owner_sock))
+            open(owner_sock, "w").close()
+            os.symlink(owner_sock, os.path.join(lab, "old-link"))  # a link made earlier, pointing out of the lab
             saved_env = {k: os.environ.get(k) for k in ("HERDR_SOCKET_PATH", "XDG_CONFIG_HOME")}
             try:
                 os.environ["HERDR_SOCKET_PATH"] = owner_sock      # an agent's pane inherits the owner's socket
                 os.environ.pop("XDG_CONFIG_HOME", None)
                 for cmd in ("herdr plugin link /tmp/x", "XDG_CONFIG_HOME=~/.config herdr plugin unlink of",
                             f"XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x",   # the lab's config, the owner's herdr
-                            f"export XDG_CONFIG_HOME={lab}; herdr plugin unlink of"):
+                            f"export XDG_CONFIG_HOME={lab}; herdr plugin unlink of",
+                            # of_architect's second review: a link to the owner's socket made on the same line
+                            f"ln -s {owner_sock} {lab}/s && HERDR_SOCKET_PATH={lab}/s herdr plugin link /tmp/x",
+                            f"socat UNIX-LISTEN:{lab}/p,fork UNIX-CONNECT:{owner_sock} & "
+                            f"HERDR_SOCKET_PATH={lab}/herdr.sock herdr plugin link /tmp/x",
+                            f"HERDR_SOCKET_PATH={lab}/old-link herdr plugin link /tmp/x",   # its real path is out
+                            f"HERDR_SOCKET_PATH={lab}/none.sock herdr plugin link /tmp/x"):  # not there yet
                     self.assertTrue(self.deny("Bash", {"command": cmd}), cmd)
                 for cmd in (f"HERDR_SOCKET_PATH={lab}/herdr.sock herdr plugin link /tmp/x",
                             f"unset HERDR_SOCKET_PATH; export XDG_CONFIG_HOME={lab}; herdr plugin unlink of",
@@ -164,6 +178,7 @@ class PluginCodeTest(unittest.TestCase):
                             "herdr plugin list"):
                     self.assertFalse(self.deny("Bash", {"command": cmd}), cmd)
             finally:
+                of_guard.HERDR_LAB = saved_lab
                 for k, v in saved_env.items():
                     os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
         finally:
