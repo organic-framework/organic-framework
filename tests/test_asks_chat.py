@@ -265,6 +265,17 @@ class ForgedOrStaleTest(ChatTest):
         self.assertIn("diff sd-2026-11-11-x to approve at the machine", view)
         self.assertNotIn("1) approve", view)
 
+    def test_a_group_with_one_held_ask_waits_for_the_machine(self):
+        """of_release's review 2026-11-11, finding 9: the chat listed a merged card by its first ask, then refused it."""
+        a = self.ask("Rotate the key for the bot today?", ["yes", "no"])
+        self.ask("Rotate the leaked key for the bot today?", ["yes", "no"], position="of_b", session="S2",
+                 ts="2026-11-11T10:00:30Z")
+        self.assertEqual([len(g["ask_ids"]) for g in of_asks.group(self.asks()) if a in g["ask_ids"]], [2])
+        view = of_asks_chat.chat_view(self.conn, self.asks())
+        self.assertIn(f"[{a[-8:]}]", view.split("Waits until the person is at the machine")[1])
+        self.assertIn("tagged security_incident", view)
+        self.refused(a, self.prompt(f"{a[-8:]} yes"), "tagged security_incident", option=1)
+
     def test_a_routed_card_to_a_person_takes_that_persons_conductor(self):
         r = self.ask("Merge the release?", ["yes", "no"], to="of_alex")
         self.refused(r, self.prompt(f"{r[-8:]} yes"), "not in the session", option=1)
