@@ -1,8 +1,7 @@
 <!-- site:skip -->
-<img alt="Organic Framework, set in grass bent by the wind, inside a viewfinder's frame." src=".github/readme/photo.jpg" width="100%"><br>
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/readme/header-dark.svg">
-  <img alt="Grow an organization of people and agents. The state-of-the-art way to build, run and reshape a company, with the human experience at its heart." src=".github/readme/header-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/organic-framework/organic-framework/raw/main/.github/readme/header-dark.jpg">
+  <img alt="Organic Framework, set in grass bent by the wind. Grow an organization of people and agents. The state-of-the-art way to build, run and reshape a company, with the human experience at its heart." src=".github/readme/header-light.jpg" width="100%">
 </picture>
 
 **[Install with your agent](#install-it-with-your-agent)** &nbsp;·&nbsp; [Quickstart by hand](#quickstart-profile-1-one-machine) &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)

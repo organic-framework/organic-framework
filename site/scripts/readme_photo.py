@@ -7,7 +7,8 @@ the README's License section names the photographer). One JPEG for both GitHub t
 
 Needs ImageMagick (magick) and a static Inter Tight 500 font file (instantiate the variable font with fontTools).
 
-Usage: readme_photo.py PHOTO INTER_TIGHT_500.ttf OUT.jpg [--width 1600 --height 955] [--credit "…" --mono FONT]
+Usage: readme_photo.py PHOTO INTER_TIGHT_500.ttf OUT.jpg [--width 1600 --height 955] [--strips LIGHT.svg DARK.svg]
+                       [--credit "…" --mono FONT]
 """
 import argparse
 import os
@@ -30,6 +31,9 @@ def main():
     ap.add_argument("--name", default="Organic Framework", help="the text woven into the grass; empty for none")
     ap.add_argument("--credit", help="a caption in a dark label at the lower left (the design's board style)")
     ap.add_argument("--mono", help="JetBrains Mono .ttf, for --credit")
+    ap.add_argument("--strips", nargs=2, metavar=("LIGHT_SVG", "DARK_SVG"),
+                    help="append each theme's tagline strip under the photo: OUT becomes OUT-light.jpg and "
+                         "OUT-dark.jpg, one seamless image per GitHub theme")
     a = ap.parse_args()
     w, h = a.width, a.height
     k = w / 1072  # the design's hero photograph is 1072 by 640 (its board is 1200 wide with 64 px margins)
@@ -63,9 +67,22 @@ def main():
                      f"{4 * k:.1f},{4 * k:.1f}",
                      "-font", a.mono, "-pointsize", f"{size:.1f}", "-fill", "#F2F3EE",
                      "-annotate", f"+{lx + pad_x:.1f}+{ly - pad_y - size * 0.22:.1f}", a.credit]
-        magick(woven, "+gravity", *draw, "-strip", "-interlace", "Plane", "-sampling-factor", "4:2:0",
-               "-quality", "78", a.out)
-    print(a.out)
+        if not a.strips:
+            magick(woven, "+gravity", *draw, "-strip", "-interlace", "Plane", "-sampling-factor", "4:2:0",
+                   "-quality", "78", a.out)
+            print(a.out)
+            return
+        framed = os.path.join(tmp, "framed.png")
+        magick(woven, "+gravity", *draw, framed)
+        stem = a.out[:-4] if a.out.endswith(".jpg") else a.out
+        for theme, svg in zip(("light", "dark"), a.strips):
+            strip = os.path.join(tmp, f"strip-{theme}.png")
+            magick("-density", "240", "-background", "none", svg, "-resize", f"{w}x", strip)
+            out = f"{stem}-{theme}.jpg"
+            # 4:4:4 keeps the strip's small text sharp in a JPEG
+            magick(framed, strip, "-append", "-strip", "-interlace", "Plane", "-sampling-factor", "4:4:4",
+                   "-quality", "82", out)
+            print(out)
 
 
 if __name__ == "__main__":
