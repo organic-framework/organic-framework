@@ -1252,7 +1252,7 @@ INPUT_WORDS = {GH: "no of.work_record from GitHub (of import github)", GIT: "no 
 FLOW_NEVER = (
     ("process time, %C&A, activity ratio, rolled %C&A",
      "needs each person's time on each item and the receiving step's judgement of what it got (§1.4); OF collects neither"),
-    ("work outside GitHub and git", "OF imports only merged pull requests and commits on main"),
+    ("work outside GitHub and git", "OF imports only merged pull requests and commits on each repository's default branch"),
     ("the share of people who record their sessions", "OF sees only the sessions it records"),
 )
 
