@@ -48,8 +48,8 @@ Grants: the tenant's grant **public** key goes into the values as `trustedGrantK
 
 Built in CI from `deploy/Dockerfile` (Python 3.14 slim, OpenSSH client, PyYAML; runs as uid 10001 with a read-only root filesystem), by `.github/workflows/of-server-image.yml` in the framework's private repository, on every change to `main`. Never built on the founder's Mac. CI imports every module the image holds before it pushes.
 
-- **The framework's registry**: `ghcr.io/organic-framework/of-server`, private; pulling it from outside GitHub needs a person's classic token with `read:packages` (GitHub Docs, "Working with the Container registry"), so an organization's cluster should not pull from it.
-- **The organization's own registry** (recommended): its keeper creates a repository and a role that GitHub's OIDC token from the framework repository's `main` may assume; the repository variables `ORG_REGISTRY_IMAGE`, `ORG_REGISTRY_ROLE` and `ORG_REGISTRY_REGION` name them (AWS ECR today), so no account appears in the workflow. CI pushes one tag per build, the commit's first 12 characters, and prints the digest; the repository can then be immutable.
+- **The framework's registry**: `ghcr.io/organic-framework/of-server`, built by the framework repository's CI on every change to `main`, one tag per build (the commit's first 12 characters), plus the version and `main`.
+- **The organization's own registry** (recommended): the organization's own CI copies the image by digest into its registry, or builds it from a pinned commit of the framework repository. The framework's CI names no organization's account: in a public repository a workflow step's environment, repository variables included, is printed in public logs. While the framework's package is private, pulling it from outside GitHub needs a person's classic token with `read:packages` (GitHub Docs, "Working with the Container registry"), so a cluster should not pull from it directly.
 - Pin the **digest** in the values: the chart writes `<image.repository>:<image.tag>`, so `image.tag: "<tag>@sha256:…"` pins it.
 
 ## 4. Install

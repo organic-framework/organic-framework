@@ -1,9 +1,8 @@
-# The of-server image (deploy/Dockerfile; docs/server.md, profile 2), built here and never on the founder's Mac.
-# It goes to this organization's own registry, ghcr.io/organic-framework/of-server, private like the repository.
-# An organization that runs the server can also have it pushed into its own registry: its keeper creates a
-# repository and a role that GitHub's OIDC token from this repository's main branch may assume, and the repository
-# variables ORG_REGISTRY_IMAGE, ORG_REGISTRY_ROLE and ORG_REGISTRY_REGION (AWS ECR) name them, so no organization's
-# account appears in this file. One immutable tag per build: the commit. Owner: of_server.
+# The of-server image (deploy/Dockerfile; docs/server.md, profile 2), built here and never on a laptop. It goes to
+# the framework's own registry, ghcr.io/organic-framework/of-server. This workflow names no organization's account:
+# in a public repository a step's environment, repository variables included, is printed in public logs. An
+# organization that runs the server copies the image by digest into its own registry, or builds it from a pinned
+# commit, in its own CI (deploy/RUNBOOK.md section 3). Owner: of_server.
 name: of-server image
 
 on:
@@ -15,7 +14,6 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write   # OIDC for the organization's registry: no stored cloud key
 
 jobs:
   image:
@@ -46,19 +44,3 @@ jobs:
             docker tag of-server:ci "ghcr.io/organic-framework/of-server:$tag"
             docker push "ghcr.io/organic-framework/of-server:$tag"
           done
-      - name: Sign in to the organization's registry (OIDC, no stored key)
-        if: vars.ORG_REGISTRY_ROLE != ''
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.ORG_REGISTRY_ROLE }}
-          aws-region: ${{ vars.ORG_REGISTRY_REGION }}
-      - if: vars.ORG_REGISTRY_ROLE != ''
-        uses: aws-actions/amazon-ecr-login@v2
-      - name: Push to the organization's registry, one tag per build
-        if: vars.ORG_REGISTRY_ROLE != ''
-        env:
-          IMAGE: ${{ vars.ORG_REGISTRY_IMAGE }}
-        run: |
-          docker tag of-server:ci "$IMAGE:${GITHUB_SHA::12}"
-          docker push "$IMAGE:${GITHUB_SHA::12}" | tee push.log
-          grep -o 'digest: sha256:[0-9a-f]*' push.log | sed "s|^|$IMAGE:${GITHUB_SHA::12} |"
