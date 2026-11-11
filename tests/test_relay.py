@@ -477,6 +477,20 @@ class RelayTest(unittest.TestCase):
         of_store.spool_append("events.jsonl", rec)
         self.assertTrue(of_relay.hook_saw(self.conn, "S-on", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e"))
         self.assertFalse(of_relay.hook_saw(self.conn, "S-other", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e"))
+        reads = []
+        saved_open = of_relay.open if hasattr(of_relay, "open") else None
+        import builtins
+        real_open = builtins.open
+        of_relay.open = lambda *a, **k: (reads.append(a[0]), real_open(*a, **k))[1]
+        try:
+            for _ in range(5):                               # one cycle, many checks: one read of an unchanged file
+                of_relay.hook_saw(self.conn, "S-on", "01a1cc93-d929-71bf-bf67-6f6e5bb9b26e")
+        finally:
+            if saved_open is None:
+                del of_relay.open
+            else:
+                of_relay.open = saved_open
+        self.assertLessEqual(len([r for r in reads if str(r).endswith("events.jsonl")]), 1)
         own = of_events.record("agent_message_in", {"msg_id": "01a1cc96-66be", "via": "relay"}, session="S-on")
         of_store.spool_append("events.jsonl", own)        # the relay's own record is no confirmation
         self.assertFalse(of_relay.hook_saw(self.conn, "S-on", "01a1cc96-66be"))

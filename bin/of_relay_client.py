@@ -501,16 +501,37 @@ def spooled_hook_record(session, msg_id):
         glob.glob(os.path.join(of_events.STATE_DIR, "events.jsonl"))
     needle, sess = f"msg {msg_id}".encode(), session.encode()
     for path in paths:
-        try:
-            with open(path, "rb") as fh:
-                fh.seek(0, 2)
-                fh.seek(max(0, fh.tell() - SPOOL_TAIL))
-                for line in fh:
-                    if needle in line and sess in line and b"agent_message_in" in line:
-                        return True
-        except OSError:
-            continue
+        for line in _spool_tail(path):
+            if needle in line and sess in line and b"agent_message_in" in line:
+                return True
     return False
+
+
+_SPOOL_TAILS = {}  # path -> ((size, mtime), [lines]): one read per change, however many messages one cycle confirms
+
+
+def _spool_tail(path):
+    """The lines of the last SPOOL_TAIL bytes of a spool file, read again only when its size or time changed
+    (of_architect's note on PR 33: every pending message read up to 4 MB of each file)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _SPOOL_TAILS.pop(path, None)
+        return []
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _SPOOL_TAILS.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - SPOOL_TAIL))
+            lines = [ln for ln in fh.read().split(b"\n") if b"agent_message_in" in ln]
+    except OSError:
+        return []
+    for old in [p for p in _SPOOL_TAILS if not os.path.exists(p)]:
+        _SPOOL_TAILS.pop(old, None)
+    _SPOOL_TAILS[path] = (key, lines)
+    return lines
 
 
 def hook_saw(conn, session, msg_id):
