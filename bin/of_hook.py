@@ -830,7 +830,7 @@ def _guard(hook, sess):
     (_org_guard), then the guard's warnings."""
     global OUTPUT
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
-    if not hit and _authority_guard(hook, sess):
+    if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
     if not hit and _scratch_guard(hook, sess):
         return
@@ -935,6 +935,53 @@ def _authority_guard(hook, sess):
     sys.stdout.flush()
     OUTPUT = None
     record("authority_contact", "deny", [])
+    return True
+
+
+RELEASE_POSITION = "of_release"
+
+
+def _release_guard(hook, sess):
+    """docs/guard.md G18 (AGENTS.md, the founder 2026-11-11: only of_release merges and pushes the public
+    repository): a push, a merge or another write to a GitHub repository of the organic-framework owner
+    (of_guard.framework_writes) is denied unless the session holds of_release. Every agent's gh acts as the founder's
+    account, so this is the only place positions are told apart. Fails closed: a session without a position is
+    denied. True when the call was denied."""
+    global OUTPUT
+    if hook.get("tool_name") != "Bash":
+        return False
+    try:
+        writes = of_guard.framework_writes("Bash", hook.get("tool_input"), hook.get("cwd"))
+    except Exception:  # noqa: BLE001 - the detector itself failed: nothing to name
+        return False
+    if not writes:
+        return False
+    sid = hook.get("session_id")
+    try:
+        name = (((_guard_index(sid).get("sessions") or {}).get(sid) or []) + [None])[0]
+    except Exception:  # noqa: BLE001 - no index, no position: denied below
+        name = None
+
+    def record(decision):
+        try:
+            write("mandate_check", {"verdict": "release_write", "decision": decision, "mode": "enforce",
+                                    "router_version": __import__("of_router").VERSION, "tool_name": "Bash",
+                                    "rule": "release_write", "writes": writes[:10]}, hook, sess, _guard_index())
+        except (SystemExit, Exception):
+            pass
+    if name == RELEASE_POSITION:
+        record("admit")
+        return False
+    OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                     "permissionDecisionReason": (
+        f"Organic Framework guard: {writes[0]} changes the public repository on GitHub, and only of_release pushes "
+        "and merges there (AGENTS.md; docs/guard.md G18). Commit on the working copy's main as before, then name the "
+        "feature's commits and a reviewer to of_release with `of send of_release`. Reading, comments and reviews "
+        "(gh pr view, gh pr diff, gh pr comment) stay open.")}}
+    sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
+    sys.stdout.flush()
+    OUTPUT = None
+    record("deny")
     return True
 
 
