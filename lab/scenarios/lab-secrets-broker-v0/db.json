@@ -1,0 +1,2 @@
+{"tokens": {"tok-reader": ["t-obs"], "tok-keeper": ["t-obs"], "tok-k8s": ["t-k8s"]},
+ "items": {"op://t-obs/grafana-viewer/credential": "v-obs-SECRET", "op://t-k8s/kube-admin/credential": "v-k8s-SECRET"}}

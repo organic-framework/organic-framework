@@ -1,0 +1,27 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "of-server.name" . }}
+  labels: {{- include "of-server.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "of-server.selector" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+      ports:
+        - {port: 18200, protocol: TCP}
+  egress:
+    - to: {{- toYaml .Values.networkPolicy.clickhouseTo | nindent 8 }}
+      ports:
+        - {port: {{ .Values.networkPolicy.clickhousePort }}, protocol: TCP}
+    - ports:   # DNS
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    {{- if .Values.grants.gitSync.enabled }}
+    - ports:   # git-sync to the repository host
+        - {port: 22, protocol: TCP}
+        - {port: 443, protocol: TCP}
+    {{- end }}
+{{- end }}

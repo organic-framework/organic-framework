@@ -1,0 +1,386 @@
+[
+ {
+  "id": "in_mandate-000",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "Last week's p99 from signal to order on Venue A was 14 ms, and Venue B was 31 ms. Please break the B number down by hop (our host, cross-connect, gateway ack) and tell me where the 17 ms gap sits. Then price it: how many races did we lose on B in the last 14 days where we arrived less than 20 ms after the winner? I need the table by Thursday.",
+  "label": "in_mandate",
+  "owner": "bot_latency"
+ },
+ {
+  "id": "in_mandate-001",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "Venue C moves to the new fee schedule on Dec 1: maker rebate drops from 0.8 bp to 0.5 bp above 50M monthly volume. Rerun the spread model on the last 60 days of C fills with the new tiers and tell me whether our current 1.2 bp minimum half-spread still clears. If not, propose the new floor and backtest it before we touch live quotes.",
+  "label": "in_mandate",
+  "owner": "bot_pricing"
+ },
+ {
+  "id": "in_mandate-002",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "Two nights ago the ETH perp exposure on Venue B sat at 2.4M against the 2.0M limit for 11 minutes before anyone saw it. Please write up that breach with timeline and cause, then add an alert at 80% of every per-venue limit that pages within 30 seconds. Also run the kill switch test on B this week and send me the measured time to flat.",
+  "label": "in_mandate",
+  "owner": "bot_risk"
+ },
+ {
+  "id": "in_mandate-003",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "The weekly P&L for Nov 3-9 shows a 38k USD difference between the ledger and the exchange statements on Venue A. Reconcile it fill by fill and label what it is (missing fees, funding, a transfer, or a real mismatch). I want the reconciled number and the labelled list before Wednesday's review.",
+  "label": "in_mandate",
+  "owner": "data_ledger"
+ },
+ {
+  "id": "in_mandate-004",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "Please give me the gap report for order book capture for the last 30 days: per venue, every hole longer than 5 seconds, with its start, length and cause. Venue B looked worst on my side, about 9 holes in the last week. If the cause is our collector, fix it and tell me when the history is complete again.",
+  "label": "in_mandate",
+  "owner": "data_market"
+ },
+ {
+  "id": "in_mandate-005",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "Trading host tr-02 shows disk at 87% and growing about 2% a day, mostly capture logs. Please set rotation and offload to cold storage so it stays under 60%, and check the other three trading hosts for the same trend. Do it outside the Asia open (00:00-03:00 UTC) and let me know the date you pick.",
+  "label": "in_mandate",
+  "owner": "infra_hosts"
+ },
+ {
+  "id": "in_mandate-006",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "Colocation in Tokyo for Venue A would cost 6,500 USD a month. Before I decide, estimate how many ms it takes off our current path to A and what that is worth per week using the race data you already have. If the gain is under 2,000 USD a week I would rather skip it, so give me the number and your confidence.",
+  "label": "in_mandate",
+  "owner": "bot_latency"
+ },
+ {
+  "id": "in_mandate-007",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "Inventory skew on the SOL book looks too weak: we ended 4 of the last 7 days holding more than 60% of the cap at close. Test a stronger skew (try 1.5x and 2x the current coefficient) on the last 45 days of data and report P&L, fill rate and the peak inventory for each. Pick one to take live by Friday if it beats the current one.",
+  "label": "in_mandate",
+  "owner": "bot_pricing"
+ },
+ {
+  "id": "in_mandate-008",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "I want every cost on the weekly P&L labelled by kind: exchange fees, funding, network and hosting, and transfers. Right now about 22k USD a week sits under 'other'. Split it and tell me which line items are more than 5% of gross profit, since those are where I'll look for the constraint.",
+  "label": "in_mandate",
+  "owner": "data_ledger"
+ },
+ {
+  "id": "in_mandate-009",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "The pricing change from bot_pricing is merged and needs to go to all four trading hosts. Roll it out one host at a time, starting with tr-04 since it carries the least volume, and hold 30 minutes between hosts with latency and fill-rate checks. Stop and roll back if p99 order latency rises more than 3 ms.",
+  "label": "in_mandate",
+  "owner": "infra_hosts"
+ },
+ {
+  "id": "in_mandate-010",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "bot_pricing needs tick-level trades for Venue C from Aug 1 to now to backtest the fee change. Please check that history is complete and serve it in one file per day, with the timestamps in exchange time and the gaps flagged. I need it by Tuesday, and tell me if any day is missing more than 1% of trades.",
+  "label": "in_mandate",
+  "owner": "data_market"
+ },
+ {
+  "id": "in_mandate-011",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "We plan to raise the Venue C limit from 1.5M to 2.5M after the new quoting goes live. Please set the exposure model for this: worst 1-minute move in the last 90 days, the loss at 2.5M, and the drawdown we would take before the kill switch fires. Tell me if you would raise it in one step or two.",
+  "label": "in_mandate",
+  "owner": "bot_risk"
+ },
+ {
+  "id": "other_position-012",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "Our fill rate on Venue B dropped from 31% to 22% over the last two weeks, but the quotes are leaving on time. I suspect we are quoting too tight after the fee tier change on Oct 28. Please pull the quote-to-fill logs you already have and tell me which spread width at the current fee tier gives the best expected profit per fill. I need the answer for Thursday's review.",
+  "label": "other_position",
+  "owner": "bot_pricing"
+ },
+ {
+  "id": "other_position-013",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "Ask: can we raise the per-venue position cap on Venue C from 400k to 600k USD? Your order book history shows depth is enough to unwind 600k in under 3 seconds. Please tell me the max size we could safely hold given that depth and what the breach threshold should be. I want a number by tomorrow noon so I can put it in the weekly sheet.",
+  "label": "other_position",
+  "owner": "bot_risk"
+ },
+ {
+  "id": "other_position-014",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "The deploy last Friday took 47 minutes and the trading hosts were out of the rotation for 12 of them. I want that under 10. Look at your backtest runner's release steps, since it ships with the same pipeline, and cut whatever is slow. Report the new timings on Monday.",
+  "label": "other_position",
+  "owner": "infra_hosts"
+ },
+ {
+  "id": "other_position-015",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "Finance wants the fee line split by venue for October: maker rebates, taker fees and withdrawal costs, each as its own row. You track exposure and fees per venue already, so please produce that table. I need it in the P&L pack by Wednesday, and the total has to match the ledger to the cent.",
+  "label": "other_position",
+  "owner": "data_ledger"
+ },
+ {
+  "id": "other_position-016",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "I need to know how many milliseconds of lead on Venue A actually turn into won races. Your fills have timestamps and our order send times are in the same table. Work out the win rate by lead bucket (0-1 ms, 1-2 ms, 2-5 ms, over 5 ms) for the last 30 days and say what each extra millisecond is worth in dollars.",
+  "label": "other_position",
+  "owner": "bot_latency"
+ },
+ {
+  "id": "other_position-017",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "We lost order book data from Venue D for 6 minutes at 03:12 UTC on Nov 8, and the gap is not marked in the history. Monitoring on your side showed the host healthy. Find out why the feed dropped without an alert, and make sure the gap is recorded so backtests skip it. Reply with the cause and the fix.",
+  "label": "other_position",
+  "owner": "data_market"
+ },
+ {
+  "id": "other_position-018",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "The kill switch fired twice last week on Venue B, once at 14:05 and once at 14:40 UTC. I want to know whether the trigger was a real exposure breach or a stale price. You hold the book snapshots for those minutes, so please check. Then tell me if the 2% drawdown trigger should move; I will not change it without that check.",
+  "label": "other_position",
+  "owner": "bot_risk"
+ },
+ {
+  "id": "other_position-019",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "Please set up an alert that pages us when the P&L for any single venue drops more than 15,000 USD in a day against the 7-day average. Use the daily numbers the ledger gives you for the trading hosts. It has to be live before Friday.",
+  "label": "other_position",
+  "owner": "data_ledger"
+ },
+ {
+  "id": "other_position-020",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "The new inventory skew model is ready to go live on Venue A. Backtest says +1.8 bps on mid-cap pairs. Set the skew coefficient to 0.35 on the hosts and run it for the live session at 08:00 UTC. If the spread widens past 6 bps, roll it back.",
+  "label": "other_position",
+  "owner": "bot_pricing"
+ },
+ {
+  "id": "other_position-021",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "We pay for colocation at two sites but only one of them carries more than 5% of our order flow. You know our flow by venue best. Tell me which site we would drop and what we lose in race wins if we move that flow to the other site. I need the saved cost against the lost wins in one number.",
+  "label": "other_position",
+  "owner": "bot_latency"
+ },
+ {
+  "id": "other_position-022",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "Next quarter I want to hire a person for the trading unit, a quant researcher or a second risk analyst. Look at the cost lines you hold and tell me which of the two fits better in the budget. Also write a job post for it.",
+  "label": "other_position",
+  "owner": "acme_org"
+ },
+ {
+  "id": "other_position-023",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "Our weekly profit was 212k last week against 260k the week before. Do the works we have running explain it, or is something else going on? Give me a ranked list of the three biggest causes with the dollar amount for each by Thursday morning.",
+  "label": "other_position",
+  "owner": "acme_ops-owner"
+ },
+ {
+  "id": "no_position-024",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "We need a tax position for the Dubai entity before the year ends. Please pull every realized gain, fee and funding payment from Jan 1 to Nov 10 into one CSV by venue and by month, because the accountant wants it by Friday. Also find out whether our UAE corporate tax filing treats exchange rebates as income or as a fee reduction, and write the answer in two lines.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-025",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "I want us to start market making on Hyperliquid perps, starting with BTC and ETH, with a $150k inventory cap per market. You know our spread model best, so draft what changes for a venue with a 0.01% maker rebate and no per-order fee. Send me the list of unknowns about the venue, such as the API rate limit and the funding rules, by Thursday so I can assign someone to find them.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-026",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "We are hiring a second infra engineer, and I need a job post and a take-home task by Monday. The person will be on call for 4 trading hosts in Tokyo and Frankfurt. Please write the on-call load you see today, in pages per week, and the three incidents from the last quarter that a new hire must be able to handle alone.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-027",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "Binance changed its terms last week and our lawyer has not seen them. Please save the old and new text of the sections on API use, self-trade and wash trading to one folder, and mark every sentence that differs. I need it by tomorrow, since the lawyer bills by the hour and I don't want to pay for the diff.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-028",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "Three of our counterparties asked for a data licence for our order book history, and one offered $4,000 a month. Please work out how many GB of it we hold per venue and which venues' terms forbid resale. I will not sign anything until that list exists.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-029",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "The colocation contract in Tokyo renews on Dec 15 at $9,800 a month, and the provider wants a 24-month term. Please read it and list the clauses on price rise, exit and power limits, and compare with the two quotes I forwarded last week. I need a recommendation on renew, shorten or move, with the cost of each, by next Wednesday.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-030",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "A market maker we trade with asked for monthly statements of our activity, and our bank asked for source-of-funds papers for the last $500k transfer. Neither is in anyone's work today. Please collect the transfer records for that wire and a one-page summary of where the funds came from, and send me the draft by Tuesday.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-031",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "We have no insurance on the trading hosts or on funds held at venues. Please give me the total value we keep on each venue at the 5 pm UTC snapshot over the last 30 days and the largest single-day number. A broker wants this to quote crime and custody cover, and I need the figures by Thursday.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-032",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "Two clients wrote to us asking for a managed account with our strategy, minimum $250k. Nobody handles client questions, onboarding or reports, so I need to know what the strategy would return net of fees on a $250k account over the last 6 months. Send me a one-page table with monthly returns and the worst drawdown, and I will decide next week whether we open this.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-033",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "I am setting up a vendor review for everyone who touches our keys or data: the cloud provider, the two VPN services and the monitoring SaaS. Please list which of them can see API keys or order flow, and what we would lose if each was breached tonight. Keep it to one page, by Friday.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-034",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "An auditor will ask us for evidence that our price history is complete for the year-end valuation. Please give me, per venue, the hours of missing data since Jan 1 and which source we would use to fill the holes. If there is a month with more than 2% missing, name it first.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "no_position-035",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "We want to put a short public technical post about our order path on the company blog and on a recruiting page. Please write 400 words on what we cut and by how much in microseconds, leaving out venue names, strategy and anything that points to our routes. I will ask the lawyer to read it before it goes out, so send it by next Tuesday.",
+  "label": "no_position",
+  "owner": ""
+ },
+ {
+  "id": "not_work-036",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "Read your Frankfurt and Tokyo numbers. Signal-to-order p50 is 4.1 ms in Frankfurt and 9.8 ms in Tokyo, and the p99 table is clear. The 2.3 ms hop through the old proxy stands out and the chart makes it obvious. Please keep the same table format for the other venues so I can compare them side by side.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-037",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "Reviewed the inventory-skew backtest. The 30-day run on BTC-PERP shows +0.8 bp per fill, which is solid, but only 11k fills went into it. Next time put the fill count and the date range in the first line, because I read the result before I read the method. The method itself is fine.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-038",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "On your question: yes, the kill switch limit stays at 250k USD net exposure per venue until the end of the month. I looked at last week's peak of 171k and it leaves enough room. No change needed on your side. I will tell you if the weekly numbers move that.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-039",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "Thanks for the weekly P&L. Fees labelled by venue and tier is exactly what I needed: it shows that 38% of our cost last week was taker fees on one venue. The transfer line still lumps two items together (withdrawal fee and network fee), so split them from the next report on.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-040",
+  "sender": "acme_ops-owner",
+  "receiver": "data_market",
+  "text": "Status from my side on the gaps you listed: the 14 minutes missing on Tuesday are the only ones I care about, since they overlap a live trading window. The other three are under a minute each and do not matter to me. No reply needed unless the Tuesday gap turns out to be unrecoverable.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-041",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "A rule for deploy reports from now on: one line per deploy with host, change, time and whether the trading host was restarted. Send it when the deploy ends, not at the end of the day. Thursday's report had four deploys in one paragraph and I could not tell which one restarted the bot.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-042",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_latency",
+  "text": "You asked whether the new fee tier on the second venue changes what a lead of 1 ms is worth. That is a pricing question and it is answered by bot_pricing's spread model, not by your measurements. Use their current numbers: the tier moves our maker fee from 1.0 to 0.6 bp, and they own the figure. Ask them for the updated table before you price the lost races.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-043",
+  "sender": "acme_ops-owner",
+  "receiver": "data_ledger",
+  "text": "You asked why Tuesday's fills in the ledger do not match the order book history. The book history has a 14 minute hole that day, so the mismatch comes from the capture, not from your records. Your ledger is right. data_market is already working on the hole; do not try to patch it from your side.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-044",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_pricing",
+  "text": "Rule for pricing changes going forward: report each one as before and after on the same 30 days, with fill count, net bp per fill and worst day. I do not need the plots. Anything under 20k fills I will treat as not yet proven, whatever the average says.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-045",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "The new exposure alert from bot_risk was approved on my side this morning, so when they send you the config for it, it can go out in the usual window. I have already told them it should reach the trading hosts before Friday. You do not need to confirm to me, only to them.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-046",
+  "sender": "acme_ops-owner",
+  "receiver": "bot_risk",
+  "text": "Thanks for staying on during the Friday night spike. I saw the log and you handled it quietly. Take Monday morning slow, nothing is due before noon.",
+  "label": "not_work",
+  "owner": ""
+ },
+ {
+  "id": "not_work-047",
+  "sender": "acme_ops-owner",
+  "receiver": "infra_hosts",
+  "text": "On your question about who renews the exchange account verification documents that expire on 20 November: nobody on this team owns it. I am taking it to the company's compliance contact this week, so leave it with me and do not file anything with the exchange yourself.",
+  "label": "not_work",
+  "owner": ""
+ }
+]

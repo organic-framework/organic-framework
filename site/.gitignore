@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.astro/
+# Copied from the repository's Markdown by scripts/sync.py before each build; the landing page is written here.
+src/content/docs/*
+!src/content/docs/index.mdx
+src/generated/

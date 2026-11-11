@@ -1,0 +1,23 @@
+# of-server for one organization, compose arm (docs/server.md, Server settings).
+host: 0.0.0.0
+port: 18200
+state_dir: /data/server
+plugins: {storage: clickhouse, buffer: disk, blobs: fs, identity: machine_keys}
+orgs:
+  org: of_org                   # organization name: its database
+tenant: lab
+vault_database: of_org_vault
+unassigned_database: of_org_unassigned
+raw_to_org: false               # the gate, until lab-secrets-v0 passes
+tenant_key_file: /nonexistent   # no master key on this machine
+tenant_key_create: false
+secret_key_file: /etc/of/secrets/secret.key
+grant_legacy_hmac: false
+trusted_grant_keys_file: ""
+trusted_grant_keys: []          # the tenant's grant public key(s), pinned
+grants_files: {}                # {org: path to registry/grants.yaml}
+health_detail: false
+clickhouse:
+  url: http://clickhouse:8123
+  user: of_org_ingest
+  password_file: /etc/of/secrets/of_org_ingest.password

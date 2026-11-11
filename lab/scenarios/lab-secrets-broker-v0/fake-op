@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""A stand-in for 1Password: `op read --no-newline REF` as the service account in OP_SERVICE_ACCOUNT_TOKEN."""
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+db = json.load(open(os.path.join(here, "db.json")))
+token, ref = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", ""), sys.argv[-1]
+vault = ref[len("op://"):].split("/")[0]
+ok = vault in db["tokens"].get(token, []) and ref in db["items"]
+with open(os.path.join(here, "reads.log"), "a") as fh:
+    fh.write(json.dumps({"token": token[-4:], "vault": vault, "ok": ok}) + "\n")
+if not ok:
+    print("[ERROR] not authorized", file=sys.stderr); sys.exit(1)
+sys.stdout.write(db["items"][ref])

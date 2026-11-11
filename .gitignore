@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Reports and research notes live in the OF team's repository, organic-framework-build
+# (reports/framework/, research_notes/), since 2026-11-11 (release step A2). Nothing lands here by mistake.
+/reports/
+/research_notes/
+
+# Real labelled cases moved to organic-framework-build/lab-private/ (release step A3); the
+# scenarios load them from there when present (OF_LAB_PRIVATE). Keep them out of the tree.
+lab/scenarios/*/real_cases.json
+
+# The drift real-case runner reads the real user organization store; it lives in lab-private/ too.
+lab/scenarios/*/real_cases.py

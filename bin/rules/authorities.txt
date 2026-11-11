@@ -1,0 +1,70 @@
+# Regulators and authorities an agent never contacts without the founder's explicit grant (docs/guard.md G16).
+# One host suffix per line: an entry matches the host itself and every host under it (`gov.ae` matches
+# `tax.gov.ae`). Government second-level domains of every country (gov.<cc>, gob.<cc>, gouv.<cc>, govt.<cc>, go.<cc>,
+# gv.<cc>, gub.<cc>) and the .gov and .mil top-level domains match by rule in of_guard, not by a line here.
+# A starting list of regulators the framework recognises without being told. An organization lists its own
+# authorities (where it is licensed) in its registry's `authorities:` (docs/registry.md, Authorities).
+
+# Government domains that do not follow the gov.<cc> pattern
+gc.ca
+europa.eu
+admin.ch
+bund.de
+police.uk
+interpol.int
+
+# United Arab Emirates
+vara.ae
+centralbank.ae
+sca.ae
+dfsa.ae
+adgm.com
+difc.ae
+
+# United States (federal agencies are under .gov)
+finra.org
+nfa.futures.org
+
+# United Kingdom
+fca.org.uk
+bankofengland.co.uk
+ico.org.uk
+
+# Europe
+bafin.de
+bundesbank.de
+amf-france.org
+banque-france.fr
+cnil.fr
+consob.it
+cnmv.es
+bde.es
+afm.nl
+dnb.nl
+centralbank.ie
+dataprotection.ie
+cssf.lu
+finma.ch
+mfsa.mt
+fi.ee
+lb.lt
+fi.se
+finanstilsynet.no
+
+# Asia and the Pacific
+sfc.hk
+rbi.org.in
+
+# Canada
+osc.ca
+ciro.ca
+lautorite.qc.ca
+bcsc.bc.ca
+
+# Offshore centres
+cima.ky
+bma.bm
+gfsc.gi
+bvifsc.vg
+fsaseychelles.sc
+fscmauritius.org

@@ -1,0 +1,97 @@
+#!/bin/sh
+# oflab: the Lab controller, v0 (docs/lab.md). Light on the Mac: limactl calls only.
+#   oflab preflight            check memory and load before starting a VM
+#   oflab up <name>            create, provision and lock one lab VM (of-lab-<name>)
+#   oflab stop-all             pause every lab VM (memory pressure)
+#   oflab down <name>          delete one lab VM
+#   oflab reap [hours]         delete lab VMs older than N hours (default 6)
+#   oflab list
+set -eu
+# Automation never touches the founder's 1Password SSH agent (founder's rule, 2026-11-05).
+# Lima runs ssh with -F /dev/null and its own key; without an agent socket it cannot reach 1Password.
+unset SSH_AUTH_SOCK
+# A child Claude session must not inherit this pane's herdr identity: herdr's integration would
+# rebind the founder's pane to the test session (of_platform's incident, 2026-11-05).
+unset HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_SOCKET_PATH
+# Nor this session's own Claude identity.
+unset CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_PID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SESSION_ATTENDED
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 OF_AUTOMATION=1
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+MAX_VMS="${OFLAB_MAX_VMS:-1}"           # one by default; 3 only for profile2/routing
+MIN_FREE_PCT="${OFLAB_MIN_FREE_PCT:-30}"
+GATEWAY_PORT="${OFLAB_GATEWAY_PORT:-18400}"
+STATE="${HOME}/.local/state/of/lab"
+mkdir -p "$STATE/runs"
+
+running() { limactl list --format '{{.Name}} {{.Status}}' 2>/dev/null | awk '$1 ~ /^of-lab-/ && $2=="Running"' | wc -l | tr -d ' '; }
+
+preflight() {
+  free=$(memory_pressure 2>/dev/null | awk -F': ' '/free percentage/{gsub("%","",$2); print $2}')
+  load=$(sysctl -n vm.loadavg | awk '{print $2}')
+  ncpu=$(sysctl -n hw.ncpu)
+  n=$(running)
+  echo "free memory ${free}% (min ${MIN_FREE_PCT}%), load ${load} on ${ncpu} cores, lab VMs running ${n}/${MAX_VMS}"
+  [ "${free:-0}" -ge "$MIN_FREE_PCT" ] || { echo "refuse: memory pressure"; return 1; }
+  awk -v l="$load" -v c="$ncpu" 'BEGIN{exit !(l < c*0.7)}' || { echo "refuse: load too high"; return 1; }
+  [ "$n" -lt "$MAX_VMS" ] || { echo "refuse: ${n} lab VMs already running (max ${MAX_VMS})"; return 1; }
+}
+
+up() {
+  name="of-lab-$1"
+  preflight
+  tar_path="$STATE/framework-$$.tgz"
+  (cd "$REPO" && COPYFILE_DISABLE=1 tar --no-xattrs --exclude='__pycache__' --exclude='.git' -czf "$tar_path" bin lab bench docs/events.md docs/registry.md README.md 2>/dev/null || tar --exclude='__pycache__' -czf "$tar_path" bin lab bench)
+  limactl create --tty=false --name "$name" "$HERE/image/lab.yaml"
+  limactl start --tty=false "$name"
+  limactl copy "$tar_path" "$name:/tmp/framework.tgz"
+  limactl copy "$HERE/image/provision.sh" "$name:/tmp/provision.sh"
+  limactl copy "$HERE/image/lockdown.sh" "$name:/tmp/lockdown.sh"
+  limactl shell "$name" sudo sh /tmp/provision.sh /tmp/framework.tgz || { echo "provision failed; VM left for inspection"; exit 1; }
+  gw=$(limactl shell "$name" getent hosts host.lima.internal | awk '{print $1}')
+  limactl shell "$name" sudo sh /tmp/lockdown.sh "$gw" "$GATEWAY_PORT"
+  echo "$(date -u +%FT%TZ) $name gateway=$gw:$GATEWAY_PORT" >> "$STATE/vms.log"
+  rm -f "$tar_path"
+}
+
+# Public destinations the Mac routes through a VPN tunnel (utun*), normalised to CIDR
+# (macOS prints short forms such as 172.64.128/20). Private ranges are dropped anyway.
+vpn_routes() {
+  netstat -rn -f inet | awk '$2 ~ /utun/ || $4 ~ /utun/ {print $1}' | python3 -c '
+import ipaddress, sys
+out = set()
+for tok in sys.stdin.read().split():
+    if tok == "default" or tok.startswith("link"):
+        continue
+    addr, _, bits = tok.partition("/")
+    parts = addr.split(".")
+    if not all(p.isdigit() for p in parts):
+        continue
+    if not bits:
+        bits = str(8 * len(parts)) if len(parts) < 4 else "32"
+    parts += ["0"] * (4 - len(parts))
+    try:
+        net = ipaddress.ip_network(".".join(parts) + "/" + bits, strict=False)
+    except ValueError:
+        continue
+    if net.is_private or net.is_loopback or net.is_multicast or net.is_link_local or str(net).startswith("255."):
+        continue
+    out.add(str(net))
+print(" ".join(sorted(out)))'
+}
+
+case "${1:-}" in
+  vpn-routes) vpn_routes ;;
+  preflight) preflight ;;
+  up) up "${2:?name}" ;;
+  stop-all) limactl list --format '{{.Name}}' | grep '^of-lab-' | xargs -n1 limactl stop ;;
+  down) limactl delete --force "of-lab-${2:?name}" ;;
+  reap)
+    hours="${2:-6}"
+    limactl list --format '{{.Name}} {{.Dir}}' | awk '$1 ~ /^of-lab-/' | while read -r n d; do
+      age=$(( ( $(date +%s) - $(stat -f %m "$d") ) / 3600 ))
+      [ "$age" -ge "$hours" ] && { echo "reap $n (${age}h)"; limactl delete --force "$n"; }
+    done ;;
+  list) limactl list | awk 'NR==1 || $1 ~ /^of-lab-/' ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac

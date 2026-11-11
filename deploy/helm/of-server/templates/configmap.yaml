@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "of-server.name" . }}
+  labels: {{- include "of-server.labels" . | nindent 4 }}
+data:
+  server.yaml: |
+    host: 0.0.0.0
+    port: 18200
+    state_dir: /data/server
+    plugins: {storage: clickhouse, buffer: disk, blobs: fs, identity: machine_keys}
+    orgs: {{- toYaml .Values.orgs | nindent 6 }}
+    tenant: {{ .Values.tenant | quote }}
+    vault_database: {{ .Values.vaultDatabase }}
+    unassigned_database: {{ .Values.unassignedDatabase }}
+    raw_to_org: {{ .Values.rawToOrg }}
+    # No master key here: only the derived masking key; legacy HMAC grants are not accepted.
+    tenant_key_file: /nonexistent
+    tenant_key_create: false
+    secret_key_file: /etc/of/secrets/secret.key
+    grant_legacy_hmac: false
+    trusted_grant_keys_file: ""
+    trusted_grant_keys: {{- toYaml .Values.trustedGrantKeys | nindent 6 }}
+    {{- if and .Values.grants.gitSync.enabled .Values.grants.configMap.name }}
+    {{- fail "grants: use gitSync or configMap, not both" }}
+    {{- end }}
+    {{- if .Values.grants.configMap.name }}
+    grants_files:
+      {{- range $org, $k := .Values.grants.configMap.keys }}
+      {{ $org }}: {{ printf "/etc/of/grants/%s/registry/grants.yaml" $org }}
+      {{- end }}
+    positions_files:
+      {{- range $org, $k := .Values.grants.configMap.keys }}
+      {{ $org }}: {{ printf "/etc/of/grants/%s/registry/positions.yaml" $org }}
+      {{- end }}
+    {{- else }}
+    grants_files: {{- toYaml .Values.grants.files | nindent 6 }}
+    {{- end }}
+    {{- if .Values.grants.gitSync.enabled }}
+    positions_files:
+      {{- range $org, $path := .Values.grants.checkouts }}
+      {{ $org }}: {{ printf "%s/registry/positions.yaml" $path }}
+      {{- end }}
+    {{- end }}
+    health_detail: false
+    {{- with .Values.publicUrl }}
+    public_url: {{ . | quote }}
+    {{- end }}
+    clickhouse:
+      url: {{ .Values.clickhouse.url }}
+      user: {{ .Values.clickhouse.user }}
+      password_file: /etc/of/secrets/{{ .Values.clickhouse.user }}.password
+  {{- if .Values.grants.gitSync.enabled }}
+  orgs.yaml: |
+    # Pod-local: where each served organization's repository is checked out (Studio's registry).
+    orgs:
+      {{- range $org, $path := .Values.grants.checkouts }}
+      - {name: {{ $org }}, path: {{ $path }}}
+      {{- end }}
+  {{- else if .Values.grants.configMap.name }}
+  orgs.yaml: |
+    # Pod-local: each served organization's registry files from the keeper's ConfigMap (grants.configMap).
+    orgs:
+      {{- range $org, $k := .Values.grants.configMap.keys }}
+      - {name: {{ $org }}, path: {{ printf "/etc/of/grants/%s" $org }}}
+      {{- end }}
+  {{- end }}

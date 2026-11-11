@@ -1,0 +1,35 @@
+# of-server, profile 2 without Kubernetes: one VM, ClickHouse beside it (the Lab's compose arm).
+# Before `docker compose up -d`, make ./secrets/ (mode 700, files 600; never commit them):
+#   secret.key                         `of server export-secret-key secrets/secret.key` on the tenant's machine
+#   of_org_ingest.password, of_org_vault_ingest.password, of_org_unassigned_ingest.password, admin.password
+# and put the tenant's grant public key in server.yaml `trusted_grant_keys`.
+# TLS: put a reverse proxy (Caddy, nginx) or a Cloudflare tunnel in front of port 18200.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD_FILE: /run/secrets/admin.password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+      - ./secrets:/run/secrets:ro
+    ulimits: {nofile: {soft: 262144, hard: 262144}}
+    restart: unless-stopped
+
+  of-server:
+    image: ${OF_SERVER_IMAGE:-of-server:0.3}   # built from deploy/Dockerfile
+    depends_on: [clickhouse]
+    command: ["--config", "/etc/of/server.yaml"]
+    ports: ["127.0.0.1:18200:18200"]
+    volumes:
+      - of-data:/data
+      - ./server.yaml:/etc/of/server.yaml:ro
+      - ./secrets:/etc/of/secrets:ro
+    read_only: true
+    tmpfs: [/tmp]
+    restart: unless-stopped
+
+volumes:
+  clickhouse: {}
+  of-data: {}

@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "of-server.name" . }}
+  labels: {{- include "of-server.labels" . | nindent 4 }}
+spec:
+  replicas: 1                 # one writer per queue: the disk queue and server.db live on one RWO volume
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {{- include "of-server.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "of-server.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: of-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/of/server.yaml"]
+          {{- if or .Values.grants.gitSync.enabled .Values.grants.configMap.name }}
+          env:
+            - {name: OF_ORGS, value: /etc/of/orgs.yaml}
+          {{- end }}
+          ports:
+            - {name: http, containerPort: 18200}
+          readinessProbe:
+            httpGet: {path: /v1/health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: config, mountPath: /etc/of/server.yaml, subPath: server.yaml, readOnly: true}
+            {{- if or .Values.grants.gitSync.enabled .Values.grants.configMap.name }}
+            - {name: config, mountPath: /etc/of/orgs.yaml, subPath: orgs.yaml, readOnly: true}
+            {{- end }}
+            {{- if .Values.grants.configMap.name }}
+            - {name: grants, mountPath: /etc/of/grants, readOnly: true}
+            {{- end }}
+            - {name: secrets, mountPath: /etc/of/secrets, readOnly: true}
+            {{- if .Values.grants.gitSync.enabled }}
+            - {name: git, mountPath: /git, readOnly: true}
+            {{- end }}
+        {{- if .Values.grants.gitSync.enabled }}
+        - name: git-sync
+          image: {{ .Values.grants.gitSync.image }}
+          args:
+            - --repo={{ required "grants.gitSync.repo" .Values.grants.gitSync.repo }}
+            - --ref={{ .Values.grants.gitSync.ref }}
+            - --root=/git
+            - --link=repo
+            - --period={{ .Values.grants.gitSync.period }}
+            - --depth=1
+            - --ssh-key-file=/etc/git-secret/ssh
+            - --ssh-known-hosts-file=/etc/git-secret/known_hosts
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: git, mountPath: /git}
+            - {name: tmp, mountPath: /tmp}
+            - {name: git-secret, mountPath: /etc/git-secret, readOnly: true}
+        {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ include "of-server.name" . }}}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: config
+          configMap: {name: {{ include "of-server.name" . }}}
+        - name: secrets
+          secret:
+            secretName: {{ include "of-server.secretName" . }}
+            defaultMode: 0400
+        {{- with .Values.grants.configMap }}
+        {{- if .name }}
+        - name: grants
+          configMap:
+            name: {{ .name }}
+            items:
+              {{- range $org, $k := .keys }}
+              - {key: {{ required "grants.configMap.keys.<org>.grants" $k.grants }}, path: {{ printf "%s/registry/grants.yaml" $org }}}
+              - {key: {{ required "grants.configMap.keys.<org>.positions" $k.positions }}, path: {{ printf "%s/registry/positions.yaml" $org }}}
+              {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.grants.gitSync.enabled }}
+        - name: git
+          emptyDir: {}
+        - name: git-secret
+          secret:
+            secretName: {{ required "grants.gitSync.sshKeySecret" .Values.grants.gitSync.sshKeySecret }}
+            defaultMode: 0400
+        {{- end }}

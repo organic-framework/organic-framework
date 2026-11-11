@@ -1,0 +1,339 @@
+# The anti-pattern catalogue as data: the single source of thresholds, priors and inputs.
+# Read by the rules in bin/of_diagnose_rules.py (of_field-analyst) and the run in bin/of_diagnose.py (of_studio);
+# cited by docs/diagnose.md. Owner of this file: of_field-analyst.
+# Every threshold is a hypothesis, to be confirmed in the Lab (lab-drift-v0) and by owner labels.
+# A threshold change bumps that rule's `version`; both versions may run side by side for one window.
+# Organization overrides come later through the structure policy file (RFC 0001 §6).
+#
+# labels_carry_from: earlier versions whose owner labels still apply. Set it only when a bump leaves detection
+# unchanged (priors, remedies, deciders); a bump that changes detection starts with no labels.
+#
+# needs: inputs a rule reads. If any is empty in the window, the rule reports `blocked: no <input>` and raises
+# nothing. Names: event kinds (of.*), registry paths (registry.*), derived fields (wr.position = work records
+# attributed to a position, with `attributed_share_min` below), and external documents (stakeholder_map).
+# Registry position keys: mandate_exit {done_when, review}, mandate_functions [...] (registry.md, e152e3d).
+#
+# severity: low | medium | high | critical, per rule or per part (default medium). Escalations take severity >= high;
+# critical also bypasses the ranking. Chronic organization-wide conditions (owner-router) stay medium: they are
+# ranked, not pushed. High is for risk that needs a decision soon (an uncovered function, work no keeper answers for).
+
+catalogue: diagnose-v0
+defaults:
+  window_days: 7               # rolling window, evaluated daily
+  trend_last_days: 3           # "rising": positive slope and the last N days above the window median
+  flat_tolerance: 0.20         # "flat": slope within ±20% of the window mean per week
+  minutes_per_prompt: 1.5      # owner minutes per prompt until focus events give real minutes
+  attributed_share_min: 0.50   # rules that need authors are blocked below this share of attributed work records
+  observed_days_gte: 3         # a position counts as observed only with hook or import activity (not source `of`) on >= N distinct days
+                               # of the window; rules that reason from absent or few messages consider observed positions only
+  exclude_bot_authors: true    # dependency bots and merge-queue apps are not writers
+  label_fp_window: 20          # owner labels considered per rule
+  label_fp_demote_share: 0.30  # above this false-positive share a rule is shown on request only
+  critical_placement: top      # critical issues go above "waiting on you" and bypass the ranking
+  severity: medium
+
+rules:
+  owner-router:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {plumbing_share_gt: 0.05, in_degree_share_gt: 0.25, l_rising_lambda_flat: true}
+    needs: [of.human_prompt, of.agent_question, of.agent_message_out]
+    delta_m: "plumbing prompts in window x minutes_per_prompt x 0.5 (half removed by grants and batching)"
+    remedies: [standing grant for repeated approval classes, coordinator for one routing cluster, batched asks with expected dT]
+
+  owner-relay:
+    version: 1                   # v1 (2026-11-06): owner words = fa `relayed`, >= 10% of the pair's messages, non-coordinator senders (first user organization's history: 12 pairs -> 4)
+    p: 0.7
+    m_decide: 5
+    thresholds: {pair_owner_relays_gte: 3, pair_owner_words_gte: 5, pair_owner_words_share_gte: 0.10, owner_words_label: "fa-2026-11-05:relayed", exclude_sender_kinds: [coordinator], exclude_pair_kinds: [owner]}
+    needs: [of.human_prompt, of.agent_message_out]   # paste_source on relay_paste prompts (derive, new) completes the relay half
+    delta_m: "owner relays on the pair x minutes_per_prompt"
+    remedies: [direct interface and grant between the pair, merge if over-coupled]
+
+  coordination-gap:
+    version: 1                   # v1 (2026-11-06): an edge is judged unmet only when both keepers are observed (of_studio)
+    p: 0.5
+    m_decide: 3
+    thresholds: {co_changed_wr_gte: 3, unmet_days: 7, observed_days_gte: 3}
+    needs: [of.work_record, registry.systems.depends_on, registry.systems.keeper, of.agent_message_out]
+    delta_m: "0 (no owner time; ranks by integration risk once incident rates exist)"
+    remedies: [announce rule on the interface, move the seam]
+
+  over-coupled:
+    version: 3                   # v3 (2026-11-10): decided by the structure keeper; v2 (2026-11-10): no pair with a unit owner (kind owner) or the structure keeper; v1 (2026-11-06): waits recorded per pair
+    labels_carry_from: [0, 1, 2] # v2 only narrows what fires; v3 changes only the decider
+    decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
+    p: 0.5
+    m_decide: 15
+    thresholds: {interface_ratio_gte: 3, reciprocity_gte: 0.5, reciprocity_without_waits_gte: 0.8, mutual_waits_gte: 1, observed_days_gte: 3, waits_recorded: per_pair,
+                 exclude_pair_kinds: [owner], exclude_structure_keeper: true}
+    needs: [of.agent_message_out, of.work_record, wr.position]
+    delta_m: "owner prompts relayed between the pair x minutes_per_prompt"
+    remedies: [merge if the working set fits one holder, publish the interface]
+
+  context-overload:
+    version: 0
+    p: 0.5
+    m_decide: 10
+    thresholds: {compactions_per_active_day_gte: 4, median_multiple_gte: 3, forgotten_fact_errors_gte: 2, after_compaction_hours: 2}
+    needs: [of.compaction, of.correction]
+    delta_m: "owner re-explain prompts after compactions x minutes_per_prompt"
+    remedies: [fresh holder with a written handover, split at a seam]
+
+  fragmented-ownership:
+    version: 1                   # v1 (2026-11-06): a code window counts only if the same keeper held the system at its start
+    p: {runtime: 0.7, code: 0.4}
+    m_decide: 3
+    thresholds: {runtime_nonkeeper_writes_gte: 1, code_writers_gte: 3, keeper_share_lt: 0.30, consecutive_windows: 2, keeper_held_at_window_start: true}
+    critical: runtime
+    severity: {runtime: critical, code: medium}
+    needs: {runtime: [of.deployment, registry.systems.keeper], code: [of.work_record, wr.position, registry.systems.keeper]}
+    delta_m: "0 for code; runtime is critical"
+    remedies: [hand writes to the system agent, route changes through the keeper's review]
+
+  orphan-work:
+    version: 3                   # v3 (2026-11-10): keeperless moves to unkept-system (2.23), which flags a live system nobody keeps with or without work; v2 (2026-11-07): keeperless only on live systems kept by nobody
+    labels_carry_from: [0, 1, 2] # v1 left detection unchanged; v2 narrowed keeperless; v3 drops it: the issues v3 still raises keep their labels
+    p: {cluster: 0.6, unmapped: 0.8}
+    m_decide: {cluster: 10, unmapped: 3}
+    thresholds: {unowned_verdicts_per_cluster_gte: 3, unmapped_wr_share_gte: 0.05, cluster_exclude_paths: [/tmp, /private/tmp, $TMPDIR, '*/scratchpad/*'], merge_into: unkept-system}   # a cluster on a system nobody keeps is evidence on that system's issue
+    cluster_from_router: rt-v4   # input rule (2026-11-07, of_studio 13b781f): earlier routers judged linked worktrees unowned
+    needs: {cluster: [of.mandate_check], unmapped: [of.work_record]}
+    decider: {cluster: owner, unmapped: structure_keeper}
+    severity: {cluster: medium, unmapped: low}
+    delta_m: "0 (ranks by risk); a new position costs the owner one decision"
+    remedies:
+      cluster: [new position with a brief draft, extend the nearest mandate]
+      unmapped: [extend the systems map (paths or a new system)]
+
+  bottleneck-broker:
+    version: 1                   # v1 (2026-11-06): betweenness on strong ties (>= 5 msgs), inbound 0.15, coordinators and the structure keeper excluded
+    p: 0.5
+    m_decide: 15
+    thresholds: {inbound_share_gte: 0.15, betweenness_gte: 0.20, strong_tie_msgs_gte: 5, wait_spike_multiple_gte: 2, observed_days_gte: 3, exclude_kinds: [coordinator], exclude_structure_keeper: true}
+    needs: [of.agent_message_out, of.agent_message_in]   # of.state_changed(blocked_on) enables the wait-spike half
+    delta_m: "owner prompts routed through the broker x minutes_per_prompt"
+    remedies: [deputy or published interface for its most frequent request, split its interfaces]
+
+  missing-verifier:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3}
+    needs: [of.correction, of.work_record, wr.position]   # work-record relations (reverts, fixes) add code rework
+    delta_m: "owner correction prompts on the position x minutes_per_prompt"
+    remedies: [cross-model review before results reach the owner or production, verifier position]
+
+  chatty:
+    version: 2                   # v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
+    labels_carry_from: [0, 1]    # v1 kept the organization and pair parts' issue ids; v2 changes only the decider
+    decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
+    p: 0.6
+    m_decide: 5
+    thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, unused_after_hours: 24, observed_days_gte: 3,
+                 injected_turns_per_hour_gte: 20, flood_hours_gte: 3, nudges_per_pair_gte: 10}
+    needs: {default: [of.agent_message_out, of.work_record, wr.position], receiver_flood: [of.agent_message_in], repeat_nudges: [of.human_prompt]}   # parts run on their own inputs (of_studio 44d4852)
+    # default reads attributed merged PRs: without wr.position every busy pair has 0 PRs and fires (first user organization, 2026-11-10: 133)
+    delta_m: "0 (frees holders, not the owner)"
+    remedies:                    # `default`: the organization and pair parts (issues without a part; of_studio 44d4852)
+      default: ["published interface: a booking tool, a status surface or a queue the coordinator reads"]
+      receiver_flood: [batched delivery or a queue read between tasks, published interface for the top senders, split the receiver's interfaces]
+      repeat_nudges: [a hand-over instead of nudges, escalate to the owner of both]   # no invented deadlines (founder, ask 53628150)
+
+  unclear-mandate:
+    version: 1                   # v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
+    p: 0.5
+    m_decide: 10
+    thresholds: {mandate_changes_gte: 2, wrong_priority_or_overengineered_verdicts_gte: 3, spec_failure_share_gte: 0.20, settle_days: 3, substantive_fields: [throughput, mandate, mandate_exit.done_when, status_reopened], ignore_added_fields: true}
+    needs: [of.mandate_changed]   # verdict reason_class and MAST tags add signals when present
+    delta_m: "owner corrections on the position x minutes_per_prompt"
+    remedies: [rewrite the brief with done criteria, split if two jobs share one position]
+
+  function-gap:
+    version: 0
+    p: 0.7
+    m_decide: 20
+    thresholds: {uncovered_function_with_dependent_interest: true}
+    critical: right_to_operate     # an uncovered function that a right-to-operate interest depends on
+    severity: {default: medium, dependent_interest: high}   # high when the stakeholder map lists a dependent interest; critical for the right to operate
+    needs: [registry.mandate_functions]   # stakeholder_map (data, later) raises severity to critical; without it the gap is ranked, not critical
+    delta_m: "0 (risk; critical when it touches the right to operate)"
+    remedies: [new position, often a process keeper, external organization with an interface]
+
+  churn:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {changes_per_position_gte: 2, share_of_positions_one_day_gte: 0.50, wr_drop_gte: 0.50}
+    needs: [of.work_record, of.holder_changed, of.mandate_changed]   # of.state_declared(suspended) adds account moves
+    delta_m: "0 (ranks by the measured throughput dip once T exists)"
+    remedies: [freeze structure changes, lengthen review windows, holder swap as a platform operation]
+
+  lingering:
+    version: 0
+    p: 0.6
+    m_decide: 3
+    thresholds: {exit_met_hours_gte: 48}
+    needs: [registry.mandate_exit]
+    delta_m: "owner prompts to the position after its exit x minutes_per_prompt"
+    remedies: [close, merge into the permanent owner, formalize with a new mandate]
+
+  inbound-backlog:
+    version: 0                   # v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    p: 0.5
+    m_decide: 5
+    thresholds: {queue_observed_days_gte: 3, old_after_min: 30, backlog_min_per_day_gte: 60, overload_days_gte: 3, depth_avg_gte: 2, unattended_days_gte: 2, exclude_kinds: [owner], merge_into: bottleneck-broker}
+    severity: {overload: medium, unattended: high}
+    needs: [of.inbound_queue]
+    delta_m: "0 unless the owner relays around the queue (ap.owner-relay); dT: sender waiting hours removed"
+    remedies: {overload: [deputy or published interface for its most frequent request, keepers decide routine within their grants], unattended: [route senders to the successor or unit owner, give the position a holder]}
+
+  # ---- development-loop rules (RFC 0005 §6; diagnose.md 2.16-2.22). v0 (2026-11-07): proposal, blocked until the loop
+  # projection of diagnose.md 4.1 exists. Per work, affected [<work>]. The first remedy is a pulse nudge to the doer.
+  loop-cheapest-rung:
+    version: 0
+    p: 0.6
+    m_decide: 2
+    thresholds: {skipped_runs_gte: 2}
+    needs: [registry.works.loop, of.loop_run]   # runs name their hypothesis; it may be recorded before the window
+    decider: doer
+    severity: low
+    delta_m: "0 (frees runner hours: the skipped rung's cost difference)"
+    remedies: ["nudge: run it on the cheaper rung first", add the missing cheap rung to the ladder]
+
+  loop-checkpoint:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {checkpoint_days_default: 3}
+    needs: [registry.works.loop, of.loop_run]
+    decider: work_owner
+    severity: medium
+    delta_m: "0; dT: target.stake per day x days without a production signal (cost of delay)"
+    remedies: ["nudge: what goes to shadow next", put the best kept hypothesis behind a flag in shadow on one site]
+
+  loop-plateau:
+    version: 0
+    p: 0.6
+    m_decide: 10
+    thresholds: {cycles_gte: 3, gain_share_lt: 0.01}
+    needs: [registry.works.loop, of.loop_run]
+    decider: work_owner
+    severity: medium
+    delta_m: "0; dT: the stake the loop no longer moves"
+    remedies: [step back and reframe (double loop), reframe review by a second position the unit owner names]
+
+  loop-wip:
+    version: 0
+    p: 0.6
+    m_decide: 2
+    thresholds: {wip_arms_default: 2, over_hours_gte: 12}
+    needs: [registry.works.loop]   # arms in flight come from the projection's series, whenever they started
+    decider: doer
+    severity: low
+    delta_m: "0 (shorter cycle time per arm)"
+    remedies: ["nudge: finish or park one arm"]
+
+  loop-babysit-model:
+    version: 0
+    p: 0.6
+    m_decide: 2
+    thresholds: {calls_gte: 100, babysit_model_default: sonnet, model_rank: [haiku, sonnet, opus, fable]}
+    needs: [registry.works.loop, of.mandate_check]   # with command_class (diagnose.md 4.1), not recorded yet
+    decider: doer                # with of_capacity, who routes models (RFC 0005 §8 step 5)
+    severity: low
+    delta_m: "0; dT: the model cost difference on the runner and monitor calls"
+    remedies: [route runner commands and monitors to a subagent or session on babysit_model]
+
+  loop-objective-drift:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {unpriced_runs_gte: 3, unpriced_share_gte: 0.30}   # a change_objective decision without a money metric fires at once
+    needs: [registry.works.loop, of.loop_run]
+    decider: work_owner
+    severity: medium
+    delta_m: "0; dT: runs spent on a proxy with no proven price"
+    remedies: ["price the metric in the target's money (measures.to_money) before more work on it", return to the target metric]
+
+  loop-eval-bottleneck:
+    version: 0
+    p: 0.6
+    m_decide: 5
+    thresholds: {wait_share_gt: 0.40, rung_runs_gte: 3}
+    needs: [registry.works.loop, of.loop_run]
+    decider: work_owner
+    severity: medium
+    delta_m: "0; dT: the wait hours on the rung"
+    remedies: [elevate the rung (more runners), move hypotheses to a cheaper rung, schedule work around the rung]
+
+  # ---- structure coverage (diagnose.md 2.23-2.26; of_architect, 2026-11-10): the registry's coverage as Studio shows it
+  # (model coverage and cells, one computation), routed to the organization's structure keeper, never to the owner.
+  unkept-system:
+    version: 0
+    p: {keeper: 0.6, unit: 0.5}
+    m_decide: {keeper: 5, unit: 3}
+    thresholds: {}               # coverage flags no_keeper, keeper_unknown, keeper_<status>; units: a live system in no unit
+    needs: [registry.systems.keeper]   # an organization that names no keeper has not started its map
+    decider: structure_keeper
+    severity: {keeper: medium, unit: low}
+    delta_m: "0 (structure: the structure keeper brings a diff, the owner approves it)"
+    remedies:
+      keeper: [name a keeper for the system, new keeper position, governed_by external:<who> with the owner's ask id (RFC 0007), lifecycle unsupported or retired if it no longer runs]
+      unit: [put the system in the unit whose owner answers for it, a new unit]
+
+  off-map-work:
+    version: 0
+    p: 0.5
+    m_decide: 10
+    thresholds: {edits_gte: 10, in_mandate_share_lt: 0.5, edit_tools: [Edit, Write, MultiEdit, NotebookEdit], min_router: 4}   # file edits in_mandate or owned_by another keeper; reads, Bash (unscoped), outside and unclaimed paths (orphan-work's cluster) are left out
+    needs: [of.mandate_check]
+    decider: structure_keeper
+    severity: medium
+    delta_m: "0; dT: tasks routed by a mandate that does not say where the work is"
+    remedies:
+      no_own_paths: [name the position's subsystem with paths (a system with parent and paths) and set the position's system to it, hand the work to the keeper of the system it changes]
+      mostly_elsewhere: [list the cells it works in under owns (RFC 0007), name the subsystem it works in, hand the work to the keeper of the system it changes]
+
+  cell-gap:
+    version: 0
+    p: {system: 0.6, nobody: 0.6, no_decider: 0.5}
+    m_decide: {system: 10, nobody: 5, no_decider: 5}
+    thresholds: {merge_into: cell-overlap}   # gaps as model cells compute them (needed cell of a live system, no active decider); a no_decider gap on an overlapping cell is evidence on the overlap
+    needs: []                    # blocked by the rule itself while no system declares needs
+    decider: structure_keeper
+    severity: {system: medium, nobody: medium, no_decider: low}
+    delta_m: "0; dT: work nobody answers for, or a task with no owner to route it to"
+    remedies:
+      system: [map the system's positions onto its cells (owns), new position for the cells nobody covers]
+      nobody: [extend a position's owns to the cell, new position, drop the kind of work from the system's needs]
+      no_decider: [mark one doer decides]
+
+  cell-overlap:
+    version: 0
+    p: 0.5
+    m_decide: 10
+    thresholds: {}               # of_model.OVERLAP_DOERS (3) active doers on one cell, as Studio shows it
+    needs: []                    # blocked by the rule itself while no position declares owns
+    decider: structure_keeper
+    severity: medium
+    delta_m: "0; dT: a task on the cell falls between its doers"
+    remedies: [name subsystems so the positions' cells are distinct, keep one decider and make the rest doers, merge positions that share every cell]
+
+measures:                      # owner-message measures (diagnose.md §7); counted, not rules: they raise no issue
+  status-poll:
+    version: sp-v1
+    unit: {per: [organization, position], window_days: 7, figures: [count, share_of_owner_messages]}
+    owner_messages: fm-v2        # of.human_prompt with corrected origin human or paste, deduplicated on (minute, first 60 chars)
+    labels_not_counted: [instruction_with_poll, system_status, question]   # system_status is reported apart
+    implementation_gate: {labelled_week: ["2026-10-30T13:40Z", "2026-11-06T13:40Z"], tolerance_abs: 3}
+    pinned_predecessor: "fa-2026-11-05:status_poll"   # precision 0.88, recall 0.75 (38 of 51) on the labelled week
+    implemented: {by: of_studio, commit: 90a4413, command: "of model polls"}
+  owner-message-act:
+    version: oa-v1
+    acts: [relay, correction, instruction, decision, approval, status_poll, system_status, question, information]   # first wins
+    attributes: [pasted, answers_ask]
+    unit: {per: [organization, position], window_days: 7, figures: [count, share_of_owner_messages]}
+    owner_messages: fm-v2
+    status: defined, not calibrated   # one labelled sample of 45 (k8s keeper); label >= 100 across positions before implementing

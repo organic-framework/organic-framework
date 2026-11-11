@@ -1,0 +1,20 @@
+{"org": "acme", "manager": "acme_ops-owner",
+ "positions": [
+  {"name": "acme_ops-owner", "_unit": "trading", "summary": "owner of the trading unit",
+   "contribution": "Measures the unit's weekly profit, finds its constraint, ranks the works by expected gain, starts them with the positions below and decides their routine."},
+  {"name": "bot_latency", "_unit": "trading", "summary": "order path speed",
+   "contribution": "Measures and cuts the time from a market signal to our order on the exchange: network routes, colocation, the hot path's code, and what a millisecond of lead is worth in won races.",
+   "mandate_exit": {"done_when": "the signal-to-order time per venue is measured and its cost in lost races is priced"}},
+  {"name": "bot_pricing", "_unit": "trading", "summary": "quotes and fee models",
+   "contribution": "Owns how the bot prices its quotes: the spread model, fee tiers, inventory skew, and the backtests that validate a pricing change."},
+  {"name": "bot_risk", "_unit": "trading", "summary": "limits and exposure",
+   "contribution": "Sets and watches position limits, exposure per venue, the kill switch, and reports risk breaches."},
+  {"name": "data_ledger", "_unit": "data", "summary": "trade ledger and P&L",
+   "contribution": "Keeps the ledger of every fill, fee and transfer, and produces the daily and weekly P&L with each cost labelled."},
+  {"name": "data_market", "_unit": "data", "summary": "market data capture",
+   "contribution": "Captures order books and trades from every venue we trade, keeps their history and its gaps, and serves it to the other positions."},
+  {"name": "infra_hosts", "_unit": "platform", "summary": "servers and deploys",
+   "contribution": "Runs the servers, the deploy pipeline and the monitoring of the trading hosts; ships the changes other positions make."},
+  {"name": "acme_org", "_unit": null, "summary": "structure keeper",
+   "contribution": "Keeps the registry: positions, units, mandates and delegations; proposes new positions and mandate changes."}
+ ]}

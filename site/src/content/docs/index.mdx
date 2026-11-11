@@ -1,0 +1,50 @@
+---
+title: Organic Framework
+description: For people who run many AI agents. Give each agent a position and a mandate, record every session, and see and steer the whole organization from one place.
+template: splash
+editUrl: false
+hero:
+  title: Run your AI agents as an organization
+  tagline: Organic Framework gives each agent a position with a name and a mandate, records every session, and lets you see and steer them all from one place.
+  actions:
+    - text: Quickstart
+      link: quickstart/
+      icon: right-arrow
+    - text: What works today
+      link: features/
+      variant: secondary
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<Card title="Positions, not loose sessions" icon="puzzle">
+		Each agent holds a position: a canonical name, the system it answers for, an owner and a mandate. When a
+		session is replaced or moves to another account, the position stays and only its holder changes.
+	</Card>
+	<Card title="One window for you" icon="comment">
+		Your conductor is the first agent you start. You talk to it, and it takes each request to its owner. Agents
+		ask you on cards, with options and a recommendation, never in a pane you are not looking at.
+	</Card>
+	<Card title="Every session recorded" icon="document">
+		Hooks record every Claude Code session as typed events in your organization's own store. Raw traces leave
+		your machine only with your consent, per organization.
+	</Card>
+	<Card title="A guard before every tool" icon="approve-check">
+		Reading secret files, printing secrets and reading process memory are denied before the tool runs. A secret
+		that reaches a transcript anyway is masked, and can be removed from every stored copy.
+	</Card>
+</CardGrid>
+
+## Where it stands
+
+Organic Framework is early. Today it runs the team that builds it and one user organization, on
+[herdr](https://herdr.dev) and Claude Code, on macOS and Linux. Each feature's state, with its evidence, is in
+[What works today](features/).
+
+<CardGrid>
+	<LinkCard title="Quickstart" description="Install OF, create your organization and start your conductor." href="quickstart/" />
+	<LinkCard title="Guide" description="The ideas you need and your everyday tasks." href="guide/" />
+	<LinkCard title="Mission" description="Why OF exists and what it is for." href="mission/" />
+	<LinkCard title="Changelog" description="What changed in each release." href="changelog/" />
+</CardGrid>

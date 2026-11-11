@@ -1,0 +1,48 @@
+# Option B (deploy/RUNBOOK.md §1): a small dedicated ClickHouse next to of-server, so only the
+# tenant holds its admin credentials. Adopted from the Lab's lab-profile2-v0 run (2026-11-06).
+# Before applying, create the admin Secret WITHOUT a trailing newline (a newline from a file
+# becomes part of the password):
+#   kubectl -n clickhouse create secret generic ch-admin --from-literal=password="$(cat admin.password)"
+# Then: kubectl apply -f clickhouse.yaml; wait for the pod; load the schema from schema.py:
+#   kubectl -n clickhouse exec -i deploy/clickhouse -- clickhouse-client --user admin \
+#     --password "$(cat admin.password)" --multiquery < schema.sql
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: clickhouse-data, namespace: clickhouse}
+spec:
+  accessModes: [ReadWriteOnce]
+  # storageClassName: <the cluster's>   # the Lab's k3s uses local-path
+  resources: {requests: {storage: 50Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: clickhouse, namespace: clickhouse}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}          # one pod per RWO volume
+  selector: {matchLabels: {app: clickhouse}}
+  template:
+    metadata: {labels: {app: clickhouse}}
+    spec:
+      securityContext: {fsGroup: 101}
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:25.8
+          env:
+            - {name: CLICKHOUSE_USER, value: admin}
+            - {name: CLICKHOUSE_PASSWORD, valueFrom: {secretKeyRef: {name: ch-admin, key: password}}}
+            - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1"}
+          ports: [{name: http, containerPort: 8123}]
+          readinessProbe: {httpGet: {path: /ping, port: http}, periodSeconds: 10}
+          resources:
+            requests: {cpu: 250m, memory: 1Gi}
+            limits: {memory: 1536Mi}
+          volumeMounts: [{name: data, mountPath: /var/lib/clickhouse}]
+      volumes: [{name: data, persistentVolumeClaim: {claimName: clickhouse-data}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: clickhouse, namespace: clickhouse}
+spec:
+  selector: {app: clickhouse}
+  ports: [{name: http, port: 8123, targetPort: http}]

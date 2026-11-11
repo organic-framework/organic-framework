@@ -1,0 +1,108 @@
+# of-server for one organization (docs/server.md, profile 2). Values the keeper must set are marked REQUIRED.
+
+image:
+  repository: ghcr.io/REPLACE/of-server   # REQUIRED: built from deploy/Dockerfile in CI
+  tag: "0.3"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The organizations this server serves, with their ClickHouse databases (server.yaml `orgs`).
+orgs:
+  acme: of_acme
+vaultDatabase: of_acme_vault                 # tenant-only: unmasked raw and of.secret_detected
+unassignedDatabase: of_acme_unassigned
+tenant: acme                                 # REQUIRED: the tenant's id (server.yaml `tenant`)
+rawToOrg: false                              # the gate: stays false until lab-secrets-v0 passes
+
+clickhouse:
+  url: http://clickhouse.clickhouse.svc:8123 # REQUIRED
+  user: of_acme_ingest                       # fallback user; each database uses <db>_ingest
+
+# Ed25519 grant public keys of the tenant, pinned (never taken from the repository). REQUIRED for grant verification.
+trustedGrantKeys: []
+#  - "ssh-ed25519 AAAA... tenant-grant"
+
+# Secrets: an existing Secret is preferred (made by the keeper from the secret manager). Keys:
+#   secret.key                         the derived masking key, hex (`of server export-secret-key`)
+#   <db>_ingest.password               one per database: every org database, the vault, unassigned
+#   <db>_read.password                 one per organization database: Studio reads its views as <db>_read
+#   <db>_redact.password               one per database: delete-only, used only by redaction (docs/server.md)
+existingSecret: ""
+# Only for the Lab's disposable clusters: inline values, rendered into a Secret.
+secretValues: {}
+
+# Grants: a git-sync sidecar keeps the organization's repository checked out read-only.
+grants:
+  gitSync:
+    enabled: false
+    image: registry.k8s.io/git-sync/git-sync:v4.4.0
+    repo: ""                       # e.g. git@github.com:acme/org.git
+    ref: main
+    period: 60s
+    sshKeySecret: ""               # Secret with key `ssh` (a read-only deploy key) and `known_hosts`
+  # Path of each organization's grants.yaml inside the checkout.
+  files:
+    acme: /git/repo/registry/grants.yaml
+  # Where each organization's repository is checked out: Studio reads registry/positions.yaml
+  # (through a pod-local orgs.yaml, OF_ORGS) and the relay checks senders against the
+  # registered holders. Used only when gitSync is enabled.
+  checkouts:
+    acme: /git/repo
+  # Without git-sync: a ConfigMap the organization's keeper fills from its registry with a committed script, rerun
+  # when the files change. Each organization's two keys are mounted read-only as /etc/of/grants/<org>/registry/,
+  # the layout of a checkout, so the relay, Studio and the secrets broker read them the same way. Not with gitSync.
+  configMap:
+    name: ""
+    keys: {}                       # e.g. {acme: {grants: grants.yaml, positions: positions.yaml}}
+
+persistence:
+  size: 10Gi                       # the disk queue, dead batches and server.db
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+service:
+  type: ClusterIP
+  port: 18200
+  nodePort: null        # with type NodePort, a fixed port (30000-32767), e.g. for the Lab's k3s
+
+# Exposure: when the organization publishes services through Cloudflare (a tunnel, or Access in front of an
+# ingress), point the tunnel at the Service; otherwise enable this Ingress.
+# Studio's one-time links use this base URL (server.yaml public_url), e.g. https://of.acme.example
+publicUrl: ""
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""                          # e.g. of.acme.example
+  annotations: {}
+  tls: []
+
+networkPolicy:
+  enabled: true
+  # Who may reach the server: the tunnel's or the ingress controller's pods.
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cloudflared
+  # ClickHouse, by CIDR or selector; DNS is always allowed; 22/443 for git-sync when enabled.
+  clickhouseTo:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: clickhouse
+  clickhousePort: 8123
+
+resources:                          # fits the Lab's 2 vCPU / 4 GB k3s node
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "1", memory: 1Gi}
+
+# Where the pod runs (and, with a WaitForFirstConsumer storage class, where its volume is made): passed to the pod
+# spec as given. An organization pins the server next to its ClickHouse and away from nodes it excludes.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}

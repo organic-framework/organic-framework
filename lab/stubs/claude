@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""A stub Claude Code harness for lab machines (docs/lab.md, section 5, "Stub harness").
+
+It costs no model tokens and holds no credentials. It behaves the way the recorder
+sees Claude Code:
+- it re-reads the hooks from <config dir>/settings.json before every event, so hooks
+  installed while it runs apply "from the next turn on";
+- it writes a transcript under <config dir>/projects/<cwd key>/<session>.jsonl;
+- it fires SessionStart, UserPromptSubmit, PreToolUse/PostToolUse, Stop and SessionEnd
+  with the payload fields the real harness sends (confirmed by the hook testbed);
+- inside herdr it reports itself as a claude agent with its session id, as herdr's
+  Claude integration does.
+
+Like Claude Code 2.1.318 it also keeps <config dir>/sessions/<pid>.json (pid, sessionId, status
+idle|busy, name, cwd) while it runs, a per-session file history, session-env and subagent
+transcripts, and the project's auto-memory, so `of capacity move` sees a realistic config dir.
+Commands for tests: `!sleep N` (a busy turn), `!subagent` (a subagent transcript),
+`!remember FILE TEXT` (append to auto-memory).
+
+Input: one prompt per line on stdin (herdr agent prompt or pane send-text). A prompt
+starting with `!reply ` sets the next assistant message; `/exit` ends the session.
+A script for unattended runs: --script FILE (one prompt per line).
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import uuid
+
+CFG = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def hooks_for(event):
+    try:
+        with open(os.path.join(CFG, "settings.json")) as fh:
+            s = json.load(fh)
+    except Exception:
+        return []
+    out = []
+    for entry in (s.get("hooks") or {}).get(event, []):
+        for h in entry.get("hooks", []):
+            if h.get("type") == "command":
+                out.append(h["command"])
+    return out
+
+
+def fire(event, payload):
+    payload = dict(payload, hook_event_name=event)
+    for cmd in hooks_for(event):
+        try:
+            subprocess.run(cmd, shell=True, input=json.dumps(payload).encode(), timeout=10,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+
+def herdr_report(state, sid):
+    pane = os.environ.get("HERDR_PANE_ID")
+    if os.environ.get("HERDR_ENV") != "1" or not pane:
+        return
+    subprocess.run(["herdr", "pane", "report-agent", pane, "--source", "herdr:claude", "--agent", "claude",
+                    "--state", state, "--agent-session-id", sid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class Session:
+    def __init__(self, sid, name, model):
+        self.sid, self.name, self.model = sid, name, model
+        self.cwd = os.getcwd()
+        key = self.cwd.replace("/", "-").replace(".", "-")
+        d = os.path.join(CFG, "projects", key)
+        os.makedirs(d, exist_ok=True)
+        self.transcript = os.path.join(d, sid + ".jsonl")
+        self.parent = None
+        self.next_reply = None
+        self.crons = []
+        self.key = key
+        self.sessfile = os.path.join(CFG, "sessions", f"{os.getpid()}.json")
+
+    def status(self, st):
+        os.makedirs(os.path.dirname(self.sessfile), exist_ok=True)
+        with open(self.sessfile, "w") as fh:
+            json.dump({"pid": os.getpid(), "sessionId": self.sid, "status": st, "name": self.name,
+                       "cwd": self.cwd, "startedAt": int(time.time() * 1000)}, fh)
+
+    def side_files(self, prompt):
+        fh_dir = os.path.join(CFG, "file-history", self.sid)
+        os.makedirs(fh_dir, exist_ok=True)
+        with open(os.path.join(fh_dir, f"{uuid.uuid4().hex[:16]}@v1"), "w") as fh:
+            fh.write(prompt)
+        env_dir = os.path.join(CFG, "session-env", self.sid)
+        os.makedirs(env_dir, exist_ok=True)
+        with open(os.path.join(env_dir, "env.sh"), "w") as fh:
+            fh.write("export LAB_STUB=1\n")
+        if prompt.startswith("!subagent"):
+            sd = os.path.join(CFG, "projects", self.key, self.sid, "subagents")
+            os.makedirs(sd, exist_ok=True)
+            with open(os.path.join(sd, f"agent-{uuid.uuid4().hex[:12]}.jsonl"), "a") as fh:
+                fh.write(json.dumps({"type": "assistant", "isSidechain": True, "uuid": str(uuid.uuid4()),
+                                     "message": {"role": "assistant", "content": "sub ok"}}) + "\n")
+        if prompt.startswith("!remember "):
+            _, fname, text = prompt.split(" ", 2)
+            md = os.path.join(CFG, "projects", self.key, "memory")
+            os.makedirs(md, exist_ok=True)
+            with open(os.path.join(md, fname), "a") as fh:
+                fh.write(text + "\n")
+
+    def last_user_prompt(self):
+        last = None
+        try:
+            for ln in open(self.transcript):
+                j = json.loads(ln)
+                if j.get("type") == "user" and not str(j["message"]["content"]).startswith("of_capacity moved"):
+                    last = j["message"]["content"]
+        except Exception:
+            pass
+        return last
+
+    def base(self):
+        return {"session_id": self.sid, "transcript_path": self.transcript, "cwd": self.cwd,
+                "permission_mode": "default", "prompt_id": str(uuid.uuid4())}
+
+    def line(self, rec):
+        rec.setdefault("uuid", str(uuid.uuid4()))
+        rec.update(parentUuid=self.parent, sessionId=self.sid, cwd=self.cwd,
+                   timestamp=time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()))
+        self.parent = rec["uuid"]
+        with open(self.transcript, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+
+    def start(self, resumed=False):
+        self.status("idle")
+        fire("SessionStart", {**self.base(), "source": "resume" if resumed else "startup", "model": self.model,
+                              "session_title": self.name})
+        herdr_report("idle", self.sid)
+        print(f"✻ Claude Code (lab stub) · {self.name} · {self.sid}\n❯ ", end="", flush=True)
+
+    def turn(self, prompt):
+        b = self.base()
+        self.status("busy")
+        herdr_report("working", self.sid)
+        fire("UserPromptSubmit", {**b, "prompt": prompt, "session_title": self.name})
+        self.line({"type": "user", "message": {"role": "user", "content": prompt}, "promptId": b["prompt_id"],
+                   "origin": {"kind": "human"}, "promptSource": "typed", "turnOrigin": "human"})
+        if prompt.startswith("!cron "):
+            self.crons.append({"id": uuid.uuid4().hex[:8], "prompt": prompt[6:], "recurring": False})
+        tid = "toolu_" + uuid.uuid4().hex[:20]
+        ti = {"command": "ls"}
+        fire("PreToolUse", {**b, "tool_name": "Bash", "tool_input": ti, "tool_use_id": tid})
+        fire("PostToolUse", {**b, "tool_name": "Bash", "tool_input": ti, "tool_use_id": tid,
+                             "tool_response": {"stdout": "README.md\n"}})
+        self.side_files(prompt)
+        if prompt.startswith("!sleep "):
+            time.sleep(float(prompt.split()[1]))
+        if prompt.startswith("of_capacity moved"):
+            self.next_reply = f"Resumed after the move. I was working on: {self.last_user_prompt()}"
+        reply = self.next_reply or f"Done: {prompt[:60]}"
+        self.next_reply = None
+        self.line({"type": "assistant", "message": {"id": "msg_" + uuid.uuid4().hex[:20], "role": "assistant",
+                                                     "model": self.model, "content": [{"type": "text", "text": reply}],
+                                                     "usage": {"input_tokens": 0, "output_tokens": 0}}})
+        fire("Stop", {**b, "stop_hook_active": False, "last_assistant_message": reply,
+                      "session_crons": self.crons, "background_tasks": []})
+        self.status("idle")
+        herdr_report("idle", self.sid)
+        print(reply)
+
+    def end(self):
+        fire("SessionEnd", {**self.base(), "reason": "prompt_input_exit"})
+        try:
+            os.remove(self.sessfile)
+        except OSError:
+            pass
+
+
+# Claude Code asks once per folder whether to trust it before it does anything, and a resumed session in a folder
+# it has not accepted sits on that dialog (runners_keeper, 2026-11-06). The stub shows the same dialog when the marker
+# `<config dir>/.lab-stub-trust-dialog` is present, so `of capacity move`/`resume` can be tested against a held start
+# independently of the real trust file (the tool may have carried trust yet Claude Code still re-prompts). While on the
+# dialog it writes no session file and fires no hooks: of_capacity sees no live session, reads the dialog text and
+# closes it with "No, exit" (Esc), which grants nothing. The dialog text matches of_capacity.TRUST_DIALOG and
+# DIALOG_MARK (docs/lab.md, "Stub harness"; bin/of_capacity.py).
+TRUST_MARKER = os.path.join(CFG, ".lab-stub-trust-dialog")
+
+
+def _account_file():
+    # where `of`/`of_capacity` read a config dir's trust: the default ~/.claude keeps it in ~/.claude.json (home),
+    # a named dir in <dir>/.claude.json (of_capacity.account_file). The stub must write where they read.
+    home = os.path.expanduser("~")
+    return os.path.join(home, ".claude.json") if os.path.normpath(CFG) == os.path.join(home, ".claude") \
+        else os.path.join(CFG, ".claude.json")
+
+
+def _accept_trust(cwd, bypass=False):
+    path = _account_file()
+    try:
+        d = json.load(open(path))
+    except Exception:
+        d = {}
+    d.setdefault("projects", {}).setdefault(cwd, {})["hasTrustDialogAccepted"] = True
+    if bypass:  # `claude --dangerously-skip-permissions` also shows the bypass-permissions warning; accepting it
+        d["skipDangerousModePermissionPrompt"] = True  # sets this global key, as real Claude Code does
+    json.dump(d, open(path, "w"))
+
+
+def trust_dialog(cwd, bypass=False):
+    """Show the folder-trust dialog and wait. Return True if the user accepts (Enter / "Yes" / 1), False on
+    "No, exit" / Esc / EOF. On accept the folder's trust is written (and, under `--dangerously-skip-permissions`,
+    the bypass-permissions warning is accepted too) and the marker cleared; on decline nothing is changed (the tool
+    never presses the dialog), and the caller exits without starting a session."""
+    for ln in ("Do you trust the files in this folder?", f"  {cwd}",
+               "Is this a project you created or one you trust?",
+               "❯ 1. Yes, I trust this folder", "  2. No, exit", "Enter to confirm · Esc to cancel"):
+        print(ln)
+    sys.stdout.flush()
+    # Read single keystrokes. Under a PTY the terminal is in canonical mode, so a lone Esc (what `herdr pane
+    # send-keys <pane> esc` delivers) would sit in the line buffer until a newline; cbreak mode delivers it at once.
+    # When stdin is not a tty (a pipe in a unit test) tcgetattr raises and we read raw, which already yields each byte.
+    old = None
+    try:
+        import termios, tty
+        old = termios.tcgetattr(0)
+        tty.setcbreak(0)
+    except Exception:
+        old = None
+    try:
+        buf = b""
+        while True:
+            try:
+                ch = os.read(0, 1)
+            except OSError:
+                return False
+            if not ch:
+                return False
+            c = ch[0]
+            if c == 0x1b:                      # Esc -> "No, exit"
+                return False
+            if c in (0x0d, 0x0a):              # Enter -> the highlighted option, "Yes, I trust"
+                _accept_trust(cwd, bypass)
+                _clear_marker()
+                print("Yes, I trust this folder", flush=True)
+                return True
+            buf += ch
+            low = buf.strip().lower()
+            if low in (b"n", b"no", b"2", b"/exit"):
+                return False
+            if low in (b"y", b"yes", b"1"):
+                _accept_trust(cwd, bypass)
+                _clear_marker()
+                print("Yes, I trust this folder", flush=True)
+                return True
+    finally:
+        if old is not None:
+            try:
+                import termios
+                termios.tcsetattr(0, termios.TCSADRAIN, old)
+            except Exception:
+                pass
+
+
+def _clear_marker():
+    try:
+        os.remove(TRUST_MARKER)
+    except OSError:
+        pass
+
+
+def agents_json():
+    """`claude agents --json`: the live sessions of this config dir, as Claude Code lists them."""
+    out = []
+    for f in sorted(__import__("glob").glob(os.path.join(CFG, "sessions", "*.json"))):
+        try:
+            j = json.load(open(f))
+            os.kill(int(j["pid"]), 0)
+        except Exception:
+            continue
+        out.append({"pid": j["pid"], "cwd": j.get("cwd"), "kind": "interactive", "startedAt": j.get("startedAt"),
+                    "sessionId": j.get("sessionId"), "name": j.get("name"), "status": j.get("status")})
+    print(json.dumps(out, indent=2))
+
+
+def main():
+    if sys.argv[1:2] == ["agents"]:
+        return agents_json() if "--json" in sys.argv else print("Usage: claude agents --json")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--session-id", default=None)
+    ap.add_argument("--resume", default=None)
+    ap.add_argument("--name", "-n", default="stub")
+    ap.add_argument("--model", default="claude-haiku-5-5")
+    ap.add_argument("--script", default=None)
+    ap.add_argument("--effort", default=None)
+    ap.add_argument("--dangerously-skip-permissions", action="store_true")
+    ap.add_argument("prompt", nargs="?")
+    a, _ = ap.parse_known_args()
+    if os.path.exists(TRUST_MARKER) and not trust_dialog(os.getcwd(), a.dangerously_skip_permissions):
+        return   # closed with "No, exit"/Esc: no session file written, no hooks fired, nothing granted
+    s = Session(a.resume or a.session_id or str(uuid.uuid4()), a.name, a.model)
+    s.start(resumed=bool(a.resume))
+    if a.prompt:
+        s.turn(a.prompt)
+        print("❯ ", end="", flush=True)
+    lines = open(a.script) if a.script else sys.stdin
+    for raw in lines:
+        p = raw.rstrip("\n")
+        if not p:
+            continue
+        if p.strip() == "/exit":
+            break
+        if p.startswith("!reply "):
+            s.next_reply = p[7:].replace("\\n", "\n")
+            continue
+        s.turn(p.replace("\\n", "\n"))
+        if not a.script:
+            print("❯ ", end="", flush=True)
+    s.end()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

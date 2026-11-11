@@ -1,0 +1,8 @@
+organization: t
+credentials:
+  grafana-viewer: {ref: "op://t-obs/grafana-viewer/credential", keeper: obs_keeper}
+  kube-admin: {ref: "op://t-k8s/kube-admin/credential", keeper: k8s_keeper}
+positions:
+  - {name: obs_reader, credentials: [grafana-viewer], holder: {session: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"}}
+  - {name: obs_keeper, holder: {session: "S-keeper"}}
+  - {name: k8s_keeper, holder: {session: "S-k8s"}}

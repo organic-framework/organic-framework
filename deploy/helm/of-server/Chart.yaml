@@ -1,0 +1,6 @@
+apiVersion: v2
+name: of-server
+description: Organic Framework's sync server (profile 2), one per organization
+type: application
+version: 0.1.0
+appVersion: "0.3"

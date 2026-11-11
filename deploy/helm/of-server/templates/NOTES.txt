@@ -1,0 +1,6 @@
+of-server {{ .Chart.AppVersion }} for {{ keys .Values.orgs | sortAlpha | join ", " }}.
+Health: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "of-server.name" . }} 18200 && curl -s 127.0.0.1:18200/v1/health
+Enroll a machine (until remote enrollment exists):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "of-server.name" . }} -c of-server -- \
+    python3 /app/of_server.py --config /etc/of/server.yaml enroll --machine-id ID --pubkey 'ssh-ed25519 AAAA…' --org ORG
+See deploy/RUNBOOK.md.

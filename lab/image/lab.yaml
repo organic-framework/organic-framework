@@ -1,0 +1,26 @@
+# Lima template for one Organic Framework lab machine (docs/lab.md, section 9).
+# Isolation from the founder's Mac is the point of this file: no mounts, no
+# forwarding, no Rosetta, no containerd. Egress is locked by lockdown.sh after provisioning.
+minimumLimaVersion: 2.0.0
+base:
+  - template:_images/ubuntu-24.04
+vmType: vz
+arch: aarch64
+cpus: 2
+memory: 4GiB
+disk: 20GiB
+mounts: []
+mountType: null
+containerd:
+  system: false
+  user: false
+ssh:
+  forwardAgent: false
+  forwardX11: false
+  loadDotSSHPubKeys: false
+portForwards:
+  - guestPortRange: [1, 65535]
+    ignore: true
+rosetta:
+  enabled: false
+upgradePackages: false

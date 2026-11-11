@@ -1,0 +1,72 @@
+/* Organic Framework's design (the founder's design system, direction "Frame") over Starlight's theme. Colours are
+   taken from the photographs: Shadow #373C15, Grass #727C3A, Ear #9C8342, Light #EDDFC0, with Paper #F2F3EE and
+   Ink #1B2013 as the neutrals. Type: Inter Tight, tightly tracked titles; JetBrains Mono for code and labels.
+   Text colours meet WCAG AA: links are #3C4929 on Paper (8.6:1) and #C8D288 on Ink (10.3:1). */
+
+:root {
+	--sl-font: 'Inter Tight Variable', 'Helvetica Neue', Arial, sans-serif;
+	--sl-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+	/* dark theme (Starlight's default): Ink, with Shadow and the light greens of the photographs */
+	--sl-color-accent-low: #373c15;
+	--sl-color-accent: #9aa05f;
+	--sl-color-accent-high: #c8d288;
+	--sl-color-white: #ffffff;
+	--sl-color-gray-1: #eceee6;
+	--sl-color-gray-2: #d5d9cc;
+	--sl-color-gray-3: #a3a994;
+	--sl-color-gray-4: #6b7358;
+	--sl-color-gray-5: #343b27;
+	--sl-color-gray-6: #232918;
+	--sl-color-black: #1b2013;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent-low: #dde3bf;
+	--sl-color-accent: #3c4929;
+	--sl-color-accent-high: #2a3319;
+	--sl-color-white: #1b2013;
+	--sl-color-gray-1: #1b2013;
+	--sl-color-gray-2: #2e3423;
+	--sl-color-gray-3: #555c4b;
+	--sl-color-gray-4: #8e9580;
+	--sl-color-gray-5: #d5d9cc;
+	--sl-color-gray-6: #e3e6dc;
+	--sl-color-gray-7: #eceee6;
+	--sl-color-black: #f2f3ee;
+}
+
+/* Titles as in the design: weight 500, tight tracking. */
+h1#_top {
+	font-weight: 500;
+	letter-spacing: -0.045em;
+	line-height: 0.98;
+}
+
+.sl-markdown-content :is(h2, h3) {
+	font-weight: 500;
+	letter-spacing: -0.02em;
+}
+
+.site-title {
+	font-weight: 500;
+	letter-spacing: -0.04em;
+	font-size: var(--sl-text-xl);
+}
+
+/* Labels in the design are mono: the table of contents' heading and the sidebar's group names. */
+nav summary .large,
+#starlight__on-this-page {
+	font-family: var(--__sl-font-mono);
+	font-weight: 400;
+	letter-spacing: 0;
+}
+
+/* Tables carry most of the reference (FEATURES, the registry's fields): denser, and readable at phone width. */
+.sl-markdown-content table {
+	font-size: var(--sl-text-sm);
+}
+
+.sl-markdown-content table code {
+	white-space: nowrap;
+}

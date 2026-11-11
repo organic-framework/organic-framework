@@ -1,0 +1,320 @@
+# The onboarding package: the unit blueprint and the run (docs/onboarding.md).
+#
+# It is Organic Framework's first Bench package (docs/framework.md, "Installing from Bench"): a unit blueprint
+# plus a bootstrap position. `of init` reads this file and writes a new organization's registry from it, with no
+# agent started. The owner's conductor is the first position and the first agent the head starts.
+#
+# Every role and step names its source. "record" is docs/onboarding-practice.md, the practice this package
+# follows; "conductor" is docs/conductor.md. A role or step that changes names its source or the run evidence
+# that changed it (the record, §8).
+#
+# Placeholders, filled by `of init`: {org} is the organization's prefix (its id, at most 14 characters),
+# {Org} its display name, {owner_id} and {owner_name} the head's person id and name.
+
+package: onboarding
+version: 1
+title: "Onboarding: how a company starts on Organic Framework"
+record: docs/onboarding-practice.md
+
+# The organization itself, as the creating system the unit works on (docs/systems.md; registry "Systems map").
+system:
+  id: "{org}"
+  name: "{Org} organization"
+  kind: creating
+  keeper: "{org}_org"
+
+# The unit (docs/registry.md, Units). Its owner is the sponsor's position.
+unit:
+  id: onboarding
+  name: Onboarding
+  owner: "{org}_owner"
+  systems: ["{org}"]
+
+# The roles, in the order `of init` writes them: the conductor first (conductor §5), then the people, then the
+# agents of the run. A role held by a person is a position with a human holder (docs/registry.md, People).
+roles:
+  - id: conductor
+    title: Conductor
+    held_by: agent
+    position: "{org}_conductor"
+    role: conductor
+    kind: coordinator
+    owner: "{org}_owner"
+    throughput: coordinate
+    owner_chat: true
+    summary: "{owner_name}'s one window"
+    brief: briefs/conductor.md
+    starts: "first: the head starts it before any other agent (conductor §5)"
+    sources:
+      - "conductor §2: a single window (UN/CEFACT Recommendation No. 33, 2005); a single point of contact (ITIL 4 service desk, Axelos 2019); the chief of staff (Ciampa, HBR, May 2005); orchestrator-workers (Anthropic, Building effective agents, 2024)"
+      - "conductor §3: every person who holds or owns a position has exactly one conductor"
+      - "record §8.3 (2): one batching point per unit files the head's cards; the conductor presents them and files none"
+      - "record §8.4 (3): a watch over open requests on a short cycle"
+      - "record §8.4 (6): the conductor's practice, from the corrections the OF team's conductor received"
+    evidence:
+      - "its ledger of the person's open requests, each closed with a result or a reason"
+      - "the share of the person's typed prompts that go to it (conductor §6)"
+
+  - id: sponsor
+    title: Sponsor
+    held_by: person
+    position: "{org}_owner"
+    role: owner
+    kind: owner
+    owner: "{org}_owner"
+    person: "{owner_id}"
+    summary: "{owner_name}, the head"
+    brief: briefs/sponsor.md
+    sources:
+      - "record §1.2: Block's client, who contracts and decides (Flawless Consulting, 4th ed., 2023)"
+      - "record §1.3: TOGAF Phase A, the approved Statement of Architecture Work"
+      - "record §1.4: Martin and Osterling's executive sponsor, mandatory (Value Stream Mapping, 2014)"
+    evidence:
+      - "the charter approved by an ask id"
+      - "the answered decision batch"
+
+  - id: champion
+    title: Champion
+    held_by: person
+    position: null  # named by the charter; the structure keeper adds the person, the position and its conductor by diff
+    role: champion
+    kind: keeper
+    brief: briefs/champion.md
+    sources:
+      - "record §1.4: Martin and Osterling's value stream champion, who owns the transformation plan"
+      - "record §1.4: Rother and Shook's value stream manager (Learning to See, 1999)"
+      - "conductor §5: the champion gets a conductor on joining"
+    evidence:
+      - "named in the charter"
+      - "the confirmed current-state map"
+      - "each increment signed off"
+
+  - id: lead
+    title: Onboarding lead
+    held_by: agent
+    position: "{org}_onboarding"
+    role: onboarding
+    kind: project
+    owner: "{org}_owner"
+    throughput: coordinate
+    summary: runs the onboarding cycle
+    brief: briefs/onboarding-lead.md
+    mandate_functions: [org_change]
+    done_when: "the run {org}-onboarding has its eight stages done, each with its own evidence; the re-check counted by a position that did not build the structure; the closing note committed"
+    starts: "second: the head starts it on the conductor's advice, at step 1"
+    sources:
+      - "record §1.2: Block's consultant across the five phases"
+      - "record §1.4: Martin and Osterling's facilitator, who must not work in the stream"
+      - "record §1.1: the lead who coordinates due diligence's workstreams (Howson, 2003)"
+      - "framework.md, Installing from Bench: a package is a unit blueprint plus a bootstrap position"
+    evidence:
+      - "the charter draft"
+      - "the findings list"
+      - "the decision-batch ask"
+      - "the plan of increments"
+      - "the closing note"
+
+  - id: business-case
+    title: Business-case analyst
+    held_by: agent
+    position: "{org}_business-case"
+    role: business-case
+    kind: analyst
+    owner: "{org}_owner"
+    throughput: measure
+    summary: how the company makes money
+    brief: briefs/business-case-analyst.md
+    mandate_functions: [strategy]
+    done_when: "the business-case baseline committed, each norm part with its state and evidence (record §8.1), and its gaps routed by the lead"
+    starts: "at step 4, in the lens wave"
+    sources:
+      - "record §1.1: commercial and financial due diligence (Howson)"
+      - "record §1.3: TOGAF Phase A stakeholders, goals, drivers and constraints; BIZBOK value streams; ISO/IEC/IEEE 15288 6.4.1"
+      - "record §8.1: the norms: the six cases, the strategy's parts, the stakeholder set"
+      - "record §8.2 (1, 2, 6): norm before traces; the strategy needs its own baseline; reuse earlier baselines by their dates"
+    evidence:
+      - "the business-case map (docs/business-case.md) with each area's maturity"
+      - "the strategy's parts, each with its state"
+      - "the stakeholder map with coverage per interest"
+      - "the money line per system, for the system architect"
+
+  - id: system-architect
+    title: System architect
+    held_by: agent
+    position: "{org}_system-architect"
+    role: system-architect
+    kind: keeper
+    owner: "{org}_owner"
+    throughput: measure
+    summary: what the company makes and runs
+    brief: briefs/system-architect.md
+    starts: "at step 3, in the data wave"
+    sources:
+      - "record §1.1: technical due diligence (Howson: IT and production technology)"
+      - "record §1.3: TOGAF baselines B to D and gap analysis; ISO/IEC/IEEE 15288 and 42010"
+      - "record §1.5: Tornhill's code-history analysis (Your Code as a Crime Scene, 2015)"
+      - "record §8.2 (7): name each record's system of record before calling it missing"
+      - "rfc/0007-system-architect-and-cells.md §2.1 and §2.2: the systems map on evidence"
+    evidence:
+      - "the systems map on evidence: runs, code, money, confirmed"
+      - "repository to system to keeper"
+      - "each record's system of record, with its access"
+
+  - id: structure-keeper
+    title: Structure keeper
+    held_by: agent
+    position: "{org}_org"
+    role: org
+    kind: keeper
+    owner: "{org}_owner"
+    throughput: coordinate
+    summary: the organization model, people too
+    brief: briefs/structure-keeper.md
+    mandate_functions: [org_change, administration]
+    starts: "at step 3, in the data wave"
+    sources:
+      - "record §1.2: Weisbord's six boxes; Nadler and Tushman's congruence, formal against informal organization"
+      - "record §1.3: the BIZBOK organization map"
+      - "record §1.6: RAPID, one decider per decision (Rogers and Blenko, HBR, 2006)"
+      - "record §1.5: socio-technical congruence (Cataldo, Herbsleb, Carley, 2008)"
+      - "record §8.1 and §8.2 (4): the management functions and the lines of control"
+      - "record §8.4 (1, 2): people are positions; each mandate against its work"
+    evidence:
+      - "the registry of people, agents and positions"
+      - "current briefs; each mandate checked against the work done"
+      - "the key decisions, each with one decider"
+      - "the misfits between the formal and the informal organization"
+
+  - id: flow-analyst
+    title: Flow analyst
+    held_by: agent
+    position: "{org}_flow"
+    role: flow
+    kind: analyst
+    owner: "{org}_owner"
+    throughput: measure
+    summary: the value stream, before and after
+    brief: briefs/flow-analyst.md
+    mandate_functions: [operations]
+    done_when: "the before report and the re-measure committed by one method (record §5), each measure's source checked, the gaps listed and never estimated"
+    starts: "at step 4, in the lens wave"
+    sources:
+      - "record §1.4: Rother and Shook's current-state map; Martin and Osterling's lead time"
+      - "record §1.1: operational due diligence"
+      - "record §1.5: process mining, discovery and conformance (Process Mining Manifesto, 2011)"
+      - "record §5: the measure before and after, from what OF records only"
+      - "record §8.2 (3): check each measure's source before the before report"
+    evidence:
+      - "PR lead time and throughput from GitHub"
+      - "asks, turns and waits from recorded sessions"
+      - "the head's open items from the onboarding, per day"
+      - "the metrics it cannot compute, listed as gaps"
+      - "the before report; the re-measure"
+
+# The rules of the unit (record §3, notes).
+rules:
+  - "The conductor is not the lead. The conductor stays for as long as the person works in OF; the lead runs one cycle and leaves (record §3; Block's termination phase)."
+  - "The lead is not the structure keeper. The facilitator must not work in the stream, and the keeper stays after the run (record §3; Martin and Osterling; Block)."
+  - "In a small company one agent may hold several lens roles (rfc/0007 allows the architect and the keeper to be one position). The lead and the conductor stay separate."
+  - "The sponsor and the champion are people: every source puts the decision with an accountable sponsor (record §3, §6)."
+  - "One batching point per unit files the head's cards; the lead is this unit's (record §8.3 (2))."
+
+# The run: one work with eight stages (docs/registry.md, Works). Each stage's done_when is checked from the
+# records, never ticked by hand (record §8.3 (3)).
+run:
+  id: "{org}-onboarding"
+  title: "{Org} onboarded on Organic Framework: the eight steps of the practice"
+  kind: project
+  owner: "{org}_owner"
+  doers: ["{org}_onboarding", "{org}_business-case", "{org}_system-architect", "{org}_org", "{org}_flow"]
+  done_when: "the eight stages done, each with its own done_when evidence counted from the records by a position that did not build the structure (record §8.3 (3))"
+  stages:
+    - id: charter
+      step: 1
+      title: "One window, then the contract: the head's conductor first, then the charter"
+      who: "the head starts the conductor, then the lead; the lead drafts the charter; the sponsor approves"
+      done_when: "of registry check passes; the head's conductor is live and the head's requests reach their owners through it; the charter (onboarding/charter.md) names the scope, the champion, what is read and what is not, each record's system of record, the outside parties with writer, channel and access, and how findings come back; it is approved by an ask id"
+      sources:
+        - "record §1.2: Block, entry and contracting"
+        - "record §1.3: TOGAF Phase A, the Statement of Architecture Work"
+        - "record §1.4: Martin and Osterling's charter"
+        - "conductor §3 and §5: one window from the start"
+        - "record §8.2 (7): the systems of record and the permission for each confidential source"
+        - "record §8.3 (1): the outside parties' channels in the charter, not after"
+        - "record §8.4 (1): people are positions"
+    - id: problem
+      step: 2
+      title: "The presenting problem: the head's last story of confusion or bureaucracy"
+      who: "the head tells the conductor; the lead records it"
+      done_when: "the story is recorded in onboarding/charter.md, section 2; the first value stream or decision area is chosen; the stage S0 to S3 is named"
+      sources:
+        - "record §1.2: Block, discovery: the presenting problem is the start"
+        - "record §1.7: Watkins' situation diagnosis (The First 90 Days, 2003)"
+        - "business-case.md: the stages S0 to S3"
+    - id: data
+      step: 3
+      title: "Data first: people, agents, machines, repositories and recorded sessions"
+      who: "the system architect and the structure keeper"
+      done_when: "every live agent, person and repository is visible (of who; the registry's people:; the systems map's repos); git and GitHub are imported; each source read has its permission named in the charter or recorded by an ask id"
+      sources:
+        - "record §1.5: the Process Mining Manifesto (discovery); Tornhill's code history"
+        - "record §8.2 (7): the system of record and its permission"
+        - "record §8.4 (1): people are positions"
+    - id: baselines
+      step: 4
+      title: "Four baselines in parallel: business case, systems, structure, flow; each against its norm"
+      who: "the business-case analyst, the system architect, the structure keeper, the flow analyst"
+      done_when: "each baseline is committed under onboarding/baselines/; each fact names its evidence; each norm part has a state (unknown, sketched, evidenced, kept current); each measure names its source and whether it was checked; each mandate is checked against its work"
+      sources:
+        - "record §1.1: due diligence's workstreams, one per lens"
+        - "record §1.3: TOGAF baselines B to D; BIZBOK domains"
+        - "record §1.2: the six boxes"
+        - "record §8.1 and §8.2 (1, 2, 4): the norms"
+        - "record §8.2 (3): each measure's source"
+        - "record §8.4 (2): each mandate against its work"
+    - id: integrate
+      step: 5
+      title: "Integrate: misfits and gaps ranked by consequence, each routed"
+      who: "the lead"
+      done_when: "onboarding/findings.md lists each finding with its lens, evidence, consequence and decider; transformational ones go to the head, transactional ones to a keeper; gaps that no agent raises are listed as decisions for the head with their consequences"
+      sources:
+        - "record §1.2: Nadler and Tushman's misfits; Burke and Litwin's two kinds of factor"
+        - "record §1.3: TOGAF gap analysis"
+        - "record §1.1: due diligence's red flags by severity"
+        - "record §8.2 (5): gaps that nobody raises stay"
+    - id: decide
+      step: 6
+      title: "Feedback: one numbered decision batch"
+      who: "the lead files it; the head's conductor presents it; the sponsor decides"
+      done_when: "the batch ask is answered; confirmed facts move to confirmed: with that ask id"
+      sources:
+        - "record §1.2: Block, feedback and the decision to act"
+        - "record §8.3 (2): one batching point per unit"
+    - id: increments
+      step: 7
+      title: "Increments: the future state as works with checkable ends, non-invasive first"
+      who: "the lead with the keepers; the champion owns the plan; the sponsor approves each invasive batch"
+      done_when: "each increment is a work in the registry with done_when and a measure; new roles come from onboarding/role-design.md with their outside party, channel and access; they start in waves sized by capacity; each new unit has one batching point; the head's open items from the onboarding are counted per day"
+      sources:
+        - "record §1.4: Martin and Osterling's future state and transformation plan"
+        - "record §1.3: TOGAF transition architectures"
+        - "record §1.7: Watkins' early wins"
+        - "record §8.2 (8): an owner per gap; one watcher per stakeholder; each role with its outside party"
+        - "record §8.3 (1, 2): channels open as soon as the roles exist; batching designed into every unit"
+        - "record §8.4 (3, 4): the conductor's watch; waves sized by capacity (rollout.md)"
+    - id: close
+      step: 8
+      title: "Re-measure, re-check, hand over, close"
+      who: "the flow analyst re-measures; a position that did not build the structure re-checks; the lead closes"
+      done_when: "the re-measure against step 4 by the same method; onboarding/recheck.md counts each item's state from the records, an item green only with its own done_when evidence; the keepers keep their maps; the lead's position is finished"
+      sources:
+        - "record §1.2: Block, extension, recycle or termination"
+        - "record §1.4: Martin and Osterling's reviews"
+        - "record §8.3 (3): the re-check counts the records"
+        - "record §8.4 (5): honest green, counted by a position that did not build it"
+
+# Templates `of init` copies into the organization's repository, under onboarding/.
+templates:
+  charter: templates/charter.md
+  role-design: templates/role-design.md
+  recheck: templates/recheck.md

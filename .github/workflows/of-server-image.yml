@@ -1,0 +1,64 @@
+# The of-server image (deploy/Dockerfile; docs/server.md, profile 2), built here and never on the founder's Mac.
+# It goes to this organization's own registry, ghcr.io/organic-framework/of-server, private like the repository.
+# An organization that runs the server can also have it pushed into its own registry: its keeper creates a
+# repository and a role that GitHub's OIDC token from this repository's main branch may assume, and the repository
+# variables ORG_REGISTRY_IMAGE, ORG_REGISTRY_ROLE and ORG_REGISTRY_REGION (AWS ECR) name them, so no organization's
+# account appears in this file. One immutable tag per build: the commit. Owner: of_server.
+name: of-server image
+
+on:
+  push:
+    branches: [main]
+    paths: ["bin/**", "deploy/Dockerfile", "docs/diagnose-v0.yaml", ".github/workflows/of-server-image.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write   # OIDC for the organization's registry: no stored cloud key
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          load: true
+          tags: of-server:ci
+      - name: Every module the image holds imports, so every module they import at load is in it
+        run: |
+          docker run --rm --entrypoint python3 of-server:ci -c \
+            "import glob, importlib, os; ms = sorted(os.path.basename(f)[:-3] for f in glob.glob('/app/of_*.py')); [importlib.import_module(m) for m in ms]; print('imports ok:', len(ms))"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        run: |
+          VERSION=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' bin/of_server.py)
+          for tag in "${GITHUB_SHA::12}" "$VERSION" main; do
+            docker tag of-server:ci "ghcr.io/organic-framework/of-server:$tag"
+            docker push "ghcr.io/organic-framework/of-server:$tag"
+          done
+      - name: Sign in to the organization's registry (OIDC, no stored key)
+        if: vars.ORG_REGISTRY_ROLE != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ORG_REGISTRY_ROLE }}
+          aws-region: ${{ vars.ORG_REGISTRY_REGION }}
+      - if: vars.ORG_REGISTRY_ROLE != ''
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Push to the organization's registry, one tag per build
+        if: vars.ORG_REGISTRY_ROLE != ''
+        env:
+          IMAGE: ${{ vars.ORG_REGISTRY_IMAGE }}
+        run: |
+          docker tag of-server:ci "$IMAGE:${GITHUB_SHA::12}"
+          docker push "$IMAGE:${GITHUB_SHA::12}" | tee push.log
+          grep -o 'digest: sha256:[0-9a-f]*' push.log | sed "s|^|$IMAGE:${GITHUB_SHA::12} |"
