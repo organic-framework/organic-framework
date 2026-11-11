@@ -82,6 +82,7 @@ def opener():
 
 
 TALL_H = 8      # from this many rows: the first cards of each stream
+BURST_S = 0.12  # Enter or o this close to another key is typed text, not a press: it opens nothing
 WIDE_W = 110    # from this many columns (and TALL_H rows): who waits on him and what he answered lately
 RECENT_H = 24   # the answers listed are this many hours old at most
 
@@ -141,6 +142,7 @@ class Panel:
         self.bg = {"data": None, "busy": False}
         self.button, self.msg, self.msg_at, self.attr = None, "", 0.0, {}
         self.recent, self.cards = [], {}  # the latest answers; screen row -> (x0, x1) of a card row
+        self.last_key = 0.0
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
 
     def refresh(self):
@@ -305,6 +307,19 @@ class Panel:
             elif x < w - 10:  # tall: no row below the button, the note beside it
                 self.put(by, x, T.cut(self.msg, w - 1 - x), curses.A_BOLD)
 
+    def burst(self):
+        """Is this key part of text typed by a tool or pasted (of_herdr: a restart typed into the pane opened the
+        popup on his screen)? A key within BURST_S of the one before, or with another right behind it."""
+        now, before = time.time(), self.last_key
+        self.scr.timeout(int(BURST_S * 1000))
+        nxt = self.scr.getch()
+        self.scr.timeout(T.SEQ_POLL_MS)
+        if nxt != -1 or now - before < BURST_S:
+            curses.flushinp()
+            self.last_key = time.time()
+            return True
+        return False
+
     def open(self):
         if self.open_cmd:
             try:
@@ -331,13 +346,16 @@ class Panel:
                 _, x, y, _, b = curses.getmouse()
             except curses.error:
                 return True
-            pressed = b & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED | curses.BUTTON1_RELEASED)
+            # one click, one open: the release (or a click), never the press too (of_herdr, from his herdr's log:
+            # one click called the opener twice in 70 ms, the second got ui_busy)
+            pressed = b & (curses.BUTTON1_CLICKED | curses.BUTTON1_RELEASED)
             on_button = self.button and y == self.button[0] and self.button[1] <= x < self.button[1] + self.button[2]
             on_card = y in self.cards and self.cards[y][0] <= x < self.cards[y][1]
             if pressed and (on_button or on_card):
                 self.open()
         elif ch in (10, 13, curses.KEY_ENTER, ord("o")):
-            self.open()
+            if not self.burst():
+                self.open()
         elif ch == ord("q"):
             return False
         return True
@@ -376,6 +394,8 @@ class Panel:
                 continue
             if not self.handle(ch):
                 return
+            if ch != curses.KEY_MOUSE:
+                self.last_key = time.time()
 
 
 def main(of_path, positions=None):
