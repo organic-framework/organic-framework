@@ -163,6 +163,29 @@ class HookTest(unittest.TestCase):
             self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
             self.assertEqual(open(path).read(), before)  # idempotent
 
+    def test_configure_refuses_a_path_that_would_break_the_key(self):
+        """of_platform's review of PR 31: an apostrophe passes herdr's check but breaks sh -c '…' when pressed."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            for home in ("/Users/o'brien/of", '/of"x', "/of\\x", "/of\nx"):
+                ok, why = plugin.configure(home, python="/py/python3", path=path, run=self._check())
+                self.assertFalse(ok, home)
+                self.assertIn("apostrophe", why)
+            self.assertFalse(os.path.exists(path))  # nothing written
+
+    def test_configure_logs_into_ofs_state_dir(self):
+        import tomllib
+        with tempfile.TemporaryDirectory() as d:
+            saved = plugin._state
+            plugin._state = lambda: os.path.join(d, "state")
+            try:
+                path = os.path.join(d, "config.toml")
+                self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
+            finally:
+                plugin._state = saved
+            key = tomllib.load(open(path, "rb"))["keys"]["command"][0]
+            self.assertIn(os.path.join(d, "state", "asks-popup.err"), key["command"])
+
     def test_configure_leaves_the_persons_own_key_and_rows_alone(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "config.toml")
