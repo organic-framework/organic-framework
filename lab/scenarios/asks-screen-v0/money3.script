@@ -1,0 +1,10 @@
+# asks-screen-v0: from a fresh fixture, the money card Q10 is the fifth in "Money and production"
+keys \t
+keys g
+keys jjjj
+read 56-on-q10
+keys 1
+read 57-after-1
+keys x
+sleep 1
+read 58-after-other-key
