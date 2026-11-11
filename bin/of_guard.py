@@ -1367,12 +1367,51 @@ def _in_plugin_code(path, cwd):
     return any(p == d or p.startswith(d.rstrip("/") + "/") for d in _plugin_dirs())
 
 
+def _line_env(stext, env):
+    """{name: value or None} in effect for one simple command: the session's environment, then ENV (the line's exports,
+    an `unset` as ""), then the command's own `env -u NAME`, `env NAME=value` and leading NAME=value words. None means
+    unset."""
+    out = {k: v for k, v in os.environ.items()}
+    for k, v in (env or {}).items():
+        if isinstance(v, str):
+            out[k] = v or None
+    try:
+        toks = _tokens(stext)
+    except ValueError:
+        toks = []
+    k = 0
+    while k < len(toks):
+        w = toks[k]
+        m = re.match(r"^([A-Za-z_]\w*)=(.*)$", w, re.S)
+        if m:
+            out[m.group(1)] = m.group(2) or None
+        elif w in ("-u", "--unset") and k + 1 < len(toks):
+            out[toks[k + 1]] = None
+            k += 1
+        elif w.startswith("--unset="):
+            out[w.split("=", 1)[1]] = None
+        elif not (os.path.basename(w) == "env" or w.startswith("-")):
+            break
+        k += 1
+    return out
+
+
+def _herdr_reached_is_lab(stext, env):
+    """Does this herdr command reach of_herdr's lab herdr? herdr talks to the running herdr through its socket:
+    HERDR_SOCKET_PATH, inherited from an agent's pane, is the owner's; only when it is unset does herdr place its
+    socket under XDG_CONFIG_HOME (of_architect's review of PR 32, checked on herdr 0.9.5)."""
+    e = _line_env(stext, env)
+    sock = e.get("HERDR_SOCKET_PATH")
+    if sock:
+        return _herdr_lab(sock)
+    return _herdr_lab(e.get("XDG_CONFIG_HOME"))
+
+
 def _plugins_deny(head, args, stext, cwd, env=None):
     """(reason, path) for G19 on one simple command run in CWD with ENV, else None. `herdr plugin install|link|…` is
-    the owner's act, except in of_herdr's isolated lab herdr (XDG_CONFIG_HOME under HERDR_LAB)."""
-    xdg = (env or {}).get("XDG_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME")
+    the owner's act, except when the command reaches of_herdr's isolated lab herdr (_herdr_reached_is_lab)."""
     if head == "herdr" and args[:1] == ["plugin"] and len(args) > 1 and args[1] in HERDR_PLUGIN_ACTS \
-            and not _herdr_lab(xdg):
+            and not _herdr_reached_is_lab(stext, env):
         hit = (PLUGINS_DENY, f"herdr plugin {args[1]}")
         if HERDR_PLUGIN_MODE == "deny":
             return hit
@@ -1529,6 +1568,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
             elif head == "export":
                 exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
+            elif head == "unset":
+                exported.update({a: "" for a in args if re.match(r"^[A-Za-z_]\w*$", a)})  # "" is unset
             elif head == "git":
                 words = [a for a in args if not a.startswith("-")]
                 if words[:1] == ["config"] and len(words) >= 3 and words[1].lower().startswith("alias."):
