@@ -1,9 +1,8 @@
 <!-- site:skip -->
-<img alt="Grass ears bent by the wind, in the sun, inside a viewfinder's frame. Photo: Benjamin Cheng, Unsplash." src=".github/readme/photo.jpg" width="100%">
-
+<img alt="Organic Framework, set in grass bent by the wind, inside a viewfinder's frame." src=".github/readme/photo.jpg" width="100%"><br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/readme/header-dark.svg">
-  <img alt="Organic Framework. People and AI agents in one organization: positions with mandates, every agent session recorded, one place to see and steer it all." src=".github/readme/header-light.svg" width="100%">
+  <img alt="Grow an organization of people and agents. The state-of-the-art way to build, run and reshape a company, with the human experience at its heart." src=".github/readme/header-light.svg" width="100%">
 </picture>
 
 **[Install with your agent](#install-it-with-your-agent)** &nbsp;·&nbsp; [Quickstart by hand](#quickstart-profile-1-one-machine) &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)

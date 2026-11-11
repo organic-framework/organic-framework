@@ -17,7 +17,7 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'Organic Framework',
-			description: 'People and AI agents in one organization: positions with mandates, every agent session recorded, one place to see and steer it all.',
+			description: 'Grow an organization of people and agents. The state-of-the-art way to build, run and reshape a company, with the human experience at its heart.',
 			logo: { light: './src/assets/of-mark-light.svg', dark: './src/assets/of-mark-dark.svg' },
 			favicon: '/favicon.svg',
 			social: [{ icon: 'github', label: 'GitHub', href: repo }],

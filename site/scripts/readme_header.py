@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""The README's title block and the documents' strips, in the OF design (the founder's design system, direction
+"""The README's tagline strip and the documents' strips, in the OF design (the founder's design system, direction
 "Frame"), each in a light and a dark variant for GitHub's two themes.
 
-The design's rules this follows: on the photograph only the frame, the mark and the credit (readme_photo.py); the text
-stands beside it, here on a transparent background under the photograph. Type: Inter Tight 500 tightly tracked for the
+The design's rules this follows: on the photograph only the frame and the name (readme_photo.py, the founder's
+variant A); the tagline stands under it, on the design's ground. Type: Inter Tight 500 tightly tracked for the
 name and titles, Inter Tight 400 for text, JetBrains Mono 400 for labels. The main mark is the name in two lines inside
 a viewfinder's four corners.
 
@@ -86,19 +86,27 @@ def mark(faces, x, y, k, colour, frame):
     return svg, w, h
 
 
-def title_block(tokens, theme, faces):
-    """Under the photograph: the name as the design's hero sets it, the tagline, and a mono label."""
-    c, h = tokens[theme], 300
-    title, _ = faces["display"].path("Organic Framework", 116)
-    lines = [faces["body"].path(t, 27)[0] for t in tokens["tagline"]]
-    label, _ = faces["mono"].path(tokens["label"], 21)
-    tag = "".join(f'<path transform="translate(4 {176 + 45 * i})" d="{d}" fill="{c["muted"]}"/>'
-                  for i, d in enumerate(lines))
+def tagline_strip(tokens, theme, faces):
+    """Under the photograph, which carries the name: the tagline on the design's ground (Paper in light, Ink in dark),
+    aligned with the name on the photo. Its first line is the headline (Inter Tight 500), the rest is text (400),
+    then the mono label."""
+    c, x = tokens[theme], 74
+    head, *rest = tokens["tagline"]
+    hd, _ = faces["mark"].path(head, 46)
+    lines = [faces["body"].path(t, 30)[0] for t in rest]
+    label, _ = faces["mono"].path(tokens["label"], 20)
+    y = 100
+    out = [f'<path transform="translate({x} {y})" d="{hd}" fill="{c["fg"]}"/>']
+    y += 54
+    for d in lines:
+        out.append(f'<path transform="translate({x} {y})" d="{d}" fill="{c["muted"]}"/>')
+        y += 42
+    h = y + 62
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {h}" width="{W}" height="{h}" role="img"
-  aria-label="Organic Framework. {' '.join(tokens['tagline'])}">
-  <path transform="translate(0 112)" d="{title}" fill="{c['fg']}"/>
-  {tag}
-  <path transform="translate(4 278)" d="{label}" fill="{c['label']}"/>
+  aria-label="{tokens.get('alt') or ' '.join(tokens['tagline'])}">
+  <rect width="{W}" height="{h}" fill="{c['bg']}"/>
+  {''.join(out)}
+  <path transform="translate({x} {h - 46})" d="{label}" fill="{c['label']}"/>
 </svg>
 """
 
@@ -141,7 +149,7 @@ def main():
     faces = {k: Face(tokens[k]) for k in ("display", "mark", "body", "mono")}
     os.makedirs(a.out_dir, exist_ok=True)
     for theme in ("light", "dark"):
-        outs = {f"header-{theme}.svg": title_block(tokens, theme, faces)}
+        outs = {f"header-{theme}.svg": tagline_strip(tokens, theme, faces)}
         for spec in a.strip:
             name, label = spec.split("=", 1)
             outs[f"strip-{name}-{theme}.svg"] = strip(tokens, theme, faces, label)
