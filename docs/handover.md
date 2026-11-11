@@ -54,6 +54,7 @@ proposed ──► accepted ──► delivered ──► verified ──► clo
 | `of.handover_returned` | receiver | gives the work back with a reason (wrong owner, too big, unclear) |
 | `of.handover_withdrawn` | requester | cancels the hand-over before it is closed |
 | `of.handover_expired` | `of pulse` | `due` has passed without acceptance, or four response windows have passed with no answer |
+| `of.handover_noted` | requester or receiver (`of handover note <id> --note "…"`) | a note on an open hand-over, never a state change: a correction to its basis ("precaution, unconfirmed"), a narrowed scope. `of handover list` and the offer show every note (2026-11-11, from a user organization) |
 
 Hand-overs are delivered through the relay as messages in the fixed frame. The **record** is the events, not the text.
 

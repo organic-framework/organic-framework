@@ -23,7 +23,7 @@ import uuid
 
 NS = uuid.UUID("5d0c7a3e-91b2-4f6d-8e4a-2b3c4d5e6f70")
 KINDS = ("proposed", "offered", "accepted", "declined", "blocked", "delivered", "verified", "rejected",
-         "closed", "returned", "withdrawn", "expired")
+         "closed", "returned", "withdrawn", "expired", "noted")
 OPEN = ("proposed", "accepted", "blocked", "delivered", "verified")
 WINDOW_MIN = 30          # default response window, from the offer into the receiver's pane
 EXPIRE_WINDOWS = 4       # unanswered this many windows: expired
@@ -83,7 +83,7 @@ def project(rows):
                         "priority": p.get("priority") or "normal", "mandate": p.get("mandate"),
                         "scope": p.get("scope"), "context": p.get("context") or [], "basis": p.get("basis"),
                         "proposed_at": r["ts"], "offered_at": None, "since": r["ts"], "history": [],
-                        "rejections": 0, "result": None, "ignored": []}
+                        "rejections": 0, "result": None, "ignored": [], "notes": []}
             out[hid]["history"].append((r["ts"], "proposed", p.get("from"), None))
             continue
         h = out.get(hid)
@@ -91,6 +91,13 @@ def project(rows):
             continue
         if kind == "offered":
             h["offered_at"] = h["offered_at"] or r["ts"]
+            continue
+        if kind == "noted":  # a note on the record, never a state change (a user organization, 2026-11-11)
+            if h["state"] in OPEN and (same(h["from"], p.get("by")) or same(h["to"], p.get("by"))
+                                       or p.get("by") in (short(h["from"]), short(h["to"]))):
+                h.setdefault("notes", []).append({"ts": r["ts"], "by": p.get("by"), "note": p.get("note")})
+            else:
+                h["ignored"].append((r["ts"], kind))
             continue
         move = MOVES.get((h["state"], kind))
         if not move:
@@ -119,6 +126,12 @@ def check(h, kind, actor, org=None):
     acme:returns_keeper)."""
     if kind not in KINDS or kind in ("proposed", "offered"):
         return f"unknown action {kind!r}"
+    if kind == "noted":  # the requester or the receiver adds a note to an open hand-over; its state stays
+        if h["state"] not in OPEN:
+            return f"hand-over is {h['state']}; a note goes on an open one"
+        if not (same(h["from"], actor, org) or same(h["to"], actor, org)):
+            return f"only {h['from']} (requester) or {h['to']} (receiver) may add a note"
+        return None
     move = MOVES.get((h["state"], kind))
     if not move:
         return f"hand-over is {h['state']}; cannot be {kind}"
@@ -208,6 +221,8 @@ def offer_text(h):
              + (" · BLOCKING (the requester waits)" if h["priority"] == "blocking" else "")]
     if h.get("context"):
         lines.append("Context: " + "; ".join(h["context"]))
+    for n in h.get("notes") or []:
+        lines.append(f"Note from {n['by']} ({(n['ts'] or '')[:16]}Z): {n['note']}")
     lines.append(f"Answer within your response window: `of handover accept {h['id'][-8:]}` or "
                  f"`of handover decline {h['id'][-8:]} --note \"why\"` (or `return`).")
     return "\n".join(lines)

@@ -3600,7 +3600,8 @@ def cmd_handover(args):
         for h in sorted(rows, key=lambda h: h["proposed_at"]):
             print(f"  {h['id'][-8:]}  {h['state']:<10} {h['from']:<22} -> {h['to']:<22} "
                   f"{'!' if h['priority'] == 'blocking' else ' '} {h['title'][:60]}"
-                  + (f"\n            basis: {h['basis'][:100]}" if h.get("basis") else ""))
+                  + (f"\n            basis: {h['basis'][:100]}" if h.get("basis") else "")
+                  + "".join(f"\n            note from {n['by']}: {(n['note'] or '')[:100]}" for n in h.get("notes") or []))
         print(f"{len(rows)} hand-over(s)" + ("" if args.all else " open"))
         return 0
     me_p = _me(positions, args.sender)
@@ -3646,12 +3647,12 @@ def cmd_handover(args):
         raise OfError(f"no single hand-over matches {args.ref!r}")
     kind = {"accept": "accepted", "decline": "declined", "block": "blocked", "deliver": "delivered",
             "verify": "verified", "reject": "rejected", "close": "closed", "return": "returned",
-            "withdraw": "withdrawn"}[args.action]
+            "withdraw": "withdrawn", "note": "noted"}[args.action]
     why = of_handover.check(h, kind, me, me_p.get("_org"))
     if why:
         raise OfError(why)
-    if kind in ("declined", "returned", "rejected") and not args.note:
-        raise OfError(f"{args.action} needs --note with the reason")
+    if kind in ("declined", "returned", "rejected", "noted") and not args.note:
+        raise OfError(f"{args.action} needs --note" + (" with the text" if kind == "noted" else " with the reason"))
     if kind == "delivered" and not args.result:
         raise OfError("deliver needs --result (a PR, a file, a report)")
     if kind == "blocked" and not args.on:
@@ -3659,7 +3660,8 @@ def cmd_handover(args):
     payload = {"id": h["id"], "by": me, "note": of_hook_mask(args.note) if args.note else None,
                "result": args.result, "on": args.on, "from": h["from"], "to": h["to"]}
     rec = of_events.record(f"handover_{kind}", {k: v for k, v in payload.items() if v is not None}, position=me)
-    rec["of.event.id"] = of_handover.event_id(h["id"], kind, sum(1 for x in h["history"] if x[1] == kind))
+    rec["of.event.id"] = of_handover.event_id(h["id"], kind, len(h.get("notes") or []) if kind == "noted" else
+                                              sum(1 for x in h["history"] if x[1] == kind))
     of_events.append(rec)
     state = of_handover.project(of_handover.load(conn))[h["id"]]["state"]
     print(f"{h['id'][-8:]}: {kind} -> {state}")
@@ -5031,7 +5033,7 @@ def main(argv=None):
                                          "accept|decline|block|deliver|verify|reject|close|return|withdraw <id>; list")
     ho.add_argument("action", nargs="?", default="list",
                     choices=["list", "propose", "accept", "decline", "block", "deliver", "verify", "reject", "close",
-                             "return", "withdraw"])
+                             "return", "withdraw", "note"])
     ho.add_argument("ref", nargs="?", help="propose: the receiving position; otherwise the hand-over id (or its end)")
     ho.add_argument("title", nargs="?")
     ho.add_argument("--done-when", dest="done_when", help="checkable done criteria (required to propose)")
@@ -5045,7 +5047,7 @@ def main(argv=None):
     ho.add_argument("--context", action="append", help="a reference: brief, file, PR (repeatable)")
     ho.add_argument("--systems", nargs="+", help="scope: systems the work touches (the router then says in_handover)")
     ho.add_argument("--paths", nargs="+", help="scope: path globs the work touches")
-    ho.add_argument("--note")
+    ho.add_argument("--note", "--text", dest="note", help="decline/return/reject: the reason; note: the note's text")
     ho.add_argument("--result", help="deliver: the PR, file or report")
     ho.add_argument("--on", help="block: founder|<position>|external:<what>")
     ho.add_argument("--close", action="store_true", help="verify: close it too (when you are the requester)")

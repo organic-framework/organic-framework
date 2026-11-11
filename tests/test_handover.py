@@ -131,6 +131,26 @@ class BasisTest(unittest.TestCase):
         self.assertIn("Basis: inference (unconfirmed: the requester's own reasoning)", of_handover.offer_text(h))
 
 
+class NoteTest(unittest.TestCase):
+    """A user organization, 2026-11-11: a correction ("precaution, unconfirmed") to an accepted hand-over could only
+    travel as a message, not onto the hand-over's own record."""
+
+    def test_a_note_by_either_party_stays_on_the_record_and_changes_no_state(self):
+        rows = [PROPOSED, ev("accepted", "2026-11-06T10:05:00Z", id="H1", by="b"),
+                ev("noted", "2026-11-06T10:20:00Z", id="H1", by="a", note="precaution, unconfirmed"),
+                ev("noted", "2026-11-06T10:21:00Z", id="H1", by="x", note="not a party")]
+        h = of_handover.project(rows)["H1"]
+        self.assertEqual(h["state"], "accepted")
+        self.assertEqual([(n["by"], n["note"]) for n in h["notes"]], [("a", "precaution, unconfirmed")])
+        self.assertEqual([k for _, k in h["ignored"]], ["noted"])
+        self.assertIn("Note from a (2026-11-06T10:20Z): precaution, unconfirmed", of_handover.offer_text(h))
+        self.assertIsNone(of_handover.check(h, "noted", "a"))
+        self.assertIsNone(of_handover.check(h, "noted", "b"))
+        self.assertIn("requester", of_handover.check(h, "noted", "x"))
+        closed = of_handover.project(rows + [ev("withdrawn", "2026-11-06T11:00:00Z", id="H1", by="a")])["H1"]
+        self.assertIn("a note goes on an open one", of_handover.check(closed, "noted", "a") or "")
+
+
 class ProposeSpooledTest(unittest.TestCase):
     """acme_org, 2026-11-06: of handover propose crashed (KeyError) when the store was busy and the event spooled."""
 
