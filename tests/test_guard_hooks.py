@@ -135,6 +135,25 @@ class PluginCodeTest(unittest.TestCase):
             self.assertFalse(self.deny("Bash", {"command": f"cat {target}"}), target)   # reading stays open
             self.assertFalse(self.deny("Read", {"file_path": target}), target)
 
+    def test_herdrs_plugin_folders_and_acts(self):
+        """of_platform's review of PR 24: herdr runs the plugin as the owner; of_home in its config folder decides
+        what run.sh starts. Writes there are denied; herdr plugin link and the like warn for now."""
+        saved = of_guard.HERDR_PLUGIN_DIRS
+        of_guard.HERDR_PLUGIN_DIRS = (os.path.join(self.tmp.name, "herdr-plugins"),)
+        of_guard._PLUGIN_DIRS.clear()
+        try:
+            home = os.path.join(self.tmp.name, "herdr-plugins", "config", "organic-framework", "of_home")
+            self.assertTrue(self.deny("Bash", {"command": f"echo /tmp/evil > {home}"}))
+            self.assertTrue(self.deny("Write", {"file_path": home, "content": "/tmp/evil"}))
+            self.assertFalse(self.deny("Bash", {"command": f"cat {home}"}))
+            of_guard._WARNINGS.clear()
+            self.assertFalse(self.deny("Bash", {"command": "herdr plugin link /tmp/x"}))   # warn mode
+            self.assertTrue(any("herdr plugin link" in w[1] for w in of_guard._WARNINGS))
+            self.assertFalse(self.deny("Bash", {"command": "herdr plugin list"}))
+        finally:
+            of_guard.HERDR_PLUGIN_DIRS = saved
+            of_guard._PLUGIN_DIRS.clear()
+
     def test_the_development_copys_plugins_are_source(self):
         target = os.path.join(self.dev, "bin", "plugins", "secrets", "vault.py")
         self.assertFalse(self.deny("Write", {"file_path": target, "content": "x"}))

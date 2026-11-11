@@ -1330,16 +1330,26 @@ def _in_hooks(path, cwd):
 PLUGINS_DENY = ("the code Organic Framework loads as plugins, which only the owner installs or changes (docs/guard.md "
                 "G19; docs/plugins.md §2)")
 _PLUGIN_DIRS = []
+# herdr's plugins run as the owner, and the OF plugin's config folder holds `of_home`, which decides the code its
+# run.sh starts (of_platform's review of PR 24, msg 01a1cc8c). herdr's own plugin folders are never an agent's to
+# write; the plugin's source, herdr-plugin/ beside bin/, is guarded like bin/plugins (source in the development copy).
+HERDR_PLUGIN_DIRS = ("~/.config/herdr/plugins",)
+HERDR_PLUGIN_ACTS = {"install", "uninstall", "update", "link", "unlink", "enable", "disable"}
+HERDR_PLUGIN_MODE = "warn"  # 2026-11-12: of_herdr and of_onboarding link and unlink while they build it; deny later
 
 
 def _plugin_dirs():
     if not _PLUGIN_DIRS:
         try:
             import of_family
-            dirs = of_family.code_paths()
+            dirs = list(of_family.code_paths())
+            dirs.append(os.path.join(os.path.dirname(of_family.SHIPPED.rstrip("/")), "..", "herdr-plugin"))
         except Exception:  # noqa: BLE001 - no loader, no plugin folders to keep
             dirs = []
-        _PLUGIN_DIRS.append([os.path.realpath(d) for d in dirs if not gated(d)])
+        keep = [os.path.realpath(d) for d in dirs if not gated(d)]
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg else [])
+        _PLUGIN_DIRS.append(keep + [os.path.realpath(os.path.expanduser(d)) for d in herdr])
     return _PLUGIN_DIRS[0]
 
 
@@ -1350,7 +1360,14 @@ def _in_plugin_code(path, cwd):
 
 
 def _plugins_deny(head, args, stext, cwd):
-    """(reason, path) for G19 on one simple command run in CWD, else None."""
+    """(reason, path) for G19 on one simple command run in CWD, else None. `herdr plugin install|link|…` is the
+    owner's act; it warns while HERDR_PLUGIN_MODE is warn."""
+    if head == "herdr" and args[:1] == ["plugin"] and len(args) > 1 and args[1] in HERDR_PLUGIN_ACTS:
+        hit = (PLUGINS_DENY, f"herdr plugin {args[1]}")
+        if HERDR_PLUGIN_MODE == "deny":
+            return hit
+        _WARNINGS.append(hit)
+        return None
     hit = next((f for f in _changed_files(head, args, stext) if _in_plugin_code(f, cwd)), None)
     return (PLUGINS_DENY, hit) if hit else None
 
