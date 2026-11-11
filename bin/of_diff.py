@@ -355,12 +355,14 @@ def move_system(text, system, frm, to):
     return "\n".join(lines)
 
 
-def move_position(text, position, frm, to):
+def move_position(text, position, frm, to, set_unit=True):
     """Set `position`'s unit to `to`, and move its name from the positions list of each delegation of unit `frm` to
     that of each delegation of unit `to`, in place, each list in its own style; every other line and comment stays
     (docs/handover.md, move_position; a user organization, 2026-11-11: a position moved between two units delegated
-    to the same owner was still counted in the old unit's budget)."""
-    text = set_fields(text, position, {"unit": to})
+    to the same owner was still counted in the old unit's budget). set_unit=False: the position is in `to` already (its
+    unit follows its system) and only the delegation lists are behind."""
+    if set_unit:
+        text = set_fields(text, position, {"unit": to})
     lines = text.split("\n")
     if _top_span(lines, "delegations"):
         for unit, fn in ((frm, lambda xs: [x for x in xs if x != position]),
@@ -566,9 +568,13 @@ def plan(d, doc):
                 problems.append(f"changes.registry[{i}]: from_unit and to_unit are the same")
             here = p.get("unit") or next((u for u, r in units.items() if p.get("system") in ((r or {}).get("systems")
                                                                                                or [])), None)
-            if here != frm:
-                problems.append(f"changes.registry[{i}]: {pn} is in unit {here or 'none'}, not {frm}")
             a, b = _unit_delegation(doc, frm), _unit_delegation(doc, to)
+            # the position may be in `to` already (its unit follows its system) with only frm's list behind (acme_org,
+            # 2026-11-11): then the op is the lists' cleanup alone
+            cleanup = here == to and pn in ((a or {}).get("positions") or [])
+            if here != frm and not cleanup:
+                problems.append(f"changes.registry[{i}]: {pn} is in unit {here or 'none'}, not {frm}"
+                                + ("" if here != to else f", and {frm}'s delegation does not list it"))
             if (a is None) != (b is None) or (a and b and (a.get("from_owner"), a.get("to_owner"))
                                               != (b.get("from_owner"), b.get("to_owner"))):
                 problems.append(f"changes.registry[{i}]: units {frm} and {to} are not delegated by the same delegator "
@@ -577,8 +583,9 @@ def plan(d, doc):
             if d.get("tier") not in ("medium", "high"):
                 problems.append(f"changes.registry[{i}]: move_position is medium tier at least: the owner approves "
                                 f"that {pn} falls under {to}'s envelope and budget")
-            edits.append((lambda t, a_=pn, b_=frm, e_=to: move_position(t, a_, b_, e_),
-                          f"move position {pn}: {frm} -> {to}"
+            edits.append((lambda t, a_=pn, b_=frm, e_=to, u_=not cleanup or p.get("unit") not in (None, to):
+                          move_position(t, a_, b_, e_, set_unit=u_),
+                          f"{'list' if cleanup else 'move'} position {pn}: {frm} -> {to}"
                           + (f" (delegations {a.get('id')} -> {b.get('id')})" if a and b else "")))
             continue
         if kind == "spawn":
@@ -741,7 +748,9 @@ def preview(d, registry_text):
         if isinstance(c, dict) and c.get("op") == "move_position":
             pn, frm, to = c.get("position"), c.get("from_unit"), c.get("to_unit")
             got = next((x for x in new.get("positions") or [] if isinstance(x, dict) and x.get("name") == pn), {})
-            if got.get("unit") != to:
+            unit = got.get("unit") or next((u for u, r in (new.get("units") or {}).items()
+                                            if got.get("system") in ((r or {}).get("systems") or [])), None)
+            if unit != to:
                 problems.append(f"after the edit, {pn} is not in unit {to}")
             for x in new.get("delegations") or []:
                 if isinstance(x, dict) and "positions" in x and (

@@ -499,6 +499,21 @@ class MovePositionTest(unittest.TestCase):
         self.assertIn("positions: []   # counted in shop's budget", new)  # the flow list keeps its comment
         self.assertIn("    - feed_keeper", new)                             # the block list stays a block list
 
+    def test_a_position_already_in_the_new_unit_only_leaves_the_old_list(self):
+        """acme_org, 2026-11-11: the position's system moved, so its unit followed; only the old list still named it."""
+        reg = POS_REG.replace("  shop:\n    owner: tp_owner\n    systems: [feed]", "  shop:\n    owner: tp_owner\n    systems: []") \
+                     .replace("    systems: [catalogue]", "    systems: [catalogue, feed]")
+        new, problems = of_diff.preview(dict(diff("mandate_rewrite", self.MOVE), tier="medium"), reg)
+        self.assertEqual(problems, [])
+        doc = yaml.safe_load(new)
+        self.assertNotIn("unit", next(p for p in doc["positions"] if p["name"] == "feed_keeper"))  # follows its system
+        self.assertEqual((doc["delegations"][0]["positions"], doc["delegations"][1]["positions"]),
+                         ([], ["cat_keeper", "feed_keeper"]))
+        listed = POS_REG.replace("positions: [feed_keeper]", "positions: []").replace(
+            "    systems: [feed]", "    systems: []").replace("    systems: [catalogue]", "    systems: [catalogue, feed]")
+        _, p = of_diff.preview(dict(diff("mandate_rewrite", self.MOVE), tier="medium"), listed)
+        self.assertIn("shop's delegation does not list it", "\n".join(p))  # nothing to clean up
+
     def test_refusals(self):
         _, p = of_diff.preview(dict(diff("mandate_rewrite", self.MOVE), tier="low"), POS_REG)
         self.assertIn("medium tier at least", "\n".join(p))
