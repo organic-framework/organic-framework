@@ -3534,6 +3534,7 @@ def cmd_diff(args):
         for e in _diff_events(conn).values():
             d = e.get("diff") or {}
             print(f"  {e['id']:<40} {e['state']:<9} {d.get('kind', ''):<16} {d.get('org', ''):<24} "
+                  f"{str(e.get('digest') or '')[:8]:<9}"  # the yes from the chat may name it (docs/remote.md)
                   f"{('review ' + e['review_due']) if e.get('review_due') else ''}")
         return 0
     if not args.target:
@@ -3962,7 +3963,7 @@ def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
     if not row:
         return f"{prompt_id} is no recorded prompt (of prompts --mine lists yours)", None
     prompt = {"ts": row[0], "session_id": row[1], **json.loads(row[2] or "{}")}
-    if prompt.get("origin") not in (None, "human"):
+    if prompt.get("origin") != "human":  # an older or unclassified prompt never counts (of_server's review)
         return f"prompt {prompt_id[-8:]} was not typed by a person (origin {prompt.get('origin')})", prompt
     me = session if session is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not me or prompt["session_id"] != me:
@@ -3970,6 +3971,14 @@ def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
     holder = next((p for p in positions if session_of(p) == me), None)
     if not holder or (holder.get("role") != "conductor" and not str(holder.get("name", "")).endswith("_conductor")):
         return "only the person's conductor points to their words; this session holds no conductor position", prompt
+    org = d.get("org")
+    if org not in (holder.get("_org"), holder.get("_orgid")):  # of_server's review: never another organization's
+        return (f"{holder['name']} is a conductor of {holder.get('_org')}, and diff {d['id']} is {org}'s; only "
+                f"{org}'s owner's conductor points to the approving words"), prompt
+    owner = _org_owner(positions, org)
+    if (holder.get("owner") or "founder") != owner:
+        return (f"{holder['name']} serves {holder.get('owner') or 'founder'}, and {org}'s diffs are approved by "
+                f"{owner}"), prompt
     proposed = e.get("proposed_at") or e.get("ts") or ""
     if proposed and prompt["ts"] < proposed:
         return f"the prompt ({prompt['ts'][:19]}Z) is older than the proposal ({proposed[:19]}Z)", prompt
@@ -3978,7 +3987,17 @@ def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
         return f"the person's words do not name the diff {d['id']}", prompt
     if not of_classify.approves(text):
         return "the person's words are not a plain yes (a no, a not or a condition counts as no approval)", prompt
+    named = [h for h in re.findall(r"(?<![0-9a-f])[0-9a-f]{8,64}(?![0-9a-f])", text.lower())
+             if h not in d["id"].lower()]
+    if named and not any(str(e.get("digest") or "").startswith(h) for h in named):  # bound to the content seen
+        return "the person's words name a digest that is not this diff's (of diff list shows its digest)", prompt
     return None, prompt
+
+
+def _org_owner(positions, org):
+    """Who approves an organization's diffs: its position of role owner (`<org>_owner`), else the founder."""
+    own = next((p for p in positions if p.get("role") == "owner" and org in (p.get("_org"), p.get("_orgid"))), None)
+    return own["name"] if own else "founder"
 
 
 def cmd_prompts(args):

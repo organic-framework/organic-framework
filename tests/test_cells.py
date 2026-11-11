@@ -159,9 +159,16 @@ class RemoteApprovalTest(unittest.TestCase):
             saved, of_events.STATE_DIR = of_events.STATE_DIR, d
             try:
                 conn = of_store.connect()
-                pos = [{"name": "acme_conductor", "role": "conductor", "holder": {"session": "S-c"}},
-                       {"name": "acme_dev", "role": "dev", "holder": {"session": "S-d"}}]
-                e = {"diff": {"id": "sd-1", "tier": "medium"}, "proposed_at": "2026-11-11T10:00:00Z"}
+                pos = [{"name": "acme_conductor", "role": "conductor", "holder": {"session": "S-c"}, "_org": "acme",
+                        "owner": "acme_owner"},
+                       {"name": "acme_owner", "role": "owner", "_org": "acme"},
+                       {"name": "acme_dev", "role": "dev", "holder": {"session": "S-d"}, "_org": "acme"},
+                       {"name": "of_conductor", "role": "conductor", "holder": {"session": "S-o"}, "_org": "ofb",
+                        "owner": "founder"},
+                       {"name": "acme_helper", "role": "conductor", "holder": {"session": "S-h"}, "_org": "acme",
+                        "owner": "acme_dev"}]
+                e = {"diff": {"id": "sd-1", "tier": "medium", "org": "acme"}, "proposed_at": "2026-11-11T10:00:00Z",
+                     "digest": "a1b2c3d4e5f60718"}
 
                 def said(text, session="S-c", origin="human", ts="2026-11-11T11:00:00.000Z"):
                     rec = of_events.record("human_prompt", {"origin": origin, "text": text}, session=session)
@@ -181,9 +188,22 @@ class RemoteApprovalTest(unittest.TestCase):
                     got = of._remote_approval(conn, e, pid, pos, session="S-d" if why == "the person's conductor"
                                               else "S-c", hold=False)[0]
                     self.assertIn(why, got or "", pid)
-                high = dict(e, diff={"id": "sd-1", "tier": "high"})
-                self.assertIn("approved at the machine", of._remote_approval(conn, high, ok, pos, session="S-c", hold=False)[0])
-                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c", hold=False)[0])
+                # of_server's review: origin exactly human; the diff's own organization; its owner's conductor;
+                # a digest the person names must be this diff's
+                self.assertIn("not typed by a person",
+                              of._remote_approval(conn, e, said("approve sd-1", origin=None), pos, session="S-c", hold=False)[0])
+                self.assertIn("is acme's", of._remote_approval(conn, e, said("approve sd-1", session="S-o"), pos,
+                                                              session="S-o", hold=False)[0])
+                self.assertIn("approved by acme_owner", of._remote_approval(conn, e, said("approve sd-1", session="S-h"),
+                                                                           pos, session="S-h", hold=False)[0])
+                self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1 a1b2c3d4"), pos, session="S-c", hold=False)[0])
+                self.assertIn("name a digest", of._remote_approval(conn, e, said("yes sd-1 ffffeeee"), pos,
+                                                                   session="S-c", hold=False)[0])
+                high = dict(e, diff={"id": "sd-1", "tier": "high", "org": "acme"})
+                self.assertIn("approved at the machine",
+                              of._remote_approval(conn, high, ok, pos, session="S-c", hold=False)[0])
+                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c",
+                                                                        hold=False)[0])
                 # on hold (docs/remote.md §5): the same yes, every tier, is refused and sent to the machine
                 for diff in (e, high):
                     why, prompt = of._remote_approval(conn, diff, ok, pos, session="S-c")
