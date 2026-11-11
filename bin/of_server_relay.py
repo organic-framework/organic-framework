@@ -384,6 +384,11 @@ class Relay:
             d = dict(zip(keys, r[1:]))
             d["to"], d["from"] = f"{d.pop('to_org')}:{d.pop('to_position')}", f"{d.pop('from_org')}:{d.pop('from_position')}"
             d["attempt"] += 1
+            if d.get("reply_to"):  # who sent the message this one answers: the client types a reply to the
+                with self.app.store.conn() as c:  # receiver's own message at once (docs/guard.md R9)
+                    o = c.execute("SELECT from_org, from_position FROM messages WHERE msg_id = ?",
+                                  (d["reply_to"],)).fetchone()
+                d["reply_to_from"] = f"{o[0]}:{o[1]}" if o else None
             out.append(d)
         return out
 

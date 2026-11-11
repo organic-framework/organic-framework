@@ -484,6 +484,31 @@ class RelayTest(unittest.TestCase):
         plan = of_relay.plan_batch([m(5), m(6, priority="urgent")], local, now, last=lambda t: now - 60)
         self.assertEqual([(a, len(ms)) for a, ms, _ in plan], [("deliver", 2)])
 
+    def test_a_message_the_receiver_waits_for_skips_the_window(self):
+        """The founder, 2026-11-11, through of_conductor: an answer a receiver waits for is typed in as soon as it is
+        idle; only unsolicited messages wait for the 15-minute window (docs/guard.md R9)."""
+        local = dict(LOCAL)
+        to = next(k for k, v in local.items() if v.get("kind") != "human")
+        pos, now = to.split(":")[-1], 10_000.0
+        recent = lambda t: now - 60   # noqa: E731 - typed a minute ago
+        m = lambda i, **k: dict({"msg_id": f"e{i}", "to": to, "from": "ofb:of_peer", "text": f"t{i}"}, **k)  # noqa
+        exp = of_relay.Expected(self.conn)
+        self.assertEqual([a for a, _, _ in of_relay.plan_batch([m(1)], local, now, last=recent, expected=exp)],
+                         ["wait"])                                       # unsolicited: the window, as before
+        plan = of_relay.plan_batch([m(2, reply_to="x", reply_to_from=to), m(3)], local, now, last=recent,
+                                   expected=exp)
+        self.assertEqual([(a, len(ms)) for a, ms, _ in plan], [("deliver", 2)])   # a reply takes the queue along
+        self.assertIsNone(exp(m(4, reply_to="x", reply_to_from="ofb:of_other")))   # a reply to someone else's
+        of_events.emit("state_declared", {"position": pos, "state": "waiting", "waiting_on": "ofb:of_peer"},
+                       position=pos)
+        self.assertEqual(of_relay.Expected(self.conn)(m(5)), "waiting")
+        of_events.emit("state_declared", {"position": pos, "state": "working", "waiting_on": None}, position=pos)
+        self.assertIsNone(of_relay.Expected(self.conn)(m(6)))
+        of_events.emit("handover_proposed", {"from": "of_peer", "to": pos, "title": "t", "done_when": "d"},
+                       position="of_peer")
+        self.assertEqual(of_relay.Expected(self.conn)(m(7)), "handover")
+        self.assertIsNone(of_relay.Expected(self.conn)(dict(m(8), **{"from": "ofb:of_third"})))
+
     def test_joined_delivery_types_one_prompt_with_each_frame(self):
         local = dict(LOCAL)
         to = next(k for k, v in local.items() if v.get("kind") != "human")

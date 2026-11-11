@@ -417,6 +417,7 @@ class RelayTest(unittest.TestCase):
         self.assertEqual((r["authority"], r["authority_reason"]),
                          ("none", "a reply to q1 (no grant needed; carries no authority)"))
         got = self.call(b, "GET", "/v1/messages?wait=0")["messages"][0]
+        self.assertEqual(got["reply_to_from"], got["to"])  # a reply to its own message: typed at once (R9)
         self.assertEqual((got["msg_id"], got["reply_to"], got["authority"], got["grant_id"]), ("r1", "q1", "none", None))
         for bad, why in ((dict(reply, msg_id="r2", to="mt:acme_other"),
                           "is not a message from mt:acme_other"),  # only back

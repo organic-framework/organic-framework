@@ -887,9 +887,12 @@ def org_drains(default, orgs_file=None):
     return out
 
 
-# Fewer interruptions (founder, 2026-11-07: 354 typed-in messages and nudges started turns in 24 h). The relay types
-# at most one prompt per receiver per BATCH_S, joining what is queued for it; priority urgent bypasses it, and fyi is
-# never typed (the receiver reads it with of inbox --mine; `of status` counts it).
+# Fewer interruptions (founder, 2026-11-07: 354 typed-in messages and nudges started turns in 24 h), without slowing
+# the answers an agent waits for (founder, 2026-11-11: up to 15 minutes between a conductor and a lead). A message the
+# receiver waits for (Expected: a reply to its own message, from a position it declared waiting on, or within an open
+# hand-over between them) is typed in as soon as it is idle, with whatever else is queued for it; any other message
+# waits for the receiver's window, at most one such prompt per BATCH_S, joining what is queued. Priority urgent
+# bypasses the window; fyi is never typed (the receiver reads it with of inbox --mine; `of status` counts it).
 BATCH_S = 15 * 60
 FYI_RETRY_S = 600  # the server's longest back-off: an fyi message is offered again and deferred again
 
@@ -922,10 +925,57 @@ def set_typed(to, now=None):
         pass
 
 
-def plan_batch(msgs, local, now=None, last=last_typed):
+def _short(name):
+    return str(name or "").split(":")[-1]
+
+
+class Expected:
+    """Why a receiver is waiting for a message, or None (docs/guard.md R9; the founder through of_conductor,
+    2026-11-11: agents waited up to 15 minutes for the answer they were waiting on). 'reply': it answers the
+    receiver's own message (the server names the original's sender, reply_to_from); 'waiting': the receiver's
+    latest declared state waits on the sender; 'handover': a hand-over between them is open. Read once per poll."""
+
+    def __init__(self, conn):
+        self.conn, self._handovers, self._waits = conn, None, {}
+
+    def _waiting_on(self, position):
+        if position not in self._waits:
+            row = self.conn.execute("SELECT payload FROM event WHERE name = 'of.state_declared' AND position = ? "
+                                    "ORDER BY ts DESC LIMIT 1", (position,)).fetchone()
+            try:
+                d = json.loads(row[0]) if row and row[0] else {}
+            except ValueError:
+                d = {}
+            self._waits[position] = _short(d.get("waiting_on")) if d.get("state") == "waiting" else ""
+        return self._waits[position]
+
+    def _open_handovers(self):
+        if self._handovers is None:
+            import of_handover
+            self._handovers = [(_short(h.get("from")), _short(h.get("to"))) for h in
+                               of_handover.project(of_handover.load(self.conn)).values()
+                               if h.get("state") in of_handover.OPEN]
+        return self._handovers
+
+    def __call__(self, m):
+        to, frm = m.get("to"), m.get("from")
+        if m.get("reply_to") and m.get("reply_to_from") == to:
+            return "reply"
+        try:
+            if self._waiting_on(_short(to)) == _short(frm):
+                return "waiting"
+            if any({a, b} == {_short(to), _short(frm)} for a, b in self._open_handovers()):
+                return "handover"
+        except Exception:  # noqa: BLE001 - a busy store: the window applies as before
+            return None
+        return None
+
+
+def plan_batch(msgs, local, now=None, last=last_typed, expected=None):
     """[(action, [messages], retry_after)] for one poll's messages: 'fyi' (defer, never typed), 'wait' (defer until
-    the receiver's batch window opens), 'deliver' (one joined prompt per receiver; urgent at once), 'single' (a
-    person's inbox or no local holder: as before, one by one)."""
+    the receiver's batch window opens), 'deliver' (one joined prompt per receiver: urgent, or one the receiver is
+    waiting for (Expected), goes as soon as it is idle, with whatever else is queued for it), 'single' (a person's
+    inbox or no local holder: as before, one by one)."""
     now = now or time.time()
     by_to, out = {}, []
     for m in msgs:
@@ -938,7 +988,8 @@ def plan_batch(msgs, local, now=None, last=last_typed):
             by_to.setdefault(m.get("to"), []).append(m)
     for to, ms in by_to.items():
         wait = BATCH_S - (now - last(to))
-        if wait > 0 and not any(m.get("priority") == "urgent" for m in ms):
+        if wait > 0 and not any(m.get("priority") == "urgent" for m in ms) and not (
+                expected and any(expected(m) for m in ms)):
             out.append(("wait", ms, int(wait) + 1))
         else:
             out.append(("deliver", ms, None))
@@ -1079,7 +1130,7 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
         while not stop.is_set():
             try:
                 msgs = c.poll_messages(30).get("messages") or []
-                for action, ms, retry in plan_batch(msgs, state["local"]):
+                for action, ms, retry in plan_batch(msgs, state["local"], expected=Expected(own)):
                     if action in ("fyi", "wait"):
                         status, reason = "deferred", ("fyi: read with of inbox --mine" if action == "fyi"
                                                       else "batched: the receiver's 15-minute window")
