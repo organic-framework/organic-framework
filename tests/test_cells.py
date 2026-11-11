@@ -234,7 +234,9 @@ class DiffAnswerApprovalTest(unittest.TestCase):
                 import of_locale
                 yes_ru = of_locale.catalogue("ru")["yes"] + ", go"  # the owner's own language, from the catalogue
                 for ask, via, said in (("A1", "asks-ui", "approve"), ("A2", "conductor", "approve"), ("A3", None, "approve"),
-                                       ("A4", "asks-ui", yes_ru), ("A5", "asks-ui", "not now")):
+                                       ("A4", "asks-ui", yes_ru), ("A5", "asks-ui", "not now"),
+                                       ("A6", "asks-ui", of_locale.catalogue("ru")["yes"] + "\u0439\u0442\u0435 think"),
+                                       ("A7", "asks-ui", "approved: go"), ("A8", "asks-ui", "yesterday")):
                     payload = {"ask_id": ask, "by": "owner", "answer": said}
                     if via:
                         payload["via"] = via
@@ -244,6 +246,9 @@ class DiffAnswerApprovalTest(unittest.TestCase):
                 self.assertFalse(of._diff_approved_by_answer(conn, "A3"))
                 self.assertTrue(of._diff_approved_by_answer(conn, "A4"))
                 self.assertFalse(of._diff_approved_by_answer(conn, "A5"))
+                self.assertFalse(of._diff_approved_by_answer(conn, "A6"))  # only starts with the word: no yes
+                self.assertFalse(of._diff_approved_by_answer(conn, "A7"))  # "approved" is no whole "approve"
+                self.assertFalse(of._diff_approved_by_answer(conn, "A8"))
                 conn.close()
             finally:
                 of_events.STATE_DIR = saved

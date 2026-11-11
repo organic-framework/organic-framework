@@ -3527,11 +3527,14 @@ def _diff_approved_by_answer(conn, ask_id):
     if not ask_id:
         return False
     import of_locale
-    starts = tuple(v.lower() for k in ("approve", "yes") for v in of_locale.variants(k))  # in any of OF's languages
+    words = sorted({v.lower() for k in ("approve", "yes") for v in of_locale.variants(k)}, key=len, reverse=True)
+    # a whole word in any of OF's languages: an answer that only starts like one ("let me think" in Russian) is no yes
+    # (review 2026-11-11, PR 2 follow-up, of_server)
+    yes = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
     for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'"):
         p = json.loads(pl or "{}")
         if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and \
-                p.get("via") == "asks-ui" and str(p.get("answer") or "").strip().lower().startswith(starts):
+                p.get("via") == "asks-ui" and yes.match(str(p.get("answer") or "")):
             return True
     return False
 
