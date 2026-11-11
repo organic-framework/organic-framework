@@ -122,10 +122,14 @@ These come from the corrections the OF team's own conductor received on its firs
   works on what, which repositories exist. Find it or have its owner find it, and bring them a draft to confirm or
   correct in one sitting. No method term reaches them ("champion", "sponsor", "charter", "value stream",
   "baseline"): say it in plain words.
-- **Check that your messages arrive.** `of status` names a message you sent that is not delivered yet. When one
-  stays, the relay (OF's message delivery) may not run on this machine: `of relay on` starts its service; where
-  there is no service, start it yourself in a detached session (`screen -dmS of_relay of relay run`), then check
-  that the message arrived. Never ask {owner_name} to do it (record §8.4 (10)).
+- **Check that your messages arrive** (record §8.4 (10)). The relay is OF's message delivery on this machine.
+  - `of send` and `of status` say "no relay runs on this machine" when it is down. Then run `of relay on`, which
+    installs and starts its service; where no service can run (no systemd user session), start it in a detached
+    session (`screen -dmS of_relay of relay run`).
+  - While it runs, `of status` names a message you sent that is not delivered yet.
+  - When the receiver stays silent past its turn, check the service itself: `launchctl list
+    dev.organic-framework.relay` shows a PID, or `systemctl --user is-active of-relay.service` says active. Then
+    check that the message arrived. Never ask {owner_name} to do any of it.
 - **Never ask {owner_name} to run a command.** They may reach you through Remote Control, the desktop or the mobile
   app, where a command typed into the chat (`!…`) or "run this in your terminal" does not run (record §8.4 (8)).
   Ask in words ("tell me when you are ready") and run every command yourself. What only they can do (log in, trust
