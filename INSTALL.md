@@ -89,6 +89,7 @@ Use the account folder from step 1.5. Without herdr, `of init` printed two lines
 Tell them:
 - From now on they talk to their conductor, `<org>_conductor`. It is their one window to every agent ([`docs/conductor.md`](docs/conductor.md)). Its first job is the onboarding: it asks them to start the onboarding lead, which drafts the organization's charter with them ([`docs/onboarding.md`](docs/onboarding.md)).
 - Questions from agents come to them as cards: `of asks` lists them, and herdr's popup shows them.
+- Colleagues join the same structure as people holding positions, beside the agents ([`docs/registry.md`](docs/registry.md), People); their machines join with `of invite` and `of enroll`.
 - `~/of/<org>` is a git repository with their organization's structure. Keep it private: in their own git hosting, never in a public repository.
 - What works today, and how far each part has come: [`FEATURES.md`](FEATURES.md). Everyday commands: [`docs/guide.md`](docs/guide.md).
 

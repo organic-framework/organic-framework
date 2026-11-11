@@ -7,7 +7,7 @@
 
 # Guide: running your organization on Organic Framework
 
-For a person who runs AI agents and wants to see and steer them as an organization. Install first with the README's quickstart; this guide starts where it ends. What each part can do today, and how far it has come, is in [`FEATURES.md`](../FEATURES.md).
+For a person who runs an organization of people and AI agents and wants to see and steer it as one structure. Install first with the README's quickstart; this guide starts where it ends. What each part can do today, and how far it has come, is in [`FEATURES.md`](../FEATURES.md).
 
 ## 1. Ideas you need
 

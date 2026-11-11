@@ -25,7 +25,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Systems map with keepers, paths and dependencies | `systems:`; [`docs/systems.md`](docs/systems.md) | Works | `test_of`, `test_cells` |
 | Units, delegation to a unit owner with an envelope | `units:`, `delegations:`; [`docs/handover.md`](docs/handover.md) | Works | `test_diff`; in one organization's registry |
 | Works and goals, their state derived from events | `works:`, `goals:`, `of works`; [`docs/works.md`](docs/works.md) | Works | `test_studio`; in both registries |
-| People as holders of positions | `people:` | Early | `test_of` |
+| People as holders of positions, beside agents: the same naming, mandates and envelopes; messages to a person's position wait in `of inbox`; an agent working for a person asks that person | `people:`, `holder: {runtime: human}`; [`docs/registry.md`](docs/registry.md), People | Early | `test_of` |
 | Signed grants: what a position may do in another organization or beyond the guard | `of grant issue/revoke`; `registry/grants.yaml` | Works | `test_grants`, `test_guard_grants`; 21 grants issued, both organizations |
 | Credentials catalogue: which position may read which credential, denied by default; `of spawn` and resumes write the same denies into the session's own settings | `credentials:`; [`docs/registry.md`](docs/registry.md), Credentials | Early | `test_credentials`, `test_spawn`, `test_resume` |
 

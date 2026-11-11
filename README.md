@@ -3,13 +3,13 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/readme/header-dark.svg">
-  <img alt="Organic Framework. Run your AI agents as an organization: positions with mandates, every session recorded, one place to see and steer them." src=".github/readme/header-light.svg" width="100%">
+  <img alt="Organic Framework. People and AI agents in one organization: positions with mandates, every agent session recorded, one place to see and steer it all." src=".github/readme/header-light.svg" width="100%">
 </picture>
 
 **[Install with your agent](#install-it-with-your-agent)** &nbsp;·&nbsp; [Quickstart by hand](#quickstart-profile-1-one-machine) &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)
 <!-- /site:skip -->
 
-Organic Framework (OF) is for people who run many AI agents. It gives each agent a position, with a canonical name, a system, a role and a mandate. It records every session. It lets you see and steer the whole organization from one place, on top of your agent runtime ([herdr](https://herdr.dev)) and harness (Claude Code first).
+Organic Framework (OF) organizes people and AI agents as one organization. Every job is a position, with a canonical name, a system, a role and a mandate, and a person holds a position as an agent can. OF records every agent session, and it lets you see and steer the whole organization, people and agents on one structure, from one place, on top of your agent runtime ([herdr](https://herdr.dev)) and harness (Claude Code first).
 
 ## Install it with your agent
 
@@ -23,7 +23,7 @@ It asks you a few questions, installs OF, and stops where only you can act: logg
 
 | | |
 |---|---|
-| **Positions, not loose sessions** | Each agent holds a position with a name, a system, an owner and a mandate. When a session is replaced or moves to another account, the position stays. |
+| **Positions, held by people and agents** | Each position has a name, a system, an owner and a mandate, and its holder is a person or an agent session. Messages and questions reach a person's position as they reach an agent's. When a session is replaced or moves to another account, the position stays. |
 | **One window for you** | Your conductor is the first agent you start; it takes each request to its owner. Agents ask you on cards, with options and a recommendation. |
 | **Every session recorded** | Hooks record every Claude Code session as typed events in your organization's own store. Raw traces leave your machine only with your consent. |
 | **A guard before every tool** | Reading secret files, printing secrets and reading process memory are denied before the tool runs. A secret that reaches a transcript anyway is masked. |
