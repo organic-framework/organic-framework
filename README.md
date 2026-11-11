@@ -1,16 +1,12 @@
 <!-- site:skip -->
+<img alt="Grass ears bent by the wind, in the sun, inside a viewfinder's frame. Photo: Benjamin Cheng, Unsplash." src=".github/readme/photo.jpg" width="100%">
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/readme/header-dark.svg">
-  <img alt="Organic Framework: run your AI agents as an organization" src=".github/readme/header-light.svg" width="100%">
+  <img alt="Organic Framework. Run your AI agents as an organization: positions with mandates, every session recorded, one place to see and steer them." src=".github/readme/header-light.svg" width="100%">
 </picture>
 
-<p align="center">
-  <a href="#quickstart-profile-1-one-machine"><b>Quickstart</b></a> &nbsp;·&nbsp;
-  <a href="FEATURES.md">What works today</a> &nbsp;·&nbsp;
-  <a href="docs/guide.md">Guide</a> &nbsp;·&nbsp;
-  <a href="CHANGELOG.md">Changelog</a> &nbsp;·&nbsp;
-  <a href="LICENSE">Apache-2.0</a>
-</p>
+**[Quickstart](#quickstart-profile-1-one-machine)** &nbsp;·&nbsp; [What works today](FEATURES.md) &nbsp;·&nbsp; [Guide](docs/guide.md) &nbsp;·&nbsp; [Changelog](CHANGELOG.md) &nbsp;·&nbsp; [Apache-2.0](LICENSE)
 <!-- /site:skip -->
 
 Organic Framework (OF) is for people who run many AI agents. It gives each agent a position, with a canonical name, a system, a role and a mandate. It records every session. It lets you see and steer the whole organization from one place, on top of your agent runtime ([herdr](https://herdr.dev)) and harness (Claude Code first).
@@ -126,4 +122,4 @@ The server differs only by plugins. See [`docs/server.md`](docs/server.md), Prof
 
 ## License
 
-Apache License 2.0: see [`LICENSE`](LICENSE).
+Apache License 2.0: see [`LICENSE`](LICENSE). The photograph at the top is by Benjamin Cheng, under the [Unsplash License](https://unsplash.com/license); it is not covered by the Apache License.

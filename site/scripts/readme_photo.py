@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The README's photograph, as the OF design's "Frame" board shows it: cropped to a wide band, a viewfinder's four
+"""The README's photograph, as the OF design's "Frame" board shows it: cropped to the hero's proportions (1072 by 640), a viewfinder's four
 white corners, and the photographer's credit in a dark label. One JPEG for both themes, sized for GitHub.
 
 Needs ImageMagick (magick) and the JetBrains Mono font file; run it only to change the photograph.
 
-Usage: readme_photo.py PHOTO MONO_FONT OUT.jpg --credit "Name · Unsplash" [--width 1920 --height 720]
+Usage: readme_photo.py PHOTO MONO_FONT OUT.jpg --credit "Name · Unsplash" [--width 1600 --height 955]
 """
 import argparse
 import subprocess
@@ -16,12 +16,12 @@ def main():
     ap.add_argument("mono_font")
     ap.add_argument("out")
     ap.add_argument("--credit", required=True)
-    ap.add_argument("--width", type=int, default=1920)
-    ap.add_argument("--height", type=int, default=720)
+    ap.add_argument("--width", type=int, default=1600)
+    ap.add_argument("--height", type=int, default=955)
     ap.add_argument("--gravity", default="center", help="which part of the photo the crop keeps")
     a = ap.parse_args()
     w, h = a.width, a.height
-    k = w / 1280  # the design is drawn at 1280 wide (its board is 1200 with 64 px margins)
+    k = w / 1072  # the design's hero photograph is 1072 by 640 (its board is 1200 wide with 64 px margins)
     inset, arm, stroke = 28 * k, 48 * k, 3 * k
     corners = []
     for x0, y0, dx, dy in ((inset, inset, 1, 1), (w - inset, inset, -1, 1),
@@ -38,7 +38,7 @@ def main():
            "-stroke", "none", "-fill", "rgba(27,32,19,0.8)", "-draw", box,
            "-font", a.mono_font, "-pointsize", f"{size:.1f}", "-fill", "#F2F3EE",
            "-annotate", f"+{lx + pad_x:.1f}+{ly - pad_y - size * 0.22:.1f}", a.credit,
-           "-strip", "-interlace", "Plane", "-sampling-factor", "4:2:0", "-quality", "82", a.out]
+           "-strip", "-interlace", "Plane", "-sampling-factor", "4:2:0", "-quality", "78", a.out]
     subprocess.run(cmd, check=True)
     print(a.out)
 

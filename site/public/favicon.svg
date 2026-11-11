@@ -1,5 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Organic Framework">
-  <rect width="64" height="64" rx="14" fill="#373C15"/>
-  <path d="M14 26 V14 H26 M38 14 H50 V26 M50 38 V50 H38 M26 50 H14 V38" fill="none" stroke="#F2F3EE" stroke-width="5"/>
-  <circle cx="32" cy="32" r="6" fill="#EDDFC0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" role="img" aria-label="Organic Framework">
+  <!-- The design's GitHub avatar "Sun": a light viewfinder and a golden dot on Shadow. -->
+  <rect width="500" height="500" rx="100" fill="#373C15"/>
+  <path d="M100 100H185V130H130V185H100Z M400 100V185H370V130H315V100Z M100 400V315H130V370H185V400Z M400 400H315V370H370V315H400Z" fill="#EDDFC0"/>
+  <circle cx="250" cy="250" r="38" fill="#E0C27A"/>
 </svg>

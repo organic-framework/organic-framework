@@ -75,6 +75,7 @@ PAGES = [
         ("docs/storage.md", "storage", "Storage"),
         ("docs/capacity.md", "capacity", "Capacity"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
+        ("docs/tools.md", "tools", "Tools of a position"),
         ("docs/studio.md", "studio", "Model and Studio"),
         ("docs/diagnose.md", "diagnose", "Anti-pattern catalogue"),
         ("docs/lab.md", "lab", "The lab"),

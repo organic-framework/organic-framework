@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
-"""The README's header image, in a light and a dark variant, in the OF design (direction "Frame": the viewfinder
-symbol, Inter Tight tightly tracked, JetBrains Mono for labels, colours taken from the photographs).
+"""The README's title block and the documents' strips, in the OF design (the founder's design system, direction
+"Frame"), each in a light and a dark variant for GitHub's two themes.
+
+The design's rules this follows: on the photograph only the frame, the mark and the credit (readme_photo.py); the text
+stands beside it, here on a transparent background under the photograph. Type: Inter Tight 500 tightly tracked for the
+name and titles, Inter Tight 400 for text, JetBrains Mono 400 for labels. The main mark is the name in two lines inside
+a viewfinder's four corners.
 
 GitHub shows a README without its CSS or web fonts, and an SVG shown as an image loads no font, so the text is drawn
-as outlines here: the image looks the same everywhere. The README picks the variant with a <picture> element.
+as outlines: the image looks the same everywhere. The README picks the variant with a <picture> element.
 
-Needs fontTools and uharfbuzz (pip install fonttools uharfbuzz); run it only to change the header, never in a build.
+Needs fontTools and uharfbuzz (pip install fonttools uharfbuzz); run it only to change these images, never in a build.
 
 Usage: readme_header.py --tokens TOKENS.json --out-dir .github/readme [--strip features="What works today" …]
 TOKENS.json: {"display": {"font": "<InterTight[wght].ttf>", "axes": {"wght": 500}, "tracking": -0.045},
-              "body": {"font": "<InterTight[wght].ttf>", "axes": {"wght": 400}, "tracking": -0.01},
+              "mark": {"font": "<InterTight[wght].ttf>", "axes": {"wght": 500}, "tracking": -0.04},
+              "body": {"font": "<InterTight[wght].ttf>", "axes": {"wght": 400}, "tracking": 0},
               "mono": {"font": "<JetBrainsMono[wght].ttf>", "axes": {"wght": 400}, "tracking": 0},
-              "light": {"bg": "#…", "fg": "#…", "muted": "#…", "frame": "#…", "dot": "#…", "line": "#…"},
+              "light": {"fg": "#…", "muted": "#…", "label": "#…", "frame": "#…", "line": "#…"},
               "dark": {…the same keys…},
-              "label": "the mono line above the title", "tagline": ["line 1", "line 2"]}
+              "label": "the mono line under the title", "tagline": ["line 1", "line 2"]}
 """
 import argparse
 import io
 import json
 import os
 
-W, H = 1280, 400
+W = 1280
 
 
 class Face:
@@ -57,47 +63,67 @@ class Face:
         return pen.getCommands(), x - track
 
 
-def symbol(x, y, size, frame, dot):
-    """The OF symbol: a viewfinder's four corners and a dot (the design's 48 px drawing, viewBox 64)."""
-    s = size / 64
-    return (f'<g transform="translate({x} {y}) scale({s:.4f})">'
-            f'<path d="M5 22 V5 H22 M42 5 H59 V22 M59 42 V59 H42 M22 59 H5 V42" fill="none" stroke="{frame}" '
-            f'stroke-width="5"/><circle cx="32" cy="32" r="6" fill="{dot}"/></g>')
+def corners(x, y, w, h, arm, stroke, colour):
+    """A viewfinder's four corners around the box (x, y, w, h), drawn inside it like the design's CSS borders."""
+    s = stroke / 2
+    d = (f"M{x + s} {y + arm} V{y + s} H{x + arm} M{x + w - arm} {y + s} H{x + w - s} V{y + arm} "
+         f"M{x + w - s} {y + h - arm} V{y + h - s} H{x + w - arm} M{x + arm} {y + h - s} H{x + s} V{y + h - arm}")
+    return f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="{stroke}"/>'
 
 
-def header(tokens, theme, faces):
-    c = tokens[theme]
-    left, sym = 88, 120
-    tx = left + sym + 48
-    label, _ = faces["mono"].path(tokens["label"], 17)
-    title, _ = faces["display"].path("Organic Framework", 104)
+def mark(faces, x, y, k, colour, frame):
+    """The main mark (design board "Frame", 01): "Organic" over "Framework", Inter Tight 500, 26 px with a line height
+    of 1.02, inside corners of 14 px at 2 px, with 18 px and 22 px of padding; all times k. Returns (svg, w, h)."""
+    size = 26 * k
+    top, word = faces["mark"].path("Organic", size)
+    bottom, w2 = faces["mark"].path("Framework", size)
+    pad_x, pad_y, lh = 22 * k, 18 * k, 1.02 * size
+    w, h = pad_x * 2 + max(word, w2), pad_y * 2 + 2 * lh
+    asc = 0.8 * size  # the baseline of the first line, from the top of its line box
+    svg = (corners(x, y, w, h, 14 * k, 2 * k, frame)
+           + f'<path transform="translate({x + pad_x:.1f} {y + pad_y + asc:.1f})" d="{top}" fill="{colour}"/>'
+           + f'<path transform="translate({x + pad_x:.1f} {y + pad_y + asc + lh:.1f})" d="{bottom}" fill="{colour}"/>')
+    return svg, w, h
+
+
+def title_block(tokens, theme, faces):
+    """Under the photograph: the name as the design's hero sets it, the tagline, and a mono label."""
+    c, h = tokens[theme], 300
+    title, _ = faces["display"].path("Organic Framework", 116)
     lines = [faces["body"].path(t, 27)[0] for t in tokens["tagline"]]
-    tag = "".join(f'<path transform="translate({tx} {290 + 38 * i})" d="{d}" fill="{c["muted"]}"/>'
+    label, _ = faces["mono"].path(tokens["label"], 21)
+    tag = "".join(f'<path transform="translate(4 {176 + 45 * i})" d="{d}" fill="{c["muted"]}"/>'
                   for i, d in enumerate(lines))
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img"
-  aria-label="Organic Framework: run your AI agents as an organization">
-  <rect width="{W}" height="{H}" rx="6" fill="{c['bg']}"/>
-  <rect x="0.5" y="0.5" width="{W - 1}" height="{H - 1}" rx="5.5" fill="none" stroke="{c['line']}"/>
-  {symbol(left, 118, sym, c['frame'], c['dot'])}
-  <path transform="translate({tx} 108)" d="{label}" fill="{c['muted']}"/>
-  <path transform="translate({tx} 216)" d="{title}" fill="{c['fg']}"/>
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {h}" width="{W}" height="{h}" role="img"
+  aria-label="Organic Framework. {' '.join(tokens['tagline'])}">
+  <path transform="translate(0 112)" d="{title}" fill="{c['fg']}"/>
   {tag}
+  <path transform="translate(4 278)" d="{label}" fill="{c['label']}"/>
 </svg>
 """
 
 
 def strip(tokens, theme, faces, label):
-    """A slim strip for the top of a document: the symbol, the name, and the document's label in mono."""
-    c, h = tokens[theme], 120
-    name, _ = faces["display"].path("Organic Framework", 40)
-    lab, lw = faces["mono"].path(label, 17)
+    """The top of a document: the main mark at the left, the document's name in mono at the right, a hairline."""
+    c, h, k = tokens[theme], 132, 1.25
+    m, mw, mh = mark(faces, 2, 8, k, c["fg"], c["frame"])
+    lab, lw = faces["mono"].path(label, 21)
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {h}" width="{W}" height="{h}" role="img"
   aria-label="Organic Framework: {label}">
-  <rect width="{W}" height="{h}" rx="6" fill="{c['bg']}"/>
-  <rect x="0.5" y="0.5" width="{W - 1}" height="{h - 1}" rx="5.5" fill="none" stroke="{c['line']}"/>
-  {symbol(48, 36, 48, c['frame'], c['dot'])}
-  <path transform="translate(124 74)" d="{name}" fill="{c['fg']}"/>
-  <path transform="translate({W - 48 - lw:.1f} 72)" d="{lab}" fill="{c['muted']}"/>
+  {m}
+  <path transform="translate({W - 2 - lw:.1f} {8 + mh - 22:.1f})" d="{lab}" fill="{c['label']}"/>
+  <rect x="0" y="{h - 2}" width="{W}" height="2" fill="{c['line']}"/>
+</svg>
+"""
+
+
+def mark_file(tokens, theme, faces):
+    """The main mark alone, cut to its own size, for wherever it shows at its own size (not the site's small logo)."""
+    c = tokens[theme]
+    m, w, h = mark(faces, 1, 1, 1.0, c["fg"], c["frame"])
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w + 2:.1f} {h + 2:.1f}" width="{w + 2:.1f}" height="{h + 2:.1f}" role="img"
+  aria-label="Organic Framework">
+  {m}
 </svg>
 """
 
@@ -107,22 +133,24 @@ def main():
     ap.add_argument("--tokens", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--strip", action="append", default=[], metavar="NAME=LABEL",
-                    help="also a slim strip for a document: strip-NAME-light.svg and strip-NAME-dark.svg")
+                    help="also a strip for a document: strip-NAME-light.svg and strip-NAME-dark.svg")
+    ap.add_argument("--mark-dir", help="also the main mark alone, main-mark-light.svg and main-mark-dark.svg, here")
     a = ap.parse_args()
     with open(a.tokens) as fh:
         tokens = json.load(fh)
-    faces = {k: Face(tokens[k]) for k in ("display", "body", "mono")}
+    faces = {k: Face(tokens[k]) for k in ("display", "mark", "body", "mono")}
     os.makedirs(a.out_dir, exist_ok=True)
     for theme in ("light", "dark"):
-        p = os.path.join(a.out_dir, f"header-{theme}.svg")
-        with open(p, "w") as fh:
-            fh.write(header(tokens, theme, faces))
-        print(p, os.path.getsize(p))
+        outs = {f"header-{theme}.svg": title_block(tokens, theme, faces)}
         for spec in a.strip:
             name, label = spec.split("=", 1)
-            p = os.path.join(a.out_dir, f"strip-{name}-{theme}.svg")
+            outs[f"strip-{name}-{theme}.svg"] = strip(tokens, theme, faces, label)
+        if a.mark_dir:
+            outs[os.path.join(a.mark_dir, f"main-mark-{theme}.svg")] = mark_file(tokens, theme, faces)
+        for name, svg in outs.items():
+            p = os.path.join(a.out_dir, name)
             with open(p, "w") as fh:
-                fh.write(strip(tokens, theme, faces, label))
+                fh.write(svg)
             print(p, os.path.getsize(p))
 
 
