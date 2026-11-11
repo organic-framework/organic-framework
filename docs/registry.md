@@ -441,7 +441,7 @@ An organization's own policy on what its positions may run ([`guard.md`](guard.m
 ```
 
 - **Subject set.** `subject: "*"` with `except:` applies to every position of the organization except those listed, and to its sessions without a position (they get no exception).
-- **Scope `kubectl`.** It takes the O1 matcher's keys: `verbs`, `pods`, `namespaces`, `admin`. Every key given must match.
+- **Scope `kubectl`.** It takes the O1 matcher's keys: `verbs`, `pods`, `namespaces`, `admin`. Every key given must match. `allow_exec` (2026-11-11) lists the execs that stay out of the rule: `[{argv: [/usr/sbin/sshd, -i], pods: [runner-0]}]`, the exact command after `--`, into a pod matching `pods` when given.
 - **Mode.** A non-critical deny warns: the agent sees `note` and the call runs, recorded as `of.mandate_check`. A critical deny denies. A rule starts in warn. It moves to deny with a new grant and the revocation of the old one, once the replay shows that the live flows have moved.
 - **Only the tenant issues and revokes them, in a plain terminal.** Today `of grant` says "tenant only" but does not check who runs it. The guard therefore denies, from every agent session, as a critical framework rule:
   - `of grant issue` and `of grant revoke`;

@@ -1327,7 +1327,8 @@ def _kubectl_call(args, env):
     local = verb is None or verb in _KUBE_LOCAL or any(a in ("-h", "--help") for a in cut) or \
         (verb == "version" and any(a.startswith("--client") for a in cut))
     label, kinds = _kube_kinds(verb, pos, cut) if verb else (None, [])
-    return {"verb": verb, "targets": targets, "namespace": _opt_value(cut, ("-n", "--namespace")),
+    run = args[args.index("--") + 1:] if verb == "exec" and "--" in args else None  # what runs in the pod
+    return {"verb": verb, "targets": targets, "namespace": _opt_value(cut, ("-n", "--namespace")), "exec_argv": run,
             "all_namespaces": any(a in ("-A", "--all-namespaces") for a in cut), "verb_label": label, "kinds": kinds,
             "config": _norm_path(cfg), "config_from": src, "context": _opt_value(cut, ("--context",)),
             "user": _opt_value(cut, ("--user",)), "local": local}
@@ -1399,7 +1400,12 @@ def kubectl_rule_match(match, call):
     admin: {configs: [~/.kube/config], contexts: [...], users: [...]}
                                 the call reaches the cluster (not a local verb) with one of these credentials:
                                 the kubeconfig in effect (flag, KUBECONFIG, else the default), --context or --user.
-    Every key given must match."""
+    allow_exec: [{argv: [/usr/sbin/sshd, -i], pods: ["runner-0"]}]
+                                an exec whose command after `--` is exactly one of these argv lists (into a pod
+                                that matches the entry's pods, when given) is out of the rule; a command held in
+                                a variable, or an exec without `--`, never matches (a user organization,
+                                2026-11-11: two typed execs allowed into its runners, everything else flagged).
+    Every other key given must match."""
     import fnmatch
     said = []
     verbs, pods, admin = match.get("verbs"), match.get("pods"), match.get("admin")
@@ -1427,6 +1433,11 @@ def kubectl_rule_match(match, call):
                 call["config_from"], "kubectl --kubeconfig naming the admin kubeconfig"))
         else:
             return None
+    def allowed(a):
+        return isinstance(a, dict) and list(a.get("argv") or []) == call["exec_argv"] and (
+            a.get("pods") is None or any(fnmatch.fnmatchcase(t, str(g)) for t in call["targets"] for g in a["pods"]))
+    if call["verb"] == "exec" and call.get("exec_argv") is not None and any(map(allowed, match.get("allow_exec") or [])):
+        return None
     return "; ".join(said) or (f"kubectl {call['verb']}" if verbs is not None else None)
 
 

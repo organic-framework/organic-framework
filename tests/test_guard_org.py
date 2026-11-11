@@ -90,6 +90,29 @@ class OrgRuleTest(unittest.TestCase):
         self.assertEqual(hits("kubectl --kubeconfig /k/own.yaml logs runner-7"), [])
         self.assertEqual(hits("kubectl --kubeconfig /k/own.yaml exec -it db-0 -- psql"), [])
 
+    def test_allowed_execs_are_out_of_the_rule(self):
+        """A user organization, 2026-11-11: exactly two typed execs into its runners stay allowed."""
+        rule = dict(RUNNER, kubectl={"verbs": ["exec", "cp"], "namespaces": ["runners-jobs"], "allow_exec": [
+            {"argv": ["/root/opt/gate/bin/sshd-i"], "pods": ["runner-w*"]},
+            {"argv": ["/usr/sbin/sshd", "-i", "-e", "-f", "/opt/gate/sshd_config"], "pods": ["runner-0"]}]})
+        ids = lambda cmd: [r["id"] for r, _ in of_guard.org_rule_hits("Bash", {"command": cmd}, [rule], "x")]  # noqa
+        self.assertEqual(ids("kubectl -n runners-jobs exec -i runner-w3 -- /root/opt/gate/bin/sshd-i"), [])
+        self.assertEqual(ids("kubectl -n runners-jobs exec -i runner-0 -- /usr/sbin/sshd -i -e -f "
+                             "/opt/gate/sshd_config"), [])
+        for flagged in ("kubectl -n runners-jobs exec -i runner-0 -- /root/opt/gate/bin/sshd-i",   # wrong pod
+                        "kubectl -n runners-jobs exec -i runner-w3 -- /root/opt/gate/bin/sshd-i -o x",  # more args
+                        "kubectl -n runners-jobs exec -i runner-w3 -- sh -c /root/opt/gate/bin/sshd-i",
+                        "kubectl -n runners-jobs exec -i $POD -- /root/opt/gate/bin/sshd-i",     # pod unknown
+                        "kubectl -n runners-jobs exec -i runner-w3 -- $GATE",
+                        "kubectl -n runners-jobs cp ./f runner-w3:/tmp/"):
+            self.assertEqual(ids(flagged), ["runner-exec"], flagged)
+        import of_grants
+        g = {"effect": "deny", "subject": "*", "issuer": "tenant", "scope": {"kubectl": rule["kubectl"]}}
+        self.assertEqual(of_grants.shape_problems(g), [])
+        bad = dict(g, scope={"kubectl": {"verbs": ["exec"], "allow_exec": [{"argv": "/usr/sbin/sshd -i"}]}})
+        self.assertIn("scope kubectl.allow_exec is a list of {argv: [strings], pods?: [globs]}",
+                      of_grants.shape_problems(bad))
+
     def test_a_namespace_sees_a_pod_held_in_a_variable(self):
         rule = dict(RUNNER, kubectl={"verbs": ["exec", "cp"], "namespaces": ["runners-jobs"]})
         hit = of_guard.org_rule_hits("Bash", {"command": "POD=$(kubectl -n runners-jobs get pod -o name | head -1); "

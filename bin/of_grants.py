@@ -379,7 +379,7 @@ def verify_request(grants_by_org, key, now_iso, grant_id, subject, action=None):
 
 # ------------------------------------------------- organization rules (deny grants; docs/registry.md)
 
-RULE_KEYS = ("verbs", "pods", "namespaces", "admin")
+RULE_KEYS = ("verbs", "pods", "namespaces", "admin", "allow_exec")
 ADMIN_KEYS = ("configs", "contexts", "users")
 GUARD_STATE = "guard-grants.json"
 
@@ -430,6 +430,11 @@ def shape_problems(grant):
             for key in ("verbs", "pods", "namespaces"):
                 if key in k and not _str_list(k[key]):
                     out.append(f"scope kubectl.{key} is a list of strings")
+            ax = k.get("allow_exec")
+            if "allow_exec" in k and not (isinstance(ax, list) and ax and all(
+                    isinstance(a, dict) and _str_list(a.get("argv")) and not set(a) - {"argv", "pods"}
+                    and ("pods" not in a or _str_list(a["pods"])) for a in ax)):
+                out.append("scope kubectl.allow_exec is a list of {argv: [strings], pods?: [globs]}")
             adm = k.get("admin")
             if "admin" in k and (not isinstance(adm, dict) or not adm or set(adm) - set(ADMIN_KEYS)
                                  or not all(_str_list(v) for v in adm.values())):
