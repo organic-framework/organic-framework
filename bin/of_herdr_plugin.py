@@ -128,6 +128,54 @@ def of_apply():
 PLUGIN_ID = "organic-framework"
 
 
+# The Agents sidebar: whatever needs the owner first (the founder, ~21:25Z via of_conductor, translated: "the sidebar
+# view must go into the release too"). First the agents with an open question to him (the `ask` pane token, bin/of_herdr_asks.py; a missing
+# token sorts after present ones), then herdr's attention (4 a dialog or permission, 3 a finished turn not yet seen,
+# 2 working, 1 idle and seen: src/app/api_helpers.rs tab_attention_priority), then the layout order. A question he
+# has seen but not answered still comes first: attention alone would put it below the working agents. No filter:
+# every agent stays listed. herdr keeps a view until the server exits, so the startup hook sets it again (herdr 0.9.5
+# docs, socket API, "Agent view queries").
+VIEW = {
+    "label": "OF: needs you first",
+    "sort": [{"field": {"token": "ask"}, "order": "asc"},
+             {"field": "attention", "order": "desc"},
+             {"field": "workspace_order", "order": "asc"},
+             {"field": "tab_order", "order": "asc"},
+             {"field": "pane_order", "order": "asc"}],
+}
+
+
+def herdr_request(method, params, sock_path=None, timeout=5.0):
+    """One request on herdr's API socket (one JSON line each way). Returns the reply, or {"error": ...}."""
+    import socket
+    sock_path = sock_path or os.environ.get("HERDR_SOCKET_PATH")
+    if not sock_path:
+        return {"error": {"code": "no_socket", "message": "HERDR_SOCKET_PATH is not set"}}
+    try:
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.settimeout(timeout)
+        c.connect(sock_path)
+        c.sendall((json.dumps({"id": f"of-herdr-plugin:{time.time_ns()}", "method": method, "params": params})
+                   + "\n").encode())
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        c.close()
+        return json.loads(buf.decode() or "{}")
+    except (OSError, ValueError) as e:
+        return {"error": {"code": type(e).__name__, "message": str(e)[:200]}}
+
+
+def set_view(request=None):
+    """Install the OF Agents view (VIEW). Returns (True, None) or (False, reason)."""
+    r = (request or herdr_request)("agent.view.set", dict(VIEW, source=f"plugin:{PLUGIN_ID}"))
+    err = r.get("error")
+    return (False, (err or {}).get("code") or str(err)) if err else (True, None)
+
+
 def install(of_home=None, run=None):
     """Link OF's herdr plugin for this user (herdr registers it in every session) and record OF's home in the plugin's
     config dir (`of_home`, which run.sh reads), for `of init` and for a person installing by hand. Idempotent.
@@ -184,7 +232,8 @@ def main(argv):
     os.environ["OF_AUTOMATION"] = "1"
     what = argv[0] if argv else ""
     if what == "startup":
-        log("startup: herdr restored its session")
+        ok, why = set_view()
+        log("startup: herdr restored its session; Agents view " + ("set" if ok else f"not set: {why}"))
     elif what == "agent-detected":
         pane = event_pane()
         if not pane:
@@ -192,6 +241,11 @@ def main(argv):
         else:
             s = wait_session(pane)
             log(f"agent detected in {pane}: session {s or 'not reported within ' + str(SESSION_WAIT_S) + ' s'}")
+    elif what == "view":
+        ok, why = set_view()
+        print("Agents view set: " + VIEW["label"] if ok else f"Agents view not set: {why}",
+              file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
     elif what == "install":
         ok, note = install(argv[1] if len(argv) > 1 else None)
         print(("" if ok else "not installed: ") + note, file=sys.stdout if ok else sys.stderr)
@@ -203,7 +257,7 @@ def main(argv):
         of = os.environ.get("OF_ASKS_OF") or os.path.join(HERE, "of")
         os.execv(sys.executable, [sys.executable, of, "asks", "--watch"])
     else:
-        print("usage: of_herdr_plugin.py startup|agent-detected|asks|install [OF_HOME]", file=sys.stderr)
+        print("usage: of_herdr_plugin.py startup|agent-detected|asks|view|install [OF_HOME]", file=sys.stderr)
         return 2
     coalesced(of_apply)
     return 0

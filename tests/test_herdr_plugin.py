@@ -111,6 +111,18 @@ class HookTest(unittest.TestCase):
                 self.assertEqual(fh.read().strip(), home)
             self.assertFalse(plugin.install("/no/such/of", run=run)[0])
 
+    def test_the_agents_view_puts_open_questions_first_and_lists_everyone(self):
+        sent = []
+        ok = plugin.set_view(request=lambda method, params: (sent.append((method, params)),
+                                                             {"result": {"type": "agent_view", "active": True}})[1])
+        self.assertEqual(ok, (True, None))
+        method, params = sent[0]
+        self.assertEqual((method, params["source"]), ("agent.view.set", "plugin:organic-framework"))
+        self.assertEqual([x["field"] for x in params["sort"][:2]], [{"token": "ask"}, "attention"])
+        self.assertNotIn("filter", params)  # every agent stays listed
+        refused = lambda method, params: {"error": {"code": "plugin_not_found", "message": "not linked"}}
+        self.assertEqual(plugin.set_view(request=refused), (False, "plugin_not_found"))
+
     def test_applies_are_coalesced(self):
         """After a herdr restart many agents are detected at once: one apply at a time, and exactly one more for
         everything that arrived during it."""

@@ -83,6 +83,12 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   through the file `of_home` in the plugin's config dir (`herdr plugin config-dir organic-framework`), else the
   folder above the plugin. It looks for Python 3 with PyYAML in `$OF_PYTHON`, then on `PATH`, then in the usual
   Homebrew places.
+- **The Agents sidebar: what needs you first** (the founder, ~21:25Z via of_conductor). The plugin installs a herdr
+  Agents view (`agent.view.set`, label "OF: needs you first"). First come the agents with an open question to the
+  owner (the `ask` pane token), then herdr's attention (a dialog or permission, a finished turn not yet seen,
+  working, idle and seen), then the layout order. Every agent stays listed. herdr keeps a view only until its
+  server exits, so the startup hook sets it again; `python3 bin/of_herdr_plugin.py view` sets it by hand. herdr
+  refuses the view (`plugin_not_found`) when the plugin is not linked.
 - **The questions screen as a popup.** The pane entrypoint `asks` (placement popup, 90% x 85%) runs `of asks
   --watch`. Any process, a key or a panel's button opens it over everything with `herdr plugin pane open --plugin
   organic-framework --entrypoint asks`. Leave out `--placement`, so the manifest's popup applies; `--env
