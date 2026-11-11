@@ -570,7 +570,7 @@ def detached(name, line, tmux=None):
     tmux = shutil.which("tmux") if tmux is None else tmux
     if tmux:
         return f"tmux new-session -d -s {name} {shlex.quote(line)}"
-    return f"screen -dmS {name} sh -c {shlex.quote(line)}"
+    return f"screen -U -dmS {name} sh -c {shlex.quote(line)}"  # -U: UTF-8, so an attached person reads it unbroken
 
 # What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "have of set opus xhigh at setup"). The
 # alias follows the newest Opus. of init writes it on the organization's entry in orgs.yaml (`agents:`); every session
@@ -849,7 +849,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
             out(f"  {line}")
     elif by_hand and f"{prefix}_conductor" in by_hand:
         out(f"  # your one window, {prefix}_conductor: start it first, before any other agent, in a terminal here")
-        out("  # (an installing agent with no terminal runs the second line detached: screen -dmS <name> sh -c '<line>'):")
+        out("  # (an installing agent with no terminal runs the second line detached: screen -U -dmS <name> sh -c '<line>'):")
         for line in by_hand[f"{prefix}_conductor"]:
             out(f"  {line}")
         out(f"  # then tell it what you want; the other agents' lines are in {repo}/onboarding/README.md")

@@ -35,7 +35,8 @@ Three of the storefront commits touch `pricing/discounts.py`, and three of the c
 The stub types these, in order, into the conductor's pane once it is started.
 
 1. "Hi. I want to start Organic Framework at Acme. Where do I begin?"
-2. When the conductor says to start the onboarding lead: the head runs `of spawn acme_onboarding`.
+2. When the conductor asks how the onboarding should run: "Hands-off, please." The head runs no command; the
+   conductor starts `acme_onboarding` itself.
 3. The story: "Last week a customer's discount code worked on the storefront but failed at checkout. I asked who
    decides the discount rules. The storefront agent said pricing does; the checkout agent said the storefront owner
    does. Nobody knew. After two days I decided it myself, and I still don't know who owns the discount rules."
@@ -74,8 +75,10 @@ Run: `of init acme --owner Alex --path ~/code/storefront --path ~/code/checkout 
 - Before: no acme position has a live holder (`of who --json`).
 - `of spawn acme_conductor` exits 0, and the first acme session to start, by its first event, is acme_conductor's
   (its declared brief, `of.injected_prompt`, names `acme_conductor`).
-- The conductor's first reply to the head's word 1 names the next step as starting `acme_onboarding` (real-agent
-  part).
+- The conductor's first reply to the head's word 1 asks how the onboarding should run, offers hands-off first,
+  and asks the head to run no command (real-agent part).
+- After word 2, `acme_onboarding` is started by the conductor (its declared brief names the injector), and the
+  head typed no command.
 
 ### C3. The story reaches the lead
 
@@ -86,7 +89,10 @@ Run: `of init acme --owner Alex --path ~/code/storefront --path ~/code/checkout 
 
 ### C4. The lead files the charter as one ask (real-agent part)
 
-- `~/of/acme/onboarding/charter.md` has the story, verbatim, in section 2.
+- `~/of/acme/onboarding/charter.md` has word 2 verbatim in section 1 ("How the onboarding runs") and the story,
+  verbatim, in section 2.
+- The ask carries the people map as a draft to confirm, from the fixtures' commit authors; no ask or message to
+  the head asks them to write a list or names a method term ("champion", "sponsor", "charter").
 - Exactly one open ask from `acme_onboarding`, linked to the work `acme-onboarding` (`of asks --all --json`).
 - No other acme position has filed an ask to the head.
 
@@ -109,3 +115,21 @@ Run: `of init acme --owner Alex --path ~/code/storefront --path ~/code/checkout 
 - Counted from `of asks --all --json`: the open asks and tasks filed by positions of the unit `onboarding`, per
   UTC day.
 - Expected: 0 after C1 to C3; 1 after C4 (the charter's ask).
+
+### C7. A message reaches an agent in a screen session (no herdr, no tmux)
+
+- On a machine with neither herdr nor tmux, `of init acme --owner Alex --yes` writes, for every agent but the
+  conductor, a second line that starts it with `screen -U -dmS <its name>`.
+- Real-agent part: the conductor runs the lead's two lines itself; `of who` shows `acme_onboarding` as
+  `screen:<pid>.acme_onboarding:0`; the conductor's first message reaches the lead with nobody typing it (the relay
+  delivers into screen windows, organic-framework 9012a74), and the lead answers it within its next turn.
+
+### C8. The remote surface (`of init --surface remote`)
+
+- Deterministic: with tmux on the PATH, `of init acme --owner Alex --surface remote --yes` writes
+  `surface: remote` to `~/.config/of/owner.yaml`; every agent's second line in `onboarding/README.md` starts with
+  `tmux new-session -d -s <its name>`, and the conductor's carries `--remote-control acme_conductor`. Without tmux,
+  `of init` stops at step 1 and names tmux.
+- Real-agent part: the head's words reach the conductor only through its session (no pane is typed into by the
+  stub); every card is presented in the chat and answered there, relayed verbatim to its asker
+  (`docs/remote.md` §2).
