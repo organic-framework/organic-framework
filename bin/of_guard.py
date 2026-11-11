@@ -1488,6 +1488,9 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             stage_reaches = reaches_agent and idx == last and not to_file
             if head == "security" and args and re.match(r"find-(generic|internet)-password$", args[0]) and "-w" in args:
                 return _prints(f"security {args[0]} -w")
+            if head == "security" and args[:1] == ["dump-keychain"] and any(  # -d prints every item's value
+                    a.startswith("-") and not a.startswith("--") and "d" in a[1:] for a in args[1:]):
+                return _prints("security dump-keychain -d")
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \

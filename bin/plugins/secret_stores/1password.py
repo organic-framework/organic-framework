@@ -27,6 +27,7 @@ class OnePassword:
     AUDIT = "each service account's Item Usage Report; the Events API on a Business account (docs/agent-secrets.md §4)"
     VALUE_COMMANDS = (("op", "read"), ("op", "item", "get"), ("op", "inject"), ("op", "run"))
     IDENTITY_VARIABLE = "OP_SERVICE_ACCOUNT_TOKEN"
+    CLI = "op"  # its own command line: only the broker and committed scripts run it (docs/guard.md G9)
 
     def __init__(self, settings=None):
         settings = settings or {}

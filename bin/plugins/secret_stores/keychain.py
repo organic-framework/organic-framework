@@ -34,6 +34,7 @@ class Keychain:
     VALUE_COMMANDS = (("security", "find-generic-password", "-w"), ("security", "find-internet-password", "-w"),
                       ("security", "dump-keychain", "-d"))
     IDENTITY_VARIABLE = None
+    CLI = None  # `security` is the OS's own tool; its value-printing forms are guarded (G6, G11)
 
     def __init__(self, settings=None):
         settings = settings or {}

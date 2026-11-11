@@ -161,6 +161,21 @@ for _name in sorted(of_family.implementations(FAMILY)):
     globals()[_cls] = type(_cls, (SecretStoreContract, unittest.TestCase), {"name": _name})
 
 
+class GuardCoversTheStores(unittest.TestCase):
+    """docs/agent-secrets.md §13.6, hand-over 3512db81: the guard names every store's commands. Each implementation
+    declares its own command line (CLI) and the forms that print a stored value (VALUE_COMMANDS); the guard denies
+    them on an agent's command line, so a store cannot ship without its rules."""
+
+    def test_every_store_command_is_denied_to_agents(self):
+        import of_guard
+        for name in sorted(of_family.implementations(FAMILY)):
+            cls = of_family.implementation(FAMILY, name)
+            cmds = [f"{cls.CLI} item list"] if getattr(cls, "CLI", None) else []
+            cmds += [" ".join(form) + " x" for form in cls.VALUE_COMMANDS]
+            for cmd in cmds:
+                self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}, "/tmp"), f"{name}: {cmd}")
+
+
 class FamilyTest(unittest.TestCase):
     def test_the_three_ship(self):
         self.assertTrue({"1password", "keychain", "envfile"} <= set(of_family.implementations(FAMILY)))
