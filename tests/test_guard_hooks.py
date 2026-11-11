@@ -147,12 +147,25 @@ class PluginCodeTest(unittest.TestCase):
             self.assertTrue(self.deny("Bash", {"command": f"echo /tmp/evil > {home}"}))
             self.assertTrue(self.deny("Write", {"file_path": home, "content": "/tmp/evil"}))
             self.assertFalse(self.deny("Bash", {"command": f"cat {home}"}))
-            self.assertTrue(self.deny("Bash", {"command": "herdr plugin link /tmp/x"}))  # the founder's herdr
-            self.assertTrue(self.deny("Bash", {"command": "XDG_CONFIG_HOME=~/.config herdr plugin unlink of"}))
             lab = os.path.expanduser("~/.cache/of-herdr/lab1/xdg")
-            self.assertFalse(self.deny("Bash", {"command": f"XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x"}))
-            self.assertFalse(self.deny("Bash", {"command": f"export XDG_CONFIG_HOME={lab}; herdr plugin unlink of"}))
-            self.assertFalse(self.deny("Bash", {"command": "herdr plugin list"}))
+            owner_sock = "/Users/alex/.config/herdr/herdr.sock"
+            saved_env = {k: os.environ.get(k) for k in ("HERDR_SOCKET_PATH", "XDG_CONFIG_HOME")}
+            try:
+                os.environ["HERDR_SOCKET_PATH"] = owner_sock      # an agent's pane inherits the owner's socket
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                for cmd in ("herdr plugin link /tmp/x", "XDG_CONFIG_HOME=~/.config herdr plugin unlink of",
+                            f"XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x",   # the lab's config, the owner's herdr
+                            f"export XDG_CONFIG_HOME={lab}; herdr plugin unlink of"):
+                    self.assertTrue(self.deny("Bash", {"command": cmd}), cmd)
+                for cmd in (f"HERDR_SOCKET_PATH={lab}/herdr.sock herdr plugin link /tmp/x",
+                            f"unset HERDR_SOCKET_PATH; export XDG_CONFIG_HOME={lab}; herdr plugin unlink of",
+                            f"HERDR_SOCKET_PATH= XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x",
+                            f"env -u HERDR_SOCKET_PATH XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x",
+                            "herdr plugin list"):
+                    self.assertFalse(self.deny("Bash", {"command": cmd}), cmd)
+            finally:
+                for k, v in saved_env.items():
+                    os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
         finally:
             of_guard.HERDR_PLUGIN_DIRS = saved
             of_guard._PLUGIN_DIRS.clear()
