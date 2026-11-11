@@ -106,6 +106,10 @@ These come from the corrections the OF team's own conductor received on its firs
   when the request is yours. Never answer that it is not allowed. If it cannot be opened (a board behind a
   sign-in), say so plainly and offer the easiest way: an export, a view link anyone can open, or a connector bound
   to the position that needs it (record §8.4 (9)).
+- **Check that your messages arrive.** `of status` names a message you sent that is not delivered yet. When one
+  stays, the relay (OF's message delivery) may not run on this machine: `of relay on` starts its service; where
+  there is no service, start it yourself in a detached session (`screen -dmS of_relay of relay run`), then check
+  that the message arrived. Never ask {owner_name} to do it (record §8.4 (10)).
 - **Never ask {owner_name} to run a command.** They may reach you through Remote Control, the desktop or the mobile
   app, where a command typed into the chat (`!…`) or "run this in your terminal" does not run (record §8.4 (8)).
   Ask in words ("tell me when you are ready") and run every command yourself. What only they can do (log in, trust

@@ -503,6 +503,36 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_relay_and_listener_run_as_services(self):
+        i = self.of_init
+        relay, listen = i.UNITS
+        plist = i.unit_text(relay, "Darwin", py="/usr/bin/python3", of="/x/bin/of", log="/l/relay.log", path="/p:/usr/bin")
+        self.assertIn("<string>dev.organic-framework.relay</string>", plist)  # the label of relay on|off uses
+        self.assertIn("<string>relay</string><string>run</string>", plist)
+        self.assertIn("<key>PATH</key><string>/p:/usr/bin</string>", plist)
+        self.assertIn("<key>OF_AUTOMATION</key><string>1</string>", plist)
+        unit = i.unit_text(listen, "Linux", py="/usr/bin/python3", of="/x/bin/of", log="-", path="/p")
+        self.assertIn("ExecStart=/usr/bin/python3 /x/bin/of listen run", unit)
+        self.assertIn("Restart=always", unit)
+        calls, state = [], {"active": True}
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            out = "active\n" if (cmd[:3] == ["systemctl", "--user", "is-active"] and state["active"]) else ""
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        lines = []
+        self.assertEqual(i.install_units(out=lines.append, system="Linux", run=run, sleep=lambda s: None), [])
+        self.assertIn(["systemctl", "--user", "enable", "--now", "of-relay.service"], calls)
+        self.assertTrue(any("relay: running" in x for x in lines))
+        state["active"] = False
+        lines = []
+        self.assertEqual(i.install_units(out=lines.append, system="Linux", run=run, wait_s=0.05,
+                                         sleep=lambda s: None), ["relay", "listen"])
+        self.assertTrue(any("relay: NOT running" in x for x in lines))
+        state["active"], calls[:] = True, []
+        i.install_units(out=lines.append, system="Linux", run=run, sleep=lambda s: None)
+        self.assertFalse([c for c in calls if "enable" in c])  # an existing, running unit is left alone
+
     def test_a_source_a_person_hands_over_is_read(self):
         files = self.built()["files"]
         for brief in ("acme_onboarding", "acme_system-architect", "acme_business-case", "acme_conductor", "acme_owner"):

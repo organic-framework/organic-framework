@@ -29,7 +29,8 @@ Then the head talks to the conductor, and the onboarding runs through it. `<org>
 - in the registry: the head as a person (`people:`) holding the owner's position; **the owner's conductor as the first position**; the onboarding unit's positions; the organization as a creating system; the unit; and the run as one work with eight stages;
 - a brief per position, and the charter, role-design and re-check templates under `onboarding/`;
 - this machine's `orgs.yaml` entry, with the repository as the organization's first path, so `of spawn` starts its positions there;
-- the recorder hooks and a local server, as before.
+- the recorder hooks and a local server, as before;
+- the relay (message delivery between agents) and the listener (the pulse: hand-over offers, nudges, the asks) as user services, launchd or systemd, each checked running; `of init` fails loudly when one does not run, since agents' messages to each other would wait undelivered (the record §8.4 (10)). A unit already on the machine is kept.
 
 No agent is started. The agents that already run on the machine are listed as positions for the structure keeper to name later. `of registry check` passes with one warning until the charter is approved: the organization's keeper has no ask id under `confirmed:` yet.
 

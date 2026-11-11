@@ -778,6 +778,16 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     else:
         out("  service not installed (--no-service); run `of server run` yourself")
 
+    out("\n8. Message delivery and the pulse (the relay and the listener, as services)")
+    if service:
+        down = install_units(out=out)
+        if down:
+            failed = True
+            out(f"  FAILED: {', '.join(down)} not running. Agents' messages to each other wait undelivered until the "
+                "relay runs.")
+    else:
+        out("  not installed (--no-service): run `of relay run` and `of listen run` yourself, each kept running")
+
     out("\nDone. Next:")
     out("  of registry check     # validate the registry")
     if by_hand and f"{prefix}_conductor" in by_hand:
@@ -835,6 +845,106 @@ def install_service():
         return (f"service file written ({unit}) but systemd could not start it: "
                 f"{(r.stderr or r.stdout).strip()[:120]}. Run `of server start` instead (it detaches and waits for the server).")
     return _started(f"service installed: {unit}")
+
+
+# The services that carry messages and the pulse (the founder, 2026-11-11 ~17:55Z: on a new organization's machine
+# the relay never started, so the conductor's message to the onboarding lead never arrived). Same labels as the
+# units `of relay on|off` and `of listen status|install` work with.
+UNITS = (
+    {"name": "relay", "label": "dev.organic-framework.relay", "unit": "of-relay.service",
+     "what": "message delivery between agents (of relay)", "args": ["relay", "run"], "always": False},
+    {"name": "listen", "label": "dev.organic-framework.listen", "unit": "of-listen.service",
+     "what": "the listener and its 5-minute pulse: hand-over offers, nudges, the asks (of listen)",
+     "args": ["listen", "run"], "always": True},
+)
+
+
+def service_path():
+    """PATH for a service: the folders of herdr, claude and python3 as this shell finds them, then the usual ones.
+    The relay types into panes through herdr; a launchd job gets no shell PATH of its own."""
+    dirs = []
+    for tool in ("herdr", "claude", "python3"):
+        w = shutil.which(tool)
+        if w:
+            dirs.append(os.path.dirname(w))
+    dirs += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+    return ":".join(dict.fromkeys(dirs))
+
+
+def unit_text(u, system, py=None, of=None, log=None, path=None):
+    """The launchd plist (Darwin) or the systemd user unit (else) that runs `of <args>` for a unit of UNITS."""
+    py, of, path = py or sys.executable, of or OF, path or service_path()
+    if system == "Darwin":
+        args = "".join(f"<string>{a}</string>" for a in [py, of] + u["args"])
+        keep = "<true/>" if u["always"] else "<dict><key>SuccessfulExit</key><false/></dict>"
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{u["label"]}</string>
+  <key>ProgramArguments</key><array>{args}</array>
+  <key>EnvironmentVariables</key><dict><key>OF_AUTOMATION</key><string>1</string><key>SSH_AUTH_SOCK</key><string></string>
+    <key>PATH</key><string>{path}</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>{keep}
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>Nice</key><integer>5</integer>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict></plist>
+"""
+    return (f"[Unit]\nDescription=Organic Framework: {u['what']}\nAfter=of-server.service\n\n[Service]\n"
+            f"ExecStart={py} {of} {' '.join(u['args'])}\nEnvironment=OF_AUTOMATION=1\nEnvironment=SSH_AUTH_SOCK=\n"
+            f"Environment=PATH={path}\nRestart={'always' if u['always'] else 'on-failure'}\nRestartSec=10\nNice=5\n\n"
+            "[Install]\nWantedBy=default.target\n")
+
+
+def unit_running(u, system, run=subprocess.run):
+    if system == "Darwin":
+        r = run(["launchctl", "print", f"gui/{os.getuid()}/{u['label']}"], capture_output=True, text=True)
+        return r.returncode == 0 and "state = running" in r.stdout
+    r = run(["systemctl", "--user", "is-active", u["unit"]], capture_output=True, text=True)
+    return r.stdout.strip() == "active"
+
+
+def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=time.sleep):
+    """Install and start the relay and the listener as user services, then check each runs (twice, a moment apart, so a
+    service that dies at start is caught). A unit file already there is kept, and started only when it does not run.
+    Returns the names that do not run; init fails loudly on any."""
+    import of_events
+    system = system or platform.system()
+    failed = []
+    for u in UNITS:
+        log = os.path.join(of_events.STATE_DIR, f"{u['name']}.log")
+        if system == "Darwin":
+            path = os.path.expanduser(f"~/Library/LaunchAgents/{u['label']}.plist")
+            start = [["launchctl", "bootout", f"gui/{os.getuid()}/{u['label']}"],
+                     ["launchctl", "bootstrap", f"gui/{os.getuid()}", path]]
+        else:
+            path = os.path.join(os.path.expanduser("~/.config/systemd/user"), u["unit"])
+            start = [["systemctl", "--user", "daemon-reload"], ["systemctl", "--user", "enable", "--now", u["unit"]]]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        new = not os.path.exists(path)
+        if new:  # a unit already there (a machine set up earlier, by hand or by of init) is kept as it is
+            with open(path, "w") as fh:
+                fh.write(unit_text(u, system, log=log))
+        if new or not unit_running(u, system, run):
+            for cmd in start:
+                run(cmd, capture_output=True, text=True)
+        ok, deadline = False, time.time() + wait_s
+        while time.time() < deadline:
+            if unit_running(u, system, run):
+                sleep(2)
+                ok = unit_running(u, system, run)
+                break
+            sleep(0.5)
+        if ok:
+            out(f"  {u['name']}: running ({u['what']}); log {log}")
+        else:
+            failed.append(u["name"])
+            out(f"  {u['name']}: NOT running ({u['what']}). Its unit is {path}; see {log}. "
+                f"`of {' '.join(u['args'])}` runs it in the foreground and shows why.")
+    return failed
 
 
 def _started(what, url="http://127.0.0.1:18200/v1/health", wait_s=8):
