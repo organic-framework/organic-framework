@@ -100,15 +100,34 @@ def resolve_language(arg=None, yes=False, path=None, ask=None):
     return code, code != current
 
 
+SURFACES = ("herdr", "remote")
+
+
+def resolve_surface(arg=None, path=None):
+    """(surface, changed): how the person reaches the agents (docs/remote.md §1). `herdr` (the default): at the
+    machine, in herdr panes; `remote`: only through the conductor's chat (Remote Control, the desktop or mobile app),
+    so every agent starts in tmux and the conductor with Remote Control on. --surface first, then owner.yaml."""
+    current = str(owner_settings(path).get("surface") or "").strip()
+    if arg and arg not in SURFACES:
+        raise ValueError(f"--surface must be one of {', '.join(SURFACES)}, not {arg!r}")
+    surface = arg or current or "herdr"
+    return surface, bool(arg) and arg != current
+
+
 def write_language(code, path=None):
     """Set `language` in owner.yaml, keeping its other keys."""
+    write_owner_setting("language", code, path)
+
+
+def write_owner_setting(key, value, path=None):
+    """Set one key in owner.yaml (language, surface), keeping the others."""
     import yaml
     path = path or _config_path("owner.yaml")
     doc = owner_settings(path)
-    doc["language"] = code
+    doc[key] = value
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
-        fh.write("# The organization's owner on this machine (of init --language; of spawn reads it)\n")
+        fh.write("# The organization's owner on this machine (of init --language, --surface; docs/remote.md)\n")
         yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
 
 
@@ -431,12 +450,14 @@ def run_readme(pkg, run, values, by_hand=None):
              "`--config-dir` with your Claude Code folder (`~/.claude` unless you use another).", ""]
     if by_hand:
         when = {fill(r.get("position") or "", values): fill(r.get("starts") or "", values) for r in pkg["roles"]}
-        lines += ["This machine has no herdr, so `of spawn` cannot open a pane. Each agent starts from the two "
-                  "lines below, with the session id `of init` reserved for it. The first line declares the brief, so "
-                  "it is not counted as your own words. The conductor's second line runs in a terminal on this "
-                  "machine (or detached: `screen -dmS <name> sh -c '<the line>'`); every other agent's second line "
-                  "starts it in a detached `screen` session, and the conductor or the lead runs both lines itself "
-                  "when its time comes. To watch an agent on this machine: `screen -r <its name>`.", ""]
+        lines += ["No herdr pane here (no herdr, or the person reaches the agents only through the conductor's "
+                  "chat: `surface: remote`, organic-framework `docs/remote.md`). Each agent starts from the two lines "
+                  "below, with the session id `of init` reserved for it. The first line declares the brief, so it is "
+                  "not counted as your own words; the second starts the agent in a detached session (tmux, where "
+                  "messages are delivered, else `screen`). The conductor or the lead runs both lines itself when its "
+                  "time comes; the conductor's own lines are run by whoever installs OF, and with `surface: remote` "
+                  "it starts with Remote Control on, so the person talks to it from the Claude app. To watch an agent "
+                  "on this machine: `tmux attach -t <its name>` (or `screen -r <its name>`).", ""]
         for who, cmds in by_hand.items():
             lines += [f"`{who}`" + (f", {when[who]}" if when.get(who) else "") + ":", "", "```sh"] + cmds + ["```", ""]
     lines += ["## The unit", "", "| Role | Position | Starts | Sources |", "|---|---|---|---|"]
@@ -508,7 +529,7 @@ def owner_evidence(org, owner, owner_name, day=None):
     return f"of init {org} without --owner, run on this machine on {day}: the login name {owner_name}"
 
 
-def hand_start(doc, conductor, repo, of_cmd="of", agents=None, detach=False):
+def hand_start(doc, conductor, repo, of_cmd="of", agents=None, detach=False, remote_control=False, tmux=None):
     """Without herdr, `of spawn` cannot open a pane: reserve the position's session id in the registry (nothing is
     started) and return the two lines that start it: declare the brief, then run claude in the repository with that
     session id, in bypass mode as of spawn starts it (the guard still stops the critical calls). detach: the second
@@ -529,21 +550,26 @@ def hand_start(doc, conductor, repo, of_cmd="of", agents=None, detach=False):
     p["holder"] = {"runtime": "claude-code", "session": sid, "workplace": HAND_START}
     brief = of_spawn.brief_text(p, repo)
     start = (f"cd {shlex.quote(repo)} && claude --session-id {sid} --name {conductor} --dangerously-skip-permissions"
+             + (f" --remote-control {conductor}" if remote_control else "")
              + "".join(f" --{k} {shlex.quote(str(v))}" for k, v in (agents or {}).items()
                        if k in ("model", "effort") and v)
              + f" {shlex.quote(brief)}")
     return [f"{of_cmd} event injected_prompt --injector of_init --session {sid} --position {conductor} "
             f"--text {shlex.quote(brief)}",
-            detached(conductor, start) if detach else start]
+            detached(conductor, start, tmux) if detach else start]
 
 
 HAND_START = "a terminal on the head's machine, started by hand (no herdr); of init reserved this session id"
 
 
-def detached(name, line):
-    """The line run in a detached `screen` session named after the position (macOS ships screen; on Linux, install
-    it). Whoever wants to watch the agent attaches with `screen -r <name>` on that machine."""
+def detached(name, line, tmux=None):
+    """The line run in a detached session named after the position: tmux, where the relay delivers messages
+    (docs/remote.md §3 row 5), else `screen` (macOS ships it; nothing is delivered into it). Whoever wants to watch
+    the agent attaches on that machine: `tmux attach -t <name>` or `screen -r <name>`."""
     import shlex
+    tmux = shutil.which("tmux") if tmux is None else tmux
+    if tmux:
+        return f"tmux new-session -d -s {name} {shlex.quote(line)}"
     return f"screen -dmS {name} sh -c {shlex.quote(line)}"
 
 # What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "have of set opus xhigh at setup"). The
@@ -632,7 +658,7 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None):
+         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None):
     import yaml
     display = display_name(org)
     org = _name(org)
@@ -642,6 +668,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
                    if isinstance(o, dict) and o.get("name") == _name(org)), {})
     start_on = agent_settings(model, effort, listed.get("agents"))
     lang, lang_changed = resolve_language(language, yes)
+    surface, surface_changed = resolve_surface(surface)
     values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
               "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
     home = os.path.expanduser("~")
@@ -650,8 +677,15 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     if lang_changed:
         write_language(lang)
         out(f"  language: {lang}, in {_config_path('owner.yaml')} (change it with of init --language)")
+    if surface_changed:
+        write_owner_setting("surface", surface)
+        out(f"  surface: {surface}, in {_config_path('owner.yaml')} (docs/remote.md)")
     out("1. Prerequisites")
-    if not check_prereqs(out):
+    if surface == "remote":
+        out("  tmux: " + ("ok" if shutil.which("tmux") else
+                          "not found (--surface remote starts every agent in tmux, where messages are delivered: "
+                          "brew install tmux on macOS, your package manager on Linux)"))
+    if not check_prereqs(out) or (surface == "remote" and not shutil.which("tmux")):
         out("\nFix the missing prerequisites above, then run `of init` again.")
         return 1
 
@@ -686,17 +720,19 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     if built:
         for name in merge_structure(doc, built):
             out(f"  + {name}")
-        if not shutil.which("herdr"):  # of spawn needs herdr: reserve the first two sessions, to start by hand
+        if surface == "remote" or not shutil.which("herdr"):  # no herdr pane: reserve each agent's session
             agents = [p["name"] for p in built["positions"] if (p.get("holder") or {}).get("runtime") != "human"]
-            by_hand = {q: c for q in agents for c in [hand_start(doc, q, repo, agents=start_on,
-                                                                 detach=q != f"{prefix}_conductor")] if c}
+            remote, cond = surface == "remote", f"{prefix}_conductor"
+            by_hand = {q: c for q in agents for c in [hand_start(
+                doc, q, repo, agents=start_on, detach=remote or q != cond, remote_control=remote and q == cond)] if c}
             run = fill(load_package(pkg_dir)["run"], values)
             built["files"]["onboarding/README.md"] = run_readme(load_package(pkg_dir), run, values, by_hand)
         write_files(repo, built["files"], out)
         out(f"  {prefix}_conductor is the first position; nothing is running yet.")
         if by_hand:
-            out(f"  no herdr here: the unit's {len(by_hand)} agents have session ids reserved, to start by hand "
-                "(onboarding/README.md)")
+            why = "surface remote" if surface == "remote" else "no herdr here"
+            out(f"  {why}: the unit's {len(by_hand)} agents have session ids reserved, each started in a detached "
+                "session by the conductor or the lead (onboarding/README.md)")
 
     out("\n4. Agents already running (a first look; the structure keeper names them in the onboarding)")
     positions = doc.setdefault("positions", [])
@@ -802,6 +838,16 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     out("\nDone. Next:")
     out("  of registry check     # validate the registry")
     if by_hand and f"{prefix}_conductor" in by_hand:
+        acct = config_dir(cfg_dir)
+        for line in conductor_start(prefix, repo, acct, start_ready(acct, repo))[:-1]:  # the trust step, if missing
+            out(f"  {line}")  # a detached session would wait on the trust dialog with nobody to answer it
+    if by_hand and f"{prefix}_conductor" in by_hand and surface == "remote":
+        out(f"  # your one window, {prefix}_conductor, first: whoever installs runs both lines here; it starts in tmux")
+        out("  # with Remote Control on. The person then opens it from the Claude app (Remote Control) and talks")
+        out("  # to it there; nothing else needs a terminal, except what waits for the machine (docs/remote.md §4):")
+        for line in by_hand[f"{prefix}_conductor"]:
+            out(f"  {line}")
+    elif by_hand and f"{prefix}_conductor" in by_hand:
         out(f"  # your one window, {prefix}_conductor: start it first, before any other agent, in a terminal here")
         out("  # (an installing agent with no terminal runs the second line detached: screen -dmS <name> sh -c '<line>'):")
         for line in by_hand[f"{prefix}_conductor"]:

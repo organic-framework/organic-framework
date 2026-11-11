@@ -111,6 +111,29 @@ class RegistryTest(unittest.TestCase):
         finally:
             sp.run = saved
 
+    def test_prompts_mine_lists_the_persons_prompts_with_ids(self):
+        """of_onboarding, 2026-11-11: a provisional position cites the event id of the head's typed yes."""
+        import argparse
+        import contextlib
+        import io
+        import of_events
+        with tempfile.TemporaryDirectory() as d:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, d
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "S-head"
+            try:
+                yes = of_events.emit("human_prompt", {"origin": "human", "text": "yes, start it\nthanks"}, session="S-head")
+                of_events.emit("human_prompt", {"origin": "relay", "text": "a peer's words"}, session="S-head")
+                of_events.emit("human_prompt", {"origin": "human", "text": "another session"}, session="S-other")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    of.cmd_prompts(argparse.Namespace(mine=True, last=10, all=False))
+                lines = out.getvalue().strip().splitlines()
+                self.assertEqual(len(lines), 1)
+                self.assertTrue(lines[0].startswith(yes) and lines[0].endswith("yes, start it"))
+            finally:
+                of_events.STATE_DIR = saved
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
              "notes": {"Waits for runners_coordinator after the CA window.": None}}
