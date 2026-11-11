@@ -241,7 +241,7 @@ The founder, 2026-11-11 ~18:56Z, through `of_conductor` (msg `01a1cbf2`): "far f
 
 ### 13.3 What the broker needs from a store
 
-The broker (§5.3), the hand-over (§5.4), the record (§5.7) and the review do not change with the store. They call the **`secrets` plugin family** ([`plugins.md`](plugins.md) §3) through the shared loader (`bin/of_family.py`): one implementation per store under `bin/plugins/secrets/<name>.py`, or an installed `organic_framework.secrets` entry point. The family's methods are `read`, `write`, `exists`, `list` and `bootstrap` (`of_family.FAMILIES`); the broker needs from each implementation:
+The broker (§5.3), the hand-over (§5.4), the record (§5.7) and the review do not change with the store. They call the **`secret_stores` plugin family** ([`plugins.md`](plugins.md) §3) through the shared loader (`bin/of_family.py`): one implementation per store under `bin/plugins/secret_stores/<name>.py`, or an installed `organic_framework.secret_stores` entry point. The name is `secret_stores` everywhere, folder, entry-point group and registry key: a folder named `secrets` is a secret path for the guard (G1.1) and for Claude Code's native deny rules (N1), so no agent could read the code in it (`of_architect` and `of_platform`, 2026-11-11, b633781). The family's methods are `read`, `write`, `exists`, `list` and `bootstrap` (`of_family.FAMILIES`); the broker needs from each implementation:
 
 | Operation | What it does |
 |---|---|
@@ -304,13 +304,13 @@ One card for the organization's owner, in the owner's language through the local
 3. **The options**, ranked by what the organization already runs: a store CLI found on its machines, the cloud of its systems in the systems map, a store named in its existing references. Each option gives its consequence: whether the store keeps positions apart by itself, who must create identities and how often, and its cost if it is a paid product. Recommended: the store the company already runs and audits; with none, sops with age in the organization's repository (no service to run, a boundary per file); the keychain only for a solo owner on one machine.
 4. **What happens next:** the structure keeper records the answer (**schema** below) and `of secret plan` prints the first identity's steps (`bootstrap`) as a task for the owner's hands.
 
-**Schema** (agreed with `of_architect`, a0a1407; [`registry.md`](registry.md), Plugins): an organization's choices live under `plugins:`, so its store is `plugins: {secrets: {name: 1password|bitwarden|vault|aws-sm|gcp-sm|sops|keychain, chosen: <ask id>, settings: {…}}}`, with settings such as a Vault address, a region or a project. Absent means files; `chosen` is required. `of registry check` refuses a `ref` whose store is not the chosen one, and a container that is not the organization's (§5.1, for any store).
+**Schema** (agreed with `of_architect`, a0a1407; [`registry.md`](registry.md), Plugins): an organization's choices live under `plugins:`, so its store is `plugins: {secret_stores: {name: 1password|bitwarden|vault|aws-sm|gcp-sm|sops|keychain, chosen: <ask id>, settings: {…}}}`, with settings such as a Vault address, a region or a project. Absent means files; `chosen` is required. `of registry check` refuses a `ref` whose store is not the chosen one, and a container that is not the organization's (§5.1, for any store).
 
 ### 13.8 Build order
 
-After the founder's decision on the broker (card `379274c4`):
-1. the `secrets` family's files implementation and the refusal of §13.2;
-2. the 1Password implementation (`bin/plugins/secrets/1password.py`), moving today's `_op_read` behind the family, unchanged in behaviour;
-3. the first-need card, `plugins.secrets` in the registry, and `of registry check`;
+Hand-over `3512db81` from `of_architect` builds the family now: its five methods, the 1Password, macOS Keychain and lab env-file implementations, the `<backend>://<path>` references and their contract tests. Building it moves no position from files to the broker. The rest waits on the founder's decision on the broker (card `379274c4`):
+1. the `secret_stores` family's files implementation and the refusal of §13.2;
+2. the broker and `of_capacity`'s credential broker reading through the family, today's `_op_read` moved behind the 1Password implementation (`bin/plugins/secret_stores/onepassword.py`), unchanged in behaviour;
+3. the first-need card, `plugins.secret_stores` in the registry, and `of registry check`;
 4. the guard rules of §13.6 for the chosen stores, each after its replay;
 5. other implementations when an organization chooses that store, each with its facts table, a stub in the lab proof (§10, step 0 against the stub) and, where possible, a real leg.
