@@ -86,6 +86,16 @@ def register(family, name, cls):
     _BUILTIN[family][name] = cls
 
 
+def _server_builtins(family):
+    """of-server's seams register their built-ins when bin/of_plugins.py loads; load it on first need, so the client
+    (of init --plugin storage=sqlite, of plugins) sees them too (of_onboarding, 2026-11-11)."""
+    if family in SERVER_FAMILIES and not _BUILTIN.get(family):
+        try:
+            import of_plugins  # noqa: F401
+        except Exception:  # noqa: BLE001 - a server module that cannot load leaves the family empty
+            pass
+
+
 def _shipped(family):
     out = {}
     d = os.path.join(SHIPPED, family)
@@ -113,6 +123,7 @@ def implementations(family):
     one: OF's own built-ins first, then what it ships, then installed packages."""
     if family not in FAMILIES:
         raise PluginError(f"no family {family!r}; families: {', '.join(sorted(FAMILIES))}")
+    _server_builtins(family)
     out = {name: "builtin" for name in _BUILTIN.get(family, {})}
     for name, (src, _) in list(_shipped(family).items()) + list(_entry_points(family).items()):
         out.setdefault(name, src)
@@ -121,6 +132,7 @@ def implementations(family):
 
 def implementation(family, name):
     """The class of one implementation, or PluginError naming the options."""
+    _server_builtins(family)
     if name in _BUILTIN.get(family, {}):
         return _BUILTIN[family][name]
     shipped = _shipped(family).get(name)
