@@ -101,7 +101,11 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   panel runs under it since it died at 21:23Z on 2026-11-11, when the build it ran from was rebased. A popup's
   command must not use it: the popup would never close.
 - **What a plugin cannot do in herdr 0.9.5.** It cannot bind keys or set sidebar rows; those stay in herdr's
-  `config.toml` (prefix+a for the questions, the red per-workspace question counter). Its CLI cannot open a
+  `config.toml` (prefix+a for the questions, the red per-workspace question counter).
+  `of_herdr_plugin.configure()` (or `python3 bin/of_herdr_plugin.py configure`), which `of init` calls beside
+  `install()`, adds both when they are missing. It is idempotent and leaves a person's own prefix+a binding and
+  sidebar rows alone, saying so. It backs the file up first, runs `herdr config check` and puts the backup back if
+  the check fails, then reloads a running server. Its CLI cannot open a
   plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.
 - **Checked on 2026-11-11 in an isolated lab herdr** (its own `XDG_CONFIG_HOME`, so its own plugin registry,
   sessions and socket; its own OF config and state, with a lab organization of one position):

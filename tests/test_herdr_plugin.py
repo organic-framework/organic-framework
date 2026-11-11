@@ -137,6 +137,55 @@ class HookTest(unittest.TestCase):
         self.assertEqual(plugin.keep(["x"], run=lambda c: (_ for _ in ()).throw(KeyboardInterrupt()),
                                      sleep=lambda s: None, say=lambda x: None), 130)  # Ctrl-C stops it
 
+    def _check(self, ok=True):
+        class R:
+            def __init__(self, out, rc):
+                self.returncode, self.stdout, self.stderr = rc, out, ""
+        return lambda argv, **k: R("config: ok" if ok or argv[1:3] != ["config", "check"] else "bad key", 0 if ok else 1)
+
+    def test_configure_adds_the_key_and_the_counter_once(self):
+        import tomllib
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            with open(path, "w") as fh:
+                fh.write('onboarding = false\n[ui]\nstatus_indicators = "symbols"\n')
+            ok, notes = plugin.configure("/of", python="/py/python3", path=path, run=self._check(),
+                                         backups=os.path.join(d, "b"), now=0)
+            self.assertTrue(ok, notes)
+            cfg = tomllib.load(open(path, "rb"))
+            key = cfg["keys"]["command"][0]
+            self.assertEqual((key["key"], key["type"], key["width"]), ("prefix+a", "popup", "90%"))
+            self.assertIn("/py/python3 /of/bin/of asks --watch", key["command"])
+            self.assertIn("$asks", str(cfg["ui"]["sidebar"]["spaces"]["rows"]))
+            self.assertEqual(cfg["ui"]["status_indicators"], "symbols")  # the person's own settings stay
+            self.assertEqual(len(os.listdir(os.path.join(d, "b"))), 1)  # backed up first
+            before = open(path).read()
+            self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
+            self.assertEqual(open(path).read(), before)  # idempotent
+
+    def test_configure_leaves_the_persons_own_key_and_rows_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            own = ('[[keys.command]]\nkey = "prefix+a"\ntype = "popup"\ncommand = "lazygit"\n\n'
+                   '[ui.sidebar.spaces]\nrows = [["workspace"]]\n')
+            with open(path, "w") as fh:
+                fh.write(own)
+            ok, notes = plugin.configure("/of", path=path, run=self._check())
+            self.assertTrue(ok)
+            self.assertEqual(open(path).read(), own)
+            self.assertTrue(any("bound to something else" in n for n in notes))
+            self.assertTrue(any("rows of its own" in n for n in notes))
+
+    def test_configure_puts_the_file_back_when_herdr_refuses_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            with open(path, "w") as fh:
+                fh.write("onboarding = false\n")
+            ok, why = plugin.configure("/of", path=path, run=self._check(ok=False), backups=os.path.join(d, "b"))
+            self.assertFalse(ok)
+            self.assertIn("refused", why)
+            self.assertEqual(open(path).read(), "onboarding = false\n")
+
     def test_applies_are_coalesced(self):
         """After a herdr restart many agents are detected at once: one apply at a time, and exactly one more for
         everything that arrived during it."""

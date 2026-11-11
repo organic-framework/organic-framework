@@ -204,6 +204,93 @@ def keep(cmd, name="the panel", run=None, sleep=None, clock=None, say=None, max_
     return 0
 
 
+def herdr_config_path(env=None):
+    """herdr's config.toml as herdr finds it: $XDG_CONFIG_HOME/herdr, else ~/.config/herdr (herdr 0.9.5,
+    src/config/io.rs config_dir; on macOS and Linux)."""
+    env = os.environ if env is None else env
+    base = env.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "herdr", "config.toml")
+
+
+QUESTIONS_KEY = "prefix+a"
+
+
+def configure(of_home=None, python=None, path=None, run=None, backups=None, now=None):
+    """Give a person's herdr OF's two config pieces, for `of init` beside install(): the key that opens the owner's
+    questions screen (prefix+a, a 90% x 85% popup running `of asks --watch`) and the red per-workspace question counter
+    in the Spaces sidebar (the `$asks` token, set by bin/of_herdr_asks.py). A plugin cannot set either: herdr takes keys
+    and sidebar rows only from config.toml. Idempotent; it never replaces a binding of prefix+a or sidebar rows the
+    person already has, and says so. It backs the file up first, runs `herdr config check`, puts the backup back if the
+    check fails, and reloads a running server. Returns (True, [notes]) or (False, reason)."""
+    import shutil
+    import tomllib
+    run = run or subprocess.run
+    of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
+    python = python or sys.executable
+    path = path or herdr_config_path()
+    text = open(path).read() if os.path.exists(path) else ""
+    try:
+        cfg = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        return False, f"{path} is not valid TOML ({e}); left alone"
+    notes, add = [], []
+    keys = [k for k in ((cfg.get("keys") or {}).get("command") or []) if k.get("key") == QUESTIONS_KEY]
+    if not keys:
+        log_file = os.path.join(os.path.expanduser("~"), ".local", "state", "of", "asks-popup.err")
+        command = (f"sh -c 'env OF_AUTOMATION=1 {python} {of_home}/bin/of asks --watch 2>>{log_file}; rc=$?; "
+                   f"if [ $rc -ne 0 ]; then echo; echo \\\"of asks exited with $rc; see {log_file}. Press Enter."
+                   f"\\\"; read x; fi'")
+        add.append("\n# Organic Framework: the owner's questions screen (of_herdr_plugin.configure, of init).\n"
+                   f"[[keys.command]]\nkey = \"{QUESTIONS_KEY}\"\ntype = \"popup\"\ncommand = \"{command}\"\n"
+                   "width = \"90%\"\nheight = \"85%\"\n")
+        notes.append(f"{QUESTIONS_KEY} opens the questions screen")
+    elif "asks --watch" in str(keys[0].get("command")):
+        notes.append(f"{QUESTIONS_KEY} already opens the questions screen")
+    else:
+        notes.append(f"{QUESTIONS_KEY} is bound to something else; left alone (bind the questions screen by hand)")
+    spaces = ((cfg.get("ui") or {}).get("sidebar") or {}).get("spaces")
+    if spaces is None:
+        add.append("\n# Organic Framework: the number of open questions per workspace, red, hidden when none.\n"
+                   "[ui.sidebar.spaces]\nrows = [[\"state_icon\", \"workspace\", { token = \"$asks\", fg = \"#f55\", "
+                   "bold = true, rules = [{ equals = \"\", hide = true }] }], [\"branch\", \"git_status\"]]\n")
+        notes.append("the sidebar shows the open questions per workspace")
+    elif "$asks" in json.dumps(spaces):
+        notes.append("the sidebar already shows the question counter")
+    else:
+        notes.append("the sidebar has rows of its own; left alone (add the $asks token by hand)")
+    if not add:
+        return True, notes
+    backup = None
+    if text:
+        bdir = backups or os.path.join(os.path.expanduser("~"), ".local", "state", "of", "herdr-config-backups")
+        os.makedirs(bdir, exist_ok=True)
+        backup = os.path.join(bdir, time.strftime("config.toml.%Y%m%dT%H%M%SZ", time.gmtime(now)) + ".before-of-init")
+        shutil.copy2(path, backup)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text + ("" if not text or text.endswith("\n") else "\n") + "".join(add))
+    herdr = os.environ.get("OF_HERDR", "herdr")
+    try:
+        chk = run([herdr, "config", "check"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        chk = None
+        notes.append(f"herdr config check did not run ({type(e).__name__})")
+    if chk is not None and (chk.returncode != 0 or "ok" not in (chk.stdout or "").lower()):
+        if backup:
+            shutil.copy2(backup, path)
+        else:
+            os.unlink(path)
+        return False, "herdr config check refused the change; the file is as it was: " + \
+            (chk.stderr or chk.stdout or "").strip()[:300]
+    try:
+        run([herdr, "server", "reload-config"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass  # no server running: the next start reads the file
+    if backup:
+        notes.append(f"backup: {backup}")
+    return True, notes
+
+
 def install(of_home=None, run=None):
     """Link OF's herdr plugin for this user (herdr registers it in every session) and record OF's home in the plugin's
     config dir (`of_home`, which run.sh reads), for `of init` and for a person installing by hand. Idempotent.
@@ -285,6 +372,10 @@ def main(argv):
             print("usage: of_herdr_plugin.py keep [--name NAME] -- COMMAND...", file=sys.stderr)
             return 2
         return keep(rest, name=name)
+    elif what == "configure":
+        ok, notes = configure(argv[1] if len(argv) > 1 else None)
+        print("; ".join(notes) if ok else f"not configured: {notes}", file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
     elif what == "install":
         ok, note = install(argv[1] if len(argv) > 1 else None)
         print(("" if ok else "not installed: ") + note, file=sys.stdout if ok else sys.stderr)
@@ -296,7 +387,7 @@ def main(argv):
         of = os.environ.get("OF_ASKS_OF") or os.path.join(HERE, "of")
         os.execv(sys.executable, [sys.executable, of, "asks", "--watch"])
     else:
-        print("usage: of_herdr_plugin.py startup|agent-detected|asks|view|keep|install [OF_HOME]", file=sys.stderr)
+        print("usage: of_herdr_plugin.py startup|agent-detected|asks|view|keep|install|configure [OF_HOME]", file=sys.stderr)
         return 2
     coalesced(of_apply)
     return 0
