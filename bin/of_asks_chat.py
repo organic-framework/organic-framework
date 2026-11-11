@@ -120,7 +120,8 @@ def prompt_row(conn, ref):
 
 
 def _norm(s):
-    s = str(s or "").lower().replace("ё", "е")  # the Russian yo is often typed as ye
+    import of_ask_text
+    s = of_ask_text.fold(s)  # the patterns of what people type live there
     s = re.sub(r"[\"'`*_«»“”„‘’]", " ", s)
     return " ".join(s.split())
 

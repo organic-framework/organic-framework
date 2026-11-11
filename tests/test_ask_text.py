@@ -226,5 +226,16 @@ class OtherChannelsTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+class PeoplesWordsTest(unittest.TestCase):
+    """The patterns of what people type that other modules use (bin/of_asks_tui.py, bin/of_asks_chat.py)."""
+
+    def test_patterns(self):
+        import of_asks_chat
+        self.assertEqual(of_ask_text.fold("Ещё РАЗ"), "еще раз")
+        self.assertEqual(of_asks_chat.quoted_options("ок, еще раз завтра", ["нет", "ещё раз завтра"]), [1])
+        self.assertTrue(of_ask_text.RECOMMENDED.search("да (рекомендую: окно короткое)"))
+        self.assertIn("д", of_ask_text.YES_KEYS)
+
+
 if __name__ == "__main__":
     unittest.main()

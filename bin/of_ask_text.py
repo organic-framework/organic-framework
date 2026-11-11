@@ -101,6 +101,11 @@ RECOMMENDED = re.compile(r"(?i)рекоменд|recommend")  # the option the as
 YES_KEYS = "yYдД"  # the keys that confirm "Done?" for a task, on a Latin or a Russian keyboard layout
 
 
+def fold(text):
+    """Lower case, with the Russian yo typed as ye: how a person's words are compared with a card's option."""
+    return str(text or "").lower().replace("ё", "е")
+
+
 def estimates(text):
     """The phrases of `text` that estimate effort or duration, in order (the module's docstring has the marks)."""
     return [(text or "")[a:b] for a, b in _spans(text or "")]
