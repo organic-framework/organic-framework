@@ -29,7 +29,8 @@ What must hold (the design's "behaviour that must hold"):
 - An answer is recorded as the popup records it (of_asks_answer.answer through the same undo window and outbox); its
   row stays in the queue, marked, until the record exists, and leaves only then. A failed send brings it back in red.
 - A money or irreversible answer needs a second press of the same key (or y); any other key cancels.
-- Below NARROW_W columns: one card per screen, ←→ (and ↑↓) page through the stream (layout B), the same keys.
+- Below NARROW_W columns: one card per screen, ↑↓ page through the stream and ←→ switch streams (layout B), the
+  same keys otherwise.
 Snoozing and handing over are records (of.ask_snoozed, of.ask_handed): the card stays open and still answerable;
 a handed card is typed into the receiver's pane by of_asks_answer.pending. Known limit: the pulse's reminders do not
 read a snooze yet.
