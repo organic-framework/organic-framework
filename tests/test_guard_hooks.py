@@ -137,7 +137,8 @@ class PluginCodeTest(unittest.TestCase):
 
     def test_herdrs_plugin_folders_and_acts(self):
         """of_platform's review of PR 24: herdr runs the plugin as the owner; of_home in its config folder decides
-        what run.sh starts. Writes there are denied; herdr plugin link and the like warn for now."""
+        what run.sh starts. Writes there are denied, and so are herdr plugin link and the like, but in of_herdr's
+        isolated lab herdr (its XDG_CONFIG_HOME under ~/.cache/of-herdr/)."""
         saved = of_guard.HERDR_PLUGIN_DIRS
         of_guard.HERDR_PLUGIN_DIRS = (os.path.join(self.tmp.name, "herdr-plugins"),)
         of_guard._PLUGIN_DIRS.clear()
@@ -146,9 +147,11 @@ class PluginCodeTest(unittest.TestCase):
             self.assertTrue(self.deny("Bash", {"command": f"echo /tmp/evil > {home}"}))
             self.assertTrue(self.deny("Write", {"file_path": home, "content": "/tmp/evil"}))
             self.assertFalse(self.deny("Bash", {"command": f"cat {home}"}))
-            of_guard._WARNINGS.clear()
-            self.assertFalse(self.deny("Bash", {"command": "herdr plugin link /tmp/x"}))   # warn mode
-            self.assertTrue(any("herdr plugin link" in w[1] for w in of_guard._WARNINGS))
+            self.assertTrue(self.deny("Bash", {"command": "herdr plugin link /tmp/x"}))  # the founder's herdr
+            self.assertTrue(self.deny("Bash", {"command": "XDG_CONFIG_HOME=~/.config herdr plugin unlink of"}))
+            lab = os.path.expanduser("~/.cache/of-herdr/lab1/xdg")
+            self.assertFalse(self.deny("Bash", {"command": f"XDG_CONFIG_HOME={lab} herdr plugin link /tmp/x"}))
+            self.assertFalse(self.deny("Bash", {"command": f"export XDG_CONFIG_HOME={lab}; herdr plugin unlink of"}))
             self.assertFalse(self.deny("Bash", {"command": "herdr plugin list"}))
         finally:
             of_guard.HERDR_PLUGIN_DIRS = saved
