@@ -264,7 +264,8 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
         log(f"asks reconcile: {e}")
     try:  # forced every run, not only on a change: the display can never drift for long
         import of_herdr_asks
-        mem["ws_counts"] = of_herdr_asks.refresh_ask_tokens(positions, agents, asks, bind)
+        herdr_only = [a for a in agents if not str(a.get("pane_id") or "").startswith(("tmux:", "screen:"))]
+        mem["ws_counts"] = of_herdr_asks.refresh_ask_tokens(positions, herdr_only, asks, bind)  # herdr's tokens only
     except Exception as e:
         log(f"ask tokens: {e}")
     of_events.emit("pulse", {"observed_at": _iso(now), "positions": [

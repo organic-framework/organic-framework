@@ -14,7 +14,8 @@ import of_views  # noqa: E402
 
 import of_locale  # noqa: E402
 
-of_locale.set_language("ru")  # these tests read the founder's panel, in Russian; LanguageTest covers English
+def setUpModule():
+    of_locale.set_language("ru")  # these tests read the founder's panel, in Russian; LanguageTest covers English
 
 T0 = panel._ts("2026-11-10T20:00:00Z")
 LEDGER = {"requests": [

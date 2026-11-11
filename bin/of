@@ -3185,7 +3185,7 @@ def cmd_ask(args):
     if refusal:
         raise OfError(refusal)
     import of_asks_chat  # where the person can do a task: phone, browser or machine (docs/remote.md §3 row 4)
-    refusal = of_asks_chat.check_where(args.where, args.task, args.command)
+    refusal = of_asks_chat.check_where(getattr(args, "where", None), args.task, args.command)
     if refusal:
         raise OfError(refusal)
     task = of_hook_mask(args.task) if args.task else None
@@ -3212,7 +3212,7 @@ def cmd_ask(args):
         "blocking": bool(args.blocking), "topic_key": _topic_key(text), **({"due": _due(args.due)} if args.due else {}),
         "questions": [{"question": text, "options": opts}], "classifications": {"q-v0": True, "q-v1": True},
         **({"task": True, "steps": task, "command": of_hook_mask(args.command) if args.command else None,
-            "where": "machine" if args.command else (args.where or "machine")} if task else {}),
+            "where": "machine" if args.command else (getattr(args, "where", None) or "machine")} if task else {}),
         **({"work": _work(me.get("_org"), args.work)} if args.work else {}),
         **({"escalated_from": src["event_id"]} if src else {})},
         position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender))
@@ -4140,7 +4140,9 @@ def cmd_pulse(args):
     observed = _t0.time()  # what the projection saw: a nudge re-checks declarations after this (of_pulse.still_waits)
     rows = of_asks.load(conn)
     asks = of_asks.project(rows)
-    agents = live_agents()
+    # herdr's agents and those in tmux or screen (of_herdr, 2026-11-11): every pulse path types through
+    # of_relay_client.herdr_deliver, which takes tmux: and screen: panes; without herdr the pulse still runs
+    agents = live_agents_or_none(warn=False)
     import of_handover
     handovers = of_handover.project(of_handover.load(conn))
     rows = of_pulse.with_messages(conn, rows)  # relayed replies (of send) count as answers to a waiting peer
@@ -4218,7 +4220,7 @@ def _capacity_ask(text, options=None, task=None, due=None, blocking=False):
         try:
             cmd_ask(argparse.Namespace(question=None if task else text, options=options, blocking=blocking,
                                        to="founder", sender="of_capacity", task=task, command=None, tags=None,
-                                       due=due, work=None))
+                                       due=due, work=None, where=None, escalates=None))
         finally:
             sys.stdout = saved
 
@@ -5212,7 +5214,8 @@ def main(argv=None):
     pr = sd.add_mutually_exclusive_group()
     pr.add_argument("--fyi", action="store_true", help="never typed into the receiver's pane: it reads it in "
                                                          "of inbox --mine when it chooses")
-    pr.add_argument("--urgent", action="store_true", help="typed in at once, past the relay's 15-minute batching")
+    pr.add_argument("--urgent", action="store_true",
+                    help="kept for old scripts: every message is typed in as soon as the receiver is idle (guard R9)")
     sd.set_defaults(fn=cmd_send)
     ib = sub.add_parser("inbox", help="messages to positions held by people on this machine")
     ib.add_argument("action", nargs="?", choices=["list", "read"], default="list")
