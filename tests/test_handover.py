@@ -115,10 +115,12 @@ class BasisTest(unittest.TestCase):
         self.assertIn("states an obligation ('compliance')", p(None, "add the compliance log", "a PR merged"))
         self.assertIn("'must'", p("", "rotate keys", "it must run nightly"))
         self.assertIsNone(p(None, "fix x", "tests pass"))  # no obligation stated: no basis needed
-        for ok in ("ask:0fd223f2", "ask:01a1cbd3-0260-700c-8f82-cd4b8b78a4fa",  # a full id (finding 6) 'source:PCI DSS 4.0 §8.3.6 "passwords at least 12 characters"',
+        for ok in ("ask:0fd223f2",
+                   "ask:01a1cbd3-0260-700c-8f82-cd4b8b78a4fa",  # a full id (finding 6)
+                   'source:PCI DSS 4.0 §8.3.6 "passwords at least 12 characters"',
                    "evidence:commit 4e3d84a", "inference"):
             self.assertIsNone(p(ok, "a required change", "done"), ok)
-        for bad in ("ask:the founder said so", "source:the contract", "because", "evidence:"):
+        for bad in ("ask:the founder said so", "source:the contract", "because", "evidence:", "ask:a----b"):
             self.assertIn("is none of the forms", p(bad, "a required change", "done"), bad)
 
     def test_the_offer_shows_the_basis_before_accepting(self):
