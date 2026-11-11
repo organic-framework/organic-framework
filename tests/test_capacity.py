@@ -1627,6 +1627,100 @@ class Plugins(unittest.TestCase):
         self.assertEqual([(x["position"], x["to"]) for x in m], [("st1", "/ap")])  # none has it: still rescued
 
 
+class ToolProfiles(unittest.TestCase):
+    """Hand-over 9843194a (docs/tools.md §4-§5): moves keep the position's tool profile, and an account where one of
+    its account-bound tools is not signed in is not a target; the founder gets one task per account."""
+    SLACK = "https://mcp.slack.com/mcp"
+    DOCS = {"acme": {
+        "tools": {
+            "grafana-read": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana", "--disable-write"],
+                             "acts_as": "viewer", "scope": "read", "keeper": "obs_keeper"},
+            "slack": {"kind": "plugin", "plugin": "slack@anthropic-plugin-directory", "url": SLACK,
+                      "account_bound": True, "acts_as": "the owner", "scope": "read", "keeper": "acme_org"}},
+        "positions": [{"name": "aws", "tools": ["grafana-read", "slack"]}, {"name": "plain"}]}}
+
+    def servers(self, d, now=None, run=None):
+        return {"/ez": [("plugin:slack:slack", self.SLACK, False)],
+                "/cl": [("plugin:slack:slack", self.SLACK, True)], "/gg": []}.get(d)
+
+    def test_a_move_carries_the_profile_in_its_one_settings_file(self):
+        import of_tools
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as t, mock.patch.object(of_tools, "registries", lambda *a: self.DOCS), \
+                mock.patch.object(of_tools, "STATE_DIR", t):
+            tools = of_capacity.tools_for({"name": "aws"}, "s1", os.path.join(t, "acct"))
+            self.assertEqual(of_capacity.tools_for({"name": "nobody"}, "s1", t), ([], {}))
+            line = of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", deny=["Read(/k/**)"],
+                                              memory_dir="/m/aws", state_dir=t, tools=tools)
+            self.assertIn("--mcp-config " + os.path.join(t, "tools", "s1.mcp.json"), line)
+            with open(os.path.join(t, "tools", "s1.mcp.json")) as fh:
+                self.assertEqual(list(json.load(fh)["mcpServers"]), ["grafana-read"])
+            settings = json.loads(of_capacity.settings_text(line))
+        self.assertEqual(settings["allowedMcpServers"], [{"serverName": "grafana-read"}, {"serverUrl": self.SLACK}])
+        self.assertEqual(settings["enabledPlugins"], {"slack@anthropic-plugin-directory": True})
+        self.assertEqual((settings["permissions"]["deny"], settings["autoMemoryDirectory"]), (["Read(/k/**)"], "/m/aws"))
+
+    def test_a_move_stops_where_a_bound_tool_is_signed_out_and_files_one_task(self):
+        from unittest import mock
+        cache, asks = {}, []
+        with tempfile.TemporaryDirectory() as ez, tempfile.TemporaryDirectory() as cl, mock.patch.multiple(
+                of_capacity, tool_docs=lambda: self.DOCS, load_cache=lambda: cache, save_cache=lambda c: None,
+                config_dirs=lambda: [ez, cl], live_sessions=lambda d: [], dir_of_position=lambda p, s: cl,
+                account_of=lambda d: "x@example.com",
+                mcp_servers=lambda d, now=None, run=None: self.servers("/ez" if d == ez else "/cl")):
+            self.assertEqual([i for i, _ in of_capacity.missing_signins("aws", ez)], ["acme/slack"])
+            self.assertEqual(of_capacity.missing_signins("aws", cl), [])
+            self.assertEqual(of_capacity.missing_signins("plain", ez), [])  # no bound tool: nothing changes
+            for _ in range(2):
+                with self.assertRaisesRegex(of_capacity.MoveError, "not signed in on .*acme/slack"):
+                    of_capacity.move({"name": "aws", "holder": {"session": "s1"}}, ez,
+                                     ask=lambda t, task=None: asks.append((t, task)), log=lambda x: None)
+        self.assertEqual(len(asks), 1)  # one task per account and tool, not one per attempt
+        self.assertIn("slack", asks[0][0])
+        self.assertIn(f"CLAUDE_CONFIG_DIR=", asks[0][1])
+
+    def test_plan_names_only_an_account_where_the_tools_are_signed_in(self):
+        from unittest import mock
+        rows = [{"config_dir": "/gg", "logged_in": True, "positions": ["aws", "plain"],
+                 "windows": {"seven_day": {"utilization": 99}}},
+                {"config_dir": "/ez", "logged_in": True, "windows": {"seven_day": {"utilization": 5}}},
+                {"config_dir": "/cl", "logged_in": True, "windows": {"seven_day": {"utilization": 40}}}]
+        pos = [{"name": "aws", "holder": {"session": "s1"}}, {"name": "plain", "holder": {"session": "s2"}}]
+        with mock.patch.multiple(of_capacity, tool_docs=lambda: self.DOCS, mcp_servers=self.servers,
+                                 load_policy=lambda: dict(POLICY)):
+            steps = {x["position"]: x for x in of_capacity.plan(rows, pos)}
+        self.assertEqual((steps["aws"]["to"], steps["aws"]["not_signed_in"]), ("/cl", {"/ez": ["acme/slack"]}))
+        self.assertEqual(steps["plain"]["to"], "/ez")
+
+    def test_fill_and_relief_avoid_the_account_rescue_prefers_another(self):
+        from unittest import mock
+        b = Balance()
+        b.setUp()
+        rows, pos = b.rows(), [{"name": "aws", "holder": {"session": "aws"}}]
+        sess = {"/cl": [], "/ez": [], "/gg": [{"session": "aws", "status": "idle"}]}
+        needs, seen = {"aws": set()}, {}
+        with mock.patch.object(of_capacity, "mcp_servers", self.servers):
+            of_capacity.add_bound(needs, seen, pos, ["/ez", "/cl", "/gg"], docs=self.DOCS)
+        self.assertEqual(needs["aws"], {"bound:acme/slack"})
+        self.assertEqual((seen["/ez"], seen["/cl"]), ({"bound:known"}, {"bound:acme/slack", "bound:known"}))
+        self.assertTrue(of_capacity.lacking(needs["aws"], seen["/ez"]))
+        self.assertFalse(of_capacity.lacking(needs["aws"], seen["/cl"]))
+        plan_ = of_capacity.balance_plan(rows, sess, pos, {"aws": 50}, {"/ez": 12.0, "/cl": 12.0}, dict(POLICY),
+                                         Balance.NOW, connectors=(needs, seen))
+        self.assertEqual([(m["to"], m["reason"][:6]) for m in plan_], [("/cl", "relief")])  # /ez resets first
+        seen["/ez"] = seen["/cl"]  # signed in there too: still one move for the session, not relief and fill
+        plan_ = of_capacity.balance_plan(rows, sess, pos, {"aws": 50}, {"/ez": 12.0, "/cl": 12.0}, dict(POLICY),
+                                         Balance.NOW, connectors=(needs, seen))
+        self.assertEqual(len(plan_), 1)
+        r = Rescue()  # a session already stopped: the account with the sign-in first, else any (it cannot work at all)
+        needs, have = {"st1": {"bound:acme/slack"}}, {"/ap": {"bound:known"}, "/gg": {"bound:acme/slack", "bound:known"}}
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, r.POS, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW, tools=(needs, have))
+        self.assertEqual([x["to"] for x in m], ["/gg"])
+        have["/gg"] = {"bound:known"}
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, r.POS, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW, tools=(needs, have))
+        self.assertEqual([x["to"] for x in m], ["/ap"])
+
+
 class McpList(unittest.TestCase):
     def test_parse_connected_connectors(self):
         text = """Checking MCP server health…
@@ -1657,7 +1751,8 @@ plugin:slack:slack: https://mcp.slack.com/mcp (HTTP) - ✘ Failed to connect
                                   lambda x: {"plugin:cloudflare", "plugin:linear", "plugin:superpowers"}):
             self.assertEqual(of_capacity.plugins_ready("/acct", run=lambda x: text),
                              {"plugin:linear", "plugin:superpowers"})  # a plugin without a server keeps counting
-            cache["_connectors"]["/acct"].pop("plugins_down")  # a cache from before this field: read again
+            for k in ("plugins_down", "servers"):  # a cache from before these fields: read again
+                cache["_connectors"]["/acct"].pop(k)
             calls = []
             self.assertEqual(of_capacity.plugins_ready("/acct", run=lambda x: calls.append(x) or ""),
                              {"plugin:cloudflare", "plugin:linear", "plugin:superpowers"})

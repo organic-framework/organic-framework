@@ -326,9 +326,11 @@ def headroom(row):
     return min(vals) if vals else None
 
 
-def best_target(rows, exclude=None):
-    """The logged-in account with the most headroom, other than `exclude` (a config dir)."""
-    cands = [(headroom(r), r) for r in rows if r.get("config_dir") != exclude and headroom(r) is not None]
+def best_target(rows, exclude=None, ok=None):
+    """The logged-in account with the most headroom, other than `exclude` (a config dir), among those `ok(dir)`
+    accepts (default: all)."""
+    cands = [(headroom(r), r) for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
+             and (ok is None or ok(r["config_dir"]))]
     if not cands:
         return None
     cands.sort(key=lambda x: (-x[0], (x[1].get("windows") or {}).get("seven_day", {}).get("utilization") or 0))
@@ -1069,19 +1071,24 @@ def launch_prompt(note_path, resumed=False, model=None):
 
 
 def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, bypass=True, resumed=False,
-                   memory_dir=None, prompt=None, deny=None, state_dir=None):
+                   memory_dir=None, prompt=None, deny=None, state_dir=None, tools=None):
     """memory_dir: the position's own memory (RFC 0006), the same on every account; deny: its credential deny rules
     (deny_for), so a moved or resumed session keeps what of spawn gave it. Both go into one settings file, as of spawn
     writes it (of_spawn.settings_file): a fresh pane's shell takes at most 1,024 bytes a line, and the deny rules
-    alone can pass 4 KB (of_platform, 331066a)."""
+    alone can pass 4 KB (of_platform, 331066a). tools: (argv, settings keys) of the position's tool profile
+    (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if is_default(target) else [f"CLAUDE_CONFIG_DIR={_q(target)}"]
     parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
-    settings = {"autoMemoryDirectory": memory_dir} if memory_dir else {}
+    t_argv, t_settings = tools or ([], {})
+    settings = dict(t_settings or {})
+    if memory_dir:
+        settings["autoMemoryDirectory"] = memory_dir
     if deny:
         settings["permissions"] = {"deny": list(deny)}
     if settings:
         import of_spawn
         parts += ["--settings", _q(of_spawn.settings_file(json.dumps(settings), sid, state_dir))]
+    parts += [_q(str(x)) for x in t_argv or []]
     if model:
         parts += ["--model", model]
     if effort:
@@ -1858,12 +1865,16 @@ def hold_after_move(session, now=None):
 
 
 def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
-         extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None):
+         extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
+         ask=None):
     """Move one position's live session to the config dir `target`. Raises MoveError before anything
     irreversible when a precondition fails; the old session then keeps running untouched.
     The session may run in a herdr pane (it resumes in the same pane) or in a Zellij pane (it resumes
     in a new herdr pane in `place` = (workspace label, tab label); the Zellij pane is left at its shell).
-    `model` restarts it on another model (on the same account when `target` is None); `why` goes into its note."""
+    `model` restarts it on another model (on the same account when `target` is None); `why` goes into its note.
+    An account where one of the position's account-bound tools is not signed in stops the move and files the
+    founder's task for that account (docs/tools.md §5); `allow_unsigned` (a rescue) moves anyway, says so in the
+    note and files the task. `ask`: the balancer's, else `of ask`."""
     name, sid = p["name"], ((p.get("holder") or {}).get("session") or "").strip()
     if not sid:
         raise MoveError(f"{name}: no holder.session in the registry")
@@ -1876,6 +1887,20 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     target = os.path.abspath(os.path.expanduser(target)) if target else src
     if not os.path.isdir(target) or account_of(target) is None:
         raise MoveError(f"{short(target)}: not a config dir with an account")
+    unsigned = missing_signins(name, target) if target != src else []
+    if unsigned:
+        names = ", ".join(i for i, _ in unsigned)
+        if not allow_unsigned:
+            if not dry_run:
+                file_signin_task(target, unsigned, name, ask=ask, of_bin=of_bin, log=log)
+            raise MoveError(f"{name}: not signed in on {short(target)}: {names} (docs/tools.md §5)"
+                            + ("" if dry_run else "; the founder has the task"))
+        log(f"  not signed in on {short(target)}: {names}; moving anyway (a rescue)")
+        extra_note = (f"Your tool(s) {names} are not signed in on {account_of(target) or short(target)}, so they are "
+                      f"missing in this session; the founder has the task to sign in. If work waits on them, tell "
+                      f"of_capacity (of send of_capacity)." + ("\n\n" + extra_note if extra_note else ""))
+        if not dry_run:
+            file_signin_task(target, unsigned, name, ask=ask, of_bin=of_bin, moved=True, log=log)
     ctx_model = last_model(find_transcript(src, sid))
     switch = bool(model) and model != ctx_model  # the model changes: a restart on the same account is the point
     s = next(x for x in sessions[src] if x["session"] == sid)
@@ -2008,7 +2033,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     mem_dir = of_memory.directory(p) if on_own or load_policy().get("position_memory") else None
     prompt = launch_prompt(note_path, model=model if switch else None)
     cmd = launch_command(s["cwd"], target, sid, name, note_path, model=model, effort=effort, bypass=bypass,
-                         memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log))
+                         memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
     key = project_key(src, sid)
     mem_src, mem_dst = os.path.join(src, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
     mem_base = os.path.join(STATE_DIR, "capacity", "memory-base", short(target).strip("~/"), key)
@@ -2214,7 +2239,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     import of_memory
     mem_dir = of_memory.directory(position) if position and load_policy().get("position_memory") else None
     cmd = launch_command(cwd, target, sid, name, note_path, model=model, effort=effort, bypass=bypass, resumed=True,
-                         memory_dir=mem_dir, deny=deny_for(position, log))
+                         memory_dir=mem_dir, deny=deny_for(position, log), tools=tools_for(position, sid, target, log))
     log(f"{name}: resume session {sid} on {short(target)} ({account_of(target)}) in herdr pane {pane}")
     log(f"  context model {model}, effort {effort}, permission mode {'bypass' if bypass else 'default'}")
     if stale:
@@ -2574,7 +2599,7 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     note_path = os.path.join(work, "note.md")
     prompt = f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it."
     cmd = launch_command(cwd, target, sid, name, note_path, model=model, effort=effort, bypass=bypass, resumed=True,
-                         memory_dir=mem, prompt=prompt, deny=deny_for(p, log))
+                         memory_dir=mem, prompt=prompt, deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
     if home:  # its own workspace; the tab it had there, if it was there (not on the desk)
         ws_label, tab_label = home[0], saved[1] if saved[0] == home[0] and saved[1] else home[1]
     else:
@@ -3195,13 +3220,18 @@ def plan(rows, positions, sessions=None):
             sess = ((p.get("holder") or {}).get("session") or "").strip()
             return (sess in busy, {"parked": 1, "finished": 2}.get(p.get("status"), 0),
                     priority_tier(p, pol), THROUGHPUT_ORDER.get(p.get("throughput"), 5), n)
+        docs = tool_docs()
         for n in sorted(r["positions"], key=key):
             p = by_name.get(n) or {}
             sess = ((p.get("holder") or {}).get("session") or "").strip()
-            out.append({"from": r["config_dir"], "to": t["config_dir"] if t else None, "position": n,
+            tp, unsigned = t, []
+            if t and docs and missing_signins(n, t["config_dir"], docs):  # docs/tools.md §5: only where signed in
+                unsigned = [i for i, _ in missing_signins(n, t["config_dir"], docs)]
+                tp = best_target(rows, exclude=r["config_dir"], ok=lambda d, n=n: not missing_signins(n, d, docs))
+            out.append({"from": r["config_dir"], "to": tp["config_dir"] if tp else None, "position": n,
                         "org": p.get("_org"), "throughput": p.get("throughput"), "status": p.get("status"),
-                        "busy": sess in busy,
-                        "command": f"of capacity move {n} --to {short(t['config_dir'])}" if t else None})
+                        "busy": sess in busy, **({"not_signed_in": {t["config_dir"]: unsigned}} if unsigned else {}),
+                        "command": f"of capacity move {n} --to {short(tp['config_dir'])}" if tp else None})
     return out
 
 
@@ -3812,8 +3842,13 @@ def lacking(used, have):
         return set()
     marked = any(h.endswith(":known") for h in have)
     plug_known = "plugins:known" in have
+    bound_known = "bound:known" in have  # account-bound tools of the position's profile (docs/tools.md §5)
     conn_known = "connectors:known" in have or not marked
-    return {u for u in used if u not in have and (plug_known if u.startswith("plugin:") else conn_known)}
+    return {u for u in used if u not in have and (plug_known if u.startswith("plugin:") else
+                                                  bound_known if u.startswith("bound:") else conn_known)}
+
+
+VETO = ("plugin:", "bound:")  # what relief never moves a session without (connectors: the note says)
 
 
 MCP_LINE = _re.compile(r"^claude\.ai (.+?): \S+ - (.+)$")
@@ -3828,6 +3863,21 @@ def parse_mcp_list(text):
         m = MCP_LINE.match(line.strip())
         if m and "Connected" in m.group(2) and "✘" not in m.group(2):
             out.add(m.group(1).strip().replace(" ", "_"))
+    return out
+
+
+def parse_mcp_servers(text):
+    """[(name, url or None, connected)] of every server line of `claude mcp list` ("<name>: <url or command> -
+    <state>"); a plugin's server is named "plugin:<plugin>:<server>", a claude.ai connector "claude.ai <Name>"."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if ": " not in line or " - " not in line:
+            continue
+        head, state = line.rsplit(" - ", 1)
+        name, target = head.split(": ", 1)
+        url = target.split()[0] if target.startswith(("http://", "https://")) else None
+        out.append((name, url, "Connected" in state and "✘" not in state))
     return out
 
 
@@ -3859,7 +3909,7 @@ def connectors_seen(d, now=None, run=None):
     d = os.path.expanduser(d)
     cache = load_cache()
     c = (cache.get("_connectors") or {}).get(d)
-    if c and "plugins_down" in c and now - c.get("at", 0) < CONNECTORS_MAX_AGE_S:
+    if c and "servers" in c and now - c.get("at", 0) < CONNECTORS_MAX_AGE_S:
         return set(c.get("names") or [])
     probe_dir = os.path.join(STATE_DIR, "capacity", "probe")
     os.makedirs(probe_dir, mode=0o700, exist_ok=True)
@@ -3874,9 +3924,167 @@ def connectors_seen(d, now=None, run=None):
     names = parse_mcp_list(text)
     cache = load_cache()
     cache.setdefault("_connectors", {})[d] = {"at": now, "names": sorted(names),
-                                              "plugins_down": sorted(parse_mcp_plugins_down(text))}
+                                              "plugins_down": sorted(parse_mcp_plugins_down(text)),
+                                              "servers": [list(x) for x in parse_mcp_servers(text)]}
     save_cache(cache)
     return names
+
+
+def mcp_servers(d, now=None, run=None):
+    """parse_mcp_servers of account `d`, from the same run and cache as connectors_seen; None if unknown."""
+    if connectors_seen(d, now, run) is None:
+        return None
+    c = (load_cache().get("_connectors") or {}).get(os.path.expanduser(d)) or {}
+    return [tuple(x) for x in c["servers"]] if "servers" in c else None
+
+
+# ------------------------------------------------------------ account-bound tools (docs/tools.md §5)
+#
+# A position's tools are declared in its organization's `tools:` catalogue (of_tools, hand-over 9843194a). Those
+# whose sign-in lives in one Claude account (an OAuth plugin, a claude.ai connector) work only where someone signed
+# in: fill, relief, plan and a move by hand go only to such an account; rescue prefers one and moves anyway (a
+# stopped session cannot work at all). A missing sign-in is the founder's task, one per account.
+
+def tool_docs():
+    """{org: registry doc} of the organizations with a `tools:` catalogue; {} when none or unreadable."""
+    try:
+        import of_tools
+        return {o: d for o, d in of_tools.registries().items() if (d or {}).get("tools")}
+    except Exception:  # noqa: BLE001 - no catalogue reader: nothing is account-bound
+        return {}
+
+
+def bound_tools(position_name, docs=None):
+    """[(org/id, catalogue entry)] of the position's account-bound tools (of_tools.session_config); [] without a
+    catalogue."""
+    docs = tool_docs() if docs is None else docs
+    if not docs or not position_name:
+        return []
+    try:
+        import of_tools
+        org, pos, doc = of_tools.find_position(position_name, docs)
+        ids = of_tools.session_config(pos, doc, None, installed=[])["account_bound"]
+    except Exception:  # noqa: BLE001 - not in a catalogued organization
+        return []
+    return [(f"{org}/{i}", doc["tools"][i]) for i in ids if isinstance(doc["tools"].get(i), dict)]
+
+
+def signed_in(entry, d, now=None, run=None):
+    """Whether account-bound tool `entry` is connected on account `d` (`claude mcp list`, by its url; a plugin
+    without one by plugins_ready); None when unknown, which never vetoes."""
+    url = str(entry.get("url") or "").rstrip("/")
+    if url:
+        servers = mcp_servers(d, now, run)
+        if servers is None:
+            return None
+        return any(u and u.rstrip("/") == url and ok for _, u, ok in servers)
+    if entry.get("kind") == "plugin" and entry.get("plugin"):
+        have = plugins_ready(d, now, run)
+        return None if have is None else "plugin:" + str(entry["plugin"]).split("@", 1)[0] in have
+    return None
+
+
+def missing_signins(position_name, d, docs=None, now=None, run=None):
+    """[(org/id, entry)] of the position's account-bound tools not signed in on account `d`."""
+    return [(i, e) for i, e in bound_tools(position_name, docs) if signed_in(e, d, now, run) is False]
+
+
+def signin_task(d, missing, position, moved=False, lang=None):
+    """(title, steps) of the founder's task to sign in to account-bound tools on one account."""
+    if lang is None:
+        try:
+            import of_spawn
+            lang = of_spawn.owner_language()
+        except Exception:  # noqa: BLE001
+            lang = "en"
+    acct = account_of(d) or short(d)
+    names = ", ".join(i.split("/", 1)[-1] for i, _ in missing)
+    line = ("claude" if is_default(d) else f"CLAUDE_CONFIG_DIR={short(d)} claude")
+    if lang == "ru":
+        why = (f"of_capacity перенёс {position} туда, потому что другого аккаунта с запасом не было; пока входа нет, "
+               f"эти инструменты в сессии недоступны." if moved else
+               f"Пока входа нет, of_capacity не переносит туда {position}.")
+        return (f"Войти в {names} в аккаунте {acct}",
+                f"Позиции {position} нужны {names}. Вход в такие инструменты хранится в каждом аккаунте Claude "
+                f"отдельно, а в аккаунте {acct} ({short(d)}) его нет. {why}\n"
+                f"1. В обычной вкладке терминала, не через «!» в сессии агента: {line}\n"
+                f"2. Введи /mcp, выбери {names} и пройди вход в браузере; затем /exit.\n"
+                f"3. Скажи «готово»: of_capacity проверит, что `claude mcp list` показывает Connected.")
+    why = (f"of_capacity moved {position} there because no other account had room; until the sign-in exists, these "
+           f"tools are missing in the session." if moved else
+           f"Until it exists, of_capacity does not move {position} there.")
+    return (f"Sign in to {names} in the account {acct}",
+            f"The position {position} needs {names}. Their sign-in is kept per Claude account, and the account {acct} "
+            f"({short(d)}) has none. {why}\n"
+            f"1. In a plain terminal tab, not with \"!\" inside an agent's session: {line}\n"
+            f"2. Type /mcp, choose {names} and sign in in the browser; then /exit.\n"
+            f"3. Say done: of_capacity checks that `claude mcp list` shows them Connected.")
+
+
+SIGNIN_TASK_EVERY_S = 24 * 3600
+
+
+def file_signin_task(d, missing, position, ask=None, of_bin=None, moved=False, now=None, log=print):
+    """File the founder's task for `missing` sign-ins on account `d`, once per account and tool a day (the task
+    stays open until checked; the pulse reminds him). `ask(text, task=..)` is the balancer's; without it, `of ask`.
+    Returns the tools it filed for."""
+    now = now or time.time()
+    cache = load_cache()
+    done = (cache.get("_signin_tasks") or {}).get(d) or {}
+    new = [(i, e) for i, e in missing if now - done.get(i, 0) >= SIGNIN_TASK_EVERY_S]
+    if not new:
+        return []
+    title, steps = signin_task(d, missing, position, moved=moved)
+    try:
+        if ask:
+            ask(title, task=steps)
+        else:
+            subprocess.run([of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"), "ask", title,
+                            "--task", steps, "--from", "of_capacity"], capture_output=True, text=True, timeout=60,
+                           check=True)
+    except Exception as e:  # noqa: BLE001 - the move's own message still names what is missing
+        log(f"  sign-in task for {short(d)} not filed: {type(e).__name__}: {e}")
+        return []
+    cache = load_cache()
+    cache.setdefault("_signin_tasks", {}).setdefault(d, {}).update({i: now for i, _ in new})
+    save_cache(cache)
+    log(f"  founder's task: sign in to {', '.join(i for i, _ in new)} on {short(d)}")
+    return [i for i, _ in new]
+
+
+def add_bound(needs, seen, positions, dirs, docs=None, now=None, run=None):
+    """Add the position's account-bound tools to what each session needs ("bound:<org>/<id>"), and to each account
+    what is signed in there, with "bound:known" where `claude mcp list` was read. In place; nothing without a
+    catalogue."""
+    docs = tool_docs() if docs is None else docs
+    if not docs:
+        return
+    entries = {}
+    for p in positions:
+        sid = ((p.get("holder") or {}).get("session") or "").strip()
+        if sid in needs:
+            b = bound_tools(p.get("name"), docs)
+            needs[sid] = set(needs[sid]) | {"bound:" + i for i, _ in b}
+            entries.update(b)
+    for d in dirs:
+        if not entries or mcp_servers(d, now, run) is None:
+            continue
+        have = {"bound:" + i for i, e in entries.items() if signed_in(e, d, now, run)} | {"bound:known"}
+        seen[d] = (set(seen.get(d) or ()) | have) if seen.get(d) is not None else have
+
+
+def tools_for(p, sid, target, log=print):
+    """(argv, settings keys) of the position's tool profile for a session on `target` (of_tools.launch_parts:
+    --mcp-config and allowedMcpServers / enabledPlugins), as of spawn passes them; ([], {}) without a catalogue."""
+    if not p or not p.get("name"):
+        return [], {}
+    try:
+        import of_tools
+        return of_tools.launch_parts(p["name"], sid, target)
+    except Exception as e:  # noqa: BLE001 - a position outside any catalogue, or a broken one (of tools check)
+        if type(e).__name__ != "ToolsError":
+            log(f"tools: no profile for {p['name']} ({type(e).__name__}: {e}); the account's own tools apply")
+        return [], {}
 
 
 TIER_SCALE = {"default_claude_ai": 1, "default_claude_max_5x": 5, "default_claude_max_20x": 20}  # Pro, Max 5x, Max 20x
@@ -3978,7 +4186,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
 
     def key(r, sid=None):
         ok = cur(r, "five_hour") < policy["relief_at"] and cur(r, "seven_day") < policy["week_max"]
-        miss = any(x.startswith("plugin:") for x in lacking(needs.get(sid) or (), seen.get(r["config_dir"])))
+        miss = any(x.startswith(VETO) for x in lacking(needs.get(sid) or (), seen.get(r["config_dir"])))
         room = 100 - max(cur(r, "five_hour"), cur(r, "seven_day")) - step * taken[r["config_dir"]]
         usd = (wcalib or {}).get(r["config_dir"]) or TIER_WEEK_USD.get(r.get("tier"), 1.0)
         return (miss, not ok, -room * usd, -TIER_RANK.get(r.get("tier"), 0), r["config_dir"])
@@ -4162,8 +4370,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     def lacks(sid, d):  # fill: a missing connector or plugin
         return bool(lacking(needs.get(sid) or (), seen.get(d)))
 
-    def lacks_plugin(sid, d):  # relief: a missing plugin only (connectors as before: the note says)
-        return any(x.startswith("plugin:") for x in lacking(needs.get(sid) or (), seen.get(d)))
+    def lacks_plugin(sid, d):  # relief: a missing plugin or account-bound tool (connectors as before: the note says)
+        return any(x.startswith(VETO) for x in lacking(needs.get(sid) or (), seen.get(d)))
     pos_by_session = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
     acct = {r["config_dir"]: r for r in rows if r.get("logged_in")}
 
@@ -4291,8 +4499,10 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         sources = [x for x in acct.values() if x["config_dir"] != d and (win(x, "seven_day")[1] or 0) > week_reset]
         cands = sorted((c + (x["config_dir"],) for x in sources for c in movable(x["config_dir"])),
                        key=lambda c: (tier(c[1]), -c[0], c[1]))
+        planned = {m["session"] for m in moves}  # relief took it already: one move per session and run (2026-11-11)
         for rate, name, sid, src in cands:
-            if len(moves) >= policy["max_moves"] or rate < policy["min_rate"] or rate > room or lacks(sid, d):
+            if sid in planned or len(moves) >= policy["max_moves"] or rate < policy["min_rate"] or rate > room \
+                    or lacks(sid, d):
                 continue
             if not resume_ok(sid, resume_max):
                 continue  # its first turn would eat too much of the sink's 5-hour window
@@ -4351,6 +4561,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     # connectors from claude mcp list (None: unknown, no veto); plugins from the config dir's files, less those whose
     # server the same list shows signed out
     seen = {d: account_tools(connectors_seen(d), plugins_ready(d)) for d in dirs}
+    add_bound(needs, seen, positions, dirs)
     stopped = {}
     for d, xs in sessions.items():
         for x in xs:
@@ -4371,7 +4582,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                 "(founder, 2026-11-06). Nothing else changed: same session, pane and name. Carry on.")
         try:  # only idle holders are planned (no background shells); their scheduled tasks are in the note
             r = move(p, m["to"], allow_shells=True, log=lambda s: None, extra_note=note,
-                     of_bin=os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"))
+                     of_bin=os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"),
+                     allow_unsigned=str(m.get("reason") or "").startswith("rescue"), ask=ask)
             m["done"] = True
             recent[m["session"]] = (now, policy.get("cooldown_h", 2) * 3600)  # no ping-pong
             of_events.emit("capacity_balanced", dict(m, pane=r.get("pane")), position=m["position"],
