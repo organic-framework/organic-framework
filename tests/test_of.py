@@ -609,7 +609,8 @@ class InitStructureTest(unittest.TestCase):
 
     def test_plugins_proposed_and_chosen(self):
         i = self.of_init
-        found = lambda: ["blobs: found s3; choose with `blobs: <name>`", "secrets: found keychain; choose with `…`"]
+        found = lambda: ["blobs: found s3; choose with `blobs: <name>`",
+                         "secret_stores: found keychain; choose with `…`", "secrets: found keychain; choose with `…`"]
         self.assertEqual(i.plugin_proposals(found), ["blobs: found s3; choose with `blobs: <name>`"])  # secrets later
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "plugins.yaml")
@@ -664,6 +665,9 @@ class InitStructureTest(unittest.TestCase):
             with self.assertRaises(ValueError) as e:
                 i.write_plugin_choices(["secrets=keychain"], os.path.join(d, "plugins.yaml"), check=lambda f, n: None)
             self.assertIn("organization's choice", str(e.exception))
+            with self.assertRaises(ValueError):
+                i.write_plugin_choices(["secret_stores=keychain"], os.path.join(d, "plugins.yaml"),
+                                       check=lambda f, n: None)
 
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
