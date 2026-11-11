@@ -58,6 +58,8 @@ PAGES = [
         ("docs/method.md", "method", "Method"),
         ("docs/systems.md", "systems", "Systems"),
         ("docs/conductor.md", "conductor", "The conductor"),
+        ("docs/remote.md", "remote", "Remote only: the conductor's chat"),
+        ("docs/plugins.md", "plugins", "Plugins"),
         ("docs/desk.md", "desk", "The desk"),
         ("docs/handover.md", "handover", "Hand-overs and diffs"),
         ("docs/works.md", "works", "Works"),
