@@ -516,6 +516,16 @@ class InitStructureTest(unittest.TestCase):
         self.assertTrue(keeper["starts"].startswith("at step 1"))
         self.assertIn("Find it, then ask to confirm", self.of_init.AGENTS_MD)
 
+    def test_the_head_chooses_the_format_and_new_work_starts_now(self):
+        files = self.built()["files"]
+        conductor = " ".join(files["registry/briefs/acme_conductor.md"].split())
+        self.assertLess(conductor.index("Hands-off (offer it first)"), conductor.index("Controlled:"))
+        self.assertIn("provisional position", conductor)
+        keeper = " ".join(files["registry/briefs/acme_org.md"].split())
+        self.assertIn("provisional: {asked:", keeper)
+        self.assertIn("How the onboarding runs:", files["onboarding/charter.md"])
+        self.assertIn("hands-off", files["onboarding/README.md"])
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS

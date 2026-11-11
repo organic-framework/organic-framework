@@ -12,6 +12,9 @@ conductor and asks only what the records cannot tell.
 ## 1. The question and the scope
 
 - **Decides:** {owner_name} (`{org}_owner`).
+- **How the onboarding runs:** _(hands-off: the agents read what they are given and can reach, decide the steps,
+  show results and ask only for decisions and access; or controlled: a draft before reading, a question before
+  each new source and step; or {owner_name}'s own words, verbatim, with the time)_
 - **The question the onboarding answers:** _(in the sponsor's words)_
 - **In scope:** _(the organization, units, systems or value streams)_
 - **Out of scope:** _(what the onboarding will not look at or change)_

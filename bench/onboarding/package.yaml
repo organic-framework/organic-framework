@@ -220,6 +220,8 @@ rules:
   - "In a small company one agent may hold several lens roles (rfc/0007 allows the architect and the keeper to be one position). The lead and the conductor stay separate."
   - "The sponsor and the champion are people: every source puts the decision with an accountable sponsor (record §3, §6)."
   - "One batching point per unit files the head's cards; the lead is this unit's (record §8.3 (2))."
+  - "The head chooses the onboarding's format first, hands-off offered first; the charter records it and the number of questions follows it (record §8.4 (12))."
+  - "Work that comes up during the onboarding is handled now: when no position covers it and the head says yes, the structure keeper adds a provisional position and the conductor starts it; it is folded into the structure at step 7 (record §8.4 (13))."
   - "Confirm, not write: never ask a person for what the agents can find; find it, draft it, and ask them to confirm or correct the draft in one sitting. No method term (champion, sponsor, charter, value stream, baseline) reaches the head (record §8.4 (11))."
   - "The charter limits what agents read on their own initiative, never what a person hands them: a source given with 'read this' is read at once, the giver's words recorded in the charter as the permission; one that cannot be opened is said so, with the easiest way offered (record §8.4 (9))."
   - "No agent asks the head to run a command: the head may be on Remote Control or the mobile app, where it does not run. Agents ask in words and run commands themselves; what only the head can do is a step in plain words with its place, filed as a task (record §8.4 (8))."
@@ -239,7 +241,7 @@ run:
       step: 1
       title: "One window; the agents find out who and what themselves; the head confirms one draft"
       who: "the conductor starts the lead when the head is ready; the lead and the structure keeper read who and what (no content) and draft the people map and the charter; the head confirms or corrects them in one sitting"
-      done_when: "of registry check passes; the head's conductor is live and the head's requests reach their owners through it; the people map and the charter were drafted by the agents from what they could reach, and the head was asked to compose nothing (only a connection to a source the agents could not reach); the charter (onboarding/charter.md) names the scope, the champion, what is read and what is not, each record's system of record, the outside parties with writer, channel and access, and how findings come back; it is approved by an ask id"
+      done_when: "of registry check passes; the head's conductor is live and the head's requests reach their owners through it; the format the head chose (hands-off, controlled, or their own words, verbatim) is in the charter's section 1 and the agents ask as often as it says; the people map and the charter were drafted by the agents from what they could reach, and the head was asked to compose nothing (only a connection to a source the agents could not reach); the charter (onboarding/charter.md) names the scope, the champion, what is read and what is not, each record's system of record, the outside parties with writer, channel and access, and how findings come back; it is approved by an ask id"
       sources:
         - "record §1.2: Block, entry and contracting"
         - "record §1.3: TOGAF Phase A, the Statement of Architecture Work"
@@ -249,6 +251,7 @@ run:
         - "record §8.3 (1): the outside parties' channels in the charter, not after"
         - "record §8.4 (1): people are positions"
         - "record §8.4 (11): find it, then ask to confirm; plain words with the head"
+        - "record §8.4 (12): the head chooses the format; hands-off offered first"
     - id: problem
       step: 2
       title: "The presenting problem: the head's last story of confusion or bureaucracy"

@@ -48,7 +48,13 @@ You start at step 1, with the onboarding lead, before anyone asks the head anyth
    - Inventory the live agents (`of who`), on every machine people enrol. An agent that works for a person has
      that person's position as its `owner`.
    - Every change is a structural diff (`of diff propose`, then `of diff apply`); `of registry check` after each.
-2. **The structure baseline** (step 4), in `onboarding/baselines/structure.md`:
+2. **Provisional positions** (any step; record §8.4 (13)). When the conductor asks for one, because work came up
+   that no position covers and {owner_name} said yes in its pane, add it at once, without waiting for the run:
+   `{org}_<task>`, kind project, owner `{org}_owner`, status active, a one-line brief from the request, and
+   `provisional: {asked: "<their words, verbatim>", at: <UTC time>, by: {org}_conductor}`. The yes in the pane is
+   the approval; no diff card. `of registry check`, commit, and tell the conductor it can start it. At step 7, fold
+   each into the structure: keep it as a position of a unit, merge it into another, or set it finished.
+3. **The structure baseline** (step 4), in `onboarding/baselines/structure.md`:
    - the six boxes, formal and informal: purposes, structure, relationships, rewards, leadership, helpful
      mechanisms;
    - the management functions (organic-framework `docs/method.md`) and the lines of control: a governing body; a
@@ -58,12 +64,12 @@ You start at step 1, with the onboarding lead, before anyone asks the head anyth
    - the key decisions, each with its one decider, and the ones with none or two;
    - each position's mandate against the work it did: the briefs against the work records and sessions
      (record §8.4 (2)).
-3. **Gaps** (step 5): give the lead each misfit, each decision with no decider, and each function with no
+4. **Gaps** (step 5): give the lead each misfit, each decision with no decider, and each function with no
    independent line, with its consequence.
-4. **Increments** (step 7): write the decided works and new positions by diff, with each new role's outside
+5. **Increments** (step 7): write the decided works and new positions by diff, with each new role's outside
    party, channel and access from `onboarding/role-design.md`. Each new unit gets one batching point for the
    head's cards. Before a manager hands out work, it runs `of delegate "<task>"`.
-5. **After the run:** keep the registry and the briefs current. Set the onboarding lead's position `finished` when
+6. **After the run:** keep the registry and the briefs current. Set the onboarding lead's position `finished` when
    it closes.
 
 ## Evidence you produce

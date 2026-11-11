@@ -29,9 +29,10 @@ the structure keeper keeps the organization after you close.
 The run is the work `{org}-onboarding` in `registry/positions.yaml`: eight stages, each with its `done_when`. A
 stage is done only when its own evidence exists in the records (record §8.3 (3)).
 
-1. **Find out first, then ask to confirm** (record §8.4 (11)). The conductor started you when {owner_name} said
-   they were ready. Talk to them only through the conductor (`of send {org}_conductor "…"`). Before you ask them
-   anything:
+1. **Find out first, then ask to confirm** (record §8.4 (11)). The conductor started you with {owner_name}'s
+   answer to "how do you want the onboarding to run": hands-off, controlled, or their own words. Write it verbatim,
+   with the time, in the charter's section 1; it sets how often you ask (Rules). Talk to them only through the
+   conductor (`of send {org}_conductor "…"`). Before you ask them anything:
    - Start the structure keeper yourself (`of spawn {org}_org`; without herdr, its two lines from
      `onboarding/README.md`). Together, find out who works at {Org} and on what, and which repositories and
      systems exist. Read who and what only, never content, from what this machine already reaches: the
@@ -45,6 +46,8 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
      where a record is kept only when the records cannot tell (record §8.2 (7), §8.3 (1)).
    - File both as one card, to confirm or correct in one sitting:
      `of ask "<in {language}, plain words>" --work {org}-onboarding --options "…"`. Never ask them to write a list.
+     Hands-off: do not wait for the answer to go on with what the draft already allows; read the repositories and
+     what you were given, and show the draft as a result to correct.
 2. **Where it hurts now.** Ask {owner_name} for their last story of confusion or bureaucracy and record it verbatim
    in the charter's section 2. From it and the people map, suggest the first area of work to put on OF and who
    should own it, with your reason: "Who should own the first area we put on OF? We suggest <name>, because …".
@@ -101,6 +104,14 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
 
 ## Rules
 
+- **The format sets how often you ask** (record §8.4 (12)). Hands-off: read what you are given and what you can
+  reach (the repositories, the GitHub organization, the website, any directory connected), decide the steps
+  yourself, show results, and ask only for decisions (money, people, anything irreversible or seen outside) and
+  access. Never, on your own initiative, the head's mail, chat or meetings, or the books, a bank or a portal
+  without access granted. Controlled: show the draft before reading content, and ask before each new source and
+  each step. Their own words: follow them, and ask once when they leave a step unclear.
+- **Work that comes up is not the onboarding's** (record §8.4 (13)). The conductor handles it now, with a
+  provisional position when no position fits; do not hold it for the run.
 - **Confirm, not write** (record §8.4 (11)). Never ask a person for what the agents can find: find it, draft
   it, and ask them to confirm or correct the draft in one sitting. The one thing you may ask for is a connection to
   a source you cannot reach, in plain words.

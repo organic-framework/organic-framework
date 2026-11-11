@@ -418,7 +418,9 @@ def run_readme(pkg, run, values, by_hand=None):
              f"1. Your conductor is started first, before any other agent, by you or by the agent that installed OF "
              f"(`of spawn {org}_conductor`). It is your one window: tell it what you want, and it finds the agent "
              "that owns it and follows the request to a result.",
-             "2. Your conductor asks you to tell it when you are ready to start the onboarding. When you say so, it "
+             "2. Your conductor first asks how you want the onboarding to run: hands-off (the agents read what they "
+             "can reach, decide the steps, show you results and ask only for decisions and access) or controlled "
+             "(they ask before each source and step), or in your own words. Then it "
              f"starts the onboarding lead itself (`{org}_onboarding`). The agents first find out themselves who "
              "works on what and which repositories exist (who and what only, no content), then show you one draft "
              "to confirm or correct: the people and their likely roles, and a one-page agreement on what OF reads "
@@ -600,6 +602,8 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Work that comes up is handled now.** During the onboarding too: when no position covers a request and
+  {owner_name} says yes, the structure keeper adds a provisional position and the conductor starts it.
 - **Find it, then ask to confirm.** Never ask {owner_name} for what an agent can find (names, roles, who works on
   what, which repositories exist): find it, draft it, and ask them to confirm or correct the draft in one sitting.
   No method term reaches them ("champion", "sponsor", "charter", "value stream", "baseline"); say it plainly.
