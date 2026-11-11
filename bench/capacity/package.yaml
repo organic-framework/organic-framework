@@ -7,8 +7,9 @@
 #
 # Every role and rule names its source. "accounts" is docs/accounts.md, "capacity" is docs/capacity.md.
 #
-# Placeholders, filled by `of init`: {org} the organization's prefix, {Org} its display name, {owner_id} and
-# {owner_name} the person the position serves.
+# Placeholders, filled by `of init`: {org} the organization's prefix (at most 14 characters), {org_name} its full name
+# (the organization part of an address), {Org} its display name, {owner_id} and {owner_name} the person the position
+# serves.
 
 package: capacity
 version: 1
@@ -42,7 +43,7 @@ roles:
 # Written to ~/.config/of/capacity.yaml on the person's machine when they say yes. Rescue moves a session already
 # stopped on its limit; fill and relief, the predictive moves, wait for a second yes (capacity, "Relief and fill").
 settings:
-  position: "{org}:{org}_capacity"
+  position: "{org_name}:{org}_capacity"  # an address: the organization's full name, then the position (of_architect, PR 27)
   auto: true
   rescue_moves: 6
   max_moves: 0
