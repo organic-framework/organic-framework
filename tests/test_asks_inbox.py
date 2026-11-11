@@ -213,7 +213,7 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("● Money and production 1", frame)
         self.assertIn("● Everything else 2", frame)
         self.assertIn("│", frame)
-        self.assertIn("↑↓ select · 1-9 answer", frame)
+        self.assertIn("↑↓ select · ←→ stream · 1-9 answer", frame)
         # it opens on the most urgent stream that holds anything (Money and production), Tab goes to Everything
         # else (the empty ones are skipped); up from its first card: its last
         self.assertEqual((box.cur, box.sel["rest"]), ("rest", "B"))
@@ -286,7 +286,7 @@ class ScreenTest(unittest.TestCase):
 
     def test_narrow_screens_show_one_card(self):
         data = [item("A", "First plain question?"), item("B", "Second plain question?")]
-        self.inbox([0.05, curses_right(), 0.05], data, size=(30, 80))
+        self.inbox([0.05, ord("j"), 0.05], data, size=(30, 80))
         frame = self.text(self.frames[-1])
         self.assertIn("‹ 2 / 2 ›", frame)
         self.assertNotIn("│", frame)
@@ -336,7 +336,7 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(top.count("●"), 4)
         self.assertIn("Holds work 1", top)
         keys = next(t for (y, x), t in frame.items() if y == 28)
-        self.assertTrue("Tab" in keys and "?" in keys and "Esc" in keys, keys)
+        self.assertTrue("←→" in keys and "?" in keys and "Esc" in keys, keys)
 
     def test_a_wide_screen_adds_the_agents_context_as_a_third_column(self):
         """The founder, ~21:08Z 2026-11-12: lots of room, more information."""
@@ -351,6 +351,34 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("I checked the nodes.", side)
         self.assertNotIn("I checked the nodes.", {t for (y, x), t in frame.items() if x == card_x})
         self.assertTrue(any(t.startswith("of_platform") for (y, x), t in frame.items() if x == 2))  # who, in the row
+
+    def test_left_and_right_switch_streams_and_a_click_on_a_tab_does_too(self):
+        """The founder, ~21:10Z 2026-11-12: clickable tabs, and the left and right arrows between them."""
+        import curses
+        data = [item("A", "First plain question?"), item("C", "Pay 90 USD to the operator?"),
+                item("D", "Log in to the console", task=True)]
+        box = self.inbox([0.05, curses.KEY_RIGHT, 0.05], data)
+        self.assertEqual(box.cur, "hands")  # from Money and production, the next that holds anything
+        self.frames = []
+        box = self.inbox([0.05, curses.KEY_LEFT, 0.05], data)
+        self.assertEqual(box.cur, "rest")  # wraps back to the last
+        x0 = next(x0 for x0, x1, st in box.tab_rects if st == "hands")
+        self.mice = [(0, x0 + 2, 0, 0, curses.BUTTON1_PRESSED)]
+        box = self.inbox([0.05, curses.KEY_MOUSE, 0.05], data)
+        self.assertEqual(box.cur, "hands")
+
+    def test_the_options_stay_in_sight_under_a_long_card(self):
+        """of_conductor from his first trial: a long card showed only its first option ('lines 1-31 of 40')."""
+        long = {"A": {"question": "Back up the data room?\n" + "\n".join(f"paragraph {i}" for i in range(80)),
+                      "options": ["yes, nightly (recommended: one evening closes the risk)", "no, not yet"]}}
+        self.inbox([0.1, 0.05], [item("A", "Back up the data room?")], cards=long, size=(30, 140))
+        frame = self.frames[-1]
+        texts = [t for (y, x), t in sorted(frame.items())]
+        self.assertTrue(any(t.startswith("★ 1  yes, nightly") for t in texts), texts)
+        self.assertTrue(any("2  no, not yet" in t for t in texts))
+        self.assertTrue(any(t.startswith("lines 1-") for t in texts))
+        status_y = 30 - 3
+        self.assertTrue(all(y < status_y for (y, x), t in frame.items() if "no, not yet" in t or t.startswith("lines")))
 
     def test_help(self):
         self.inbox([0.05, ord("?"), 0.05], [item("A", "First plain question?")])
