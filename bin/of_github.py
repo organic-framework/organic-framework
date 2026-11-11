@@ -20,6 +20,17 @@ import of_store
 
 NS = uuid.UUID("2a8d7c11-4b6e-4f0a-8c3e-1d2e3f405162")
 FIELDS = "number,author,createdAt,mergedAt,headRefName,title,files,url"
+BODY_LIMIT = 2000  # bytes of a PR body or a commit message kept on the work record, masked (of_hook.clip)
+
+
+def _commit_body(c):
+    """The commit message below its subject line, masked and clipped; None when there is none."""
+    msg = (c.get("message") or "").strip("\n")
+    title = (c.get("title") or "").strip()
+    if title and msg.startswith(title):
+        msg = msg[len(title):]
+    msg = msg.strip()
+    return of_hook.clip(msg, BODY_LIMIT)[0] if msg else None
 
 
 _CLI = []
@@ -179,16 +190,19 @@ def windows(since, today=None, days=3):
 POSITIONS_QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
     pageInfo { hasNextPage endCursor }
-    nodes { ... on PullRequest { number body commits(last: 50) { nodes { commit { message } } } } }
+    nodes { ... on PullRequest { number body commits(last: 50) { nodes { commit { message } } }
+                                 reviews(states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) { totalCount } } }
   }
 }"""
 
 
-def bodies(repo, state, search=None, gh="gh", pages=40):
+def bodies(repo, state, search=None, gh="gh", pages=40, details=None):
     """{PR number: the Position lines of its body and its commits}, by a separate GraphQL search (50 PRs a page):
     bodies or commits together with files cut GitHub's answer on a busy window (2026-11-10: storefront 10-28..10-30,
     "unexpected end of JSON input"), and agents write the trailer in their commits more often than in the PR body
-    (#3093: none in the body, two in its commits). Best effort: what was read before a failure, never an error."""
+    (#3093: none in the body, two in its commits). Best effort: what was read before a failure, never an error.
+    details: a dict to fill with {PR number: {body, reviews}} (the number of submitted reviews), for the work record
+    (of_field-analyst, 2026-11-11: ap.unsourced-requirement reads what a PR claimed and whether anyone reviewed it)."""
     q = f"repo:{repo} is:pr " + {"merged": "is:merged", "open": "is:open", "closed": "is:closed"}.get(state, "")
     q += f" {search}" if search else ""
     out, after = {}, None
@@ -209,6 +223,9 @@ def bodies(repo, state, search=None, gh="gh", pages=40):
             texts = [n.get("body") or ""] + [(c.get("commit") or {}).get("message") or ""
                                              for c in (n.get("commits") or {}).get("nodes") or []]
             out[int(n["number"])] = [x for t in texts for x in POSITION_LINE.findall(t)]
+            if details is not None:
+                details[int(n["number"])] = {"body": n.get("body") or "",
+                                             "reviews": (n.get("reviews") or {}).get("totalCount")}
         if not (data.get("pageInfo") or {}).get("hasNextPage"):
             break
         after = data["pageInfo"]["endCursor"]
@@ -234,11 +251,13 @@ def fetch(repo, since, gh="gh", attempts=4):
             time.sleep(5 * 2 ** i)
         else:
             raise RuntimeError(f"gh pr list {repo} {a}..{b}: {err}")
-        lines = bodies(repo, "merged", f"merged:{a}..{b}", gh)
+        details = {}
+        lines = bodies(repo, "merged", f"merged:{a}..{b}", gh, details=details)
         for pr in json.loads(r.stdout or "[]"):
             if pr["number"] not in seen:
                 seen.add(pr["number"])
-                out.append(dict(pr, position_lines=lines.get(int(pr["number"]), [])))
+                out.append(dict(pr, position_lines=lines.get(int(pr["number"]), []),
+                                **details.get(int(pr["number"]), {})))
     return out
 
 
@@ -346,6 +365,8 @@ def import_org(conn, org, systems, since, fetcher=fetch, log=print, position_sys
                        "author": (pr.get("author") or {}).get("login"), "created_at": pr.get("createdAt"),
                        "merged_at": pr.get("mergedAt"), "head_ref": pr.get("headRefName"),
                        "title": of_hook.clip(pr.get("title") or "", 200)[0], "files": len(files),
+                       "body": of_hook.clip(pr["body"], BODY_LIMIT)[0] if pr.get("body") else None,
+                       "reviews": pr.get("reviews"),
                        "paths": files[:300], "systems": sys_, "system_basis": basis,
                        "external": [s for s in sys_ if str(governed.get(s, "self")).startswith("external:")],
                        "position": who, "attribution": how,
@@ -547,6 +568,7 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
                         hits[sid] = hits.get(sid, 0) + 1
             payload = {"source": "git", "unit": "commit", "repo": repo, "sha": c["sha"], "author": c["author"],
                        "merged_at": c["at"], "title": of_hook.clip(c["title"] or "", 200)[0], "position": pos,
+                       "message": _commit_body(c),
                        "paths": files[:300], "files": len(files),
                        "systems": sorted(hits, key=lambda x: -hits[x]),
                        "works": match_works(works, repo, None, None, files, list(hits))}

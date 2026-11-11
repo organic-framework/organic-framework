@@ -60,7 +60,7 @@ class GithubTest(unittest.TestCase):
     def test_a_pr_bodys_position_line_names_its_author(self):
         """of_field-analyst, 2026-11-10: 90 of 820 merged Acme PRs had a position (pr-links only)."""
         body = "Summary.\n\nPosition: storefront_search\nCo-Authored-By: Claude <noreply@anthropic.com>"
-        prs = {"M/storefront": [dict(PRS["M/storefront"][1], number=9, body=body),
+        prs = {"M/storefront": [dict(PRS["M/storefront"][1], number=9, body=body, reviews=0),
                                dict(PRS["M/storefront"][1], number=10, body="Position: nobody_here"),
                                dict(PRS["M/storefront"][0], number=11, body="Position: disc_keeper")]}
         with tempfile.TemporaryDirectory() as root:
@@ -76,6 +76,9 @@ class GithubTest(unittest.TestCase):
                 self.assertEqual((rows[9][0]["position"], rows[9][0]["attribution"], rows[9][1]),
                                  ("storefront_search", "trailer", "storefront_search"))
                 self.assertIsNone(rows[10][0]["position"])  # a line naming no position of the organization
+                # ap.unsourced-requirement reads what a PR claimed and whether anyone reviewed it (of_field-analyst)
+                self.assertEqual((rows[9][0]["body"], rows[9][0]["reviews"]), (body, 0))
+                self.assertIsNone(rows[11][0]["reviews"])  # not read: unknown, never zero
                 self.assertEqual((rows[11][0]["systems"], rows[11][0]["system_basis"]), (["discovery"], "position"))
                 conn.close()
             finally:
@@ -254,6 +257,8 @@ class LocalCommitsTest(unittest.TestCase):
                 self.assertEqual((a["source"], a["unit"], a["repo"], a["position"], a["paths"], a["systems"]),
                                  ("git", "commit", "organic-framework", "of_platform", ["bin/of_a.py"], ["of-client"]))
                 self.assertEqual((b["position"], b["paths"], b["systems"], b["title"]), (None, ["docs/b.md"], [], "Second, no trailer"))
+                self.assertIn("Body.", a["message"])  # the commit message's body, masked and clipped
+                self.assertIsNone(b["message"])
                 self.assertTrue(a["sha"] and a["merged_at"].endswith("Z"))  # UTC, comparable with every event's ts
             finally:
                 of_events.STATE_DIR = saved
