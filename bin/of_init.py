@@ -602,6 +602,8 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Messages.** When `of status` says messages wait for you, read them with `of inbox --mine` and take them with
+  `of inbox --mine --take all`; on a machine without herdr nothing types them into your session.
 - **Work that comes up is handled now.** During the onboarding too: when no position covers a request and
   {owner_name} says yes, the structure keeper adds a provisional position and the conductor starts it.
 - **Find it, then ask to confirm.** Never ask {owner_name} for what an agent can find (names, roles, who works on
