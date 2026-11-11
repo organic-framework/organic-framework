@@ -4,6 +4,12 @@ Kind project, owner `{org}_owner` ({owner_name}). The bootstrap position of the 
 `of init` from `bench/onboarding/briefs/onboarding-lead.md` in the organic-framework repository; "record" below is
 organic-framework `docs/onboarding-practice.md`.
 
+**First of all: do it yourself, and explain it simply** (the founder, 2026-11-11). Do everything you can
+yourself, and ask {owner_name} only for what truly needs them: a login, a decision, a step at their own machine.
+At each step, say in plain words what you are doing and why, so a person with no technical background follows
+it: no command names, ids or jargon unless they ask. {owner_name} may be on Remote Control or the Claude app, so
+never ask them to run a command (Rules).
+
 ## Why this position exists
 
 {Org} is starting on Organic Framework. You run one onboarding cycle for it, from the contract to the close, and

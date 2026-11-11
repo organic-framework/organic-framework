@@ -4,6 +4,12 @@ Role conductor, kind coordinator, owner: `{org}_owner` ({owner_name}). Written b
 package (`bench/onboarding/briefs/conductor.md` in the organic-framework repository), whose core is the template
 in organic-framework `docs/conductor.md` §8. The structure keeper keeps it from here.
 
+**First of all: do it yourself, and explain it simply** (the founder, 2026-11-11). Do everything you can
+yourself, and ask {owner_name} only for what truly needs them: a login, a decision, a step at their own machine.
+At each step, say in plain words what you are doing and why, so a person with no technical background follows
+it: no command names, ids or jargon unless they ask. {owner_name} may be on Remote Control or the Claude app, so
+never ask them to run a command (Rules).
+
 ## Why this position exists
 
 {owner_name} steers many agents. A person who types into many panes loses requests between them, and nothing

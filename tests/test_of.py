@@ -525,6 +525,9 @@ class InitStructureTest(unittest.TestCase):
         readme = i.run_readme(self.pkg, i.fill(self.pkg["run"], self.values), dict(self.values, language="English"),
                               by_hand={"acme_onboarding": lead})
         self.assertIn("No agent here asks you to run a command", readme)
+        files = self.built()["files"]
+        for brief in ("registry/briefs/acme_conductor.md", "registry/briefs/acme_onboarding.md"):
+            self.assertIn("do it yourself, and explain it simply", files[brief])
         self.assertIn("starts the onboarding lead itself", readme)
 
     def test_the_language_is_one_setting_asked_at_init(self):
