@@ -62,6 +62,19 @@ class HooksTest(unittest.TestCase):
                     "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x git commit -m x"):
             self.assertFalse(self.deny(cmd), cmd)
 
+    def test_an_alias_is_read_as_what_it_runs(self):
+        """of_architect's second review of PR 6: git runs an alias for a word it does not have."""
+        for cmd in ("git -c alias.ci='commit --no-verify' ci -m x",
+                    "git config alias.ci 'commit --no-verify' && git ci -m x",
+                    "git -c alias.s='!git commit --no-verify -m x' s",
+                    "git frobnicate -m x"):                        # neither a built-in nor a readable alias
+            self.assertTrue(self.deny(cmd), cmd)
+        with open(os.path.join(self.gated, ".git", "config"), "w") as fh:
+            fh.write("[alias]\n\tci = commit --no-verify\n\tl = log --oneline\n")
+        self.assertTrue(self.deny("git ci -m x"))                    # an alias already in the repository's config
+        self.assertFalse(self.deny("git l -3"))
+        self.assertFalse(self.deny("git frobnicate -m x", cwd=self.other))
+
     def test_another_repository_keeps_its_own_hook_rules(self):
         self.assertFalse(self.deny("git commit --no-verify -m x", cwd=self.other))
         self.assertFalse(self.deny("rm .git/hooks/pre-commit", cwd=self.other))
