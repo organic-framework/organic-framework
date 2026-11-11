@@ -9,7 +9,8 @@ import of_tools  # noqa: E402
 
 DOC = {
     "units": {"obs": {"tools": ["grafana-read"]}},
-    "credentials": {"grafana-viewer": {"paths": ["~/.config/acme/grafana-viewer.token"], "keeper": "obs_keeper"}},
+    "credentials": {"grafana-viewer": {"ref": "op://acme-agents/grafana-viewer/credential", "keeper": "obs_keeper"},
+                    "books-mcp": {"paths": ["~/.config/acme/books-mcp/url"], "keeper": "books_keeper"}},
     "tools": {
         "superpowers": {"kind": "plugin", "plugin": "superpowers@claude-plugins-official", "default": True,
                         "acts_as": "nobody (skills)", "scope": "read", "keeper": "acme_org"},
@@ -21,6 +22,10 @@ DOC = {
         "slack": {"kind": "plugin", "plugin": "slack@anthropic-plugin-directory", "url": "https://mcp.slack.com/mcp",
                   "account_bound": True, "acts_as": "the founder's Slack user", "scope": ["read", "act-as-person"],
                   "keeper": "acme_dispatcher"},
+        "books": {"kind": "mcp-stdio", "command": ["python3", "/of/bin/of_mcp_bridge.py", "--url-file",
+                                                   "~/.config/acme/books-mcp/url"],
+                  "credential": {"id": "books-mcp"}, "acts_as": "the books MCP server's user", "scope": "read",
+                  "keeper": "books_keeper"},
         "docs": {"kind": "connector", "url": "https://api.example/v1/pages/mcp", "account_bound": True,
                  "acts_as": "the account's owner", "scope": "write", "keeper": "acme_org"},
     },
@@ -28,6 +33,7 @@ DOC = {
         {"name": "obs_keeper", "unit": "obs"},
         {"name": "acme_dispatcher", "tools": ["slack", "docs", "-superpowers"]},
         {"name": "acme_org"},
+        {"name": "books_keeper", "tools": ["books"]},
     ],
 }
 
@@ -66,6 +72,12 @@ class SessionConfigTest(unittest.TestCase):
         self.assertEqual(c["account_bound"], ["slack", "docs"])
         self.assertEqual(c["settings"]["enabledPlugins"]["superpowers@claude-plugins-official"], False)
 
+    def test_a_file_credential_is_read_by_the_server_itself(self):
+        c = self.cfg("books_keeper", [])
+        s = c["mcp"]["mcpServers"]["books"]
+        self.assertEqual(s["command"], "python3")
+        self.assertNotIn("secret", s["args"])
+
     def test_no_tools_allows_no_server(self):
         c = self.cfg("acme_org", [])
         self.assertEqual(c["settings"]["allowedMcpServers"], [])
@@ -87,9 +99,13 @@ class CheckTest(unittest.TestCase):
                          "y": {"kind": "mcp-remote", "url": "https://h/mcp", "oauth": True,
                                "headers": {"Authorization": {"vault": "Acme/x"}}, "acts_as": "s", "scope": "read",
                                "keeper": "a"}}}
+        bad["credentials"]["f"] = {"paths": ["~/.config/acme/f"]}
+        bad["tools"]["z"] = {"kind": "mcp-stdio", "command": ["p"], "credential": {"id": "f"}, "acts_as": "s",
+                             "scope": "read", "keeper": "a"}
         probs = "\n".join(of_tools.check({"acme": bad}))
         for want in ("tool nope is not in the catalogue", "keeper ghost", "credential missing",
-                     "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference"):
+                     "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference",
+                     "credential f is a file: the command names its path"):
             self.assertIn(want, probs)
 
 

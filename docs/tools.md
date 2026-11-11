@@ -103,7 +103,7 @@ So OF does **not** use `--strict-mcp-config`: it would hide the account-bound to
 An OAuth tool's sign-in, and a claude.ai connector, exist only on the accounts where someone signed in.
 - `of capacity plan` and `move` read the position's account-bound tools (`launch_parts` lists them; `of tools plan` prints them). A move goes only to an account where they are connected. Otherwise the move stops, and the founder gets one task per account, listing each missing sign-in, before the move rather than after.
 - Such a sign-in is the founder's (or the tool keeper's) work: one task per account, filed only when a position needs that tool there.
-- A tool a position depends on moves to a portable form where the service allows it: a bot or service-account token held by the broker, used through a stdio server or a remote server's header.
+- A tool a position depends on moves to a portable form where the service allows it: a bot or service-account token held by the broker, or the tool's own OAuth sign-in through the bridge (§6, end).
 
 ## 6. The plan
 
@@ -115,7 +115,13 @@ An OAuth tool's sign-in, and a claude.ai connector, exist only on the accounts w
 6. **The catalogues**: the OF team's, then each user organization's, through its structure keeper. Then the user-scope servers in each account's `.claude.json` are removed, first their credentials, then the servers.
 7. **Codex**: the same profile as `-c mcp_servers.<id>.…` overrides, or a generated `CODEX_HOME`, when `of_herdr` starts Codex through the launcher. Codex's documentation does not say yet whether its `-c` overrides reach `mcp_servers`; this is checked before it is built.
 
-Not built yet: a credential sent as a remote server's header (through Claude Code's `headersHelper`, which runs a command at connection and merges the headers it prints), and portable plugins (a plugin loaded with `--plugin-dir` from a folder OF keeps, instead of each account's cache).
+**A remote server with its own sign-in, made portable** (`bin/of_mcp_bridge.py`, 2026-11-11). Many services serve MCP over HTTP with OAuth (Slack, Notion, Linear, Cloudflare, a user organization's accounting service), or put a key in the URL. In Claude Code such a sign-in stays with one account (§4). The bridge makes it the tool's own instead:
+- `of_mcp_bridge.py login --url-file F --oauth-store D`: one sign-in, in a plain terminal, by the person or the identity the tool acts as. It discovers the authorization server (RFC 9728, RFC 8414), registers its own client (RFC 7591), signs in with PKCE (RFC 7636) on a 127.0.0.1 callback, and writes the client and refresh token to `D/oauth.json`, mode 600. The folder is a credential in the organization's catalogue, kept by the tool's keeper.
+- In the catalogue the tool is `kind: mcp-stdio` with the command `python3 <of>/bin/of_mcp_bridge.py --url-file F --oauth-store D`. The bridge refreshes the token under a lock, so every session of the position on every account uses it, and the session's shell never sees it.
+- `of_mcp_bridge.py call … <tool> '<json>'` calls one tool from a shell, for a session started before its profile had the tool.
+- A URL that carries a key is moved out of a config file with `of tools adopt-url <server> --to F`, which never prints it.
+
+Not built yet: portable plugins (a plugin loaded with `--plugin-dir` from a folder OF keeps, instead of each account's cache).
 
 ## 7. Changes from RFC 0004
 

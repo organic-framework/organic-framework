@@ -153,8 +153,14 @@ def check(docs):
                     out.append(f"{where}: credential is {{id: <credential id>, env: NAME | file: NAME}}")
                 elif cid not in creds:
                     out.append(f"{where}: credential {cid} is not in {org}'s credentials catalogue")
-                if isinstance(c, dict) and not (c.get("env") or c.get("file")) and kind == "mcp-stdio":
+                ent = creds.get(cid) or {} if cid else {}
+                if isinstance(c, dict) and ent.get("ref") and not (c.get("env") or c.get("file")) \
+                        and kind == "mcp-stdio":
                     out.append(f"{where}: say how the server takes the credential: env: NAME or file: NAME")
+                if cid in creds and not ent.get("ref") and kind == "mcp-stdio" and not any(
+                        os.path.expanduser(str(x)) == os.path.expanduser(str(pth))
+                        for x in e.get("command") or [] for pth in ent.get("paths") or []):
+                    out.append(f"{where}: credential {cid} is a file: the command names its path")
                 if isinstance(c, dict) and kind in ("mcp-remote",):
                     out.append(f"{where}: a header credential for a remote server is not built yet (docs/tools.md §5)")
             for field in ("env", "headers"):
@@ -208,7 +214,9 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
         if kind == "mcp-stdio":
             cmd = [os.path.expanduser(str(x)) for x in e["command"]]
             c = e.get("credential") if isinstance(e.get("credential"), dict) else None
-            if c and c.get("id"):
+            creds = doc.get("credentials") if isinstance(doc.get("credentials"), dict) else {}
+            if c and c.get("id") and (creds.get(c["id"]) or {}).get("ref"):  # in the vault: the broker gives it
+                # to the server's process alone; a credential still kept in a file is read by the server itself
                 how = ["--file", c["file"]] if c.get("file") else ["--env", c.get("env") or c["id"].upper()]
                 cmd = [ofb, "secret", "run", c["id"], *how, "--", *cmd]
             s = {"type": "stdio", "command": cmd[0], "args": cmd[1:]}
@@ -444,6 +452,27 @@ def print_inventory(inv, days):
               + ", ".join(f"{w} {n}" for w, n in top))
 
 
+# ---------- moving a credential out of an MCP config ----------
+
+def adopt_url(server, to, codex_config=None, force=False):
+    """Write a Codex MCP server's URL (which holds its key) into a file of mode 600, never printing it; returns the
+    host. The Codex entry is left as it is: its owner removes it once the position's tool works."""
+    import tomllib
+    with open(os.path.expanduser(codex_config or "~/.codex/config.toml"), "rb") as fh:
+        url = ((tomllib.load(fh).get("mcp_servers") or {}).get(server) or {}).get("url")
+    if not url:
+        raise ToolsError(f"Codex has no remote MCP server {server}")
+    path = os.path.expanduser(to)
+    if os.path.exists(path) and not force:
+        raise ToolsError(f"{to} exists; --force replaces it")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write(url)
+    os.replace(tmp, path)
+    return _server_shape({"url": url})["url"]
+
+
 # ---------- the CLI ----------
 
 def main(argv=None):
@@ -457,6 +486,10 @@ def main(argv=None):
     pl.add_argument("position")
     pl.add_argument("--config-dir")
     pl.add_argument("--json", action="store_true")
+    ad = sub.add_parser("adopt-url", help="write a Codex MCP server's URL (with its key) into a mode-600 file, unprinted")
+    ad.add_argument("server")
+    ad.add_argument("--to", required=True)
+    ad.add_argument("--force", action="store_true")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "inventory":
@@ -465,6 +498,10 @@ def main(argv=None):
                 print(json.dumps(inv, indent=1, sort_keys=True))
             else:
                 print_inventory(inv, a.days)
+            return 0
+        if a.cmd == "adopt-url":
+            host = adopt_url(a.server, a.to, force=a.force)
+            print(f"written {a.to} (mode 600): the URL of {host}; Codex's entry is unchanged")
             return 0
         if a.cmd == "check":
             probs = check(registries())
