@@ -84,6 +84,8 @@ def cmd_model(args):
         return cmd_escalations(args)
     if args.what == "senders":
         return cmd_senders(args)
+    if args.what == "usage":
+        return cmd_usage(args)
     if args.what == "queues":
         return cmd_queues(args)
     if args.what == "works":
@@ -246,6 +248,69 @@ def cmd_senders(args):
         print(json.dumps(dict(c.most_common()), indent=1, ensure_ascii=False))
     else:
         _table(c.most_common(), ["from-name", "messages"])
+    return 0
+
+
+def _short_model(name):
+    return (name or "?").replace("claude-", "")
+
+
+def cmd_usage(args):
+    """Each delegated unit's use this month per position, per UTC day and per model (of_studio.usage_by_position), the
+    same count as the unit's budget row: what a unit owner needs to answer a budget escalation with a plan (a user organization's structure keeper,
+    2026-11-11). A partial index prints a gap, never numbers."""
+    b = time.time()
+    args.at = of_model.iso(b)
+    org, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
+    u = of_studio.usage_by_position(m, rows, b, units=args.unit, refresh=args.refresh)
+    missing = sorted(set(args.unit or ()) - set(u["units"]))
+    if missing:
+        print(f"not a delegated unit of {org['name']}: {', '.join(missing)}", file=sys.stderr)
+        return 2
+    read = of_model.iso(u["read_at"])[:16] + "Z" if u["read_at"] else "never"
+    if not u["complete"]:
+        gap = (f"the usage index for {u['month']} has not read every transcript yet (last read {read}); "
+               "the pulse goes on with it, or run again with --refresh")
+        print(json.dumps({"month": u["month"], "read_at": u["read_at"], "complete": False, "gap": gap}, indent=1)
+              if args.json else f"gap: {gap}")
+        return 0
+    if args.json:
+        print(json.dumps(dict(u, org=org["name"]), indent=1, ensure_ascii=False))
+        return 0
+    pct = lambda x, of: f"{100 * x / of:.1f}%" if isinstance(of, (int, float)) and of > 0 else "-"
+    print(f"use in {u['month']} (UTC), {org['name']}, index read {read}\n"
+          "tokens: input + output + cache writes (cache reads left out); dollars: Opus 5.5 list prices for every model "
+          "(of_capacity.usage); both as the unit budget counts them")
+    for uid, r in u["units"].items():
+        bt, bu = r["budget_tokens"], r["budget_usd"]
+        print(f"\n{uid} (owner {r['owner'] or '-'}): {r['fresh']:,} tokens"
+              + (f" of {bt:,} ({pct(r['fresh'], bt)})" if isinstance(bt, (int, float)) else "")
+              + f", ${r['cost_usd']:,.2f}" + (f" of ${bu:,} ({pct(r['cost_usd'], bu)})" if isinstance(bu, (int, float)) else "")
+              + f", {r['sessions']} sessions")
+        ps = sorted(r["positions"].items(), key=lambda kv: (-kv[1]["fresh"], kv[0]))
+        if not ps:
+            print("  no session of this unit's positions this month")
+            continue
+        _table([(p + ("*" if v["also_in"] else ""), v["sessions"], f"{v['fresh']:,}", pct(v["fresh"], r["fresh"]),
+                 f"{v['cost_usd']:,.2f}",
+                 ", ".join(f"{_short_model(k)} {pct(f, v['fresh'])}" for k, f in sorted(v["models"].items(), key=lambda kv: -kv[1])
+                           if f > 0) or "-") for p, v in ps],
+               ["position", "sessions", "tokens", "of unit", "usd", "models (by tokens)"])
+        if any(v["also_in"] for _, v in ps):
+            print("* also in " + "; ".join(f"{p}: {', '.join(v['also_in'])}" for p, v in ps if v["also_in"])
+                  + " (counted in each unit)")
+        zero = {"fresh": 0, "cost_usd": 0.0}
+        days = sorted({d for _, v in ps for d in v["days"]})
+        if args.per_day:
+            _table([(d[5:], p, f"{v['days'][d]['fresh']:,}", f"{v['days'][d]['cost_usd']:,.2f}")
+                    for d in days for p, v in ps if d in v["days"]], ["day", "position", "tokens", "usd"])
+        elif days:
+            tot = {d: (sum(v["days"].get(d, zero)["fresh"] for _, v in ps), sum(v["days"].get(d, zero)["cost_usd"] for _, v in ps))
+                   for d in days}
+            top = {d: max(ps, key=lambda kv: kv[1]["days"].get(d, zero)["fresh"])[0] for d in days}
+            _table([(d[5:], f"{tot[d][0]:,}", f"{tot[d][1]:,.2f}", top[d]) for d in days],
+                   ["day", "tokens", "usd", "most tokens"])
+            print("(each position per day: --per-day; everything: --json)")
     return 0
 
 
@@ -670,7 +735,7 @@ def main(argv=None):
     mo = sub.add_parser("model", help="the model at time t and the owner measures (read-only; docs/studio.md)")
     mo.add_argument("what", nargs="?", default="summary",
                     choices=["summary", "positions", "systems", "dsm", "dmm", "coverage", "position-dsm",
-                             "measures", "snapshot", "gate", "issues", "escalations", "senders", "queues", "works", "polls", "loops", "corrections",
+                             "measures", "snapshot", "gate", "issues", "escalations", "senders", "queues", "works", "polls", "loops", "corrections", "usage",
                              "activity", "evidence", "cells"])
     mo.add_argument("--org")
     mo.add_argument("--at", help="ISO time (UTC); default now")
@@ -686,6 +751,10 @@ def main(argv=None):
     mo.add_argument("--for", dest="for_", help="issues: only those this position decides (a structure keeper or a unit owner)")
     mo.add_argument("--all", action="store_true", help="works: also RFCs nobody holds and finished projects")
     mo.add_argument("--labels", action="append", help="polls: a hand-label file (jsonl: event_id, label); repeatable")
+    mo.add_argument("--unit", action="append", help="usage: one delegated unit (repeatable; default every delegated unit)")
+    mo.add_argument("--per-day", action="store_true", help="usage: each position's use per day")
+    mo.add_argument("--refresh", action="store_true",
+                    help=f"usage: read new transcript lines first (for at most {of_studio.USAGE_BUDGET_S} s; the pulse does it too)")
     mo.add_argument("--exclude-unit", help="polls: leave out this unit's positions (a unit judged apart)")
     mo.add_argument("--write", action="store_true", help="escalations: record newly fired ones as of.escalation_due")
     mo.add_argument("--weeks", type=int, default=of_studio.CORRECTION_WEEKS, help="corrections: ISO weeks up to --at")

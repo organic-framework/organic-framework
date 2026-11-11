@@ -2040,9 +2040,9 @@ class UnitUsageTest(unittest.TestCase):
         with open(of_studio._usage_index_path()) as fh:
             return json.load(fh)
 
-    def line(self, mid, ts, inp=10, out=5, w1=20):
+    def line(self, mid, ts, inp=10, out=5, w1=20, model=None):
         import json
-        return json.dumps({"timestamp": ts, "message": {"id": mid, "usage": {
+        return json.dumps({"timestamp": ts, "message": {"id": mid, **({"model": model} if model else {}), "usage": {
             "input_tokens": inp, "output_tokens": out, "cache_read_input_tokens": 100,
             "cache_creation": {"ephemeral_1h_input_tokens": w1, "ephemeral_5m_input_tokens": 0}}}}) + "\n"
 
@@ -2093,6 +2093,78 @@ class UnitUsageTest(unittest.TestCase):
             self.assertEqual(len(self.index()["files"]), 1)   # one file read before the deadline
             got = of_studio.unit_usage(model, [], now, refresh=True, budget_s=30)
         self.assertEqual((got["u1"]["sessions"], got["u1"]["fresh"]), (2, 70))
+
+
+    def test_usage_per_position_day_and_model(self):
+        """`of model usage` (a user organization's structure keeper, 2026-11-11): a unit's month per position, per UTC day and per model, the same
+        count as the unit's budget row; an index of the old shape is read again; a partial index prints a gap."""
+        import contextlib
+        import io
+        import json
+        from unittest import mock
+        import of_capacity
+        import of_studio_cli
+        a = self.dirs[0]
+        self.write(a, "s1.jsonl", self.line("m1", "2026-11-03T10:00:00Z", model="claude-opus-5-5")
+                   + self.line("m2", "2026-11-04T23:59:00Z", inp=100, model="claude-haiku-5-5"))
+        self.write(a, "s2.jsonl", self.line("m3", "2026-11-04T01:00:00Z", out=500, model="claude-opus-5-5"))
+        self.write(a, "s3.jsonl", self.line("m4", "2026-11-04T01:00:00Z"))                 # p3: another unit
+        os.makedirs(os.path.dirname(of_studio._usage_index_path()), exist_ok=True)
+        with open(of_studio._usage_index_path(), "w") as fh:                                 # the old shape, read to the end
+            json.dump({"month": "2026-11", "files": {os.path.join(a, "projects", "p", f"s{i}.jsonl"): {"offset": 10 ** 6}
+                                                     for i in (1, 2, 3)}, "ids": [], "sessions": {"s1": {"fresh": 1}}}, fh)
+        model = {"org_units": {"u1": {"delegation": {"id": "d1", "to_owner": "boss",
+                                                     "envelope": {"budget": {"tokens_month": 1000, "usd_month": 2}}}},
+                               "u2": {"delegation": {"id": "d2"}}}}
+        now = of_model.epoch("2026-11-05T00:00Z")
+        members = {"u1": (set(), {"p1", "p2"}), "u2": (set(), {"p3", "p2"})}                   # p2 in both units
+        with mock.patch.object(of_capacity, "config_dirs", return_value=[a]), \
+                mock.patch.object(of_model, "session_positions", return_value={"s1": "p1", "s2": "p2", "s3": "p3"}), \
+                mock.patch.object(of_diagnose, "unit_members", side_effect=lambda m, uid: members[uid]):
+            self.assertFalse(of_studio.usage_by_position(model, [], now)["complete"])          # old shape: not read yet
+            u = of_studio.usage_by_position(model, [], now, units=["u1"], refresh=True, budget_s=30)
+            self.assertTrue(u["complete"])
+            self.assertEqual(list(u["units"]), ["u1"])
+            r = u["units"]["u1"]
+            self.assertEqual((r["owner"], r["sessions"], r["budget_tokens"], r["budget_usd"]), ("boss", 2, 1000, 2))
+            p1, p2 = r["positions"]["p1"], r["positions"]["p2"]
+            self.assertEqual(p1["fresh"], 35 + 125)                                            # m1 and m2, re-read from 0
+            self.assertEqual({d: v["fresh"] for d, v in p1["days"].items()}, {"2026-11-03": 35, "2026-11-04": 125})
+            self.assertEqual(p1["models"], {"claude-opus-5-5": 35, "claude-haiku-5-5": 125})
+            self.assertEqual((p2["fresh"], p2["also_in"], p1["also_in"]), (530, ["u2"], []))
+            self.assertEqual(r["fresh"], 35 + 125 + 530)
+            budget = of_studio.unit_usage(model, [], now, refresh=True, budget_s=30)            # the budget row's count
+            self.assertEqual(budget["u1"]["fresh"], r["fresh"])
+            self.assertAlmostEqual(budget["u1"]["cost_usd"], r["cost_usd"], places=2)
+            out = io.StringIO()
+            with mock.patch.object(of_studio_cli, "_model", return_value=({"name": "acme"}, model, [])), \
+                    mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
+                    mock.patch.object(of_studio.time, "time", return_value=now), contextlib.redirect_stdout(out):
+                of_studio_cli.main(["model", "usage", "--unit", "u1"])
+            text = out.getvalue()
+            self.assertIn("u1 (owner boss): 690 tokens of 1,000 (69.0%)", text)
+            self.assertRegex(text, r"p2\* +1 +530 +76.8%")
+            self.assertIn("* also in p2: u2 (counted in each unit)", text)                    # --unit u1 still says it
+            self.assertIn("haiku-5-5 78.1%, opus-5-5 21.9%", text)                           # p1: 125 and 35 of 160
+            self.assertRegex(text, r"11-04 +655 +[0-9.]+ +p2")                                # the unit's day, its top position
+            out = io.StringIO()
+            with mock.patch.object(of_studio_cli, "_model", return_value=({"name": "acme"}, model, [])), \
+                    mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
+                    mock.patch.object(of_studio.time, "time", return_value=now), contextlib.redirect_stdout(out):
+                of_studio_cli.main(["model", "usage", "--per-day"])
+            self.assertRegex(out.getvalue(), r"11-04 +p1 +125 ")
+            self.assertRegex(out.getvalue(), r"11-04 +p3 +35 ")                               # u2's position, its own table
+            idx = self.index()
+            idx["complete"] = False
+            with open(of_studio._usage_index_path(), "w") as fh:
+                json.dump(idx, fh)
+            out = io.StringIO()
+            with mock.patch.object(of_studio_cli, "_model", return_value=({"name": "acme"}, model, [])), \
+                    mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
+                    mock.patch.object(of_studio.time, "time", return_value=now), contextlib.redirect_stdout(out):
+                of_studio_cli.main(["model", "usage"])
+            self.assertTrue(out.getvalue().startswith("gap: the usage index for 2026-11 has not read every transcript"))
+            self.assertNotIn("tokens of", out.getvalue())
 
 
 class IssuesAcrossOrgsTest(unittest.TestCase):

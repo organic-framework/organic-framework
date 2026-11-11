@@ -100,6 +100,7 @@ TOKEN_METHOD = "tok-v0"   # assistant records, deduplicated by (session, usage, 
 
 USAGE_TTL_S = 900        # a unit's usage is refreshed at most this often (incremental: only new bytes)
 USAGE_BUDGET_S = 25      # one refresh reads for at most this long; the pulse kills its copy at 60 s
+USAGE_INDEX_V = 2        # 2: per-day and per-model sums per session, for `of model usage` (a user organization's structure keeper, 2026-11-11); a new version re-reads the month
 CORRECTION_WEEKS = 6   # the Owner page's repeat-correction table (RFC 0006 §2.4)
 
 
@@ -116,7 +117,8 @@ def _usage_index_path():
 def _usage_advance(month, start, wanted, deadline):
     """Read the delegated units' transcripts forward from where the last refresh stopped, and add this month's
     responses to per-session sums: `usage-index.json` keeps each file's offset, this month's message ids (one API
-    response counts once, across files: a move copies a transcript to another account) and the sums. Lines are
+    response counts once, across files: a move copies a transcript to another account) and the sums (the month's, per
+    UTC day as [fresh, cost_usd], and fresh tokens per model), with `read_at` and `complete` of the last read. Lines are
     streamed, never a whole file in memory (a full read of a user organization's took 50 s and 5.2 GB, 2026-11-11). The same
     count as of_capacity.usage (list prices, subagents to their session). Returns True when every file is read,
     False when `deadline` came first: the progress is saved and the next refresh goes on from it."""
@@ -129,8 +131,10 @@ def _usage_advance(month, start, wanted, deadline):
     except (OSError, ValueError):
         idx = {}
     files = idx.get("files") or {}
-    if idx.get("month") != month:   # a new month: the offsets go on, the sums and ids start again
-        idx = {"month": month, "files": files, "ids": [], "sessions": {}}
+    if idx.get("v") != USAGE_INDEX_V:   # a new shape: the month is read again from the start
+        idx, files = {"v": USAGE_INDEX_V, "month": month, "files": {}, "ids": [], "sessions": {}}, {}
+    elif idx.get("month") != month:   # a new month: the offsets go on, the sums and ids start again
+        idx = {"v": USAGE_INDEX_V, "month": month, "files": files, "ids": [], "sessions": {}}
     ids, sums = set(idx.get("ids") or []), idx.get("sessions") or {}
     done = True
     for d in of_capacity.config_dirs():
@@ -177,9 +181,15 @@ def _usage_advance(month, start, wanted, deadline):
                         cc = u.get("cache_creation") or {}
                         w1 = cc.get("ephemeral_1h_input_tokens", 0) if cc else u.get("cache_creation_input_tokens", 0)
                         w5 = cc.get("ephemeral_5m_input_tokens", 0)
+                        fresh, cost = u.get("input_tokens", 0) + u.get("output_tokens", 0) + w1 + w5, of_capacity.usage_cost(u)
                         o = sums.setdefault(sid, {"fresh": 0, "cost_usd": 0.0})
-                        o["fresh"] += u.get("input_tokens", 0) + u.get("output_tokens", 0) + w1 + w5
-                        o["cost_usd"] += of_capacity.usage_cost(u)
+                        o["fresh"] += fresh
+                        o["cost_usd"] += cost
+                        day = o.setdefault("days", {}).setdefault(time.strftime("%Y-%m-%d", time.gmtime(t)), [0, 0.0])
+                        day[0] += fresh
+                        day[1] += cost
+                        mod = o.setdefault("models", {})
+                        mod[m.get("model") or "?"] = mod.get(m.get("model") or "?", 0) + fresh
             except OSError:
                 continue
             files[f] = {"offset": off, "ino": st.st_ino}
@@ -188,7 +198,7 @@ def _usage_advance(month, start, wanted, deadline):
                 break
         if not done:
             break
-    idx.update(files=files, ids=sorted(ids), sessions=sums)
+    idx.update(files=files, ids=sorted(ids), sessions=sums, read_at=time.time(), complete=done)
     try:
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -242,6 +252,70 @@ def unit_usage(model, rows, now, refresh=False, budget_s=USAGE_BUDGET_S):
             except OSError:
                 pass
     return {k: v for k, v in cache.items() if k in units and v.get("month") == month}
+
+
+def usage_by_position(model, rows, now, units=None, refresh=False, budget_s=USAGE_BUDGET_S):
+    """`of model usage` (a user organization's structure keeper, 2026-11-11): each delegated unit's use this month per position, per UTC day and per
+    model, from the same index and count as the unit's budget row (unit_usage), so a unit owner can plan models, pauses
+    and the limit it needs. {month, read_at, complete, units: {unit: {owner, sessions, fresh, cost_usd, budget_tokens,
+    budget_usd, positions: {position: {sessions, fresh, cost_usd, days: {day: {fresh, cost_usd}}, models: {model:
+    fresh}, also_in: [other delegated units of the position, which count it too]}}}}}. `complete` is False while the index has not read every file: the numbers are then partial and the
+    caller prints a gap, never them. `refresh` advances the index first, for at most `budget_s` (the pulse does it)."""
+    import json
+    month = time.strftime("%Y-%m", time.gmtime(now))
+    delegated = {uid: u for uid, u in (model.get("org_units") or {}).items() if u.get("delegation")}
+    sp = of_model.session_positions(model, rows)
+    members = {uid: of_diagnose.unit_members(model, uid)[1] for uid in delegated}
+    if refresh:
+        try:
+            import of_capacity  # noqa: F401
+            _usage_advance(month, of_model.epoch(month + "-01"),
+                           {x for x, p in sp.items() if any(p in ps for ps in members.values())}, time.time() + budget_s)
+        except ImportError:
+            pass
+    try:
+        with open(_usage_index_path()) as fh:
+            idx = json.load(fh)
+    except (OSError, ValueError):
+        idx = {}
+    ok = idx.get("v") == USAGE_INDEX_V and idx.get("month") == month
+    sums = (idx.get("sessions") or {}) if ok else {}
+    out = {"month": month, "read_at": idx.get("read_at") if ok else None, "complete": bool(ok and idx.get("complete")),
+           "units": {}}
+    for uid, u in delegated.items():
+        if units and uid not in units:
+            continue
+        rec = u["delegation"]
+        env = (rec.get("envelope") or {}).get("budget") or {}
+        row = {"owner": rec.get("to_owner"), "sessions": 0, "fresh": 0, "cost_usd": 0.0,
+               "budget_tokens": env.get("tokens_month"), "budget_usd": env.get("usd_month"), "positions": {}}
+        for sid, pos in sorted(sp.items()):
+            if pos not in members[uid]:
+                continue
+            row["sessions"] += 1
+            s = sums.get(sid)
+            p = row["positions"].setdefault(pos, {"sessions": 0, "fresh": 0, "cost_usd": 0.0, "days": {}, "models": {},
+                                                  "also_in": sorted(x for x, ps in members.items() if x != uid and pos in ps)})
+            p["sessions"] += 1
+            if not s:
+                continue
+            p["fresh"] += s["fresh"]
+            p["cost_usd"] += s["cost_usd"]
+            for day, (f, c) in (s.get("days") or {}).items():
+                d = p["days"].setdefault(day, {"fresh": 0, "cost_usd": 0.0})
+                d["fresh"] += f
+                d["cost_usd"] += c
+            for mod, f in (s.get("models") or {}).items():
+                p["models"][mod] = p["models"].get(mod, 0) + f
+        for p in row["positions"].values():
+            p["cost_usd"] = round(p["cost_usd"], 2)
+            for d in p["days"].values():
+                d["cost_usd"] = round(d["cost_usd"], 2)
+            p["days"] = dict(sorted(p["days"].items()))
+        row["fresh"] = sum(p["fresh"] for p in row["positions"].values())
+        row["cost_usd"] = round(sum(p["cost_usd"] for p in row["positions"].values()), 2)
+        out["units"][uid] = row
+    return out
 
 
 def budget_used(model, rows, now, conn=None, refresh_usage=False, refresh_budget_s=USAGE_BUDGET_S):
