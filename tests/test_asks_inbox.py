@@ -456,6 +456,30 @@ class PanelTest(ScreenTest):
         finally:
             T.REFRESH_S = saved
 
+    def test_a_new_build_is_taken_only_when_still_and_whole(self):
+        """The founder's trial panel died at 21:23Z restarting mid-rebase on a bin/of without --panel."""
+        import of_asks_panel as P
+        with tempfile.TemporaryDirectory() as d:
+            f = os.path.join(d, "of_asks_panel.py")
+            open(f, "w").write("1")
+            t, helps = [1000.0], []
+
+            def run(argv, **kw):
+                helps.append(argv)
+                return type("R", (), {"returncode": 0, "stdout": "--watch --panel" if len(helps) > 1 else "--watch"})()
+            r = P.Restarter([f], "/x/bin/of", run=run, clock=lambda: t[0])
+            self.assertFalse(r.due())
+            os.utime(f, (1, 1))                        # a rebase moves the file
+            self.assertFalse(r.due())                  # still changing
+            t[0] += P.SETTLE_S - 1
+            self.assertFalse(r.due())                  # not still long enough
+            t[0] += 2
+            self.assertFalse(r.due())                  # still, but its CLI does not know --panel yet
+            self.assertEqual(len(helps), 1)
+            t[0] += P.SETTLE_S + 1
+            self.assertTrue(r.due())                   # still and whole: restart
+            self.assertEqual(helps[-1][1:], ["/x/bin/of", "asks", "--help"])
+
     def test_typed_text_opens_nothing(self):
         """of_herdr, 2026-11-12: a restart typed into the panel's pane ('o' and Enter in a command) opened the popup."""
         import of_asks_panel as P
