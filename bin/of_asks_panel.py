@@ -30,7 +30,8 @@ from of_locale import tr
 def herdr_config():
     try:
         import tomllib
-        with open(os.path.expanduser("~/.config/herdr/config.toml"), "rb") as fh:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")  # as herdr reads it (of_herdr)
+        with open(os.path.join(base, "herdr", "config.toml"), "rb") as fh:
             return tomllib.load(fh)
     except (OSError, ValueError, ImportError):
         return {}

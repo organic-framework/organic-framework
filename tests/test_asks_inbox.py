@@ -354,6 +354,16 @@ class PanelTest(ScreenTest):
         self.assertEqual(P.open_keys(cfg, of_path="/x/wt/bin/of"), "Ctrl-B, then Shift-A")
         self.assertEqual(P.open_keys(dict(cfg, keys=dict(cfg["keys"], prefix="ctrl+a"))), "Ctrl-A, then a")
         self.assertIsNone(P.open_keys({}))
+        with tempfile.TemporaryDirectory() as d:  # herdr reads XDG_CONFIG_HOME when it is set
+            os.makedirs(os.path.join(d, "herdr"))
+            with open(os.path.join(d, "herdr", "config.toml"), "w") as fh:
+                fh.write('[[keys.command]]\nkey = "prefix+shift+a"\ncommand = "of asks --watch"\n')
+            saved = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = d
+            try:
+                self.assertEqual(P.open_keys(), "Ctrl-B, then Shift-A")
+            finally:
+                os.environ.pop("XDG_CONFIG_HOME") if saved is None else os.environ.update(XDG_CONFIG_HOME=saved)
 
     def panel(self, keys, data, size=(6, 140), open_cmd=None):
         import of_asks_panel as P
