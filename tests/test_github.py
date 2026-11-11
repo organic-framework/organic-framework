@@ -264,5 +264,58 @@ class LocalCommitsTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class DefaultBranchTest(unittest.TestCase):
+    """The founder, 2026-11-11: of import git read only main; a repository's default may be another branch."""
+
+    def repo(self, root, name, branch):
+        import subprocess
+        path = os.path.join(root, name)
+        os.makedirs(path)
+        git = lambda *a: subprocess.run(["git", "-C", path, "-c", "commit.gpgsign=false", "-c", "user.email=t@t",
+                                         "-c", "user.name=t", *a], capture_output=True, text=True, check=True)
+        git("init", "-q", "-b", branch)
+        with open(os.path.join(path, "a"), "w") as fh:
+            fh.write("x")
+        git("add", "a")
+        git("commit", "-qm", "first")
+        return path, git
+
+    def test_resolution_order_and_a_plain_refusal(self):
+        with tempfile.TemporaryDirectory() as root:
+            m, _ = self.repo(root, "m", "master")
+            self.assertEqual(of_github.default_branch(m)[0], "master")
+            d, git = self.repo(root, "d", "develop")
+            git("branch", "master")  # two candidates, no origin/HEAD: not guessed
+            ref, why = of_github.default_branch(d)
+            self.assertIsNone(ref)
+            self.assertIn("name the default in orgs.yaml", why)
+            self.assertEqual(of_github.default_branch(d, "develop"), ("develop", "orgs.yaml"))
+            self.assertIsNone(of_github.default_branch(d, "nope")[0])
+            git("update-ref", "refs/remotes/origin/develop", "HEAD")
+            git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+            self.assertEqual(of_github.default_branch(d), ("develop", "origin/HEAD"))
+
+    def test_import_reads_the_default_and_says_when_it_cannot(self):
+        with tempfile.TemporaryDirectory() as root:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = os.path.join(root, "state")
+            try:
+                m, _ = self.repo(root, "m", "trunk")
+                d, git = self.repo(root, "d", "develop")
+                git("branch", "master")
+                said = []
+                conn = of_store.connect()
+                n = of_github.import_local(conn, "o", {}, [m, d], "2020-01-01", works={}, log=said.append)
+                self.assertEqual(n, 1)  # trunk's one commit; d is not guessed
+                self.assertTrue(any("m: 1 commits on trunk" in x for x in said), said)
+                self.assertTrue(any(x.startswith("  d: not read:") for x in said), said)
+                n = of_github.import_local(conn, "o", {}, [m, d], "2020-01-01", works={}, log=said.append,
+                                           branches={"d": "develop"})
+                self.assertEqual(n, 1)  # d now, on the branch orgs.yaml names
+                conn.close()
+            finally:
+                of_events.STATE_DIR = saved
+
+
 if __name__ == "__main__":
     unittest.main()

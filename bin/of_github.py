@@ -498,12 +498,45 @@ def systems_by_dir(systems):
     return out
 
 
-def local_commits(root, since, git="git"):
-    """[{sha, author, at, title, message, paths}] on main of the checkout at `root`, since the ISO date (oldest first).
-    Read-only: no locks, no prompts, no user config."""
+DEFAULT_CANDIDATES = ("main", "master", "trunk", "develop")
+
+
+def default_branch(root, override=None, git="git"):
+    """(ref, how) for the checkout's default branch, or (None, why not). The founder, 2026-11-11: of import git read
+    only `main`, and a repository's default may be master, develop, trunk or another. In order: the branch orgs.yaml
+    names for this repository (`branches:` on the organization's entry); the remote's default (origin/HEAD), as the
+    local branch of that name when it exists; else the one of main, master, trunk, develop that exists."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+
+    def run(*a):
+        return subprocess.run([git, "-C", root, *a], capture_output=True, text=True, timeout=30, env=env)
+
+    def exists(ref):
+        return run("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
+    if override:
+        return (override, "orgs.yaml") if exists(override) else \
+            (None, f"the branch {override!r} that orgs.yaml names does not exist here")
+    r = run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    if r.returncode == 0 and r.stdout.strip():
+        remote = r.stdout.strip()                      # origin/<name>
+        name = remote.split("/", 1)[1] if "/" in remote else remote
+        return (name, "origin/HEAD") if exists(f"refs/heads/{name}") else (remote, "origin/HEAD")
+    found = [b for b in DEFAULT_CANDIDATES if exists(f"refs/heads/{b}")]
+    if len(found) == 1:
+        return found[0], "the only one of " + ", ".join(DEFAULT_CANDIDATES)
+    if found:
+        return None, (f"no origin/HEAD and several candidates ({', '.join(found)}); name the default in orgs.yaml "
+                      "(branches: {<repository>: <branch>} on the organization's entry)")
+    return None, ("no origin/HEAD and none of " + ", ".join(DEFAULT_CANDIDATES) + "; name the default in orgs.yaml "
+                  "(branches: {<repository>: <branch>} on the organization's entry)")
+
+
+def local_commits(root, since, git="git", branch="main"):
+    """[{sha, author, at, title, message, paths}] on `branch` of the checkout at `root` (its default branch, from
+    default_branch), since the ISO date (oldest first). Read-only: no locks, no prompts, no user config."""
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
     fmt = GIT_SEP.join(["%H", "%an", "%ct", "%s", "%B"]) + REC_SEP
-    r = subprocess.run([git, "-C", root, "-c", "core.quotepath=false", "log", "main", "--reverse", f"--since={since}",
+    r = subprocess.run([git, "-C", root, "-c", "core.quotepath=false", "log", branch, "--reverse", f"--since={since}",
                         f"--format={fmt}", "--name-only"], capture_output=True, text=True, timeout=120, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"git log {root}: {r.stderr.strip()[:200]}")
@@ -536,8 +569,10 @@ def last_local(conn, org):
     return row[0] if row else None
 
 
-def import_local(conn, org, systems, roots, since=None, works=None, log=print, lister=local_commits):
-    """Every commit on main of the organization's checkouts (orgs.yaml paths) as of.work_record {source: git,
+def import_local(conn, org, systems, roots, since=None, works=None, log=print, lister=local_commits, branches=None,
+                 resolve=default_branch):
+    """Every commit on the default branch (default_branch; `branches` from orgs.yaml overrides it per repository) of
+    the organization's checkouts (orgs.yaml paths) as of.work_record {source: git,
     unit: commit, repo, sha, author, merged_at, title, position, paths, systems, works}, for an organization that
     commits locally and never pushes (the OF team; of_studio, docs/studio.md §2.1). Deterministic id by repo and sha;
     an existing record is kept. Returns the number written."""
@@ -551,7 +586,11 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
         if not os.path.isdir(os.path.join(root, ".git")):
             continue  # a main checkout only (a worktree's .git is a file)
         repo = os.path.basename(root.rstrip("/"))
-        commits = lister(root, since)
+        ref, how = resolve(root, (branches or {}).get(repo) or (branches or {}).get(root))
+        if not ref:
+            log(f"  {repo}: not read: {how}")  # said plainly, never an empty read that looks like no work
+            continue
+        commits = lister(root, since, branch=ref)
         for c in commits:
             eid = str(uuid.uuid5(NS, f"{repo}@{c['sha']}:git"))
             if conn.execute("SELECT 1 FROM event WHERE event_id = ?", (eid,)).fetchone():
@@ -578,6 +617,6 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
             rec["timestamp"] = c["at"]
             of_store.add_event(conn, rec)
             n += 1
-        log(f"  {repo}: {len(commits)} commits on main since {since}")
+        log(f"  {repo}: {len(commits)} commits on {ref} ({how}) since {since}")
     log(f"{n} work records (local commits) for {org}")
     return n
