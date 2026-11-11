@@ -241,22 +241,25 @@ The founder, 2026-11-11 ~18:56Z, through `of_conductor` (msg `01a1cbf2`): "far f
 
 ### 13.3 What the broker needs from a store
 
-The broker (§5.3), the hand-over (§5.4), the record (§5.7) and the review do not change with the store. They call one interface, implemented once per store (an adapter in `bin/of_secret_stores.py`, **API** to agree with `of_architect`):
+The broker (§5.3), the hand-over (§5.4), the record (§5.7) and the review do not change with the store. They call the **`secrets` plugin family** ([`plugins.md`](plugins.md) §3) through the shared loader (`bin/of_family.py`): one implementation per store under `bin/plugins/secrets/<name>.py`, or an installed `organic_framework.secrets` entry point. The family's methods are `read`, `write`, `exists`, `list` and `bootstrap` (`of_family.FAMILIES`); the broker needs from each implementation:
 
 | Operation | What it does |
 |---|---|
 | `ref` form | the catalogue's reference for this store, validated by `of registry check` (below) |
 | `container(ref)` | the unit the store scopes access by: a vault, a project, a path, a name prefix, a file |
 | `read(ref, identity)` | the value, read with **the position's own identity** in this store; never logged |
+| `exists(ref)`, `list(container)` | whether an item is there, and the items of a container (names only), for `of registry check` and the review |
 | `write(ref, value, identity)` | a keeper's rotation, with an identity that may write that container |
-| `plan(position, read, write)` | the steps a person runs once to create the position's identity with exactly those containers, and where its secret goes (the broker's identity file, with a silent read) |
+| `bootstrap(position, read, write)` | the steps a person runs once to create the position's identity with exactly those containers, and where its secret goes (the broker's identity file, with a silent read); `of secret plan` prints them |
 | `enforces_boundary` | whether the store itself stops one position's identity from reading another's containers (§5.3, "1Password itself enforces the vault boundary") |
 | `audit` | where the store's own record of reads is, for the cross-check of §5.7 |
 | `value_commands` | the command forms that print a stored value, for the guard (§13.6) |
 
+The `ref` form, `container`, `enforces_boundary`, `audit` and `value_commands` are attributes of an implementation beyond the family's five methods; they are proposed to `of_platform` for the family.
+
 ### 13.4 The stores
 
-Each row is checked against the store's own documentation before its adapter is built, as §4 did for 1Password; the cells below are the design's assumptions, not yet that check.
+Each row is checked against the store's own documentation before its implementation is built, as §4 did for 1Password; the cells below are the design's assumptions, not yet that check.
 
 | Store | `ref` | Position identity | Boundary the store enforces | Who creates the identity | The store's own audit |
 |---|---|---|---|---|---|
@@ -278,10 +281,10 @@ What follows from the table:
 
 | Section | With another store |
 |---|---|
-| §4, §7 (1Password's facts and limits) | one such table per store, from its documentation, before its adapter is built |
+| §4, §7 (1Password's facts and limits) | one such table per store, from its documentation, before its implementation is built |
 | §5.1 vaults | containers per system, named in the store's form |
 | §5.2 service accounts | a position identity in the store, only for positions that use credentials; `of secret plan` prints the store's own steps |
-| §5.3 broker | unchanged; `read` goes through the adapter; the identity file holds the store's secret (a token, an AppRole secret, an age key) |
+| §5.3 broker | unchanged; `read` goes through the family; the identity file holds the store's secret (a token, an AppRole secret, an age key) |
 | §5.4 hand-over | unchanged: the broker reads the holder at each use |
 | §5.5 rotation | values unchanged; the identity's rotation as the store allows (above) |
 | §5.6 break-glass | level 3 lives wherever the company keeps its root credentials; OF records its use only |
@@ -299,15 +302,15 @@ One card for the organization's owner, in the owner's language through the local
 1. **The decision:** where the organization keeps its agents' secrets.
 2. **Why now:** the first credential needs moving (which one, for which position); until the answer it stays a file.
 3. **The options**, ranked by what the organization already runs: a store CLI found on its machines, the cloud of its systems in the systems map, a store named in its existing references. Each option gives its consequence: whether the store keeps positions apart by itself, who must create identities and how often, and its cost if it is a paid product. Recommended: the store the company already runs and audits; with none, sops with age in the organization's repository (no service to run, a boundary per file); the keychain only for a solo owner on one machine.
-4. **What happens next:** the structure keeper records the answer (**schema** below) and `of secret plan` prints the first identity's steps as a task for the owner's hands.
+4. **What happens next:** the structure keeper records the answer (**schema** below) and `of secret plan` prints the first identity's steps (`bootstrap`) as a task for the owner's hands.
 
-**Schema** (to agree with `of_architect`): an organization's registry gets `secrets: {store: 1password|bitwarden|vault|aws-sm|gcp-sm|sops|keychain, chosen: <ask id>, settings: {…}}`, with settings such as a Vault address, a region or a project. Absent means files. `of registry check`: every `ref` has the chosen store's form, and its container belongs to the organization (§5.1, for any store).
+**Schema** (agreed with `of_architect`, a0a1407; [`registry.md`](registry.md), Plugins): an organization's choices live under `plugins:`, so its store is `plugins: {secrets: {name: 1password|bitwarden|vault|aws-sm|gcp-sm|sops|keychain, chosen: <ask id>, settings: {…}}}`, with settings such as a Vault address, a region or a project. Absent means files; `chosen` is required. `of registry check` refuses a `ref` whose store is not the chosen one, and a container that is not the organization's (§5.1, for any store).
 
 ### 13.8 Build order
 
 After the founder's decision on the broker (card `379274c4`):
-1. the store interface, with the files baseline and the refusal of §13.2;
-2. the 1Password adapter, moving today's `_op_read` behind the interface, unchanged in behaviour;
-3. the first-need card, `secrets:` in the schema, and `of registry check`;
+1. the `secrets` family's files implementation and the refusal of §13.2;
+2. the 1Password implementation (`bin/plugins/secrets/1password.py`), moving today's `_op_read` behind the family, unchanged in behaviour;
+3. the first-need card, `plugins.secrets` in the registry, and `of registry check`;
 4. the guard rules of §13.6 for the chosen stores, each after its replay;
-5. other adapters when an organization chooses that store, each with its facts table, a stub in the lab proof (§10, step 0 against the stub) and, where possible, a real leg.
+5. other implementations when an organization chooses that store, each with its facts table, a stub in the lab proof (§10, step 0 against the stub) and, where possible, a real leg.
