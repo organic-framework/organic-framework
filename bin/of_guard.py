@@ -1046,6 +1046,12 @@ def _grant_deny(head, args, stext):
     if head == "ssh-keygen" and "-Y" in args and "sign" in args and \
             any(_GRANT_KEY_NAME.search(a) for a in [_opt_value(args, ("-f",)) or ""]):
         return GRANT_DENY, "ssh-keygen -Y sign with the tenant's grant key"
+    hit = next((f for f in _changed_files(head, args, stext) if _grant_file(f)), None)
+    return (GRANT_DENY, hit) if hit else None
+
+
+def _changed_files(head, args, stext):
+    """The files one simple command writes, removes, moves over or changes in place (G13, G17)."""
     files = list(_write_targets(stext))
     if head == "tee" or head in _REMOVERS or (head in _IN_PLACE and any(a.startswith("-i") or a == "-pi" for a in args)):
         files += [a for a in args if not a.startswith("-")]
@@ -1053,10 +1059,120 @@ def _grant_deny(head, args, stext):
         files += [a for a in args if not a.startswith("-")][-1:]
     elif head == "dd":
         files += [a[3:] for a in args if a.startswith("of=")]
+    elif head in ("chmod", "chflags", "xattr"):
+        files += [a for a in args[1:] if not a.startswith("-")]
     elif head == "git" and args[:1] and args[0] in ("checkout", "restore", "rm", "mv"):
         files += [a for a in args[1:] if not a.startswith("-")]
-    hit = next((f for f in files if _grant_file(f)), None)
-    return (GRANT_DENY, hit) if hit else None
+    return files
+
+
+# ------------------------------------------------- the release gate's hooks (G17)
+# of_architect (msg 01a1cbed, 2026-11-11), after three leaking commits; AGENTS.md forbids --no-verify (d90e8f0). In a
+# repository whose pre-commit hook is the release gate (installed by organic-framework-build release/install-hooks.sh,
+# found by its marker line), an agent never skips the hooks or moves them: --no-verify (any subcommand), `commit -n`,
+# `-c core.hooksPath=`, a change to core.hooksPath, or a write to .git/hooks/. Elsewhere nothing changes: a user
+# organization's own repositories keep their own hook rules. Replay over 21 days (218,571 commands): no live flow in a
+# gated repository; the hits were all in other repositories.
+GATE_MARK = b"organic-framework-build release/install-hooks.sh"
+HOOKS_DENY = ("the release gate's hooks, which nobody skips or changes in this repository (AGENTS.md; docs/guard.md "
+              "G17): fix what the gate names and commit again; of_release keeps the hooks")
+_GATED = {}
+_COMMIT_VALUE_FLAGS = set("mFCctSu")   # a short flag of git commit that takes the rest of its cluster as a value
+
+
+def _git_dir(path):
+    """The git directory (the common one, for a worktree) of the repository holding PATH, or None."""
+    p = os.path.abspath(os.path.expanduser(path or "."))
+    for _ in range(64):
+        g = os.path.join(p, ".git")
+        if os.path.isdir(g):
+            return g
+        if os.path.isfile(g):
+            try:
+                line = open(g).read().strip()
+            except OSError:
+                return None
+            if not line.startswith("gitdir:"):
+                return None
+            d = line[7:].strip()
+            d = d if os.path.isabs(d) else os.path.join(p, d)
+            try:
+                return os.path.normpath(os.path.join(d, open(os.path.join(d, "commondir")).read().strip()))
+            except OSError:
+                return d
+        up = os.path.dirname(p)
+        if up == p:
+            return None
+        p = up
+    return None
+
+
+def gated(path):
+    """Does the repository holding PATH run the release gate as its pre-commit hook?"""
+    g = _git_dir(path)
+    if not g:
+        return False
+    if g not in _GATED:
+        try:
+            with open(os.path.join(g, "hooks", "pre-commit"), "rb") as fh:
+                _GATED[g] = GATE_MARK in fh.read(4096)
+        except OSError:
+            _GATED[g] = False
+    return _GATED[g]
+
+
+def _in_hooks(path, cwd):
+    p = os.path.expanduser(str(path).strip("'\""))
+    p = p if os.path.isabs(p) else os.path.join(cwd or ".", p)
+    p = os.path.normpath(p)
+    return ("/.git/hooks/" in p + "/" or p.endswith("/.git/hooks")) and gated(p.split("/.git/hooks")[0] or "/")
+
+
+def _hooks_deny(head, args, stext, cwd):
+    """(reason, token) for G17 on one simple command run in CWD, else None."""
+    if head != "git":
+        hit = next((f for f in _changed_files(head, args, stext) if _in_hooks(f, cwd)), None)
+        return (HOOKS_DENY, hit) if hit else None
+    i, where, conf = 0, cwd or ".", []
+    while i < len(args) and args[i].startswith("-"):
+        a = args[i]
+        if a in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
+            if a == "-C":
+                where = os.path.join(where, os.path.expanduser(args[i + 1]))
+            elif a == "-c" or a == "--config-env":
+                conf.append(args[i + 1])
+            i += 2
+            continue
+        if a.startswith("--config-env="):
+            conf.append(a.split("=", 1)[1])
+        i += 1
+    sub, rest = (args[i], args[i + 1:]) if i < len(args) else (None, [])
+    rest = rest[:rest.index("--")] if "--" in rest else rest
+    files = [f for f in _changed_files(head, args, stext) if _in_hooks(f, where)]
+    if files:
+        return HOOKS_DENY, files[0]
+    if not sub or not gated(where):
+        return None
+    if any(c.lower().startswith("core.hookspath") for c in conf):
+        return HOOKS_DENY, "git -c core.hooksPath"
+    if sub == "config":
+        low = [a.lower() for a in rest]
+        key = next((k for k, a in enumerate(low) if a == "core.hookspath" or a.startswith("core.hookspath=")), None)
+        writes = {"--unset", "--unset-all", "--add", "--replace-all", "set", "unset", "--edit", "-e", "edit"}
+        if key is not None and (key + 1 < len(rest) or "=" in low[key] or writes & set(low[:key])):
+            return HOOKS_DENY, "git config core.hooksPath"
+        return None
+    if "--no-verify" in rest:
+        return HOOKS_DENY, f"git {sub} --no-verify"
+    if sub == "commit":
+        for a in rest:
+            if a.startswith("-") and not a.startswith("--"):
+                for ch in a[1:]:
+                    if ch == "n":
+                        return HOOKS_DENY, "git commit -n"
+                    if ch in _COMMIT_VALUE_FLAGS:
+                        break
+    return None
 
 
 def _bash_deny(cmd, depth=0, reaches_agent=True):
@@ -1105,6 +1221,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
         if mem and (READERS.search(bare) or re.search(r"\b(?:dd|cp|scp|rsync|gcore|gdb|lldb)\b", bare)):
             return f"a command that reads memory or a core dump ({mem})", mem
         return _reads(READERS.search(bare) and _loose_secret_path(bare))
+    here = _DENY_CWD[0]  # the directory a command runs in, following `cd` along the line (G17)
     for pipe in pipes:
         last = len(pipe) - 1
         cmds = []  # (head, args) of the simple-command stages, for the env-dump pipeline check
@@ -1126,9 +1243,13 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             if head == "security" and args and re.match(r"find-(generic|internet)-password$", args[0]) and "-w" in args:
                 return _prints(f"security {args[0]} -w")
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
-                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext)
+                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
+                or _hooks_deny(head, args, stext, here)
             if hit:
                 return hit
+            if head == "cd":
+                to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
+                here = to if os.path.isabs(to) else os.path.join(here or ".", to)
             remote = _remote_shell(head, args)
             if remote:
                 files = [f for f in [_stdin_file(stext)] if f]
@@ -1208,6 +1329,8 @@ def critical_deny(tool, tool_input, cwd=None):
     _DENY_CWD[0] = cwd
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _grant_file(path):
         return GRANT_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_hooks(path, cwd):
+        return HOOKS_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Grep") and _memory_path(path):
