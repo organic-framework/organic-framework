@@ -237,5 +237,23 @@ class PeoplesWordsTest(unittest.TestCase):
         self.assertIn("д", of_ask_text.YES_KEYS)
 
 
+class JudgeFiledCardTest(unittest.TestCase):
+    """of_architect, 2026-11-12: three cards filed from end-of-turn reports whose status line waited on "the card"
+    beside the list that named the open card by its id (bin/of_judge.py says_more, _ON_A_CARD)."""
+
+    def test_a_wait_on_the_card_is_that_card(self):
+        import of_judge
+        report = ("Готово: правила обновлены, тесты проходят.\n\nМой статус: жду твоего ответа на карточку.\n\n"
+                  "**Вопросы команды OF к тебе:**\n- запускать ли независимого рецензента `of_review` (`d8eaf596`).")
+        self.assertFalse(of_judge.says_more(report, {"d8eaf596"}))
+        self.assertFalse(of_judge.says_more(report.replace("жду твоего ответа на карточку",
+                                                           "waiting for your answer on the card"), {"d8eaf596"}))
+        # a new wait beside the card is still a question
+        self.assertTrue(of_judge.says_more(report.replace("жду твоего ответа на карточку",
+                                                          "жду твоего ответа, запускать ли сборку"), {"d8eaf596"}))
+        self.assertTrue(of_judge.says_more(report.replace("на карточку.", "на карточку: или сначала тесты?"),
+                                           {"d8eaf596"}))
+
+
 if __name__ == "__main__":
     unittest.main()

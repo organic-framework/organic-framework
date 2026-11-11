@@ -386,13 +386,22 @@ def only_filed_ids(conn, text, now=None):
 _UNFILED_ITEM = re.compile(r"(?i)\b(?:вопрос\w*|question\w*|решени\w*|decision\w*|выбор\w*|choice|одобрени\w*|approval)\b")
 
 
+# A wait on "the card" points at an ask already filed (of_architect, 2026-11-12: cards d6b7fbdd, fb9338c0 and
+# 3e3620cd were filed from end-of-turn reports whose status line said "waiting for your answer on the card", beside
+# the list that named the open card by its id).
+_ON_A_CARD = re.compile(r"(?i)(?:\bна|\bпо|\bк)\s+(?:эт\w+\s+|тво\w+\s+|мо\w+\s+)?карточк\w*"
+                        r"|\b(?:on|to|for|about)\s+(?:the|this|that|my|your)\s+(?:card|ask)\b")
+
+
 def says_more(text, ids):
     """Does the message ask the owner something besides these ids: on the lines that name none of them (q-v5's
     requests and owner headings, or a waiting note), or as an item with no id in a list that names them ("WAITING ON:
     from you — `0fd223f2`, `2c43429e`, question about 1Password": a question never filed)?"""
     import of_classify
     lines = (text or "").splitlines()
-    rest = "\n".join(ln for ln in lines if not any(i in ln for i in ids))
+    # a line that names a filed ask is that ask; so is a line waiting on "the card", when the message names the card
+    rest = "\n".join(ln for ln in lines if not any(i in ln for i in ids) and not (_ON_A_CARD.search(ln)
+                                                                              and "?" not in ln))
     if of_classify._request_v5(rest) or of_classify._heading_v5(rest) or of_classify._NOTE_WAITS_OWNER_V5.search(rest):
         return True
     for ln in lines:
