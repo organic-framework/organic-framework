@@ -1332,6 +1332,35 @@ class StuckPane(unittest.TestCase):
         self.assertIn('Do not choose "Move to background and exit"', t)
 
 
+class CapacityPosition(unittest.TestCase):
+    """capacity.yaml `position` names who gets the invariant's work (docs/accounts.md B4); with none, the owner."""
+
+    def tearDown(self):
+        of_locale.set_language(None)
+
+    def test_the_position_and_the_name_records_carry(self):
+        self.assertIsNone(of_capacity.capacity_position({}))
+        self.assertIsNone(of_capacity.capacity_position({"position": "  "}))
+        self.assertEqual(of_capacity.actor({}), "of_capacity")
+        self.assertEqual(of_capacity.capacity_position({"position": "acme:acme_capacity"}), "acme:acme_capacity")
+        self.assertEqual(of_capacity.actor({"position": "acme:acme_capacity"}), "acme_capacity")
+
+    def test_the_owner_cards_without_a_position(self):
+        stalls = [{"session": "s1", "position": "acme_a"}, {"session": "s2", "position": None}]
+        cyr = re.compile("[\\u0400-\\u04ff]")
+        for lang in ("en", "ru"):
+            of_locale.set_language(lang)
+            text, options = of_capacity.owner_card("self", stalls, ["/gg"], [], "")
+            self.assertIn("acme_a, s2", text)
+            self.assertIsNone(options)
+            pool, opts = of_capacity.owner_card("pool", [], [], ["s3"], "- /gg: week 90%")
+            self.assertIn("- /gg: week 90%", pool)
+            self.assertEqual(len(opts.split("|")), 2)
+            for t in (text, pool, opts):
+                self.assertNotIn("{", t)
+                self.assertEqual(cyr.search(t) is not None, lang == "ru", t)
+
+
 class OwnerTextsInTheOwnersLanguage(unittest.TestCase):
     """The owner's cards are English in the code and come in the owner's language from the catalogue
     (bin/of_locale.py; organic-framework 5462bab)."""

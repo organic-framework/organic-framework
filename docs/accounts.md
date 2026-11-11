@@ -1,6 +1,10 @@
 # Harness accounts as an OF feature, and the capacity package
 
-Status: **plan**, 2026-11-11, by `of_capacity`. Done: A1–A3 (`bin/of_accounts.py`, `tests/test_accounts.py`). Next: A4 with `of_herdr`.
+Status: **plan**, 2026-11-11, by `of_capacity`.
+
+- Done: A1–A3 (`bin/of_accounts.py`, `tests/test_accounts.py`).
+- B3 in part: the invariant's work goes to `capacity.yaml` `position`, else to the owner as a card.
+- A4 is with `of_herdr` (hand-over a9c118e8).
 
 Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, translated:
 
@@ -59,7 +63,9 @@ Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, transla
 4. **Machine and organization.** Accounts belong to a person's machine, and one machine may serve several organizations; the founder's serves two.
    - The balancer is one per machine and moves only the positions this machine holds (docs/server-several-machines.md §4.3).
    - The services need no position.
-   - Proposal: the position is optional, one per person, registered in that person's home organization. This is the open decision in §5.
+   - **Decided: one per person** (the founder, about 21:01Z, through `of_conductor` msg 01a1cc68, translated: "one per person").
+     - The position is optional, registered in that person's home organization, and serves the accounts of that person's machines across every organization they work in.
+     - `capacity.yaml` `position` names it on each machine.
 5. **The credential broker** (setup tokens, the vault) stays out of the package until `secret_stores` lands (docs/plugins.md §5, step 2). Then it moves onto that family.
 6. **The `of init` step**, agreed with `of_onboarding`: after the listener is installed, `of init` sees N accounts and asks the head on one card whether to balance between them.
 
@@ -74,5 +80,4 @@ Each step is committed on `main` and named to `of_release` with a reviewer, so i
 
 ## 5. Open
 
-- **Where the optional position lives** (B4): one per person, in their home organization (proposed), or one per organization.
 - **Which of A4's three ways** (`of_herdr`).
