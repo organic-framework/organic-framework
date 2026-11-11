@@ -296,13 +296,13 @@ An organization's choices of the outside products that hold its data, so every m
 
 ```yaml
 plugins:
-  secrets:
+  secret_stores:
     name: 1password          # 1password | bitwarden | vault | aws-sm | gcp-sm | sops | keychain (docs/agent-secrets.md §13.4)
     chosen: "29ea1baa"       # the owner's ask id; required
     settings: {}             # the implementation's own settings, never a secret value
 ```
 
-- **Absent means no product chosen.** For `secrets` that means files: credentials under the credential roots, named by `paths` (Credentials, below), until the owner chooses at the first need (docs/agent-secrets.md §13.2).
+- **Absent means no product chosen.** For `secret_stores` that means files: credentials under the credential roots, named by `paths` (Credentials, below), until the owner chooses at the first need (docs/agent-secrets.md §13.2).
 - **A credential's `ref` names its store** in the store's own form (`op://`, `bws://`, `vault://`, `aws-sm://`, `gcp-sm://`, `sops://`, `keychain://`); `of registry check` refuses a `ref` whose store is not the organization's chosen one.
 - `chosen` is required: the store is the owner's decision, never a default.
 
