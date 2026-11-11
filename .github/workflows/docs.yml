@@ -7,14 +7,13 @@
 name: docs site
 
 on:
-  # By hand only until the first build passes in the lab; then also on every push to main that touches
+  # By hand only until the first build passes; then also on every push to main that touches
   # README.md, FEATURES.md, CHANGELOG.md, docs/**, site/** or this file.
   workflow_dispatch:
 
+# Least privilege per job: the build, which runs npm, can only read; only the deploy job can write to Pages.
 permissions:
   contents: read
-  pages: write
-  id-token: write   # GitHub Pages deploys with the workflow's OIDC token
 
 concurrency:
   group: pages
@@ -23,6 +22,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read   # actions/configure-pages reads the Pages site's address
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
@@ -36,9 +38,9 @@ jobs:
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d   # v6.0.0
       - name: Check the pages and their links
         run: python3 site/scripts/sync.py --check
-      - name: Install
+      - name: Install exactly what site/package-lock.json pins, running no package's install scripts
         working-directory: site
-        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+        run: npm ci --ignore-scripts
       - name: Build
         working-directory: site
         env:
@@ -55,6 +57,9 @@ jobs:
     needs: build
     if: vars.DOCS_SITE == 'publish'
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write   # GitHub Pages deploys with the job's OIDC token
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
