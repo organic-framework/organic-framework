@@ -620,6 +620,40 @@ class InitStructureTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 i.write_plugin_choices(["blobs"], path, check=lambda f, n: None)
 
+    def test_a_rerun_keeps_the_owner_and_refreshes_untouched_files(self):
+        i = self.of_init
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, self.built())
+        self.assertEqual(i.existing_owner(doc, "acme"), ("alex", "Alex"))
+        self.assertIsNone(i.existing_owner({"positions": []}, "acme"))
+        with tempfile.TemporaryDirectory() as repo:
+            old = {"AGENTS.md": "old rules", "registry/briefs/acme_conductor.md": "old brief",
+                   "registry/briefs/acme_org.md": "their own edits", "onboarding/charter.md": "their charter"}
+            for rel, text in old.items():
+                os.makedirs(os.path.dirname(os.path.join(repo, rel)) or repo, exist_ok=True)
+                with open(os.path.join(repo, rel), "w") as fh:
+                    fh.write(text)
+            new = {"AGENTS.md": "new rules", "registry/briefs/acme_conductor.md": "new brief",
+                   "registry/briefs/acme_org.md": "new keeper brief", "onboarding/charter.md": "template"}
+            done, kept = i.refresh_files(repo, new, out=lambda *a: None, stamp="T",
+                                         edited=lambda r, rel: rel == "registry/briefs/acme_org.md")
+            self.assertEqual(done, ["AGENTS.md", "registry/briefs/acme_conductor.md"])
+            self.assertEqual(kept, ["registry/briefs/acme_org.md"])
+            read = lambda rel: open(os.path.join(repo, rel)).read()
+            self.assertEqual(read("registry/briefs/acme_conductor.md"), "new brief")
+            self.assertEqual(read("onboarding/.before-refresh-T/registry/briefs/acme_conductor.md"), "old brief")
+            self.assertEqual(read("registry/briefs/acme_org.md"), "their own edits")
+            self.assertEqual(read("registry/briefs/acme_org.md.package-new"), "new keeper brief")
+            self.assertEqual(read("onboarding/charter.md"), "their charter")  # a working document: never touched
+            git = ["git", "-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", repo]
+            subprocess.run(git[:-2] + ["init", "-q", repo], check=True)
+            subprocess.run(git + ["add", "AGENTS.md"], check=True)
+            subprocess.run(git + ["commit", "-qm", "init"], check=True)
+            self.assertFalse(i.org_edited(repo, "AGENTS.md"))  # one commit, clean
+            with open(os.path.join(repo, "AGENTS.md"), "a") as fh:
+                fh.write("\nour push rule")
+            self.assertTrue(i.org_edited(repo, "AGENTS.md"))  # changed since
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS

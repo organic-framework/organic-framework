@@ -509,6 +509,66 @@ def write_files(repo, files, out=print):
         out(f"  + {rel}")
 
 
+def existing_owner(doc, prefix):
+    """(person id, name) of the person holding <prefix>_owner in a registry already written, else None. A re-run of
+    of init keeps the organization's owner, whatever --owner says (a different --owner would add a stray person)."""
+    p = next((x for x in doc.get("positions") or [] if isinstance(x, dict) and x.get("name") == f"{prefix}_owner"), None)
+    pid = ((p or {}).get("holder") or {}).get("person")
+    if not pid:
+        return None
+    return pid, ((doc.get("people") or {}).get(pid) or {}).get("name") or pid
+
+
+# --refresh: the package files a re-run may bring up to date (the founder, 2026-11-11: a user organization updated OF,
+# but its agents kept the old briefs, since of init never overwrites). The working documents (the charter, the role
+# design, the re-check) are never touched: they hold the organization's own words.
+def refreshable(files):
+    return ["AGENTS.md", "onboarding/README.md"] + sorted(r for r in files if r.startswith("registry/briefs/"))
+
+
+def org_edited(repo, rel, run=subprocess.run):
+    """Whether the organization changed one of init's files after init wrote it: more than one commit touched it, or
+    it has changes not committed. A file never committed counts as not edited (its copy is kept anyway)."""
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        return False
+    g = ["git", "-C", repo]
+    commits = run(g + ["log", "--format=%h", "--", rel], capture_output=True, text=True).stdout.split()
+    tracked = run(g + ["ls-files", "--error-unmatch", "--", rel], capture_output=True, text=True).returncode == 0
+    dirty = run(g + ["status", "--porcelain", "--", rel], capture_output=True, text=True).stdout.strip()
+    return len(commits) > 1 or (tracked and bool(dirty))
+
+
+def refresh_files(repo, files, out=print, stamp=None, edited=org_edited):
+    """Bring the package's files up to date: each that differs is copied to onboarding/.before-refresh-<stamp>/ and
+    overwritten, unless the organization edited it; then the new version goes beside it as <file>.package-new for
+    its structure keeper to merge. Returns (refreshed, kept)."""
+    stamp = stamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    refreshed, kept = [], []
+    for rel in refreshable(files):
+        path = os.path.join(repo, rel)
+        if rel not in files or not os.path.exists(path):
+            continue
+        with open(path) as fh:
+            old = fh.read()
+        if old == files[rel]:
+            continue
+        if edited(repo, rel):
+            with open(path + ".package-new", "w") as fh:
+                fh.write(files[rel])
+            kept.append(rel)
+            out(f"  ~ {rel}: edited here, kept; the package's version is beside it ({rel}.package-new)")
+            continue
+        backup = os.path.join(repo, "onboarding", f".before-refresh-{stamp}", rel)
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        with open(backup, "w") as fh:
+            fh.write(old)
+        with open(path, "w") as fh:
+            fh.write(files[rel])
+        refreshed.append(rel)
+        out(f"  ↻ {rel}")
+    return refreshed, kept
+
+
 def owner_identity(owner=None):
     """(person id, name) of the organization's owner: the name given, else this machine's login name."""
     import getpass
@@ -660,12 +720,23 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=()):
+         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=(), refresh=False):
     import yaml
     display = display_name(org)
     org = _name(org)
     prefix = org_prefix(org)
     owner_id, owner_name = owner_identity(owner)
+    kept_owner = None
+    try:
+        with open(os.path.join(os.path.expanduser(repo or f"~/of/{org}"), "registry", "positions.yaml")) as fh:
+            kept_owner = existing_owner(yaml.safe_load(fh) or {}, prefix)
+    except (OSError, ValueError):
+        pass
+    if kept_owner and kept_owner[0] != owner_id:
+        if owner:
+            out(f"  the organization's owner stays {kept_owner[1]} ({kept_owner[0]}), as first written; "
+                f"--owner {owner!r} is not used (change the holder of {prefix}_owner by a diff instead)")
+        owner_id, owner_name = kept_owner
     listed = next((o for o in (owner_settings(_config_path("orgs.yaml")).get("orgs") or [])
                    if isinstance(o, dict) and o.get("name") == _name(org)), {})
     start_on = agent_settings(model, effort, listed.get("agents"))
@@ -729,6 +800,13 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
                 doc, q, repo, agents=start_on, detach=remote or q != cond, remote_control=remote and q == cond)] if c}
             run = fill(load_package(pkg_dir)["run"], values)
             built["files"]["onboarding/README.md"] = run_readme(load_package(pkg_dir), run, values, by_hand)
+        if refresh:
+            files = dict(built["files"], **{"AGENTS.md": AGENTS_MD.format(**values)})
+            refreshed, _ = refresh_files(repo, files, out)
+            if refreshed:
+                out("  running agents keep the brief they started with: their conductor tells each to read it again "
+                    "(of send <position> \"your brief changed; read it again\"); the old files are under "
+                    "onboarding/.before-refresh-*")
         write_files(repo, built["files"], out)
         out(f"  {prefix}_conductor is the first position; nothing is running yet.")
         if by_hand:
