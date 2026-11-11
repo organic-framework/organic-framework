@@ -1,0 +1,9 @@
+# asks-screen-v0 at 160x45: a money answer needs a second press; any other key cancels it, nothing recorded
+keys \t
+keys g
+read 50-money-first
+keys 1
+read 51-after-1
+keys x
+sleep 1
+read 52-after-other-key

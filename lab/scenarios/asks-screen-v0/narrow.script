@@ -1,0 +1,9 @@
+# asks-screen-v0 at 96x40: the pane is under 100 columns, so layout B (one card per screen)
+sleep 3
+keys g
+read 40-narrow-first
+keys \x1b[C
+read 41-narrow-right
+keys \x1b[D
+keys \x1b[D
+read 42-narrow-left-twice-wraps
