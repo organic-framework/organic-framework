@@ -4306,17 +4306,39 @@ def _listener_runs_capacity():
         return False
 
 
-def _capacity_ask(text, options=None, task=None, due=None, blocking=False):
-    """of_capacity's asks and tasks to the owner. Every field cmd_ask reads is set: a Namespace without `task`
-    raised AttributeError from 2026-11-06 (a2b0d44) to 2026-11-07, and no capacity ask reached the owner."""
+def _capacity_ask(text, options=None, task=None, due=None, blocking=False, positions=None):
+    """The balancer's asks and tasks to the owner. Every field cmd_ask reads is set: a Namespace without `task`
+    raised AttributeError from 2026-11-06 (a2b0d44) to 2026-11-07, and no capacity ask reached the owner.
+    The sender is the machine's capacity position (of_capacity.actor()). When no registry on this machine has that
+    position (a colleague's machine with no capacity position; of_capacity, 2026-11-12), cmd_ask would refuse it and
+    the ask would be lost: it is filed as a machine card instead, as the disk card is (bin/of_scratch.py)."""
+    import of_capacity
+    sender = of_capacity.actor()
+    positions = _load_quiet() if positions is None else positions
+    if not any(sender == p["name"] or sender in [str(a) for a in p.get("aliases") or []] for p in positions):
+        return _capacity_card(sender, text, options, task, due, blocking)
     with open(os.devnull, "w") as null:
         saved, sys.stdout = sys.stdout, null
         try:
             cmd_ask(argparse.Namespace(question=None if task else text, options=options, blocking=blocking,
-                                       to="founder", sender="of_capacity", task=task, command=None, tags=None,
+                                       to="founder", sender=sender, task=task, command=None, tags=None,
                                        due=due, work=None, where=None, escalates=None))
         finally:
             sys.stdout = saved
+
+
+def _capacity_card(sender, text, options=None, task=None, due=None, blocking=False):
+    """The balancer's ask as a machine card to the owner, with no registry position behind it."""
+    import of_events
+    steps = of_hook_mask(task) if task else None
+    question = of_hook_mask(text if not task else (steps or "").strip().splitlines()[0][:200])
+    opts = [o.strip() for o in (options or "").split("|") if o.strip()]
+    return of_events.emit("agent_question", {
+        "detected_by": "declared", "source": "capacity", "from_position": sender, "to": "founder",
+        "blocking": bool(blocking), "topic_key": _topic_key(question), **({"due": _due(due)} if due else {}),
+        "questions": [{"question": question, "options": opts}],
+        **({"task": True, "steps": steps, "command": None, "where": "machine"} if task else {})},
+        position=sender)
 
 
 def _capacity_watch(positions, log):

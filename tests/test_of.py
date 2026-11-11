@@ -143,6 +143,25 @@ class RegistryTest(unittest.TestCase):
         given = set(_re.findall(r"([a-z_]+)=", inspect.getsource(of._capacity_ask).split("Namespace(", 1)[1]))
         self.assertEqual(sorted(reads - given), [])
 
+    def test_capacity_ask_with_no_capacity_position_is_a_machine_card(self):
+        """2026-11-12 (of_capacity): on a machine whose registries have no capacity position, cmd_ask refused the
+        sender and the balancer's ask was lost; it is filed as a machine card to the owner instead."""
+        import of_events
+        evs, saved = [], of_events.emit
+        of_events.emit = lambda kind, payload, **kw: evs.append({"kind": kind, "payload": payload, **kw}) or "e1"
+        try:
+            of._capacity_ask("Move the positions?", "move now|wait for the reset", positions=[])
+            of._capacity_ask(None, task="Log in to the account a\n1. run it", positions=[])
+        finally:
+            of_events.emit = saved
+        qs = [e for e in evs if e.get("kind") == "agent_question"]
+        self.assertEqual(len(qs), 2)
+        card, task = (q["payload"] for q in qs)
+        self.assertEqual((card["to"], card["source"]), ("founder", "capacity"))
+        self.assertEqual(card["questions"][0]["options"], ["move now", "wait for the reset"])
+        self.assertTrue(task["task"])
+        self.assertEqual(task["questions"][0]["question"], "Log in to the account a")
+
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
              "notes": {"Waits for runners_coordinator after the CA window.": None}}
