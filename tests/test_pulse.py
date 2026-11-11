@@ -661,6 +661,34 @@ class RemoteQueueTest(unittest.TestCase):
             finally:
                 of_events.STATE_DIR = saved
 
+    def test_a_deferred_delivery_is_not_told_and_no_queue_crosses_organizations(self):
+        """After-the-fact review of 2026-11-11, findings 4 and 5."""
+        pos = [{"name": "acme_conductor", "role": "conductor", "status": "active", "_org": "acme"},
+               {"name": "of_conductor", "role": "conductor", "status": "active", "_org": "ofb"},
+               {"name": "acme_dev", "role": "dev", "status": "active", "_org": "acme"},
+               {"name": "glx_dev", "role": "dev", "status": "active", "_org": "globex"}]
+        asks = [{"event_id": "e-acme", "state": "open", "to": "founder", "position": "acme_dev", "text": "a"},
+                {"event_id": "e-glx", "state": "open", "to": "founder", "position": "glx_dev", "text": "g"}]
+        views = [({"id": "r1", "title": "Stuck one"}, "stuck", [])]
+        idle = {"acme_conductor": {"pane_id": "p-a", "agent_status": "idle"},
+                "of_conductor": {"pane_id": "p-o", "agent_status": "idle"}}
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            try:
+                typed, mem = [], {}
+                defer = lambda p, t, w: typed.append((p, t)) or ("deferred", "agent busy")
+                of_pulse.remote_notes(pos, idle, asks, [], mem, defer, T0, log=lambda m: None, views=views)
+                self.assertEqual(mem.get("remote_seen"), [])  # deferred: nothing marked, the next pulse tries again
+                typed = []
+                ok = lambda p, t, w: typed.append((p, t)) or (True, "typed")
+                of_pulse.remote_notes(pos, idle, asks, [], mem, ok, T0, log=lambda m: None, views=views)
+                self.assertEqual([p for p, _ in typed], ["p-a"])  # acme's card to acme's conductor only
+                self.assertNotIn("glx_dev", typed[0][1])           # globex has no conductor: not sent to another's
+                self.assertNotIn("Stuck one", typed[0][1])         # two conductors live, none named: not guessed
+            finally:
+                of_events.STATE_DIR = saved
+
 
 class TaskClaimTest(unittest.TestCase):
     """2026-11-07, task bd12d0: platform_owner's 'of asks answered' for a routed question also claimed a founder's task

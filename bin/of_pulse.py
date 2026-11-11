@@ -435,10 +435,17 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
                   and p.get("status", "active") == "active"]
     if not conductors:
         return 0
-    first = conductors[0]
+    # The person's own conductor, for what is theirs across organizations (their stuck requests): the one owner.yaml
+    # names (`conductor:`), else the only conductor live on this machine. Never another organization's conductor by
+    # default (after-the-fact review of 2026-11-11, finding 5: the founder's queue would leak across organizations).
+    import of_locale
+    named = of_locale.owner_setting("conductor")
+    local = [c for c in conductors if (live.get(c["name"]) or {}).get("pane_id")]
+    mine = by_name.get(named) if named else (local[0] if len(local) == 1 else None)
 
     def conductor_for(org):
-        return next((c for c in conductors if c.get("_org") == org), first)
+        """The conductor of an organization's own item: that organization's; none when it has none."""
+        return next((c for c in conductors if c.get("_org") == org), None)
 
     seen = mem.setdefault("remote_seen", [])
     items = {}
@@ -449,7 +456,10 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
         if key not in seen:
             org = (by_name.get(a.get("position")) or {}).get("_org")
             what = "a task for their hands" if a.get("task") else "a card"
-            items.setdefault(conductor_for(org)["name"], []).append(
+            c = conductor_for(org)
+            if not c:
+                continue  # an organization without a conductor: its owner sees the popup, never another's chat
+            items.setdefault(c["name"], []).append(
                 (key, f"{what} from {a.get('position')}: {str(a.get('text') or '')[:160]} (ask {a['event_id'][-8:]})"))
     for r in rows:
         if r.get("kind") != "waiting_owner":
@@ -457,7 +467,10 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
         key = f"wait:{r['position']}:{r.get('since')}"
         if key not in seen:
             org = (by_name.get(r["position"]) or {}).get("_org")
-            items.setdefault(conductor_for(org)["name"], []).append(
+            c = conductor_for(org)
+            if not c:
+                continue
+            items.setdefault(c["name"], []).append(
                 (key, f"{r['position']} waits on them: {str(r.get('text') or '; '.join(r.get('evidence') or []))[:160]}"))
     if views is None:
         import of_conductor_panel
@@ -469,7 +482,10 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
             continue
         key = f"stuck:{req.get('id')}"
         if key not in seen:
-            items.setdefault(first["name"], []).append(
+            if not mine:
+                log("remote notes: no conductor of the person's own (owner.yaml conductor:) for a stuck request")
+                continue
+            items.setdefault(mine["name"], []).append(
                 (key, f"their request is stuck: {req.get('title') or req.get('title_ru') or req.get('id')}"))
     told = 0
     for name, its in items.items():
@@ -479,7 +495,11 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
         text = ("Message from of_pulse (via of pulse, authority: none; the person's queue, remote surface)\n"
                 "New for the person you serve; tell them in their language and plain words within this turn:\n"
                 + "\n".join(f"- {line}" for _, line in its) + "\n[to you as their conductor, once per item]")
-        prompt(pane["pane_id"], text, "of_pulse")
+        res = prompt(pane["pane_id"], text, "of_pulse")
+        ok = res[0] if isinstance(res, tuple) else (res is None or res is True)
+        if ok is not True:  # deferred or failed: not told, so the next pulse tries again (review 2026-11-11, finding 4)
+            log(f"remote notes: {name} not told ({res[1] if isinstance(res, tuple) and len(res) > 1 else res})")
+            continue
         of_events.emit("nudge_sent", {"position": name, "from_position": "of_pulse", "to_position": name,
                                       "about": f"{len(its)} item(s) of the person's queue", "pane": pane["pane_id"],
                                       "kind": "remote_queue"}, position=name, org=by_name.get(name, {}).get("_org"))
