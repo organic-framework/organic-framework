@@ -318,7 +318,7 @@ class MovePieces(unittest.TestCase):
         self.assertIsNone(of_capacity.input_draft(compact))
         self.assertIsNone(of_capacity.input_draft(["❯ 1. Stop and wait for limit to reset", "  2. Wait here"]))
         agents_panel = box[:3] + ["  ⏵⏵ bypass permissions on · 11 shells", "", "  ⏺ main",
-                                  "❯ ◯ general-purpose  Ожидаю CI для PR 696, W7-02   1d 13h"]
+                                  "❯ ◯ general-purpose  Waiting for CI on PR 696, W7-02   1d 13h"]
         self.assertEqual(of_capacity.input_draft(agents_panel), "")  # the agents list under the box is not a draft
         history = ["\x1b[48;2;55;55;55m❯ \x1b[0m\x1b[38;2;255;255;255man earlier prompt\x1b[0m", "⏺ ok"] + box
         self.assertEqual(of_capacity.input_draft(history), "")
@@ -525,7 +525,7 @@ class HerdrName(unittest.TestCase):
 
 class RegistryIsNotOurs(unittest.TestCase):
     REG = ('positions:\n  - name: acme_a\n    holder:\n      session: s1\n'
-           '      workplace: zellij quadratic-magpie, pane 55 (tab "cloudflared (фон)")\n'
+           '      workplace: zellij quadratic-magpie, pane 55 (tab "cloudflared (background)")\n'
            '  - name: acme_b\n    holder:\n      workplace: "zellij x, pane 193 (Tab #1), account ~/.claude-g"\n')
 
     def test_a_move_proposes_a_diff_and_never_writes_the_registry(self):
@@ -542,7 +542,7 @@ class RegistryIsNotOurs(unittest.TestCase):
             self.assertTrue(os.path.exists(path))
             self.assertIn('+      workplace: "herdr local, workspace acme·shop, tab storefront, pane wD:p1"', diff)
             self.assertNotIn("account", diff.split("+      workplace:")[1].splitlines()[0])  # runtime, not structure
-            new = self.REG.replace('zellij quadratic-magpie, pane 55 (tab "cloudflared (фон)")',
+            new = self.REG.replace('zellij quadratic-magpie, pane 55 (tab "cloudflared (background)")',
                                    '"herdr local, workspace acme·shop, tab storefront, pane wD:p1"')
             self.assertEqual(yaml.safe_load(new)["positions"][0]["holder"]["workplace"],
                              "herdr local, workspace acme·shop, tab storefront, pane wD:p1")

@@ -124,7 +124,7 @@ Why: **budget left in a window at its reset is lost, so spend first what resets 
 
 ### The invariant: no session stands on a limit while another account accepts work (design, 2026-11-11)
 
-**Founder, 2026-11-10 ~20:10Z:** «у меня сессия в 5-часовой лимит уперлась. Почему ее никто не ребалансирует на другой аккаунт?» (hand-over 2759a172 from of_conductor).
+**Founder, 2026-11-10 ~20:10Z:** "my session hit its 5-hour limit. Why is nobody rebalancing it to another account?" (hand-over 2759a172 from of_conductor).
 
 **The class.** A session stopped on a usage limit stays stopped while another account could run it. This happened five times in four days, and each time a rule or a parameter was fixed and the class remained:
 - 11-07: ten Acme sessions stood on `~/.claude` at 100%, because relief took only idle holders;
@@ -400,7 +400,7 @@ The broker:
 
 1. **Decisions:**
    - The four accounts are the founder's own: confirmed 2026-11-07.
-   - **Keep the four accounts as they are; no written question to Anthropic** (the founder, in `of_capacity`'s session, 2026-11-07, about 12:34Z: «такой вопрос, конечно, задавать не нужно. Мы уже разобрались эту всю историю»). The balancer keeps spreading the fleet over them.
+   - **Keep the four accounts as they are; no written question to Anthropic** (the founder, in `of_capacity`'s session, 2026-11-07, about 12:34Z: "of course there is no need to ask such a question. We have already sorted out this whole story"). The balancer keeps spreading the fleet over them.
    - The tax workers' lane is Acme's, asked by `acme_org`.
 2. **Inventory** (`of capacity creds`, `adopt`): events only, no secrets. It can ship before the vault.
 3. **Vault and service account** (code built; the founder's sitting waits until a consumer needs a token, since none does on 2026-11-08): the founder runs `of capacity vault-setup` himself, in a normal terminal tab. It is a committed command, so no task text has to carry the token file's path. It uses his own `op` session (Touch ID), creates the vault and `of-capacity`, and writes the token straight to its mode-600 file. It refuses to run from automation or an agent's pane, and never overwrites an existing token. The step is `of_capacity`'s own founder task. It is filed once step 4's code exists, so that the vault line, the first Authorize clicks and, if `acme_org` chooses lane B, the Console key make one sitting. Acme's 1Password line is `acme_org`'s own task (`569478d4`), by the boundary rule.
