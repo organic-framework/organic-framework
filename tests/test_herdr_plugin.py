@@ -68,6 +68,24 @@ class HookTest(unittest.TestCase):
         self.assertIsNone(plugin.wait_session("w1:p1", wait_s=3, get=lambda p: None, clock=lambda: next(t),
                                               sleep=lambda s: None))
 
+    def test_a_panels_button_opens_the_popup(self):
+        calls = []
+
+        class R:
+            def __init__(self, out, rc=0):
+                self.returncode, self.stdout, self.stderr = rc, out, ""
+        ok = lambda argv, **k: (calls.append(argv), R('{"id":"cli:plugin","result":{"type":"ok"}}'))[1]
+        self.assertEqual(plugin.open_questions("/w/bin/of", run=ok), (True, None))
+        self.assertEqual(calls[0][1:7], ["plugin", "pane", "open", "--plugin", "organic-framework", "--entrypoint"])
+        self.assertEqual(calls[0][-2:], ["--env", "OF_ASKS_OF=/w/bin/of"])
+        self.assertNotIn("--placement", calls[0])  # the manifest's popup applies; the CLI cannot name it
+        class E(R):
+            def __init__(self, err):
+                super().__init__("", 1)
+                self.stderr = err
+        busy = lambda argv, **k: E('{"error":{"code":"ui_busy","message":"a popup pane is already open"},"id":"cli:plugin"}')
+        self.assertEqual(plugin.open_questions(run=busy), (False, "ui_busy"))  # herdr 0.9.5 prints it on stderr
+
     def test_applies_are_coalesced(self):
         """After a herdr restart many agents are detected at once: one apply at a time, and exactly one more for
         everything that arrived during it."""
