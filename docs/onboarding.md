@@ -10,7 +10,7 @@ The founder's rules for it (2026-11-10):
 ## Start a company on OF
 
 ```sh
-of init <org> --owner "<the head's name>"   # the repository, the head's conductor, the onboarding unit; no agent started
+of init <org> --owner "<the head's name>" --language <en|ru|…>   # the repository, the conductor, the unit; no agent started
 of registry check                            # passes
 cd ~/of/<org> && claude --dangerously-skip-permissions   # once: trust the folder, accept the bypass warning, /exit
 of spawn <org>_conductor --config-dir ~/.claude   # the head's one window: the first agent started
@@ -31,7 +31,7 @@ Then the head talks to the conductor, and the onboarding runs through it. `<org>
 
 No agent is started. The agents that already run on the machine are listed as positions for the structure keeper to name later. `of registry check` passes with one warning until the charter is approved: the organization's keeper has no ask id under `confirmed:` yet.
 
-Without `--owner`, the head's name is the machine's login name.
+Without `--owner`, the head's name is the machine's login name. `--language` is the language the agents use with the head, one setting kept in `~/.config/of/owner.yaml` (`of spawn` reads it too); without it `of init` asks in a terminal, keeps the machine's earlier setting, or uses English. It goes into the conductor's and the lead's briefs, the organization's `AGENTS.md` and the charter's section 7.
 
 ## Concepts
 

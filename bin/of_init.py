@@ -42,6 +42,75 @@ def _ask(question, yes):
         return False
 
 
+# -------------------------------------------------------------------- the owner's language
+
+# The language the agents use with the head: one explicit setting, asked at init (the founder, 2026-11-11: a new
+# organization's conductor talked Russian, and nothing set its language). Kept in ~/.config/of/owner.yaml `language`,
+# which of spawn reads for the owner's tasks; written into the conductor's brief, the lead's and the charter.
+LANGUAGES = {"en": "English", "ru": "Russian", "uk": "Ukrainian", "de": "German", "fr": "French", "es": "Spanish",
+             "it": "Italian", "pt": "Portuguese", "tr": "Turkish", "ar": "Arabic", "zh": "Chinese", "ja": "Japanese"}
+_NAMES = dict({v.lower(): k for k, v in LANGUAGES.items()}, **{"русский": "ru", "english": "en"})
+
+
+def language_code(text):
+    """A language code for a code or a name ("ru", "Russian", "русский" -> "ru"); an unknown one is kept as given."""
+    s = str(text or "").strip()
+    low = s.lower()
+    return low if low in LANGUAGES else _NAMES.get(low, s)
+
+
+def language_name(code):
+    return LANGUAGES.get(code, code)
+
+
+def owner_settings(path=None):
+    import yaml
+    path = path or _config_path("owner.yaml")
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _config_path(name):
+    import of_events
+    return of_events.config_path(name)
+
+
+def resolve_language(arg=None, yes=False, path=None, ask=None):
+    """(code, changed): --language first, then this machine's owner.yaml, then a question in a terminal, else English.
+    ask(prompt) -> answer; None reads stdin when it is a terminal and --yes was not given."""
+    current = str(owner_settings(path).get("language") or "").strip()
+    if arg:
+        code = language_code(arg)
+    elif current:
+        code = current
+    else:
+        if ask is None and not yes and sys.stdin.isatty():
+            ask = input
+        try:
+            answer = ask("Which language should your agents use with you? A code or a name (en, ru, …) [en] ") \
+                if ask else ""
+        except EOFError:
+            answer = ""
+        code = language_code(answer) or "en"
+    return code, code != current
+
+
+def write_language(code, path=None):
+    """Set `language` in owner.yaml, keeping its other keys."""
+    import yaml
+    path = path or _config_path("owner.yaml")
+    doc = owner_settings(path)
+    doc["language"] = code
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("# The organization's owner on this machine (of init --language; of spawn reads it)\n")
+        yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+
+
 # -------------------------------------------------------------------- hooks
 
 def config_dir(explicit=None):
@@ -248,7 +317,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 PACKAGE_DIR = os.path.join(os.path.dirname(HERE), "bench", "onboarding")
 PREFIX_MAX = 14  # "<prefix>_system-architect" stays within the 32 characters of a name
 SUMMARY_MAX = 40
-TOKEN = re.compile(r"\{(org|Org|owner_id|owner_name)\}")
+TOKEN = re.compile(r"\{(org|Org|owner_id|owner_name|language)\}")
 
 
 def display_name(org_arg):
@@ -283,7 +352,9 @@ def load_package(pkg_dir=PACKAGE_DIR):
 def build_structure(pkg, values, pkg_dir=PACKAGE_DIR):
     """The registry parts and the files the package gives a new organization, nothing written:
     {people, systems, units, positions (the conductor first), works, files {repo-relative path: text}}.
-    values: {org (the prefix), Org, owner_id, owner_name}."""
+    values: {org (the prefix), Org, owner_id, owner_name, language (a name; English when absent)}."""
+    values = dict({"language": "English"}, **values)
+
     def read(rel):
         with open(os.path.join(pkg_dir, rel)) as fh:
             return fill(fh.read(), values)
@@ -488,6 +559,8 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Language.** Agents talk to {owner_name} in {language}, whatever language the tools, the records or other agents
+  use; they switch only when {owner_name} asks (`of init --language`, kept in `~/.config/of/owner.yaml`).
 - **Who does what needs evidence.** A claim that a person holds a position, keeps a system or decides it carries
   `evidence:` beside it: the authorship it rests on, with its window, or an ask id. The people map from the
   repositories comes before any person's position, and {owner_name}'s words go in verbatim, never retold
@@ -502,16 +575,21 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR):
+         pkg_dir=PACKAGE_DIR, language=None):
     import yaml
     display = display_name(org)
     org = _name(org)
     prefix = org_prefix(org)
     owner_id, owner_name = owner_identity(owner)
+    lang, lang_changed = resolve_language(language, yes)
     values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
-              "owner_evidence": owner_evidence(org, owner, owner_name)}
+              "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
     home = os.path.expanduser("~")
-    out(f"Organic Framework: init for organization {org!r} (owner: {owner_name})\n")
+    out(f"Organic Framework: init for organization {org!r} (owner: {owner_name}; "
+        f"agents talk to them in {language_name(lang)})\n")
+    if lang_changed:
+        write_language(lang)
+        out(f"  language: {lang}, in {_config_path('owner.yaml')} (change it with of init --language)")
     out("1. Prerequisites")
     if not check_prereqs(out):
         out("\nFix the missing prerequisites above, then run `of init` again.")

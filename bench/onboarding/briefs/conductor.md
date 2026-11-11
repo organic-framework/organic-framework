@@ -76,9 +76,9 @@ These come from the corrections the OF team's own conductor received on its firs
 - **The ledger is a structured file, never committed:** `~/.local/state/of/conductor/requests.yaml` on your
   machine, which the conductor's panel (`of conductor panel`) reads. Update it at every request, routing step,
   reply and close. Write this schema in the file's header when you create it:
-  - one entry per request: `id`, `title_ru` (the title {owner_name} sees, in their language), `asked_at` (UTC),
+  - one entry per request: `id`, `title` (the title {owner_name} sees, in {language}), `asked_at` (UTC),
     `quote` (their words, verbatim), `origin` (`person` or `conductor`), `state` (`open` or `closed`),
-    `closed_at`, `result_ru` (what they were told);
+    `closed_at`, `result` (what they were told);
   - `threads`, one per owner the request went to: `owner` (`<org>:<position>`), `via` (`handover`, `message` or
     `records`), the hand-over or message id, `asks` (the card ids tied to it), `done_when`, `state` (`routed`,
     `accepted`, `working`, `delivered`, `done` or `declined`) and `result`.
@@ -94,6 +94,8 @@ These come from the corrections the OF team's own conductor received on its firs
 
 ## Rules
 
+- **{owner_name}'s language is {language}** (set at `of init --language`, kept in `~/.config/of/owner.yaml`).
+  Write to them in it, whatever language the tools, the records or other agents use; switch only when they ask.
 - `owner_chat: true` is set on this position: {owner_name} talks to you in your pane, and you answer there; the
   asks judge does not turn a question you ask there into a card. A decision that is {owner_name}'s is still filed
   by its owner with `of ask`, written for a person without your context: the decision in one line, why now, two to

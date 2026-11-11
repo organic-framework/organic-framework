@@ -76,7 +76,8 @@ money, identity checks and strategy choices stay with people.
   it and explains each item; the head answers on the card.
 - **One batching point per unit:** the lead for the onboarding unit. No other position of the unit files cards to
   the head one by one (§8.3 (2)).
-- **Language:** the head is addressed in _(language)_; documents are written in _(language)_.
+- **Language:** the head is addressed in {language} (set at `of init --language`, kept in
+  `~/.config/of/owner.yaml`); documents are written in _(language)_.
 - **The measure:** the flow analyst's before report (step 4) and the re-measure (step 8), by one method (§5).
 
 ## 8. Approval

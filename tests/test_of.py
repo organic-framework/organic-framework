@@ -495,6 +495,29 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_the_language_is_one_setting_asked_at_init(self):
+        lang = self.of_init
+        self.assertEqual([lang.language_code(x) for x in ("ru", "Russian", "русский", "EN", "Klingon")],
+                         ["ru", "ru", "ru", "en", "Klingon"])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "owner.yaml")
+            self.assertEqual(lang.resolve_language(None, yes=True, path=path), ("en", True))  # no terminal: English
+            self.assertEqual(lang.resolve_language(None, path=path, ask=lambda q: "Russian"), ("ru", True))
+            lang.write_language("ru", path)
+            self.assertEqual(lang.resolve_language(None, path=path, ask=lambda q: self.fail("asked again")), ("ru", False))
+            self.assertEqual(lang.resolve_language("de", yes=True, path=path), ("de", True))  # --language wins
+            with open(path, "a") as fh:
+                fh.write("time_zone: Asia/Dubai\n")
+            lang.write_language("de", path)
+            self.assertEqual(lang.owner_settings(path), {"language": "de", "time_zone": "Asia/Dubai"})
+        b = self.built(dict(self.values, language="Russian"))
+        conductor = b["files"]["registry/briefs/acme_conductor.md"]
+        self.assertIn("Alex's language is Russian", conductor)
+        self.assertIn("`title` (the title Alex sees, in Russian)", conductor)
+        self.assertNotIn("_ru", conductor)
+        self.assertIn("addressed in Russian", b["files"]["onboarding/charter.md"])
+        self.assertIn("is English", self.built()["files"]["registry/briefs/acme_conductor.md"])  # the default
+
     def test_the_heads_holding_carries_its_evidence(self):
         ev = self.of_init.owner_evidence("acme", "Alex", "Alex", day="2026-11-11")
         self.assertEqual(ev, 'of init acme --owner "Alex", run on this machine on 2026-11-11')

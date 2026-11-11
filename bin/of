@@ -4930,8 +4930,10 @@ def main(argv=None):
     it.add_argument("--yes", "-y", action="store_true")
     it.add_argument("--no-service", action="store_true")
     it.add_argument("--owner", help="the head's name: a person in people: holding <org>_owner (default: the login name)")
+    it.add_argument("--language", help="the language agents use with the head, a code or a name (en, ru, …); "
+                                       "asked in a terminal when unset; kept in ~/.config/of/owner.yaml")
     it.set_defaults(fn=lambda a: __import__("of_init").init(a.org, a.repo, a.path, a.yes, a.config_dir, not a.no_service,
-                                                            owner=a.owner))
+                                                            owner=a.owner, language=a.language))
     se = sub.add_parser("leaks", aliases=["secrets"],  # renamed: one letter from `of secret`, the broker (of_docs)
                         help="count leaked secrets from gitleaks reports, without revealing them (alias: secrets)")
     se.add_argument("action", choices=["summarize", "scan-context", "review", "mark", "rotations"])

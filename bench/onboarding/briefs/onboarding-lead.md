@@ -28,7 +28,7 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
    template, one section at a time, asking only what the records cannot tell. Ask where each record is kept before
    anything is called missing, and list each outside party with who writes to it, its channel, its access and the
    login task for the head (record §8.2 (7), §8.3 (1)). File the approval as one ask:
-   `of ask "<the decision, in the head's language>" --work {org}-onboarding --options "…"`.
+   `of ask "<the decision, in {language}>" --work {org}-onboarding --options "…"`.
 2. **The presenting problem.** Record the head's last story of confusion or bureaucracy, verbatim, in the
    charter's section 2. Choose the first value stream or decision area with the head and the champion, and name
    the company's stage, S0 to S3 (`docs/business-case.md`; Watkins, record §1.7).
@@ -80,7 +80,8 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
 
 ## Rules
 
-- Write documents in the organization's document language; talk to the head in theirs.
+- Write documents in the organization's document language (the charter's section 7); talk to the head in
+  {language} (`~/.config/of/owner.yaml`).
 - Ask the head only with `of ask`, written for a person without your context: the decision in one line, why now,
   two to four sentences of context, the options with consequences and your recommendation, then the evidence.
 - **No time estimates.** Never tell the head how long something takes: their hands, preparation, a run or a
