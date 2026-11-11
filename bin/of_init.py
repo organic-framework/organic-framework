@@ -496,7 +496,7 @@ def owner_evidence(org, owner, owner_name, day=None):
     return f"of init {org} without --owner, run on this machine on {day}: the login name {owner_name}"
 
 
-def hand_start(doc, conductor, repo, of_cmd="of"):
+def hand_start(doc, conductor, repo, of_cmd="of", agents=None):
     """Without herdr, `of spawn` cannot open a pane: reserve the conductor's session id in the registry (nothing is
     started) and return the two lines that start it by hand in a terminal: declare the brief, then run claude in the
     repository with that session id. Re-running reuses the reserved id. None when the conductor is not in doc or
@@ -515,10 +515,27 @@ def hand_start(doc, conductor, repo, of_cmd="of"):
     brief = of_spawn.brief_text(p, repo)
     return [f"{of_cmd} event injected_prompt --injector of_init --session {sid} --position {conductor} "
             f"--text {shlex.quote(brief)}",
-            f"cd {shlex.quote(repo)} && claude --session-id {sid} --name {conductor} {shlex.quote(brief)}"]
+            f"cd {shlex.quote(repo)} && claude --session-id {sid} --name {conductor}"
+            + "".join(f" --{k} {shlex.quote(str(v))}" for k, v in (agents or {}).items() if k in ("model", "effort") and v)
+            + f" {shlex.quote(brief)}"]
 
 
 HAND_START = "a terminal on the head's machine, started by hand (no herdr); of init reserved this session id"
+
+# What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "при сетапе of ставил opus xhigh"). The
+# alias follows the newest Opus. of init writes it on the organization's entry in orgs.yaml (`agents:`); every session
+# OF starts uses it unless a position or the command names another.
+AGENT_DEFAULTS = {"model": "opus", "effort": "xhigh"}
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def agent_settings(model=None, effort=None, current=None):
+    """The `agents:` entry for orgs.yaml: the organization's current one (else the defaults), with --model and
+    --effort over it."""
+    if effort and effort not in EFFORTS:
+        raise ValueError(f"--effort must be one of {', '.join(EFFORTS)}, not {effort!r}")
+    base = dict(AGENT_DEFAULTS, **(current if isinstance(current, dict) else {}))
+    return dict(base, **{k: v for k, v in (("model", model), ("effort", effort)) if v})
 
 
 def start_ready(acct, repo):
@@ -575,12 +592,15 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR, language=None):
+         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None):
     import yaml
     display = display_name(org)
     org = _name(org)
     prefix = org_prefix(org)
     owner_id, owner_name = owner_identity(owner)
+    listed = next((o for o in (owner_settings(_config_path("orgs.yaml")).get("orgs") or [])
+                   if isinstance(o, dict) and o.get("name") == _name(org)), {})
+    start_on = agent_settings(model, effort, listed.get("agents"))
     lang, lang_changed = resolve_language(language, yes)
     values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
               "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
@@ -628,7 +648,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
             out(f"  + {name}")
         if not shutil.which("herdr"):  # of spawn needs herdr: reserve the first two sessions, to start by hand
             agents = [p["name"] for p in built["positions"] if (p.get("holder") or {}).get("runtime") != "human"]
-            by_hand = {q: c for q in agents for c in [hand_start(doc, q, repo)] if c}
+            by_hand = {q: c for q in agents for c in [hand_start(doc, q, repo, agents=start_on)] if c}
             run = fill(load_package(pkg_dir)["run"], values)
             built["files"]["onboarding/README.md"] = run_readme(load_package(pkg_dir), run, values, by_hand)
         write_files(repo, built["files"], out)
@@ -691,10 +711,16 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         own = [repo] + [x for x in (os.path.expanduser(p) for p in paths) if x != repo]
         lst.append({"name": org, "path": repo.replace(home, "~", 1), "workspace": org,
                     "database": "of_" + org.replace("-", "_"),
-                    "paths": [p.replace(home, "~", 1) for p in own]})
+                    "paths": [p.replace(home, "~", 1) for p in own], "agents": start_on})
+    entry = next(o for o in lst if o.get("name") == org)
+    if model or effort:  # an organization already listed changes only when asked
+        entry["agents"] = start_on
     with open(orgs_path, "w") as fh:
         yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
     out(f"  {orgs_path}")
+    if entry.get("agents"):
+        out(f"  its agents start on {entry['agents'].get('model')}, effort {entry['agents'].get('effort')} "
+            "(agents: in that file; of init --model/--effort changes it)")
 
     out("\n6. The recorder hooks (additive; your existing hooks stay)")
     failed = False

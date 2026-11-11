@@ -495,6 +495,20 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_agents_start_on_opus_xhigh(self):
+        i = self.of_init
+        self.assertEqual(i.agent_settings(), {"model": "opus", "effort": "xhigh"})
+        self.assertEqual(i.agent_settings(effort="max"), {"model": "opus", "effort": "max"})
+        self.assertEqual(i.agent_settings(current={"model": "sonnet", "effort": "high"}), {"model": "sonnet", "effort": "high"})
+        self.assertEqual(i.agent_settings(model="opus", current={"model": "sonnet", "effort": "high"}),
+                         {"model": "opus", "effort": "high"})
+        with self.assertRaises(ValueError):
+            i.agent_settings(effort="xhight")
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, self.built())
+        lines = i.hand_start(doc, "acme_conductor", "/home/alex/of/acme", agents=i.agent_settings())
+        self.assertIn("--name acme_conductor --model opus --effort xhigh 'You hold", lines[1])
+
     def test_the_language_is_one_setting_asked_at_init(self):
         lang = self.of_init
         self.assertEqual([lang.language_code(x) for x in ("ru", "Russian", "русский", "EN", "Klingon")],

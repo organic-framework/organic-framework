@@ -31,7 +31,7 @@ Then the head talks to the conductor, and the onboarding runs through it. `<org>
 
 No agent is started. The agents that already run on the machine are listed as positions for the structure keeper to name later. `of registry check` passes with one warning until the charter is approved: the organization's keeper has no ask id under `confirmed:` yet.
 
-Without `--owner`, the head's name is the machine's login name. `--language` is the language the agents use with the head, one setting kept in `~/.config/of/owner.yaml` (`of spawn` reads it too); without it `of init` asks in a terminal, keeps the machine's earlier setting, or uses English. It goes into the conductor's and the lead's briefs, the organization's `AGENTS.md` and the charter's section 7.
+Without `--owner`, the head's name is the machine's login name. `--language` is the language the agents use with the head, one setting kept in `~/.config/of/owner.yaml` (`of spawn` reads it too); without it `of init` asks in a terminal, keeps the machine's earlier setting, or uses English. It goes into the conductor's and the lead's briefs, the organization's `AGENTS.md` and the charter's section 7. The organization's agents start on Opus at effort xhigh (`agents: {model: opus, effort: xhigh}` on its entry in `~/.config/of/orgs.yaml`; the `opus` alias follows the newest Opus); `--model` and `--effort` change it.
 
 ## Concepts
 
