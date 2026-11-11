@@ -1335,7 +1335,14 @@ _PLUGIN_DIRS = []
 # write; the plugin's source, herdr-plugin/ beside bin/, is guarded like bin/plugins (source in the development copy).
 HERDR_PLUGIN_DIRS = ("~/.config/herdr/plugins",)
 HERDR_PLUGIN_ACTS = {"install", "uninstall", "update", "link", "unlink", "enable", "disable"}
-HERDR_PLUGIN_MODE = "warn"  # 2026-11-12: of_herdr and of_onboarding link and unlink while they build it; deny later
+HERDR_PLUGIN_MODE = "deny"  # the founder's yes linked the plugin (ask cad7e7ba); any change to it needs a new yes
+HERDR_LAB = "~/.cache/of-herdr"  # of_herdr's labs: an isolated herdr, XDG_CONFIG_HOME under it (msg 01a1cca3)
+
+
+def _herdr_lab(path):
+    lab = os.path.realpath(os.path.expanduser(HERDR_LAB))
+    p = os.path.realpath(os.path.expanduser(str(path or "")))
+    return bool(path) and (p == lab or p.startswith(lab + "/"))
 
 
 def _plugin_dirs():
@@ -1348,7 +1355,8 @@ def _plugin_dirs():
             dirs = []
         keep = [os.path.realpath(d) for d in dirs if not gated(d)]
         xdg = os.environ.get("XDG_CONFIG_HOME")
-        herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg else [])
+        herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg and not _herdr_lab(xdg)
+                                           else [])
         _PLUGIN_DIRS.append(keep + [os.path.realpath(os.path.expanduser(d)) for d in herdr])
     return _PLUGIN_DIRS[0]
 
@@ -1359,10 +1367,12 @@ def _in_plugin_code(path, cwd):
     return any(p == d or p.startswith(d.rstrip("/") + "/") for d in _plugin_dirs())
 
 
-def _plugins_deny(head, args, stext, cwd):
-    """(reason, path) for G19 on one simple command run in CWD, else None. `herdr plugin install|link|…` is the
-    owner's act; it warns while HERDR_PLUGIN_MODE is warn."""
-    if head == "herdr" and args[:1] == ["plugin"] and len(args) > 1 and args[1] in HERDR_PLUGIN_ACTS:
+def _plugins_deny(head, args, stext, cwd, env=None):
+    """(reason, path) for G19 on one simple command run in CWD with ENV, else None. `herdr plugin install|link|…` is
+    the owner's act, except in of_herdr's isolated lab herdr (XDG_CONFIG_HOME under HERDR_LAB)."""
+    xdg = (env or {}).get("XDG_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME")
+    if head == "herdr" and args[:1] == ["plugin"] and len(args) > 1 and args[1] in HERDR_PLUGIN_ACTS \
+            and not _herdr_lab(xdg):
         hit = (PLUGINS_DENY, f"herdr plugin {args[1]}")
         if HERDR_PLUGIN_MODE == "deny":
             return hit
@@ -1511,7 +1521,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
-                or _plugins_deny(head, args, stext, here)
+                or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext)})
             if hit:
                 return hit
             if head == "cd":
