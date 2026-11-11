@@ -14,5 +14,5 @@ Before it: `of account add <name>` lists each account on the machine and files t
 `of claude [--account NAME]` opens Claude Code on one, with no shell alias. The package adds the position that keeps
 them working; the services run without it once `capacity.yaml` says `auto: true`.
 
-Placeholders filled by `of init`: `{org}` (the organization's prefix), `{Org}` (its display name), `{owner_id}` and
-`{owner_name}` (the person the position serves).
+Placeholders filled by `of init`: `{org}` (the organization's prefix), `{org_name}` (its full name, as in an address),
+`{Org}` (its display name), `{owner_id}` and `{owner_name}` (the person the position serves).
