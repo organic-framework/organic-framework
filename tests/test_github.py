@@ -314,9 +314,11 @@ class DefaultBranchTest(unittest.TestCase):
                                            branches={"d": "develop"})
                 self.assertEqual(n, 1)  # d now, on the branch orgs.yaml names
                 home = os.path.expanduser("~")
-                e, git_e = self.repo(root, "e", "develop")
+                under_home = tempfile.mkdtemp(dir=home)  # the repository under HOME, so its key can start with ~/
+                e, git_e = self.repo(under_home, "e", "develop")
                 git_e("branch", "master")
-                key = ("~" + e[len(home):]) if e.startswith(home) else e  # a path as orgs.yaml writes it
+                key = "~" + e[len(home):]  # a path as orgs.yaml writes it
+                self.assertTrue(key.startswith("~/"), key)
                 n = of_github.import_local(conn, "o", {}, [e], "2020-01-01", works={}, log=said.append,
                                            branches={key: "develop"})
                 self.assertEqual(n, 1)  # of_studio's review of PR 12: a ~ path key matches the expanded root
