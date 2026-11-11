@@ -622,6 +622,20 @@ class InitStructureTest(unittest.TestCase):
         self.assertTrue(c[1].startswith("tmux new-session -d -s acme_conductor 'cd /home/alex/of/acme && claude"))
         self.assertIn("--remote-control acme_conductor", c[1])
 
+    def test_a_long_organization_name_is_used_where_the_name_is_needed(self):
+        i = self.of_init
+        org = "acme-logistics-europe"  # longer than PREFIX_MAX: the prefix is cut, the name is not
+        prefix = i.org_prefix(org)
+        self.assertNotEqual(prefix, org)
+        values = dict(self.values, org=prefix, org_name=org)
+        cap = i.capacity_structure(values)
+        self.assertEqual(cap["settings"]["position"], f"{org}:{prefix}_capacity")  # an address: the full name
+        self.assertEqual([p["name"] for p in cap["positions"]], [f"{prefix}_capacity"])
+        conductor = " ".join(i.build_structure(self.pkg, values)["files"][f"registry/briefs/{prefix}_conductor.md"]
+                             .split())
+        self.assertIn(f"of init {org} --capacity yes --yes", conductor)
+        self.assertNotIn(f"of init {prefix} ", conductor)
+
     def test_capacity_keeper_on_the_heads_yes(self):
         i = self.of_init
         self.assertEqual(i.resolve_capacity("no", accounts=3), "no")

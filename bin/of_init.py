@@ -337,7 +337,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 PACKAGE_DIR = os.path.join(os.path.dirname(HERE), "bench", "onboarding")
 PREFIX_MAX = 14  # "<prefix>_system-architect" stays within the 32 characters of a name
 SUMMARY_MAX = 40
-TOKEN = re.compile(r"\{(org|Org|owner_id|owner_name|language)\}")
+TOKEN = re.compile(r"\{(org|org_name|Org|owner_id|owner_name|language)\}")
 
 
 def display_name(org_arg):
@@ -352,8 +352,8 @@ def org_prefix(org):
 
 
 def fill(value, values):
-    """Fill the package's placeholders ({org}, {Org}, {owner_id}, {owner_name}) in a string, list or mapping; any
-    other brace stays as it is."""
+    """Fill the package's placeholders ({org}, {org_name}, {Org}, {owner_id}, {owner_name}, {language}) in a string,
+    list or mapping; any other brace stays as it is."""
     if isinstance(value, str):
         return TOKEN.sub(lambda m: values[m.group(1)], value)
     if isinstance(value, list):
@@ -372,8 +372,9 @@ def load_package(pkg_dir=PACKAGE_DIR):
 def build_structure(pkg, values, pkg_dir=PACKAGE_DIR):
     """The registry parts and the files the package gives a new organization, nothing written:
     {people, systems, units, positions (the conductor first), works, files {repo-relative path: text}}.
-    values: {org (the prefix), Org, owner_id, owner_name, language (a name; English when absent)}."""
-    values = dict({"language": "English"}, **values)
+    values: {org (the prefix, at most PREFIX_MAX characters), org_name (the organization's name, which of init and an
+    `<organization>:<position>` address take), Org, owner_id, owner_name, language (a name; English when absent)}."""
+    values = dict({"language": "English", "org_name": values["org"]}, **values)
 
     def read(rel):
         with open(os.path.join(pkg_dir, rel)) as fh:
@@ -399,7 +400,7 @@ def package_positions(pkg, values, pkg_dir):
     """(positions, files): a package's roles as registry positions, each with its brief under registry/briefs/; a role
     with no position (the onboarding's champion) gives only its brief, under onboarding/. A package with no run, system
     or unit (bench/capacity) gives just these."""
-    values = dict({"language": "English"}, **values)
+    values = dict({"language": "English", "org_name": values["org"]}, **values)
 
     def read(rel):
         with open(os.path.join(pkg_dir, rel)) as fh:
@@ -440,6 +441,8 @@ CAPACITY_QUESTION = ("This machine has {n} Claude accounts. When one reaches its
                      "until it resets. Shall OF move them to an account that still has room, and add one agent of "
                      "yours, {position}, that keeps watch over the accounts and asks you only when your hands or "
                      "money are needed?")
+CAPACITY_COST = ("It uses only your own accounts: one small check per account at most every 30 minutes on the "
+                 "cheapest model, and that one agent.")  # what it costs, so the head can answer without asking
 CAPACITY_OPTIONS = ("yes, move them and add {position} (recommended: no agent waits on a spent account while "
                     "another has room)",
                     "no, not now: nothing is added, and agents on a spent account wait for it to reset; tell your "
@@ -449,6 +452,7 @@ CAPACITY_OPTIONS = ("yes, move them and add {position} (recommended: no agent wa
 def capacity_structure(values, pkg_dir=CAPACITY_PACKAGE):
     """The capacity package's parts for the head: its position and brief, merged like the onboarding's, and the
     settings for capacity.yaml. FileNotFoundError when the package is missing."""
+    values = dict({"language": "English", "org_name": values["org"]}, **values)
     pkg = load_package(pkg_dir)
     positions, files = package_positions(pkg, values, pkg_dir)
     return {"people": {}, "systems": {}, "units": {}, "works": {}, "positions": positions, "files": files,
@@ -472,7 +476,7 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
         return None
     try:
         from of_locale import tr
-        answer = ask(f"{tr(CAPACITY_QUESTION, lang, n=accounts, position=position)} [y/N] ")
+        answer = ask(f"{tr(CAPACITY_QUESTION, lang, n=accounts, position=position)} {tr(CAPACITY_COST, lang)} [y/N] ")
     except EOFError:
         answer = ""
     from of_locale import variants  # "yes" in each of OF's languages comes from the locale catalogue
@@ -492,7 +496,7 @@ def file_capacity_card(n, position, lang=None, of_bin=None, run=subprocess.run):
     from of_locale import tr
     of_bin = of_bin or OF
     try:
-        r = run([of_bin, "ask", tr(CAPACITY_QUESTION, lang, n=n, position=position),
+        r = run([of_bin, "ask", f"{tr(CAPACITY_QUESTION, lang, n=n, position=position)} {tr(CAPACITY_COST, lang)}",
                  "--options", "|".join(tr(o, lang, position=position) for o in CAPACITY_OPTIONS)],
                 capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -881,7 +885,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     n_acc = len(of_accounts.dirs())
     served = str(owner_settings(_config_path("capacity.yaml")).get("position") or "").strip()
     cap = resolve_capacity(capacity, yes, n_acc, served, position=f"{prefix}_capacity", lang=lang)
-    values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
+    values = {"org": prefix, "org_name": org, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
               "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
     home = os.path.expanduser("~")
     out(f"Organic Framework: init for organization {org!r} (owner: {owner_name}; "
