@@ -1,0 +1,8 @@
+# asks-screen-v0: of_herdr_plugin.open_questions() opens the popup; a second call while it is open says ui_busy
+run HERDR_SOCKET_PATH=$HOME/.cache/of-herdr/pl/config/herdr/sessions/ax/herdr.sock python3 -c "import sys; sys.path.insert(0, '$HARNESS/../../../bin'); import of_herdr_plugin as p; print(p.open_questions('$ASKS_OF'))" > $OUTDIR/open.txt 2>&1
+sleep 4
+run pgrep -fl "asks-inbox/bin/of asks --watch" | wc -l > $OUTDIR/procs.txt
+run HERDR_SOCKET_PATH=$HOME/.cache/of-herdr/pl/config/herdr/sessions/ax/herdr.sock python3 -c "import sys; sys.path.insert(0, '$HARNESS/../../../bin'); import of_herdr_plugin as p; print(p.open_questions('$ASKS_OF'))" > $OUTDIR/open-again.txt 2>&1
+keys \x1b
+sleep 2
+run pgrep -fl "asks-inbox/bin/of asks --watch" | wc -l > $OUTDIR/procs-after.txt

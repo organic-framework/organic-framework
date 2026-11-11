@@ -125,6 +125,33 @@ def of_apply():
     log(f"of apply rc={r.returncode}: {out[:600]}")
 
 
+PLUGIN_ID = "organic-framework"
+
+
+def open_questions(of_path=None, run=None):
+    """Open the owner's questions screen as a popup over everything: the plugin's `asks` entrypoint, for a panel's
+    button or a script. of_path: the bin/of to run instead of this checkout's (a trial build). Returns (True, None),
+    or (False, reason): herdr says `ui_busy` while another popup, Settings or Copy mode is open, and
+    `plugin_not_found` when the plugin is not linked."""
+    run = run or subprocess.run
+    argv = [os.environ.get("OF_HERDR", "herdr"), "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "asks"]
+    if of_path:
+        argv += ["--env", f"OF_ASKS_OF={of_path}"]
+    try:
+        r = run(argv, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"{type(e).__name__}: {e}"[:200]
+    err = {}
+    for text in (r.stdout, r.stderr):  # herdr prints an error's JSON on stderr
+        try:
+            err = (json.loads(text or "{}") or {}).get("error") or err
+        except ValueError:
+            pass
+    if r.returncode == 0 and not err:
+        return True, None
+    return False, err.get("code") or (r.stderr or r.stdout or f"exit {r.returncode}").strip()[:200]
+
+
 def main(argv):
     os.environ["OF_AUTOMATION"] = "1"
     what = argv[0] if argv else ""
