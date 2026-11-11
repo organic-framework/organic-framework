@@ -607,6 +607,19 @@ class InitStructureTest(unittest.TestCase):
         self.assertNotIn("1Password", self.of_init.AGENTS_MD)
         self.assertIn("where they keep secrets", " ".join(files["registry/briefs/acme_conductor.md"].split()))
 
+    def test_plugins_proposed_and_chosen(self):
+        i = self.of_init
+        found = lambda: ["blobs: found s3; choose with `blobs: <name>`", "secrets: found keychain; choose with `…`"]
+        self.assertEqual(i.plugin_proposals(found), ["blobs: found s3; choose with `blobs: <name>`"])  # secrets later
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "plugins.yaml")
+            with open(path, "w") as fh:
+                fh.write("storage: sqlite\n")
+            doc = i.write_plugin_choices(["blobs=s3"], path, check=lambda f, n: None)
+            self.assertEqual(doc, {"storage": "sqlite", "blobs": "s3"})
+            with self.assertRaises(ValueError):
+                i.write_plugin_choices(["blobs"], path, check=lambda f, n: None)
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS
