@@ -147,5 +147,47 @@ class ProvisionalTest(unittest.TestCase):
         self.assertEqual(of.check_provisional({"organization": "acme", "works": {"acme-onboarding": {}}}, [p]), [])
 
 
+class RemoteApprovalTest(unittest.TestCase):
+    """docs/remote.md §3 row 2: a diff approved from the conductor's chat on the person's recorded words."""
+
+    def test_the_persons_yes_in_the_conductors_session_up_to_medium(self):
+        import json
+        import tempfile
+        import of_events
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, d
+            try:
+                conn = of_store.connect()
+                pos = [{"name": "acme_conductor", "role": "conductor", "holder": {"session": "S-c"}},
+                       {"name": "acme_dev", "role": "dev", "holder": {"session": "S-d"}}]
+                e = {"diff": {"id": "sd-1", "tier": "medium"}, "proposed_at": "2026-11-11T10:00:00Z"}
+
+                def said(text, session="S-c", origin="human", ts="2026-11-11T11:00:00.000Z"):
+                    rec = of_events.record("human_prompt", {"origin": origin, "text": text}, session=session)
+                    rec["timestamp"] = ts
+                    of_store.add_event(conn, rec)
+                    return rec["of.event.id"]
+                ok = said("yes, approve sd-1")
+                self.assertIsNone(of._remote_approval(conn, e, ok, pos, session="S-c")[0])
+                cases = {
+                    said("yes but first check sd-1"): "not a plain yes",
+                    said("yes"): "do not name the diff",
+                    said("approve sd-1", ts="2026-11-11T09:00:00.000Z"): "older than the proposal",
+                    said("approve sd-1", origin="relay"): "not typed by a person",
+                    said("approve sd-1", session="S-d"): "the person's conductor",
+                }
+                for pid, why in cases.items():
+                    got = of._remote_approval(conn, e, pid, pos, session="S-d" if why == "the person's conductor"
+                                              else "S-c")[0]
+                    self.assertIn(why, got or "", pid)
+                high = dict(e, diff={"id": "sd-1", "tier": "high"})
+                self.assertIn("approved at the machine", of._remote_approval(conn, high, ok, pos, session="S-c")[0])
+                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c")[0])
+                conn.close()
+            finally:
+                of_events.STATE_DIR = saved
+
+
 if __name__ == "__main__":
     unittest.main()

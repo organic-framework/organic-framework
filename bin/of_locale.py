@@ -46,6 +46,17 @@ def _read_setting():
     return lang if lang == DEFAULT or lang in available() else DEFAULT
 
 
+def owner_setting(key, default=None):
+    """A plain `key: value` line of ~/.config/of/owner.yaml (language, surface), read without PyYAML."""
+    import of_events
+    try:
+        with open(of_events.config_path("owner.yaml")) as fh:
+            m = re.search(rf"^{re.escape(key)}:\s*['\"]?([^'\"#\n]*?)['\"]?\s*(?:#.*)?$", fh.read(), re.M)
+    except OSError:
+        return default
+    return (m.group(1).strip() or default) if m else default
+
+
 def language():
     global _lang
     if _lang is None:

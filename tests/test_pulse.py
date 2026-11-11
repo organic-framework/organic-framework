@@ -625,6 +625,43 @@ class LimitAskNotAWaitTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class RemoteQueueTest(unittest.TestCase):
+    """docs/remote.md §3 row 3: with surface remote, the person's queue goes to their conductor, once per item."""
+
+    def test_cards_waits_and_stuck_threads_reach_the_conductor_once(self):
+        pos = [{"name": "acme_conductor", "role": "conductor", "status": "active", "_org": "acme"},
+               {"name": "acme_dev", "role": "dev", "status": "active", "_org": "acme"}]
+        asks = [{"event_id": "e-card-1", "state": "open", "to": "founder", "position": "acme_dev", "text": "merge it?"},
+                {"event_id": "e-task-2", "state": "open", "to": "founder", "position": "acme_dev", "text": "log in",
+                 "task": True},
+                {"event_id": "e-done-3", "state": "answered", "to": "founder", "position": "acme_dev", "text": "x"}]
+        rows = [{"position": "acme_dev", "kind": "waiting_owner", "since": "t1", "text": "needs a key"}]
+        views = [({"id": "r1", "title": "Fix the build"}, "stuck", []), ({"id": "r2"}, "working", [])]
+        typed, mem = [], {}
+        busy = {"acme_conductor": {"pane_id": "p-c", "agent_status": "working"}}
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            try:
+                n = of_pulse.remote_notes(pos, busy, asks, rows, mem, lambda p, t, w: typed.append((p, t)), T0,
+                                          log=lambda m: None, views=views)
+                self.assertEqual((n, typed), (0, []))  # busy: nothing typed, nothing marked
+                idle = {"acme_conductor": {"pane_id": "p-c", "agent_status": "idle"}}
+                of_pulse.remote_notes(pos, idle, asks, rows, mem, lambda p, t, w: typed.append((p, t)), T0,
+                                      log=lambda m: None, views=views)
+                self.assertEqual([p for p, _ in typed], ["p-c"])
+                text = typed[0][1]
+                for part in ("a card from acme_dev", "a task for their hands", "acme_dev waits on them",
+                             "their request is stuck: Fix the build"):
+                    self.assertIn(part, text)
+                self.assertNotIn("e-done-3"[-8:], text)
+                of_pulse.remote_notes(pos, idle, asks, rows, mem, lambda p, t, w: typed.append((p, t)), T0,
+                                      log=lambda m: None, views=views)
+                self.assertEqual(len(typed), 1)  # once per item
+            finally:
+                of_events.STATE_DIR = saved
+
+
 class TaskClaimTest(unittest.TestCase):
     """2026-11-07, task bd12d0: platform_owner's 'of asks answered' for a routed question also claimed a founder's task
     that grouped with it by text; the popup showed 'ты сказал: сделал' for a task he never opened."""

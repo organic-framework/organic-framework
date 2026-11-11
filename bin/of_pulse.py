@@ -337,6 +337,12 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
         stuck_panes(positions, agents, bind, live, prompt, send, log)
     except Exception as e:  # noqa: BLE001
         log(f"stuck input check: {e}")
+    try:  # docs/remote.md §3 row 3: a person on the remote surface hears about their queue from their conductor
+        import of_locale
+        if of_locale.owner_setting("surface") == "remote":
+            remote_notes(positions, live, asks, rows_, mem, prompt, now, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"remote notes: {e}")
     save_memory(mem)
     return rows_
 
@@ -414,6 +420,73 @@ PASTE_HINT = ("The box holds only a paste placeholder ('[Pasted text #N +M lines
               "Enter was lost (Acme, 2026-11-11: acme_code-auditor sat three hours behind one, lost while Claude "
               "Code compacted the session). Look at the pane; if no person is typing there, press Enter in it to send "
               "the held text (herdr pane send-keys <pane> Enter).")
+
+
+def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views=None):
+    """docs/remote.md §3 row 3 (with `surface: remote` in owner.yaml): the person reaches OF only through their
+    conductor's chat, so no herdr notification or popup reaches them. Each pulse tells the conductor, in one message
+    typed into its pane when it is idle, what is new for the person: a card or a task that opened, a thread of theirs
+    that is stuck (the conductor's ledger), a position that waits on them. Each item once; an item the conductor could
+    not be told yet waits for the next pulse. views: [(request, kind, threads)] of the ledger (tests)."""
+    import of_asks
+    by_name = {p["name"]: p for p in positions}
+    conductors = [p for p in positions if (p.get("role") == "conductor" or p["name"].endswith("_conductor"))
+                  and p.get("status", "active") == "active"]
+    if not conductors:
+        return 0
+    first = conductors[0]
+
+    def conductor_for(org):
+        return next((c for c in conductors if c.get("_org") == org), first)
+
+    seen = mem.setdefault("remote_seen", [])
+    items = {}
+    for a in of_asks.for_owner(asks):
+        if a.get("state") != "open":
+            continue
+        key = f"ask:{a['event_id']}"
+        if key not in seen:
+            org = (by_name.get(a.get("position")) or {}).get("_org")
+            what = "a task for their hands" if a.get("task") else "a card"
+            items.setdefault(conductor_for(org)["name"], []).append(
+                (key, f"{what} from {a.get('position')}: {str(a.get('text') or '')[:160]} (ask {a['event_id'][-8:]})"))
+    for r in rows:
+        if r.get("kind") != "waiting_owner":
+            continue
+        key = f"wait:{r['position']}:{r.get('since')}"
+        if key not in seen:
+            org = (by_name.get(r["position"]) or {}).get("_org")
+            items.setdefault(conductor_for(org)["name"], []).append(
+                (key, f"{r['position']} waits on them: {str(r.get('text') or '; '.join(r.get('evidence') or []))[:160]}"))
+    if views is None:
+        import of_conductor_panel
+        import of_store
+        ledger = of_conductor_panel.load_ledger()
+        views = [] if ledger.get("error") else of_conductor_panel.views_of(ledger, of_store.connect(), now)
+    for req, kind, _ in views:
+        if kind != "stuck":
+            continue
+        key = f"stuck:{req.get('id')}"
+        if key not in seen:
+            items.setdefault(first["name"], []).append(
+                (key, f"their request is stuck: {req.get('title') or req.get('title_ru') or req.get('id')}"))
+    told = 0
+    for name, its in items.items():
+        pane = live.get(name) or {}
+        if not prompt or not pane.get("pane_id") or pane.get("agent_status") not in ("idle", "done"):
+            continue  # busy or away: the next pulse tries again
+        text = ("Message from of_pulse (via of pulse, authority: none; the person's queue, remote surface)\n"
+                "New for the person you serve; tell them in their language and plain words within this turn:\n"
+                + "\n".join(f"- {line}" for _, line in its) + "\n[to you as their conductor, once per item]")
+        prompt(pane["pane_id"], text, "of_pulse")
+        of_events.emit("nudge_sent", {"position": name, "from_position": "of_pulse", "to_position": name,
+                                      "about": f"{len(its)} item(s) of the person's queue", "pane": pane["pane_id"],
+                                      "kind": "remote_queue"}, position=name, org=by_name.get(name, {}).get("_org"))
+        seen.extend(k for k, _ in its)
+        told += 1
+        log(f"told {name}: {len(its)} item(s) for the person (remote surface)")
+    del seen[:-2000]
+    return told
 
 
 def stuck_panes(positions, agents, bind, live, prompt, send, log=print):

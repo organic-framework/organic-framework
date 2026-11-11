@@ -629,3 +629,15 @@ def command_class(tool, command):
     if _MONITOR_CMD.search(command):
         return "monitor"
     return "other"
+
+
+# ---- a typed approval (docs/remote.md §3 row 2: a diff approved from the conductor's chat) ----
+# The person's own words are the authority; a no, a "not" or a condition ("yes, but …") is never a yes.
+APPROVAL_YES = re.compile(r"(?i)(?<!\w)(yes|approve[ds]?|go ahead|ok|okay|да|одобряю|одобрено|согласен|подтверждаю)(?!\w)")
+APPROVAL_NOT = re.compile(r"(?i)(?<!\w)(no|not|don'?t|but|wait|нет|не|но|однако|подожди)(?!\w)")
+
+
+def approves(text):
+    """A plain yes: an approval word and no refusal, negation or condition."""
+    return bool(text and APPROVAL_YES.search(text) and not APPROVAL_NOT.search(text))
+
