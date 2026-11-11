@@ -622,6 +622,48 @@ class InitStructureTest(unittest.TestCase):
         self.assertTrue(c[1].startswith("tmux new-session -d -s acme_conductor 'cd /home/alex/of/acme && claude"))
         self.assertIn("--remote-control acme_conductor", c[1])
 
+    def test_capacity_keeper_on_the_heads_yes(self):
+        i = self.of_init
+        self.assertEqual(i.resolve_capacity("no", accounts=3), "no")
+        with self.assertRaises(ValueError):
+            i.resolve_capacity("maybe", accounts=3)
+        self.assertEqual(i.resolve_capacity(None, accounts=1, ask=lambda q: "y"), "no")  # one account: not asked
+        self.assertEqual(i.resolve_capacity(None, accounts=2, served="acme:acme_capacity", ask=lambda q: "y"), "no")
+        asked = []
+        import of_locale
+        said = of_locale.variants("yes")[-1]  # "yes" in the person's language, from the catalogue
+        self.assertEqual(i.resolve_capacity(None, accounts=2, ask=lambda q: asked.append(q) or said,
+                                            position="acme_capacity"), "yes")
+        self.assertEqual(i.resolve_capacity(None, accounts=2, ask=lambda q: "y"), "yes")
+        self.assertIn("This machine has 2 Claude accounts", asked[0])
+        self.assertIn("acme_capacity", asked[0])
+        self.assertEqual(i.resolve_capacity(None, accounts=2, ask=lambda q: ""), "no")  # no by default
+        self.assertIsNone(i.resolve_capacity(None, yes=True, accounts=2))  # nobody here: the card
+        cap = i.capacity_structure(self.values)
+        self.assertEqual([p["name"] for p in cap["positions"]], ["acme_capacity"])
+        self.assertEqual(cap["positions"][0]["package"], {"name": "capacity", "version": 1, "role": "capacity"})
+        self.assertEqual(cap["settings"]["position"], "acme:acme_capacity")
+        self.assertTrue(cap["settings"]["auto"])
+        self.assertNotIn("{", cap["files"]["registry/briefs/acme_capacity.md"].replace("{{", ""))
+        b = self.built()
+        b["positions"] += cap["positions"]
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, b)
+        names = {p["name"] for p in doc["positions"]}
+        problems = []
+        for p in doc["positions"]:
+            problems += of.check_mandate_fields(p)
+        problems += of.check_people(doc, doc["positions"])
+        self.assertEqual(problems, [])
+        self.assertIn(next(p for p in doc["positions"] if p["name"] == "acme_capacity")["owner"], names)
+        calls = []
+        run = lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0, "asked a1b2c3d4\n", "")
+        self.assertEqual(i.file_capacity_card(3, "acme_capacity", "en", of_bin="of", run=run),
+                         (True, "asked a1b2c3d4"))
+        self.assertEqual(calls[0][:2], ["of", "ask"])
+        self.assertIn("This machine has 3 Claude accounts", calls[0][2])
+        self.assertTrue(calls[0][4].startswith("yes, move them and add acme_capacity"))
+
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
         for rel, text in files.items():

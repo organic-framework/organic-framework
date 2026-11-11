@@ -378,9 +378,33 @@ def build_structure(pkg, values, pkg_dir=PACKAGE_DIR):
     def read(rel):
         with open(os.path.join(pkg_dir, rel)) as fh:
             return fill(fh.read(), values)
-    org = values["org"]
     sysd = fill(pkg["system"], values)
     unit = fill(pkg["unit"], values)
+    positions, files = package_positions(pkg, values, pkg_dir)
+    run = fill(pkg["run"], values)
+    work = {"title": run["title"], "kind": run["kind"], "doc": "onboarding/charter.md", "systems": [values["org"]],
+            "owner": run["owner"], "doers": run["doers"], "done_when": run["done_when"],
+            "stages": [{"id": s["id"], "title": s["title"], "done_when": s["done_when"], "state": "open"}
+                       for s in run["stages"]]}
+    for key, rel in (pkg.get("templates") or {}).items():
+        files[f"onboarding/{key}.md"] = read(rel)
+    files["onboarding/README.md"] = run_readme(pkg, run, values)
+    return {"people": {values["owner_id"]: {"name": values["owner_name"], "machines": [], "status": "active"}},
+            "systems": {sysd["id"]: {k: v for k, v in sysd.items() if k != "id"}},
+            "units": {unit["id"]: {k: v for k, v in unit.items() if k != "id"}},
+            "positions": positions, "works": {run["id"]: work}, "files": files}
+
+
+def package_positions(pkg, values, pkg_dir):
+    """(positions, files): a package's roles as registry positions, each with its brief under registry/briefs/; a role
+    with no position (the onboarding's champion) gives only its brief, under onboarding/. A package with no run, system
+    or unit (bench/capacity) gives just these."""
+    values = dict({"language": "English"}, **values)
+
+    def read(rel):
+        with open(os.path.join(pkg_dir, rel)) as fh:
+            return fill(fh.read(), values)
+    org = values["org"]
     positions, files = [], {}
     for r in pkg["roles"]:
         r = fill(r, values)
@@ -404,18 +428,73 @@ def build_structure(pkg, values, pkg_dir=PACKAGE_DIR):
         p["aliases"] = []
         positions.append(p)
         files[p["mandate"]] = read(r["brief"])
-    run = fill(pkg["run"], values)
-    work = {"title": run["title"], "kind": run["kind"], "doc": "onboarding/charter.md", "systems": [org],
-            "owner": run["owner"], "doers": run["doers"], "done_when": run["done_when"],
-            "stages": [{"id": s["id"], "title": s["title"], "done_when": s["done_when"], "state": "open"}
-                       for s in run["stages"]]}
-    for key, rel in (pkg.get("templates") or {}).items():
-        files[f"onboarding/{key}.md"] = read(rel)
-    files["onboarding/README.md"] = run_readme(pkg, run, values)
-    return {"people": {values["owner_id"]: {"name": values["owner_name"], "machines": [], "status": "active"}},
-            "systems": {sysd["id"]: {k: v for k, v in sysd.items() if k != "id"}},
-            "units": {unit["id"]: {k: v for k, v in unit.items() if k != "id"}},
-            "positions": positions, "works": {run["id"]: work}, "files": files}
+    return positions, files
+
+
+# -------------------------------------------------------------------- the capacity package (docs/accounts.md B6)
+# With two or more Claude accounts on the machine, the head decides once whether agents that stop on a usage limit
+# move to an account with room, with one agent of theirs keeping watch ({org}_capacity, bench/capacity). The package
+# and capacity.yaml are of_capacity's; this step only asks, adds the position and hands the settings to its writer.
+CAPACITY_PACKAGE = os.path.join(os.path.dirname(PACKAGE_DIR), "capacity")
+CAPACITY_QUESTION = ("This machine has {n} Claude accounts. When one reaches its usage limit, the agents on it stop "
+                     "until it resets. Shall OF move them to an account that still has room, and add one agent of "
+                     "yours, {position}, that keeps watch over the accounts and asks you only when your hands or "
+                     "money are needed?")
+CAPACITY_OPTIONS = ("yes, move them and add {position} (recommended: no agent waits on a spent account while "
+                    "another has room)|no, not now: nothing is added, and agents on a spent account wait for it to "
+                    "reset; tell your conductor if you change your mind")
+
+
+def capacity_structure(values, pkg_dir=CAPACITY_PACKAGE):
+    """The capacity package's parts for the head: its position and brief, merged like the onboarding's, and the
+    settings for capacity.yaml. FileNotFoundError when the package is missing."""
+    pkg = load_package(pkg_dir)
+    positions, files = package_positions(pkg, values, pkg_dir)
+    return {"people": {}, "systems": {}, "units": {}, "works": {}, "positions": positions, "files": files,
+            "settings": fill(pkg.get("settings") or {}, values)}
+
+
+def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, position="a capacity keeper"):
+    """'yes', 'no', or None when nobody here can answer (no terminal, or --yes): the head then gets one card.
+    --capacity first; under two accounts, or with a capacity position already named in capacity.yaml, 'no' without a
+    question; else one question in a terminal, no by default. ask(prompt) -> answer."""
+    if arg:
+        if arg not in ("yes", "no"):
+            raise ValueError(f"--capacity must be yes or no, not {arg!r}")
+        return arg
+    if accounts < 2 or served:
+        return "no"
+    if ask is None and not yes and sys.stdin.isatty():
+        ask = input
+    if not ask:
+        return None
+    try:
+        answer = ask(f"{CAPACITY_QUESTION} [y/N] ".format(n=accounts, position=position))
+    except EOFError:
+        answer = ""
+    from of_locale import variants  # "yes" in each of OF's languages comes from the locale catalogue
+    words = {"y"} | {w.lower() for w in variants("yes") + variants("y")}
+    return "yes" if str(answer).strip().lower() in words else "no"
+
+
+def write_capacity_settings(settings):
+    """(written, kept), lists of keys: of_capacity's writer merges the package's settings into capacity.yaml, keeps its
+    lines and comments, and never overwrites a key already set (of_capacity.write_defaults, 9b70593)."""
+    import of_capacity
+    return of_capacity.write_defaults(settings)
+
+
+def file_capacity_card(n, position, lang=None, of_bin=None, run=subprocess.run):
+    """One card to the head, asked as the caller (none in a plain terminal): (filed, output)."""
+    from of_locale import tr
+    of_bin = of_bin or OF
+    try:
+        r = run([of_bin, "ask", tr(CAPACITY_QUESTION, lang, n=n, position=position),
+                 "--options", tr(CAPACITY_OPTIONS, lang, position=position)],
+                capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    return r.returncode == 0, ((r.stdout if r.returncode == 0 else r.stderr or r.stdout) or "").strip()
 
 
 def run_readme(pkg, run, values, by_hand=None):
@@ -772,7 +851,8 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
-         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=(), refresh=False):
+         pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=(), refresh=False,
+         capacity=None):
     import yaml
     display = display_name(org)
     org = _name(org)
@@ -794,6 +874,10 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     start_on = agent_settings(model, effort, listed.get("agents"))
     lang, lang_changed = resolve_language(language, yes)
     surface, surface_changed = resolve_surface(surface)
+    import of_accounts
+    n_acc = len(of_accounts.dirs())
+    served = str(owner_settings(_config_path("capacity.yaml")).get("position") or "").strip()
+    cap = resolve_capacity(capacity, yes, n_acc, served, position=f"{prefix}_capacity")
     values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
               "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
     home = os.path.expanduser("~")
@@ -844,6 +928,14 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         out(f"  the onboarding package is missing ({pkg_dir}): no conductor and no unit written. "
             "Install Organic Framework with its bench/ folder, then run `of init` again.")
     by_hand = None
+    cap_built = None
+    if built and (cap == "yes" or any(p.get("name") == f"{prefix}_capacity" for p in doc.get("positions") or [])):
+        try:  # also on a re-run of an organization that has it, so --refresh brings its brief up to date
+            cap_built = capacity_structure(values)
+            built["positions"] += cap_built["positions"]
+            built["files"].update(cap_built["files"])
+        except FileNotFoundError:
+            out(f"  the capacity package is missing ({CAPACITY_PACKAGE}): {prefix}_capacity is not added")
     if built:
         for name in merge_structure(doc, built):
             out(f"  + {name}")
@@ -978,7 +1070,47 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     else:
         out("  not installed (--no-service): run `of relay run` and `of listen run` yourself, each kept running")
 
-    out("\n9. Plugins: what this machine has (docs/plugins.md; OF assumes no product)")
+    out("\n9. Claude accounts: agents on a spent one move to one with room (docs/accounts.md)")
+    position = f"{prefix}_capacity"
+    if cap == "yes" and cap_built:
+        try:
+            settings = cap_built["settings"]
+            written, kept = write_capacity_settings(settings)
+            out(f"  + {position}: keeps watch over this machine's {n_acc} Claude account(s); it starts later, like "
+                "the other agents")
+            if written:
+                out(f"  capacity.yaml: {', '.join(f'{k}: {settings[k]}' for k in written)}")
+            if kept:
+                out(f"  capacity.yaml keeps what was set there: {', '.join(kept)}")
+            if "position" in kept and served and served != settings.get("position"):
+                out(f"  this machine's accounts stay with {served}: one keeper per person, so {position} has "
+                    "nothing to watch here")
+            if n_acc < 2:
+                out("  one account here: nothing to move until a second is added (of account add)")
+        except Exception as e:  # noqa: BLE001 - said plainly; the position is in the registry already
+            failed = True
+            out(f"  capacity.yaml NOT written: {e}")
+    elif cap == "yes":
+        out(f"  {position} not added: the capacity package is missing")
+    elif served and not capacity:
+        out(f"  served by {served} (capacity.yaml position)")
+    elif n_acc < 2 and not capacity:
+        out(f"  Claude accounts here: {n_acc}; nothing to move between (of account add adds another)")
+    elif cap == "no":
+        out(f"  not now: nothing added, and no balancer runs, so no agent moves off a spent account. To add it "
+            f"later: of init {org} --capacity yes")
+    elif kept_owner is None:  # nobody here to answer: one card to the head, on the first run only
+        filed, said = file_capacity_card(n_acc, position, lang)
+        if filed:
+            out(f"  {n_acc} accounts: one card to {owner_name}, relayed by their conductor; on yes it runs "
+                f"of init {org} --capacity yes --yes ({said})")
+        else:
+            out(f"  {n_acc} accounts, and the card was not filed ({said}): ask {owner_name} in words, then "
+                f"of init {org} --capacity yes|no")
+    else:
+        out(f"  {n_acc} accounts, undecided: ask {owner_name} in words, then of init {org} --capacity yes|no")
+
+    out("\n10. Plugins: what this machine has (docs/plugins.md; OF assumes no product)")
     if plugins:
         try:
             chosen = write_plugin_choices(plugins)

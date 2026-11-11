@@ -5313,10 +5313,13 @@ def main(argv=None):
     it.add_argument("--model", help="the model the organization's agents start on (default opus, the newest Opus)")
     it.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
                     help="the effort they start at (default xhigh)")
+    it.add_argument("--capacity", choices=["yes", "no"],
+                    help="with two or more Claude accounts here: move agents off a spent account and add the head's "
+                         "capacity keeper (bench/capacity); asked in a terminal when unset, else one card to the head")
     it.set_defaults(fn=lambda a: __import__("of_init").init(a.org, a.repo, a.path, a.yes, a.config_dir, not a.no_service,
                                                             owner=a.owner, language=a.language, model=a.model,
                                                             effort=a.effort, surface=a.surface, plugins=a.plugin,
-                                                            refresh=a.refresh))
+                                                            refresh=a.refresh, capacity=a.capacity))
     se = sub.add_parser("leaks", aliases=["secrets"],  # renamed: one letter from `of secret`, the broker (of_docs)
                         help="count leaked secrets from gitleaks reports, without revealing them (alias: secrets)")
     se.add_argument("action", choices=["summarize", "scan-context", "review", "mark", "rotations"])
