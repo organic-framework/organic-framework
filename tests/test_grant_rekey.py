@@ -104,6 +104,30 @@ class RekeyTest(unittest.TestCase):
         self.assertEqual(open(self.old + ".pub").read(), pin_before)
         self.assertTrue(os.path.exists(self.old))
 
+    def test_the_owners_agent_is_refused_from_an_agent_session_or_a_service(self):
+        """of_release's review 2026-11-11, finding #10: AGENTS.md keeps automation away from the owner's SSH agent;
+        of_grants refuses it whoever calls, while a test's own agent stays usable."""
+        owners = of_grants.AGENT_SOCK
+        self.assertTrue(of_grants.owners_agent(owners))
+        self.assertFalse(of_grants.owners_agent(self.sock))
+        saved = {k: os.environ.get(k) for k in ("OF_AUTOMATION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            for k, v in (("OF_AUTOMATION", "1"), ("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "S1")):
+                os.environ[k] = v
+                with self.assertRaises(PermissionError):
+                    of_grants.sign_with_agent({"id": "g1"}, sock=owners)
+                with self.assertRaises(PermissionError):
+                    of_grants.rekey(sock=owners)
+                os.environ.pop(k)
+            of_grants.refuse_outside_owners_terminal(owners, "x")      # the owner's own terminal: allowed
+            os.environ["OF_AUTOMATION"] = "1"
+            of_grants.refuse_outside_owners_terminal(self.sock, "x")   # a test's own agent: allowed
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
     def test_a_staged_file_that_is_not_one_ed25519_line_is_refused(self):
         with open(self.staged, "w") as fh:
             fh.write(textwrap.dedent("not a key\n"))
