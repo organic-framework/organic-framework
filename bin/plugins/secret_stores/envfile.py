@@ -23,6 +23,7 @@ class EnvFile:
     AUDIT = "none: a lab store"
     VALUE_COMMANDS = ()
     IDENTITY_VARIABLE = None
+    CLI = None
 
     def __init__(self, settings=None):
         settings = settings or {}
