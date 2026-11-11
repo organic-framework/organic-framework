@@ -22,6 +22,7 @@ OF_AUTOMATION=1 (AGENTS.md: automation never touches the owner's SSH agent).
 
 import fcntl
 import json
+import re
 import os
 import subprocess
 import sys
@@ -228,6 +229,12 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
     python = python or sys.executable
     path = path or herdr_config_path()
+    log_file = os.path.join(_state(), "asks-popup.err")  # OF's state dir, $OF_STATE when set
+    # They go into a TOML string and into sh -c '…': a quote, an apostrophe, a backslash or a control character
+    # would break the key (of_platform's review of PR 31), so such a path is refused, as resume_argv refuses it.
+    bad = [x for x in (python, of_home, log_file) if re.search(r"['\"\\\x00-\x1f\x7f]", x)]
+    if bad:
+        return False, f"a path holds a quote, an apostrophe, a backslash or a control character: {bad[0]!r}"
     text = open(path).read() if os.path.exists(path) else ""
     try:
         cfg = tomllib.loads(text)
@@ -236,7 +243,6 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     notes, add = [], []
     keys = [k for k in ((cfg.get("keys") or {}).get("command") or []) if k.get("key") == QUESTIONS_KEY]
     if not keys:
-        log_file = os.path.join(os.path.expanduser("~"), ".local", "state", "of", "asks-popup.err")
         command = (f"sh -c 'env OF_AUTOMATION=1 {python} {of_home}/bin/of asks --watch 2>>{log_file}; rc=$?; "
                    f"if [ $rc -ne 0 ]; then echo; echo \\\"of asks exited with $rc; see {log_file}. Press Enter."
                    f"\\\"; read x; fi'")
