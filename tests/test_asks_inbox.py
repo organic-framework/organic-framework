@@ -379,6 +379,21 @@ class PanelTest(ScreenTest):
         self.assertEqual(box.button[0], 3)
         self.assertEqual(ran, [["herdr-open", "asks"]])
 
+    def test_the_button_opens_the_popup_through_the_plugin(self):
+        import of_asks_panel as P
+        calls = []
+
+        def popup():
+            calls.append(1)
+            return (True, None) if len(calls) == 1 else (False, "ui_busy")
+        box = P.Panel(self.scr([0.05, 10, 0.05, ord("o"), 0.05]), lambda: ([("Waiting on you", [])], {}),
+                      initial=([], {}), keys="Ctrl-B, then a", popup=popup)
+        box.run()
+        self.assertEqual(len(calls), 2)
+        text = "\n".join(self.text(f) for f in self.frames)
+        self.assertIn("opening the questions…", text)
+        self.assertIn("herdr shows another popup, Settings or Copy mode: close it, then try again", text)
+
     def test_without_an_opener_the_button_says_the_keys(self):
         box, ran = self.panel([0.05, 10, 0.05], [item("A", "First plain question?")])
         self.assertEqual(ran, [])
