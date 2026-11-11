@@ -441,8 +441,9 @@ CAPACITY_QUESTION = ("This machine has {n} Claude accounts. When one reaches its
                      "yours, {position}, that keeps watch over the accounts and asks you only when your hands or "
                      "money are needed?")
 CAPACITY_OPTIONS = ("yes, move them and add {position} (recommended: no agent waits on a spent account while "
-                    "another has room)|no, not now: nothing is added, and agents on a spent account wait for it to "
-                    "reset; tell your conductor if you change your mind")
+                    "another has room)",
+                    "no, not now: nothing is added, and agents on a spent account wait for it to reset; tell your "
+                    "conductor if you change your mind")  # each translated alone: tr reads what follows "|" as context
 
 
 def capacity_structure(values, pkg_dir=CAPACITY_PACKAGE):
@@ -454,7 +455,8 @@ def capacity_structure(values, pkg_dir=CAPACITY_PACKAGE):
             "settings": fill(pkg.get("settings") or {}, values)}
 
 
-def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, position="a capacity keeper"):
+def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, position="a capacity keeper",
+                     lang=None):
     """'yes', 'no', or None when nobody here can answer (no terminal, or --yes): the head then gets one card.
     --capacity first; under two accounts, or with a capacity position already named in capacity.yaml, 'no' without a
     question; else one question in a terminal, no by default. ask(prompt) -> answer."""
@@ -469,7 +471,8 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
     if not ask:
         return None
     try:
-        answer = ask(f"{CAPACITY_QUESTION} [y/N] ".format(n=accounts, position=position))
+        from of_locale import tr
+        answer = ask(f"{tr(CAPACITY_QUESTION, lang, n=accounts, position=position)} [y/N] ")
     except EOFError:
         answer = ""
     from of_locale import variants  # "yes" in each of OF's languages comes from the locale catalogue
@@ -490,7 +493,7 @@ def file_capacity_card(n, position, lang=None, of_bin=None, run=subprocess.run):
     of_bin = of_bin or OF
     try:
         r = run([of_bin, "ask", tr(CAPACITY_QUESTION, lang, n=n, position=position),
-                 "--options", tr(CAPACITY_OPTIONS, lang, position=position)],
+                 "--options", "|".join(tr(o, lang, position=position) for o in CAPACITY_OPTIONS)],
                 capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
@@ -877,7 +880,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     import of_accounts
     n_acc = len(of_accounts.dirs())
     served = str(owner_settings(_config_path("capacity.yaml")).get("position") or "").strip()
-    cap = resolve_capacity(capacity, yes, n_acc, served, position=f"{prefix}_capacity")
+    cap = resolve_capacity(capacity, yes, n_acc, served, position=f"{prefix}_capacity", lang=lang)
     values = {"org": prefix, "Org": display, "owner_id": owner_id, "owner_name": owner_name,
               "owner_evidence": owner_evidence(org, owner, owner_name), "language": language_name(lang)}
     home = os.path.expanduser("~")
