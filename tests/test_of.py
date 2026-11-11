@@ -583,6 +583,23 @@ class InitStructureTest(unittest.TestCase):
         for p in ("conductor", "onboarding", "business-case", "system-architect", "org", "flow"):
             self.assertIn("run `of inbox --mine`", " ".join(files[f"registry/briefs/acme_{p}.md"].split()), p)
 
+    def test_the_remote_surface_starts_agents_in_tmux(self):
+        i = self.of_init
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "owner.yaml")
+            self.assertEqual(i.resolve_surface(None, path), ("herdr", False))  # the default
+            self.assertEqual(i.resolve_surface("remote", path), ("remote", True))
+            i.write_owner_setting("surface", "remote", path)
+            self.assertEqual(i.resolve_surface(None, path), ("remote", False))
+            with self.assertRaises(ValueError):
+                i.resolve_surface("phone", path)
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, self.built())
+        c = i.hand_start(doc, "acme_conductor", "/home/alex/of/acme", detach=True, remote_control=True,
+                         tmux="/opt/homebrew/bin/tmux")
+        self.assertTrue(c[1].startswith("tmux new-session -d -s acme_conductor 'cd /home/alex/of/acme && claude"))
+        self.assertIn("--remote-control acme_conductor", c[1])
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS
@@ -637,8 +654,9 @@ class InitStructureTest(unittest.TestCase):
                       lines[1])
         doc = {"organization": "acme"}
         i.merge_structure(doc, self.built())
-        lead = i.hand_start(doc, "acme_onboarding", "/home/alex/of/acme", agents=i.agent_settings(), detach=True)
-        self.assertTrue(lead[1].startswith("screen -dmS acme_onboarding sh -c 'cd /home/alex/of/acme && claude"))
+        lead = i.hand_start(doc, "acme_onboarding", "/home/alex/of/acme", agents=i.agent_settings(), detach=True,
+                            tmux="")  # no tmux: screen
+        self.assertTrue(lead[1].startswith("screen -U -dmS acme_onboarding sh -c 'cd /home/alex/of/acme && claude"))
         self.assertTrue(lead[0].startswith("of event injected_prompt"))  # an agent runs both; nothing asks the head
         readme = i.run_readme(self.pkg, i.fill(self.pkg["run"], self.values), dict(self.values, language="English"),
                               by_hand={"acme_onboarding": lead})
