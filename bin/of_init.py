@@ -484,17 +484,21 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
     return "yes" if str(answer).strip().lower() in words else "no"
 
 
-def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which):
+def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, configure=None):
     """Link OF's herdr plugin (of_herdr's, bin/of_herdr_plugin.py), which names each agent by its position when herdr
-    sees it and after every herdr restart. It changes the person's herdr, so it is said first and asked like the
-    hooks; undone with `herdr plugin unlink organic-framework`. Returns True when linked; never fails the init."""
+    sees it and after every herdr restart, and give herdr's config the key for the questions screen and the
+    per-workspace question counter (configure, which a plugin cannot do). Both change the person's herdr, so they are
+    said first and asked once, like the hooks; the plugin is undone with `herdr plugin unlink organic-framework`, the
+    config from the backup configure keeps. Returns True when linked; never fails the init."""
     if not which("herdr"):
         out("  herdr: not installed here, nothing to link")
         return False
     out("  herdr: OF's plugin names each agent by its position when herdr sees it and after every herdr restart. "
-        "Linking adds it to your herdr; herdr plugin unlink organic-framework removes it.")
+        "Linking adds it to your herdr; herdr plugin unlink organic-framework removes it. herdr's config also gets "
+        "prefix+a for the questions screen and a red count of open questions per workspace in the sidebar, after a "
+        "backup; a key or sidebar rows of your own are kept.")
     try:
-        if not _ask("Link OF's plugin into herdr?", yes):
+        if not _ask("Link OF's plugin into herdr and add the questions key and counter?", yes):
             out("  not linked: of apply names the agents when you run it; python3 bin/of_herdr_plugin.py install "
                 "links it later")
             return False
@@ -509,6 +513,18 @@ def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which):
     except Exception as e:  # noqa: BLE001 - said plainly; agents still get names from of apply
         ok, note = False, f"{type(e).__name__}: {e}"
     out(f"  herdr plugin: {note}" if ok else f"  herdr plugin NOT linked: {note} (of apply still names the agents)")
+    if configure is None:
+        import of_herdr_plugin
+        configure = of_herdr_plugin.configure
+    try:
+        done, notes = configure(os.path.dirname(HERE))
+    except Exception as e:  # noqa: BLE001 - said plainly; of asks still lists the questions
+        done, notes = False, f"{type(e).__name__}: {e}"
+    if done:
+        for n in (notes if isinstance(notes, (list, tuple)) else [notes]):
+            out(f"  herdr config: {n}")
+    else:
+        out(f"  herdr config NOT changed: {notes} (of asks still lists the questions)")
     return ok
 
 

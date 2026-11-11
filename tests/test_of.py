@@ -719,13 +719,17 @@ class InitStructureTest(unittest.TestCase):
         self.assertFalse(i.link_herdr_plugin(True, said.append, install=lambda h: 1 / 0, which=lambda n: None))
         self.assertIn("not installed here", said[-1])
         homes = []
-        self.assertTrue(i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr",
+        cfg = lambda h: homes.append(h) or (True, ["prefix+a opens the questions screen", "sidebar: $asks"])
+        self.assertTrue(i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr", configure=cfg,
                                              install=lambda h: homes.append(h) or (True, "linked")))
         self.assertTrue(any("herdr plugin unlink organic-framework" in x for x in said))  # said before it is done
-        self.assertEqual(homes, [os.path.dirname(i.HERE)])
+        self.assertEqual(homes, [os.path.dirname(i.HERE)] * 2)
+        self.assertEqual(said[-1], "  herdr config: sidebar: $asks")
         self.assertFalse(i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr",
-                                              install=lambda h: (False, "herdr plugin link failed")))
-        self.assertIn("NOT linked: herdr plugin link failed", said[-1])
+                                              install=lambda h: (False, "herdr plugin link failed"),
+                                              configure=lambda h: (False, "herdr config check failed")))
+        self.assertIn("NOT linked: herdr plugin link failed", said[-2])
+        self.assertIn("herdr config NOT changed: herdr config check failed", said[-1])
 
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
