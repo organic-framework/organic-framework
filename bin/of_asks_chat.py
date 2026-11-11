@@ -14,7 +14,8 @@ conductor points to the person's own words; OF records the answer only when that
   card; with --text the words must be in the prompt as typed.
 A card tagged money, security_incident, prod_change or irreversible is refused (HELD_TAGS, docs/remote.md §5): the
 event store is a file the agents' user can write, so until prompts are recorded out of their reach such a card is
-answered at the machine. The answer is the person's (`by: owner`, so a task is claimed, never closed), `via: conductor`, with the prompt's id
+answered at the machine; so is a diff's approval card (of diff apply would take its answer as the approval). The
+answer is the person's (`by: owner`, so a task is claimed, never closed), `via: conductor`, with the prompt's id
 and words; the asker sees them under the answer. Delivery is the popup's: typed into the asker's pane now when it is
 idle, else at its turn end or the pulse (of_asks_answer.pending), for REDELIVER_MAX_AGE_H.
 
@@ -64,7 +65,7 @@ def in_chat(ask):
     """How the conductor presents an open ask: `answer` (a card the person answers in the chat), `steps` (a task they
     can do where they are), `waiting` (it waits until they are at the machine)."""
     kind = ask.get("kind") or ""
-    if kind in AT_MACHINE_KINDS or kind.startswith("blocked:") or held_tags(ask):
+    if kind in AT_MACHINE_KINDS or kind.startswith("blocked:") or ask.get("diff_id") or held_tags(ask):
         return "waiting"
     if ask.get("task"):
         return "steps" if where_of(ask) in ("phone", "browser") else "waiting"
@@ -227,6 +228,9 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
         raise ValueError(f"ask {first['event_id'][-8:]} is a {kind.split(':')[0]} in a pane: it is answered at the "
                          "machine, never from the chat")
     by_id = {a["event_id"]: a for a in asks}
+    diff = next((by_id[i].get("diff_id") for i in g["ask_ids"] if (by_id.get(i) or {}).get("diff_id")), None)
+    if diff:  # of_release's review 2026-11-11, finding 1: of diff apply would take the answer as the approval
+        raise ValueError(f"ask {first['event_id'][-8:]} is the approval card of diff {diff}: {DIFF_HOLD}")
     first_opts = _options_of(conn, first)
     held = sorted({t for i in g["ask_ids"] for t in held_tags(by_id.get(i) or {}, first_opts if i == first["event_id"]
                                                                else ())})
@@ -364,6 +368,7 @@ def chat_view(conn, asks):
         else:
             held = held_tags(a)
             what = "a task at the machine" if a.get("task") else (
+                f"diff {a['diff_id']} to approve at the machine" if a.get("diff_id") else
                 f"a card tagged {', '.join(held)}, answered at the machine" if held
                 else f"a {(a.get('kind') or '').split(':')[0]} in a pane")
             waiting.append(f"  {tag} ({what}): {a['text'][:160]}")

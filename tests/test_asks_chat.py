@@ -255,6 +255,16 @@ class ForgedOrStaleTest(ChatTest):
                        ts="2026-11-11T10:00:40Z")
         self.refused(opt, self.prompt(f"{opt[-8:]} wait"), "tagged money", option=1)  # its options count too
 
+    def test_a_diffs_card_is_approved_at_the_machine(self):
+        """of_release's review 2026-11-11, finding 1: of diff apply took an owner's answer to a diff's card as its
+        approval, whatever its tier."""
+        d = self.ask("Approve the structure change sd-2026-11-11-x?", ["approve", "reject"], diff_id="sd-2026-11-11-x")
+        self.refused(d, self.prompt(f"{d[-8:]} approve"), "approval card of diff sd-2026-11-11-x", option=1)
+        self.assertEqual(of_asks_chat.in_chat({x["event_id"]: x for x in self.asks()}[d]), "waiting")
+        view = of_asks_chat.chat_view(self.conn, self.asks())
+        self.assertIn("diff sd-2026-11-11-x to approve at the machine", view)
+        self.assertNotIn("1) approve", view)
+
     def test_a_routed_card_to_a_person_takes_that_persons_conductor(self):
         r = self.ask("Merge the release?", ["yes", "no"], to="of_alex")
         self.refused(r, self.prompt(f"{r[-8:]} yes"), "not in the session", option=1)
