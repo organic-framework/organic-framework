@@ -14,13 +14,14 @@ Status: **design**, 2026-11-11, by `of_architect`. The founder, about 19:00Z: "w
 - **An organization's secrets store is chosen at its first need**, not at install, on one card to its owner (docs/agent-secrets.md §13.2); until then its credentials are files.
 - **Choosing.** A machine's choices live in `~/.config/of/plugins.yaml` (`<family>: <name>` plus that implementation's settings). A choice that belongs to an organization, such as where its secrets live, sits in the organization's registry (`plugins:`), so every machine and colleague of that organization uses the same one. The organization's choice wins over the machine's for its own data.
 - **Loading.** OF loads implementations it ships (`bin/plugins/<family>/<name>.py`) and, from installed Python packages, entry points in the group `organic_framework.<family>`. It never loads code from a folder an agent can write: the guard denies agents writes to installed plugin code, so a plugin cannot be planted by an agent. A plugin runs with OF's own rights; installing one is the owner's act.
+- **A family's name never contains `secrets`**: a path with `secrets/` in it is denied to every agent by the guard (G1.1) and by Claude Code's own deny rules, which take no exceptions, so no agent could read or edit the code. The family that holds credentials is `secret_stores` (folder `bin/plugins/secret_stores/`, entry-point group `organic_framework.secret_stores`, key `secret_stores` in `plugins.yaml` and in an organization's `plugins:`); `of_server`, 2026-11-11.
 - **Naming references.** Where a record names something inside a product, it uses the family's URI form: a credential's `ref` is `<backend>://<path>` (for example `op://acme-obs/grafana/credential`, `keychain://acme/grafana-viewer`, `vault://secret/acme/grafana#token`, `aws-sm://acme/grafana`), so a registry says which backend holds it and moves between backends by changing the ref.
 
 ## 3. The families
 
 | Family | What it does for OF | Methods (outline) | Ships with | Owner |
 |---|---|---|---|---|
-| `secrets` | where credentials live; the broker reads and writes through it | the store interface of docs/agent-secrets.md §13.3: `ref` form, `container`, `read` and `write` with the position's own identity, `plan`, `enforces_boundary`, `audit`, `value_commands` | 1Password service accounts; macOS Keychain; an env file for a lab. Candidates: Bitwarden, LastPass, HashiCorp Vault, AWS Secrets Manager and KMS, Google Secret Manager | `of_server` |
+| `secret_stores` | where credentials live; the broker reads and writes through it | the store interface of docs/agent-secrets.md §13.3: `ref` form, `container`, `read` and `write` with the position's own identity, `plan`, `enforces_boundary`, `audit`, `value_commands` | 1Password service accounts; macOS Keychain; an env file for a lab. Candidates: Bitwarden, LastPass, HashiCorp Vault, AWS Secrets Manager and KMS, Google Secret Manager | `of_server` |
 | `runtime` | the panes agents run in: list, read, deliver text when idle, label, focus | `agents()`, `read(pane)`, `deliver(pane, text)`, `label(pane, …)`, `focus(pane)` | herdr; tmux; none (a terminal, inbox only) | `of_herdr` |
 | `harness` | the agent program: start and resume a session, its hooks, its transcripts, its accounts | `start(…)`, `resume(session)`, `install_hooks()`, `transcripts()`, `accounts()` | Claude Code. Candidate: Codex | `of_platform`, accounts with `of_capacity` |
 | `code_host` | work records: merged changes and their authors | `merged(since)`, `authors(paths, since)`, `pr(id)` | git (local); GitHub. Candidates: GitLab, Bitbucket | `of_platform` |
@@ -35,7 +36,7 @@ Tools for agents (MCP servers, plugins, connectors such as Slack or Gmail) are a
 
 | Product | Files | Becomes |
 |---|---|---|
-| 1Password (`op`, service accounts) | 14, among them `of`, `of_capacity.py`, `of_credentials.py`, `of_grants.py`, `of_guard.py`, `of_hook.py`, `of_client.py` | `secrets`; the guard's rules about `op` become rules about the chosen backend's command |
+| 1Password (`op`, service accounts) | 14, among them `of`, `of_capacity.py`, `of_credentials.py`, `of_grants.py`, `of_guard.py`, `of_hook.py`, `of_client.py` | `secret_stores`; the guard's rules about `op` become rules about the chosen backend's command |
 | herdr | 35 | `runtime` (tmux already exists in `of_tmux.py`) |
 | Claude Code (`claude`, `CLAUDE_CONFIG_DIR`, its hooks and transcripts) | 10, among them `of_hook.py`, `of_capacity.py`, `of_resume.py`, `of_init.py`, `of_judge.py` | `harness`; the small judges move to `model` |
 | GitHub (`gh`) | 12, among them `of_github.py`, `of_coord.py`, `of_listen.py`, `of_measures.py`, `of_model.py` | `code_host` |
@@ -48,7 +49,7 @@ Each owner lists the exact call sites in its part when it converts, and the cont
 ## 5. Order
 
 1. **The mechanism** (`of_platform`): the loader shared by client and server, `plugins.yaml`, the organization's `plugins:` key, entry points, the guard's deny on writes to installed plugin code (with `of_server`), and `of init` proposing choices from what it detects.
-2. **`secrets` first** (`of_server`), with three implementations (1Password, macOS Keychain, an env file) and the `<backend>://` refs; the broker and `of_capacity`'s credential broker use it. This answers the founder's request directly.
+2. **`secret_stores` first** (`of_server`), with three implementations (1Password, macOS Keychain, an env file) and the `<backend>://` refs; the broker and `of_capacity`'s credential broker use it. This answers the founder's request directly.
 3. **`runtime`** (`of_herdr`): herdr and tmux; the remote-only design's delivery into tmux (docs/remote.md row 5) is its first use.
 4. **`notify`, `code_host`, `service`, `harness`, `model`**, each by its owner, in any order.
 5. **Contract tests** per family (`of_lab`), so a third party's plugin can prove itself.
