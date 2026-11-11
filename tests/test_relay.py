@@ -489,6 +489,11 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(of_relay._is_rule(named))
         self.assertEqual(of_relay.input_box_text(screen), "")
         self.assertFalse(of_relay._is_rule("── a short line of text that only starts with a rule"))
+        narrow = "─" * 13 + " shop_throughput-owner ─"      # a 35-column pane (2026-11-12)
+        screen = ("a reply\n" + "─" * 35 + "\nmore reply\n\n" + narrow + "\n\u276f\xa0\n" + "─" * 35 + "\n  bypass")
+        self.assertTrue(of_relay._is_rule(narrow))
+        self.assertEqual(of_relay.input_box_text(screen), "")
+        self.assertFalse(of_relay._is_rule("──── two words ─"))       # a label is one name, never prose
 
     def test_joined_delivery_types_one_prompt_with_each_frame(self):
         local = dict(LOCAL)

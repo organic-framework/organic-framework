@@ -112,14 +112,18 @@ STUCK_AFTER = 3  # defers in a row with text in the box: of pulse tells the posi
 
 
 _NAMED_RULE = re.compile(r"─{2,}(?: [^─]{1,40} ─*)?")
+_NAMED_RULE_NARROW = re.compile(r"─{4,} [^\s─]{1,40} ─+")  # a narrow pane: rule, one name, rule (2026-11-12)
 
 
 def _is_rule(line):
     """A horizontal rule of Claude Code's input box, also one that carries the session's name ('──── name ─'):
     2026-11-11, of_platform: in a 72-column pane the named rule was 75% rule characters, the box was read from the
-    rule above the agent's last reply, and 21 deliveries were deferred over an empty box."""
+    rule above the agent's last reply, and 21 deliveries were deferred over an empty box. In a 35-column pane the
+    named rule holds only 14 rule characters (2026-11-12, a user organization's unit owner, 25 deliveries deferred):
+    a line of rule characters, one name and rule characters is a rule at any width."""
     t = _ANSI.sub("", line).strip()
-    return t.startswith("─") and (t.count("─") > 0.8 * len(t) or (t.count("─") >= 20 and bool(_NAMED_RULE.fullmatch(t))))
+    return t.startswith("─") and (t.count("─") > 0.8 * len(t) or (t.count("─") >= 20 and bool(_NAMED_RULE.fullmatch(t)))
+                                  or bool(_NAMED_RULE_NARROW.fullmatch(t)))
 
 
 def input_box_text(screen):
