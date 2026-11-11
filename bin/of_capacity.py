@@ -3225,9 +3225,15 @@ def plan(rows, positions, sessions=None):
             p = by_name.get(n) or {}
             sess = ((p.get("holder") or {}).get("session") or "").strip()
             tp, unsigned = t, []
-            if t and docs and missing_signins(n, t["config_dir"], docs):  # docs/tools.md §5: only where signed in
-                unsigned = [i for i, _ in missing_signins(n, t["config_dir"], docs)]
-                tp = best_target(rows, exclude=r["config_dir"], ok=lambda d, n=n: not missing_signins(n, d, docs))
+            used = {x for x in tools_used(find_transcript(r["config_dir"], sess) or "") if x.startswith("plugin:")} \
+                if sess else set()
+
+            def gone(d, n=n, used=used):  # plugins it used and bound tools not signed in there (docs/tools.md §5)
+                return (sorted(lacking(used, account_tools(None, plugins_ready(d)))) if used else []) + \
+                    [i for i, _ in (missing_signins(n, d, docs) if docs else [])]
+            if t and gone(t["config_dir"]):
+                unsigned = gone(t["config_dir"])
+                tp = best_target(rows, exclude=r["config_dir"], ok=lambda d, gone=gone: not gone(d))
             out.append({"from": r["config_dir"], "to": tp["config_dir"] if tp else None, "position": n,
                         "org": p.get("_org"), "throughput": p.get("throughput"), "status": p.get("status"),
                         "busy": sess in busy, **({"not_signed_in": {t["config_dir"]: unsigned}} if unsigned else {}),
