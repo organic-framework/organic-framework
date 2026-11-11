@@ -2260,7 +2260,9 @@ def cmd_asks(args):
                 return next((a["pane_id"] for p, a in bind(positions(), live_agents())[0] if p["name"] == name), None)
             except OfError:
                 return None
-        return of_asks_tui.main(positions, None, os.path.realpath(__file__), pane_of,
+        import of_asks_inbox  # layout A (the founder's choice, 2026-11-12); --classic: the earlier popup
+        return (of_asks_tui.main if args.classic else of_asks_inbox.main)(positions, None, os.path.realpath(__file__),
+                                                                          pane_of,
                                 after=lambda: _reconcile_ask_tokens(positions()), refresh=refresh)
     import of_asks
     import of_store
@@ -5255,7 +5257,9 @@ def main(argv=None):
     ak.add_argument("id", nargs="?")
     ak.add_argument("reason", nargs="*")
     ak.add_argument("--all", action="store_true", help="also answered, denied, superseded and expired asks")
-    ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a)")
+    ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a): the queue and the "
+                    "selected card side by side, streams, wrap-around keys (bin/of_asks_inbox.py)")
+    ak.add_argument("--classic", action="store_true", help="with --watch: the earlier one-column popup")
     ak.add_argument("--json", action="store_true")
     ak.add_argument("--chat", action="store_true", help="the owner's queue as the conductor tells it in a chat: cards, "
                     "tasks for a phone or a browser, and what waits for the machine")
