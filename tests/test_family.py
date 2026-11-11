@@ -58,6 +58,11 @@ class MechanismTest(unittest.TestCase):
         self.assertTrue(any("runtime: names no implementation" in p for p in probs))
         self.assertIn(of_family.SHIPPED, of_family.code_paths())
 
+    def test_server_builtins_without_importing_the_server(self):
+        """of_onboarding, 2026-11-11: of init --plugin storage=sqlite found no sqlite."""
+        self.assertIn("sqlite", of_family.implementations("storage"))
+        self.assertTrue(of_family.implementation("storage", "sqlite"))
+
 
 if __name__ == "__main__":
     unittest.main()
