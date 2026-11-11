@@ -1327,9 +1327,9 @@ positions:
         typed = []
         deliver = lambda p, t: typed.append(t) or (True, "")
         _, sent = self.oj.pulse_pass(self.conn, asks, [], [], bind, now=later, deliver=deliver, log=lambda m: None,
-                                        start=lambda a: False)
+                                        start=lambda a: False, online=lambda: True)
         _, again = self.oj.pulse_pass(self.conn, asks, [], [], bind, now=later + 3600, deliver=deliver,
-                                         log=lambda m: None, start=lambda a: False)
+                                         log=lambda m: None, start=lambda a: False, online=lambda: True)
         self.assertEqual((sent, again, len(typed)), (1, 0, 1))
         self.assertIn(card[-8:], typed[0])
 

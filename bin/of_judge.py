@@ -695,7 +695,7 @@ def _resolve(conn, ref):
 
 # ------------------------------------------------------------------ the pulse's part
 
-def pulse_pass(conn, asks, positions, agents, bind, now=None, deliver=None, log=print, start=spawn):
+def pulse_pass(conn, asks, positions, agents, bind, now=None, deliver=None, log=print, start=spawn, online=None):
     """Every pulse: start a judge for candidates nobody judged (the hook's marker was lost, the slots were busy, a
     model error), whatever happened to the session since; and tell agents about the pane cards OF filed for them that
     they were not told about yet (turns the founder started, after CORRECT_HUMAN_MIN; panes that were busy).
@@ -714,8 +714,13 @@ def pulse_pass(conn, asks, positions, agents, bind, now=None, deliver=None, log=
         vs = judged(conn, a["event_id"])
         if not vs or (all(v == "error" for v in vs) and len(vs) < 3):
             todo.append(a["event_id"])
-    if todo or pending_count():
+    if online is None:
+        import of_net
+        online = of_net.online
+    if (todo or pending_count()) and online():  # during a network drop no try is spent: the next pulse judges
         started = int(start(["--pending", *todo[:20]]))
+    elif todo or pending_count():
+        log("judge: the model API is unreachable; candidates wait for the next pulse")
     live = {}
     for p, ag in bind(positions, agents)[0] if bind and agents is not None else []:
         live[p["name"]] = ag
