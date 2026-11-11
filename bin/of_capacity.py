@@ -3525,6 +3525,35 @@ def load_policy():
     return p
 
 
+def write_defaults(settings, path=None, now=None):
+    """Merge a package's settings into capacity.yaml (bench/capacity/package.yaml `settings`, for of init's step):
+    a key the person already set is kept as it is, a missing one is appended under a dated comment; the file's own
+    lines and comments stay. Returns (written, kept): the keys of each. A capacity.yaml that is not a YAML mapping
+    raises ValueError and is left alone."""
+    import yaml
+    path = path or of_events.config_path("capacity.yaml")
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        text = ""
+    current = yaml.safe_load(text) if text.strip() else {}
+    if not isinstance(current, dict):
+        raise ValueError(f"{path} is not a YAML mapping; nothing written")
+    written = [k for k in settings if k not in current]
+    kept = [k for k in settings if k in current]
+    if written:
+        stamp = _iso(now or time.time())[:10]
+        add = (f"# bench/capacity defaults, written by of init {stamp}; a key set above is never overwritten\n"
+               + yaml.safe_dump({k: settings[k] for k in written}, sort_keys=False, default_flow_style=False))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            fh.write(text + ("" if not text or text.endswith("\n") else "\n") + add)
+        os.replace(tmp, path)
+    return written, kept
+
+
 def capacity_position(policy=None):
     """'<org>:<name>' of the position that serves this machine's accounts: capacity.yaml `position` (docs/accounts.md
     B4: one per person, in their home organization; of init writes it), or None. With none, the invariant's work

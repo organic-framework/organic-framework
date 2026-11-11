@@ -1345,6 +1345,27 @@ class CapacityPosition(unittest.TestCase):
         self.assertEqual(of_capacity.capacity_position({"position": "acme:acme_capacity"}), "acme:acme_capacity")
         self.assertEqual(of_capacity.actor({"position": "acme:acme_capacity"}), "acme_capacity")
 
+    def test_write_defaults_never_overwrites_what_the_person_set(self):
+        import yaml
+        pkg = {"position": "acme:acme_capacity", "auto": True, "rescue_moves": 6, "max_moves": 0, "relief_moves": 0}
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, "of", "capacity.yaml")
+            self.assertEqual(of_capacity.write_defaults(pkg, path), (list(pkg), []))  # no file: all written
+            self.assertEqual(yaml.safe_load(open(path).read()), pkg)
+            with open(path, "w") as fh:
+                fh.write("# mine\nauto: false  # not yet\nmax_moves: 2")  # no newline at the end
+            written, kept = of_capacity.write_defaults(pkg, path)
+            self.assertEqual((written, kept), (["position", "rescue_moves", "relief_moves"], ["auto", "max_moves"]))
+            text = open(path).read()
+            self.assertTrue(text.startswith("# mine\nauto: false  # not yet\nmax_moves: 2\n# bench/capacity"))
+            got = yaml.safe_load(text)
+            self.assertEqual((got["auto"], got["max_moves"], got["position"]), (False, 2, "acme:acme_capacity"))
+            self.assertEqual(of_capacity.write_defaults(pkg, path), ([], list(pkg)))  # a re-run writes nothing
+            with open(path, "w") as fh:
+                fh.write("- a list\n")
+            with self.assertRaises(ValueError):
+                of_capacity.write_defaults(pkg, path)
+
     def test_the_owner_cards_without_a_position(self):
         stalls = [{"session": "s1", "position": "acme_a"}, {"session": "s2", "position": None}]
         cyr = re.compile("[\\u0400-\\u04ff]")
