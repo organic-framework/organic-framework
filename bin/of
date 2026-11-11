@@ -2846,6 +2846,20 @@ def cmd_send(args):
     reason = f": {r['authority_reason']}" if r.get("authority_reason") else ""
     print(f"{r.get('state')}: {r.get('msg_id')} to {to} (authority: {r.get('authority')}{reason})"
           + (f" under grant {args.grant}" if args.grant else ""))
+    if r.get("state") == "queued":  # say when nothing will deliver it (a new organization's install, 2026-11-11)
+        org, pos = to.split(":", 1)
+        try:
+            pres = client.presence(org)
+            held = {h.get("position") for h in ((pres.get("holders") if isinstance(pres, dict) else pres) or [])}
+        except Exception:  # noqa: BLE001
+            held = None
+        if held is not None and pos not in held:
+            print(f"warning: no running relay shows {to} as held on any machine, so nothing types this message in "
+                  f"yet; it waits on the server until one does, and {pos} can read it now with `of inbox --mine`")
+        elif any(f"{h['org']}:{h['position']}" == to for h in body):
+            w = _relay_warning()
+            if w:
+                print(f"warning: {to} is held here and {w}")
     return 0
 
 
@@ -2947,6 +2961,26 @@ def cmd_relay(args):
 RELAY_LABEL = "dev.organic-framework.relay"
 
 
+def relay_alive():
+    """Whether an `of relay run` process runs on this machine (True/False), or None when it cannot be told (no pgrep).
+    A new organization's install, 2026-11-11: no relay ran, so a conductor's first message never arrived and nothing said so."""
+    import subprocess
+    try:
+        r = subprocess.run(["pgrep", "-f", r"of relay run"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    pids = [p for p in r.stdout.split() if p.isdigit() and int(p) != os.getpid()]
+    return bool(pids)
+
+
+def _relay_warning():
+    """One line when no relay runs here, else None."""
+    if relay_alive() is False:
+        return ("no relay runs on this machine: messages to positions held here wait on the server and are never "
+                "typed in; start it with `of relay on`, and until then read them with `of inbox --mine`")
+    return None
+
+
 def _relay_service(action):
     """`of relay on|off`: bootstrap or boot out the launchd unit (installed by of_server, modelled on
     the pulse). A relay started the old way (pid file) is stopped first: one poller per machine."""
@@ -2960,9 +2994,13 @@ def _relay_service(action):
         r = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
         print("of relay: off" if r.returncode == 0 else "of relay: was not loaded")
         return 0
-    if not os.path.exists(plist):
-        raise OfError(f"of relay on: no launchd unit {plist} (installed by of_server); `of relay run` runs it "
-                      "in the foreground")
+    if not os.path.exists(plist):  # a machine set up before of init installed it (of_onboarding, 9b8f7e9)
+        import of_init
+        failed = of_init.install_units()
+        if "relay" in failed:
+            raise OfError("of relay on: the relay unit did not start; `of relay run` runs it in the foreground")
+        print("of relay: installed and started its service")
+        return 0
     subprocess.run(["launchctl", "bootout", target], capture_output=True)
     r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", plist], capture_output=True, text=True)
     if r.returncode != 0:
@@ -3847,6 +3885,9 @@ def cmd_status(args):
             print(note)
     except Exception:  # noqa: BLE001
         pass
+    w = _relay_warning()  # a dead relay is said where every agent looks at the end of each turn (a new organization's install, 2026-11-11)
+    if w:
+        print(f"warning: {w}")
     return 0
 
 

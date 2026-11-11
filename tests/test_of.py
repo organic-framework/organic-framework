@@ -97,6 +97,20 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(of.org_agents("a", path), {"model": "opus", "effort": "xhigh"})
             self.assertEqual(of.org_agents("b", path), {})
 
+    def test_a_dead_relay_is_said(self):
+        """A new organization's install, 2026-11-11: no relay ran and a conductor's first message never arrived, silently."""
+        import subprocess as sp
+        saved = sp.run
+        try:
+            sp.run = lambda *a, **k: type("R", (), {"stdout": "", "returncode": 1})()
+            self.assertFalse(of.relay_alive())
+            self.assertIn("of relay on", of._relay_warning())
+            sp.run = lambda *a, **k: type("R", (), {"stdout": "99999999\n", "returncode": 0})()
+            self.assertTrue(of.relay_alive())
+            self.assertIsNone(of._relay_warning())
+        finally:
+            sp.run = saved
+
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
              "notes": {"Waits for runners_coordinator after the CA window.": None}}
