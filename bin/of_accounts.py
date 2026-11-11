@@ -141,21 +141,23 @@ def login_task(name, d, lang=None):
                "logged in.", lang, **kw))
 
 
-def _actor():
-    import of_capacity
-    return of_capacity.actor()
-
-
-def _file_task(title, steps, of_bin=None):
+def _file_task(title, steps, of_bin=None, run=subprocess.run):
+    """File the owner's task as the caller, as of spawn files its own (the calling session's position; none in a plain
+    terminal, where the owner runs it): (filed, output). No fixed sender: a colleague's organization has no
+    of_capacity (of_platform's review of PR 22)."""
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
-    r = subprocess.run([of_bin, "ask", title, "--task", steps, "--from", _actor()], capture_output=True,
-                       text=True, timeout=60, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
-    return (r.stdout or r.stderr).strip()
+    try:
+        r = run([of_bin, "ask", title, "--task", steps], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    return r.returncode == 0, ((r.stdout if r.returncode == 0 else r.stderr or r.stdout) or "").strip()
 
 
 def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, log=print):
     """Add an account: create its folder (mode 700), list it, and file one owner task to log in there unless it is
-    logged in already. The accounts found by name are listed too, so adding the first one hides none of them."""
+    logged in already. The accounts found by name are listed too, so adding the first one hides none of them.
+    `ask(title, steps)` -> (filed, output); when the task cannot be filed, the steps are printed for whoever runs this
+    (in a plain terminal, the owner) and AccountError says so."""
     if not NAME.match(name or ""):
         raise AccountError(f"an account name is lowercase letters, digits, - and _, at most 32 characters: {name!r}")
     d = config_dir or ("~/.claude" if name == "default" else f"~/.claude-{name}")
@@ -178,9 +180,16 @@ def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, 
     if logged_in:
         return None
     title, steps = login_task(name, tilde(full, home))
-    out = ask(title, steps) if ask else _file_task(title, steps)
-    log(f"account {name}: not logged in yet; the owner's task to log in: {out}")
-    return title
+    try:
+        filed, out = ask(title, steps) if ask else _file_task(title, steps)
+    except Exception as e:  # noqa: BLE001 - a failed filing is reported below, never as filed
+        filed, out = False, f"{type(e).__name__}: {e}"
+    if filed:
+        log(f"account {name}: not logged in yet; the owner's task to log in: {out}")
+        return title
+    log(f"account {name}: not logged in yet, and the task to log in could not be filed ({out[-200:]}).\n"
+        f"The steps, for whoever logs in:\n{title}\n{steps}")
+    raise AccountError("the task to log in was not filed; its steps are above")
 
 
 def remove(name, home=None, log=print):
@@ -271,15 +280,10 @@ def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None):
     import of_capacity
     env = dict(os.environ if env is None else env)
     args, account = list(args), None
-    for i, a in enumerate(args):
-        if a == "--account" and i + 1 < len(args):
-            account = args[i + 1]
-            del args[i:i + 2]
-            break
-        if a.startswith("--account="):
-            account = a.split("=", 1)[1]
-            del args[i]
-            break
+    if args and args[0] == "--account" and len(args) > 1:  # ours only first: the rest is Claude Code's, untouched
+        account, args = args[1], args[2:]
+    elif args and args[0].startswith("--account="):
+        account, args = args[0].split("=", 1)[1], args[1:]
     if account is None and len(args) == 2 and args[0] == "--resume":
         line = (resumer or resume_line)(args[1])
         if line:
