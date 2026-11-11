@@ -3987,9 +3987,10 @@ def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
         return f"the person's words do not name the diff {d['id']}", prompt
     if not of_classify.approves(text):
         return "the person's words are not a plain yes (a no, a not or a condition counts as no approval)", prompt
-    named = [h for h in re.findall(r"(?<![0-9a-f])[0-9a-f]{8,64}(?![0-9a-f])", text.lower())
-             if h not in d["id"].lower()]
-    if named and not any(str(e.get("digest") or "").startswith(h) for h in named):  # bound to the content seen
+    # a digest counts only where the words name it as one ("digest a1b2c3d4"), so a card id is never read as one, and
+    # every digest named must be this diff's (review 2026-11-11, finding 7)
+    named = re.findall(r"(?i)\bdigest[:\s]+([0-9a-f]{8,64})\b", text)
+    if named and not all(str(e.get("digest") or "").startswith(h.lower()) for h in named):  # the content seen
         return "the person's words name a digest that is not this diff's (of diff list shows its digest)", prompt
     return None, prompt
 
