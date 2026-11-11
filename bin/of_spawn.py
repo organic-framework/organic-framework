@@ -98,11 +98,15 @@ def deny_rules(position, org, cat, named=None, roots=None):
     return rules
 
 
-def session_settings(memory=None, deny=None):
-    """The one --settings JSON: the memory directory (bin/of_memory.py, RFC 0006) and the credential deny rules."""
+def session_settings(memory=None, deny=None, extra=None):
+    """The one --settings JSON: the memory directory (bin/of_memory.py, RFC 0006), the credential deny rules, and
+    extra keys such as the tool profile's allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md
+    §4)."""
     s = json.loads(memory) if memory else {}
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
+    for k, v in (extra or {}).items():
+        s[k] = v
     return json.dumps(s) if s else None
 
 
@@ -125,15 +129,18 @@ def settings_file(settings, sid, state_dir=None):
 
 
 def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=True, memory=None, deny=None,
-                   state_dir=None):
+                   state_dir=None, tools=None):
     """memory: the --settings JSON naming the position's memory directory (bin/of_memory.py, RFC 0006); deny: the
-    credential deny rules (deny_rules). Both go into one settings file (settings_file)."""
+    credential deny rules (deny_rules); tools: (argv, settings keys) of the position's tool profile
+    (of_tools.launch_parts). The settings go into one settings file (settings_file)."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if os.path.realpath(config_dir) == os.path.realpath(default_dir) \
         else [f"CLAUDE_CONFIG_DIR={shlex.quote(config_dir)}"]
     parts = ["cd", shlex.quote(cwd), "&&", *env, "OF_SPAWNED=1", "claude", "--session-id", sid, "-n", name]
-    settings = session_settings(memory, deny)
+    tool_argv, tool_settings = tools or ([], {})
+    settings = session_settings(memory, deny, tool_settings)
     if settings:
         parts += ["--settings", shlex.quote(settings_file(settings, sid, state_dir))]
+    parts += [shlex.quote(a) for a in tool_argv]
     if model:
         parts += ["--model", model]
     if bypass:
@@ -143,9 +150,10 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
 
 def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
          capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
-         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None):
+         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None):
     """Everything run() needs, or SpawnError. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
-    the account accepted the Bypass Permissions warning (bypass_accepted)."""
+    the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
+    (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
     live = {q["name"]: a for q, a in bind(positions, agents)[0]}
     if p["name"] in live:
         a = live[p["name"]]
@@ -173,7 +181,8 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
             "trusted": trusted(config_dir, cwd) if trusted else None,
             "bypass_ok": (not bypass) or bool(accepted(config_dir)) if accepted else True,
             "deny": list(deny or []),
-            "command": launch_command(cwd, config_dir, sid, p["name"], default_dir, model, bypass, memory, deny)}
+            "command": launch_command(cwd, config_dir, sid, p["name"], default_dir, model, bypass, memory, deny,
+                                      tools=tools(p["name"], sid, config_dir) if tools else None)}
 
 
 def git_root(path, exists=os.path.exists, isdir=os.path.isdir):

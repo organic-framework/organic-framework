@@ -258,6 +258,13 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             problems += [f"{org}:registry/positions.yaml: works: {pr}"
                          for pr in check_works(works, names, systems, units, statuses)]
             problems += [f"{org}: works: {pr}" for pr in loop_files(works, _org_paths(orgs_file).get(org) or [])]
+    if deep:  # tool profiles (docs/tools.md; of_tools.check, of_tools's rules)
+        try:
+            import of_tools
+            problems += [f"{pr.split(': ', 1)[0]}:registry/positions.yaml: {pr.split(': ', 1)[1]}" if ": " in pr else pr
+                         for pr in of_tools.check(of_tools.registries(orgs_file))]
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"tools: the check could not run ({type(e).__name__}: {e})")
     known = {org for org, _, _ in org_registries(orgs_file)}
     for p in positions:
         if p.get("serves") and p["serves"] not in known:
@@ -1680,6 +1687,18 @@ def resolve(query, positions, agents):
     raise OfError(f"no position or live agent matches {query!r}")
 
 
+def _tool_parts(position, sid, config_dir, log=print):
+    """The position's tool profile for a launch (docs/tools.md §4; of_tools.launch_parts): (argv, settings keys).
+    An organization without a `tools:` catalogue gets ([], {}). A broken catalogue is of registry check's to report:
+    the launch goes on without a profile, and says so."""
+    try:
+        import of_tools
+        return of_tools.launch_parts(position, sid, config_dir)
+    except Exception as e:  # noqa: BLE001
+        log(f"tools: no profile for {position} ({type(e).__name__}: {e}); the session starts with the account's own")
+        return [], {}
+
+
 def cmd_spawn(args):
     """of spawn <position>: start its session with the brief, declared by construction (bin/of_spawn.py)."""
     import of_capacity
@@ -1710,7 +1729,8 @@ def cmd_spawn(args):
                            roots.get(p["_org"], ""), want_workspace, config_dir=args.config_dir, cwd=args.cwd,
                            capacity_rows=rows, best_target=of_capacity.best_target,
                            trusted=lambda d, c: of_spawn.trusted_with_parents(d, c, of_capacity.trusted_key), model=args.model,
-                           bypass=not args.no_bypass, memory=memory, deny=deny, accepted=of_spawn.bypass_accepted)
+                           bypass=not args.no_bypass, memory=memory, deny=deny, accepted=of_spawn.bypass_accepted,
+                           tools=_tool_parts)
     except of_spawn.SpawnError as e:
         raise OfError(str(e))
     print(f"{pl['position']}: session {pl['session']}\n  account {pl['config_dir']}\n  folder {pl['cwd']}\n"
@@ -1969,7 +1989,9 @@ def cmd_resume_command(args):
         except Exception:  # noqa: BLE001
             mem = None
     deny = of_capacity.deny_for(p, log=lambda m: None) if p else None  # its credential deny rules, as of spawn
-    line = of_resume.command(args.session, memory_dir=mem, deny=deny)
+    d, _ = of_resume.newest_copy(args.session)
+    tools = _tool_parts(p["name"], args.session, d, log=lambda m: None) if p and d else None  # its tool profile
+    line = of_resume.command(args.session, memory_dir=mem, deny=deny, tools=tools)
     if not line:
         return 1
     print(line)

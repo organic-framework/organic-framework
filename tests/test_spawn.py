@@ -215,5 +215,43 @@ class OwnerStepsTest(unittest.TestCase):
         self.assertTrue(plan(cwd="/w", accepted=lambda d: False, bypass=False)["bypass_ok"])  # no bypass: no warning
 
 
+class ToolProfileTest(unittest.TestCase):
+    """docs/tools.md §4 (of_tools, hand-over 2ba2ec3f): a position starts with its tool profile; an organization with
+    no tools: catalogue gets nothing new."""
+
+    def test_a_catalogue_gives_the_allowlist_and_the_mcp_config_and_none_gives_nothing(self):
+        import yaml
+        import of_events
+        import of_tools
+        sys.path.insert(0, HERE)
+        from test_tools import DOC
+        with tempfile.TemporaryDirectory() as d:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, os.path.join(d, "state")
+            try:
+                for org, doc in (("acme", DOC), ("globex", {"positions": [{"name": "globex_org"}]})):
+                    os.makedirs(os.path.join(d, org, "registry"))
+                    with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                        yaml.safe_dump(doc, fh)
+                orgs = os.path.join(d, "orgs.yaml")
+                with open(orgs, "w") as fh:
+                    fh.write(f"orgs:\n  - {{name: acme, path: {d}/acme}}\n  - {{name: globex, path: {d}/globex}}\n")
+                acct = os.path.join(d, "acct")
+                os.makedirs(acct)
+                parts = lambda name, sid, cd: of_tools.launch_parts(name, sid, cd, orgs_file=orgs,
+                                                                     state_dir=of_events.STATE_DIR)
+                pl = plan(cwd="/w", config_dir=acct, tools=parts, p=dict(P, name="obs_keeper"))
+                argv = shlex.split(pl["command"])
+                self.assertIn("--mcp-config", argv)
+                with open(argv[argv.index("--mcp-config") + 1]) as fh:
+                    self.assertIn("grafana-read", json.load(fh)["mcpServers"])
+                with open(argv[argv.index("--settings") + 1]) as fh:
+                    self.assertEqual(json.load(fh)["allowedMcpServers"], [{"serverName": "grafana-read"}])
+                none = plan(cwd="/w", config_dir=acct, tools=parts, p=dict(P, name="globex_org"))
+                self.assertEqual(none["command"], plan(cwd="/w", config_dir=acct, p=dict(P, name="globex_org"))["command"])
+                self.assertNotIn("--mcp-config", none["command"])
+            finally:
+                of_events.STATE_DIR = saved
+
+
 if __name__ == "__main__":
     unittest.main()
