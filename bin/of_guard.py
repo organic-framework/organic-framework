@@ -10,6 +10,7 @@ turn their verdicts into the hook's output and of.mandate_check events. Tests: t
 
 import os
 import re
+import shlex
 
 import of_classify
 
@@ -1128,6 +1129,151 @@ def _config_files_set(env, word):
     return False
 
 
+# Aliases (of_architect's second review of PR 6): git runs an alias for a subcommand it does not have, and gh for a
+# command it does not have, so `git -c alias.p=push p` and `gh alias set m "pr merge" && gh m 12` must be read as what
+# they run. git never lets an alias replace a built-in command, so only another word needs expanding.
+GIT_BUILTINS = frozenset("""add am annotate apply archive bisect blame branch bugreport bundle cat-file check-attr
+check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone column commit
+commit-graph commit-tree config count-objects credential describe diagnose diff diff-files diff-index diff-tree
+difftool fast-export fast-import fetch fetch-pack filter-branch fmt-merge-msg for-each-ref for-each-repo format-patch
+fsck gc get-tar-commit-id grep gui hash-object help hook http-backend index-pack init instaweb interpret-trailers log
+ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file merge-index merge-tree mktag
+mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs patch-id prune prune-packed pull push
+range-diff read-tree rebase receive-pack reflog refs remote repack replace replay request-pull rerere reset restore
+rev-list rev-parse revert rm scalar send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout
+stage stash status stripspace submodule switch symbolic-ref tag unpack-file unpack-objects update-index update-ref
+update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version whatchanged worktree
+write-tree lfs""".split())
+GH_BUILTINS = frozenset("""alias api attestation auth browse cache co codespace completion config copilot extension gist
+gpg-key help issue label org pr preview project release repo ruleset run search secret ssh-key status variable
+workflow""".split())
+
+
+def _config_sections(path, section):
+    """{name in lower case: value} of one section of a git config file (`[alias]`), and its include paths."""
+    out, inc, cur = {}, [], None
+    try:
+        lines = open(os.path.expanduser(path), errors="replace").read(1 << 20).splitlines()
+    except OSError:
+        return out, inc
+    for line in lines:
+        t = line.strip()
+        if t.startswith("["):
+            cur = t.strip("[]").strip().lower()
+            continue
+        m = re.match(r"^([A-Za-z][\w-]*)\s*=\s*(.*)$", t)
+        if not m:
+            continue
+        val = m.group(2).strip()
+        if len(val) >= 2 and val[0] == val[-1] == '"':
+            val = val[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        if cur == section:
+            out[m.group(1).lower()] = val
+        elif cur == "include" and m.group(1).lower() == "path":
+            inc.append(val)
+    return out, inc
+
+
+def _git_aliases(where, env, line):
+    """{name: expansion} git would read for a call in WHERE with ENV: the line's own `git config alias.*` (LINE), the
+    repository's config, the global and the system files, one include level each."""
+    env = env or {}
+    files = []
+    g = _git_dir(where)
+    if g:
+        files.append(os.path.join(g, "config"))
+    if env.get("GIT_CONFIG_GLOBAL"):
+        files.append(env["GIT_CONFIG_GLOBAL"])
+    else:
+        xdg = env.get("XDG_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+        files += ["~/.gitconfig", os.path.join(xdg, "git", "config")]
+    if not env.get("GIT_CONFIG_NOSYSTEM"):
+        files += [env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig", "/opt/homebrew/etc/gitconfig",
+                  "/usr/local/etc/gitconfig"]
+    out = {}
+    for f in reversed(files):  # later files win in git; read the lowest first so the repository's wins
+        found, inc = _config_sections(f, "alias")
+        for i in inc:
+            out.update(_config_sections(os.path.join(os.path.dirname(os.path.expanduser(f)), os.path.expanduser(i))
+                                        if not os.path.isabs(os.path.expanduser(i)) else i, "alias")[0])
+        out.update(found)
+    out.update(line or {})
+    return out
+
+
+def git_expand(args, where, env=None, line=None, depth=0):
+    """ARGS of a git call (after `git`) with an alias expanded: (args, None); (None, shell line) for a `!` alias;
+    (None, None) when the subcommand is neither a built-in nor an alias the guard can read."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") else 1
+    if i >= len(args) or args[i] in GIT_BUILTINS or depth > 5:
+        return args, None
+    sub = args[i].lower()
+    conf = {k[len("alias."):]: v for k, v in _git_config_pairs(args, env or {}) if k.startswith("alias.")}
+    val = conf.get(sub)
+    if val is None:
+        val = _git_aliases(where, env, line).get(sub)
+    if val is None:
+        return None, None
+    if val.startswith("!"):
+        return None, val[1:] + " " + " ".join(shlex.quote(a) for a in args[i + 1:])
+    try:
+        words = shlex.split(val)
+    except ValueError:
+        return None, None
+    return git_expand(args[:i] + words + args[i + 1:], where, env, line, depth + 1)
+
+
+def _gh_aliases(line):
+    """{name: expansion} of gh's own aliases: `aliases:` in its config.yml ($GH_CONFIG_DIR, else the XDG folder or
+    ~/.config/gh), and the line's `gh alias set` (LINE). Read without YAML: the hook may run without PyYAML."""
+    d = os.environ.get("GH_CONFIG_DIR") or os.path.join(os.environ.get("XDG_CONFIG_HOME") or "~/.config", "gh")
+    out, inside = {}, False
+    try:
+        lines = open(os.path.join(os.path.expanduser(d), "config.yml"), errors="replace").read(1 << 20).splitlines()
+    except OSError:
+        lines = []
+    for ln in lines:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        if not ln[0].isspace():
+            inside = ln.split("#")[0].strip() == "aliases:"
+            continue
+        m = re.match(r"^\s+([^:\s]+):\s*(.*)$", ln) if inside else None
+        if m:
+            v = m.group(2).strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            out[m.group(1)] = v
+    out.update(line or {})
+    return out
+
+
+def gh_expand(args, line=None, depth=0):
+    """ARGS of a gh call with an alias expanded, as git_expand: (args, None), (None, shell line), (None, None)."""
+    k = 0
+    while k < len(args) and args[k].startswith("-"):
+        k += 2 if args[k] in ("-R", "--repo", "--hostname") else 1
+    if k >= len(args) or args[k] in GH_BUILTINS or depth > 5:
+        return args, None
+    val = _gh_aliases(line).get(args[k])
+    if val is None:
+        return None, None
+    rest = args[k + 1:]
+    used = [int(n) for n in re.findall(r"\$(\d+)", val)]
+    for n in sorted(set(used), reverse=True):
+        val = val.replace(f"${n}", shlex.quote(rest[n - 1]) if n - 1 < len(rest) else "")
+    rest = rest[max(used):] if used else rest
+    if val.startswith("!"):
+        return None, val[1:] + " " + " ".join(shlex.quote(a) for a in rest)
+    try:
+        words = shlex.split(val)
+    except ValueError:
+        return None, None
+    return gh_expand(args[:k] + words + rest, line, depth + 1)
+
+
 def _git_dir(path):
     """The git directory (the common one, for a worktree) of the repository holding PATH, or None."""
     p = os.path.abspath(os.path.expanduser(path or "."))
@@ -1215,6 +1361,18 @@ def _hooks_deny(head, args, stext, cwd, env=None):
     if head != "git":
         hit = next((f for f in _changed_files(head, args, stext) if _in_hooks(f, cwd)), None)
         return (HOOKS_DENY, hit) if hit else None
+    where0 = cwd or "."
+    for k in range(len(args) - 1):  # git -C <dir> before the subcommand moves the repository
+        if args[k] == "-C":
+            where0 = os.path.join(where0, os.path.expanduser(args[k + 1]))
+    expanded, shell = git_expand(args, where0, env, (env or {}).get("__git_aliases"))
+    if shell is not None:
+        hit = _bash_deny(shell, 1) if gated(where0) else None
+        return hit if hit else None
+    if expanded is None:
+        return (HOOKS_DENY, f"git {next((a for a in args if not a.startswith('-')), '')}: an alias or command the "
+                            "guard cannot read") if gated(where0) else None
+    args = expanded
     i, where, conf = 0, cwd or ".", []
     while i < len(args) and args[i].startswith("-"):
         a = args[i]
@@ -1341,6 +1499,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
             elif head == "export":
                 exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
+            elif head == "git":
+                words = [a for a in args if not a.startswith("-")]
+                if words[:1] == ["config"] and len(words) >= 3 and words[1].lower().startswith("alias."):
+                    exported.setdefault("__git_aliases", {})[words[1][len("alias."):].lower()] = " ".join(words[2:])
             remote = _remote_shell(head, args)
             if remote:
                 files = [f for f in [_stdin_file(stext)] if f]
@@ -1852,7 +2014,7 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
     for _quoted, body, opener in docs:
         if _head(opener) in _SHELLS:
             out += framework_writes(tool, {"command": body}, cwd, depth + 1)
-    here, added, exported = cwd, {}, {}
+    here, added, exported, git_al, gh_al = cwd, {}, {}, {}, {}
     for pipe in pipes:
         for kind, stext in pipe:
             if kind == "sub":
@@ -1870,6 +2032,18 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
             elif head in _SHELLS - {"eval"} and "-c" in args[:-1]:
                 out += framework_writes(tool, {"command": args[args.index("-c") + 1]}, here, depth + 1)
             elif head == "git":
+                env_here = {**exported, **_assignments(stext)}
+                fw_here = any(_framework_slug(u) for us in {**_remotes(here or "."), **added}.values() for u in us)
+                expanded, shell = git_expand(args, here or ".", env_here, git_al)
+                if shell is not None:
+                    out += framework_writes(tool, {"command": shell}, here, depth + 1)
+                    continue
+                if expanded is None:
+                    if fw_here:
+                        out.append(f"git {next((a for a in args if not a.startswith('-')), '')} (an alias or "
+                                   "command the guard cannot read)")
+                    continue
+                args = expanded
                 i, where = 0, here or "."
                 while i < len(args) and args[i].startswith("-"):
                     if args[i] in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(args):
@@ -1880,6 +2054,8 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
                     i += 1
                 sub, rest = (args[i], args[i + 1:]) if i < len(args) else (None, [])
                 words = [a for a in rest if not a.startswith("-")]
+                if sub == "config" and len(words) >= 2 and words[0].lower().startswith("alias."):
+                    git_al[words[0][len("alias."):].lower()] = " ".join(words[1:])  # an alias set earlier on the line
                 if sub == "remote" and words[:1] in (["add"], ["set-url"]) and len(words) >= 3:
                     added[words[1]] = [words[2]]  # a remote added or re-pointed earlier on the line
                 elif sub == "config" and len(words) >= 2 and re.match(r"^remote\..+\.(?:push)?url$", words[0].lower()):
@@ -1888,7 +2064,21 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
                         args, {**exported, **_assignments(stext)})):
                     out.append("git push")
             elif head == "gh":
-                w = _gh_write(args, here or ".")
+                plain = [a for a in args if not a.startswith("-")]
+                if plain[:2] == ["alias", "set"] and len(plain) >= 4:
+                    gh_al[plain[2]] = plain[3]  # an alias set earlier on the line
+                    continue
+                expanded, shell = gh_expand(args, gh_al)
+                if shell is not None:
+                    out += framework_writes(tool, {"command": shell}, here, depth + 1)
+                    continue
+                if expanded is None:
+                    named = next((args[j + 1] for j in range(len(args) - 1) if args[j] in ("-R", "--repo")), None)
+                    if (named and _framework_slug(named)) or any(_framework_slug(u) for us in _remotes(
+                            here or ".").values() for u in us):
+                        out.append(f"gh {plain[0] if plain else ''} (an alias or extension the guard cannot read)")
+                    continue
+                w = _gh_write(expanded, here or ".")
                 if w:
                     out.append(w)
     return out

@@ -73,6 +73,32 @@ class WritesTest(unittest.TestCase):
                     "{ clientMutationId } }'"):
             self.assertEqual(self.writes(cmd, cwd=self.other), [], cmd)
 
+    def test_an_alias_is_read_as_what_it_runs(self):
+        """of_architect's second review of PR 6: gh and git aliases."""
+        gh = os.path.join(self.tmp.name, "gh")
+        os.makedirs(gh)
+        with open(os.path.join(gh, "config.yml"), "w") as fh:
+            fh.write("git_protocol: https\naliases:\n    co: pr checkout\n    m: pr merge\n    v: pr view\n"
+                     "# a comment\neditor:\n")
+        saved = os.environ.get("GH_CONFIG_DIR")
+        os.environ["GH_CONFIG_DIR"] = gh
+        try:
+            for cmd in ('gh alias set mm "pr merge" && gh mm 12 --squash', "gh m 12", "gh m 12 --squash",
+                        "git -c alias.p=push p origin main", "git config alias.p push && git p origin main",
+                        "git -c alias.s='!git push origin main' s", "gh frob 12"):
+                self.assertTrue(self.writes(cmd), cmd)
+            with open(os.path.join(self.fw, ".git", "config"), "a") as fh:
+                fh.write("[alias]\n\tp = push\n\tl = log --oneline\n")
+            self.assertTrue(self.writes("git p origin main"))      # an alias already in the repository's config
+            for cmd in ("gh v 12", "gh co 12", "git l -3"):
+                self.assertEqual(self.writes(cmd), [], cmd)
+            self.assertEqual(self.writes("gh frob 12", cwd=self.other), [])
+        finally:
+            if saved is None:
+                os.environ.pop("GH_CONFIG_DIR", None)
+            else:
+                os.environ["GH_CONFIG_DIR"] = saved
+
     def test_reading_comments_and_reviews_are_not(self):
         for cmd in ("git fetch", "git pull", "git log origin/main", "gh pr view 12", "gh pr diff 12",
                     "gh pr comment 12 -b 'Verdict: approve'", "gh pr list", f"gh api repos/{FW}/rulesets",
