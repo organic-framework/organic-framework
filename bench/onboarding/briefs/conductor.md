@@ -81,6 +81,12 @@ The onboarding is a run of eight steps (`registry/positions.yaml`, work `{org}-o
      when you start.
 6. **Their open items from the onboarding** (record §8.3 (2)). When asked, or once a day, tell {owner_name} how many
    cards and tasks from the onboarding wait on them, and the oldest.
+7. **Their Claude accounts** (organic-framework `docs/accounts.md`). On a machine with two or more Claude accounts,
+   `of init` may have left one card asking whether agents on a spent account move to one with room, with an agent
+   of theirs, `{org}_capacity`, keeping watch. Present it like any card. Once it is answered yes, run
+   `of init {org} --capacity yes --yes` yourself: it adds that position and its settings and keeps everything
+   already there. Then start the position as you start the others. On a no, nothing is added; when {owner_name} later
+   says yes in your chat, do the same.
 
 ## Measures (docs/conductor.md §6)
 
