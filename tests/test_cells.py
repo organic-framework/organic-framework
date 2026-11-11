@@ -170,13 +170,18 @@ class RemoteApprovalTest(unittest.TestCase):
                 e = {"diff": {"id": "sd-1", "tier": "medium", "org": "acme"}, "proposed_at": "2026-11-11T10:00:00Z",
                      "digest": "a1b2c3d4e5f60718"}
 
-                def said(text, session="S-c", origin="human", ts="2026-11-11T11:00:00.000Z"):
-                    rec = of_events.record("human_prompt", {"origin": origin, "text": text}, session=session)
+                import calendar
+                now = calendar.timegm((2026, 11, 11, 12, 0, 0))
+
+                def said(text, session="S-c", origin="human", ts="2026-11-11T11:00:00.000Z", source="hook",
+                         channel=None):
+                    payload = {"origin": origin, "text": text, **({"channel": channel} if channel else {})}
+                    rec = of_events.record("human_prompt", payload, session=session, source=source)
                     rec["timestamp"] = ts
                     of_store.add_event(conn, rec)
                     return rec["of.event.id"]
                 ok = said("yes, approve sd-1")
-                self.assertIsNone(of._remote_approval(conn, e, ok, pos, session="S-c", hold=False)[0])
+                self.assertIsNone(of._remote_approval(conn, e, ok, pos, session="S-c", hold=False, now=now)[0])
                 cases = {
                     said("yes but first check sd-1"): "not a plain yes",
                     said("yes"): "do not name the diff",
@@ -186,29 +191,39 @@ class RemoteApprovalTest(unittest.TestCase):
                 }
                 for pid, why in cases.items():
                     got = of._remote_approval(conn, e, pid, pos, session="S-d" if why == "the person's conductor"
-                                              else "S-c", hold=False)[0]
+                                              else "S-c", hold=False, now=now)[0]
                     self.assertIn(why, got or "", pid)
                 # of_server's review: origin exactly human; the diff's own organization; its owner's conductor;
                 # a digest the person names must be this diff's
                 self.assertIn("not typed by a person",
-                              of._remote_approval(conn, e, said("approve sd-1", origin=None), pos, session="S-c", hold=False)[0])
+                              of._remote_approval(conn, e, said("approve sd-1", origin=None), pos, session="S-c", hold=False, now=now)[0])
                 self.assertIn("is acme's", of._remote_approval(conn, e, said("approve sd-1", session="S-o"), pos,
-                                                              session="S-o", hold=False)[0])
+                                                              session="S-o", hold=False, now=now)[0])
                 self.assertIn("approved by acme_owner", of._remote_approval(conn, e, said("approve sd-1", session="S-h"),
-                                                                           pos, session="S-h", hold=False)[0])
+                                                                           pos, session="S-h", hold=False, now=now)[0])
                 self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1 digest a1b2c3d4"), pos, session="S-c",
-                                                      hold=False)[0])
+                                                      hold=False, now=now)[0])
                 self.assertIsNone(of._remote_approval(conn, e, said("yes sd-1, card 0fd223f2"), pos, session="S-c",
-                                                      hold=False)[0])  # a card id is no digest (finding 7)
+                                                      hold=False, now=now)[0])  # a card id is no digest (finding 7)
                 self.assertIn("name a digest", of._remote_approval(
-                    conn, e, said("yes sd-1 digest a1b2c3d4 digest ffffeeee"), pos, session="S-c", hold=False)[0])
+                    conn, e, said("yes sd-1 digest a1b2c3d4 digest ffffeeee"), pos, session="S-c", hold=False, now=now)[0])
                 self.assertIn("name a digest", of._remote_approval(conn, e, said("yes sd-1 digest ffffeeee"), pos,
-                                                                   session="S-c", hold=False)[0])
+                                                                   session="S-c", hold=False, now=now)[0])
+                # finding 3: the same evidence rules as an answer from the chat (of_asks_chat.check)
+                for pid, why in ((said("approve sd-1", source="import"), "not recorded by the hook"),
+                                 (said("approve sd-1", channel="asks-ui"), "the popup's answer typed into a pane"),
+                                 (said("approve sd-1", ts="2026-11-10T09:00:00.000Z"), "older than 24 h"),
+                                 (said("approve sd-1", ts="2026-11-11T13:00:00.000Z"), "dated in the future")):
+                    self.assertIn(why, of._remote_approval(conn, e, pid, pos, session="S-c", hold=False, now=now)[0])
+                fixed = said("approve sd-1")
+                of_store.add_event(conn, of_events.record("prompt_origin", {"event_id": fixed, "origin": "relay"}))
+                self.assertIn("not typed by a person",
+                              of._remote_approval(conn, e, fixed, pos, session="S-c", hold=False, now=now)[0])
                 high = dict(e, diff={"id": "sd-1", "tier": "high", "org": "acme"})
                 self.assertIn("approved at the machine",
-                              of._remote_approval(conn, high, ok, pos, session="S-c", hold=False)[0])
-                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c",
-                                                                        hold=False)[0])
+                              of._remote_approval(conn, high, ok, pos, session="S-c", hold=False, now=now)[0])
+                self.assertIn("event id", of._remote_approval(conn, e, "nope", pos, session="S-c",
+                                                                        hold=False, now=now)[0])
                 # on hold (docs/remote.md §5): the same yes, every tier, is refused and sent to the machine
                 for diff in (e, high):
                     why, prompt = of._remote_approval(conn, diff, ok, pos, session="S-c")

@@ -3562,7 +3562,7 @@ def cmd_diff(args):
             raise OfError(f"not approved: {why}")
         d = e["diff"]
         of_events.emit("diff_approved", {"id": d["id"], "digest": e["digest"], "by": "owner", "via": "remote",
-                                         "prompt": args.prompt, "session": prompt["session_id"],
+                                         "prompt": prompt["event_id"], "session": prompt["session_id"],
                                          "machine": of_events.machine_id()})
         print(f"approved {d['id']} on the owner's words in prompt {args.prompt[-8:]}; its author applies it with "
               f"`of diff apply {d['id']}`")
@@ -3957,7 +3957,7 @@ def of_hook_mask(text):
     return of_hook.mask(text or "")
 
 
-def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
+def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True, now=None):
     """(None, prompt) when the person's recorded prompt approves the proposed diff `e`, else (the reason, prompt).
     docs/remote.md §3 row 2 and §5: the person's own words, recorded by the hook as an of.human_prompt of origin human,
     in the session that holds their organization's conductor, which runs this command; later than the proposal; naming
@@ -3972,13 +3972,28 @@ def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
     if d.get("tier") not in ("low", "medium"):
         return (f"{d['id']} is tier {d.get('tier')}: a high-tier diff is approved at the machine, in a terminal, by "
                 "the owner reading its exact text (docs/remote.md §4)"), None
-    row = conn.execute("SELECT ts, session_id, payload FROM event WHERE event_id = ? AND name = 'of.human_prompt'",
-                       (prompt_id,)).fetchone()
-    if not row:
-        return f"{prompt_id} is no recorded prompt (of prompts --mine lists yours)", None
-    prompt = {"ts": row[0], "session_id": row[1], **json.loads(row[2] or "{}")}
-    if prompt.get("origin") != "human":  # an older or unclassified prompt never counts (of_server's review)
-        return f"prompt {prompt_id[-8:]} was not typed by a person (origin {prompt.get('origin')})", prompt
+    # the same evidence rules as an answer from the chat (of_asks_chat.check; review 2026-11-11, finding 3): the event
+    # as of_asks_chat.prompt_row reads it, with of.prompt_origin corrections; recorded by the hook; typed by the
+    # person, not the popup's answer typed into a pane; not dated in the future; at most PROMPT_MAX_AGE_H old
+    try:
+        prompt = of_asks_chat.prompt_row(conn, prompt_id)
+    except ValueError as err:
+        return str(err), None
+    if prompt["name"] != "of.human_prompt":
+        return f"{prompt['event_id']} is an {prompt['name']}, not a prompt the person typed", prompt
+    if prompt["source"] != "hook":
+        return f"prompt {prompt['event_id'][-8:]} was not recorded by the hook (source {prompt['source']})", prompt
+    if prompt["origin"] != "human" or prompt["channel"] == "asks-ui":
+        return (f"prompt {prompt['event_id'][-8:]} was not typed by a person (origin {prompt['origin']}"
+                + (", the popup's answer typed into a pane" if prompt["channel"] == "asks-ui" else "") + ")"), prompt
+    import time as _t
+    now = now or _t.time()
+    pts = of_asks_chat._epoch(prompt["ts"])
+    if pts > now + 60:
+        return f"prompt {prompt['event_id'][-8:]} is dated in the future ({prompt['ts']})", prompt
+    if now - pts > of_asks_chat.PROMPT_MAX_AGE_H * 3600:
+        return (f"prompt {prompt['event_id'][-8:]} is older than {of_asks_chat.PROMPT_MAX_AGE_H} h: ask the person "
+                "again"), prompt
     me = session if session is not None else os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not me or prompt["session_id"] != me:
         return "the prompt must be in the session that runs this command: the person's conductor", prompt
