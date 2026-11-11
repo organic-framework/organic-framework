@@ -24,7 +24,7 @@ roles:
     position: "{org}_capacity"
     role: capacity
     kind: keeper
-    owner: "{owner_id}"
+    owner: "{org}_owner"  # a registry owner is a position; the head holds {org}_owner (of_onboarding, msg 01a1cc78)
     throughput: sustain
     summary: "{owner_name}'s Claude accounts: limits, moves, log-ins"
     brief: briefs/capacity.md
