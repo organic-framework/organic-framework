@@ -109,6 +109,15 @@ class CheckTest(unittest.TestCase):
             self.assertIn(want, probs)
 
 
+class NamesPathTest(unittest.TestCase):
+    def test_glob_stem_and_exact(self):
+        self.assertTrue(of_tools._names_path("~/.config/acme/x", "~/.config/acme/x/**"))
+        self.assertTrue(of_tools._names_path("~/.config/acme/x/oauth.json", "~/.config/acme/x/**"))
+        self.assertTrue(of_tools._names_path("~/.config/acme/f", "~/.config/acme/f"))
+        self.assertFalse(of_tools._names_path("~/.config/acme/xy", "~/.config/acme/x/**"))
+        self.assertFalse(of_tools._names_path("python3", "~/.config/acme/x/**"))
+
+
 class ShapeTest(unittest.TestCase):
     def test_url_shown_by_host_and_a_key_in_it_flagged(self):
         s = of_tools._server_shape({"url": "https://books.mcp.example/mcp/" + "ab12" * 8 + "/message"})

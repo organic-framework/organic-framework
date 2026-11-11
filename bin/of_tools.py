@@ -99,6 +99,15 @@ def profile(position, doc):
     return sorted(want, key=lambda t: order.index(t) if t in order else len(order))
 
 
+def _names_path(arg, pattern):
+    """Whether a command argument names a credential path: the path itself, or a file or folder under a glob's
+    literal stem (`~/.config/acme/x/**` is named by `~/.config/acme/x`)."""
+    a = os.path.expanduser(str(arg)).rstrip("/")
+    p = os.path.expanduser(str(pattern))
+    stem = re.split(r"[*?[]", p, 1)[0].rstrip("/")
+    return a == p.rstrip("/") or (stem != p.rstrip("/") and (a == stem or a.startswith(stem + "/")))
+
+
 def _has_key(v, key):
     if isinstance(v, dict):
         return key in v or any(_has_key(x, key) for x in v.values())
@@ -158,8 +167,7 @@ def check(docs):
                         and kind == "mcp-stdio":
                     out.append(f"{where}: say how the server takes the credential: env: NAME or file: NAME")
                 if cid in creds and not ent.get("ref") and kind == "mcp-stdio" and not any(
-                        os.path.expanduser(str(x)) == os.path.expanduser(str(pth))
-                        for x in e.get("command") or [] for pth in ent.get("paths") or []):
+                        _names_path(x, pth) for x in e.get("command") or [] for pth in ent.get("paths") or []):
                     out.append(f"{where}: credential {cid} is a file: the command names its path")
                 if isinstance(c, dict) and kind in ("mcp-remote",):
                     out.append(f"{where}: a header credential for a remote server is not built yet (docs/tools.md §5)")
