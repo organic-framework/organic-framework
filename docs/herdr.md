@@ -1,7 +1,7 @@
 # herdr in Organic Framework
 
 Owner: `of_herdr`. Status: first version, 2026-11-11. So far it covers the version OF runs on, what herdr can
-draw, and the upstream issues OF depends on. The adapter, the full inventory of OF's calls and the contract tests
+draw, agents without herdr (tmux), and the upstream issues OF depends on. The adapter, the full inventory of OF's calls and the contract tests
 come next (brief, Mandate 1, items 2 and 3).
 
 OF runs on [herdr](https://herdr.dev) (`herdrdev/herdr`, Apache-2.0), adopted on 2026-11-05. herdr is a terminal
@@ -55,6 +55,34 @@ The requests screen's picture failed on these rules (2026-11-10, conductor reque
 - the panel did not handle scrolling.
 
 Neither herdr nor Ghostty had a bug that blocked it. The full account is in the lab's README.
+
+## Agents without herdr: tmux
+
+A person who reaches OF only through the conductor's chat ([`remote.md`](remote.md)) runs the other agents in tmux.
+OF delivers to them as it does to a herdr pane (`bin/of_tmux.py`, owner `of_herdr`):
+
+- **How an agent is seen.** OF's Claude Code hook reports the agent's state for its tmux pane where it reports
+  state to herdr: idle at session start, working when a prompt is submitted, blocked on a permission request or a
+  question, idle when the turn ends, forgotten at session end. One small file per pane lives under
+  `~/.local/state/of/tmux-panes/`. At session start the hook also notes the Claude Code process, so a pane whose
+  agent has exited (a shell prompt again) is never typed into.
+- **Its pane id** is `tmux:<socket name>:%<n>`, for example `tmux:default:%3`. `of who`, the relay and routed asks
+  list such agents next to herdr's and bind them to positions by session. `of apply`, `of go`, views and the desk
+  change herdr's panes only and leave tmux agents alone.
+- **Delivery** follows herdr's rules: only when the reported state is idle (or working, for a message waiting over
+  five minutes; never blocked), only into an empty input box (a dim suggestion counts as empty), never into a
+  dialog, declared as an injection first. The text goes in as one bracketed paste through a tmux buffer, then
+  Enter after 300 ms, as herdr 0.9.5's `agent prompt` does. Nothing selects a pane or moves a person's focus.
+- **What it needs on the machine:** tmux, OF's hooks in the Claude Code settings (`of hooks install`), and the
+  relay (`of relay run`). An agent started before the hook knew tmux appears at its next turn.
+- **Limits.** tmux has no agent state of its own, so the hooks are the only source. A turn interrupted with Esc
+  fires no Stop hook, so the pane reads working until its next turn ends. A tmux agent has no herdr name, label or
+  sidebar.
+
+Checked on 2026-11-11 with tmux 3.8 and Claude Code 2.1.322 in a private tmux server: the relay's delivery reached
+an idle session, which answered it; the session recorded the text as injected by the relay; `of who` showed the
+agent's state; a message to a box holding text was deferred; the report was removed when the session exited.
+Tests: `tests/test_tmux.py`.
 
 ## Upstream issues OF depends on
 
