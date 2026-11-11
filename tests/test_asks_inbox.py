@@ -305,7 +305,7 @@ class ScreenTest(unittest.TestCase):
         self.assertGreaterEqual(box.ctop, 0)
 
     def row_of(self, frame, text):
-        return next((y for (y, x), t in frame.items() if x == 2 and t.startswith(text)), None)
+        return next((y for (y, x), t in frame.items() if x == 2 and text in t), None)
 
     def test_the_selected_row_stays_put_when_a_card_arrives_above_even_if_the_queue_fits(self):
         """of_harness 2026-11-12 (asks-screen-v0): the row moved from screen line 8 to 9 while the queue fit."""
@@ -337,6 +337,20 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("Holds work 1", top)
         keys = next(t for (y, x), t in frame.items() if y == 28)
         self.assertTrue("Tab" in keys and "?" in keys and "Esc" in keys, keys)
+
+    def test_a_wide_screen_adds_the_agents_context_as_a_third_column(self):
+        """The founder, ~21:08Z 2026-11-12: lots of room, more information."""
+        data = [item("A", "First plain question?", who="of_platform")]
+        cards = {"A": {"options": ["yes", "no"], "context": "I checked the nodes.", "links": ["https://x/1"],
+                       "doing": {"mandate": "keeps the platform", "turns": ["ran the tests"]}}}
+        self.inbox([0.1, 0.05], data, cards=cards, size=(40, 200))
+        frame = self.frames[-1]
+        card_x = min(x for (y, x), t in frame.items() if t == "First plain question?")
+        side = {t for (y, x), t in frame.items() if x > card_x + 40}
+        self.assertIn("What the agent is doing:", side)
+        self.assertIn("I checked the nodes.", side)
+        self.assertNotIn("I checked the nodes.", {t for (y, x), t in frame.items() if x == card_x})
+        self.assertTrue(any(t.startswith("of_platform") for (y, x), t in frame.items() if x == 2))  # who, in the row
 
     def test_help(self):
         self.inbox([0.05, ord("?"), 0.05], [item("A", "First plain question?")])
@@ -404,6 +418,16 @@ class PanelTest(ScreenTest):
         self.assertIn("opening the questions…", text)
         self.assertIn("herdr shows another popup, Settings or Copy mode: close it, then try again", text)
 
+    def test_a_new_build_restarts_the_panel(self):
+        import of_asks_panel as P
+        T.REFRESH_S, saved = 0.05, T.REFRESH_S
+        try:
+            box = P.Panel(self.scr([0.1, 0.1, 0.1]), lambda: ([("Waiting on you", [])], {}), initial=([], {}),
+                          stale=lambda: True)
+            self.assertEqual(box.run(), "restart")
+        finally:
+            T.REFRESH_S = saved
+
     def test_without_an_opener_the_button_says_the_keys(self):
         box, ran = self.panel([0.05, 10, 0.05], [item("A", "First plain question?")])
         self.assertEqual(ran, [])
@@ -411,11 +435,42 @@ class PanelTest(ScreenTest):
 
     def test_a_narrow_pane_puts_a_stream_on_each_line(self):
         data = [item("A", "First plain question?"), item("C", "Pay 90 USD to the operator?")]
-        self.panel([0.05], data, size=(10, 30))
+        self.panel([0.05], data, size=(7, 30))
         rows = [t for (y, x), t in sorted(self.frames[-1].items())]
-        self.assertIn("● Holds work 0", rows)
-        self.assertIn("● Everything else 1", rows)
+        self.assertEqual([r for r in rows if r.startswith("●")], ["● 0", "● 1", "● 0", "● 1"])  # too few rows: dots
         self.assertIn("or Ctrl-B, then a", rows)  # under the button when it does not fit beside it
+
+    def test_a_tall_pane_lists_the_first_cards_of_each_stream(self):
+        """The founder, ~21:08Z 2026-11-12: lots of room, more information; less room, less information."""
+        import curses
+        data = [item(c, f"Plain question {c}?", since=f"2026-11-11T0{i}:00:00Z", who=f"of_{c.lower()}")
+                for i, c in enumerate("ABCDEF", 1)] + [item("M", "Pay 90 USD to the operator?", who="of_m")]
+        self.mice = [(0, 5, 3, 0, curses.BUTTON1_PRESSED)]  # a click on a card row opens the questions too
+        box, ran = self.panel([0.05, curses.KEY_MOUSE, 0.05], data, size=(12, 90), open_cmd=["open"])
+        rows = [t for (y, x), t in sorted(self.frames[-1].items())]
+        self.assertIn("● Money and production 1", rows)
+        self.assertTrue(any(r.startswith("● Everything else 6") for r in rows), rows)
+        self.assertTrue(any("of_a" in r and "Plain question A?" in r for r in rows))
+        self.assertTrue(any("(+" in r for r in rows))  # what did not fit is counted
+        self.assertIn("or Ctrl-B, then a", " ".join(rows))
+        self.assertEqual(ran, [["open"]])
+        self.assertFalse(any("Waiting on you" == r for r in rows))  # under WIDE_W: no second column at this height
+
+    def test_a_wide_tall_pane_adds_who_waits_and_the_latest_answers(self):
+        import of_asks_panel as P
+        data = [item("A", "Plain question A?", since="2026-11-11T01:00:00Z", who="of_a"),
+                item("B", "Plain question B?", since="2026-11-11T02:00:00Z", who="of_a"),
+                item("C", "Plain question C?", since="2026-11-11T03:00:00Z", who="of_c")]
+        recent = [{"ts": "2026-11-11T20:00:00Z", "who": "of_x", "text": "q", "answer": "approve"}]
+        box = P.Panel(self.scr([0.05], (16, 150)), lambda: ([("Waiting on you", data)], {}, recent),
+                      initial=(list(data), {}), keys="Ctrl-B, then a")
+        box.run()
+        frame = self.frames[-1]
+        right = {y: t for (y, x), t in frame.items() if x > 80}
+        self.assertIn("Waiting on you", right.values())
+        self.assertTrue(any("of_a" in t and "×2" in t for t in right.values()), right)
+        self.assertIn("Answered lately", right.values())
+        self.assertTrue(any("of_x: approve" in t for t in right.values()))
 
 
 def curses_right():
