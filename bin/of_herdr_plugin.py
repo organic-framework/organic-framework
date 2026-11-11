@@ -131,8 +131,8 @@ PLUGIN_ID = "organic-framework"
 def open_questions(of_path=None, run=None):
     """Open the owner's questions screen as a popup over everything: the plugin's `asks` entrypoint, for a panel's
     button or a script. of_path: the bin/of to run instead of this checkout's (a trial build). Returns (True, None),
-    or (False, reason): herdr says `ui_busy` while another popup, Settings or Copy mode is open, and
-    `plugin_not_found` when the plugin is not linked."""
+    or (False, reason): herdr's error code, `ui_busy` while another popup, Settings or Copy mode is open (checked in
+    asks-screen-v0), or its message."""
     run = run or subprocess.run
     argv = [os.environ.get("OF_HERDR", "herdr"), "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "asks"]
     if of_path:
