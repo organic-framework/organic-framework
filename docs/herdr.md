@@ -56,6 +56,46 @@ The requests screen's picture failed on these rules (2026-11-10, conductor reque
 
 Neither herdr nor Ghostty had a bug that blocked it. The full account is in the lab's README.
 
+## The OF herdr plugin
+
+The founder, 2026-11-11 (through `of_conductor`, msg `01a1cc40`): the naming that keeps the herdr sidebar readable
+is part of OF's herdr plugin, so every organization gets it on install, and it applies by itself when a position
+starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, runner `run.sh`, hooks in
+`bin/of_herdr_plugin.py`).
+
+- **What it does.** herdr runs its hook once after the server restores its session (`[[startup]]`) and whenever it
+  detects an agent in a pane (event `pane.agent_detected`). The hook waits for the session herdr reports a moment
+  after detection (at most 30 s), then runs `of apply`:
+  - the agent's herdr name becomes its canonical position name, and the pane label is `■ name ■`;
+  - the tab is named by role and the workspace by organization, with one workspace per unit (`short·unit`);
+  - the `system`, `role` and `summary` tokens are set;
+  - misplaced panes are moved, unless a move would move the person's focus (`bin/of_focus.py`).
+
+  So `of spawn`, capacity moves, resumes and a `claude` started by hand are all named without anyone running
+  `of apply`.
+- **Load.** `of apply` is idempotent and takes about a second. Applies are coalesced: one runs at a time, and
+  everything detected meanwhile causes exactly one more run (at most five in a row). A name binding recorded by
+  `of apply` has a fixed event id, so repeated runs keep it once. The log is `<state>/herdr-plugin.log`; herdr
+  keeps its own (`herdr plugin log list --plugin organic-framework`).
+- **Install and remove.** `herdr plugin link <OF checkout>/herdr-plugin`, and `herdr plugin unlink
+  organic-framework` to remove it. herdr registers plugins for the user, in every session. The runner finds OF
+  through the file `of_home` in the plugin's config dir (`herdr plugin config-dir organic-framework`), else the
+  folder above the plugin. It looks for Python 3 with PyYAML in `$OF_PYTHON`, then on `PATH`, then in the usual
+  Homebrew places.
+- **What a plugin cannot do in herdr 0.9.5.** It cannot bind keys or set sidebar rows; those stay in herdr's
+  `config.toml` (prefix+a for the questions, the red per-workspace question counter). Its CLI cannot open a
+  plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.
+- **Checked on 2026-11-11 in an isolated lab herdr** (its own `XDG_CONFIG_HOME`, so its own plugin registry,
+  sessions and socket; its own OF config and state, with a lab organization of one position):
+  - a Claude Code session started as `claude -n storefront_operator` was named within a second of detection, with
+    its pane label, tokens, tab label (`operator`) and workspace label (`acme`);
+  - after two server restarts, the startup hook ran each time, and the resumed session was named again by its
+    session;
+  - repeated runs recorded the name binding once.
+
+  A session with no message yet cannot be resumed after a restart ("No conversation found"). A position bound only
+  by its name loses that name at a restart until the keeper writes `holder.session`.
+
 ## Agents without herdr: tmux
 
 A person who reaches OF only through the conductor's chat ([`remote.md`](remote.md)) runs the other agents in tmux.

@@ -1556,9 +1556,13 @@ def cmd_apply(args):
         import of_events
         for p in positions:
             if p.get("_bound_by_name"):
+                # a fixed id: the herdr plugin runs of apply on every agent it detects, so the same binding comes
+                # again until the keeper writes holder.session; the store keeps it once (of_herdr, herdr-plugin/)
                 of_events.emit("holder_changed", {"position": p["name"], "previous_session": None,
                                                   "new_session": p["_bound_by_name"],
                                                   "evidence": "live agent started under the canonical name"},
+                               event_id=of_events.stable_id("bound_by_name", p.get("_org"), p["name"],
+                                                            p["_bound_by_name"]),
                                position=p["name"], org=p.get("_orgid"))
     if not cmds:
         print("herdr already matches the registry.")
