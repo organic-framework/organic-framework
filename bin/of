@@ -39,6 +39,8 @@ try:
 except ImportError:
     sys.exit("of: PyYAML is missing. Install it with `python3 -m pip install --user pyyaml`.")
 
+from of_locale import tr  # noqa: E402  what a person reads, in their language (bin/of_locale.py)
+
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 SOURCE = "of:registry"
 DESK = "desk"  # the desk workspace label; `of desk` owns its layout
@@ -3175,7 +3177,8 @@ def cmd_ask(args):
             of_pulse.save_memory(mem)
     _reconcile_ask_tokens(positions)
     if task:
-        print(f"task for {to} (ask {eid[-8:] if eid else '?'}): it shows at the top of the popup under 'Сделать тебе'. "
+        print(f"task for {to} (ask {eid[-8:] if eid else '?'}): it shows at the top of the popup under "
+              f"'{tr('To do for you')}'. "
               "An answer or a reply does not close it: check the result yourself, then "
               f"`of status working --done-task {eid[-8:] if eid else '<id>'}` (or --reopen-task with what you still see).")
         return 0
@@ -3488,7 +3491,7 @@ def cmd_diff(args):
         if args.ask:  # the owner's own language and a question that stands on its own (AGENTS.md); the
             # diff file stays an English document, and its hypothesis stays in the event (acme_org, 2026-11-06)
             q = (f"{of_hook_mask(args.ask).strip()}\n\n(diff {d['id']}, {d['kind']}, tier {d['tier']}; "
-                 f"в терминале: of diff approve {d['id']})")
+                 + tr("in a terminal: of diff approve {id}", id=d['id']) + ")")
         else:
             q = (f"Structural diff {d['id']} ({d['kind']}, tier {d['tier']}) from {me}: {d['hypothesis']} "
                  f"Approve? (or in a terminal: of diff approve {d['id']})")
@@ -3862,7 +3865,7 @@ def cmd_status(args):
                 and (a["event_id"].endswith(tid) or a["event_id"].startswith(tid))]
         if not mine:
             raise OfError(f"no open ask of {me['name']} matches {tid!r}")
-        if args.reopen_task:  # the note shows on his card ("не принято: …"): no estimate there either
+        if args.reopen_task:  # the note shows on his card ("not accepted: …"): no estimate there either
             import of_ask_text
             refusal = of_ask_text.check(note)
             if refusal:
@@ -4053,7 +4056,7 @@ def _capacity_ask(text, options=None, task=None, due=None, blocking=False):
 def _capacity_watch(positions, log):
     """docs/capacity.md: probes each account at most every 30 minutes; one ask per account, window and reset."""
     import of_capacity
-    return of_capacity.watch(positions, lambda t: _capacity_ask(t, "перенести сейчас|ждать сброса"), log=log)
+    return of_capacity.watch(positions, lambda t: _capacity_ask(t, tr("move now") + "|" + tr("wait for the reset")), log=log)
 
 
 def _pulse_service(action):

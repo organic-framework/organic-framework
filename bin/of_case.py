@@ -58,7 +58,7 @@ matter.
 - members: the agents that belong on the desk while he works on it, the most central first, at most 8:
   - the agents he typed to about this matter;
   - agents he named or asked to involve. He dictates by voice and names agents loosely ("spam agent", "accounting \
-keeper", "acme org", "the forecaster", "срупут" for throughput): map each to its roster name;
+keeper", "acme org", "the forecaster", "thruput" for throughput): map each to its roster name;
   - agents doing substantial work on the matter for those agents: they got a question about it and answer with \
 analysis or data, or they were given work on it.
   Leave out agents with only routine traffic (status, acknowledgements, notes sent to many), agents working on \

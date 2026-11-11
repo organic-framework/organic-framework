@@ -19,6 +19,7 @@ import subprocess
 import time
 
 import of_events
+from of_locale import tr
 
 STALL_MIN = 15
 TASK_REMIND_MIN = 120  # an open task for the owner: one reminder every 2 h (of_architect, 2026-11-06)
@@ -285,8 +286,9 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
         log(f"inbound queues: {e}")
     tasks = [a for a in of_asks.for_owner(asks) if a.get("task") and a["state"] == "open" and not a.get("claimed_at")]
     if tasks and now - mem.get("last_task_remind", 0) >= TASK_REMIND_MIN * 60:  # work for his hands: every 2 h, no more
-        send(f"{len(tasks)} задач(и) ждут твоих рук",
-             " · ".join(f"{a.get('position')}: {a['text'][:60]}" for a in tasks[:4]) + "  (prefix+a → Сделать тебе)")
+        send(tr("{n} task(s) wait for your hands", n=len(tasks)),
+             " · ".join(f"{a.get('position')}: {a['text'][:60]}" for a in tasks[:4])
+             + "  (prefix+a → " + tr("To do for you") + ")")
         mem["last_task_remind"] = now
     old = [g for g in of_asks.group(of_asks.for_owner(asks)) if (_ts(g["since"]) or now) <= now - ASK_REMIND_MIN * 60
            and not str(g.get("kind") or "").startswith("question (heuristic)")]  # asked in a pane: no notifications
@@ -800,8 +802,8 @@ def disk_check(mem, now, send=notify, free=None, log=print):
     if free >= DISK_CLEAR:
         mem.pop("disk_low", None)
     elif free < DISK_WARN and now - mem.get("disk_low", 0) >= 86400:
-        send(f"Диск: {free / 1e9:.0f} ГБ свободно (< {DISK_WARN / 1e9:.0f})",
-             "of db stats и du -sh ~/.local/state/of/* показывают, что занимает место OF")
+        send(tr("Disk: {free} GB free (< {warn})", free=f"{free / 1e9:.0f}", warn=f"{DISK_WARN / 1e9:.0f}"),
+             tr("of db stats and du -sh ~/.local/state/of/* show what takes OF's space"))
         mem["disk_low"] = now
         log(f"disk: {free / 1e9:.0f} GB free")
 

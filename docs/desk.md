@@ -29,7 +29,7 @@ The desk is not an alert board. Questions reach him through the asks popup, and 
 2. **The model.** Haiku through `claude -p` reads the digest, the same way the asks judge does: no tools, no hooks, no session file, on the account with the most headroom. It names up to 3 cases, the current one first. A case is a whole investigation, not each question in it. Each case has a short Russian title and summary, and up to 8 members with a weight (1.0 for the agent he talks to, 0.7–0.9 for the core work, 0.4–0.6 for a supporting part) and a reason.
 3. **The record.** `of.case_inferred` ([`events.md`](events.md)). Names not in the roster are dropped.
 
-On the day's data, one call takes about 17 s and $0.005. It named the incident ("Всплеск #4: откуда деньги и почему мы их не взяли") with `acme_throughput-owner`, `accounting_keeper`, `storefront_checkout`, `storefront_search`, `storefront_timing`, `storefront_promo-triggers` and `storefront_operator`. It left out `forecasting_keeper`, whose traffic was routine. It also put a later conversation with `acme_org` first, once he had moved on to it.
+On the day's data, one call takes about 17 s and $0.005. It named the incident ("Spike #4: where the money came from and why we did not take it", in the founder's language) with `acme_throughput-owner`, `accounting_keeper`, `storefront_checkout`, `storefront_search`, `storefront_timing`, `storefront_promo-triggers` and `storefront_operator`. It left out `forecasting_keeper`, whose traffic was routine. It also put a later conversation with `acme_org` first, once he had moved on to it.
 
 **When it runs.** The listener starts `of desk case --infer` in the background:
 

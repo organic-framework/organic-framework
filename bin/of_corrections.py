@@ -39,11 +39,11 @@ SENDER = "organic-framework-build:of_platform"
 SYSTEM = """You read one message the founder typed to an AI agent that works for him. Decide whether it corrects \
 the agent: says the agent did something wrong, or should do it differently from now on.
 
-correction is true for: criticism of how the agent works or reports ("мне не нравится, как ты выдаёшь отчёт", \
-"опять непонятный отчёт", "почему ты только Франкфурт анализируешь?"), a rule it broke or should keep, a wrong fact \
-or number it gave, a step it skipped. A question that implies a mistake counts ("почему ты не посмотрел US?").
+correction is true for: criticism of how the agent works or reports ("I don't like how you report", \
+"an unclear report again", "why do you only analyse Frankfurt?"), a rule it broke or should keep, a wrong fact \
+or number it gave, a step it skipped. A question that implies a mistake counts ("why didn't you look at the US?").
 correction is false for: new tasks and questions, also questions about the system the agent studies (the bot, \
-its triggers, the market, the data: "можно ли было понять, что эти триггеры не исполнятся?" asks about the bot, not \
+its triggers, the market, the data: "could we have seen that these triggers would not fire?" asks about the bot, not \
 about the agent); approvals; praise, also praise followed by the next request; information; decisions; and requests \
 to do more of the same work or to go deeper. A message can hold several things: it is a correction when any part of \
 it says the agent's own work or report was wrong or should change.

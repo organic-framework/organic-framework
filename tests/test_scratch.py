@@ -90,7 +90,7 @@ class ScratchTest(unittest.TestCase):
         self.run_check(mem, 2, 18 * GiB)
         cards = [e for e in self.events("of.agent_question") if e.get("source") == "disk_check"]
         self.assertEqual(len(cards), 1)
-        self.assertIn("big 4.0 ГиБ", cards[0]["questions"][0]["question"])
+        self.assertIn("big 4.0 GiB", cards[0]["questions"][0]["question"])  # English unless owner.yaml says otherwise
         self.run_check(mem, 3, 22 * GiB)  # between the marks: same episode, still open
         self.assertEqual(self.events("of.agent_question_answered"), [])
         self.run_check(mem, 4, 26 * GiB)

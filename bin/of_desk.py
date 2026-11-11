@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import time
+from of_locale import tr
 
 import of_events
 
@@ -320,8 +321,8 @@ def _notify_dialog(d, log):
         sound = __import__("of_pulse").herdr_sound("request")
     except Exception:  # noqa: BLE001
         sound = None
-    _run(["notification", "show", f"{d['name']} ждёт тебя в диалоге",
-          "--body", f"Разрешение или выбор в его панели. Открыть: of go {d['name']}"]
+    _run(["notification", "show", tr("{name} waits for you in a dialog", name=d['name']),
+          "--body", tr("A permission or a choice in its pane. Open it: of go {name}", name=d['name'])]
          + (["--sound", sound] if sound else []), log)
 
 

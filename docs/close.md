@@ -12,7 +12,7 @@ on 11-09 at 19:02Z, and then its session sat idle for a day. Closing it by hand 
    right one. `of who` then showed the position as `remote:idle` on machine "?", from stale presence, instead of
    offline.
 2. **No check of the founder's yes.** AGENTS.md forbids closing another agent's session without it. `acme_org`
-   found his answer in the store by hand: ask `b0e6186c`, "да, закрыть сессию", asked by acme_throughput-owner.
+   found his answer in the store by hand: ask `b0e6186c`, "yes, close the session" (his words, in his language), asked by acme_throughput-owner.
 3. **No check of what was left behind.** By hand it found four worktrees in the shared checkout (clean, three
    branches merged) and an open obsolete PR #2184. It routed them to catalogue_keeper.
 4. **No registry step.** It set `status: finished` and wrote the closure into `holder.workplace` by hand. No field
@@ -38,9 +38,9 @@ its lessons.
 - `--ask <id>` names an ask the founder answered, and its question must name the position. The command reads the
   answer from the store, so nobody retells the decision (of_architect):
   - with options, it reads the chosen option, which must be the closing one (a closure ask offers
-    "закрыть | оставить");
+    "close | keep", in the owner's language);
   - a free-text answer counts only when it is a plain yes;
-  - a conditional answer ("да, но сначала …") blocks, and the command prints his words for the keeper.
+  - a conditional answer ("yes, but first …") blocks, and the command prints his words for the keeper.
 - When no such ask exists, the command stops and prints the `of ask` to file.
 - A position held by a person is refused.
 - **The pane is confirmed** (acme_org): when the live session in the position's pane differs from

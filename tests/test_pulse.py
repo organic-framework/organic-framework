@@ -120,7 +120,7 @@ class DiskCheckTest(unittest.TestCase):
         of_pulse.disk_check(mem, now, send, free=60 * GB, log=lambda m: None)
         self.assertEqual(sent, [])
         of_pulse.disk_check(mem, now, send, free=49 * GB, log=lambda m: None)
-        self.assertEqual(sent, ["Диск: 49 ГБ свободно (< 50)"])
+        self.assertEqual(sent, ["Disk: 49 GB free (< 50)"])
         of_pulse.disk_check(mem, now + 300, send, free=48 * GB, log=lambda m: None)
         of_pulse.disk_check(mem, now + 600, send, free=52 * GB, log=lambda m: None)  # between the marks: same episode
         of_pulse.disk_check(mem, now + 900, send, free=49 * GB, log=lambda m: None)

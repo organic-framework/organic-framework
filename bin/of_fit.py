@@ -1,7 +1,7 @@
 """Mandate fit: does the work a position hands out belong to the position that gets it? (founder, 2026-11-10)
 
 acme_throughput-owner gave storefront_pricing (new-block bids) "what is 1 ms of our lead worth on pending races"; pending
-speed is storefront_search's mandate, and the founder caught it by hand ("может, у нас опять роли перепутались"). The
+speed is storefront_search's mandate, and the founder caught it by hand ("maybe we have mixed up the roles again"). The
 mandate router reads only paths, and no diagnose rule reads what a task is (RFC 0001 §5.7: drift, wrong-task rate;
 docs/lab.md phase 5, not started). This module is the judge: a small model reads one message a position sent another
 and the organization's roster, and says whether it hands out work, and whose mandate that work is.

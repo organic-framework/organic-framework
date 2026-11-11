@@ -26,6 +26,7 @@ import subprocess
 import time
 
 import of_events
+from of_locale import tr
 
 GiB = 2 ** 30
 SCRATCH_CAP = 3 * GiB
@@ -113,12 +114,13 @@ def quota_note(name, paths, size):
 
 
 def card_text(free, top):
-    lines = "; ".join(f"{n} {gib(b)} ГиБ" for n, b in top[:5]) or "размеры ещё не измерены"
-    return (f"На Маке осталось {gib(free)} ГиБ свободного места (меньше {gib(CARD_BELOW)}). Ниже примерно 20 ГиБ "
-            f"под угрозой relay, база событий OF и все сессии. Больше всего занимают папки scratch живых сессий: "
-            f"{lines}. Пульс уже попросил позиции сверх {gib(SCRATCH_CAP)} ГиБ почистить свои папки; сам он ничего "
-            f"не удаляет. Карточка закроется сама, когда свободно станет больше {gib(CARD_CLEAR)} ГиБ. "
-            f"Что делать?")
+    from of_locale import tr
+    lines = "; ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top[:5]) or tr("sizes not measured yet")
+    return tr("This Mac has {free} GiB of free space left (under {below}). Below about 20 GiB the relay, OF's event "
+              "store and every session are at risk. The live sessions' scratch folders take the most: {lines}. The "
+              "pulse has asked the positions over {cap} GiB to clean their folders; it deletes nothing itself. The "
+              "card closes itself once more than {clear} GiB are free. What should be done?",
+              free=gib(free), below=gib(CARD_BELOW), lines=lines, cap=gib(SCRATCH_CAP), clear=gib(CARD_CLEAR))
 
 
 def _open_cards(conn):
@@ -201,8 +203,8 @@ def _card(mem, now, free, top, log, conn=None):
             "detected_by": "declared", "source": CARD_SOURCE, "from_position": "of_platform", "to": "founder",
             "topic_key": "disk-low", "blocking": False,
             "questions": [{"question": card_text(free, top),
-                           "options": ["попросить хранителей структуры разобрать папки (рекомендую: они знают, "
-                                       "что из этого ещё в работе)", "разберусь сам"]}]},
+                           "options": [tr("ask the structure keepers to sort the folders out (recommended: they "
+                                          "know what is still in use)"), tr("I will sort it out myself")]}]},
             position="of_platform")
         mem["disk_card"] = now
         log(f"disk: {gib(free)} GiB free, founder card {eid}")

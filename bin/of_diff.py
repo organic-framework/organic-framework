@@ -805,7 +805,7 @@ def preview(d, registry_text):
 
 def review_due(d, now=None):
     """The review's date when the author named a number of days; None otherwise. OF never invents one (founder,
-    ask 53628150: "убери их полностью, они только мешают")."""
+    ask 53628150: "remove them completely, they only get in the way")."""
     m = re.search(r"(\d+)\s*days?", str((d.get("review") or {}).get("after") or ""))
     if not m:
         return None
