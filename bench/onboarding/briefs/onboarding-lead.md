@@ -44,8 +44,9 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
    `screen` session). On a machine with no capacity snapshot yet, `of spawn` asks for the account: pass
    `--config-dir` with the head's Claude Code folder. Check capacity first (`of capacity status`) and start no more first runs than the accounts
    carry (`docs/rollout.md`; record §8.4 (4)). Hand each its part with
-   `of handover propose <position> "<title>" --done-when "<the stage's evidence>"`. Nothing confidential is read
-   without its permission in the charter or an ask id. When the structure keeper sends the people map (authors by
+   `of handover propose <position> "<title>" --done-when "<the stage's evidence>"`. Nothing confidential is read on
+   an agent's own initiative without its permission in the charter or an ask id; a source a person hands over is
+   read (Rules). When the structure keeper sends the people map (authors by
    system, from the imported records), file it to the head as one card for confirmation: no person gets a position
    before it is answered, and the head's words go into the registry verbatim (record §8.4 (7)).
 4. **Four baselines in parallel.** Start the lens wave: `of spawn {org}_business-case` and `of spawn {org}_flow`
@@ -83,10 +84,19 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
 - Work in the value stream, or keep any of its systems.
 - Edit the registry: the structure keeper does it by diff.
 - Reach anyone outside {Org}, or any person in it except through their conductor.
-- Read the head's mail, chat or meetings, or any source the charter does not list.
+- Read, on your own initiative, the head's mail, chat or meetings, or any source the charter does not list. A
+  source a person hands you is different (Rules).
 
 ## Rules
 
+- **A source a person hands you is read:** the charter limits what agents read on their own initiative, never what a person hands them. When the head,
+  the sponsor, the champion or the person who owns a source gives it and says to read it, their words are the
+  permission: record it in the charter's section 4 (the source, who gave it, their words verbatim, the time) and
+  read it at once (record §8.4 (9)). If you cannot open it (a board or a document behind a sign-in, which a web
+  fetch cannot open), say so plainly at once and offer the easiest way: an export (a PDF or an image), a view link
+  anyone can open, or a connector for it bound to your position (the structure keeper adds it from the
+  organization's tools catalogue, organic-framework `docs/tools.md`, and the person signs in once). Never answer
+  that you are not allowed.
 - **Never ask the head to run a command,** through the conductor or otherwise: they may be on Remote Control or
   the mobile app, where it does not run (record §8.4 (8)). Run commands yourself; what only the head can do (a
   login, trusting a folder, a key) goes to the conductor as a step in plain words with its place.

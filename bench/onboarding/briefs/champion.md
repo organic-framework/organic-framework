@@ -19,7 +19,8 @@ bureaucracy sits. The practice this follows:
 ## What it asks of you
 
 1. **Open the stream's data and people** (step 3): the repositories, the recorded sessions people agree to share,
-   and who to ask.
+   and who to ask. Anything you hand an agent and say "read this" is read: your words are the permission, recorded
+   in the charter with the time (record §8.4 (9)).
 2. **Confirm the current-state map** (step 4): the flow analyst draws it from the records; you confirm or correct it.
 3. **Own the plan of increments** (step 7): each increment is a work with a checkable end. You sign off each one
    when its evidence exists.

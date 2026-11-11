@@ -48,7 +48,15 @@ system of record with its access; open questions about a system's grain.
 
 ## Rules
 
-- Read only what the charter lists, and a confidential source only with its permission there or an ask id.
+- On your own initiative, read only what the charter lists, and a confidential source only with its permission
+  there or an ask id. **A source a person hands you is read:** the charter limits what agents read on their own initiative, never what a person hands them. When the head,
+  the sponsor, the champion or the person who owns a source gives it and says to read it, their words are the
+  permission: record it in the charter's section 4 (the source, who gave it, their words verbatim, the time) and
+  read it at once (record §8.4 (9)). If you cannot open it (a board or a document behind a sign-in, which a web
+  fetch cannot open), say so plainly at once and offer the easiest way: an export (a PDF or an image), a view link
+  anyone can open, or a connector for it bound to your position (the structure keeper adds it from the
+  organization's tools catalogue, organic-framework `docs/tools.md`, and the person signs in once). Never answer
+  that you are not allowed.
 - Your questions for the head go to the onboarding lead (`of send {org}_onboarding "…"`), which batches them.
 - A governance fact is confirmed only by an ask id; a comment confirms nothing (`docs/registry.md`).
 - Commit your own work, with the trailer `Position: {org}_system-architect`.

@@ -53,7 +53,8 @@ _NAMES = dict({v.lower(): k for k, v in LANGUAGES.items()}, **{"русский":
 
 
 def language_code(text):
-    """A language code for a code or a name ("ru", "Russian", "русский" -> "ru"); an unknown one is kept as given."""
+    """A language code for a code, an English name or the language's own name ("ru", "Russian" -> "ru"); an unknown
+    one is kept as given."""
     s = str(text or "").strip()
     low = s.lower()
     return low if low in LANGUAGES else _NAMES.get(low, s)
@@ -541,7 +542,7 @@ def detached(name, line):
     import shlex
     return f"screen -dmS {name} sh -c {shlex.quote(line)}"
 
-# What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "при сетапе of ставил opus xhigh"). The
+# What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "have of set opus xhigh at setup"). The
 # alias follows the newest Opus. of init writes it on the organization's entry in orgs.yaml (`agents:`); every session
 # OF starts uses it unless a position or the command names another.
 AGENT_DEFAULTS = {"model": "opus", "effort": "xhigh"}
@@ -608,9 +609,11 @@ This repository holds the organization {Org} as an app of Organic Framework: its
   `evidence:` beside it: the authorship it rests on, with its window, or an ask id. The people map from the
   repositories comes before any person's position, and {owner_name}'s words go in verbatim, never retold
   (organic-framework `docs/registry.md`, People).
-- **What OF reads.** GitHub, the Claude Code sessions people choose to record, and the structure. Never the head's
-  mail, chat or meetings; a confidential source only with a permission recorded by an ask id
-  (`onboarding/charter.md`).
+- **What OF reads.** GitHub, the Claude Code sessions people choose to record, and the structure. Never, on an
+  agent's own initiative, the head's mail, chat or meetings; a confidential source only with a permission recorded
+  by an ask id (`onboarding/charter.md`). A source a person hands an agent with "read this" is read at once: their
+  words are the permission, recorded in the charter with the time. If it cannot be opened, the agent says so and
+  offers an export, a view link or a connector.
 - **Agent names** are `<system>_<role>`, matching `[a-z][a-z0-9_-]{{0,31}}`.
 - **Every agent commit** ends with a `Position: <name>` trailer naming the author's position.
 - **At the end of every turn**, declare where you are: `of status working | waiting --on owner|<position> | idle | done`.

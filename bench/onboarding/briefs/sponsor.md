@@ -41,7 +41,10 @@ follows puts the decision with one accountable sponsor:
 
 OF reads GitHub, the Claude Code sessions people choose to record, and the structure itself. It does not read your
 mail, chat or meetings. A confidential source (the books, a bank, a provider's portal) is read only with your
-permission recorded by an ask id (record §8.2 (7)).
+permission recorded by an ask id (record §8.2 (7)). Anything you hand an agent yourself and say "read this" is
+read at once: your words are the permission, recorded in the charter with the time. If the agent cannot open it
+(a board or a document behind a sign-in), it tells you so and offers the easiest way: an export, a view link, or a
+connector you sign in to once (record §8.4 (9)).
 
 ## What stays with you
 

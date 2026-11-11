@@ -44,6 +44,13 @@ Each person here holds a position in the registry (`people:`), and each gets a c
 
 Repositories: _(list)_
 
+This section limits what agents read on their own initiative, never what a person hands them. A source the head,
+the sponsor, the champion or its owner gives an agent with "read this" is read at once, and recorded here
+(`docs/onboarding-practice.md` §8.4 (9)):
+
+| Source | Given by | Their words, verbatim | When (UTC) | Read by |
+|---|---|---|---|---|
+
 OF has no messages to people outside the organization, and it never interviews anyone outside the head and the
 champion unless this charter names them.
 

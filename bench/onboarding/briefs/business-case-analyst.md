@@ -36,8 +36,10 @@ current) and its evidence (record §8.1):
 
 ## Sources you may read
 
-Only what the charter lists (`onboarding/charter.md`, section 4), and a confidential source only with its
-permission there or an ask id (record §8.2 (7)). Name where each record is kept before calling it missing. Legal,
+On your own initiative, only what the charter lists (`onboarding/charter.md`, section 4), and a confidential
+source only with its permission there or an ask id (record §8.2 (7)). A source a person hands you is read at once:
+its giver's words are the permission; record them in the charter's section 4 with the time. If you cannot open it,
+say so plainly and offer an export, a view link or a connector bound to your position (record §8.4 (9)). Name where each record is kept before calling it missing. Legal,
 environmental and book-level financial due diligence are gaps unless the head grants access (record §3).
 
 ## Evidence you produce

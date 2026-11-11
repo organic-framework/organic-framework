@@ -503,6 +503,14 @@ class InitStructureTest(unittest.TestCase):
         self.assertIsNone(self.of_init.hand_start(doc, "acme_conductor", "/home/alex/of/acme"))  # a real holder stays
         self.assertIsNone(self.of_init.hand_start(doc, "acme_nobody", "/home/alex/of/acme"))
 
+    def test_a_source_a_person_hands_over_is_read(self):
+        files = self.built()["files"]
+        for brief in ("acme_onboarding", "acme_system-architect", "acme_business-case", "acme_conductor", "acme_owner"):
+            text = " ".join(files[f"registry/briefs/{brief}.md"].split())
+            self.assertRegex(text, r"(hands? (you|over)|hand an agent)", brief)
+            self.assertIn("§8.4 (9)", text, brief)
+        self.assertIn("| Source | Given by | Their words, verbatim | When (UTC) | Read by |", files["onboarding/charter.md"])
+
     def test_agents_start_on_opus_xhigh(self):
         i = self.of_init
         self.assertEqual(i.agent_settings(), {"model": "opus", "effort": "xhigh"})
