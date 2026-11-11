@@ -19,8 +19,9 @@ You are a coding agent (Claude Code, for example), and a person asked you to ins
 3. **The folders with the code their agents work on.** Each becomes a `--path`.
 4. **Whether they have a machine that stays on**: a home server, a second computer, a mini PC. If they do, recommend section 2 before you go on. If they do not, install on the machine you are on.
 5. **Which Claude Code account the agents run on**: its folder is `~/.claude` unless they set `CLAUDE_CONFIG_DIR`.
-6. **The language their agents should use with them** (`--language`, a code or a name: `en`, `ru`, …). Usually it is the one they talk to you in.
-7. **How they will reach their agents**: at the machine where OF runs, in herdr (the default), or only through the chat with their conductor, from another computer or a phone: Claude's Remote Control, the desktop or the mobile app. For the chat alone, use `--surface remote` at step 5 ([`docs/remote.md`](docs/remote.md)).
+6. **If this machine has two or more Claude accounts** (`of account list`, [`docs/accounts.md`](docs/accounts.md)): whether agents on an account that has used up its limit should move to one with room, with one more agent of theirs, `<org>_capacity`, keeping watch. Ask in words; their answer is `--capacity yes` or `--capacity no` at step 5. With one account, skip it.
+7. **The language their agents should use with them** (`--language`, a code or a name: `en`, `ru`, …). Usually it is the one they talk to you in.
+8. **How they will reach their agents**: at the machine where OF runs, in herdr (the default), or only through the chat with their conductor, from another computer or a phone: Claude's Remote Control, the desktop or the mobile app. For the chat alone, use `--surface remote` at step 5 ([`docs/remote.md`](docs/remote.md)).
 
 ## 2. If they have a machine that stays on (recommended)
 
@@ -28,7 +29,7 @@ Agents keep working while the laptop sleeps or travels, and the person reaches t
 - **Install OF and herdr on that machine,** not on the laptop: run sections 3 to 7 there. The agents, the registry and of-server live there, and so does the Claude Code login the agents use.
 - **Reach it over Tailscale,** a private network of the person's own devices. Install Tailscale on that machine, the laptop and the phone, signed in to the same account. Open no port to the internet.
 - **SSH with keys only,** no passwords. From the laptop: `ssh <user>@<machine's Tailscale name>`, then `herdr`. herdr attaches to the session already running there, with every agent in it. `Ctrl+b, q` detaches, and the agents keep running.
-- **Or the chat alone.** If the person will talk only to their conductor, from the Claude app, install with `--surface remote` (step 1.7): the conductor starts with Remote Control on, and every agent runs in tmux on that machine.
+- **Or the chat alone.** If the person will talk only to their conductor, from the Claude app, install with `--surface remote` (step 1.8): the conductor starts with Remote Control on, and every agent runs in tmux on that machine.
 - **Keep the machine awake on power.** On macOS: System Settings, Energy, prevent sleep when the display is off.
 
 The details and a security checklist are in [`docs/remote-access.md`](docs/remote-access.md). The person installs Tailscale and turns on SSH: both need their password or a login in a browser.
@@ -58,8 +59,10 @@ of --help
 ## 5. Create the organization
 
 ```bash
-of init <org> --owner "<their name>" --language <code> --path <folder> [--path <another folder>] [--surface remote]
+of init <org> --owner "<their name>" --language <code> --path <folder> [--path <another folder>] [--surface remote] [--capacity yes|no]
 ```
+
+`--capacity` matters only with two or more Claude accounts on this machine. Without it, `of init` asks in a terminal; with no terminal, the person gets one card instead, which their conductor presents.
 
 The language is kept in `~/.config/of/owner.yaml`; without `--language`, `of init` asks in a terminal, or uses English. A new organization's agents start on Opus at effort `xhigh`: `of init` writes `agents: {model: opus, effort: xhigh}` on the organization's entry in `~/.config/of/orgs.yaml`, and `of spawn` reads it. If the person wants another model or effort, add `--model` and `--effort`.
 
