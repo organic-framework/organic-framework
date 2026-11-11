@@ -38,7 +38,8 @@ def catalogue(path=None):
 
 
 def kinds_needed(cat=None):
-    """Every event kind any rule reads (for the loaders' name filter)."""
+    """Every event kind any rule reads (for the loaders' name filter): its `needs`, and its `reads` (kinds it uses
+    when present, never a reason to block it; of_field-analyst, 2026-11-11)."""
     try:
         cat = cat or catalogue()
     except OSError:
@@ -46,7 +47,7 @@ def kinds_needed(cat=None):
     out = {"of.issue_labelled", "of.mandate_check"}
     for r in (cat.get("rules") or {}).values():
         needs = r.get("needs") or []
-        for n in (sum(needs.values(), []) if isinstance(needs, dict) else needs):
+        for n in (sum(needs.values(), []) if isinstance(needs, dict) else list(needs)) + list(r.get("reads") or []):
             if str(n).startswith("of."):
                 out.add(n)
     return tuple(sorted(out))

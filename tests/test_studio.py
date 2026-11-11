@@ -669,6 +669,10 @@ class DiagnoseTest(unittest.TestCase):
         k = of_diagnose.kinds_needed()
         for n in ("of.work_record", "of.agent_message_out", "of.issue_labelled", "of.compaction"):
             self.assertIn(n, k)
+        k = of_diagnose.kinds_needed({"rules": {"r": {"needs": ["of.a"], "reads": ["of.b", "not-a-kind"]},
+                                                "q": {"needs": {"x": ["of.c"]}, "reads": ["of.d"]}}})
+        self.assertTrue({"of.a", "of.b", "of.c", "of.d"} <= set(k))                     # `reads` load too
+        self.assertNotIn("not-a-kind", k)
 
 
 class DelegationTest(unittest.TestCase):
