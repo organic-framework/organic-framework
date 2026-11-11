@@ -898,3 +898,64 @@ def _relogged(events):
 
 SCENARIOS.append(_case("chatty-org/negative-recording-changed", _org_doc(), _relogged(_org_chatter(73, 20)),
                        ("ap.chatty", ["(organization)"], "negative")))
+
+
+# ---- ap.unsourced-requirement@0, affected [requester, receiver] (a hand-over) or [position] (a work record) ----
+# docs/handover.md §1.1: a claim that drives work carries its basis, unchanged. The drift: a requester's unconfirmed
+# reading ("[confirm with counsel]" in the context) handed over as work to do, and the receiver's PR carrying it on.
+_HEDGED = ["registers/reg.md#REG-02", "Decree 1/2020 Art. 5(1) [confirm with counsel, Q-REG-05]"]
+
+
+def _hid(i):
+    return f"01a1c759-0000-7000-8000-00000000{i[-4:]:0>4}"   # the short id is its last 8 characters
+
+
+def _handover(i, title, context=(), done_when="a test shows a listed address is skipped", frm="bot_search", to="bot_nonce",
+              ts=None, **extra):
+    return ev(i, ts or _at("11-03"), "of.handover_proposed", sid_of(frm),
+              dict({"id": _hid(i), "from": frm, "to": to, "title": title,
+                    "done_when": done_when, "context": list(context)}, **extra), position=frm)
+
+
+def _claim_pr(i, number, title, position="bot_nonce", body=None):
+    pl = {"source": "gh", "author": "founder-gh", "systems": ["bot"], "repo": "o/r", "number": number,
+          "url": f"https://github.com/o/r/pull/{number}", "merged_at": _at("11-04"), "title": title, "position": position}
+    if body:
+        pl["body"] = body
+    return ev(i, _at("11-04"), "of.work_record", sid_of(position), pl, position=position)
+
+
+_PAIR = ["bot_nonce", "bot_search"]
+SCENARIOS += [
+    _case("unsourced-requirement/positive-strengthened", _org_doc(),
+          [_handover("ur1", "Before live sends: skip listed addresses", _HEDGED),
+           _claim_pr("ur1p", 9101, "feat(bot): screen each send against a list (REG-02)")],
+          ("ap.unsourced-requirement", _PAIR, "positive")),
+    # the same reading handed over with its source quoted, or with its hedge in the done_when, or returned: no drift
+    _case("unsourced-requirement/negative-quoted-source", _org_doc(),
+          [_handover("ur2", "Before live sends: skip listed addresses",
+                     ["Decree 1/2020 Art. 5: \"any person freezes listed persons' funds and makes none available\""]),
+           _claim_pr("ur2p", 9102, "feat(bot): screen each send against a list (REG-02)")],
+          ("ap.unsourced-requirement", _PAIR, "negative")),
+    _case("unsourced-requirement/negative-hedge-carried", _org_doc(),
+          [_handover("ur3", "Before live sends: skip listed addresses", _HEDGED,
+                     done_when="behind a flag that stays off: inference, unconfirmed until counsel answers Q-REG-05")],
+          ("ap.unsourced-requirement", _PAIR, "negative")),
+    _case("unsourced-requirement/negative-returned", _org_doc(),
+          [_handover("ur4", "Before live sends: skip listed addresses", _HEDGED),
+           ev("ur4r", _at("11-03", 11), "of.handover_returned", sid_of("bot_nonce"),
+              {"id": _hid("ur4"), "by": "bot_nonce"}, position="bot_nonce")],
+          ("ap.unsourced-requirement", _PAIR, "negative")),
+    # a PR that calls its work a legal requirement with no basis at all; and spec words (required key, must refuse)
+    _case("unsourced-requirement/positive-unsourced-pr", _org_doc(),
+          [_handover("ur5", "Add a parser test", ["reports/parser.md"]),
+           _claim_pr("ur5p", 9105, "feat(bot): audit log", position="bot_operator",
+                     body="This is a legal requirement for the exchange.")],
+          ("ap.unsourced-requirement", ["bot_operator"], "positive")),
+    _case("unsourced-requirement/negative-spec-words", _org_doc(),
+          [_handover("ur6", "The bid gas count is a required key", ["reports/bid.md"], done_when="the parser must refuse a missing key"),
+           _claim_pr("ur6p", 9106, "config(search): the prefetch distance is a required TOML key", position="bot_operator")],
+          ("ap.unsourced-requirement", ["bot_operator"], "negative"), ("ap.unsourced-requirement", _PAIR, "negative")),
+    _case("unsourced-requirement/blocked-no-handovers", _org_doc(), [],
+          ("ap.unsourced-requirement", _PAIR, "blocked")),
+]

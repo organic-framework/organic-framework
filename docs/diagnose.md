@@ -494,6 +494,50 @@ The decision:
 
 What stays without a rule: a task given to the wrong role. A task message carries no kind-of-work label yet. Once tasks are classified into cells (RFC 0007 step 6, `of fit` and `of delegate`), an assignment to a position that does not own the task's cell becomes checkable; that is RFC 0001 §5.7.
 
+### 2.27 Unsourced or strengthened requirement — `ap.unsourced-requirement@0`
+
+*v0 (2026-11-11), built. Asked by `of_architect` (relay message 01a1cb93) after two incidents the founder raised that day, in which a claim lost its basis as it moved and grew stronger at each step. The rule it checks is [`handover.md`](handover.md) §1.1 (organic-framework cfda02c): every claim that drives work carries its basis (an owner's ask, a source with the quote, evidence, or an inference), passed on unchanged.*
+
+The first user organization's case (2026-11-10):
+1. A compliance watcher read two laws and marked its reading "[confirm with counsel]" in a hand-over's context.
+2. The hand-over asked a bot's position to screen live operations against a sanctions list, as plain work to do.
+3. The PR that did it called it a "compliance requirement" and was merged with no review, so live operations were gated on a reading nobody had confirmed.
+
+| Part | Fires when | Remedy |
+|---|---|---|
+| `strengthened` | A hand-over's own basis is an inference, and its title and done_when do not say so. Before the hand-over `basis` field (organic-framework 8056acf), the inference is the requester's own word in the context ("[confirm with counsel]", "unconfirmed", "inference"). With the field, the offer already shows `basis: inference` as unconfirmed, so only a title or done_when that calls the work owed grows it. One issue per hand-over; the merged PRs and commits that carry it on are its evidence. A work record also fires on its own when it cites an inference-based hand-over that kept its hedge, and states the work as owed | Restate the basis as an inference in the hand-over and in the work built on it. Confirm it with an owner's ask or a quoted source before the work counts as required. The receiver returns the hand-over until then |
+| `unsourced` | A hand-over or a work record states the work as owed, with no basis at all | Add the basis, or return the work to its requester |
+
+- **What counts as stating an obligation:** the work is owed to an authority. Examples: "compliance requirement", "legal obligation", "required by …", "the law requires", "requirement REG-02".
+  - A plain "must" or "required" does not count. In a spec it describes behaviour ("a required TOML key"), and in the first calibration week every such match was of that kind.
+  - `of handover propose` refuses a broader word list (must, required, compliance, …) without a basis. That is the gate at the source; this rule checks what passed it and what grew after it.
+- **What counts as a basis**, in this order:
+  - the hand-over's `basis` field;
+  - else an ask id, a quoted source, or the requester's hedge in the context;
+  - else any context, such as a pointer to a register or a report, which v0 accepts as a basis.
+- **How work is linked to a hand-over**, in this order:
+  - its text cites the hand-over id;
+  - the hand-over's delivered result names the PR or the commit;
+  - it is the receiver's work, merged after the hand-over, and it cites a register token the hand-over cites (such as `REG-02`).
+
+  Merge-queue copies are left out.
+- **Left out:**
+  - hand-overs declined, returned, withdrawn or expired, since the receiver did what §1.1 asks;
+  - questions (a title ending in "?").
+- **Decider:** the structure keeper, through the daily keeper digest. The organization's structure keeper fixes its instance (`of_architect`, relay message 01a1cb93).
+- *p* = 0.6 (`strengthened`), 0.4 (`unsourced`); *m_decide* = 5 and 3 min. Severity medium and low.
+- **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML), but the run's loader takes only `needs` kinds today (`of_diagnose.kinds_needed`, `of_studio`). Until it takes `reads`, a returned hand-over can still fire, and a delivered result links nothing.
+  - A merged PR's body and review count are not in work records yet. Until `of import github` stores them, the hand-over id and the obligation wording are read from titles only.
+- **Calibration** (2026-11-11, the 7 days to that evening):
+  - The first user organization: 2 issues, both from the same watcher's hand-overs with "[confirm with counsel]" in the context.
+    - One is the case above. The register token links its PR, whose body was restated the next day as "Precaution, unconfirmed".
+    - In the other, an unconfirmed duty became a row of the organization's legal obligations calendar.
+  - The OF team: quiet.
+  - Two calibration notes:
+    - "Must" and "required" matched the titles of 4 merged PRs (each also as a merge-queue copy), all describing behaviour.
+    - "Assume" as a hedge word matched 3 CI PRs ("assume the publisher role"), so v0 does not use it.
+- **Not covered here:** a claim about people in a registry, such as "a colleague keeps the X bots", the day's first incident. [`registry.md`](registry.md), People, requires `evidence:` beside such a claim, and `of registry check` warns without it (`of_platform`).
+
 ## 3. Ranking: expected ΔT per minute of the owner's time
 
 score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
@@ -534,6 +578,7 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | §3 | T and OE events per organization | app adapters |
 | 2.16–2.22 | The loop projection of §4.1 | RFC 0005 §8 steps 1–3 |
 | 2.25, 2.26 | `needs:` on systems and `owns:` on positions | RFC 0007 steps 1 and 3: the schema exists; each organization's system architect fills it |
+| 2.27 | A merged PR's body and review count on its work record; hand-over states and delivered results in the run's loader (`reads`) | `of import github` (`of_platform`); `of_diagnose.kinds_needed` (`of_studio`) |
 
 ### 4.1 What the loop rules read
 
@@ -602,6 +647,7 @@ The columns:
 | off-map-work@0 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |
 | cell-gap@0 | blocked (no `needs` yet) | blocked | all three parts P/R 1.0; reports blocked without cells | — | U1's cells |
 | cell-overlap@0 | blocked (no `owns` yet) | blocked | P/R 1.0; reports blocked without cells | — | U1's cells |
+| unsourced-requirement@0 | fired 2, 2026-11-11 | quiet | both parts P/R 1.0; negatives: a quoted source, the hedge kept in the done_when, a returned hand-over, spec words; reports blocked without hand-overs | — | the 2 U1 issues to label with its structure keeper |
 
 The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live run above. Their real cases wait for the loop events of the search week (§4.1), derived from the runner records.
 

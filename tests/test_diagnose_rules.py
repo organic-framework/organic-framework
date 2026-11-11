@@ -184,6 +184,88 @@ class RulesTest(unittest.TestCase):
         self.assertIn("ap.cell-gap@0", verify[0]["evidence"]["merged"])
         self.assertTrue(all(i["decider"] == "structure_keeper" for i in d["issues"] if i["rule"].startswith("ap.cell-")))
 
+    HID = "01a1c759-4e99-7222-b4aa-f0f8aa11bb22"
+
+    def ho(self, i, title, context=(), done_when="a test shows it", frm="compliance_watcher", to="bot_operator",
+           hid=None, ts="2026-11-02T10:00Z", **extra):
+        return ev(f"ho{i}", ts, "of.handover_proposed", None,
+                  dict({"id": hid or self.HID, "from": frm, "to": to, "title": title, "done_when": done_when,
+                        "context": list(context)}, **extra))
+
+    def pr(self, n, title, position="bot_operator", ts="2026-11-03T10:00Z", author="founder-gh", **extra):
+        return ev(f"pr{n}", ts, "of.work_record", None,
+                  dict({"source": "gh", "repo": "acme/arb", "number": n, "url": f"https://github.com/acme/arb/pull/{n}",
+                        "author": author, "merged_at": ts, "title": title, "position": position, "systems": ["bot"]}, **extra))
+
+    def unsourced(self, rows):
+        m = of_model.build(self.DOC2, rows, at=self.B)
+        return R.rule_unsourced_requirement(m, rows, of_model.epoch(self.A), of_model.epoch(self.B), of_diagnose.catalogue(),
+                                            R_spec("unsourced-requirement"))
+
+    HEDGED = ["registers/reg.md#G-REG-02", "Decree 1/2020 Art. 5(1) [confirm with counsel, Q-REG-05]"]
+
+    def test_unsourced_requirement_strengthened_and_carried(self):
+        """A watcher's unconfirmed reading becomes a hand-over stated as work to do, and the receiver's PR carries it."""
+        root = self.ho(1, "Before live sends: skip listed addresses", self.HEDGED)
+        work = [self.pr(42, "feat(bot): screen each send against a list (G-REG-02)"),
+                self.pr(43, "merge queue: merged #42: feat(bot): screen each send (G-REG-02)", author="app/mergify"),
+                self.pr(44, "docs: list format (G-REG-02)", position="k8s_keeper")]   # not the receiver: not carried
+        got = self.unsourced([root] + work)
+        self.assertEqual([(i["part"], i["affected"], i["decider"]) for i in got],
+                         [("strengthened", ["bot_operator", "compliance_watcher"], "structure_keeper")])
+        ev_ = got[0]["evidence"]
+        self.assertEqual([(x["record"], x["link"]) for x in ev_["carried_into"]], [("arb#42", "the receiver's work cites G-REG-02")])
+        self.assertIn("[confirm with counsel, Q-REG-05]", got[0]["summary"])
+        self.assertEqual(got[0]["issue_id"], self.unsourced([root])[0]["issue_id"])   # one issue per hand-over, with or without work
+        # the PR body, when the record carries it, shows how far the claim grew; a delivered result links work too
+        body = self.pr(42, "feat(bot): screen", body="Compliance requirement G-REG-02 (hand-over aa11bb22): skip listed ones.")
+        done = ev("d1", "2026-11-03T12:00Z", "of.handover_delivered", None, {"id": self.HID, "result": "acme/arb#45 merged"})
+        got = self.unsourced([root, body, self.pr(45, "feat(bot): the list job", position="k8s_keeper"), done])
+        recs = {x["record"]: x for x in got[0]["evidence"]["carried_into"]}
+        self.assertEqual(recs["arb#42"]["link"], "its text cites the hand-over")
+        self.assertIn("Compliance requirement G-REG-02", recs["arb#42"]["states"])
+        self.assertEqual(recs["arb#45"]["link"], "the hand-over's delivered result names it")
+        self.assertEqual(got[0]["evidence"]["delivered"], "acme/arb#45 merged")
+
+    def test_unsourced_requirement_negatives(self):
+        """The basis carried, a quoted source, an owner's ask, a question, or a receiver who returned it: no issue."""
+        self.assertEqual(self.unsourced([self.ho(1, "Unconfirmed, pending counsel: skip listed addresses", self.HEDGED)]), [])
+        self.assertEqual(self.unsourced([self.ho(1, "Skip listed addresses", self.HEDGED,
+                                                 done_when="inference, unconfirmed until counsel answers Q-REG-05")]), [])
+        quoted = ["Decree 1/2020 Art. 5: \"any person freezes listed persons' funds and makes none available\""]
+        self.assertEqual(self.unsourced([self.ho(1, "Skip listed addresses", quoted)]), [])
+        self.assertEqual(self.unsourced([self.ho(1, "Skip listed addresses", basis="ask:a76abee5")]), [])
+        self.assertEqual(self.unsourced([self.ho(1, "Do our licensed activities cover trading?", self.HEDGED)]), [])
+        for kind in ("declined", "returned", "withdrawn", "expired"):
+            gone = ev("x", "2026-11-02T11:00Z", f"of.handover_{kind}", None, {"id": self.HID})
+            self.assertEqual(self.unsourced([self.ho(1, "Skip listed addresses", self.HEDGED), gone]), [], kind)
+        # a spec's must or required is not an obligation claim (the first calibration week's look-alikes)
+        self.assertEqual(self.unsourced([self.ho(1, "Bid gas count is a required key; the parser must refuse a missing one"),
+                                         self.pr(50, "config(search): the prefetch distance is a required TOML key"),
+                                         self.pr(51, "fix(policy): show the model the grammar it must follow")]), [])
+        # the basis field (of handover propose --basis, 8056acf): the offer shows an inference as unconfirmed, so it grows
+        # only when the title or done_when calls it owed
+        self.assertEqual(self.unsourced([self.ho(1, "Skip listed addresses", basis="inference")]), [])
+        got = self.unsourced([self.ho(1, "Compliance requirement G-REG-02: skip listed addresses", basis="inference")])
+        self.assertEqual([i["part"] for i in got], ["strengthened"])
+
+    def test_unsourced_requirement_without_any_basis(self):
+        got = self.unsourced([self.ho(1, "Add the audit log: a compliance requirement"),
+                              self.pr(60, "feat(bot): audit log", body="This is a legal requirement for the exchange."),
+                              self.pr(61, "feat(bot): audit log", body="A legal requirement (founder, ask a76abee5)."),
+                              self.pr(62, "feat(bot): audit log", body="Maybe a legal requirement: unconfirmed.")])
+        self.assertEqual(sorted((i["part"], tuple(i["affected"])) for i in got),
+                         [("unsourced", ("bot_operator",)), ("unsourced", ("bot_operator", "compliance_watcher"))])
+        self.assertEqual(next(i for i in got if "record" in i["evidence"])["evidence"]["record"], "arb#60")
+        # a hand-over that kept its hedge, and a PR that cites it and states it as owed: the PR is where it grew
+        kept = self.ho(1, "Skip listed addresses (unconfirmed)", self.HEDGED)
+        grew = self.pr(63, "feat(bot): screen", body="Compliance requirement G-REG-02 (hand-over aa11bb22).")
+        got = self.unsourced([kept, grew])
+        self.assertEqual([(i["part"], i["affected"], i["evidence"]["record"]) for i in got],
+                         [("strengthened", ["bot_operator"], "arb#63")])
+        # with no hand-over in the window the rule is blocked (it reads hand-overs first)
+        self.assertEqual(self.status(self.diag([]), "unsourced-requirement")["status"], "blocked")
+
     def test_cell_rules_blocked_until_cells_are_declared(self):
         d = self.diag([])
         self.assertEqual(self.status(d, "cell-gap")["status"], "blocked")

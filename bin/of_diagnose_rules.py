@@ -1051,6 +1051,190 @@ def rule_cell_overlap(model, rows, a, b, cat, spec):
     return out
 
 
+# ------------------------------------------------------------------ provenance (diagnose.md 2.27; handover.md §1.1)
+
+# Work stated as owed to an authority: a law, a regulator, a contract, the owner. A plain "must" or "required" is not
+# one: in a spec it describes behaviour ("a required TOML key"), which was every match in the first calibration week.
+OWED = re.compile(r"\b(?:compliance|regulatory|legal|statutory|contractual|licen[cs]e)\s+(?:requirement|obligation|duty)s?\b"
+                  r"|\b(?:required|mandated|mandatory|obliged|obligatory)\s+(?:by|under|per)\s"
+                  r"|\b(?:law|laws|regulation|regulator|decree|statute|counsel|founder|owner)\s+(?:requires|mandates|demands|obliges)\b"
+                  r"|\brequirement\s+(?-i:[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+)\b", re.I)
+# The requester's own word that its reason is unconfirmed.
+HEDGE = re.compile(r"\[\s*confirm|\bconfirm with\b|\bto be confirmed\b|\bTBC\b|\bunconfirmed\b|\bnot (?:yet )?confirmed\b"
+                   r"|\binference\b|\binferred\b|\bunverified\b|\bnot (?:yet )?verified\b"
+                   r"|\bpending (?:counsel|legal|confirmation)\b|\bassumption\b", re.I)
+ASK_REF = re.compile(r"\b(?:ask|asks|card|founder|owner|yes|answer(?:ed|s)?)\b[^.;\n]{0,40}?\b[0-9a-f]{8}\b", re.I)
+QUOTE = re.compile(r"\"[^\"]{12,}\"|“[^”]{12,}”|«[^»]{12,}»")
+REF_TOKEN = re.compile(r"(?<![\w-])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+(?![\w-])")   # a register row: REG-02, OB-009, F-003
+CLOSED_UNDONE = ("declined", "returned", "withdrawn", "expired")
+
+
+def _around(text, m, width=70):
+    lo, hi = max(0, m.start() - width), min(len(text), m.end() + width)
+    return ("…" if lo else "") + text[lo:hi].strip() + ("…" if hi < len(text) else "")
+
+
+def _short(name):
+    return str(name or "").rsplit(":", 1)[-1]
+
+
+def handover_basis(p):
+    """(kind, text) of a proposed hand-over's basis: its `basis` field (handover.md §1.1: ask, source, evidence,
+    inference), else what its context says. kind: ask | source | evidence | inference | context | None."""
+    b = str(p.get("basis") or "").strip()
+    if b:
+        kind = b.split(":", 1)[0].strip().lower()
+        return ("inference" if kind.startswith("inference") else kind if kind in ("ask", "source", "evidence") else "context"), b
+    items = [str(x) for x in p.get("context") or []]
+    ctx = "; ".join(items)
+    for x in items:
+        if HEDGE.search(x):
+            return "inference", x[:240]
+    if ASK_REF.search(ctx):
+        return "ask", ctx[:160]
+    if QUOTE.search(ctx):
+        return "source", ctx[:160]
+    return ("context", ctx[:160]) if ctx.strip() else (None, "")
+
+
+def hedge_phrase(text):
+    """The words that say a basis is unconfirmed: a bracket such as "[confirm with counsel, Q-REG-05]" whole."""
+    m = HEDGE.search(text or "")
+    if not m:
+        return ""
+    if text[m.start()] == "[" and "]" in text[m.start():]:
+        return text[m.start():text.index("]", m.start()) + 1]
+    return _around(text, m, 30)
+
+
+def _names_record(text, key, sha):
+    """Does a delivered result name this work record: its PR URL, `<repo>#<n>` or `<repo> PR #<n>`, or its commit?"""
+    if key:
+        repo, n = key
+        return bool(re.search(rf"/pull/{n}\b|\b{re.escape(repo)}\s*(?:PR\s*)?#\s*{n}\b", text, re.I))
+    return bool(sha) and len(str(sha)) >= 7 and str(sha)[:7] in text
+
+
+def _record_basis(text, handover_ids):
+    """The basis a work record's own text gives: inference (it says so), ask, a hand-over it cites, a quoted source."""
+    if HEDGE.search(text):
+        return "inference"
+    if ASK_REF.search(text):
+        return "ask"
+    for h in handover_ids:
+        if h[-8:] in text:
+            return f"handover:{h[-8:]}"
+    return "source" if QUOTE.search(text) else None
+
+
+def rule_unsourced_requirement(model, rows, a, b, cat, spec):
+    """A claim that drives work lost its basis on the way, or never had one (handover.md §1.1).
+    Part strengthened: a hand-over whose own basis is an inference (its `basis` field, or its context's word:
+    "[confirm with counsel]", "unconfirmed") states the work without that word in its title or done_when, so the
+    receiver gets a must; the merged PRs and commits that carry it on are its evidence (linked by the hand-over id in
+    their text, by its delivered result, or by a register token such as REG-02 shared by the receiver's work). A work
+    record that cites an inference-based hand-over which kept its hedge, and states the work as owed, is strengthened
+    on its own. Part unsourced: a hand-over or a work record that states the work as owed to an authority (OWED) with no
+    basis at all. Declined, returned, withdrawn and expired hand-overs are left out: the receiver did as §1.1 says."""
+    hos, state, results = {}, {}, collections.defaultdict(list)
+    for r in rows:
+        n, pl = r["name"], r.get("payload") or {}
+        if not n.startswith("of.handover_"):
+            continue
+        hid = pl.get("id") or (r.get("event_id") if n == "of.handover_proposed" else None)
+        if not hid:
+            continue
+        kind = n[len("of.handover_"):]
+        if kind == "proposed":
+            hos.setdefault(hid, dict(pl, id=hid, ts=r["ts"]))
+        elif kind != "offered":
+            state[hid] = kind
+        if kind == "delivered":
+            results[hid].append(" ".join(str(pl[k]) for k in ("result", "note") if pl.get(k)))
+    hos = {h: p for h, p in hos.items() if state.get(h) not in CLOSED_UNDONE}
+    basis = {h: handover_basis(p) for h, p in hos.items()}
+    ho_tokens = {h: set(REF_TOKEN.findall(" ".join([str(p.get("title") or ""), str(p.get("done_when") or "")]
+                                                   + [str(x) for x in p.get("context") or []]))) for h, p in hos.items()}
+
+    def flagged(p):
+        """The hand-over's own step grew the claim. With a `basis: inference` field the offer shows it unconfirmed, so
+        only a title or done_when that calls it owed (OWED) grew it; with the hedge buried in the context (before the
+        field, 2026-11-11), a title and done_when that say nothing of it did."""
+        wd = f"{p.get('title') or ''} {p.get('done_when') or ''}"
+        if basis[p["id"]][0] != "inference" or HEDGE.search(wd) or str(p.get("title") or "").rstrip().endswith("?"):
+            return False
+        return bool(OWED.search(wd)) if p.get("basis") else True
+
+    carried, own = collections.defaultdict(list), []
+    for r in rows:
+        if r["name"] != "of.work_record" or not of_model.in_window(r, a, b):
+            continue
+        pl = r.get("payload") or {}
+        if of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
+            continue   # a merge-queue copy of a PR counted on its own
+        title = str(pl.get("title") or "")
+        text = " ".join(str(pl.get(f) or "") for f in ("title", "body", "message"))   # body and message when the record has them
+        k = of_model.pr_key(pl)
+        ref = f"{k[0]}#{k[1]}" if k else f"{str(pl.get('repo') or '').rsplit('/', 1)[-1]}@{str(pl.get('sha') or '')[:8]}"
+        tokens = set(REF_TOKEN.findall(text))
+        merged = epoch(pl.get("merged_at") or r["ts"]) or 0
+        owed = OWED.search(text)
+        rec = {"record": ref, "url": pl.get("url"), "merged_at": pl.get("merged_at") or r["ts"], "position": pl.get("position"),
+               "title": title[:200]}
+        if "reviews" in pl:
+            rec["reviews"] = pl["reviews"]
+        if owed:
+            rec["states"] = _around(text, owed, 40)
+        links = []
+        for h, p in hos.items():
+            shared = tokens & ho_tokens[h] if _short(p.get("to")) == pl.get("position") and merged >= (epoch(p["ts"]) or 0) else set()
+            if h[-8:] in text:
+                links.append((h, "its text cites the hand-over"))
+            elif any(_names_record(x, k, pl.get("sha")) for x in results.get(h, ())):
+                links.append((h, "the hand-over's delivered result names it"))
+            elif shared:
+                links.append((h, f"the receiver's work cites {', '.join(sorted(shared))}"))
+        hedged = [(h, how) for h, how in links if basis[h][0] == "inference"]
+        for h, how in hedged:
+            if flagged(hos[h]):
+                carried[h].append(dict(rec, link=how))
+        if any(flagged(hos[h]) for h, _ in hedged):
+            continue
+        if hedged and owed and not HEDGE.search(text):
+            h, how = hedged[0]
+            own.append(("strengthened", rec, {"handover": h[-8:], "handover_basis": basis[h][1], "link": how}))
+        elif owed and not links and not _record_basis(text, hos):
+            own.append(("unsourced", rec, {}))
+
+    out = []
+    for h, p in sorted(hos.items(), key=lambda kv: kv[1]["ts"]):
+        frm, to, title = _short(p.get("from")), _short(p.get("to")), str(p.get("title") or "")
+        recs = sorted(carried.get(h, []), key=lambda x: x["merged_at"])
+        if flagged(p) and (of_model.in_window(p, a, b) or recs):
+            into = "; carried into " + ", ".join(x["record"] for x in recs) + " without it" if recs else ""
+            ev = {"handover": h[-8:], "from": frm, "to": to, "title": title[:200], "state": state.get(h, "proposed"),
+                  "basis": "inference", "basis_text": basis[h][1], "carried_into": recs}
+            if results.get(h):
+                ev["delivered"] = results[h][-1][:240]
+            out.append(issue(cat, "unsourced-requirement", [frm, to], ev,
+                             f"hand-over {h[-8:]} ({frm} -> {to}) asks '{title[:90]}' as work to do, while its own basis says "
+                             f"{hedge_phrase(basis[h][1]) or 'inference'}{into}", part="strengthened", key=f"handover:{h}"))
+        elif (of_model.in_window(p, a, b) and basis[h][0] is None
+              and OWED.search(f"{title} {p.get('done_when') or ''}")):
+            m = OWED.search(f"{title} {p.get('done_when') or ''}")
+            out.append(issue(cat, "unsourced-requirement", [frm, to],
+                             {"handover": h[-8:], "from": frm, "to": to, "title": title[:200], "states": m.group(0), "basis": None},
+                             f"hand-over {h[-8:]} ({frm} -> {to}) states the work as owed ('{m.group(0)}') with no basis",
+                             part="unsourced", key=f"handover:{h}"))
+    for part, rec, extra in own:
+        who = rec["position"] or rec["record"]
+        why = (f"cites hand-over {extra['handover']}, whose basis says {hedge_phrase(extra['handover_basis']) or 'inference'}, and states it as owed"
+               if part == "strengthened" else "states the work as owed with no basis")
+        out.append(issue(cat, "unsourced-requirement", [who], dict(rec, **extra),
+                         f"{rec['record']} by {who} {why}: '{rec.get('states', '')}'", part=part, key=f"wr:{rec['record']}"))
+    return out
+
+
 RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_gap,
          "unclear-mandate": rule_unclear_mandate, "churn": rule_churn, "chatty": rule_chatty,
          "bottleneck-broker": rule_bottleneck_broker,
@@ -1061,5 +1245,6 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "loop-plateau": rule_loop_plateau, "loop-wip": rule_loop_wip, "loop-babysit-model": rule_loop_babysit_model,
          "loop-objective-drift": rule_loop_objective_drift, "loop-eval-bottleneck": rule_loop_eval_bottleneck,
          "unkept-system": rule_unkept_system, "off-map-work": rule_off_map_work,
-         "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap}
+         "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
+         "unsourced-requirement": rule_unsourced_requirement}
 # a rule in parts (needs keyed by part) takes the tuple of runnable parts as its last argument

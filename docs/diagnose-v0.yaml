@@ -321,6 +321,20 @@ rules:
     delta_m: "0; dT: a task on the cell falls between its doers"
     remedies: [name subsystems so the positions' cells are distinct, keep one decider and make the rest doers, merge positions that share every cell]
 
+  unsourced-requirement:
+    version: 0                   # v0 (2026-11-11): of_architect's request (relay msg 01a1cb93), docs/handover.md §1.1 (cfda02c)
+    p: {strengthened: 0.6, unsourced: 0.4}
+    m_decide: {strengthened: 5, unsourced: 3}
+    thresholds: {}               # the patterns are OWED, HEDGE, ASK_REF, QUOTE and REF_TOKEN in bin/of_diagnose_rules.py; a plain must or required is not an obligation claim
+    needs: [of.handover_proposed]
+    reads: [of.handover_delivered, of.handover_declined, of.handover_returned, of.handover_withdrawn, of.handover_expired, of.work_record]   # used when present: states that take a hand-over out, delivered results that link work to it
+    decider: structure_keeper
+    severity: {strengthened: medium, unsourced: low}
+    delta_m: "0 (ranks by risk); dT: work done, merged or run because of an obligation nobody confirmed"
+    remedies:
+      strengthened: [restate the basis as inference and unconfirmed in the hand-over and in the work built on it, confirm it with an owner's ask or a quoted source before the work is treated as required, the receiver returns the hand-over until it has a basis]
+      unsourced: [add the basis (an ask id, a source with the quote, evidence, or inference), return the work to its requester for a basis]
+
 measures:                      # owner-message measures (diagnose.md §7); counted, not rules: they raise no issue
   status-poll:
     version: sp-v1
