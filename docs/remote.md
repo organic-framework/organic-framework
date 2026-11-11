@@ -39,6 +39,8 @@ The conductor finds the event id of the person's words with `of prompts --mine`:
 
 The conductor keeps these in one list and gives it to the person when they say they are at the machine.
 
-## 5. Why this is safe
+## 5. How far this is safe
 
-A remote answer carries the same evidence as a click: the person's own words, recorded by the hook in the session that holds their conductor, with an event id that the conductor cannot write. The conductor points to the words; it never states a decision of its own (docs/conductor.md, rule 4).
+A remote answer rests on the person's own words, recorded by the hook in the session that holds their conductor; the conductor points to them and never states a decision of its own (docs/conductor.md, rule 4). The limit (`of_asks`, 2026-11-11): the event store is a file that the agents' operating-system user can write, so a process running as that user could add a forged prompt. Until prompts are recorded by a component the agents cannot write to (of-server under its own operating-system user, the same fix as the independent secrets review's first finding, organic-framework-build `reports/agent-secrets-review-2026-11-11.md`):
+- **answers to cards from the chat** are allowed only for cards that carry no `money`, `security_incident`, `prod_change` or `irreversible` tag;
+- **diff approvals from the chat** (§3, row 2) are on hold: `of diff approve --prompt` refuses, and diffs are approved at the machine.
