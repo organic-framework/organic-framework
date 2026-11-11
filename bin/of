@@ -3886,6 +3886,34 @@ def of_hook_mask(text):
     return of_hook.mask(text or "")
 
 
+def cmd_prompts(args):
+    """of prompts --mine [--last N] [--all]: this session's recorded prompts typed by a person, newest first, each with
+    its event id, UTC time and first line. A conductor cites the id of the head's yes as provisional.event
+    (docs/registry.md, Fields, provisional; of_onboarding, 2026-11-11)."""
+    import of_store
+    if not args.mine:
+        raise OfError("of prompts takes --mine: the calling session's prompts")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        raise OfError("of prompts --mine runs inside a Claude Code session (no CLAUDE_CODE_SESSION_ID here)")
+    conn = of_store.connect()
+    rows = conn.execute("SELECT event_id, ts, payload FROM event WHERE name = 'of.human_prompt' AND session_id = ? "
+                        "ORDER BY ts DESC", (sid,)).fetchall()
+    shown = 0
+    for eid, ts, pl in rows:
+        p = json.loads(pl or "{}")
+        if not args.all and p.get("origin") not in (None, "human"):
+            continue  # a relayed, scheduled or injected prompt is no person's words
+        first = next((ln.strip() for ln in str(p.get("text") or "").splitlines() if ln.strip()), "")
+        print(f"{eid}  {ts[:19]}Z  {first[:120]}" + ("" if p.get("origin") in (None, "human") else f"  ({p.get('origin')})"))
+        shown += 1
+        if shown >= args.last:
+            break
+    if not shown:
+        print("no prompts typed by a person in this session yet")
+    return 0
+
+
 def cmd_status(args):
     """Declare this position's state: working | waiting --on founder|<position> | idle | done."""
     import of_events
@@ -5118,6 +5146,12 @@ def main(argv=None):
                      "replaces OF's escalated copy, or escalates it now; his answer reaches you and the asker")
     ak2.add_argument("--from", dest="sender")
     ak2.set_defaults(fn=cmd_ask)
+    pr = sub.add_parser("prompts", help="of prompts --mine [--last N]: this session's prompts typed by a person, with "
+                                        "their event ids (a provisional position cites its yes)")
+    pr.add_argument("--mine", action="store_true", help="the calling session's prompts (required)")
+    pr.add_argument("--last", type=int, default=10)
+    pr.add_argument("--all", action="store_true", help="also relayed, scheduled and injected prompts")
+    pr.set_defaults(fn=cmd_prompts)
     pa = sub.add_parser("paste", help="paste_source (ps-v0): of paste backfill [--since DATE]")
     pa.add_argument("action", choices=["backfill"])
     pa.add_argument("--since")
