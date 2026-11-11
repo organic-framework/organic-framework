@@ -12,7 +12,9 @@ import of_events  # noqa: E402
 import of_store  # noqa: E402
 import of_views  # noqa: E402
 
-panel.LANG = "ru"  # these tests read the founder's panel, in Russian; LanguageTest covers English
+import of_locale  # noqa: E402
+
+of_locale.set_language("ru")  # these tests read the founder's panel, in Russian; LanguageTest covers English
 
 T0 = panel._ts("2026-11-10T20:00:00Z")
 LEDGER = {"requests": [
@@ -154,19 +156,23 @@ class LanguageTest(unittest.TestCase):
     and reads the ledger's `title` (the conductor brief no longer writes title_ru)."""
 
     def tearDown(self):
-        panel.LANG = "ru"
+        of_locale.set_language("ru")
 
     def test_english_by_default_and_the_title_field(self):
-        panel.LANG = "en"
+        of_locale.set_language("en")
         self.assertEqual(panel.ago(None, 0), "—")
         self.assertEqual(panel.ago(100, 100 + 600), "10 min ago")
         self.assertEqual(panel._title({"title": "Fix the build"}), "Fix the build")
         self.assertEqual(panel._title({"title_ru": "Старое"}), "Старое")
         self.assertEqual(panel._title({}), "Untitled")
-        panel.LANG = "ru"
+        of_locale.set_language("ru")
         self.assertEqual(panel._title({}), "Без названия")
         self.assertEqual(panel.ago(100, 100 + 600), "10 мин назад")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def tearDownModule():
+    of_locale.set_language(None)  # the next modules read the setting again

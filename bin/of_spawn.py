@@ -228,16 +228,9 @@ def registry_line(pl, pane):
 
 
 def owner_language():
-    """The language of the owner's cards on this machine: ~/.config/of/owner.yaml `language` (en or ru; default en).
-    The tool's own text stays English; a newcomer's owner may not read Russian (of_docs, 2026-11-11)."""
-    import of_events
-    try:
-        import yaml
-        with open(of_events.config_path("owner.yaml")) as fh:
-            lang = str((yaml.safe_load(fh) or {}).get("language") or "en").lower()
-    except (OSError, ImportError, AttributeError, ValueError):
-        lang = "en"
-    return lang if lang in ("en", "ru") else "en"
+    """The person's language (of_locale.language: ~/.config/of/owner.yaml `language`, English by default)."""
+    import of_locale
+    return of_locale.language()
 
 
 def _claude_line(pl, flag=""):
@@ -246,22 +239,24 @@ def _claude_line(pl, flag=""):
     return f"cd {pl['cwd']} && {env}claude{flag}"
 
 
+def _host():
+    import platform
+    return platform.node() or "this machine"
+
+
 def trust_task(pl, lang=None):
-    """(title, steps) for the owner's task when the folder is untrusted in the chosen account."""
-    acct, lang = pl["config_dir"], lang or owner_language()
-    if lang == "ru":
-        return (f"Доверить папку {pl['cwd']} в аккаунте {acct}, чтобы запустить {pl['position']}",
-                f"of spawn {pl['position']} остановился: Claude Code в аккаунте {acct} ещё не доверяет папке {pl['cwd']} "
-                f"и покажет диалог доверия. Доверить папку можешь только ты.\n"
-                f"1. В любом терминале: {_claude_line(pl)}\n"
-                "2. В диалоге доверия выбери «Yes, I trust this folder», затем выйди (/exit).\n"
-                f"3. Скажи «готово»: позиция запустится повторной командой of spawn {pl['position']}.")
-    return (f"Trust the folder {pl['cwd']} in the account {acct}, to start {pl['position']}",
-            f"of spawn {pl['position']} stopped: Claude Code in the account {acct} does not trust the folder "
-            f"{pl['cwd']} yet and would show its trust dialog. Only the organization's owner trusts a folder.\n"
-            f"1. In any terminal: {_claude_line(pl)}\n"
-            "2. In the trust dialog choose \"Yes, I trust this folder\", then leave with /exit.\n"
-            f"3. Run of spawn {pl['position']} again.")
+    """(title, steps) for the owner's task when the folder is untrusted in the chosen account. The steps name the
+    machine and say what to do there in words, the command only as one way: the owner may drive the conductor from
+    another computer (of_onboarding, 2026-11-11), and the conductor runs of spawn again."""
+    from of_locale import tr
+    kw = dict(position=pl["position"], cwd=pl["cwd"], acct=pl["config_dir"], host=_host(), line=_claude_line(pl))
+    return (tr("Trust the folder {cwd} in the account {acct}, to start {position}", lang, **kw),
+            tr("of spawn {position} stopped: Claude Code in the account {acct} on {host} does not trust the folder "
+               "{cwd} yet and would show its trust dialog. Only the organization's owner trusts a folder.\n"
+               "1. On {host}, open Claude Code in the folder {cwd} with the account {acct}: in a terminal there, "
+               "{line}; or the Claude app, opening that folder.\n"
+               "2. In the trust dialog choose \"Yes, I trust this folder\", then leave Claude Code.\n"
+               "3. Tell your conductor it is done; it runs of spawn {position} again.", lang, **kw))
 
 
 def bypass_accepted(config_dir):
@@ -277,21 +272,16 @@ def bypass_accepted(config_dir):
 
 def bypass_task(pl, lang=None):
     """(title, steps) for the owner's task when the account has not accepted the Bypass Permissions warning."""
-    acct, lang = pl["config_dir"], lang or owner_language()
-    line = _claude_line(pl, " --dangerously-skip-permissions")
-    if lang == "ru":
-        return (f"Принять предупреждение Bypass Permissions в аккаунте {acct}, чтобы запустить {pl['position']}",
-                f"of spawn {pl['position']} остановился: агенты OF работают в режиме Bypass Permissions, а аккаунт "
-                f"{acct} ещё ни разу не принял его предупреждение. Принять его можешь только ты.\n"
-                f"1. В любом терминале: {line}\n"
-                "2. В предупреждении выбери «Yes, I accept», затем выйди (/exit).\n"
-                f"3. Скажи «готово»: позиция запустится повторной командой of spawn {pl['position']}.")
-    return (f"Accept the Bypass Permissions warning in the account {acct}, to start {pl['position']}",
-            f"of spawn {pl['position']} stopped: OF's agents run in Bypass Permissions mode, and the account {acct} "
-            f"has not accepted its warning yet. Only the organization's owner accepts it.\n"
-            f"1. In any terminal: {line}\n"
-            "2. In the warning choose \"Yes, I accept\", then leave with /exit.\n"
-            f"3. Run of spawn {pl['position']} again.")
+    from of_locale import tr
+    kw = dict(position=pl["position"], cwd=pl["cwd"], acct=pl["config_dir"], host=_host(),
+              line=_claude_line(pl, " --dangerously-skip-permissions"))
+    return (tr("Accept the Bypass Permissions warning in the account {acct}, to start {position}", lang, **kw),
+            tr("of spawn {position} stopped: OF's agents run in Bypass Permissions mode, and the account {acct} on "
+               "{host} has not accepted its warning yet. Only the organization's owner accepts it.\n"
+               "1. On {host}, start Claude Code in Bypass Permissions mode with the account {acct}: in a terminal "
+               "there, {line}.\n"
+               "2. In the warning choose \"Yes, I accept\", then leave Claude Code.\n"
+               "3. Tell your conductor it is done; it runs of spawn {position} again.", lang, **kw))
 
 
 def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeout=180):
