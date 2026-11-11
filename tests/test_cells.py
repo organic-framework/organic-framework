@@ -215,5 +215,34 @@ class RemoteApprovalTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class DiffAnswerApprovalTest(unittest.TestCase):
+    """After-the-fact review of 2026-11-11, finding 1: only the popup's answer approves a diff's ask."""
+
+    def test_only_the_popups_answer_counts(self):
+        import tempfile
+        import of_events
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, d
+            try:
+                conn = of_store.connect()
+                import of_locale
+                yes_ru = of_locale.catalogue("ru")["yes"] + ", go"  # the owner's own language, from the catalogue
+                for ask, via, said in (("A1", "asks-ui", "approve"), ("A2", "conductor", "approve"), ("A3", None, "approve"),
+                                       ("A4", "asks-ui", yes_ru), ("A5", "asks-ui", "not now")):
+                    payload = {"ask_id": ask, "by": "owner", "answer": said}
+                    if via:
+                        payload["via"] = via
+                    of_store.add_event(conn, of_events.record("agent_question_answered", payload))
+                self.assertTrue(of._diff_approved_by_answer(conn, "A1"))
+                self.assertFalse(of._diff_approved_by_answer(conn, "A2"))  # the conductor's chat never approves
+                self.assertFalse(of._diff_approved_by_answer(conn, "A3"))
+                self.assertTrue(of._diff_approved_by_answer(conn, "A4"))
+                self.assertFalse(of._diff_approved_by_answer(conn, "A5"))
+                conn.close()
+            finally:
+                of_events.STATE_DIR = saved
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,6 +83,17 @@ def catalogue(lang):
     return _cats[lang]
 
 
+def variants(source):
+    """The source string and its translation in every catalogue, for matching what a person typed or chose in any
+    of OF's languages (a popup answer "yes" in theirs)."""
+    out = [source.split("|", 1)[0]]
+    for lang in available():
+        v = catalogue(lang).get(source)
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 def tr(source, lang=None, **kw):
     """`source` may carry a context after "|" ("stuck|pill") when one English word needs two translations; the
     English text drops it."""
