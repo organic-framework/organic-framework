@@ -15,3 +15,14 @@ command = ["sh", "run.sh", "startup"]
 [[events]]
 on = "pane.agent_detected"
 command = ["sh", "run.sh", "agent-detected"]
+
+# The owner's questions screen as a popup over everything. Any process opens it with
+#   herdr plugin pane open --plugin organic-framework --entrypoint asks
+# (no --placement: the manifest's popup applies). --env OF_ASKS_OF=<bin/of> runs a trial build.
+[[panes]]
+id = "asks"
+title = "Questions"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["sh", "run.sh", "asks"]

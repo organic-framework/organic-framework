@@ -32,8 +32,15 @@ class ManifestTest(unittest.TestCase):
         self.assertRegex(self.m["id"], r"^[A-Za-z0-9.:_-]+$")
         self.assertEqual({e["on"] for e in self.m["events"]}, {"pane.agent_detected"})
         self.assertTrue({e["on"] for e in self.m["events"]} <= HOOK_EVENTS)
-        for item in self.m["events"] + self.m["startup"]:
+        for item in self.m["events"] + self.m["startup"] + self.m["panes"]:
             self.assertEqual(item["command"][:2], ["sh", "run.sh"])  # argv, run from the plugin folder
+
+    def test_the_questions_screen_opens_as_a_popup(self):
+        """`herdr plugin pane open --plugin organic-framework --entrypoint asks` without --placement takes the
+        manifest's placement; herdr 0.9.5's CLI cannot ask for a popup itself (checked in the lab, asks-screen-v0)."""
+        asks = next(p for p in self.m["panes"] if p["id"] == "asks")
+        self.assertEqual((asks["placement"], asks["command"][2]), ("popup", "asks"))
+        self.assertRegex(asks["id"], r"^[A-Za-z0-9:_-]+$")  # local ids take no dots
 
     def test_the_runner_is_valid_sh_and_finds_the_module(self):
         run = os.path.join(ROOT, "herdr-plugin", "run.sh")
@@ -41,7 +48,7 @@ class ManifestTest(unittest.TestCase):
         r = subprocess.run(["sh", run, "nonsense"], capture_output=True, text=True, cwd=os.path.dirname(run),
                            env=dict(os.environ, OF_STATE=tempfile.mkdtemp()), timeout=30)
         self.assertEqual(r.returncode, 2)  # reached of_herdr_plugin.py, which refused the unknown hook
-        self.assertIn("usage: of_herdr_plugin.py", r.stderr)
+        self.assertIn("usage: of_herdr_plugin.py", r.stderr)  # startup|agent-detected|asks
 
 
 class HookTest(unittest.TestCase):
