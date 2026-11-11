@@ -40,7 +40,8 @@ ln -s ~/organic-framework/bin/of ~/.local/bin/of     # or anywhere on your PATH
 python3 -c "import yaml" || python3 -m pip install --user --break-system-packages pyyaml
                                                      # Debian/Ubuntu: sudo apt install python3-yaml
 
-of init my-org --owner "Your Name" --path ~/code/my-project   # repeat --path for each directory of this organization
+of init my-org --owner "Your Name" --language en --path ~/code/my-project   # repeat --path for each directory
+                                                     # --language: what your agents speak with you (en, ru, …)
                                                      # not in a terminal (a script, CI): add --yes
 
 cd ~/of/my-org && claude --dangerously-skip-permissions   # once, if of init prints it: trust the folder (below), then /exit
@@ -57,7 +58,7 @@ of spawn my-org_conductor --config-dir ~/.claude     # your conductor: the first
 2. It creates the organization's repository (`~/of/my-org`, with `registry/positions.yaml`, `AGENTS.md` and `onboarding/`).
 3. It writes the structure from the onboarding package (`bench/onboarding`): you as a person holding `my-org_owner`, your conductor `my-org_conductor` first, then the onboarding unit and its run. It starts no agent. Your conductor is your one window to every agent ([`docs/conductor.md`](docs/conductor.md)); the onboarding then runs through it ([`docs/onboarding.md`](docs/onboarding.md)).
 4. It lists agents already running (in herdr, or found through Claude Code) as positions for the structure keeper to name in the onboarding.
-5. It lists the organization in `~/.config/of/orgs.yaml`.
+5. It lists the organization in `~/.config/of/orgs.yaml`, with what its agents start on: Opus at effort `xhigh`, unless you give `--model` and `--effort`. It keeps the language your agents use with you in `~/.config/of/owner.yaml` (`--language`; without it, it asks, or uses English).
 6. It adds the recorder hooks to your Claude Code settings. The change is additive and comes with a backup and a diff.
 7. It enrolls this machine and starts `of-server` with SQLite storage, as a launchd or systemd user service, and says "up" only once the server answers. Where there is no systemd user session (some VMs and containers), it says so, and you start the server yourself (below).
 

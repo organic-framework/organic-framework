@@ -2,6 +2,8 @@
 
 You are a coding agent (Claude Code, for example), and a person asked you to install Organic Framework (OF) from this repository. This page tells you what to ask, what to run, how to check each step, and where to stop for the person. The README's quickstart is the same install, written for a person doing it by hand.
 
+**First of all: do it yourself, and explain it simply** (the founder, 2026-11-11: "in setup, let the agent do as much as it can itself rather than pull the person in, and explain everything very plainly"). Do everything you can yourself, and ask the person only for what truly needs them: a login, a password prompt, Claude Code's trust dialog, a decision. At each step, say in plain words what you are doing and why, so a person with no technical background follows it: no command names, ids or jargon unless they ask.
+
 **Rules for you while you install:**
 - **The person may be remote.** They may drive you through Claude's Remote Control, the desktop or the mobile app, or over SSH from another computer, and a command typed into such a chat does not run. Never ask them to type or paste a command: run every command yourself.
 - Ask before you change anything outside the new folders: the person's Claude Code settings, their shell profile, a service on their machine.
@@ -17,6 +19,7 @@ You are a coding agent (Claude Code, for example), and a person asked you to ins
 3. **The folders with the code their agents work on.** Each becomes a `--path`.
 4. **Whether they have a machine that stays on**: a home server, a second computer, a mini PC. If they do, recommend section 2 before you go on. If they do not, install on the machine you are on.
 5. **Which Claude Code account the agents run on**: its folder is `~/.claude` unless they set `CLAUDE_CONFIG_DIR`.
+6. **The language their agents should use with them** (`--language`, a code or a name: `en`, `ru`, …). Usually it is the one they talk to you in.
 
 ## 2. If they have a machine that stays on (recommended)
 
@@ -52,8 +55,10 @@ of --help
 ## 5. Create the organization
 
 ```bash
-of init <org> --owner "<their name>" --path <folder> [--path <another folder>]
+of init <org> --owner "<their name>" --language <code> --path <folder> [--path <another folder>]
 ```
+
+The language is kept in `~/.config/of/owner.yaml`; without `--language`, `of init` asks in a terminal, or uses English. A new organization's agents start on Opus at effort `xhigh`: `of init` writes `agents: {model: opus, effort: xhigh}` on the organization's entry in `~/.config/of/orgs.yaml`, and `of spawn` reads it. If the person wants another model or effort, add `--model` and `--effort`.
 
 `of init` asks before it adds OF's recorder hooks to the Claude Code settings. If you run it without a terminal, it stops there and installs nothing. Explain the change to the person first, in words: the hooks are added next to theirs, with a backup and a diff. When they agree, run it with `--yes`.
 
