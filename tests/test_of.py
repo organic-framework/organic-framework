@@ -165,6 +165,33 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(titled["questions"][0]["question"], "Sign in to the account b")  # the title is kept
         self.assertEqual(titled["steps"], "1. open it\n2. sign in")
 
+    def test_the_ingest_worker_drains_the_spool_after_each_transcript(self):
+        """2026-11-11 (of_server 3f2d224): under load the hook spooled its records, and the worker drained the spool
+        only after the whole batch of transcripts, minutes later; the relay took a typed message for lost."""
+        import argparse
+        import of_events
+        import of_ship
+        import of_store
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "pending"))
+            for i in range(3):
+                with open(os.path.join(d, "pending", f"m{i}"), "w") as fh:
+                    fh.write(f"/t/{i}.jsonl")
+            saved = (of_events.STATE_DIR, of_store.drain_spool, of_store.with_subagents, of._ingest_with_reads,
+                     of_ship.ship)
+            of_events.STATE_DIR = d
+            of_store.drain_spool = lambda conn: calls.append("drain") or 0
+            of_store.with_subagents = lambda p: [p]
+            of._ingest_with_reads = lambda conn, p: calls.append(p) or 1
+            of_ship.ship = lambda log=None: None
+            try:
+                of._ingest_worker(None, argparse.Namespace(quiet=True))
+            finally:
+                (of_events.STATE_DIR, of_store.drain_spool, of_store.with_subagents, of._ingest_with_reads,
+                 of_ship.ship) = saved
+        self.assertEqual(calls, ["drain", "/t/0.jsonl", "drain", "/t/1.jsonl", "drain", "/t/2.jsonl", "drain"])
+
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
              "notes": {"Waits for runners_coordinator after the CA window.": None}}

@@ -2589,7 +2589,10 @@ def _ingest_worker(conn, args):
                 continue
             for one in of_store.with_subagents(path):  # subagents spend too (of_capacity, 2026-11-06)
                 total += _ingest_with_reads(conn, one)  # a new transcript's fork mark lands with its rows
-        total += of_store.drain_spool(conn)
+            # the spool after each transcript, not after the whole batch: under load a batch takes minutes, and
+            # the hook's spooled records (a delivered message's prompt) reached the store only that much later, so
+            # the relay took a typed message for lost and typed it again (of_server 3f2d224, 2026-11-11)
+            total += of_store.drain_spool(conn)
     if not args.quiet:
         print(f"{total} records")
     try:
