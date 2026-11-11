@@ -45,6 +45,9 @@ import of_asks_tui as T
 from of_locale import tr
 
 NARROW_W = 100       # below this many columns: one card per screen (layout B)
+WIDE_W = 180         # from this many columns: a third column with the agent's context (the founder, 2026-11-12 ~21:08Z:
+#                      "lots of room, more information; less room, less information")
+WHO_W = 48           # from this list width: each row says who asks
 MOVED_GUARD_S = 1.5  # after the selected card closed elsewhere, answer keys wait this long
 RISK_TAGS = ("money", "prod_change", "irreversible", "security_incident")
 CONFIRM_TAGS = ("money", "irreversible")  # an answer needs a second key press
@@ -212,7 +215,28 @@ def row_age(x, now=None):
     return mark + (T._age(x.get("since")) or "")
 
 
-def card_rows(c, item, width, overlay_note=None):
+def context_rows(c, width):
+    """The agent's side of a card, for the third column: what it is doing (its mandate and last turns), its last
+    message before the question, the links."""
+    wrap = T._wrap
+    rows = []
+    doing = c.get("doing") or {}
+    if doing.get("mandate") or doing.get("turns"):
+        rows.append((tr("What the agent is doing:"), "head"))
+        if doing.get("mandate"):
+            rows += [(ln, "dim") for ln in wrap(doing["mandate"], width)]
+        for t in doing.get("turns") or []:
+            rows += [(ln, "dim") for ln in wrap(f"· {t}", width)]
+        rows.append(("", None))
+    if c.get("context"):
+        rows += [(tr("The agent's last message before the question:"), "head")]
+        rows += [(ln, "dim") for ln in wrap(c["context"], width)]
+    if c.get("links"):
+        rows += [("", None)] + [(ln, "dim") for ln in wrap(tr("Links: ") + "  ".join(c["links"]), width)]
+    return rows
+
+
+def card_rows(c, item, width, overlay_note=None, context=True):
     """The card as [(text, style)], wrapped to width: title, who and how long, why now, the question, the options
     (the recommended one marked), the agent's last message, the links."""
     import of_ask_text
@@ -264,10 +288,10 @@ def card_rows(c, item, width, overlay_note=None):
             rows += [("", None), (tr("No options: r writes an answer."), "dim")]
         elif not c.get("loading"):
             rows += [("", None), (tr("Answered in its pane: o goes there."), "dim")]
-    if c.get("context"):
+    if context and c.get("context"):
         rows += [("", None), (tr("The agent's last message before the question:"), "head")]
         rows += [(ln, "dim") for ln in wrap(c["context"], width)]
-    if c.get("links"):
+    if context and c.get("links"):
         rows += [("", None)] + [(ln, "dim") for ln in wrap(tr("Links: ") + "  ".join(c["links"]), width)]
     return rows
 
@@ -390,7 +414,7 @@ class Inbox:
         self.search, self.mode, self.confirm = None, "main", None
         self.msg, self.moved_at, self.note, self.studio_note = "", 0.0, {}, {}
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
-        self.attr, self.lw = {}, 0
+        self.attr, self.lw, self.cx, self.xtop = {}, 0, 0, 0
 
     # data
     def refresh(self, force=False):
@@ -506,7 +530,7 @@ class Inbox:
                 self.put(1, 0, f"‹ {idx + 1} / {len(its)} ›  " + tr("←→ page"), curses.A_DIM)
             card_x, card_w = 1, max(20, w - 3)
         else:
-            lw = max(30, min(60, w * 2 // 5))
+            lw = max(30, min(60, w * 2 // 5)) if w < WIDE_W else max(48, min(64, w * 28 // 100))
             self.draw_list(its, idx, body_top, body_h, lw)
             for y in range(body_top, body_top + body_h):
                 self.put(y, lw + 1, "│", curses.A_DIM)
@@ -516,9 +540,16 @@ class Inbox:
             if below:
                 self.put(body_top + body_h - 1, lw + 1, "▼", curses.A_BOLD)
             card_x, card_w = lw + 3, max(20, w - lw - 5)
-        self.lw = 0 if narrow else lw
+        self.lw, self.cx = (0 if narrow else lw), 0
+        ctx = None
+        if w >= WIDE_W:  # the third column: the agent's context beside the card
+            card_w = (w - card_x - 3) * 55 // 100
+            self.cx = card_x + card_w + 2
+            ctx = (self.cx, w - self.cx - 1)
+            for y in range(body_top, body_top + body_h):
+                self.put(y, self.cx - 2, "│", curses.A_DIM)
         if item:
-            self.draw_card(item, body_top, body_h, card_x, card_w)
+            self.draw_card(item, body_top, body_h, card_x, card_w, ctx)
         elif not self.bg["busy"] or self.items:
             self.put(body_top + 1, card_x, tr("Nothing here.") if self.cur != "search" else tr("No card matches."),
                      curses.A_DIM)
@@ -555,6 +586,9 @@ class Inbox:
             st = self.out.state(k)
             age = row_age(x)
             title = " ".join((x.get("text") or "").split())
+            if width >= WHO_W:  # room for who asks
+                who = T.cut(", ".join(x.get("who") or []), 14)
+                title = who + " " * (15 - T.dwidth(who)) + title
             tail = ""
             a = 0
             if st and st[0] in ("pending", "sending"):
@@ -580,7 +614,7 @@ class Inbox:
                       n=n, text=T.cut(text, 50), who=", ".join(item.get("who") or []))
         return None
 
-    def draw_card(self, item, top_y, height, x0, width):
+    def draw_card(self, item, top_y, height, x0, width, ctx=None):
         c = self.card(item)
         k = key_of(item)
         note = None
@@ -589,7 +623,14 @@ class Inbox:
             note = tr("snoozed until {t}", t=time.strftime("%d.%m %H:%M", time.localtime(o[1])))
         elif o and o[0] == "handed":
             note = tr("handed to {p}", p=o[1])
-        rows = card_rows(c, item, width, note)
+        rows = card_rows(c, item, width, note, context=ctx is None)
+        if ctx and self.mode == "main":
+            side = context_rows(c, ctx[1])
+            if self.note.get("key") != k:
+                self.xtop = 0
+            self.xtop = max(0, min(self.xtop, max(0, len(side) - height)))
+            for i, (ln, kind) in enumerate(side[self.xtop:self.xtop + height]):
+                self.put(top_y + i, ctx[0], ln, {"head": curses.A_UNDERLINE, "dim": curses.A_DIM}.get(kind, 0))
         if self.mode == "help":
             rows = [(ln, "text") for ln in help_rows()]
         elif self.mode == "snooze":
@@ -712,6 +753,8 @@ class Inbox:
         on_list = self.lw and x < self.lw
         if (up or down) and on_list and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, -1 if up else 1, wrap=False)])
+        elif (up or down) and self.cx and x >= self.cx:  # over the context column: it scrolls
+            self.xtop = max(0, self.xtop + (-3 if up else 3))
         elif up or down:
             self.ctop = max(0, self.ctop + (-3 if up else 3))
         elif on_list and its and b & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED) and y >= 2:  # a press
