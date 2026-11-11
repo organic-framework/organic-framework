@@ -147,7 +147,7 @@ def _file_task(title, steps, of_bin=None, run=subprocess.run):
     of_capacity (of_platform's review of PR 22)."""
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
     try:
-        r = run([of_bin, "ask", title, "--task", steps], capture_output=True, text=True, timeout=60)
+        r = run([sys.executable, of_bin, "ask", title, "--task", steps], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, str(e)
     return r.returncode == 0, ((r.stdout if r.returncode == 0 else r.stderr or r.stdout) or "").strip()
@@ -255,7 +255,9 @@ def resume_line(sid, of_bin=None, run=subprocess.run):
     """The line `of resume-command` gives for a session (its account, model, effort, permission mode), or None."""
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
     try:
-        r = run([of_bin, "resume-command", sid], capture_output=True, text=True, timeout=60)
+        # this Python, not PATH's first python3: in a login shell /usr/bin comes first and its python3 has no PyYAML,
+        # so bin/of failed and the resume fell to another account (of_herdr's lab, 2026-11-11, hand-over a9c118e8)
+        r = run([sys.executable, of_bin, "resume-command", sid], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     line = (r.stdout or "").strip()
@@ -273,7 +275,14 @@ def choose(cwd, home=None, status_rows=None):
     return expand(t["config_dir"], home) if t else None
 
 
-def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None):
+def holder_of(sid, home=None):
+    """The config folder that holds the session's newest transcript, or None (of_resume.newest_copy)."""
+    import of_resume
+    d, _ = of_resume.newest_copy(sid, dirs(home))
+    return d
+
+
+def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None, holder=None):
     """(argv, env) that `of claude ARGS` runs. `--account NAME` picks the account; without it the exact form
     `--resume <id>` resumes the session as it ran (the account that holds it); otherwise an already set
     CLAUDE_CONFIG_DIR is kept, else the account is chosen as of spawn chooses."""
@@ -288,6 +297,9 @@ def launch(args, env=None, cwd=None, home=None, chooser=None, resumer=None):
         line = (resumer or resume_line)(args[1])
         if line:
             return ["/bin/sh", "-c", "exec " + line], env
+        held = (holder or holder_of)(args[1], home)  # no line: at least the account that holds it, never a guess
+        if held:
+            env["CLAUDE_CONFIG_DIR"] = held
     if account is not None:
         e = find(account, home)
         if not e:

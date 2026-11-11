@@ -108,7 +108,7 @@ class OfClaude(unittest.TestCase):
         self.saved = of_events.CONFIG_DIR
         of_events.CONFIG_DIR = os.path.join(self.tmp.name, "config")
         self.kw = dict(home=self.home, chooser=lambda cwd, home: os.path.join(self.home, ".claude-a"),
-                       resumer=lambda sid: None)
+                       resumer=lambda sid: None, holder=lambda sid, home: None)
 
     def tearDown(self):
         of_events.CONFIG_DIR = self.saved
@@ -131,6 +131,18 @@ class OfClaude(unittest.TestCase):
         argv, env = of_accounts.launch(["--resume", "s1"], env={}, **self.kw)  # no account holds it: the chooser
         self.assertEqual(argv[1:], ["--resume", "s1"])
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.join(self.home, ".claude-a"))
+
+    def test_a_resume_without_its_line_still_goes_to_the_account_that_holds_it(self):
+        """of_herdr's lab (hand-over a9c118e8): bin/of failed under a python3 without PyYAML, the line came back None,
+        and the resume went to the account the chooser picked: 'No conversation found'."""
+        held = os.path.join(self.home, ".claude")
+        argv, env = of_accounts.launch(["--resume", "s1"], env={}, **dict(self.kw, holder=lambda sid, home: held))
+        self.assertEqual(argv[1:], ["--resume", "s1"])
+        self.assertNotIn("CLAUDE_CONFIG_DIR", env)  # ~/.claude holds it: the default account, variable unset
+        calls = []
+        run = lambda argv, **kw: calls.append(argv) or type("R", (), {"returncode": 0, "stdout": "env x claude", "stderr": ""})()  # noqa: E731
+        self.assertEqual(of_accounts.resume_line("s1", of_bin="/of", run=run), "env x claude")
+        self.assertEqual(calls[0][:2], [sys.executable, "/of"])  # this Python, never PATH's python3
 
     def test_account_is_ours_only_as_the_first_argument(self):
         argv, env = of_accounts.launch(["-p", "--account", "a"], env={}, **self.kw)  # Claude Code's own arguments
