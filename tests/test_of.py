@@ -663,6 +663,15 @@ class InitStructureTest(unittest.TestCase):
         self.assertEqual(calls[0][:2], ["of", "ask"])
         self.assertIn("This machine has 3 Claude accounts", calls[0][2])
         self.assertTrue(calls[0][4].startswith("yes, move them and add acme_capacity"))
+        self.assertEqual(len(calls[0][4].split("|")), 2)  # both options reach the card
+        i.file_capacity_card(3, "acme_capacity", "ru", of_bin="of", run=run)
+        ru = of_locale.tr(i.CAPACITY_OPTIONS[1], "ru", position="acme_capacity")
+        self.assertNotEqual(calls[1][2], calls[0][2])  # the head's language, from the catalogue
+        self.assertEqual(calls[1][4].split("|")[1], ru)
+        asked = []
+        i.resolve_capacity(None, accounts=2, ask=lambda q: asked.append(q) or "", position="acme_capacity", lang="ru")
+        self.assertTrue(asked[0].startswith(of_locale.tr(i.CAPACITY_QUESTION, "ru", n=2, position="acme_capacity")))
+        self.assertNotIn("This machine has", asked[0])
 
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
