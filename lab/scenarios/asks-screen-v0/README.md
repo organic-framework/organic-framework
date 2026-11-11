@@ -37,3 +37,13 @@ At 160x45:
 At 96x40 (a 77-column pane): layout B, one card per screen with "‹ 1 / 11 ›"; → pages on; ← from the first wraps to
 the last. **Finding:** the streams line is cut in the middle of a label (the fourth stream shows only its dot), and
 the keys line loses Tab and `?`.
+
+## Rerun on build 5f83ad0 (2026-11-12)
+
+From a fresh fixture, every step above again, plus `money3.script`:
+- Both findings are fixed. A card that sorts above the cursor leaves the selected row on its screen line (line 8),
+  and the divider shows ▲ at its top. At 77 columns the other streams show as dot and count
+  (`● Holds work 11   ● 6   ● 5   ● 41`), and the keys line keeps Tab, `?` and Esc.
+- Unchanged and passing: the arrows wrap; Tab and Shift+Tab; `g`, `G`, `?` and Esc; the wheel over the queue and over
+  a long card; layout B paging and wrap; the trial popup opens and Esc closes it; the money card asks for a second
+  press, and another key cancels with nothing recorded.
