@@ -9,7 +9,8 @@
 # that changed it (the record, §8).
 #
 # Placeholders, filled by `of init`: {org} is the organization's prefix (its id, at most 14 characters),
-# {Org} its display name, {owner_id} and {owner_name} the head's person id and name.
+# {org_name} its full name (what `of init` and an `<organization>:<position>` address take), {Org} its display name,
+# {owner_id} and {owner_name} the head's person id and name.
 
 package: onboarding
 version: 1
