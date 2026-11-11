@@ -580,13 +580,18 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
         last = last_local(conn, org)
         since = (dt.date.fromisoformat(last[:10]) - dt.timedelta(days=1)).isoformat() if last else "2026-10-01"
     by_dir = systems_by_dir(systems)
+    if branches is not None and not isinstance(branches, dict):
+        log(f"  branches in orgs.yaml for {org} is not a mapping of repository to branch; ignored")
+        branches = None
+    # keys by folder name or path, a path written as orgs.yaml writes paths (~/…) (of_studio's review of PR 12)
+    branches = {os.path.expanduser(str(k)): v for k, v in (branches or {}).items()}
     n = 0
     for root in roots:
         root = os.path.expanduser(str(root))
         if not os.path.isdir(os.path.join(root, ".git")):
             continue  # a main checkout only (a worktree's .git is a file)
         repo = os.path.basename(root.rstrip("/"))
-        ref, how = resolve(root, (branches or {}).get(repo) or (branches or {}).get(root))
+        ref, how = resolve(root, branches.get(repo) or branches.get(root.rstrip("/")) or branches.get(root))
         if not ref:
             log(f"  {repo}: not read: {how}")  # said plainly, never an empty read that looks like no work
             continue
