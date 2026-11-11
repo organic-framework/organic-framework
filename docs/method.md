@@ -159,7 +159,7 @@ Source: the organization's own stakeholder map (app material, private). The map 
 
 Full digitalization makes A.3.1.MR practical: methods can be recovered from the event log rather than written from scratch. Methods already visible in the first user organization's retrospective:
 - **turnkey change:** RFC → review by a different model → staged delivery;
-- **the reporting method**, written after "Мне не нравятся твои репорты";
+- **the reporting method**, written after "I don't like your reports";
 - **incident → rule:** a correction becomes a rule with its origin and rationale within minutes;
 - **keeper of an absent owner's system**, with an explicit hand-back.
 

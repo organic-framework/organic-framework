@@ -9,9 +9,9 @@
 
 ## 1. Summary
 
-Today every click in a web UI that needs the owner's account becomes a founder task ("Сделать тебе"). On 2026-11-07, filing a kernel bug in Launchpad was such a task: the text was ready and checked, and only the clicks and the login were left for him.
+Today every click in a web UI that needs the owner's account becomes a founder task ("To do for you"). On 2026-11-07, filing a kernel bug in Launchpad was such a task: the text was ready and checked, and only the clicks and the login were left for him.
 
-A browser agent can make those clicks. Codex on the founder's Mac already has browser use and computer use. This RFC adds a second route for a task: **"Сделать за тебя"**. The asker prepares the exact content. The founder approves it with one press. A browser agent does the clicks in a separate browser profile, records what it did, and returns the evidence. The asker checks the result and closes the task, as it does today.
+A browser agent can make those clicks. Codex on the founder's Mac already has browser use and computer use. This RFC adds a second route for a task: **"Do it for me"**. The asker prepares the exact content. The founder approves it with one press. A browser agent does the clicks in a separate browser profile, records what it did, and returns the evidence. The asker checks the result and closes the task, as it does today.
 
 Secrets, money and the owner's physical presence (SSO, Touch ID, passkeys) stay with the founder.
 
@@ -115,7 +115,7 @@ A task that mixes A and B is split, one sitting per task (`AGENTS.md`, 2026-11-0
 - **A separate Chrome profile, "OF hands".** The founder signs in there, once, only to the sites on the allowlist (`~/.config/of/hands.yaml`). His main profile, which holds the password manager, mail and banking, is never attached. This follows the same principle as the SSH agent rule: automation never reaches the founder's own keyring.
 - **Pages go to the model provider.** Whatever the executor sees is sent to OpenAI (or to the provider of whichever harness holds the position). A site whose pages must not leave the Mac stays off the allowlist.
 
-### 4.2 Dispatch: "Сделать за тебя"
+### 4.2 Dispatch: "Do it for me"
 
 1. The asker files the task with a route:
 
@@ -124,10 +124,10 @@ A task that mixes A and B is split, one sitting per task (`AGENTS.md`, 2026-11-0
    ```
 
    The content file holds the exact text the executor will type. The steps say what to click, where to stop and what to return.
-2. The popup shows the task under "Сделать за тебя": the site, the content, the last irreversible step (for example "Submit"), and two buttons, «Делай» and «Сделаю сам».
-3. «Делай» is the owner's decision. It is an `of.agent_question_answered` with `approve_hands: true`, and its id is the authority. OF hands the task to the executor (`of handover`), carrying the ask id, the steps and the content.
-4. The executor works and stops before the last irreversible step if the steps say `confirm_before: submit`. It then posts a screenshot of the filled form to the popup, and the founder presses «Отправить». A low-risk task may go through on the first approval.
-5. «Сделаю сам» keeps today's route: the steps are shown to him.
+2. The popup shows the task under "Do it for me": the site, the content, the last irreversible step (for example "Submit"), and two buttons, "Do it" and "I'll do it myself".
+3. "Do it" is the owner's decision. It is an `of.agent_question_answered` with `approve_hands: true`, and its id is the authority. OF hands the task to the executor (`of handover`), carrying the ask id, the steps and the content.
+4. The executor works and stops before the last irreversible step if the steps say `confirm_before: submit`. It then posts a screenshot of the filled form to the popup, and the founder presses "Send". A low-risk task may go through on the first approval.
+5. "I'll do it myself" keeps today's route: the steps are shown to him.
 
 ### 4.3 Authority and the guard
 
@@ -150,7 +150,7 @@ A task that mixes A and B is split, one sitting per task (`AGENTS.md`, 2026-11-0
   - the result: a URL, a bug number, a post link;
   - the last screenshot;
   - `of status done --note …`.
-- The asker checks the result as it would after the founder's own «сделал». For example, the bug exists, or the old key is gone (`gh api`). Then it runs `of status working --done-task <id>`.
+- The asker checks the result as it would after the founder's own "done". For example, the bug exists, or the old key is gone (`gh api`). Then it runs `of status working --done-task <id>`.
 - If the result is not there, the task reopens with what is missing and goes back to the founder's queue.
 
 ### 4.6 Executor neutrality and the bake-off
@@ -182,7 +182,7 @@ After §1a:
 | Step | Who | Done when |
 |---|---|---|
 | 1. CLI-or-app test, then the bake-off on test accounts | `of_lab` | a report with the five tasks and the measures above |
-| 2. `of ask --hands web`, the popup's «Делай» and «Отправить», handover to the executor, `of.web_action` | `of_platform` | a kind-B task runs end to end in the Lab |
+| 2. `of ask --hands web`, the popup's "Do it" and "Send", handover to the executor, `of.web_action` | `of_platform` | a kind-B task runs end to end in the Lab |
 | 3. Codex hooks collector | `of_platform` | a Codex turn writes the same events as a Claude Code turn |
 | 4. ChatGPT subscription in `of capacity` | `of_capacity` | its limits show in `of capacity status` |
 | 5. The executor position and its brief, per organization | each structure keeper (`acme_org` for Acme) | a registry entry and a brief that carries §4.3 |

@@ -2,7 +2,7 @@
 
 Status: **decided**, 2026-11-11, by `of_architect`, hand-over `e404efbd` from `of_conductor`. The founder chose where the conductor lives: option A, a position in the person's home organization with grants into the others (ask `b7cb0925`, §4).
 
-The founder, 2026-11-11 10:02Z: "теперь обязательно для всех, кто начинает пользоваться нашим фреймворком, вообще для всех, кто пользуется, через дирижер работать ... чтобы у него всегда было одно окно".
+The founder, 2026-11-11 10:02Z: "from now on, everyone who starts using our framework, everyone who uses it at all, works through the conductor ... so that they always have one window".
 
 ## 1. Why
 

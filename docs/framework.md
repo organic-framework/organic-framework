@@ -177,7 +177,7 @@ What installation does (our structure for the founder's description; the FPF gro
 - **Diagnostics are opt-in, like Apple's sharing with app developers** (founder, 2026-11-03).
   - Inside the company, the unit's activity is analyzed in full: it is the company's own data.
   - Reporting to Bench works like Apple's option to share diagnostics with app developers: off unless the company turns it on.
-  - No private data leaves the company. By default not even public data leaves it: anything sent can be breached ("все могут хакнуть").
+  - No private data leaves the company. By default not even public data leaves it: anything sent can be breached ("anything can be hacked").
   - Our reading: diagnostics carry minimal derived signals only, such as failure signatures, fit results and rule-change counts, never content.
 
 **Every package ships environments: test cases that show how its agents work** (founder, 2026-11-03).
