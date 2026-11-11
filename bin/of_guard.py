@@ -1128,6 +1128,39 @@ def _in_hooks(path, cwd):
     return ("/.git/hooks/" in p + "/" or p.endswith("/.git/hooks")) and gated(p.split("/.git/hooks")[0] or "/")
 
 
+# ------------------------------------------------- the code OF loads as plugins (G19)
+# of_platform (msg 01a1cc0b, docs/plugins.md §2): installing a plugin is the owner's act, so an agent never writes to
+# the code OF loads as one: each installed organic_framework.* entry point's package folder, and the shipped folder
+# (bin/plugins) of an OF install. The framework's development copy (the release gate's hooks, G17) is the exception:
+# there bin/plugins is source like the rest of bin/, written under the gate and review.
+PLUGINS_DENY = ("the code Organic Framework loads as plugins, which only the owner installs or changes (docs/guard.md "
+                "G19; docs/plugins.md §2)")
+_PLUGIN_DIRS = []
+
+
+def _plugin_dirs():
+    if not _PLUGIN_DIRS:
+        try:
+            import of_family
+            dirs = of_family.code_paths()
+        except Exception:  # noqa: BLE001 - no loader, no plugin folders to keep
+            dirs = []
+        _PLUGIN_DIRS.append([os.path.realpath(d) for d in dirs if not gated(d)])
+    return _PLUGIN_DIRS[0]
+
+
+def _in_plugin_code(path, cwd):
+    p = os.path.expanduser(str(path).strip("'\""))
+    p = os.path.realpath(p if os.path.isabs(p) else os.path.join(cwd or ".", p))
+    return any(p == d or p.startswith(d.rstrip("/") + "/") for d in _plugin_dirs())
+
+
+def _plugins_deny(head, args, stext, cwd):
+    """(reason, path) for G19 on one simple command run in CWD, else None."""
+    hit = next((f for f in _changed_files(head, args, stext) if _in_plugin_code(f, cwd)), None)
+    return (PLUGINS_DENY, hit) if hit else None
+
+
 def _hooks_deny(head, args, stext, cwd):
     """(reason, token) for G17 on one simple command run in CWD, else None."""
     if head != "git":
@@ -1244,7 +1277,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 return _prints(f"security {args[0]} -w")
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
-                or _hooks_deny(head, args, stext, here)
+                or _hooks_deny(head, args, stext, here) or _plugins_deny(head, args, stext, here)
             if hit:
                 return hit
             if head == "cd":
@@ -1331,6 +1364,8 @@ def critical_deny(tool, tool_input, cwd=None):
         return GRANT_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_hooks(path, cwd):
         return HOOKS_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_plugin_code(path, cwd):
+        return PLUGINS_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Grep") and _memory_path(path):

@@ -67,5 +67,50 @@ class HooksTest(unittest.TestCase):
                                                                                       "pre-commit")}, self.other))
 
 
+class PluginCodeTest(unittest.TestCase):
+    """The code OF loads as plugins (docs/guard.md G19): an installed plugin's package and the shipped folder of an
+    install are the owner's; the development copy's bin/plugins is source like the rest of bin/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dev = os.path.join(self.tmp.name, "framework")
+        self.installed = os.path.join(self.tmp.name, "site-packages", "of_vault_plugin")
+        self.shipped = os.path.join(self.tmp.name, "install", "bin", "plugins")
+        os.makedirs(os.path.join(self.dev, ".git", "hooks"))
+        os.makedirs(os.path.join(self.dev, "bin", "plugins"))
+        with open(os.path.join(self.dev, ".git", "hooks", "pre-commit"), "w") as fh:
+            fh.write("# Installed by organic-framework-build release/install-hooks.sh: the gate.\n")
+        for d in (self.installed, self.shipped):
+            os.makedirs(d)
+        import of_family
+        self.saved = of_family.code_paths
+        of_family.code_paths = lambda: [os.path.join(self.dev, "bin", "plugins"), self.installed, self.shipped]
+        of_guard._PLUGIN_DIRS.clear()
+        of_guard._GATED.clear()
+
+    def tearDown(self):
+        import of_family
+        of_family.code_paths = self.saved
+        of_guard._PLUGIN_DIRS.clear()
+        self.tmp.cleanup()
+
+    def deny(self, tool, ti, cwd=None):
+        hit = of_guard.critical_deny(tool, ti, cwd or self.tmp.name)
+        return bool(hit) and "plugins" in hit[0]
+
+    def test_an_installed_or_shipped_plugin_is_not_written(self):
+        for target in (os.path.join(self.installed, "store.py"), os.path.join(self.shipped, "secrets", "x.py")):
+            self.assertTrue(self.deny("Write", {"file_path": target, "content": "x"}), target)
+            self.assertTrue(self.deny("Bash", {"command": f"echo x > {target}"}), target)
+            self.assertTrue(self.deny("Bash", {"command": f"rm {target}"}), target)
+            self.assertFalse(self.deny("Bash", {"command": f"cat {target}"}), target)   # reading stays open
+            self.assertFalse(self.deny("Read", {"file_path": target}), target)
+
+    def test_the_development_copys_plugins_are_source(self):
+        target = os.path.join(self.dev, "bin", "plugins", "secrets", "vault.py")
+        self.assertFalse(self.deny("Write", {"file_path": target, "content": "x"}))
+        self.assertFalse(self.deny("Bash", {"command": f"echo x > {target}"}))
+
+
 if __name__ == "__main__":
     unittest.main()
