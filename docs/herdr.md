@@ -77,8 +77,9 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   everything detected meanwhile causes exactly one more run (at most five in a row). A name binding recorded by
   `of apply` has a fixed event id, so repeated runs keep it once. The log is `<state>/herdr-plugin.log`; herdr
   keeps its own (`herdr plugin log list --plugin organic-framework`).
-- **Install and remove.** `herdr plugin link <OF checkout>/herdr-plugin`, and `herdr plugin unlink
-  organic-framework` to remove it. herdr registers plugins for the user, in every session. The runner finds OF
+- **Install and remove.** `python3 bin/of_herdr_plugin.py install` (or `of_herdr_plugin.install()`, for `of init`)
+  links the folder and writes `of_home`; it is idempotent. By hand: `herdr plugin link <OF checkout>/herdr-plugin`.
+  `herdr plugin unlink organic-framework` removes it. herdr registers plugins for the user, in every session. The runner finds OF
   through the file `of_home` in the plugin's config dir (`herdr plugin config-dir organic-framework`), else the
   folder above the plugin. It looks for Python 3 with PyYAML in `$OF_PYTHON`, then on `PATH`, then in the usual
   Homebrew places.

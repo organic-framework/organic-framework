@@ -86,6 +86,31 @@ class HookTest(unittest.TestCase):
         busy = lambda argv, **k: E('{"error":{"code":"ui_busy","message":"a popup pane is already open"},"id":"cli:plugin"}')
         self.assertEqual(plugin.open_questions(run=busy), (False, "ui_busy"))  # herdr 0.9.5 prints it on stderr
 
+    def test_install_links_once_and_records_ofs_home(self):
+        import tempfile as tf
+        with tf.TemporaryDirectory() as cfg:
+            calls, linked = [], []
+
+            class R:
+                def __init__(self, out="", rc=0):
+                    self.returncode, self.stdout, self.stderr = rc, out, ""
+
+            def run(argv, **k):
+                calls.append(argv[1:3])
+                if argv[1:3] == ["plugin", "list"]:
+                    return R("".join(f"- organic-framework enabled [local:{x}]\n" for x in linked))
+                if argv[1:3] == ["plugin", "link"]:
+                    linked.append(argv[3])
+                    return R()
+                return R(cfg + "\n")
+            home = os.path.abspath(ROOT)
+            self.assertTrue(plugin.install(home, run=run)[0])
+            self.assertTrue(plugin.install(home, run=run)[0])
+            self.assertEqual(sum(1 for c in calls if c == ["plugin", "link"]), 1)  # linked once
+            with open(os.path.join(cfg, "of_home")) as fh:
+                self.assertEqual(fh.read().strip(), home)
+            self.assertFalse(plugin.install("/no/such/of", run=run)[0])
+
     def test_applies_are_coalesced(self):
         """After a herdr restart many agents are detected at once: one apply at a time, and exactly one more for
         everything that arrived during it."""
