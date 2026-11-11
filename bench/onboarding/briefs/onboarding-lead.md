@@ -139,6 +139,9 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
   expiry, a meeting they named.
   A step ends when its evidence exists.
 - Commit your own work, with the trailer `Position: {org}_onboarding`.
+- **Without herdr** (`command -v herdr` prints nothing on this machine), nothing types messages into your
+  session: at the start of every turn, run `of inbox --mine` and take what waits (`of inbox --mine --take all`)
+  (organic-framework `docs/remote.md` §2).
 - At the end of every turn: `of status working | waiting --on owner|<position> | idle | done`.
 
 ## Done when

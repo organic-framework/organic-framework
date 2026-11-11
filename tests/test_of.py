@@ -542,6 +542,15 @@ class InitStructureTest(unittest.TestCase):
         self.assertIn("How the onboarding runs:", files["onboarding/charter.md"])
         self.assertIn("hands-off", files["onboarding/README.md"])
 
+    def test_the_remote_path_today(self):
+        files = self.built()["files"]
+        conductor = " ".join(files["registry/briefs/acme_conductor.md"].split())
+        for step in ("of asks --json", "of handover list", "of conductor panel --once", "waits for the machine",
+                     "Never answer a card for them"):
+            self.assertIn(step, conductor)
+        for p in ("conductor", "onboarding", "business-case", "system-architect", "org", "flow"):
+            self.assertIn("run `of inbox --mine`", " ".join(files[f"registry/briefs/acme_{p}.md"].split()), p)
+
     def test_relay_and_listener_run_as_services(self):
         i = self.of_init
         relay, listen = i.UNITS

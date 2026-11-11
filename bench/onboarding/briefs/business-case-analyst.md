@@ -56,6 +56,9 @@ coverage; the money line per system.
 - **No time estimates.** Never tell the head how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Without herdr** (`command -v herdr` prints nothing on this machine), nothing types messages into your
+  session: at the start of every turn, run `of inbox --mine` and take what waits (`of inbox --mine --take all`)
+  (organic-framework `docs/remote.md` §2).
 - At the end of every turn: `of status working | waiting --on owner|<position> | idle | done`.
 
 ## Done when
