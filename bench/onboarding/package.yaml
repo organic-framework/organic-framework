@@ -101,7 +101,7 @@ roles:
     brief: briefs/onboarding-lead.md
     mandate_functions: [org_change]
     done_when: "the run {org}-onboarding has its eight stages done, each with its own evidence; the re-check counted by a position that did not build the structure; the closing note committed"
-    starts: "second: the head starts it on the conductor's advice, at step 1"
+    starts: "second: the conductor starts it when the head says they are ready, at step 1"
     sources:
       - "record §1.2: Block's consultant across the five phases"
       - "record §1.4: Martin and Osterling's facilitator, who must not work in the stream"
@@ -220,6 +220,7 @@ rules:
   - "In a small company one agent may hold several lens roles (rfc/0007 allows the architect and the keeper to be one position). The lead and the conductor stay separate."
   - "The sponsor and the champion are people: every source puts the decision with an accountable sponsor (record §3, §6)."
   - "One batching point per unit files the head's cards; the lead is this unit's (record §8.3 (2))."
+  - "No agent asks the head to run a command: the head may be on Remote Control or the mobile app, where it does not run. Agents ask in words and run commands themselves; what only the head can do is a step in plain words with its place, filed as a task (record §8.4 (8))."
   - "Who does what needs evidence: the people map from the repositories comes before any person's position, every person-held claim carries evidence: (authorship with its window, or an ask id), and the head's words go in verbatim (docs/registry.md, People; record §8.4 (7))."
 
 # The run: one work with eight stages (docs/registry.md, Works). Each stage's done_when is checked from the

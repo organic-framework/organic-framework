@@ -407,24 +407,31 @@ def run_readme(pkg, run, values, by_hand=None):
              "`bench/onboarding/` in the organic-framework repository). The practice it follows is organic-framework "
              "`docs/onboarding-practice.md` (\"record\" below); the conductor is `docs/conductor.md`.", "",
              "## Start here", "",
-             "0. Once, before the first `of spawn`: open Claude Code in this repository "
-             "(`claude --dangerously-skip-permissions`), choose \"Yes, I trust this folder\", accept the "
-             "bypass-permissions warning, then type `/exit`. `of spawn` does not answer these questions for you; "
-             "without them it stops and files a task for you.",
-             f"1. Start your conductor first, before any other agent: `of spawn {org}_conductor`. It is your one window: "
-             "tell it what you want, and it finds the agent that owns it and follows the request to a result.",
-             f"2. Your conductor then asks you to start the onboarding lead: `of spawn {org}_onboarding`. The lead "
-             "drafts the charter (`onboarding/charter.md`) with you, through your conductor. Nothing is read before "
-             "you approve it.",
-             "3. The other agents of the unit start later, in waves the lead sizes by capacity.", "",
+             "No agent here asks you to run a command: you may talk to them through Remote Control or the Claude "
+             "app, where a command typed into the chat does not run. They ask in words and run commands themselves. "
+             "Only what needs your own hands is yours, described as a step with its place.", "",
+             "0. Once, on the machine where OF runs: open Claude Code in this repository, choose \"Yes, I trust "
+             "this folder\", accept the bypass-permissions warning, then leave it (`/exit`). In a terminal there: "
+             "`claude --dangerously-skip-permissions` in this folder. No agent can answer these for you; without "
+             "them `of spawn` stops and files a task for you.",
+             f"1. Your conductor is started first, before any other agent, by you or by the agent that installed OF "
+             f"(`of spawn {org}_conductor`). It is your one window: tell it what you want, and it finds the agent "
+             "that owns it and follows the request to a result.",
+             "2. Your conductor asks you to tell it when you are ready to start the onboarding. When you say so, it "
+             f"starts the onboarding lead itself (`{org}_onboarding`). The lead drafts the charter "
+             "(`onboarding/charter.md`) with you, through your conductor. Nothing is read before you approve it.",
+             "3. The other agents of the unit start later, in waves the lead sizes by capacity; the lead starts "
+             "them.", "",
              "On a machine with no capacity snapshot yet, `of spawn` asks which Claude Code account to use: add "
              "`--config-dir` with your Claude Code folder (`~/.claude` unless you use another).", ""]
     if by_hand:
         when = {fill(r.get("position") or "", values): fill(r.get("starts") or "", values) for r in pkg["roles"]}
-        lines += ["This machine has no herdr, so `of spawn` cannot open a pane. Start each agent in its own terminal "
-                  "instead, when its time comes, with the session id `of init` reserved for it. Each first line "
-                  "declares the brief, so it is not counted as your own words; the second starts the agent in this "
-                  "repository.", ""]
+        lines += ["This machine has no herdr, so `of spawn` cannot open a pane. Each agent starts from the two "
+                  "lines below, with the session id `of init` reserved for it. The first line declares the brief, so "
+                  "it is not counted as your own words. The conductor's second line runs in a terminal on this "
+                  "machine (or detached: `screen -dmS <name> sh -c '<the line>'`); every other agent's second line "
+                  "starts it in a detached `screen` session, and the conductor or the lead runs both lines itself "
+                  "when its time comes. To watch an agent on this machine: `screen -r <its name>`.", ""]
         for who, cmds in by_hand.items():
             lines += [f"`{who}`" + (f", {when[who]}" if when.get(who) else "") + ":", "", "```sh"] + cmds + ["```", ""]
     lines += ["## The unit", "", "| Role | Position | Starts | Sources |", "|---|---|---|---|"]
@@ -496,11 +503,14 @@ def owner_evidence(org, owner, owner_name, day=None):
     return f"of init {org} without --owner, run on this machine on {day}: the login name {owner_name}"
 
 
-def hand_start(doc, conductor, repo, of_cmd="of", agents=None):
-    """Without herdr, `of spawn` cannot open a pane: reserve the conductor's session id in the registry (nothing is
-    started) and return the two lines that start it by hand in a terminal: declare the brief, then run claude in the
-    repository with that session id. Re-running reuses the reserved id. None when the conductor is not in doc or
-    already has a holder that is not this reservation."""
+def hand_start(doc, conductor, repo, of_cmd="of", agents=None, detach=False):
+    """Without herdr, `of spawn` cannot open a pane: reserve the position's session id in the registry (nothing is
+    started) and return the two lines that start it: declare the brief, then run claude in the repository with that
+    session id, in bypass mode as of spawn starts it (the guard still stops the critical calls). detach: the second
+    line runs in a detached `screen` session, so an agent (the conductor, the lead) starts it itself, with no terminal
+    of its own and nothing asked of the person (the founder, 2026-11-11: a head on Remote Control cannot run a
+    command). Re-running reuses the reserved id. None when the position is not in doc or already has a holder that
+    is not this reservation."""
     import shlex
     import uuid
     import of_spawn
@@ -513,14 +523,23 @@ def hand_start(doc, conductor, repo, of_cmd="of", agents=None):
     sid = h.get("session") or str(uuid.uuid4())
     p["holder"] = {"runtime": "claude-code", "session": sid, "workplace": HAND_START}
     brief = of_spawn.brief_text(p, repo)
+    start = (f"cd {shlex.quote(repo)} && claude --session-id {sid} --name {conductor} --dangerously-skip-permissions"
+             + "".join(f" --{k} {shlex.quote(str(v))}" for k, v in (agents or {}).items()
+                       if k in ("model", "effort") and v)
+             + f" {shlex.quote(brief)}")
     return [f"{of_cmd} event injected_prompt --injector of_init --session {sid} --position {conductor} "
             f"--text {shlex.quote(brief)}",
-            f"cd {shlex.quote(repo)} && claude --session-id {sid} --name {conductor}"
-            + "".join(f" --{k} {shlex.quote(str(v))}" for k, v in (agents or {}).items() if k in ("model", "effort") and v)
-            + f" {shlex.quote(brief)}"]
+            detached(conductor, start) if detach else start]
 
 
 HAND_START = "a terminal on the head's machine, started by hand (no herdr); of init reserved this session id"
+
+
+def detached(name, line):
+    """The line run in a detached `screen` session named after the position (macOS ships screen; on Linux, install
+    it). Whoever wants to watch the agent attaches with `screen -r <name>` on that machine."""
+    import shlex
+    return f"screen -dmS {name} sh -c {shlex.quote(line)}"
 
 # What a new organization's agents start on (the founder, 2026-11-11 ~17:35Z: "при сетапе of ставил opus xhigh"). The
 # alias follows the newest Opus. of init writes it on the organization's entry in orgs.yaml (`agents:`); every session
@@ -557,8 +576,10 @@ def conductor_start(prefix, repo, acct, ready=(False, False)):
     import of_spawn
     lines = []
     if not all(ready):
-        lines.append(of_spawn._claude_line({"config_dir": acct, "cwd": repo}, " --dangerously-skip-permissions")
-                     + "   # once: trust this folder, accept the bypass warning, then type /exit")
+        lines += ["# once, by the person on this machine (an agent cannot answer it for them; tell them in these words,",
+                  f"# never as a command to paste): open Claude Code in {repo}, choose \"Yes, I trust this folder\",",
+                  "# accept the bypass-permissions warning, then leave it with /exit. In a terminal here:",
+                  of_spawn._claude_line({"config_dir": acct, "cwd": repo}, " --dangerously-skip-permissions")]
     lines.append(f"of spawn {prefix}_conductor --config-dir {acct}   # your one window: start it first")
     return lines
 
@@ -576,6 +597,11 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 - **No time estimates.** Never tell {owner_name} how long something takes: their hands, preparation, a run or a
   build. A real deadline with its source stays: a legal due date, a booked window, a limit's reset, a session's
   expiry, a meeting they named.
+- **Never ask {owner_name} to run a command.** They may reach you through Remote Control, the desktop or the
+  mobile app, where a command typed into the chat does not run. Ask in words ("tell me when you are ready") and
+  run commands yourself. What only they can do (log in, trust a folder, approve a key or a payment) is a step in
+  plain words with its place (the machine, the app or page, what to choose), filed as a task, never a command to
+  paste.
 - **Language.** Agents talk to {owner_name} in {language}, whatever language the tools, the records or other agents
   use; they switch only when {owner_name} asks (`of init --language`, kept in `~/.config/of/owner.yaml`).
 - **Who does what needs evidence.** A claim that a person holds a position, keeps a system or decides it carries
@@ -648,7 +674,8 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
             out(f"  + {name}")
         if not shutil.which("herdr"):  # of spawn needs herdr: reserve the first two sessions, to start by hand
             agents = [p["name"] for p in built["positions"] if (p.get("holder") or {}).get("runtime") != "human"]
-            by_hand = {q: c for q in agents for c in [hand_start(doc, q, repo, agents=start_on)] if c}
+            by_hand = {q: c for q in agents for c in [hand_start(doc, q, repo, agents=start_on,
+                                                                 detach=q != f"{prefix}_conductor")] if c}
             run = fill(load_package(pkg_dir)["run"], values)
             built["files"]["onboarding/README.md"] = run_readme(load_package(pkg_dir), run, values, by_hand)
         write_files(repo, built["files"], out)
@@ -751,7 +778,8 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     out("\nDone. Next:")
     out("  of registry check     # validate the registry")
     if by_hand and f"{prefix}_conductor" in by_hand:
-        out(f"  # your one window, {prefix}_conductor: start it first, before any other agent, in a terminal:")
+        out(f"  # your one window, {prefix}_conductor: start it first, before any other agent, in a terminal here")
+        out("  # (an installing agent with no terminal runs the second line detached: screen -dmS <name> sh -c '<line>'):")
         for line in by_hand[f"{prefix}_conductor"]:
             out(f"  {line}")
         out(f"  # then tell it what you want; the other agents' lines are in {repo}/onboarding/README.md")

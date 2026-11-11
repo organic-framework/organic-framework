@@ -17,7 +17,9 @@ follows puts the decision with one accountable sponsor:
 
 ## What it asks of you
 
-1. **Start your conductor first:** `of spawn {org}_conductor`. It is your one window: tell it what you want, and
+1. **Your conductor is started first** (by you or by the agent that installed OF: `of spawn {org}_conductor`).
+   No agent asks you to run a command: they ask in words and run commands themselves, so you can talk to them
+   from Remote Control or the Claude app. It is your one window: tell it what you want, and
    it finds the agent that owns it and follows the request to a result (`docs/conductor.md`). You may still type
    into any agent's pane when you choose to.
 2. **Approve the charter** (step 1). The onboarding lead drafts it through your conductor:

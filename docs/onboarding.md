@@ -20,7 +20,9 @@ of spawn <org>_conductor --config-dir ~/.claude   # the head's one window: the f
 
 Then the head talks to the conductor, and the onboarding runs through it. `<org>/onboarding/README.md` in the new repository lists the unit and the run.
 
-**Without herdr** `of spawn` cannot open a pane. `of init` then reserves a session id for each agent of the unit in the registry (nothing is started) and prints the conductor's two lines: one declares its brief (`of event injected_prompt`), so it is not counted as the head's words, and one starts it in the repository (`claude --session-id <id> --name <org>_conductor "<brief>"`). Every agent's two lines are in `onboarding/README.md`, with when to start it.
+**Without herdr** `of spawn` cannot open a pane. `of init` then reserves a session id for each agent of the unit in the registry (nothing is started) and prints the conductor's two lines: one declares its brief (`of event injected_prompt`), so it is not counted as the head's words, and one starts it in the repository (`claude --session-id <id> --name <org>_conductor "<brief>"`). Every agent's two lines are in `onboarding/README.md`, with when to start it; for every agent but the conductor, the second line starts it in a detached `screen` session, so the conductor or the lead runs both lines itself.
+
+**No agent asks the head to run a command** (the record §8.4 (8)). The head may talk to the conductor through Remote Control, the desktop or the mobile app, where a command typed into the chat does not run. The conductor asks in words ("tell me when you are ready to start the onboarding") and starts the lead itself; the lead starts the waves. What only the head can do (log in, trust the folder, accept the bypass-permissions warning, approve a key) is a step in plain words with its place, filed as a task.
 
 `of init` writes, from the onboarding package (`bench/onboarding/`):
 - the organization repository: `AGENTS.md`, `registry/positions.yaml`, `registry/briefs/`, `onboarding/`;

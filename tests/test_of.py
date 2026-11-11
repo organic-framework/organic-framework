@@ -515,7 +515,17 @@ class InitStructureTest(unittest.TestCase):
         doc = {"organization": "acme"}
         i.merge_structure(doc, self.built())
         lines = i.hand_start(doc, "acme_conductor", "/home/alex/of/acme", agents=i.agent_settings())
-        self.assertIn("--name acme_conductor --model opus --effort xhigh 'You hold", lines[1])
+        self.assertIn("--name acme_conductor --dangerously-skip-permissions --model opus --effort xhigh 'You hold",
+                      lines[1])
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, self.built())
+        lead = i.hand_start(doc, "acme_onboarding", "/home/alex/of/acme", agents=i.agent_settings(), detach=True)
+        self.assertTrue(lead[1].startswith("screen -dmS acme_onboarding sh -c 'cd /home/alex/of/acme && claude"))
+        self.assertTrue(lead[0].startswith("of event injected_prompt"))  # an agent runs both; nothing asks the head
+        readme = i.run_readme(self.pkg, i.fill(self.pkg["run"], self.values), dict(self.values, language="English"),
+                              by_hand={"acme_onboarding": lead})
+        self.assertIn("No agent here asks you to run a command", readme)
+        self.assertIn("starts the onboarding lead itself", readme)
 
     def test_the_language_is_one_setting_asked_at_init(self):
         lang = self.of_init
@@ -555,11 +565,15 @@ class InitStructureTest(unittest.TestCase):
     def test_conductor_start_trusts_the_folder_once(self):
         start = self.of_init.conductor_start
         lines = start("acme", "/home/alex/of/acme", "/home/alex/.claude")
-        self.assertEqual(lines[0].split("   #")[0], "cd /home/alex/of/acme && claude --dangerously-skip-permissions")
-        self.assertIn("/exit", lines[0])
-        self.assertTrue(lines[1].startswith("of spawn acme_conductor --config-dir /home/alex/.claude"))
+        words = " ".join(x for x in lines if x.startswith("#"))  # the person's step, in words, with its place
+        self.assertIn("by the person on this machine", words)
+        self.assertIn("never as a command to paste", words)
+        self.assertIn("Yes, I trust this folder", words)
+        self.assertIn("/exit", words)
+        self.assertEqual(lines[-2], "cd /home/alex/of/acme && claude --dangerously-skip-permissions")
+        self.assertTrue(lines[-1].startswith("of spawn acme_conductor --config-dir /home/alex/.claude"))
         other = start("acme", "/home/alex/of/acme", "/home/alex/.claude-b", (True, False))
-        self.assertIn("CLAUDE_CONFIG_DIR=/home/alex/.claude-b claude --dangerously-skip-permissions", other[0])
+        self.assertIn("CLAUDE_CONFIG_DIR=/home/alex/.claude-b claude --dangerously-skip-permissions", other[-2])
         self.assertEqual(len(start("acme", "/home/alex/of/acme", "/home/alex/.claude", (True, True))), 1)
         import json
         with tempfile.TemporaryDirectory() as acct:  # an empty account: neither trusted nor accepted

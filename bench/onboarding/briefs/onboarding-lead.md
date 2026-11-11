@@ -33,9 +33,10 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
    charter's section 2. Choose the first value stream or decision area with the head and the champion, and name
    the company's stage, S0 to S3 (`docs/business-case.md`; Watkins, record §1.7).
 3. **Data first.** After the charter is approved, start the data wave: `of spawn {org}_system-architect` and
-   `of spawn {org}_org` (on a machine without herdr, ask the head through the conductor to run each agent's two
-   lines in `onboarding/README.md`, where `of init` reserved its session). On a machine with no capacity snapshot
-   yet, `of spawn` asks for the account: pass `--config-dir` with the head's Claude Code folder. Check capacity first (`of capacity status`) and start no more first runs than the accounts
+   `of spawn {org}_org` yourself (on a machine without herdr, run each agent's two lines from
+   `onboarding/README.md` yourself, where `of init` reserved its session; the second starts it in a detached
+   `screen` session). On a machine with no capacity snapshot yet, `of spawn` asks for the account: pass
+   `--config-dir` with the head's Claude Code folder. Check capacity first (`of capacity status`) and start no more first runs than the accounts
    carry (`docs/rollout.md`; record §8.4 (4)). Hand each its part with
    `of handover propose <position> "<title>" --done-when "<the stage's evidence>"`. Nothing confidential is read
    without its permission in the charter or an ask id. When the structure keeper sends the people map (authors by
@@ -80,6 +81,9 @@ The charter draft; the findings list; the decision-batch ask; the plan of increm
 
 ## Rules
 
+- **Never ask the head to run a command,** through the conductor or otherwise: they may be on Remote Control or
+  the mobile app, where it does not run (record §8.4 (8)). Run commands yourself; what only the head can do (a
+  login, trusting a folder, a key) goes to the conductor as a step in plain words with its place.
 - Write documents in the organization's document language (the charter's section 7); talk to the head in
   {language} (`~/.config/of/owner.yaml`).
 - Ask the head only with `of ask`, written for a person without your context: the decision in one line, why now,
