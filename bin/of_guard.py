@@ -1080,6 +1080,54 @@ _GATED = {}
 _COMMIT_VALUE_FLAGS = set("mFCctSu")   # a short flag of git commit that takes the rest of its cluster as a value
 
 
+def _no_verify(a):
+    """--no-verify, or an abbreviation git accepts for it (--no-veri, --no-verif; of_architect's review of PR 6)."""
+    return a.startswith("--no-veri") and "--no-verify".startswith(a)
+
+
+def _git_config_pairs(args, env):
+    """[(key in lower case, value)] a git call sets for itself: `-c key=value` before its subcommand, and
+    GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>, and GIT_CONFIG_PARAMETERS in its environment
+    (of_architect's review of PR 6: core.hooksPath set through the environment)."""
+    out, i = [], 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-c" and i + 1 < len(args):
+            k, _, v = args[i + 1].partition("=")
+            out.append((k.lower(), v))
+            i += 2
+            continue
+        if args[i] in ("-C", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
+            i += 2
+            continue
+        i += 1
+    try:
+        n = int((env or {}).get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        n = 0
+    for j in range(min(max(n, 0), 64)):
+        out.append((str(env.get(f"GIT_CONFIG_KEY_{j}") or "").lower(), str(env.get(f"GIT_CONFIG_VALUE_{j}") or "")))
+    params = str((env or {}).get("GIT_CONFIG_PARAMETERS") or "")
+    for k, inline, quoted in re.findall(r"'([^'=]+)(?:=([^']*))?'(?:='([^']*)')?", params):
+        out.append((k.lower(), quoted or inline or ""))
+    return out
+
+
+def _config_files_set(env, word):
+    """Does a config file the environment points git at (GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG) name
+    WORD? /dev/null names nothing; a file that cannot be read counts as naming it."""
+    for k in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG"):
+        f = (env or {}).get(k)
+        if not f or f == "/dev/null":
+            continue
+        try:
+            with open(os.path.expanduser(f), errors="replace") as fh:
+                if word in fh.read(1 << 20).lower():
+                    return True
+        except OSError:
+            return True
+    return False
+
+
 def _git_dir(path):
     """The git directory (the common one, for a worktree) of the repository holding PATH, or None."""
     p = os.path.abspath(os.path.expanduser(path or "."))
@@ -1161,8 +1209,9 @@ def _plugins_deny(head, args, stext, cwd):
     return (PLUGINS_DENY, hit) if hit else None
 
 
-def _hooks_deny(head, args, stext, cwd):
-    """(reason, token) for G17 on one simple command run in CWD, else None."""
+def _hooks_deny(head, args, stext, cwd, env=None):
+    """(reason, token) for G17 on one simple command run in CWD with ENV (the line's exports and its own
+    assignments), else None."""
     if head != "git":
         hit = next((f for f in _changed_files(head, args, stext) if _in_hooks(f, cwd)), None)
         return (HOOKS_DENY, hit) if hit else None
@@ -1186,8 +1235,13 @@ def _hooks_deny(head, args, stext, cwd):
         return HOOKS_DENY, files[0]
     if not sub or not gated(where):
         return None
-    if any(c.lower().startswith("core.hookspath") for c in conf):
-        return HOOKS_DENY, "git -c core.hooksPath"
+    env = dict(env or {})
+    if any(c.lower().startswith("core.hookspath") for c in conf) or \
+            any(k == "core.hookspath" for k, _ in _git_config_pairs(args, env)) or \
+            "hookspath" in str(env.get("GIT_CONFIG_PARAMETERS") or "").lower():
+        return HOOKS_DENY, "git with core.hooksPath set for the call"
+    if _config_files_set(env, "hookspath"):
+        return HOOKS_DENY, "git with a config file that sets core.hooksPath"
     if sub == "config":
         low = [a.lower() for a in rest]
         key = next((k for k, a in enumerate(low) if a == "core.hookspath" or a.startswith("core.hookspath=")), None)
@@ -1195,7 +1249,7 @@ def _hooks_deny(head, args, stext, cwd):
         if key is not None and (key + 1 < len(rest) or "=" in low[key] or writes & set(low[:key])):
             return HOOKS_DENY, "git config core.hooksPath"
         return None
-    if "--no-verify" in rest:
+    if any(_no_verify(a) for a in rest):
         return HOOKS_DENY, f"git {sub} --no-verify"
     if sub == "commit":
         for a in rest:
@@ -1255,6 +1309,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             return f"a command that reads memory or a core dump ({mem})", mem
         return _reads(READERS.search(bare) and _loose_secret_path(bare))
     here = _DENY_CWD[0]  # the directory a command runs in, following `cd` along the line (G17)
+    exported = {}        # what `export` set earlier on the line (G17: GIT_CONFIG_* variables)
     for pipe in pipes:
         last = len(pipe) - 1
         cmds = []  # (head, args) of the simple-command stages, for the env-dump pipeline check
@@ -1277,12 +1332,15 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 return _prints(f"security {args[0]} -w")
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
-                or _hooks_deny(head, args, stext, here) or _plugins_deny(head, args, stext, here)
+                or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
+                or _plugins_deny(head, args, stext, here)
             if hit:
                 return hit
             if head == "cd":
                 to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
+            elif head == "export":
+                exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
             remote = _remote_shell(head, args)
             if remote:
                 files = [f for f in [_stdin_file(stext)] if f]
@@ -1634,6 +1692,10 @@ RELEASE_OWNER = "organic-framework"
 _GH_URL = re.compile(r"(?:github\.com[:/]+|^)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.I)
 _GH_READ_PATHS = re.compile(r"/(?:issues|pulls)/(?:\d+/)?comments(?:/\d+)?$|/pulls/\d+/reviews(?:/\d+)?$|"
                             r"/(?:issues|pulls)/comments/\d+(?:/reactions)?$|/issues/\d+/reactions$")
+_GQL_WRITES = re.compile(r"\b(mergePullRequest|enablePullRequestAutoMerge|mergeBranch|updateRefs?|createRef|deleteRef|"
+                         r"createCommitOnBranch|revertPullRequest|(?:create|update|delete)BranchProtectionRule|"
+                         r"(?:create|update|delete)RepositoryRuleset|updateRepository|archiveRepository|"
+                         r"deleteRepository|transferRepository)\b")
 _GH_WRITES = {"pr": {"merge"}, "release": {"create", "edit", "delete", "upload", "delete-asset"},
               "repo": {"edit", "delete", "archive", "unarchive", "rename", "sync"},
               "workflow": {"run", "enable", "disable"}, "run": {"rerun", "cancel", "delete"},
@@ -1680,13 +1742,43 @@ def _remotes(where):
     return out
 
 
-def _git_push_target(args, where):
-    """Does `git push …` (ARGS after `push`) go to a framework repository?"""
-    pos = [a for a in args if not a.startswith("-")]
-    remotes = _remotes(where)
+_PUSH_VALUE = {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+
+
+def _git_push_target(args, where, added=None, conf=()):
+    """Does `git push …` (ARGS after `push`) go to a framework repository? ADDED: remotes the same line added or
+    re-pointed ({name: [url]}); CONF: (key, value) the call sets for itself. A remote name nobody can resolve, in a
+    repository with a framework remote, counts as the framework (of_architect's review of PR 6: `-o x`, a remote
+    added on the line)."""
+    pos, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a in _PUSH_VALUE and i + 1 < len(args):
+            if a == "--repo":
+                pos.append(args[i + 1])
+            i += 2
+            continue
+        if a.startswith("--repo="):
+            pos.append(a.split("=", 1)[1])
+        elif a.startswith("-o") and len(a) > 2 or a.startswith("--push-option="):
+            pass
+        elif not a.startswith("-"):
+            pos.append(a)
+        i += 1
+    remotes = {k: list(v) for k, v in _remotes(where).items()}
+    for name, urls in (added or {}).items():
+        remotes[name] = list(urls)
+    for k, v in conf:
+        m = re.match(r"^remote\.(.+)\.(?:push)?url$", k)
+        if m:
+            remotes.setdefault(m.group(1), []).append(v)
+        if re.match(r"^url\..*\.(?:push)?insteadof$", k) and RELEASE_OWNER in k.lower():
+            return True  # the call rewrites some address to the framework's
     target = pos[0] if pos else None
     if target and ("/" in target or ":" in target) and target not in remotes:
         return _framework_slug(target)
+    if target and target not in remotes:
+        return any(_framework_slug(u) for us in remotes.values() for u in us)
     urls = remotes.get(target or "origin") or ([u for us in remotes.values() for u in us] if not target else [])
     return any(_framework_slug(u) for u in urls)
 
@@ -1719,6 +1811,9 @@ def _gh_write(args, where):
             return None
         if path.lstrip("/") == "graphql":
             body = " ".join(args)
+            m = _GQL_WRITES.search(body)
+            if m:  # a node id hides the repository, so these count wherever they point (review of PR 6)
+                return f"gh api graphql {m.group(1)}"
             if RELEASE_OWNER in body.lower() and not re.search(r"\b(addComment|addPullRequestReview\w*|"
                                                                  r"addReaction)\b", body):
                 return "gh api graphql mutation"
@@ -1757,7 +1852,7 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
     for _quoted, body, opener in docs:
         if _head(opener) in _SHELLS:
             out += framework_writes(tool, {"command": body}, cwd, depth + 1)
-    here = cwd
+    here, added, exported = cwd, {}, {}
     for pipe in pipes:
         for kind, stext in pipe:
             if kind == "sub":
@@ -1770,6 +1865,8 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
             if head == "cd":
                 to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
+            elif head == "export":
+                exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
             elif head in _SHELLS - {"eval"} and "-c" in args[:-1]:
                 out += framework_writes(tool, {"command": args[args.index("-c") + 1]}, here, depth + 1)
             elif head == "git":
@@ -1781,7 +1878,14 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
                         i += 2
                         continue
                     i += 1
-                if i < len(args) and args[i] == "push" and _git_push_target(args[i + 1:], where):
+                sub, rest = (args[i], args[i + 1:]) if i < len(args) else (None, [])
+                words = [a for a in rest if not a.startswith("-")]
+                if sub == "remote" and words[:1] in (["add"], ["set-url"]) and len(words) >= 3:
+                    added[words[1]] = [words[2]]  # a remote added or re-pointed earlier on the line
+                elif sub == "config" and len(words) >= 2 and re.match(r"^remote\..+\.(?:push)?url$", words[0].lower()):
+                    added.setdefault(words[0].split(".", 1)[1].rsplit(".", 1)[0], []).append(words[1])
+                elif sub == "push" and _git_push_target(rest, where, added, _git_config_pairs(
+                        args, {**exported, **_assignments(stext)})):
                     out.append("git push")
             elif head == "gh":
                 w = _gh_write(args, here or ".")
