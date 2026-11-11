@@ -285,16 +285,14 @@ class RelayTest(unittest.TestCase):
         of_relay.record_queues({}, now=now, unsent={"mt:dpc": {"n": 2, "items": [
             item("g1", "2026-11-09T11:05:39.650Z"), item("g2", "2026-11-09T11:12:00.000Z")]}})
         self.assertEqual(of_relay.queue_note("mt:dpc", now=now),
-                         "1 message you sent is not delivered yet: to mt:k8s_keeper (8m; batched, next in 1m). "
-                         "An --urgent message to a receiver takes its queued ones with it, oldest first")  # g2: under 5m
+                         "1 message you sent is not delivered yet: to mt:k8s_keeper (8m; batched, next in 1m)")  # g2: <5m
         of_relay.record_queues({}, now=now, unsent={"mt:dpc": {"n": 4, "items": [
             item("o1", "2026-11-06T11:00:00.000Z", present=False, next_at=None),           # 3 days old: not repeated
             item("g1", "2026-11-09T11:05:39.650Z"), item("g3", "2026-11-09T11:06:00.000Z"),
             item("h1", "2026-11-09T11:07:00.000Z", to="mt:catalogue_keeper", state="leased")]}})
         self.assertEqual(of_relay.queue_note("mt:dpc", now=now),
                          "3 messages you sent are not delivered yet: 2 to mt:k8s_keeper (oldest 8m; batched, next in 1m);"
-                         " to mt:catalogue_keeper (7m; being typed now). An --urgent message to a receiver takes its"
-                         " queued ones with it, oldest first")
+                         " to mt:catalogue_keeper (7m; being typed now)")
         of_relay.record_queues({"mt:dpc": {"n": 1, "oldest": "2026-11-09T11:04:00Z"}}, now=now, unsent={"mt:dpc": {
             "n": 1, "items": [item("g1", "2026-11-09T11:05:39.650Z", present=False, next_at=None)]}})
         note = of_relay.queue_note("mt:dpc", now=now)
@@ -467,47 +465,30 @@ class RelayTest(unittest.TestCase):
             of_relay.subprocess.run = saved
         self.assertEqual(calls[-1][-1], "yes, go ahead")
 
-    def test_batching_fyi_and_urgent(self):
-        """founder, 2026-11-07: one typed prompt per receiver per 15 minutes; fyi never typed; urgent at once."""
+    def test_every_message_goes_at_once_fyi_never(self):
+        """The founder, 2026-11-11: no 15-minute window. Whatever is queued for a receiver is one joined prompt,
+        typed as soon as it is idle, however recently it got the last one; fyi is never typed; a person's inbox
+        takes every message one by one."""
         local = dict(LOCAL)
         to = next(k for k, v in local.items() if v.get("kind") != "human")
-        m = lambda i, **k: dict({"msg_id": f"b{i}", "to": to, "from": "mt:x", "text": f"t{i}"}, **k)
-        now = 10_000.0
-        plan = of_relay.plan_batch([m(1), m(2), m(3, priority="fyi")], local, now, last=lambda t: 0)
-        self.assertEqual(sorted((a, len(ms)) for a, ms, _ in plan), [("deliver", 2), ("fyi", 1)])
+        m = lambda i, **k: dict({"msg_id": f"b{i}", "to": to, "from": "mt:x", "text": f"t{i}"}, **k)  # noqa: E731
+        plan = of_relay.plan_batch([m(1), m(2), m(3, priority="fyi"), m(4, priority="urgent")], local)
+        self.assertEqual(sorted((a, len(ms), r) for a, ms, r in plan),
+                         [("deliver", 3, None), ("fyi", 1, of_relay.FYI_RETRY_S)])
         human = next((k for k, v in local.items() if v.get("kind") == "human"), None)
         if human:  # a person's fyi goes to their inbox like any message
-            plan = of_relay.plan_batch([dict(m(9, priority="fyi"), to=human)], local, now, last=lambda t: 0)
+            plan = of_relay.plan_batch([dict(m(9, priority="fyi"), to=human)], local)
             self.assertEqual([a for a, _, _ in plan], ["single"])
-        plan = of_relay.plan_batch([m(4)], local, now, last=lambda t: now - 60)   # typed a minute ago
-        self.assertEqual([(a, r) for a, _, r in plan], [("wait", 14 * 60 + 1)])
-        plan = of_relay.plan_batch([m(5), m(6, priority="urgent")], local, now, last=lambda t: now - 60)
-        self.assertEqual([(a, len(ms)) for a, ms, _ in plan], [("deliver", 2)])
 
-    def test_a_message_the_receiver_waits_for_skips_the_window(self):
-        """The founder, 2026-11-11, through of_conductor: an answer a receiver waits for is typed in as soon as it is
-        idle; only unsolicited messages wait for the 15-minute window (docs/guard.md R9)."""
-        local = dict(LOCAL)
-        to = next(k for k, v in local.items() if v.get("kind") != "human")
-        pos, now = to.split(":")[-1], 10_000.0
-        recent = lambda t: now - 60   # noqa: E731 - typed a minute ago
-        m = lambda i, **k: dict({"msg_id": f"e{i}", "to": to, "from": "ofb:of_peer", "text": f"t{i}"}, **k)  # noqa
-        exp = of_relay.Expected(self.conn)
-        self.assertEqual([a for a, _, _ in of_relay.plan_batch([m(1)], local, now, last=recent, expected=exp)],
-                         ["wait"])                                       # unsolicited: the window, as before
-        plan = of_relay.plan_batch([m(2, reply_to="x", reply_to_from=to), m(3)], local, now, last=recent,
-                                   expected=exp)
-        self.assertEqual([(a, len(ms)) for a, ms, _ in plan], [("deliver", 2)])   # a reply takes the queue along
-        self.assertIsNone(exp(m(4, reply_to="x", reply_to_from="ofb:of_other")))   # a reply to someone else's
-        of_events.emit("state_declared", {"position": pos, "state": "waiting", "waiting_on": "ofb:of_peer"},
-                       position=pos)
-        self.assertEqual(of_relay.Expected(self.conn)(m(5)), "waiting")
-        of_events.emit("state_declared", {"position": pos, "state": "working", "waiting_on": None}, position=pos)
-        self.assertIsNone(of_relay.Expected(self.conn)(m(6)))
-        of_events.emit("handover_proposed", {"from": "of_peer", "to": pos, "title": "t", "done_when": "d"},
-                       position="of_peer")
-        self.assertEqual(of_relay.Expected(self.conn)(m(7)), "handover")
-        self.assertIsNone(of_relay.Expected(self.conn)(dict(m(8), **{"from": "ofb:of_third"})))
+    def test_a_rule_with_the_sessions_name_is_a_rule(self):
+        """2026-11-11, of_platform: '──── shop_auditor ─' in a 72-column pane was 75% rule characters; the box
+        was read from the rule above the agent's last reply and 21 deliveries waited over an empty box."""
+        named = "─" * 53 + " shop_auditor ─"
+        screen = ("the agent's last reply\n" + "─" * 72 + "\nmore reply text\n\u273b Cogitated for 33s\n\n" + named
+                  + "\n\u276f\xa0\n" + "─" * 72 + "\n  \u23f5\u23f5 bypass permissions on \u00b7 \u29c9 scope2")
+        self.assertTrue(of_relay._is_rule(named))
+        self.assertEqual(of_relay.input_box_text(screen), "")
+        self.assertFalse(of_relay._is_rule("── a short line of text that only starts with a rule"))
 
     def test_joined_delivery_types_one_prompt_with_each_frame(self):
         local = dict(LOCAL)
