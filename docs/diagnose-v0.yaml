@@ -327,7 +327,8 @@ rules:
     m_decide: {strengthened: 5, unsourced: 3}
     thresholds: {}               # the patterns are OWED, HEDGE, ASK_REF, QUOTE and REF_TOKEN in bin/of_diagnose_rules.py; a plain must or required is not an obligation claim
     needs: [of.handover_proposed]
-    reads: [of.handover_delivered, of.handover_declined, of.handover_returned, of.handover_withdrawn, of.handover_expired, of.work_record]   # used when present: states that take a hand-over out, delivered results that link work to it
+    reads: [of.handover_accepted, of.handover_blocked, of.handover_delivered, of.handover_verified, of.handover_rejected, of.handover_closed,
+            of.handover_declined, of.handover_returned, of.handover_withdrawn, of.handover_expired, of.work_record]   # used when present: a hand-over's state for the evidence, the states that take it out, delivered results that link work to it
     decider: structure_keeper
     severity: {strengthened: medium, unsourced: low}
     delta_m: "0 (ranks by risk); dT: work done, merged or run because of an obligation nobody confirmed"
