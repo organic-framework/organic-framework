@@ -297,13 +297,13 @@ An organization's choices of the outside products that hold its data, so every m
 ```yaml
 plugins:
   secret_stores:
-    name: 1password          # 1password | bitwarden | vault | aws-sm | gcp-sm | sops | keychain (docs/agent-secrets.md §13.4)
+    name: 1password          # shipped: 1password | keychain | envfile; designed: bitwarden | vault | aws-sm | gcp-sm | sops (docs/agent-secrets.md §13.4)
     chosen: "29ea1baa"       # the owner's ask id; required
     settings: {}             # the implementation's own settings, never a secret value
 ```
 
 - **Absent means no product chosen.** For `secret_stores` that means files: credentials under the credential roots, named by `paths` (Credentials, below), until the owner chooses at the first need (docs/agent-secrets.md §13.2).
-- **A credential's `ref` names its store** in the store's own form (`op://`, `bws://`, `vault://`, `aws-sm://`, `gcp-sm://`, `sops://`, `keychain://`); `of registry check` refuses a `ref` whose store is not the organization's chosen one.
+- **A credential's `ref` names its store** in the store's own form (Credentials, Secret references, below); `of registry check` refuses a `ref` whose store is not the organization's chosen one.
 - `chosen` is required: the store is the owner's decision, never a default.
 
 ## Credentials (2026-11-11, `of_architect`; from a user organization's structure keeper through `of_server`)
@@ -330,12 +330,15 @@ Rules:
   - A file under a root that no credential names is denied to every position. The guard reports it to the structure keeper as an undeclared credential.
 - **Paths outside the roots**, for example an SSH key under `~/.ssh`, are protected only where a credential names them. Each is denied to the positions that do not list it.
 - **A credential is listed only by positions of its own organization.** Another organization's roots are denied the same way.
-- **Names, paths and references only.** The catalogue never holds a value. A credential kept in 1Password is named by its secret reference (below); one still kept in a file, by its `paths`.
-- **Secret references** (2026-11-11, `of_server`; [`agent-secrets.md`](agent-secrets.md), agreed by `of_architect`, msg `01a1cab8`):
-  - `ref: "op://<vault>/<item>/<field>"`, 1Password's own form, which `op read` and `op run` take as it is. The vault is `<org>-<system>` in plain ASCII (`acme-obs`, `acme-k8s-read`): a reference allows letters, digits, `-`, `_`, `.` and spaces, and any other character needs an ID.
+- **Names, paths and references only.** The catalogue never holds a value. A credential kept in the organization's store is named by its secret reference (below); one kept in a file, by its `paths`.
+- **Secret references** (2026-11-11, `of_server`; [`agent-secrets.md`](agent-secrets.md), agreed by `of_architect`, msg `01a1cab8`; stores from hand-over `3512db81`, code 1f41b60 and f3f22ad):
+  - `ref` (docs/agent-secrets.md §13): where the credential's value lives, as `<store>://<path>` in the form of the store the organization chose (`plugins: {secret_stores: {name, chosen, settings}}`, Plugins above), never a value. The forms OF ships:
+    - `op://<org>-<system>/<item>/[<section>/]<field>`: 1Password's own secret reference (store `1password`), which `op read` and `op run` take as it is; its vault must be one of the organization's, in plain ASCII (`acme-obs`, `acme-k8s-read`): a reference allows letters, digits, `-`, `_`, `.` and spaces, and any other character needs an ID;
+    - `keychain://<service>/<account>`: a generic password in the macOS keychain (store `keychain`), only for a solo owner on one Mac, since it keeps no position apart;
+    - `envfile://<NAME>`: a name in a lab's env file, the choice's `settings.path` (store `envfile`), never for real credentials.
   - `rotate_days`: how often its keeper rotates the value; 90 when absent.
-  - A credential needs `ref` or `paths`, or both while its file is being retired.
-  - The organization's broker serves a `ref` to the holder of a position that lists or keeps the credential (`of secret run`; docs/server.md, `POST /v1/secrets/use`), read with that position's own service account.
+  - A credential needs `ref` or `paths`; both while its value moves from a file into the store.
+  - The organization's broker serves a `ref` to the holder of a position that lists or keeps the credential (`of secret run`; docs/server.md, `POST /v1/secrets/use`), read with that position's own identity in the store.
 - **What it is and is not.**
   - The guard stops accidents and use by the wrong position. It does not stop a process that wants the file, because every session runs as the same user.
   - `of spawn` writes the same lists into the session's own Claude Code deny rules (`permissions.deny`, `Read` and `Edit` of each path; `bin/of_spawn.py` `deny_rules`), in a settings file under the state folder passed with `--settings` (`spawn/<session>.settings.json`, mode 600). A file, because a fresh pane's shell takes at most 1,024 bytes a line and 26 paths made a 4.9 KB command line. Each layer switches with the guard's own (G14), so the two deny together:
@@ -350,7 +353,7 @@ Rules:
 - **Source practice:** least privilege and fail-safe defaults (Saltzer and Schroeder, "The Protection of Information in Computer Systems", Proc. IEEE, 1975; NIST SP 800-53 Rev. 5, AC-3 and AC-6).
 - **`of registry check` validates the catalogue:**
   - credential ids;
-  - each credential's `ref` or `paths`; a `ref` is a secret reference in the allowed characters, its vault is the organization's own (`<org>-…`), and no two credentials name one item; `rotate_days` is a whole number;
+  - each credential's `ref` or `paths`. It refuses a `ref` of a store OF does not know, a `ref` when the organization chose no store (the credential is then a file, `paths`), a `ref` of another store than the chosen one, a `ref` the store's own parser refuses, a container that is not the organization's (`<org>-<system>`) for a store that keeps positions apart, and two credentials naming one item; `rotate_days` is a whole number;
   - that each keeper and each position that lists a credential is a position of the organization;
   - that no two credentials claim one path;
   - that `credential_roots` is a list of paths under the home directory.
