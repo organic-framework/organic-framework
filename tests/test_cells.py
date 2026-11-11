@@ -91,5 +91,32 @@ class PeopleTest(unittest.TestCase):
         self.assertTrue(legacy and legacy[0].startswith(of.WARN))  # no people: yet: a warning, the check passes
 
 
+class EvidenceTest(unittest.TestCase):
+    """docs/registry.md, People: a person-held claim carries evidence: beside it (the founder, 2026-11-11: a
+    paraphrase put a colleague on systems he does not keep)."""
+
+    def test_person_held_claims_without_evidence_warn(self):
+        positions = [
+            {"name": "shop_keeper", "holder": {"person": "dana"},
+             "owns": [{"system": "shop", "method": "build", "decides": True},
+                      {"system": "pricing", "method": "run", "decides": True, "evidence": "ask a76abee5"}]},
+            {"name": "ops_keeper", "holder": {"person": "lee", "evidence": "git authors 2026-10-01..11-10: 41 of 47"}},
+            {"name": "agent_keeper", "holder": {"session": "s"}, "owns": [{"system": "ci", "method": "run"}]}]
+        doc = {"systems": {"shop": {"keeper": "shop_keeper"}, "ops": {"keeper": "ops_keeper"},
+                           "ci": {"keeper": "agent_keeper"}, "bank": {"governed_by": "external:bank-team"},
+                           "pay": {"governed_by": "external:pay", "evidence": "ask 1234abcd"}},
+               "works": {"w1": {"doers": ["external:dana"]}, "w2": {"doers": ["agent_keeper"]}}}
+        out = of.check_evidence(doc, positions)
+        self.assertTrue(all(x.startswith(of.WARN) for x in out), out)  # warnings: today's registries keep passing
+        text = "\n".join(out)
+        for expected in ("shop_keeper: holder.person 'dana'", "owns shop/build", "systems: shop: keeper shop_keeper",
+                         "systems: bank: governed_by external:bank-team", "works: w1: doers external:dana",
+                         "systems: ops: keeper ops_keeper"):  # holding the position is not keeping the system
+            self.assertIn(expected, text)
+        for absent in ("ops_keeper: holder", "pricing", "systems: ci", "systems: pay", "w2"):  # evidence, or no person
+            self.assertNotIn(absent, text)
+        self.assertEqual(len(out), 6)
+
+
 if __name__ == "__main__":
     unittest.main()

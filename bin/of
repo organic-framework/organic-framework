@@ -221,6 +221,8 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                           else f"{org}:registry/positions.yaml: {pr}")
                          for pr in check_cells(doc, [p for p in doc.get("positions") or [] if isinstance(p, dict)
                                                      and p.get("name")])]
+            problems += [f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" for pr in check_evidence(
+                doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")])]
     for org, path, _ in org_registries(orgs_file):
         units = next((p["_units"] for p in positions if p.get("_org") == org), None)
         if units is None and os.path.exists(path) and org not in BROKEN:
@@ -955,6 +957,54 @@ def check_people(doc, positions):
             out.append(f"{'' if people else WARN}positions: {p['name']}: holder.person {who!r} is not in people:")
         elif (people[who] or {}).get("status") == "left" and (p.get("status") or "active") == "active":
             out.append(f"positions: {p['name']}: held by {who}, who left; give it a new holder or close it")
+    return out
+
+
+def check_evidence(doc, positions):
+    """docs/registry.md, People, "Who does what needs evidence" (of_architect e9c6b16; the founder, 2026-11-11: a
+    paraphrase put a colleague on systems he does not keep). Warnings, so today's registries pass: a person-held claim
+    with no `evidence:` beside it, in the same mapping (authorship with its window, or an ask id):
+    - a position's `holder.person` (in `holder`);
+    - a system whose `keeper` is a position held by a person, or whose `governed_by` is `external:<who>` (in the
+      system's entry);
+    - an `owns` entry of a position held by a person (in the entry);
+    - a work whose `doers` name `external:<who>` (in the work's entry)."""
+    out = []
+    by = {p["name"]: p for p in positions if isinstance(p, dict) and p.get("name")}
+
+    def person(name):
+        h = (by.get(name) or {}).get("holder")
+        return h.get("person") if isinstance(h, dict) else None
+
+    def has(m):
+        return isinstance(m, dict) and bool(str(m.get("evidence") or "").strip())
+
+    hint = "add evidence: beside it (authorship with its window, or an ask id)"
+    for name, p in by.items():
+        h = p.get("holder")
+        if isinstance(h, dict) and h.get("person") and not has(h):
+            out.append(f"{WARN}positions: {name}: holder.person {h['person']!r} without evidence; {hint}")
+        if person(name):
+            for o in p.get("owns") or []:
+                if isinstance(o, dict) and not has(o):
+                    out.append(f"{WARN}positions: {name}: owns {o.get('system')}/{o.get('method')}: decided by "
+                               f"{person(name)}'s position without evidence; {hint}")
+    systems = doc.get("systems") if isinstance(doc.get("systems"), dict) else {}
+    for sid, sd in systems.items():
+        if not isinstance(sd, dict) or has(sd):
+            continue
+        k, g = sd.get("keeper"), sd.get("governed_by")
+        if isinstance(k, str) and person(k):
+            out.append(f"{WARN}systems: {sid}: keeper {k} is {person(k)}'s position, without evidence; {hint}")
+        if isinstance(g, str) and g.startswith("external:"):
+            out.append(f"{WARN}systems: {sid}: governed_by {g} without evidence; {hint}")
+    works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
+    for wid, w in works.items():
+        if not isinstance(w, dict) or has(w):
+            continue
+        ext = [d for d in (w.get("doers") or []) if isinstance(d, str) and d.startswith("external:")]
+        if ext:
+            out.append(f"{WARN}works: {wid}: doers {', '.join(ext)} without evidence; {hint}")
     return out
 
 
