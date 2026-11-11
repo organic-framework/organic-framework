@@ -128,6 +128,34 @@ def of_apply():
 PLUGIN_ID = "organic-framework"
 
 
+def install(of_home=None, run=None):
+    """Link OF's herdr plugin for this user (herdr registers it in every session) and record OF's home in the plugin's
+    config dir (`of_home`, which run.sh reads), for `of init` and for a person installing by hand. Idempotent.
+    Returns (True, note) or (False, reason). herdr must be installed; no server needs to run."""
+    run = run or subprocess.run
+    of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
+    folder = os.path.join(of_home, "herdr-plugin")
+    if not os.path.isfile(os.path.join(folder, "herdr-plugin.toml")):
+        return False, f"no plugin folder at {folder}"
+    herdr = os.environ.get("OF_HERDR", "herdr")
+    try:
+        listed = run([herdr, "plugin", "list"], capture_output=True, text=True, timeout=15)
+        if f"[local:{folder}]" not in (listed.stdout or ""):
+            r = run([herdr, "plugin", "link", folder], capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                return False, (r.stderr or r.stdout or "herdr plugin link failed").strip()[:300]
+        d = run([herdr, "plugin", "config-dir", PLUGIN_ID], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"herdr: {type(e).__name__}: {e}"[:300]
+    cfg = (d.stdout or "").strip().splitlines()[-1:] if d.returncode == 0 else []
+    if not cfg:
+        return False, "herdr gave no config dir for the plugin"
+    os.makedirs(cfg[0], exist_ok=True)
+    with open(os.path.join(cfg[0], "of_home"), "w") as fh:
+        fh.write(of_home + "\n")
+    return True, f"linked {folder}; of_home {of_home}"
+
+
 def open_questions(of_path=None, run=None):
     """Open the owner's questions screen as a popup over everything: the plugin's `asks` entrypoint, for a panel's
     button or a script. of_path: the bin/of to run instead of this checkout's (a trial build). Returns (True, None),
@@ -164,6 +192,10 @@ def main(argv):
         else:
             s = wait_session(pane)
             log(f"agent detected in {pane}: session {s or 'not reported within ' + str(SESSION_WAIT_S) + ' s'}")
+    elif what == "install":
+        ok, note = install(argv[1] if len(argv) > 1 else None)
+        print(("" if ok else "not installed: ") + note, file=sys.stdout if ok else sys.stderr)
+        return 0 if ok else 1
     elif what == "asks":
         # The questions screen as the plugin's popup ([[panes]] asks in herdr-plugin.toml). Any process can open it:
         # herdr plugin pane open --plugin organic-framework --entrypoint asks (the manifest's placement is popup).
@@ -171,7 +203,7 @@ def main(argv):
         of = os.environ.get("OF_ASKS_OF") or os.path.join(HERE, "of")
         os.execv(sys.executable, [sys.executable, of, "asks", "--watch"])
     else:
-        print("usage: of_herdr_plugin.py startup|agent-detected|asks", file=sys.stderr)
+        print("usage: of_herdr_plugin.py startup|agent-detected|asks|install [OF_HOME]", file=sys.stderr)
         return 2
     coalesced(of_apply)
     return 0
