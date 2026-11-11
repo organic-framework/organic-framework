@@ -12,7 +12,9 @@ conductor points to the person's own words; OF records the answer only when that
 - naming the card (its id, or its asker when that asker has no other open card of this person), or quoting one of its
   options that no other open card of this person offers. With --option the prompt may quote no other option of the
   card; with --text the words must be in the prompt as typed.
-The answer is the person's (`by: owner`, so a task is claimed, never closed), `via: conductor`, with the prompt's id
+A card tagged money, security_incident, prod_change or irreversible is refused (HELD_TAGS, docs/remote.md §5): the
+event store is a file the agents' user can write, so until prompts are recorded out of their reach such a card is
+answered at the machine. The answer is the person's (`by: owner`, so a task is claimed, never closed), `via: conductor`, with the prompt's id
 and words; the asker sees them under the answer. Delivery is the popup's: typed into the asker's pane now when it is
 idle, else at its turn end or the pulse (of_asks_answer.pending), for REDELIVER_MAX_AGE_H.
 
@@ -32,6 +34,21 @@ WHERES = ("phone", "browser", "machine")
 PROMPT_MAX_AGE_H = 24  # an older prompt is not taken as an answer: the person is asked again
 AT_MACHINE_KINDS = ("permission", "registry")  # answered by keys in a pane or in a terminal, never from a chat
 GONE = ("left", "closed", "retired")
+# docs/remote.md §5 (of_architect, 2026-11-11, 4557113): the event store is a file the agents' operating-system user
+# can write, so a process could add a forged prompt. Until prompts are recorded by a component the agents cannot write
+# to (of-server under its own user), a card with one of these tags is answered at the machine, and every diff too.
+HELD_TAGS = ("money", "security_incident", "prod_change", "irreversible")
+STORE_LIMIT = ("until the person's prompts are recorded by a component the agents cannot write to (docs/remote.md "
+               "§5: a process running as the agents' user could add a forged prompt)")
+DIFF_HOLD = (f"diff approvals from the chat are on hold {STORE_LIMIT}: approve it at the machine, with "
+             "`of diff approve <id>` in a terminal")
+
+
+def held_tags(ask):
+    """The names of the ask's tags that keep an answer from the chat away until the store is safe. A tag is stored as
+    {tag, source, systems} (of_classify.parse_tags, tags_of), or as a plain "name[:systems]"."""
+    names = [str(t.get("tag") or "") if isinstance(t, dict) else str(t).split(":", 1)[0] for t in ask.get("tags") or []]
+    return [n for n in dict.fromkeys(names) if n in HELD_TAGS]
 
 
 def where_of(ask):
@@ -42,7 +59,7 @@ def in_chat(ask):
     """How the conductor presents an open ask: `answer` (a card the person answers in the chat), `steps` (a task they
     can do where they are), `waiting` (it waits until they are at the machine)."""
     kind = ask.get("kind") or ""
-    if kind in AT_MACHINE_KINDS or kind.startswith("blocked:"):
+    if kind in AT_MACHINE_KINDS or kind.startswith("blocked:") or held_tags(ask):
         return "waiting"
     if ask.get("task"):
         return "steps" if where_of(ask) in ("phone", "browser") else "waiting"
@@ -204,6 +221,11 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
     if kind in AT_MACHINE_KINDS or kind.startswith("blocked:"):
         raise ValueError(f"ask {first['event_id'][-8:]} is a {kind.split(':')[0]} in a pane: it is answered at the "
                          "machine, never from the chat")
+    by_id = {a["event_id"]: a for a in asks}
+    held = sorted({t for i in g["ask_ids"] for t in held_tags(by_id.get(i) or {})})
+    if held:
+        raise ValueError(f"ask {first['event_id'][-8:]} is tagged {', '.join(held)}: it is answered at the machine "
+                         f"(the popup), not from the chat, {STORE_LIMIT}")
     who_for = first.get("to")
     mine = conductors(positions, who_for, first.get("position"))
     if not mine:
@@ -228,7 +250,6 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
     if now - pts > PROMPT_MAX_AGE_H * 3600:
         raise ValueError(f"--prompt {p['event_id']} is older than {PROMPT_MAX_AGE_H} h ({p['ts']}): ask the person "
                          "again")
-    by_id = {a["event_id"]: a for a in asks}
     members = [by_id[i] for i in g["ask_ids"] if i in by_id]
     ids = [a["event_id"] for a in members if _epoch(a["ts"]) < pts
            and not (a.get("reopened_at") and _epoch(a["reopened_at"]) >= pts)]
@@ -334,7 +355,10 @@ def chat_view(conn, asks):
             steps.append(f"  {tag} ({where_of(a)}): {a['text']}\n" +
                          "\n".join("      " + ln for ln in str(a.get("steps") or "").splitlines() if ln.strip()))
         else:
-            what = "a task at the machine" if a.get("task") else f"a {(a.get('kind') or '').split(':')[0]} in a pane"
+            held = held_tags(a)
+            what = "a task at the machine" if a.get("task") else (
+                f"a card tagged {', '.join(held)}, answered at the machine" if held
+                else f"a {(a.get('kind') or '').split(':')[0]} in a pane")
             waiting.append(f"  {tag} ({what}): {a['text'][:160]}")
     out = []
     if cards:

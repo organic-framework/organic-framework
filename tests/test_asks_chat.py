@@ -225,6 +225,24 @@ class ForgedOrStaleTest(ChatTest):
         self.assertEqual(self.check(c, self.prompt(f"{c[-8:]} yes", ts="2026-11-11T10:05:10Z"), option=1)["conductor"],
                          "of_conductor")  # the founder's own conductor, by address, serves him here too
 
+    def test_a_card_tagged_money_or_production_is_answered_at_the_machine(self):
+        """docs/remote.md §5: a forged prompt is possible while the store is the agents' file."""
+        for tag, stored in (("money", {"tag": "money", "source": "declared"}),
+                            ("security_incident", {"tag": "security_incident", "source": "guessed"}),
+                            ("prod_change", {"tag": "prod_change", "source": "declared", "systems": ["k8s"]}),
+                            ("irreversible", "irreversible")):
+            c = self.ask(f"Decide {tag}?", ["yes", "no"], tags=[stored], position="of_b", session="S2",
+                         ts="2026-11-11T10:00:20Z")
+            self.refused(c, self.prompt(f"{c[-8:]} yes"), f"tagged {tag}", option=1)
+            self.assertEqual(of_asks_chat.in_chat({x["event_id"]: x for x in self.asks()}[c]), "waiting")
+            self.ask(f"Decide {tag}?", ["yes", "no"], tags=[tag], position="of_b", session="S2")  # supersede nothing
+        view = of_asks_chat.chat_view(self.conn, self.asks())
+        self.assertIn("a card tagged money, answered at the machine", view)
+        ok = self.ask("Rename the channel?", ["yes", "no"], tags=[{"tag": "window_go", "systems": ["slack"]}],
+                      position="of_unit_owner",
+                      session="S6", ts="2026-11-11T10:00:40Z")
+        self.assertEqual(self.check(ok, self.prompt(f"{ok[-8:]} yes"), option=1)["answer"], "yes")
+
     def test_a_routed_card_to_a_person_takes_that_persons_conductor(self):
         r = self.ask("Merge the release?", ["yes", "no"], to="of_alex")
         self.refused(r, self.prompt(f"{r[-8:]} yes"), "not in the session", option=1)
@@ -320,6 +338,13 @@ class CliTest(unittest.TestCase):
             self.assertIn("answered", r.stdout)
             r = run("asks", "--json")
             self.assertNotIn(aid, [a["event_id"] for a in json.loads(r.stdout)])
+            # a card tagged money waits for the machine, whatever the prompt says (docs/remote.md §5)
+            r = run("ask", "Pay the invoice?", "--options", "yes|no", "--tags", "money", "--from", "of_a")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            mid = next(a["event_id"] for a in json.loads(run("asks", "--json").stdout) if a["text"] == "Pay the invoice?")
+            r = run("asks", "answer", mid[-8:], "--option", "1", "--prompt", ids[1])
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("tagged money", r.stderr)
 
 
 if __name__ == "__main__":

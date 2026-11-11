@@ -3942,11 +3942,16 @@ def of_hook_mask(text):
     return of_hook.mask(text or "")
 
 
-def _remote_approval(conn, e, prompt_id, positions, session=None):
+def _remote_approval(conn, e, prompt_id, positions, session=None, hold=True):
     """(None, prompt) when the person's recorded prompt approves the proposed diff `e`, else (the reason, prompt).
     docs/remote.md §3 row 2 and §5: the person's own words, recorded by the hook as an of.human_prompt of origin human,
     in the session that holds their organization's conductor, which runs this command; later than the proposal; naming
-    the diff's id and saying a plain yes. Tiers up to medium; a high tier stays at the machine (§4)."""
+    the diff's id and saying a plain yes. Tiers up to medium; a high tier stays at the machine (§4).
+    On hold (of_architect, 2026-11-11, docs/remote.md §5): every diff is refused until prompts are recorded by a
+    component the agents cannot write to; `hold=False` runs the evidence checks, kept tested for that day."""
+    import of_asks_chat
+    if hold:
+        return of_asks_chat.DIFF_HOLD, None
     import of_classify
     d = e["diff"]
     if d.get("tier") not in ("low", "medium"):

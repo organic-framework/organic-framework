@@ -169,7 +169,7 @@ class RemoteApprovalTest(unittest.TestCase):
                     of_store.add_event(conn, rec)
                     return rec["of.event.id"]
                 ok = said("yes, approve sd-1")
-                self.assertIsNone(of._remote_approval(conn, e, ok, pos, session="S-c")[0])
+                self.assertIsNone(of._remote_approval(conn, e, ok, pos, session="S-c", hold=False)[0])
                 cases = {
                     said("yes but first check sd-1"): "not a plain yes",
                     said("yes"): "do not name the diff",
@@ -179,11 +179,17 @@ class RemoteApprovalTest(unittest.TestCase):
                 }
                 for pid, why in cases.items():
                     got = of._remote_approval(conn, e, pid, pos, session="S-d" if why == "the person's conductor"
-                                              else "S-c")[0]
+                                              else "S-c", hold=False)[0]
                     self.assertIn(why, got or "", pid)
                 high = dict(e, diff={"id": "sd-1", "tier": "high"})
-                self.assertIn("approved at the machine", of._remote_approval(conn, high, ok, pos, session="S-c")[0])
-                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c")[0])
+                self.assertIn("approved at the machine", of._remote_approval(conn, high, ok, pos, session="S-c", hold=False)[0])
+                self.assertIn("no recorded prompt", of._remote_approval(conn, e, "nope", pos, session="S-c", hold=False)[0])
+                # on hold (docs/remote.md §5): the same yes, every tier, is refused and sent to the machine
+                for diff in (e, high):
+                    why, prompt = of._remote_approval(conn, diff, ok, pos, session="S-c")
+                    self.assertIn("on hold", why)
+                    self.assertIn("of diff approve <id>` in a terminal", why)
+                    self.assertIsNone(prompt)
                 conn.close()
             finally:
                 of_events.STATE_DIR = saved
