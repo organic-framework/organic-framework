@@ -152,15 +152,18 @@ class RegistryTest(unittest.TestCase):
         try:
             of._capacity_ask("Move the positions?", "move now|wait for the reset", positions=[])
             of._capacity_ask(None, task="Log in to the account a\n1. run it", positions=[])
+            of._capacity_ask("Sign in to the account b", task="1. open it\n2. sign in", positions=[])
         finally:
             of_events.emit = saved
         qs = [e for e in evs if e.get("kind") == "agent_question"]
-        self.assertEqual(len(qs), 2)
-        card, task = (q["payload"] for q in qs)
+        self.assertEqual(len(qs), 3)
+        card, task, titled = (q["payload"] for q in qs)
         self.assertEqual((card["to"], card["source"]), ("founder", "capacity"))
         self.assertEqual(card["questions"][0]["options"], ["move now", "wait for the reset"])
         self.assertTrue(task["task"])
         self.assertEqual(task["questions"][0]["question"], "Log in to the account a")
+        self.assertEqual(titled["questions"][0]["question"], "Sign in to the account b")  # the title is kept
+        self.assertEqual(titled["steps"], "1. open it\n2. sign in")
 
     def test_yaml_traps(self):
         p = {"name": "x_y", "status": {"work": "active"}, "aliases": "old",
