@@ -7,7 +7,7 @@
 
 # Features
 
-What Organic Framework does today, by area, and how far each part has come. Checked against the code, the tests and the event log on 2026-11-11 by `of_docs`; how is at the end.
+What Organic Framework does today, by area, and how far each part has come. Checked against the code, the tests and the event log on 2026-11-11 by `of_docs`, and the rows new in 0.2.0 on 2026-11-12; how is at the end.
 
 **States**
 - **Works**: tested in `tests/`, and in regular use in the week before the check by the organizations that run OF today: the team that builds OF and one user organization. The evidence says where a feature is used by only one of them.
@@ -37,6 +37,9 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | The onboarding package: eight roles and eight steps, each with its source; charter templates | [`bench/onboarding/`](bench/onboarding/) | Early | `lab-onboarding-v0` |
 | Starting a position's agent in its place, on the account with the most headroom, with its brief | `of spawn <position>` | Works | `test_spawn`; 31 agents started on 5 days |
 | Bringing in past sessions | `of import` | Works | `test_derive`, `test_github` |
+| Installing through the person's own coding agent: the questions to ask, each step's check, the person's steps said in words | [`INSTALL.md`](INSTALL.md) | Early | the README quickstart, the same install by hand, passes on a clean lab VM (6 of 6); no lab run yet of an agent following `INSTALL.md` |
+| Setup choices: the head's language, the agents' model and effort, the relay and the listener as services, OF's herdr plugin, Claude accounts and the capacity keeper, plugins; `--refresh` after an update | `of init --language`, `--model`, `--effort`, `--capacity`, `--plugin`, `--refresh` | Early | `test_of` |
+| A person's language on every screen and card, from one catalogue | `language` in `~/.config/of/owner.yaml`; `bin/locale/` | Early | `test_locale`; Russian on one machine |
 
 ## The conductor: one window per person
 
@@ -45,6 +48,9 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | A person's conductor, the first agent started, routing each request to its owner | `<org>_conductor`; [`docs/conductor.md`](docs/conductor.md) | Works for the founder of the team that builds OF; Early for others | `test_conductor_panel`; daily use by one person |
 | The conductor's panel: the person's open requests and their state | `of conductor panel` | Early: it reads only `of_conductor`'s ledger and its text is in Russian | `test_conductor_panel` |
 | Enrollment creating a colleague's conductor; a person's messages delivered to their conductor | [`docs/conductor.md`](docs/conductor.md) §7 | Designed | — |
+| Working from the conductor's chat alone: the conductor starts with Remote Control on; the other agents run in tmux (or `screen`) and get their messages there | `of init --surface remote`; [`docs/remote.md`](docs/remote.md) | Early | `test_tmux`, `test_screen`; `lab-remote-v0` is written, not run yet |
+| Questions answered in the chat, on the person's own recorded words; tagged cards and diff approvals wait for the machine | `of asks --chat`, `of asks answer --prompt`, `of prompts --mine`, `of ask --where` | Early | `test_asks_chat`, `test_asks_answer` |
+| Provisional positions: work raised during the onboarding starts on the person's yes, with no powers, until the structure step | `provisional:`; [`docs/registry.md`](docs/registry.md) | Early | `test_of`, `test_cells` |
 
 ## Seeing and steering agents (on herdr)
 
@@ -58,6 +64,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | The pulse: who waits on whom, nudges, stalls | `of pulse`, `of listen` | Works | `test_pulse`, `test_listen`; 1,711 pulses and 1,306 nudges, every day |
 | Disk: each live session's scratch folder sized, its position told past a cap, new writes refused past a quota, a card to the owner when free disk runs low | `of pulse`; [`docs/storage.md`](docs/storage.md), Disk and retention | Early (built 2026-11-11) | `test_scratch`, `test_guard_scratch` |
 | Resuming a session on its own account, model and permission mode after herdr restarts | `of resume-command`; `bin/of-shell.zsh` | Works | `test_resume` |
+| OF's herdr plugin: agents named by their positions when herdr sees them and after a restart; the Agents view with questions first; herdr resumes OF's sessions on their own account | `herdr-plugin/`; `of init` links it | Early | `test_herdr_plugin`; on one machine since 2026-11-11 |
 
 ## Questions, messages and hand-overs
 
@@ -67,9 +74,11 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | A small model that tells a question in a pane from a status line | the question judge | Works | `test_asks_live`, `test_hook`, `lab-asks-v0`; 879 judgements on 5 days |
 | Declared state at the end of each turn | `of status working\|waiting\|idle\|done` | Works | `test_pulse`; 13,072 declarations, both organizations, every day |
 | Messages between positions, on one machine or several, typed in when the receiver is idle | `of send`, `of inbox`, the relay | Works | `test_relay`, `test_relay_regression`, `test_server_relay`; 13,718 messages delivered on 6 days |
-| Hand-overs with a checkable end and a verifier | `of handover`; [`docs/handover.md`](docs/handover.md) | Works | `test_handover`; 117 hand-overs, both organizations, on 6 days |
+| Hand-overs with a checkable end and a verifier, a basis for what they ask, and notes | `of handover`, `--basis`, `of handover note`; [`docs/handover.md`](docs/handover.md) | Works | `test_handover`; 117 hand-overs, both organizations, on 6 days |
 | Structure changes as diffs with the owner's approval of the exact text | `of diff check/propose/apply` | Works | `test_diff`; 37 diffs applied on 6 days |
 | Who should do a task: a model reads every mandate | `of delegate`, `of fit replay` | Early | `test_fit`, `lab-fit-v0` |
+| The questions screen: the queue and the card side by side, in streams, with a search; `prefix+a` opens it, and a counter on each workspace shows what waits | `of asks --watch` | Early | `test_asks_inbox`; `asks-screen-v0` in a lab herdr |
+| The questions panel, always in sight, with a button that opens the screen; the more room, the more it shows | `of asks --panel` | Early | `test_asks_inbox` |
 
 ## Recording and the trace store
 
@@ -98,6 +107,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | An organization's own deny rules, signed | deny grants; [`docs/guard.md`](docs/guard.md) §O | Works | `test_guard_org` |
 | Masking secrets in traces, and removing a leaked one from every stored copy | `of redact`; [`docs/rfc/0002-secrets-in-traces.md`](docs/rfc/0002-secrets-in-traces.md) | Works | `test_mask`, `test_redact`, `test_secrets`, `test_no_secret_output`; 21 removals on 2 days |
 | A broker that serves a credential only to the position's holder, at the moment of use (1Password) | `of secret run`; [`docs/agent-secrets.md`](docs/agent-secrets.md) | Early (built 2026-11-11) | `test_secrets_broker`, `lab-secrets-broker-v0` |
+| Where secrets are kept is the organization's choice, through the `secret_stores` plugins: 1Password, the macOS keychain, an env file for the lab | `plugins:` in the registry; [`docs/plugins.md`](docs/plugins.md) | Early | `test_secret_stores`, `test_family` |
 | Break-glass grants, rotation and hand-over of secrets | [`docs/agent-secrets.md`](docs/agent-secrets.md) §5.4–5.6 | Designed | — |
 
 ## Capacity: Claude accounts and limits
@@ -108,6 +118,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Moving a session to another account between turns, with its context | `of capacity move`, `of capacity balance` | Works | `test_capacity`, `capacity-move-v1`; 205 balancing runs on 6 days |
 | Before and after a restart of the machine: every session back on its account | `of capacity reboot prepare/restore` | Early: used in one restart (2026-11-10) | `test_capacity` |
 | A position's own memory, kept across moves | `of capacity memory`; [`docs/rfc/0006-position-memory.md`](docs/rfc/0006-position-memory.md) | Early | `test_memory` |
+| The machine's Claude accounts as OF's own list, with no shell aliases; the capacity package, one keeper per person | `of account`, `of claude`; [`bench/capacity/`](bench/capacity/); [`docs/accounts.md`](docs/accounts.md) | Early | `test_accounts`, `test_capacity` |
 
 ## Model, measures and diagnosis
 
