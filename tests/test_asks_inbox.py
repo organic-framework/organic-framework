@@ -343,6 +343,56 @@ class ScreenTest(unittest.TestCase):
         self.assertTrue(any("select; wraps from the first card to the last" in self.text(f) for f in self.frames))
 
 
+class PanelTest(ScreenTest):
+    """The small panel (bin/of_asks_panel.py; the founder ~20:45Z 2026-11-12 via of_conductor, msg 01a1cc5b)."""
+
+    def test_the_key_comes_from_herdr_s_config(self):
+        import of_asks_panel as P
+        cfg = {"keys": {"command": [{"key": "prefix+a", "command": "sh -c '/x/main/bin/of asks --watch'"},
+                                    {"key": "prefix+shift+a", "command": "sh -c '/x/wt/bin/of asks --watch'"}]}}
+        self.assertEqual(P.open_keys(cfg), "Ctrl-B, then a")
+        self.assertEqual(P.open_keys(cfg, of_path="/x/wt/bin/of"), "Ctrl-B, then Shift-A")
+        self.assertEqual(P.open_keys(dict(cfg, keys=dict(cfg["keys"], prefix="ctrl+a"))), "Ctrl-A, then a")
+        self.assertIsNone(P.open_keys({}))
+
+    def panel(self, keys, data, size=(6, 140), open_cmd=None):
+        import of_asks_panel as P
+        ran = []
+        box = P.Panel(self.scr(keys, size), lambda: ([("Waiting on you", data)], {}), initial=(list(data), {}),
+                      keys="Ctrl-B, then a", open_cmd=open_cmd, run_cmd=ran.append)
+        box.run()
+        return box, ran
+
+    def test_counts_wait_button_and_a_click(self):
+        import curses
+        data = [item("A", "First plain question?", since="2026-11-10T08:00:00Z"),
+                item("C", "Pay 90 USD to the operator?"), item("D", "Log in to the console", task=True)]
+        self.mice = [(0, 3, 3, 0, curses.BUTTON1_PRESSED)]
+        box, ran = self.panel([0.05, curses.KEY_MOUSE, 0.05], data, open_cmd=["herdr-open", "asks"])
+        frame = self.text(self.frames[0])
+        self.assertIn("● Money and production 1", frame)
+        self.assertIn("● For your hands 1", frame)
+        self.assertIn("Longest wait:", frame)
+        self.assertIn("First plain question?", frame)
+        self.assertIn(" Open the questions ", frame)
+        self.assertIn("or Ctrl-B, then a", frame)
+        self.assertEqual(box.button[0], 3)
+        self.assertEqual(ran, [["herdr-open", "asks"]])
+
+    def test_without_an_opener_the_button_says_the_keys(self):
+        box, ran = self.panel([0.05, 10, 0.05], [item("A", "First plain question?")])
+        self.assertEqual(ran, [])
+        self.assertTrue(any("Press Ctrl-B, then a to open them." in self.text(f) for f in self.frames))
+
+    def test_a_narrow_pane_puts_a_stream_on_each_line(self):
+        data = [item("A", "First plain question?"), item("C", "Pay 90 USD to the operator?")]
+        self.panel([0.05], data, size=(10, 30))
+        rows = [t for (y, x), t in sorted(self.frames[-1].items())]
+        self.assertIn("● Holds work 0", rows)
+        self.assertIn("● Everything else 1", rows)
+        self.assertIn("or Ctrl-B, then a", rows)  # under the button when it does not fit beside it
+
+
 def curses_right():
     import curses
     return curses.KEY_RIGHT

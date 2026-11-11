@@ -2229,6 +2229,9 @@ def cmd_asks(args):
         return of_judge.run([x for x in [args.id, *(args.reason or [])] if x], args.pending, args.pane, args.dry_run)
     if args.action == "deliver":  # the listener, at the end of a position's turn (of_asks_answer.redeliver_pass)
         return _asks_deliver(args.id)
+    if getattr(args, "panel", False):  # the small panel of the questions, always in sight (bin/of_asks_panel.py)
+        import of_asks_panel
+        return of_asks_panel.main(os.path.realpath(__file__), _load_quiet)
     if args.watch and args.action not in ("answered", "withdraw"):  # the popup: first frame before any store work
         import of_asks_tui
         import threading
@@ -5260,6 +5263,8 @@ def main(argv=None):
     ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a): the queue and the "
                     "selected card side by side, streams, wrap-around keys (bin/of_asks_inbox.py)")
     ak.add_argument("--classic", action="store_true", help="with --watch: the earlier one-column popup")
+    ak.add_argument("--panel", action="store_true", help="a small panel of the questions for a pane or a view: the "
+                    "count per stream, the longest wait, how to open the popup and a button that opens it")
     ak.add_argument("--json", action="store_true")
     ak.add_argument("--chat", action="store_true", help="the owner's queue as the conductor tells it in a chat: cards, "
                     "tasks for a phone or a browser, and what waits for the machine")

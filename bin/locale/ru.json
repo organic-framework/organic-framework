@@ -213,5 +213,16 @@
  "production|tag": "прод",
  "irreversible|tag": "необратимо",
  "security|tag": "безопасность",
- "↑↓ select · 1-9 answer · Tab stream · ? help · Esc back": "↑↓ выбор · 1-9 ответ · Tab поток · ? помощь · Esc назад"
+ "↑↓ select · 1-9 answer · Tab stream · ? help · Esc back": "↑↓ выбор · 1-9 ответ · Tab поток · ? помощь · Esc назад",
+ "{prefix}, then {key}": "{prefix}, затем {key}",
+ "Questions": "Вопросы",
+ "Longest wait: {age} · {who}: {text}": "Дольше всех ждёт: {age} · {who}: {text}",
+ "First: {text}": "Первый: {text}",
+ "Nothing waits on you.": "Тебя ничего не ждёт.",
+ "Open the questions": "Открыть вопросы",
+ "or {keys}": "или {keys}",
+ "opening the questions…": "открываю вопросы…",
+ "could not open: {why}": "не открылось: {why}",
+ "Press {keys} to open them.": "Нажми {keys}, чтобы открыть.",
+ "The questions open with of asks --watch.": "Вопросы открываются командой of asks --watch."
 }
