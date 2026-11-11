@@ -45,16 +45,10 @@ def _ts(iso):
 # ------------------------------------------------------------ config dirs
 
 def config_dirs(home=None):
-    """`~/.claude` and every `~/.claude-<name>` directory, sorted. `~/.claude.json` is a file, not a dir. A name with
-    a dot is not an account: Claude Code locks a config dir with a `<dir>.lock` directory, and on 2026-11-09 the
-    probe took `~/.claude-d.lock` for an account and ran in it every 30 minutes, keeping the lock in place."""
-    home = home or os.path.expanduser("~")
-    out = [d for d in glob.glob(os.path.join(home, ".claude-*")) if os.path.isdir(d)
-           and _re.match(r"^\.claude-[A-Za-z0-9_-]+$", os.path.basename(d))]
-    base = os.path.join(home, ".claude")
-    if os.path.isdir(base):
-        out.append(base)
-    return sorted(out)
+    """The machine's accounts, sorted (docs/accounts.md): the folders listed in ~/.config/of/accounts.yaml, else
+    `~/.claude` and every `~/.claude-<name>` directory (of_accounts.discovered)."""
+    import of_accounts
+    return of_accounts.dirs(home)
 
 
 def short(d, home=None):
