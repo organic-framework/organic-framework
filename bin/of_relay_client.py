@@ -487,15 +487,45 @@ def seen_since(key, since):
 CONFIRM_S = 45  # how long the relay waits for the session's hook to record a typed message
 
 
+SPOOL_TAIL = 4 << 20  # how much of each spool file's end is read for a hook record
+
+
+def spooled_hook_record(session, msg_id):
+    """Is the hook's record of this message in the spool, not yet in the store? Under load the hook spools its events
+    (of_store.spool_append) and the ingest worker moves them in minutes later (2026-11-11, of_platform: a message
+    typed into a pane at 21:47:02Z reached the store at 21:52:22Z; the relay read it as lost and typed it three
+    times). Only the hook's record carries the frame's text 'msg <id>'; the relay's own carries a msg_id field."""
+    import glob
+    d = os.path.join(of_events.STATE_DIR, "spool")
+    paths = glob.glob(os.path.join(d, "events.jsonl")) + glob.glob(os.path.join(d, "events.jsonl.draining.*")) + \
+        glob.glob(os.path.join(of_events.STATE_DIR, "events.jsonl"))
+    needle, sess = f"msg {msg_id}".encode(), session.encode()
+    for path in paths:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - SPOOL_TAIL))
+                for line in fh:
+                    if needle in line and sess in line and b"agent_message_in" in line:
+                        return True
+        except OSError:
+            continue
+    return False
+
+
 def hook_saw(conn, session, msg_id):
-    """Did the receiving session's hook record this message (its frame carries 'msg <id>')?"""
-    if not (conn and session and msg_id):
+    """Did the receiving session's hook record this message (its frame carries 'msg <id>')? In the store, or still in
+    the spool under load."""
+    if not (session and msg_id):
         return False
-    try:
-        return conn.execute("SELECT 1 FROM event WHERE name = 'of.agent_message_in' AND source = 'hook' AND session_id = ? "
-                            "AND payload LIKE ? LIMIT 1", (session, f"%msg {msg_id}%")).fetchone() is not None
-    except Exception:  # noqa: BLE001 - a busy store must not hold delivery; unconfirmed is safe (re-offered)
-        return False
+    if conn is not None:
+        try:
+            if conn.execute("SELECT 1 FROM event WHERE name = 'of.agent_message_in' AND source = 'hook' AND "
+                            "session_id = ? AND payload LIKE ? LIMIT 1", (session, f"%msg {msg_id}%")).fetchone():
+                return True
+        except Exception:  # noqa: BLE001 - a busy store: the spool below, else unconfirmed (re-offered)
+            pass
+    return spooled_hook_record(session, msg_id)
 
 
 def hooked(conn, session):
