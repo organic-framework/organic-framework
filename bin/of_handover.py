@@ -192,7 +192,8 @@ def due_actions(handovers, now, window_of, offered_ok):
 # docs/handover.md §1.1 (of_architect cfda02c; the founder's incident of 2026-11-11 16:58Z: an unconfirmed inference
 # travelled as a must and merged as a "compliance requirement"): why the work is owed.
 # an ask id in full (a hyphenated UUID) or its hex prefix or end (review 2026-11-11, finding 6)
-BASIS = re.compile(r'^(?:ask:[0-9a-f](?:[0-9a-f-]{4,38})[0-9a-f]|source:\S.*"[^"]+"\s*$|evidence:\S.*|inference)$', re.S)
+BASIS = re.compile(r'^(?:ask:(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{6,40})'
+                   r'|source:\S.*"[^"]+"\s*$|evidence:\S.*|inference)$', re.S)
 OBLIGATION = re.compile(r"(?i)\b(must|required|requirements?|compliance|compliant|mandated|mandatory)\b")
 BASIS_HELP = ("--basis 'ask:<id>' (an owner's decision), 'source:<law, contract, standard or document> \"<the quote>\"', "
               "'evidence:<a commit, metric, log or report>', or 'inference' (your own reasoning, unconfirmed)")

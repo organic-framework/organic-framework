@@ -441,7 +441,8 @@ def remote_notes(positions, live, asks, rows, mem, prompt, now, log=print, views
     import of_locale
     named = of_locale.owner_setting("conductor")
     local = [c for c in conductors if (live.get(c["name"]) or {}).get("pane_id")]
-    mine = by_name.get(named) if named else (local[0] if len(local) == 1 else None)
+    mine = next((c for c in conductors if c["name"] == named), None) if named else \
+        (local[0] if len(local) == 1 else None)  # a name that is no active conductor is never typed into
 
     def conductor_for(org):
         """The conductor of an organization's own item: that organization's; none when it has none."""
