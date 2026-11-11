@@ -199,6 +199,10 @@ def call(prompt, config_dir=None, runner=subprocess.run, model=MODEL):
 def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=print, limit=40):
     """Judge his prompts of the last LOOKBACK_S not judged yet. Returns [(prompt, verdict)]."""
     now = now or time.time()
+    import of_net
+    if runner is subprocess.run and not of_net.online():  # a network drop: each call would wait out its timeout
+        log("of corrections: the model API is unreachable; the prompts wait for the next run")
+        return []
     st = load_state()
     summaries = {p["name"]: p.get("summary") for p in positions or ()}
     todo = [c for c in prompts(conn, _iso(now - LOOKBACK_S), _iso(now)) if c["key"] not in st["judged"]][:limit]

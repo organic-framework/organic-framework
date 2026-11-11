@@ -311,6 +311,10 @@ def infer(conn, positions, now=None, runner=subprocess.run, emit=True, trigger="
     d = digest(conn, positions, now=now, previous=(prev or {}).get("cases"))
     if not d["prompts"]:
         return None
+    import of_net
+    if runner is subprocess.run and not of_net.online():  # a network drop: the next prompt infers again
+        log("of desk case: the model API is unreachable; the case stays as it was")
+        return None
     prompt = render(d)
     v = call(prompt, {r["name"] for r in d["roster"]}, runner=runner)
     payload = dict(v, version=VERSION, trigger=trigger, window_s=d["window_s"], prompts=len(d["prompts"]),
