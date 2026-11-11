@@ -39,6 +39,7 @@
  "Sign in to {names} in the account {acct}": "Войти в {names} в аккаунте {acct}",
  "Steps:": "Шаги:",
  "Studio: opening…": "Studio: открываю…",
+ "The Claude accounts on this machine are {state}: sessions had to be moved twice within five hours, or no account accepts work. Moves of stopped sessions go on by themselves; the choice is money: wait for the accounts to reopen, or add an account (of account add). Accounts now:\n{numbers}": "Аккаунты Claude на этой машине {state}: сессии пришлось переносить дважды за пять часов, или ни один аккаунт не принимает работу. Остановившиеся сессии переносятся сами; выбор за деньгами: дождаться, когда аккаунты откроются, или добавить аккаунт (of account add). Аккаунты сейчас:\n{numbers}",
  "The position {position} needs {names}. Their sign-in is kept per Claude account, and the account {acct} ({dir}) has none. {why}\n1. In a plain terminal tab, not with \"!\" inside an agent's session: {line}\n2. Type /mcp, choose {names} and sign in in the browser; then /exit.\n3. Say done: of_capacity checks that `claude mcp list` shows them Connected.": "Позиции {position} нужны {names}. Вход в такие инструменты хранится в каждом аккаунте Claude отдельно, а в аккаунте {acct} ({dir}) его нет. {why}\n1. В обычной вкладке терминала, не через «!» в сессии агента: {line}\n2. Введи /mcp, выбери {names} и пройди вход в браузере; затем /exit.\n3. Скажи «готово»: of_capacity проверит, что `claude mcp list` показывает Connected.",
  "This Mac has {free} GiB of free space left (under {below}). Below about 20 GiB the relay, OF's event store and every session are at risk. The live sessions' scratch folders take the most: {lines}. The pulse has asked the positions over {cap} GiB to clean their folders; it deletes nothing itself. The card closes itself once more than {clear} GiB are free. What should be done?": "На Маке осталось {free} ГиБ свободного места (меньше {below}). Ниже примерно 20 ГиБ под угрозой relay, база событий OF и все сессии. Больше всего занимают папки scratch живых сессий: {lines}. Пульс уже попросил позиции сверх {cap} ГиБ почистить свои папки; сам он ничего не удаляет. Карточка закроется сама, когда свободно станет больше {clear} ГиБ. Что делать?",
  "To do for you": "Сделать тебе",
@@ -55,6 +56,7 @@
  "a question in the questions window": "вопрос в окне вопросов",
  "accepted": "принято",
  "accepted, in progress": "принято, в работе",
+ "add an account": "добавить аккаунт",
  "and {n} more": "и ещё {n}",
  "answered": "ответил",
  "answered from the records, nobody disturbed": "ответили по записям, никого не дёргали",
@@ -104,7 +106,9 @@
  "redoing it after review": "переделывает после проверки",
  "returned": "возвращено",
  "sent ✓ · u to undo ({s} s)": "отправлено ✓ · u — отменить ({s} с)",
+ "short|pool": "на исходе",
  "sizes not measured yet": "размеры ещё не измерены",
+ "spent|pool": "исчерпаны",
  "stuck": "застряло",
  "stuck|pill": "застряли",
  "taken up": "взял в работу",
@@ -114,6 +118,7 @@
  "trust them in the target account": "доверить на целевом аккаунте",
  "updated": "обновлено",
  "updating…": "обновляю…",
+ "wait for the accounts to reopen": "дождаться, когда аккаунты откроются",
  "wait for the reset": "ждать сброса",
  "waiting": "ждёт",
  "waiting on you": "ждёт тебя",
@@ -133,5 +138,6 @@
  "{n} days ago": "{n} дн назад",
  "{n} draft(s) archived: the question is closed already ({ids})": "{n} черновик(ов) убрано в архив: вопрос уже закрыт ({ids})",
  "{n} min ago": "{n} мин назад",
- "{n} task(s) wait for your hands": "{n} задач(и) ждут твоих рук"
+ "{n} task(s) wait for your hands": "{n} задач(и) ждут твоих рук",
+ "{who} stand on their usage limit for two balancer runs while {accepting} accept work, and the balancer could not move them. No capacity position serves this machine's accounts, so this card is the only notice. Ask your conductor to move them, or wait for their accounts to reopen.": "{who} стоят на лимите уже два прогона балансировщика, хотя {accepting} принимают работу, а перенести их балансировщик не смог. Аккаунты этой машины не обслуживает ни одна позиция ёмкости, поэтому эта карточка — единственное уведомление. Попроси своего дирижёра перенести их или дождись, когда их аккаунты откроются."
 }

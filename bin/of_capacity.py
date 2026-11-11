@@ -1714,7 +1714,7 @@ def _inject(sid, text, reason):
     import hashlib
     digest = hashlib.sha256(text.strip().encode()).hexdigest()
     of_events.emit("injected_prompt", {"injector": "of_capacity", "target_session": sid, "text_sha256": digest,
-                                       "reason": reason}, position="of_capacity")
+                                       "reason": reason}, position=actor())
     path = os.path.join(STATE_DIR, "injections.jsonl")
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
         fh.write(json.dumps({"ts": time.time(), "session": sid, "sha256": digest, "injector": "of_capacity"}) + "\n")
@@ -2533,7 +2533,7 @@ def reboot_prepare(positions, hold=(), dry_run=False, log=print, tmp_root=None, 
     with open(os.path.join(out_dir, "plan.json"), "w") as fh:
         json.dump(plan, fh, indent=1, ensure_ascii=False)
     of_events.emit("capacity_reboot_prepared", {"sessions": len(entries), "tmp_kept": plan.get("tmp_kept")},
-                   position="of_capacity")
+                   position=actor())
     log(f"{len(entries)} session(s) recorded in {short(out_dir)}; restart, log in, start herdr, then run "
         "`of capacity reboot restore` in a herdr pane")
     return plan
@@ -2713,7 +2713,7 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
     failed = [n for n, s, _ in done if s == "failed"]
     if not dry_run:
         of_events.emit("capacity_reboot_restored", {"resumed": sum(1 for _, s, _ in done if s == "resumed"),
-                                                    "failed": failed}, position="of_capacity")
+                                                    "failed": failed}, position=actor())
         if not failed and not only:
             if plan.get("herdr_resume_before") is not False and "herdr_resume_before" in plan:
                 set_herdr_resume(True, log=log)
@@ -2790,7 +2790,7 @@ def adopt(name, kind, account, expires_at=None, value=None, fp=None, consumer=No
         raise MoveError("a fingerprint is the first 12 hex digits of the token's SHA-256")
     payload = {"name": name, "kind": kind, "account": account, "fingerprint": fp, "expires_at": expires_at,
                "consumer": consumer, "at": _iso(time.time())}
-    of_events.emit("credential_adopted", payload, position="of_capacity",
+    of_events.emit("credential_adopted", payload, position=actor(),
                    session=os.environ.get("CLAUDE_CODE_SESSION_ID"))
     return payload
 
@@ -2815,7 +2815,7 @@ def store_secret(name, kind, account, consumer=None, read=None, interactive=None
                                                          "consumer": consumer})
     rec = {"name": name, "kind": kind, "account": account, "fingerprint": fp, "vault_item": item, "consumer": consumer,
            "at": _iso(time.time())}
-    of_events.emit("credential_adopted", rec, position="of_capacity")
+    of_events.emit("credential_adopted", rec, position=actor())
     return rec
 
 
@@ -3016,7 +3016,7 @@ def mint(d, log=print, spawn=None, probe_fn=None, token_probe_fn=None, put=None,
                               {"account": account, "kind": "setup_token", "fingerprint": fp, "expires_at": expires})
     rec = {"name": f"setup-token {account}", "kind": "setup_token", "account": account, "fingerprint": fp,
            "expires_at": expires, "vault_item": item, "at": _iso(now)}
-    of_events.emit("credential_minted", rec, position="of_capacity")
+    of_events.emit("credential_minted", rec, position=actor())
     log(f"  {short(d)}: minted and stored, fingerprint {fp}, expires {expires}")
     return rec
 
@@ -3141,7 +3141,7 @@ def loop_costs(conn, now, emit=None):
     """For each of.loop_run without an of.loop_cost (RFC 0005 §5 "cost per cycle"): the recording session's spend
     from the run's start (started_at, else queued_at) to its end, each response once by message.id, subagents
     included, at list price. No start: usd None (unknown, never zero). Returns the number of costs written."""
-    emit = emit or (lambda k, p: of_events.emit(k, p, position="of_capacity"))
+    emit = emit or (lambda k, p: of_events.emit(k, p, position=actor()))
     done = {json.loads(p or "{}").get("run") for (p,) in conn.execute(
         "SELECT payload FROM event WHERE name = 'of.loop_cost'")}
     n = 0
@@ -3523,6 +3523,38 @@ def load_policy():
     except Exception:
         pass
     return p
+
+
+def capacity_position(policy=None):
+    """'<org>:<name>' of the position that serves this machine's accounts: capacity.yaml `position` (docs/accounts.md
+    B4: one per person, in their home organization; of init writes it), or None. With none, the invariant's work
+    reaches the owner as a card (owner_card)."""
+    p = (policy if policy is not None else load_policy()).get("position")
+    return str(p).strip() or None if p else None
+
+
+def actor(policy=None):
+    """The position name the balancer's records and asks carry: the capacity position's, else of_capacity."""
+    p = capacity_position(policy)
+    return p.split(":", 1)[-1] if p else "of_capacity"
+
+
+def owner_card(kind, stalls, accepting, spent, numbers):
+    """The owner's card for the invariant's work when no capacity position serves the machine: a session stands on
+    its limit for two runs ("self"), or the pool is short or spent ("pool", a money question)."""
+    from of_locale import tr
+    if kind == "self":
+        who = ", ".join(sorted({s.get("position") or s["session"] for s in stalls})) or "?"
+        return (tr("{who} stand on their usage limit for two balancer runs while {accepting} accept work, and the "
+                   "balancer could not move them. No capacity position serves this machine's accounts, so this card "
+                   "is the only notice. Ask your conductor to move them, or wait for their accounts to reopen.",
+                   who=who, accepting=", ".join(short(a) for a in sorted(accepting)) or "-"), None)
+    state = tr("spent|pool") if spent else tr("short|pool")
+    return (tr("The Claude accounts on this machine are {state}: sessions had to be moved twice within five hours, or "
+               "no account accepts work. Moves of stopped sessions go on by themselves; the choice is money: wait for "
+               "the accounts to reopen, or add an account (of account add). Accounts now:\n{numbers}",
+               state=state, numbers=numbers or "-"),
+            tr("wait for the accounts to reopen") + "|" + tr("add an account"))
 
 
 def usage_cost(u):
@@ -4041,7 +4073,7 @@ def file_signin_task(d, missing, position, ask=None, of_bin=None, moved=False, n
             ask(title, task=steps)
         else:
             subprocess.run([of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"), "ask", title,
-                            "--task", steps, "--from", "of_capacity"], capture_output=True, text=True, timeout=60,
+                            "--task", steps, "--from", actor()], capture_output=True, text=True, timeout=60,
                            check=True)
     except Exception as e:  # noqa: BLE001 - the move's own message still names what is missing
         log(f"  sign-in task for {short(d)} not filed: {type(e).__name__}: {e}")
@@ -4622,13 +4654,23 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         cache["_invariant"] = state
         save_cache(cache)
         of_bin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+        carded = set()
         for kind, x in actions:
             if kind == "event":
                 of_events.emit("capacity_stall", x)
                 continue
-            to = "organic-framework-build:of_capacity"  # "self" and "pool": work for of_capacity's session
-            r = subprocess.run([of_bin, "send", to, "--from", "organic-framework-build:of_capacity", x],
-                               capture_output=True, text=True, timeout=60,
+            to = capacity_position(policy)  # "self" and "pool": work for the capacity position's session
+            if not to:
+                if kind == "self" and kind in carded:
+                    continue  # one card per run names every stalled session
+                carded.add(kind)
+                text, options = owner_card(kind, stalls, accepting, spent,
+                                           pool_numbers(rows, sessions, rates, wcalib, now))
+                if ask and not dry_run:
+                    ask(text, options) if options else ask(text)
+                log(f"balance: invariant {kind}: no capacity position; {'the owner has a card' if ask else text}")
+                continue
+            r = subprocess.run([of_bin, "send", to, "--from", to, x], capture_output=True, text=True, timeout=60,
                                env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
             log(f"balance: invariant {kind}: {(r.stdout or r.stderr).strip()[-160:]}")
     if plan_ and not dry_run:

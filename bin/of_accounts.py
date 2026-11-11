@@ -141,9 +141,14 @@ def login_task(name, d, lang=None):
                "logged in.", lang, **kw))
 
 
+def _actor():
+    import of_capacity
+    return of_capacity.actor()
+
+
 def _file_task(title, steps, of_bin=None):
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
-    r = subprocess.run([of_bin, "ask", title, "--task", steps, "--from", "of_capacity"], capture_output=True,
+    r = subprocess.run([of_bin, "ask", title, "--task", steps, "--from", _actor()], capture_output=True,
                        text=True, timeout=60, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
     return (r.stdout or r.stderr).strip()
 
