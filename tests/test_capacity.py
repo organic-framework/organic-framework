@@ -431,7 +431,7 @@ class PlanAndWatch(unittest.TestCase):
             pos = [dict(p) for p in self.POS]
             sessions = {"/g": [{"session": "s1"}, {"session": "s2"}, {"session": "s3"}], "/e": [{"session": "s4"}]}
             kw["sessions_fn"] = lambda d: sessions.get(d, [])
-            of_locale.set_language("en")  # another module pins ru at import
+            of_locale.set_language("en")  # the English text, whatever owner.yaml says
             try:
                 of_capacity.watch(pos, asked.append, log=lambda m: None, **kw)
             finally:
