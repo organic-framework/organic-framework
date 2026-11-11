@@ -114,6 +114,31 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   A session with no message yet cannot be resumed after a restart ("No conversation found"). A position bound only
   by its name loses that name at a restart until the keeper writes `holder.session`.
 
+## Resuming OF's sessions after a herdr restart
+
+herdr resumes an agent after its server restarts by typing a command into the pane's new shell. For Claude Code its
+own command is a bare `claude --resume <id>`: no account, model, effort or permission mode. On 2026-11-10, 38 sessions
+came back on one spent account that way. A shell function (`bin/of-shell.zsh`) used to rewrite it; OF no longer
+needs one (docs/accounts.md A4, hand-over a9c118e8 from `of_capacity`).
+
+- **How.** OF's Claude Code hook reports its own resume command with every state report (`pane.report_agent`,
+  `resume_argv`; `resume_argv()` in `bin/of_hook.py`). herdr keeps a reported resume command with the pane, across
+  restarts too, and prefers it to its own (herdr 0.9.5, `src/persist/restore.rs`). The command is
+  `env <the hook's Python> <OF>/bin/of claude --resume <id>`, and `of claude --resume` runs the `of resume-command`
+  line: the account that holds the session, its model, effort and permission mode (`bin/of_accounts.py`).
+- **Why `env` and full paths.** herdr takes a plain command name as the first word and types the command into a new
+  login shell. On macOS, `path_helper` puts `/usr/bin` first there, and `/usr/bin/python3` has no PyYAML. The lab
+  first saw `of: PyYAML is missing`, then a resume on the wrong account until `of_capacity` ran `bin/of` under the same
+  Python too (a3c44e9).
+- **When it is not reported.** No session (a subagent's call), a side chat, or a path herdr would refuse (an
+  apostrophe, a control character). herdr then uses its own command.
+- **Checked on 2026-11-11** in a lab herdr whose panes ran a login `/bin/sh` (no OF shell function) with no
+  `CLAUDE_CONFIG_DIR` in the pane. A Claude Code session was started on one account for its own process only, as
+  `of spawn` does, and given one message; its hook reported the command. After a server restart, herdr typed it and
+  the session came back with its conversation (its transcript exists only on that account) and its model
+  (`claude --resume <id> --model claude-haiku-5-5`). Tests: `tests/test_herdr_plugin.py` `ResumeTest`.
+- A session that never got a message cannot be resumed by any command ("No conversation found").
+
 ## Agents without herdr: tmux
 
 A person who reaches OF only through the conductor's chat ([`remote.md`](remote.md)) runs the other agents in tmux.

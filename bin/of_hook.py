@@ -432,7 +432,30 @@ def herdr_state(state, message=None):
     params = {"pane_id": pane, "source": HERDR_SOURCE, "agent": "claude", "state": state, "seq": time.time_ns()}
     if message:
         params["message"] = message[:200]
+    resume = resume_argv()
+    if resume:
+        params["resume_argv"] = resume
     herdr_call("pane.report_agent", params)
+
+
+def resume_argv(env=None, python=None, of_bin=None):
+    """What herdr runs in this pane after a herdr restart, instead of its own bare `claude --resume <id>`: `of claude
+    --resume <id>` resumes the session as it ran, on its account with its model, effort and permission mode
+    (bin/of_accounts.py), so no shell function is needed (docs/accounts.md A4, hand-over a9c118e8; docs/herdr.md).
+    herdr keeps a resume command reported with a state report and prefers it to its own (herdr 0.9.5,
+    src/persist/restore.rs). It types the command into a new login shell, whose PATH may put a Python without PyYAML
+    first (macOS path_helper: /usr/bin before Homebrew; seen in the lab). So the command names this hook's own Python
+    and this checkout's bin/of, behind `env`, because herdr takes only a plain command name as the first word. None for
+    a subagent's call or a side chat, or when a path would break herdr's rules."""
+    env = os.environ if env is None else env
+    if not _SESSION or env.get("OF_SIDE_CHAT") or not re.fullmatch(r"[0-9A-Za-z-]{8,64}", _SESSION):
+        return None
+    python = python or sys.executable
+    of_bin = of_bin or os.path.join(os.path.dirname(os.path.abspath(__file__)), "of")
+    if not python or not os.path.isfile(of_bin) or any("'" in x or re.search(r"[\x00-\x1f\x7f]", x)
+                                                         for x in (python, of_bin)):
+        return None
+    return ["env", python, of_bin, "claude", "--resume", _SESSION]
 
 
 def tmux_state(state, message=None):

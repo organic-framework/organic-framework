@@ -164,5 +164,47 @@ class HookTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(d, "herdr-plugin.pending")))  # the next event runs it
 
 
+class ResumeTest(unittest.TestCase):
+    """docs/accounts.md A4 (hand-over a9c118e8): OF's hook reports `of claude --resume <id>` to herdr with its state, so
+    a herdr restart resumes the session on its account, model and mode with no shell function."""
+
+    def setUp(self):
+        import of_hook
+        self.h = of_hook
+        self.saved = (of_hook._SESSION, of_hook.herdr_call, os.environ.get("HERDR_PANE_ID"))
+        self.calls = []
+        of_hook.herdr_call = lambda method, params: self.calls.append((method, params))
+        os.environ["HERDR_PANE_ID"] = "w1:p1"
+
+    def tearDown(self):
+        self.h._SESSION, self.h.herdr_call, pane = self.saved
+        if pane is None:
+            os.environ.pop("HERDR_PANE_ID", None)
+        else:
+            os.environ["HERDR_PANE_ID"] = pane
+
+    def test_the_state_report_carries_ofs_resume_command(self):
+        self.h._SESSION = "00000000-0000-4000-8000-00000000a9c1"
+        argv = self.h.resume_argv(env={}, python="/opt/py/bin/python3")
+        self.assertEqual(argv[0], "env")  # herdr takes a plain command name only; paths may follow
+        self.assertEqual(argv[1], "/opt/py/bin/python3")  # the hook's own Python: it has PyYAML
+        self.assertTrue(argv[2].endswith(os.path.join("bin", "of")))
+        self.assertEqual(argv[3:], ["claude", "--resume", "00000000-0000-4000-8000-00000000a9c1"])
+        self.h.herdr_state("idle")
+        method, params = self.calls[-1]
+        self.assertEqual((method, params["source"], params["state"]), ("pane.report_agent", "of:hook", "idle"))
+        self.assertEqual(params["resume_argv"][3:5], ["claude", "--resume"])
+
+    def test_no_resume_command_for_a_subagent_a_side_chat_or_a_bad_path(self):
+        self.h._SESSION = "00000000-0000-4000-8000-00000000a9c1"
+        self.assertIsNone(self.h.resume_argv(env={"OF_SIDE_CHAT": "1"}))
+        self.assertIsNone(self.h.resume_argv(env={}, python="/it's/python3"))  # herdr refuses apostrophes
+        self.assertIsNone(self.h.resume_argv(env={}, of_bin="/no/such/of"))
+        self.h._SESSION = None  # a subagent's call
+        self.assertIsNone(self.h.resume_argv(env={}))
+        self.h._SESSION = "x; rm -rf"  # never typed into a shell
+        self.assertIsNone(self.h.resume_argv(env={}))
+
+
 if __name__ == "__main__":
     unittest.main()
