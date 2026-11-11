@@ -304,6 +304,40 @@ class ScreenTest(unittest.TestCase):
         self.assertTrue(any("line" in self.text(f) for f in self.frames))
         self.assertGreaterEqual(box.ctop, 0)
 
+    def row_of(self, frame, text):
+        return next((y for (y, x), t in frame.items() if x == 2 and t.startswith(text)), None)
+
+    def test_the_selected_row_stays_put_when_a_card_arrives_above_even_if_the_queue_fits(self):
+        """of_harness 2026-11-12 (asks-screen-v0): the row moved from screen line 8 to 9 while the queue fit."""
+        a = item("A", "First plain question?", since="2026-11-11T08:00:00Z")
+        b = item("B", "Second plain question?", since="2026-11-11T09:00:00Z")
+        new = item("N", "A newer plain question?", since="2026-11-11T07:00:00Z")
+        calls, ticks = {"n": 0}, {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return ([("Waiting on you", [a, b] + ([new] if calls["n"] > 1 else []))], {})
+
+        def seq():
+            ticks["n"] += 1
+            return 1 if ticks["n"] > 3 else 0
+        self.inbox([0.05, ord("j"), 0.05, -1, 0.1, -1, 0.05], [a, b], loader=loader, seq=seq)
+        rows = [self.row_of(f, "Second plain question?") for f in self.frames if self.row_of(f, "Second plain")]
+        self.assertEqual(len(set(rows)), 1, rows)
+        last = self.frames[-1]
+        self.assertTrue(any(t == "▲" for t in last.values()))  # the new card went above: marked
+
+    def test_a_narrow_screen_keeps_every_stream_and_the_main_keys(self):
+        data = [item("A", "First plain question?"), item("C", "Pay 90 USD to the operator?"),
+                item("D", "Log in to the console", task=True), item("E", "Lift it?", kind="question (declared) blocking")]
+        self.inbox([0.05], data, size=(30, 77))
+        frame = self.frames[-1]
+        top = "".join(t for (y, x), t in sorted(frame.items()) if y == 0)
+        self.assertEqual(top.count("●"), 4)
+        self.assertIn("Holds work 1", top)
+        keys = next(t for (y, x), t in frame.items() if y == 28)
+        self.assertTrue("Tab" in keys and "?" in keys and "Esc" in keys, keys)
+
     def test_help(self):
         self.inbox([0.05, ord("?"), 0.05], [item("A", "First plain question?")])
         self.assertTrue(any("select; wraps from the first card to the last" in self.text(f) for f in self.frames))
