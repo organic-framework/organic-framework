@@ -146,5 +146,6 @@
  "y": "д",
  "{name} stopped (exit {code}); it starts again in {s} s. Ctrl-C stops it.": "{name}: остановилась (код {code}); снова запустится через {s} с. Ctrl-C — остановить.",
  "the questions panel": "Панель вопросов",
- "the panel": "Панель"
+ "the panel": "Панель",
+ "It uses only your own accounts: one small check per account at most every 30 minutes on the cheapest model, and that one agent.": "Он использует только твои собственные аккаунты: одна небольшая проверка на аккаунт не чаще раза в 30 минут на самой дешёвой модели, и этот один агент."
 }
