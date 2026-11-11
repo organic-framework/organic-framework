@@ -1589,6 +1589,172 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None):
     return hits
 
 
+# ------------------------------------------------- the public repository's writes on GitHub (G18)
+# AGENTS.md (the founder, 2026-11-11 about 19:11Z; cards 626ac155, 9800f623): every feature reaches main through a pull
+# request, and only of_release merges and pushes. Every agent's git and gh act as the founder's GitHub account, so
+# only the guard can tell positions apart. framework_writes() names what a command line would change on a GitHub
+# repository of the organic-framework owner; the hook allows it to of_release only (bin/of_hook.py). Reading,
+# comments and reviews stay open to everyone. A user organization's own repositories are never matched.
+RELEASE_OWNER = "organic-framework"
+_GH_URL = re.compile(r"(?:github\.com[:/]+|^)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.I)
+_GH_READ_PATHS = re.compile(r"/(?:issues|pulls)/(?:\d+/)?comments(?:/\d+)?$|/pulls/\d+/reviews(?:/\d+)?$|"
+                            r"/(?:issues|pulls)/comments/\d+(?:/reactions)?$|/issues/\d+/reactions$")
+_GH_WRITES = {"pr": {"merge"}, "release": {"create", "edit", "delete", "upload", "delete-asset"},
+              "repo": {"edit", "delete", "archive", "unarchive", "rename", "sync"},
+              "workflow": {"run", "enable", "disable"}, "run": {"rerun", "cancel", "delete"},
+              "secret": {"set", "delete", "remove"}, "variable": {"set", "delete", "remove"},
+              "ruleset": {"create", "edit", "delete"}, "cache": {"delete"}}
+_GH_VALUE = {"-R", "--repo", "-X", "--method", "-f", "-F", "--field", "--raw-field", "--input", "-H", "--header",
+             "--jq", "-q", "--template", "-t", "--hostname", "--cache", "-p", "--preview", "-b", "--body", "-m",
+             "--subject", "--match-head-commit", "--author-email", "--ref", "-r", "--title", "--notes", "-n",
+             "--target", "--branch", "-B", "--head", "-a", "--app", "-e", "--env", "-o", "--org"}
+
+
+def _framework_slug(text):
+    """Is TEXT (a URL, `owner/name` or a path `repos/owner/name/...`) a GitHub repository of RELEASE_OWNER?"""
+    t = str(text or "").strip().strip("'\"")
+    t = re.sub(r"^/?repos/", "", t)
+    parts = t.split("/")
+    if "://" in t or t.startswith("git@") or "github.com" in t:
+        m = _GH_URL.search(t.split("?")[0])
+        return bool(m) and m.group(1).lower() == RELEASE_OWNER
+    return len(parts) >= 2 and parts[0].lower() == RELEASE_OWNER and bool(parts[1])
+
+
+def _remotes(where):
+    """{remote name: [url, pushurl…]} of the repository holding WHERE, from its git config."""
+    g = _git_dir(where)
+    out = {}
+    if not g:
+        return out
+    try:
+        text = open(os.path.join(g, "config"), encoding="utf-8", errors="replace").read()
+    except OSError:
+        return out
+    name = None
+    for line in text.splitlines():
+        m = re.match(r'\s*\[remote\s+"([^"]+)"\]', line)
+        if m:
+            name = m.group(1)
+            continue
+        if line.strip().startswith("["):
+            name = None
+        m = re.match(r"\s*(?:push)?url\s*=\s*(\S+)", line)
+        if name and m:
+            out.setdefault(name, []).append(m.group(1))
+    return out
+
+
+def _git_push_target(args, where):
+    """Does `git push …` (ARGS after `push`) go to a framework repository?"""
+    pos = [a for a in args if not a.startswith("-")]
+    remotes = _remotes(where)
+    target = pos[0] if pos else None
+    if target and ("/" in target or ":" in target) and target not in remotes:
+        return _framework_slug(target)
+    urls = remotes.get(target or "origin") or ([u for us in remotes.values() for u in us] if not target else [])
+    return any(_framework_slug(u) for u in urls)
+
+
+def _gh_write(args, where):
+    """What a `gh …` call (ARGS after gh) would change on a framework repository, or None."""
+    words, repo, method, fields, k = [], None, None, False, 0
+    while k < len(args):
+        a = args[k]
+        key, _, inline = a.partition("=") if a.startswith("--") else (a, "", "")
+        if key in _GH_VALUE:
+            val = inline if inline else (args[k + 1] if k + 1 < len(args) else "")
+            if key in ("-R", "--repo"):
+                repo = val
+            elif key in ("-X", "--method"):
+                method = val.upper()
+            elif key in ("-f", "-F", "--field", "--raw-field", "--input"):
+                fields = True
+            k += 1 if inline else 2
+            continue
+        if not a.startswith("-"):
+            words.append(a)
+        k += 1
+    if not words:
+        return None
+    if words[0] == "api" and len(words) > 1:
+        path = words[1].split("?")[0]
+        method = method or ("POST" if fields else "GET")
+        if method == "GET" or path.lstrip("/") == "graphql" and not re.search(r"\bmutation\b", " ".join(args)):
+            return None
+        if path.lstrip("/") == "graphql":
+            body = " ".join(args)
+            if RELEASE_OWNER in body.lower() and not re.search(r"\b(addComment|addPullRequestReview\w*|"
+                                                                 r"addReaction)\b", body):
+                return "gh api graphql mutation"
+            return None
+        here_fw = "{owner}" in path and any(_framework_slug(u) for us in _remotes(where).values() for u in us)
+        if not path.lstrip("/").startswith("repos/") or not (here_fw or _framework_slug(path)) \
+                or _GH_READ_PATHS.search(path):
+            return None
+        return f"gh api -X {method} {re.sub(r'^/?repos/', '', path)}"
+    sub = words[1] if len(words) > 1 else None
+    if sub not in _GH_WRITES.get(words[0], set()):
+        return None
+    if repo is not None:
+        return f"gh {words[0]} {sub} -R {repo}" if _framework_slug(repo) else None
+    return f"gh {words[0]} {sub}" if any(_framework_slug(u) for us in _remotes(where).values() for u in us) else None
+
+
+def framework_writes(tool, tool_input, cwd=None, depth=0):
+    """[what] a tool call would change on a GitHub repository of the organic-framework owner (G18): a git push to it,
+    a merge, a release, a workflow run, a secret or variable, a repository setting, a write through gh api (a
+    status, a ruleset, a ref, a file). Comments and reviews are not writes here. The repository is the one the
+    command names (a URL, -R, an api path) or the one it runs in (the session's directory, `cd`, `git -C`)."""
+    if tool != "Bash" or depth > 4:
+        return []
+    cmd = (tool_input or {}).get("command") or ""
+    if "git" not in cmd and "gh" not in cmd:
+        return []
+    try:
+        text, subs, docs, _ = _scan(cmd)
+        pipes = _split(text)
+    except Exception:  # noqa: BLE001 - nothing parsed, nothing named
+        return []
+    out = []
+    for sub in subs:
+        out += framework_writes(tool, {"command": sub}, cwd, depth + 1)
+    for _quoted, body, opener in docs:
+        if _head(opener) in _SHELLS:
+            out += framework_writes(tool, {"command": body}, cwd, depth + 1)
+    here = cwd
+    for pipe in pipes:
+        for kind, stext in pipe:
+            if kind == "sub":
+                out += framework_writes(tool, {"command": stext}, here, depth + 1)
+                continue
+            s = _simple(stext)
+            if not s or s[0] == "<read":
+                continue
+            head, args = s[0], s[1]
+            if head == "cd":
+                to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
+                here = to if os.path.isabs(to) else os.path.join(here or ".", to)
+            elif head in _SHELLS - {"eval"} and "-c" in args[:-1]:
+                out += framework_writes(tool, {"command": args[args.index("-c") + 1]}, here, depth + 1)
+            elif head == "git":
+                i, where = 0, here or "."
+                while i < len(args) and args[i].startswith("-"):
+                    if args[i] in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(args):
+                        if args[i] == "-C":
+                            where = os.path.join(where, os.path.expanduser(args[i + 1]))
+                        i += 2
+                        continue
+                    i += 1
+                if i < len(args) and args[i] == "push" and _git_push_target(args[i + 1:], where):
+                    out.append("git push")
+            elif head == "gh":
+                w = _gh_write(args, here or ".")
+                if w:
+                    out.append(w)
+    return out
+
+
 # ------------------------------------------------------------------ files under a credential root (G14)
 # docs/registry.md, Credentials (of_architect, 8ef7bc0, 2026-11-11, from a user organization): under each
 # organization's credential root a position may read or use only the files a credential it lists names. This part
