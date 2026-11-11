@@ -3514,13 +3514,18 @@ def _diff_events(conn):
 
 
 def _diff_approved_by_answer(conn, ask_id):
-    """An owner's popup answer `approve…` to the diff's ask counts as the approval."""
+    """An owner's popup answer `approve…` to the diff's ask counts as the approval: only the popup's (`via:
+    asks-ui`), which the owner clicks at the machine. An answer recorded through the conductor's chat (`via:
+    conductor`) or any other path never does: it would apply any tier past the terminal approval and the remote hold
+    (after-the-fact review of 2026-11-11, finding 1; organic-framework-build release/reviews)."""
     if not ask_id:
         return False
+    import of_locale
+    starts = tuple(v.lower() for k in ("approve", "yes") for v in of_locale.variants(k))  # in any of OF's languages
     for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'"):
         p = json.loads(pl or "{}")
         if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and \
-                str(p.get("answer") or "").lower().startswith(("approve", "да")):
+                p.get("via") == "asks-ui" and str(p.get("answer") or "").strip().lower().startswith(starts):
             return True
     return False
 
