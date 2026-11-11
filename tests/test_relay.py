@@ -400,7 +400,7 @@ class RelayTest(unittest.TestCase):
         for _ in range(2):
             self._deliver_with_box(self._screen("a person's half-typed words"))
         self.assertEqual(of_relay.read_stuck()["w3:pS"]["count"], 3)
-        res, typed = self._deliver_with_box(self._screen("какой статус по лимитам?", dim=True))  # a suggestion
+        res, typed = self._deliver_with_box(self._screen("what is the status of the limits?", dim=True))  # a suggestion
         self.assertEqual((res[0], len(typed)), (True, 1))
         self.assertNotIn("w3:pS", of_relay.read_stuck())  # an empty box resets the count
         res, typed = self._deliver_with_box(self._screen(""))
@@ -448,7 +448,7 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(f("Reminder: hand-over", "of-pulse:a").startswith("Message from a (via of pulse, authority: none)"))
         self.assertTrue(f("brief", "of_spawn", "of spawn").startswith("Message from of_spawn (via of spawn,"))
         for framed in ("Message from mt:x (via relay, authority: none)\nhi", "Question from k8s_keeper (unit p, …): x",
-                       "Answer from the founder to your question 1234abcd: да"):
+                       "Answer from the founder to your question 1234abcd: yes"):
             self.assertEqual(f(framed, "s"), framed)
         res, typed = self._deliver_with_box(self._screen(""))
         self.assertTrue(typed[0][-1].startswith("Message from ofb:of_x (via of, authority: none)\nof_x: hello"))
@@ -462,10 +462,10 @@ class RelayTest(unittest.TestCase):
         saved = of_relay.subprocess.run
         of_relay.subprocess.run = lambda argv, **k: (calls.append(argv), R())[1]
         try:
-            of_relay.herdr_deliver("w1:p1", "да, запускай", "S", "owner", human_channel="asks-ui")
+            of_relay.herdr_deliver("w1:p1", "yes, go ahead", "S", "owner", human_channel="asks-ui")
         finally:
             of_relay.subprocess.run = saved
-        self.assertEqual(calls[-1][-1], "да, запускай")
+        self.assertEqual(calls[-1][-1], "yes, go ahead")
 
     def test_batching_fyi_and_urgent(self):
         """founder, 2026-11-07: one typed prompt per receiver per 15 minutes; fyi never typed; urgent at once."""
