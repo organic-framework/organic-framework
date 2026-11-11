@@ -1400,11 +1400,35 @@ def _herdr_reached_is_lab(stext, env):
     """Does this herdr command reach of_herdr's lab herdr? herdr talks to the running herdr through its socket:
     HERDR_SOCKET_PATH, inherited from an agent's pane, is the owner's; only when it is unset does herdr place its
     socket under XDG_CONFIG_HOME (of_architect's review of PR 32, checked on herdr 0.9.5)."""
+    if (env or {}).get("__lab_link"):  # the line made a link or a socket in the lab before this command
+        return False
     e = _line_env(stext, env)
     sock = e.get("HERDR_SOCKET_PATH")
-    if sock:
-        return _herdr_lab(sock)
-    return _herdr_lab(e.get("XDG_CONFIG_HOME"))
+    if not sock:  # herdr then uses its socket under XDG_CONFIG_HOME, as the owner's under ~/.config
+        xdg = e.get("XDG_CONFIG_HOME")
+        if not _herdr_lab(xdg):
+            return False
+        sock = os.path.join(os.path.expanduser(xdg), "herdr", "herdr.sock")
+    # the socket must exist when the guard looks, its real path inside the lab: a link made later on the line, or one
+    # that points out of the lab, reaches the owner's herdr (of_architect's second review of PR 32)
+    path = os.path.expanduser(sock)
+    return os.path.lexists(path) and os.path.exists(path) and _herdr_lab(os.path.realpath(path))
+
+
+def _makes_lab_link(head, args):
+    """Does one simple command make a link or a socket under of_herdr's lab (ln; socat or nc listening on a Unix
+    socket there)?"""
+    def lab(a):
+        a = a.split(":", 1)[1] if re.match(r"^(?:UNIX|unix)[\w-]*:", a) else a
+        return _herdr_lab(a.split(",", 1)[0])
+    if head == "ln":
+        return any(lab(a) for a in args if not a.startswith("-"))
+    if head == "socat":
+        return any(re.match(r"^(?:UNIX|unix)[\w-]*:", a) and lab(a) for a in args)
+    if head in ("nc", "ncat", "netcat"):
+        return any("U" in a[1:] for a in args if a.startswith("-") and not a.startswith("--")) and \
+            any(lab(a) for a in args if not a.startswith("-"))
+    return False
 
 
 def _plugins_deny(head, args, stext, cwd, env=None):
@@ -1534,6 +1558,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
         return _reads(READERS.search(bare) and _loose_secret_path(bare))
     here = _DENY_CWD[0]  # the directory a command runs in, following `cd` along the line (G17)
     exported = {}        # what `export` set earlier on the line (G17: GIT_CONFIG_* variables)
+    lab_link = False     # a link or a socket made under of_herdr's lab earlier on the line (G19)
     for pipe in pipes:
         last = len(pipe) - 1
         cmds = []  # (head, args) of the simple-command stages, for the env-dump pipeline check
@@ -1560,7 +1585,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
-                or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext)})
+                or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
+                                                           **({"__lab_link": "1"} if lab_link else {})})
             if hit:
                 return hit
             if head == "cd":
@@ -1570,6 +1596,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
             elif head == "unset":
                 exported.update({a: "" for a in args if re.match(r"^[A-Za-z_]\w*$", a)})  # "" is unset
+            if _makes_lab_link(head, args):
+                lab_link = True
             elif head == "git":
                 words = [a for a in args if not a.startswith("-")]
                 if words[:1] == ["config"] and len(words) >= 3 and words[1].lower().startswith("alias."):
