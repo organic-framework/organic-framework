@@ -310,7 +310,7 @@ One card for the organization's owner, in the owner's language through the local
 
 Hand-over `3512db81` from `of_architect` builds the family now: its five methods, the 1Password, macOS Keychain and lab env-file implementations, the `<backend>://<path>` references and their contract tests. Building it moves no position from files to the broker. The rest waits on the founder's decision on the broker (card `379274c4`):
 1. the `secret_stores` family's files implementation and the refusal of §13.2;
-2. the broker and `of_capacity`'s credential broker reading through the family, today's `_op_read` moved behind the 1Password implementation (`bin/plugins/secret_stores/onepassword.py`), unchanged in behaviour;
+2. the broker and `of_capacity`'s credential broker reading through the family, today's `_op_read` moved behind the 1Password implementation (`bin/plugins/secret_stores/1password.py`), unchanged in behaviour;
 3. the first-need card, `plugins.secret_stores` in the registry, and `of registry check`;
 4. the guard rules of §13.6 for the chosen stores, each after its replay;
 5. other implementations when an organization chooses that store, each with its facts table, a stub in the lab proof (§10, step 0 against the stub) and, where possible, a real leg.

@@ -97,7 +97,7 @@ def fixture(name, tmp):
         store = cls({})
         store.runner = FakeSecurity()
         return store, None, "keychain://of-acme-obs/grafana-viewer", "of-acme-obs", None
-    if name == "onepassword":
+    if name == "1password":
         store = cls({"op": "op"})
         store.runner = FakeOp({"tok-obs": {"acme-obs"}, "tok-k8s": {"acme-k8s"}})
         store.runner.items[("acme-obs", "grafana-viewer")] = {"credential": "old"}
@@ -163,7 +163,7 @@ for _name in sorted(of_family.implementations(FAMILY)):
 
 class FamilyTest(unittest.TestCase):
     def test_the_three_ship(self):
-        self.assertTrue({"onepassword", "keychain", "envfile"} <= set(of_family.implementations(FAMILY)))
+        self.assertTrue({"1password", "keychain", "envfile"} <= set(of_family.implementations(FAMILY)))
         self.assertEqual(of_family.FAMILIES[FAMILY].owner, "of_server")
 
 
