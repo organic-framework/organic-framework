@@ -5108,6 +5108,9 @@ def main(argv=None):
     if argv and argv[0] == "tools":  # a position's tools, bound to the position (docs/tools.md): of_tools's module
         import of_tools
         return of_tools.main(argv[1:])
+    if argv and argv[0] in ("account", "claude"):  # the machine's harness accounts (docs/accounts.md): of_capacity's
+        import of_accounts
+        return of_accounts.main(argv[1:]) if argv[0] == "account" else of_accounts.claude(argv[1:])
     ap = argparse.ArgumentParser(prog="of", description="Organic Framework CLI v0 (over herdr)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     # dispatched above, before this parser: listed here so that `of --help` names them (of_docs, 2026-11-11)
@@ -5115,7 +5118,9 @@ def main(argv=None):
                        ("studio", "the Studio page (of_studio; of studio --help)"),
                        ("works", "the works map and each work's state (= of model works)"),
                        ("secret", "a position's credential through the agents' secrets broker (of secret --help)"),
-                       ("tools", "a position's MCP servers, plugins and connectors (of tools inventory|check|plan)")):
+                       ("tools", "a position's MCP servers, plugins and connectors (of tools inventory|check|plan)"),
+                       ("account", "the Claude Code accounts on this machine (of account list|add|remove|adopt)"),
+                       ("claude", "open Claude Code on an account: of claude [--account NAME] [claude arguments]")):
         sub.add_parser(name, help=text, add_help=False)
     a = sub.add_parser("apply", help="name live holders in herdr and set their tokens")
     a.add_argument("--dry-run", "-n", action="store_true", help="print the herdr commands only")

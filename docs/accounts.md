@@ -1,6 +1,6 @@
 # Harness accounts as an OF feature, and the capacity package
 
-Status: **plan**, 2026-11-11, by `of_capacity`, awaiting `of_conductor`.
+Status: **plan**, 2026-11-11, by `of_capacity`. Done: A1–A3 (`bin/of_accounts.py`, `tests/test_accounts.py`). Next: A4 with `of_herdr`.
 
 Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, translated:
 
