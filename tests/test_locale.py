@@ -73,6 +73,13 @@ class LocaleTest(unittest.TestCase):
             for k, v in cat.items():  # a translation keeps the source's placeholders
                 self.assertEqual(sorted(re.findall(r"\{(\w+)", k)), sorted(re.findall(r"\{(\w+)", v)), k)
 
+    def test_a_context_is_a_word_or_two_not_options(self):
+        """tr() reads what follows "|" as a context and English drops it: a card's options joined with "|" in one key
+        lose every option but the first (of init's CAPACITY_OPTIONS, 2026-11-12). Translate each option alone."""
+        for lang in of_locale.available():
+            long = [k for k in of_locale.catalogue(lang) if "|" in k and len(k.split("|", 1)[1].split()) > 2]
+            self.assertEqual(long, [], f"{lang}: a context of more than two words; translate each option alone")
+
 
 if __name__ == "__main__":
     unittest.main()
