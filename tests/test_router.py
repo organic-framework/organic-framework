@@ -1,6 +1,7 @@
 """The mandate router (observe): path -> system -> keeper -> verdict."""
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,19 @@ class RouterTest(unittest.TestCase):
             self.assertEqual(of_router.target_path("Read", {"file_path": "a/b"}, "/w"), "/w/a/b")
             self.assertEqual(of_router.target_path("Bash", {"command": "ls"}, "/w"), "/w")
             self.assertIsNone(of_router.target_path("WebFetch", {}, "/w"))
+
+    def test_a_character_class_in_a_paths_pattern_matches(self):
+        # of_studio, 2026-11-12: '[' was escaped, so a pattern with a class matched nothing (rt-v6)
+        with tempfile.TemporaryDirectory() as root:
+            systems = {"discovery": {"keeper": "disc_keeper", "paths": ["devops/k8s/workers/shop-[afg]*"]},
+                       "rest": {"keeper": "rest_keeper", "paths": ["devops/k8s/workers/shop-[!afg]*"]}}
+            idx = of_router.build_index([{"name": "disc_keeper", "_org": "o", "_systems": systems}], {"o": [root]})
+            r = os.path.realpath(root)
+            for name, system in (("shop-fetch.yaml", "discovery"), ("shop-zeta.yaml", "rest"),
+                                 ("shop-!x.yaml", "rest"), ("shop-", None)):
+                self.assertEqual(of_router.resolve(f"{r}/devops/k8s/workers/{name}", idx)[1], system, name)
+            self.assertIsNone(of_router.resolve(f"{r}/devops/k8s/workers/shop-a/b.yaml", idx)[1])
+            self.assertIsNone(re.match(of_router.glob_rx("a[!b]c"), "a/c"))
 
 
 if __name__ == "__main__":
