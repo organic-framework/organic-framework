@@ -64,6 +64,29 @@ class RegistryTest(unittest.TestCase):
             self.assertIn("status 'gone'", text)
             self.assertIn("ghost:registry/positions.yaml: missing", text)
 
+    def test_works_warnings_are_the_registry_checks_only(self):
+        """2026-11-12: the loop check's new warning printed 14 lines on every `of` call."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_x, system: mt, role: x, status: active}
+                works:
+                  w-a:
+                    title: A
+                    kind: speed
+                    owner: acme_x
+                    loop:
+                      target: {metric: m, money: n}
+                      ladder: [{rung: oracle, accept: ok}]
+                  w-b: {title: B, kind: speed, owner: nobody_here}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: mt, path: %s/org}\n" % root)
+            orgs = os.path.join(root, "conf/orgs.yaml")
+            quick, deep = ("\n".join(of.load_positions(orgs, deep=d)[1]) for d in (False, True))
+            self.assertNotIn("has no segment", quick)
+            self.assertIn("has no segment", deep)
+            self.assertIn("nobody_here", quick)  # a problem still prints everywhere
+
     def test_a_broken_working_copy_falls_back_to_the_last_commit(self):
         """A user organization, 2026-11-11: one minute of invalid YAML mid-edit failed every session's of send and of inbox."""
         with tempfile.TemporaryDirectory() as root:
