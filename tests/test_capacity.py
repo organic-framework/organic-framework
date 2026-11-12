@@ -1393,7 +1393,7 @@ class CapacityPosition(unittest.TestCase):
 
 class OwnerTextsInTheOwnersLanguage(unittest.TestCase):
     """The owner's cards are English in the code and come in the owner's language from the catalogue
-    (bin/of_locale.py; organic-framework 5462bab)."""
+    (bin/of_locale.py; organic-framework 15168b1)."""
 
     def tearDown(self):
         of_locale.set_language(None)
@@ -1749,7 +1749,7 @@ class ToolProfiles(unittest.TestCase):
     its account-bound tools is not signed in is not a target; the founder gets one task per account."""
     SLACK = "https://mcp.slack.com/mcp"
     DOCS = {"acme": {
-        "tools_mode": "enforce",  # of_tools cc98403: only an enforced catalogue strips the account's own tools
+        "tools_mode": "enforce",  # of_tools, PR 38: only an enforced catalogue strips the account's own tools
         "tools": {
             "grafana-read": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana", "--disable-write"],
                              "acts_as": "viewer", "scope": "read", "keeper": "obs_keeper"},
@@ -2320,8 +2320,8 @@ class PositionMemory(unittest.TestCase):
         self.assertNotIn("--settings", of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md"))
 
     def test_launch_command_carries_the_credential_deny_rules_in_a_file(self):
-        # of_platform, 2026-11-11 (874b73c): of spawn writes the deny rules; a move or resume must keep them. In a
-        # file (331066a): a fresh pane's shell takes 1,024 bytes a line, and 26 credential paths made 4.9 KB.
+        # of_platform, 2026-11-11: of spawn writes the deny rules; a move or resume must keep them. In a
+        # file: a fresh pane's shell takes 1,024 bytes a line, and 26 credential paths made 4.9 KB.
         deny = [f"Read(/k/credential-{i:02d}/**)" for i in range(60)]
         with tempfile.TemporaryDirectory() as t:
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
@@ -2496,7 +2496,7 @@ class Reboot(unittest.TestCase):
         self.assertEqual(of_capacity.flags_from_args(args),
                          ("claude-opus-5-5", "xhigh", True, "/Users/alex/.local/state/of/memory/mt/k8s_keeper"))
         self.assertEqual(of_capacity.flags_from_args("claude"), (None, None, False, None))
-        with tempfile.TemporaryDirectory() as t:  # of spawn and moves pass a settings file (331066a)
+        with tempfile.TemporaryDirectory() as t:  # of spawn and moves pass a settings file
             f = os.path.join(t, "s1.settings.json")
             with open(f, "w") as fh:
                 json.dump({"autoMemoryDirectory": "/m/k8s_keeper", "permissions": {"deny": ["Read(/k/**)"]}}, fh)
