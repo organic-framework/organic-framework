@@ -318,13 +318,13 @@ goals:
 - **Counting.** As for a delegation's budget (Delegations, "Budget"): `tokens_month` counts fresh tokens (input, cache writes and output, each response once by its message id), and `usd_month` is the cost at list prices, cache reads included. A month is a calendar month in UTC.
 - **Attribution: session, position, work, goal.**
   - A response's tokens go to the position whose holder the session was at that moment (`holder.session` and its history).
-  - From the position they go to a work: the work it last declared with `of status --work <id>` or `of ask --work <id>`, until it declares another. Without a declaration, they go to its one open work when it is a doer of exactly one; or to the goal when all its open works serve the same goal. Otherwise they are shown as unattributed under the position, which is a prompt to declare `--work`.
+  - From the position they go to a work: the work it last declared with `of status --work <id>`, until it declares another. An `of ask --work` does not move the attribution: an ask about a work is not the work being done. Without a declaration, they go to its one open work when it is a doer of exactly one; or to the goal when all its open works serve the same goal. Otherwise they are shown as unattributed under the position, which is a prompt to declare `--work`.
   - A goal's spend is that of its works and of its sub-goals; a condition's, that of its works.
 - **Sub-budgets.** A sub-goal's budget is a part of its parent's. Children whose budgets add up to more than the parent's is a warning. A node without a budget counts inside its nearest ancestor that has one.
 - **Reading before stopping.** Budgets are generous for now, so OF reads and warns and never stops work:
   - Studio and `of works` show each node's spend this month against its budget, with a straight-line forecast to the month's end;
   - at 80%, the pulse records `of.budget_warning` and tells the organization's structure keeper (`--fyi`);
-  - at 100%, it files one card a month to the goal's owner (a person): raise the budget, or narrow the work.
+  - at 100%, it files one card a month to the person who holds the goal's owner position, or to the organization's owner when an agent holds it: raise the budget, or narrow the work.
 - **Who sets it.** The budget is part of the goal's text, so the goal's approver decides it, and a change is a `goal_change` (docs/handover.md §3). A first budget, as generous as the founder asked, is twice the last 30 days' spend of the node's works, or the owner's own figure for new work (`of_architect`'s default).
 - **Why.** The founder, 2026-11-12 12:54Z: speeding up and optimizing are open-ended problems, so a token budget is set for each goal, generous and large for now (`of_conductor`'s session, prompt `01a1cfd2-af5f`; its message `01a1cfd3-b557`).
 - **The build** (from 2026-11-12):
