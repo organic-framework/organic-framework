@@ -95,7 +95,9 @@ def run(conn, positions=None, agents=None, bind=None, log=print, view=False):
     """One reconcile pass over the store (pulse, popup). view: the asks as the listener's view holds them (a few ms),
     and no pass when the listener is not fresh, for the questions screen: its pass projected the whole log, 16 s of
     CPU and 8 s of reads on 2026-11-12, and the cards waited behind it (the founder: the screen opened in 10 to 30 s;
-    of_conductor msg 01a1d09c). The pulse reconciles every 5 minutes either way."""
+    of_conductor msg 01a1d09c-4562). The pulse reconciles every 5 minutes either way. The view lags the log by up to a
+    listener tick, so an ask answered a moment ago may still read open and get a reconcile close after its answer:
+    harmless, since of_asks.project changes only an open ask's state (of_review on PR 98)."""
     import of_asks
     import of_events
     if view:
