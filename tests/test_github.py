@@ -121,35 +121,35 @@ class PathRepoTest(unittest.TestCase):
                          ["hosts"])
 
 
-WORKS = {"mt-nonces": {"title": "n", "kind": "rfc", "doc": "storefront:docs/rfc/nonces.md (PR #20)", "systems": ["storefront"],
+WORKS = {"acme-nonces": {"title": "n", "kind": "rfc", "doc": "storefront:docs/rfc/nonces.md (PR #20)", "systems": ["storefront"],
                        "match": {"prs": [20], "branches": ["claude/wallet-*"], "doc": "storefront:docs/rfc/nonces.md"}},
-         "mt-core": {"title": "c", "kind": "rfc", "systems": ["contracts"],
+         "acme-core": {"title": "c", "kind": "rfc", "systems": ["contracts"],
                      "match": {"paths": ["storefront:contracts/**", "arb-contracts/**"]}},
-         "mt-cbx": {"title": "x", "kind": "project", "systems": ["runners"],
+         "acme-cbx": {"title": "x", "kind": "project", "systems": ["runners"],
                     "match": {"branches": ["claude/*cbx*"], "paths": ["devops-k8s:k8s/runners/**"]}},
-         "mt-old": {"title": "o", "kind": "rfc", "state": "parked"}}
+         "acme-old": {"title": "o", "kind": "rfc", "state": "parked"}}
 
 
 class WorksMatchTest(unittest.TestCase):
     def test_match_by_number_branch_path_and_doc(self):
         m = lambda repo, n, br, files, rs=("storefront",): of_github.match_works(WORKS, repo, n, br, files, rs)
-        self.assertEqual(m("M/storefront", 20, "x", []), ["mt-nonces"])
+        self.assertEqual(m("M/storefront", 20, "x", []), ["acme-nonces"])
         self.assertEqual(m("M/other", 20, "x", [], ()), [])                  # PR numbers are the doc repository's
-        self.assertEqual(m("M/storefront", 5, "claude/wallet-fix", []), ["mt-nonces"])
-        self.assertEqual(m("M/storefront", 5, "claude/wallet-fix", [], ()), ["mt-nonces"])  # the doc's repository
+        self.assertEqual(m("M/storefront", 5, "claude/wallet-fix", []), ["acme-nonces"])
+        self.assertEqual(m("M/storefront", 5, "claude/wallet-fix", [], ()), ["acme-nonces"])  # the doc's repository
         self.assertEqual(m("M/unrelated", 5, "claude/wallet-fix", [], ()), [])  # a branch glob in another repo
-        self.assertEqual(m("M/storefront", 5, "b", ["docs/rfc/nonces.md"]), ["mt-nonces"])
-        self.assertEqual(m("M/storefront", 5, "b", ["contracts/src/A.sol"]), ["mt-core"])
-        self.assertEqual(m("M/arb-contracts", 5, "b", ["src/A.sol"], ()), ["mt-core"])   # a plain glob: '<repo dir>/<path>'
-        self.assertEqual(m("O/devops-k8s", 5, "b", ["k8s/runners/a.yaml"], ()), ["mt-cbx"])
-        self.assertEqual(m("O/devops-k8s", 5, "claude/cbx-guard", [], ("runners",)), ["mt-cbx"])
+        self.assertEqual(m("M/storefront", 5, "b", ["docs/rfc/nonces.md"]), ["acme-nonces"])
+        self.assertEqual(m("M/storefront", 5, "b", ["contracts/src/A.sol"]), ["acme-core"])
+        self.assertEqual(m("M/arb-contracts", 5, "b", ["src/A.sol"], ()), ["acme-core"])   # a plain glob: '<repo dir>/<path>'
+        self.assertEqual(m("O/devops-k8s", 5, "b", ["k8s/runners/a.yaml"], ()), ["acme-cbx"])
+        self.assertEqual(m("O/devops-k8s", 5, "claude/cbx-guard", [], ("runners",)), ["acme-cbx"])
         self.assertEqual(m("M/storefront", 5, "main", ["README.md"]), [])
-        w = {"mt-core-v2": {"systems": ["contracts"], "match": {"branches": ["devops-k8s:claude/*core-v2*", "claude/*hop*"]}}}
+        w = {"acme-core-v2": {"systems": ["contracts"], "match": {"branches": ["devops-k8s:claude/*core-v2*", "claude/*hop*"]}}}
         mw = lambda repo, br, rs=(): of_github.match_works(w, repo, 9, br, [], rs)
-        self.assertEqual(mw("O/devops-k8s", "claude/deploy-core-v2-fra"), ["mt-core-v2"])   # repo-scoped branch rule
+        self.assertEqual(mw("O/devops-k8s", "claude/deploy-core-v2-fra"), ["acme-core-v2"])   # repo-scoped branch rule
         self.assertEqual(mw("M/storefront", "claude/deploy-core-v2-fra"), [])                # only in that repository
         self.assertEqual(mw("O/devops-k8s", "claude/two-hop"), [])                          # a bare glob: own repos only
-        self.assertEqual(mw("M/arb-contracts", "claude/two-hop", ("contracts",)), ["mt-core-v2"])
+        self.assertEqual(mw("M/arb-contracts", "claude/two-hop", ("contracts",)), ["acme-core-v2"])
         self.assertEqual(m("M/storefront", 20, "mergify/merge-queue/main/abc", []), [])     # a queue batch: never
         self.assertEqual(m("M/storefront", 5, "gh-readonly-queue/main/pr-20-abc", ["docs/rfc/nonces.md"]), [])
 
@@ -177,12 +177,12 @@ class WorksMatchTest(unittest.TestCase):
                                          closed_fetcher=lambda r, s: closed if r == "M/storefront" else [],
                                          detail_fetcher=detail)
                 wr = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM event WHERE name = 'of.work_record'")]
-                self.assertEqual(wr[0]["works"], ["mt-nonces"])
+                self.assertEqual(wr[0]["works"], ["acme-nonces"])
                 st = {p["number"]: p for p in (json.loads(r[0]) for r in conn.execute(
                     "SELECT payload FROM event WHERE name = 'of.pr_state'"))}
                 self.assertEqual(sorted(st), [31, 32])  # a merged PR is a work record, not a pr_state
                 self.assertEqual((st[31]["state"], st[31]["draft"], st[31]["works"], st[31]["systems"]),
-                                 ("open", True, ["mt-nonces"], ["storefront"]))
+                                 ("open", True, ["acme-nonces"], ["storefront"]))
                 self.assertEqual((st[31]["last_review_at"], st[31]["last_push_at"]),
                                  ("2026-10-31T09:00:00Z", "2026-10-31T07:00:00Z"))
                 self.assertEqual((st[32]["state"], st[32]["works"]), ("closed", []))

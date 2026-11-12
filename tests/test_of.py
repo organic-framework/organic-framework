@@ -1104,7 +1104,7 @@ class WorksTest(unittest.TestCase):
     """The works: schema (docs/works.md step 1), with acme_org's draft's fields as the fixture."""
 
     def test_valid_draft_shapes(self):
-        works = {"mt-nonces-wallets": {
+        works = {"acme-nonces-wallets": {
             "title": "Nonces and wallets for Shop sends", "kind": "rfc",
             "doc": "storefront:docs/rfc/shop-nonces-and-wallets.md (PR #2683)", "systems": ["storefront"],
             "owner": "acme_owner", "doers": ["storefront_checkout", "external:dana"], "draft_state": "live",
@@ -1112,7 +1112,7 @@ class WorksTest(unittest.TestCase):
             "match": {"prs": [2218, 2683], "branches": ["claude/wallet-*"], "paths": ["storefront:docs/rfc/*.md"]},
             "stages": [{"id": "w2", "title": "allocator live", "done_when": "watch clean", "state": "done"},
                        {"id": "part-1", "title": "claim by block order", "done_when": "#2683 merged", "state": "open"}]},
-            "mt-old": {"title": "parked one", "kind": "project", "state": "parked"}}
+            "acme-old": {"title": "parked one", "kind": "project", "state": "parked"}}
         self.assertEqual(of.check_works(works, {"acme_owner", "storefront_checkout"}, {"storefront": {}}), [])
 
     def test_match_globs_take_a_repo_prefix(self):
