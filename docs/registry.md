@@ -324,8 +324,8 @@ works:
 
 - **A work keeps a condition or moves a goal.** It names one of them. Several works may keep one condition.
 - **A condition has no sub-goals and no rank.** More than 7 active conditions is a warning.
-- **Studio and `of works` show the conditions beside the tree**, each with its measure, level, current reading when it has a `metric`, works and doers. A breach shows above progress.
-- **Why.** On a user organization's goal, the founder decided that its platform and security conditions are held at their level and are not goals (ask `2780d584`), and its compliance works are of the same kind. Its structure keeper asked how to write them once works must hang on goals (2026-11-12). The practice is to keep health metrics beside the objectives (Wodtke, *Radical Focus*, 2nd ed., 2021).
+- **Studio and `of works` are to show the conditions beside the tree** (with the goal tree, below), each with its measure, level, current reading when it has a `metric`, works and doers. A breach shows above progress.
+- **Why.** On a user organization's goal, the founder decided that its platform and security conditions are held at their level and are not goals (ask `2780d584`); its structure keeper reads its compliance works as the same kind (a reading, not the founder's words). Its structure keeper asked how to write them once works must hang on goals (2026-11-12). The practice is to keep health metrics beside the objectives (Wodtke, *Radical Focus*, 2nd ed., 2021).
 - **The checks** (to build with the goal tree): ids unique across goals and conditions; `measure`, `level` and `decided` present; `state`; `under` an existing goal; each work's `condition` an existing condition; a work naming both a goal and a condition is a problem.
 
 ## Tools (2026-11-11, `of_tools`; method in [`tools.md`](tools.md))
