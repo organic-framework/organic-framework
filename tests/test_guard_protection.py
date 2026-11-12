@@ -116,6 +116,17 @@ class GuardStateTest(unittest.TestCase):
         for tool in ("Write", "Edit"):
             hit = of_guard.critical_deny(tool, {"file_path": os.path.expanduser("~/.local/state/of/guard-credentials.json")})
             self.assertIn("guard's own cache", (hit or [""])[0], tool)
+        # by its real path and by pattern (of_secrets-review): a link to the state folder, a glob the shell expands
+        state = os.path.expanduser("~/.local/state/of")
+        os.makedirs(state, exist_ok=True)
+        with tempfile.TemporaryDirectory() as d:
+            link = os.path.join(d, "s")
+            os.symlink(state, link)
+            for cmd in (f"cp forged.json {link}/guard-credentials.json", "cp forged.json ~/.local/state/of/guard-cred*.json",
+                        "rm ~/.local/state/of/*.json", "cp f ~/.local/state/o?/passkey-rev*",
+                        f"echo x > {link}/guard-credentials.json"):
+                self.assertIn("guard's own cache", bash(cmd, d) or "", cmd)
+            self.assertIsNone(bash(f"cp f {link}/other.json", d))
         self.assertIsNone(bash("cat ~/.local/state/of/guard-credentials.json"))
         self.assertIsNone(bash("ls -la ~/.local/state/of/"))
 
