@@ -2,7 +2,8 @@
 
 Proves on **two lab machines** what docs/agent-secrets.md §10 claims: a position's hand-over gives the new holder
 access to its credential and the old holder none, with no step in 1Password. Domain and the broker: `of_server`
-(built; of_server's hand-over d7a1354c). Harness: `of_lab`. Single-host unit version:
+(built by `of_server` on 2026-11-11, in the public history from its first commit, organic-framework 74cbd41;
+hand-over d7a1354c). Harness: `of_lab`. Single-host unit version:
 tests/test_secrets_broker.py (the FAKE_OP lives there; this reuses it across machines).
 
 ## Setup (three Lima VMs on the user-v2 net)
