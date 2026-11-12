@@ -39,15 +39,25 @@ def _num(x):
 
 
 def _segment(raw):
-    """The target's controlled segment as the registry writes it (docs/registry.md Works, of_architect 26bdee1:
-    {start, end, context: [text]}), or None when the target names none. `context` is always a list of texts: one text
-    alone becomes a list of one, anything else none (`of registry check` calls both a problem)."""
+    """The target's controlled segment as the registry writes it (docs/registry.md Works, "The target's controlled
+    segment", organic-framework PR 58): {start, end, context}, or None when the target names none. `context` is always
+    a list of its parts as written, each a text or a mapping {what, name (optional)}; a lone text becomes a list of one,
+    and a part of any other shape is left out (`of registry check` calls it a problem)."""
     if not isinstance(raw, dict):
         return None
     seg = dict(raw)
     ctx = raw.get("context")
-    seg["context"] = [str(x) for x in ctx if x is not None] if isinstance(ctx, list) else ([ctx] if isinstance(ctx, str) else [])
+    ctx = ctx if isinstance(ctx, list) else [ctx] if isinstance(ctx, str) else []
+    seg["context"] = [dict(x) if isinstance(x, dict) else x for x in ctx
+                      if isinstance(x, str) or (isinstance(x, dict) and isinstance(x.get("what"), str))]
     return seg
+
+
+def context_label(part):
+    """A context part by its text, or its `what` with its name: what the loop card lists beside the target."""
+    if isinstance(part, dict):
+        return f'{part["what"]} ({part["name"]})' if part.get("name") else part["what"]
+    return part
 
 
 def spec_of(raw):

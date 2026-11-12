@@ -1827,7 +1827,8 @@ def _loop_card(d, w):
     seg = t.get("segment")
     if seg:   # docs/registry.md: the segment the organization controls, and the parts outside it reported beside it
         facts[1:1] = [("Segment", f'{seg.get("start") or "?"} → {seg.get("end") or "?"}'),
-                      ("Context", "; ".join(seg["context"]) + " (outside the segment: context, never a lever)" if seg["context"] else "–")]
+                      ("Context", "; ".join(of_loops.context_label(x) for x in seg["context"])
+                       + " (outside the segment: context, never a lever)" if seg["context"] else "–")]
     if not c["declared"]:
         facts.append(("Declared", "no loop: in the registry yet; the events show alone"))
     hi = c["highest"]
