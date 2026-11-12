@@ -122,7 +122,7 @@ Run: `of init acme --owner Alex --path ~/code/storefront --path ~/code/checkout 
   conductor, a second line that starts it with `screen -U -dmS <its name>`.
 - Real-agent part: the conductor runs the lead's two lines itself; `of who` shows `acme_onboarding` as
   `screen:<pid>.acme_onboarding:0`; the conductor's first message reaches the lead with nobody typing it (the relay
-  delivers into screen windows, organic-framework 9012a74), and the lead answers it within its next turn.
+  delivers into screen windows, organic-framework 71b8b20), and the lead answers it within its next turn.
 
 ### C8. The remote surface (`of init --surface remote`)
 

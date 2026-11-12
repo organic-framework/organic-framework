@@ -530,7 +530,7 @@ def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, co
 
 def write_capacity_settings(settings):
     """(written, kept), lists of keys: of_capacity's writer merges the package's settings into capacity.yaml, keeps its
-    lines and comments, and never overwrites a key already set (of_capacity.write_defaults, 9b70593)."""
+    lines and comments, and never overwrites a key already set (of_capacity.write_defaults, 11d4cf3)."""
     import of_capacity
     return of_capacity.write_defaults(settings)
 
@@ -1347,7 +1347,7 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
 
 # Families whose choice waits until the work needs it (the founder, 2026-11-11 ~18:56Z: where secrets are kept is
 # chosen as late as possible, when the first secret is needed; the conductor asks then).
-PLUGINS_LATER = ("secret_stores",)  # of_family's name since b633781; `secrets` is its alias (of_family.canonical)
+PLUGINS_LATER = ("secret_stores",)  # of_family's name since 42eb000; `secrets` is its alias (of_family.canonical)
 
 
 def _family(name):
