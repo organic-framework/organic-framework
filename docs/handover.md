@@ -136,7 +136,7 @@ The single format for every structural change. The Lab applies it to a lab organ
 ```yaml
 diff:
   id: sd-2026-11-xx-…
-  kind: split | merge | spawn | close | park | swap_holder | reassign_owner | delegate | move_workplace | handover_rule | mandate_rewrite | grant_change
+  kind: split | merge | spawn | close | park | swap_holder | reassign_owner | delegate | move_workplace | handover_rule | mandate_rewrite | grant_change | goal_change
   tier: low | medium | high                 # §5.6 of RFC 0001
   author: acme_org                          # the structure keeper proposing it
   issue: iss-…                              # the diagnosed issue it answers (optional)
@@ -149,6 +149,7 @@ diff:
       to: "< 1"
   changes:                                  # machine-applicable edits
     registry: [ {op: add, path: positions[...], value: {...}}, ... ]
+    goals:    [ {op: add | rewrite | close, id: g-…, value: {...}}, ... ]   # goal_change; conditions: the same
     grants:   [ ... ]
     briefs:   [ {op: write, path: registry/briefs/storefront_releases.md, from: fork-of-brief} ]
     routing:  [ ... ]
@@ -167,6 +168,7 @@ diff:
 - `of diff check` runs the validity checks: the registry, grant attenuation, the single writer, the accountability path, no widened critical grant.
 - `of diff apply` writes the events (`of.diff_applied`, plus `of.mandate_changed`, holder and grant events) and schedules the review.
 - `of diff review` compares observed signals with `predicted` and proposes keep, extend or revert. Every diff and its review go to the archive.
+- **`goal_change`** (2026-11-12, `of_architect`; `of_conductor`'s message `01a1cf8f`) adds, rewrites or closes goals and conditions (docs/registry.md, Goals). One diff may carry a whole tree, so the owner approves the exact text once. Its tier is medium at least, and `approvals: [owner]`: the organization's owner for a root goal or a condition held for the whole organization. `of diff apply` writes the approval's ask id into each node's `decided`. Its `predicted` names what the tree should change, for example the open works on no goal or condition going to zero, or a measure per sub-goal.
 
 ## 4. Order of implementation
 
