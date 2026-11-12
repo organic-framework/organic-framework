@@ -1,4 +1,4 @@
-"""The locale layer (bin/of_locale.py; organic-framework 5462bab): English in the code, the person's language from the
+"""The locale layer (bin/of_locale.py; organic-framework 15168b1): English in the code, the person's language from the
 catalogue, and every string the code shows through tr() translated in every catalogue."""
 import glob
 import os
