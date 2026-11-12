@@ -411,8 +411,9 @@ Rules:
     - `keychain://<service>/<account>`: a generic password in the macOS keychain (store `keychain`), only for a solo owner on one Mac, since it keeps no position apart;
     - `envfile://<NAME>`: a name in a lab's env file, the choice's `settings.path` (store `envfile`), never for real credentials.
   - `rotate_days`: how often its keeper rotates the value; 90 when absent.
-  - A credential needs `ref` or `paths`; both while its value moves from a file into the store.
+  - A credential needs `ref`, `paths` or `keychain`; `ref` and `paths` both while its value moves from a file into the store.
   - The organization's broker serves a `ref` to the holder of a position that lists or keeps the credential (`of secret run`; docs/server.md, `POST /v1/secrets/use`), read with that position's own identity in the store.
+- **Keychain items no agent reads** (2026-11-12, `of_server`; agreed by `of_architect`, msg `01a1cf8e`; docs/guard.md G20): `keychain: [<service>, …]` names generic or internet passwords in the owner's macOS keychain that only the owner's own programs read, such as a launchd job (a user organization's backup keys; the founder's yes said keys do not reach agents, ask `f86a710c`). Each entry is a keychain service name, or a prefix of at least four characters with a trailing `*`. No session may name one in a `security` call or in interpreter code, whatever position it holds, so no position lists such a credential; its `keeper` still owns its rotation.
 - **What it is and is not.**
   - The guard stops accidents and use by the wrong position. It does not stop a process that wants the file, because every session runs as the same user.
   - `of spawn` writes the same lists into the session's own Claude Code deny rules (`permissions.deny`, `Read` and `Edit` of each path; `bin/of_spawn.py` `deny_rules`), in a settings file under the state folder passed with `--settings` (`spawn/<session>.settings.json`, mode 600). A file, because a fresh pane's shell takes at most 1,024 bytes a line and 26 paths made a 4.9 KB command line. Each layer switches with the guard's own (G14), so the two deny together:
@@ -430,9 +431,23 @@ Rules:
   - each credential's `ref` or `paths`. It refuses a `ref` of a store OF does not know, a `ref` when the organization chose no store (the credential is then a file, `paths`), a `ref` of another store than the chosen one, a `ref` the store's own parser refuses, a container that is not the organization's (`<org>-<system>`) for a store that keeps positions apart, and two credentials naming one item; `rotate_days` is a whole number;
   - that each keeper and each position that lists a credential is a position of the organization;
   - that no two credentials claim one path;
-  - that `credential_roots` is a list of paths under the home directory.
+  - that `credential_roots` is a list of paths under the home directory;
+  - that each `keychain` entry is a service name or a prefix with a trailing `*`, and each `protected_code` entry a path the guard can hold (below).
 
   `of_server` builds the check and the guard rule (docs/guard.md), with a replay of recent sessions before the deny goes live.
+
+### Protected code (2026-11-12, `of_server`; agreed by `of_architect`, msg `01a1cf8e`; docs/guard.md G21)
+
+Code that runs with an organization's secrets, such as a launchd job and the scripts it starts, is listed in a top-level `protected_code:`. No agent session writes, removes, moves or changes the mode of anything under an entry.
+
+```yaml
+protected_code:
+  - "~/Library/Application Support/acme-backup/bin"   # the scripts the job runs
+  - "~/Library/LaunchAgents/com.acme.backup.*"         # the job's own definition
+```
+
+- **Path form.** Each entry is an absolute path or one that starts with `~/`, `$HOME/` or `${HOME}/`, at least two folders deep (never `/` or the home folder itself), because such jobs live outside the repositories. The home is the home of the user the guard runs as. An entry may be a folder (everything under it), a file, or a glob (`*`, `?`, `[…]`), matched against real paths, so a link in a path does not get around it.
+- **How a change reaches it.** Only from a commit of the organization's repository that its reviewer approved: the owner applies it in a plain terminal, or runs an installer that copies the files out of that commit (`git show <commit>:<path>`), never out of a working copy. The guard does not see what a program writes, so an agent that runs an installer writes through it. Either the owner runs the installer, or an organization rule (Grants below, docs/guard.md O) names the one position that may.
 
 ## Grants (proposal, 2026-11-05)
 

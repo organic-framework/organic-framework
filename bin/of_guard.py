@@ -199,6 +199,8 @@ def _code_deny(code):
     carried = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
     for m in _LITERAL.finditer(carried):
         lit = m.group(2).strip()
+        if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
+            return KEYCHAIN_DENY, _keychain_name(lit)
         if " " not in lit and _secret_path(lit):
             return _reads(lit)
         if " " not in lit and _MEMORY_CODE.match(lit):
@@ -1339,6 +1341,117 @@ HERDR_PLUGIN_MODE = "deny"  # the founder's yes linked the plugin (ask cad7e7ba)
 HERDR_LAB = "~/.cache/of-herdr"  # of_herdr's labs: an isolated herdr, XDG_CONFIG_HOME under it (msg 01a1cca3)
 
 
+# docs/guard.md G20 and G21 (2026-11-12, a user organization through its structure keeper; the founder's yes on its
+# encrypted backup said the keys do not reach agents, ask f86a710c): what an organization's registry keeps from every
+# agent session, with no position excepted. The hook sets both from the credentials catalogue's cache before the
+# critical denies (of_credentials.cached_protection; no YAML on that path).
+_ORG_PROTECTION = {"keychain": (), "code": ()}
+KEYCHAIN_DENY = ("a macOS keychain item that an organization keeps from every agent session (its credentials "
+                 "catalogue's keychain:; docs/guard.md G20); the program that needs it reads it itself")
+PROTECTED_CODE_DENY = ("code that runs with an organization's secrets, which agents never change (its registry's "
+                       "protected_code:; docs/guard.md G21)")
+_SEC_ARG_OPTS = set("acCdDGjlpPrst")  # security find-*-password options that take a value
+
+
+def use_protection(keychain=(), code=()):
+    """Set the keychain services (exact, or a prefix with a trailing *) and the protected code paths or globs."""
+    _ORG_PROTECTION.update(keychain=tuple(sorted({str(k).lower() for k in keychain or () if str(k).strip()})),
+                           code=tuple(sorted({str(c) for c in code or () if str(c).strip()})))
+
+
+def _keychain_name(text):
+    """The protected keychain service TEXT names (equal to it, or holds a protected prefix), else None."""
+    t = str(text).lower()
+    for k in _ORG_PROTECTION["keychain"]:
+        if (k.endswith("*") and k[:-1] in t) or (not k.endswith("*") and (t == k or k in t)):
+            return k
+    return None
+
+
+def _security_opts(args):
+    """(flags, values) of a security find-*-password call: the short flags given, and every option value or operand,
+    read as getopt reads them (-gs svc, -s svc -w, -ssvc)."""
+    flags, values, k = set(), [], 0
+    while k < len(args):
+        a = args[k]
+        if a == "--":
+            values += args[k + 1:]
+            break
+        if a.startswith("-") and len(a) > 1 and not a.startswith("--"):
+            for j, ch in enumerate(a[1:], 1):
+                if ch in _SEC_ARG_OPTS:
+                    if a[j + 1:]:
+                        values.append(a[j + 1:])
+                    else:
+                        values.append(args[k + 1] if k + 1 < len(args) else "")
+                        k += 1
+                    break
+                flags.add(ch)
+        else:
+            values.append(a)
+        k += 1
+    return flags, values
+
+
+def _security_deny(args):
+    """G11 and G20 on `security ARGS`: a password printed (find-*-password -w or -g), every item exported, a dump with
+    values (dump-keychain -d), or any subcommand that names a keychain item an organization protects."""
+    sub = args[0] if args else ""
+    for a in args[1:]:
+        name = _keychain_name(a) or (_keychain_name(a[2:]) if a.startswith("-") and len(a) > 2 else None)
+        if name:
+            return KEYCHAIN_DENY, f"security {sub} {name}"
+    if re.match(r"find-(generic|internet)-password$", sub):
+        flags, _ = _security_opts(args[1:])
+        for f in ("w", "g"):  # -g prints the password too, on stderr, which reaches the agent like stdout
+            if f in flags:
+                return _prints(f"security {sub} -{f}")
+    if sub == "export":  # writes the keychain's items, private keys included, to a file or to stdout
+        return _prints("security export")
+    if sub == "dump-keychain" and any(a.startswith("-") and not a.startswith("--") and "d" in a[1:] for a in args[1:]):
+        return _prints("security dump-keychain -d")  # -d prints every item's value
+    return None
+
+
+def _real_pattern(pattern):
+    """PATTERN with the real path of its literal folder: /tmp and /var are links on macOS."""
+    p = os.path.expanduser(str(pattern))
+    head = re.split(r"[*?[]", p, maxsplit=1)[0]
+    stem = head if head.endswith("/") or head == p else os.path.dirname(head)
+    return os.path.realpath(stem.rstrip("/") or "/") + p[len(stem.rstrip("/")):] if stem else p
+
+
+def _protected_code(path, cwd, removal=False):
+    """The protected_code entry PATH lies in (the entry itself, under it, or a match of its glob), else None. With
+    REMOVAL (rm, rmdir, mv), a folder that holds an entry counts too: removing it removes the entry."""
+    if not _ORG_PROTECTION["code"] or not path:
+        return None
+    import fnmatch
+    p = os.path.expanduser(str(path).strip("'\""))
+    p = os.path.realpath(p if os.path.isabs(p) else os.path.join(cwd or ".", p))
+    chain = [p]
+    while os.path.dirname(chain[-1]) != chain[-1]:
+        chain.append(os.path.dirname(chain[-1]))
+    for pat in _ORG_PROTECTION["code"]:
+        rp = _real_pattern(pat).rstrip("/")
+        if any(c == rp or fnmatch.fnmatchcase(c, rp) for c in chain):
+            return pat
+        stem = re.split(r"[*?[]", rp, maxsplit=1)[0]
+        if removal and (stem.startswith(p.rstrip("/") + "/") or (stem == p and stem != rp)):
+            return pat
+    return None
+
+
+def _protected_code_deny(head, args, stext, cwd):
+    """(reason, path) for G21 on one simple command, else None."""
+    if not _ORG_PROTECTION["code"]:
+        return None
+    removal = head in ("rm", "rmdir", "mv", "unlink", "shred")
+    files = _changed_files(head, args, stext) + ([a for a in args if not a.startswith("-")] if head == "rmdir" else [])
+    hit = next((f for f in files if _protected_code(f, cwd, removal)), None)
+    return (PROTECTED_CODE_DENY, hit) if hit else None
+
+
 def _herdr_lab(path):
     lab = os.path.realpath(os.path.expanduser(HERDR_LAB))
     p = os.path.realpath(os.path.expanduser(str(path or "")))
@@ -1577,16 +1690,16 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             head, args, words, to_file, herestr = s
             cmds.append((head, args))
             stage_reaches = reaches_agent and idx == last and not to_file
-            if head == "security" and args and re.match(r"find-(generic|internet)-password$", args[0]) and "-w" in args:
-                return _prints(f"security {args[0]} -w")
-            if head == "security" and args[:1] == ["dump-keychain"] and any(  # -d prints every item's value
-                    a.startswith("-") and not a.startswith("--") and "d" in a[1:] for a in args[1:]):
-                return _prints("security dump-keychain -d")
+            if head == "security":  # G11, G20
+                hit = _security_deny(args)
+                if hit:
+                    return hit
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
-                                                           **({"__lab_link": "1"} if lab_link else {})})
+                                                           **({"__lab_link": "1"} if lab_link else {})}) \
+                or _protected_code_deny(head, args, stext, here)
             if hit:
                 return hit
             if head == "cd":
@@ -1685,6 +1798,8 @@ def critical_deny(tool, tool_input, cwd=None):
         return HOOKS_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_plugin_code(path, cwd):
         return PLUGINS_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _protected_code(path, cwd):
+        return PROTECTED_CODE_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Grep") and _memory_path(path):

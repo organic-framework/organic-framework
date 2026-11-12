@@ -183,6 +183,10 @@ def main(argv=None):
     r.add_argument("--days", type=int, default=21)
     r.add_argument("--out", required=True)
     r.add_argument("--db")
+    r.add_argument("--keychain", action="append", default=[], help="a keychain service an organization protects, "
+                   "beside the catalogue's (docs/guard.md G20), to replay a rule before its entry lands")
+    r.add_argument("--protected-code", action="append", default=[], help="a path or glob of protected code, beside "
+                   "the registries' (docs/guard.md G21)")
     o = sub.add_parser("org")
     o.add_argument("--org", required=True)
     o.add_argument("--rules", required=True, help="a YAML file with `grants:` (deny grants, issued or proposed; "
@@ -227,6 +231,11 @@ def main(argv=None):
             print(f"breakdown: {len(table)} rows, {sum(table.values())} calls -> {a.breakdown}")
         return
     if a.cmd == "run":
+        import of_credentials
+        import of_guard
+        keychain, code = of_credentials.protection(of_credentials.load())
+        if hasattr(of_guard, "use_protection"):  # G20, G21 as the hook applies them
+            of_guard.use_protection(keychain + a.keychain, code + [of_credentials._abs(c) for c in a.protected_code])
         cmds = commands(a.days, a.db)
         dec = decide(cmds)
         with open(os.open(a.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:

@@ -866,6 +866,11 @@ def _guard(hook, sess):
     of.mandate_check {decision: deny, verdict: critical, mode: enforce}; then the organization's rules
     (_org_guard), then the guard's warnings."""
     global OUTPUT
+    try:  # G20, G21: the organizations' keychain items and protected code, from the catalogue's cache (no YAML)
+        import of_credentials
+        of_guard.use_protection(*of_credentials.cached_protection(STATE))
+    except Exception:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
+        pass
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
     if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
