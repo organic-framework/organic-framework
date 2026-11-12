@@ -1949,11 +1949,14 @@ def metric_reading(d, metric):
 
 
 def level_breached(level, value):
-    """True or False when the level is a comparison ('<= 2', '>= 99.5%') and there is a reading; else None."""
+    """True or False when the level is a comparison ('<= 2', '>= 99.5%') and there is a reading; else None. A level in
+    percent read against a share (Studio's shares run from 0 to 1) compares the share as a percent: 0.97 is 97%."""
     m = LEVEL.match(str(level or ""))
     if not m or value is None:
         return None
     op, x = m.group(1), float(m.group(2))
+    if "%" in str(level) and 0 <= value <= 1:
+        value *= 100
     ok = {"<=": value <= x, ">=": value >= x, "<": value < x, ">": value > x, "==": value == x, "=": value == x}[op]
     return not ok
 
