@@ -45,10 +45,10 @@ jobs:
       - name: No OpenSSH server in the image; the OpenSSH client is a package scanners see (deploy/Dockerfile)
         run: |
           docker run --rm --entrypoint sh of-server:ci -c '
-            if dpkg-query -W -f "\${Status}" openssh-server 2>/dev/null | grep -q installed; then
+            if dpkg-query -W -f "\${Status}" openssh-server 2>/dev/null | grep -qx "install ok installed"; then
               echo "openssh-server is installed"; exit 1; fi
             if command -v sshd >/dev/null || [ -e /usr/sbin/sshd ]; then echo "sshd is in the image"; exit 1; fi
-            dpkg-query -W -f "\${Status}" openssh-client | grep -q "install ok installed" || {
+            dpkg-query -W -f "\${Status}" openssh-client | grep -qx "install ok installed" || {
               echo "openssh-client is not a package record"; exit 1; }
             command -v ssh-keygen && echo "no sshd; openssh-client recorded: ok"'
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550   # v4.8.0
