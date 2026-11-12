@@ -89,6 +89,11 @@ class GoalCheckTest(unittest.TestCase):
         conds = {f"c-{i}": dict(CONDITIONS["c-compliance"]) for i in range(8)}
         self.assertIn("warning: conditions: more than 7 active conditions", "\n".join(lines(conditions=conds)))
 
+    def test_a_budget_is_no_longer_a_key(self):
+        got = lines(dict(GOALS, x2=goal(rank=3, budget={"usd_month": 5})),
+                    dict(CONDITIONS, c2=dict(CONDITIONS["c-compliance"], budget={"tokens_month": 5})))
+        self.assertEqual(sorted(x.split(": budget")[0] for x in got), ["warning: conditions: c2", "warning: goals: x2"])
+
     def test_the_tree_is_in_rank_order(self):
         self.assertEqual([(d, g) for d, g, _ in of_goals.tree(GOALS)],
                          [(0, "g-revenue"), (1, "g-orders"), (1, "g-aov"), (0, "g-other")])
