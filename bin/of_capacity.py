@@ -1071,7 +1071,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     """memory_dir: the position's own memory (RFC 0006), the same on every account; deny: its credential deny rules
     (deny_for), so a moved or resumed session keeps what of spawn gave it. Both go into one settings file, as of spawn
     writes it (of_spawn.settings_file): a fresh pane's shell takes at most 1,024 bytes a line, and the deny rules
-    alone can pass 4 KB (of_platform, 331066a). tools: (argv, settings keys) of the position's tool profile
+    alone can pass 4 KB (of_platform, 2026-11-11). tools: (argv, settings keys) of the position's tool profile
     (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if is_default(target) else [f"CLAUDE_CONFIG_DIR={_q(target)}"]
     parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
@@ -1097,7 +1097,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
 
 def deny_for(p, log=print):
     """The position's credential deny rules, as of spawn writes them (docs/registry.md, Credentials; of_platform,
-    874b73c). None without a position or with a broken catalogue: of registry check reports that, and the guard
+    2026-11-11). None without a position or with a broken catalogue: of registry check reports that, and the guard
     still applies."""
     if not p or not p.get("name"):
         return None
@@ -1246,7 +1246,7 @@ def effort_of(d, model):
 
 
 HOLDER_LAG_NOTE = ("If `of inbox --mine` or `of send` answers `403 not_holder` right after this, the relay server has "
-                   "not seen your new process yet; it should within about 10 seconds (of_server, 363dbaa), so retry in "
+                   "not seen your new process yet; it should within about 10 seconds (of_server, 2026-11-07), so retry in "
                    "10 to 20 seconds, do not investigate.")
 
 
@@ -4366,7 +4366,7 @@ def pool_numbers(rows, sessions, rates, wcalib, now):
 
 
 def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", window_s=5 * 3600):
-    """Pure bookkeeping of the invariant across runs (of_architect's review of b8e91f3, 2026-11-11). The founder must
+    """Pure bookkeeping of the invariant across runs (of_architect's review of the rescue, 2026-11-11). The founder must
     never be the monitor again.
     state: {"stalled": [session ids], "runs": {session: runs stalled}, "rescues": {session: [epochs]},
     "told_pool": epoch}; stalls: stall_report(); accepting: accepting_accounts(); rescued: [(session, position)]
@@ -4799,7 +4799,7 @@ def ingest_spend(conn, now, keep_s=SPEND_KEEP_S, batch=5000):
         first = conn.execute("SELECT min(id) FROM transcript_record WHERE timestamp >= ?", (since,)).fetchone()[0]
         cur = (first or 1) - 1
     cur, n = int(cur), 0
-    # transcript_own leaves out a fork's copies of its parent's records (of_platform, 6dfe8a2: a fork is
+    # transcript_own leaves out a fork's copies of its parent's records (of_platform, 2026-11-06: a fork is
     # marked in the transaction of its first rows, so a reader by id never sees a copy before its mark);
     # an older store without it falls back to transcript_record and the _owns rule
     own = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'transcript_own'").fetchone() is not None
