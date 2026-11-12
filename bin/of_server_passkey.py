@@ -186,11 +186,21 @@ def es256_verify(spki_b64, data, der_signature):
     return pt is not None and pt[0] % _N == r
 
 
-def short_code(credential_id):
-    """The code the phone's page and the owner's terminal both show: six characters from the credential id's hash,
-    from an alphabet with no look-alike characters."""
-    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-    n = int.from_bytes(hashlib.sha256(credential_id).digest()[:8], "big")
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def short_code(credential_id, public_key):
+    """The code the owner compares: six characters, from an alphabet with no look-alike characters, of SHA-256 over
+    the credential id followed by the public key (SubjectPublicKeyInfo DER; base64 accepted). Each side computes it
+    itself: the phone from the key it just made, the owner's terminal from the record it is about to sign. A store
+    or a server that swapped the public key therefore shows a different code at the terminal (of_secrets-review on
+    organic-framework PR 81: a code of the credential id alone, relayed by of-server, let a swapped key pass)."""
+    if isinstance(credential_id, str):
+        credential_id = unb64u(credential_id)
+    if isinstance(public_key, str):
+        public_key = base64.b64decode(public_key)
+    alphabet = CODE_ALPHABET
+    n = int.from_bytes(hashlib.sha256(bytes(credential_id) + bytes(public_key)).digest()[:8], "big")
     out = ""
     for _ in range(6):
         n, r = divmod(n, len(alphabet))
@@ -229,8 +239,9 @@ def verify_registration(attestation_object, client_data_json, challenge, rp_id, 
         raise PasskeyError("the passkey did not verify the person (no user presence or verification)")
     if not auth["credential_id"] or auth["public_key"] is None:
         raise PasskeyError("the registration carries no credential")
-    return {"credential_id": b64u(auth["credential_id"]), "public_key": cose_to_spki(auth["public_key"]),
-            "counter": auth["counter"], "code": short_code(auth["credential_id"])}
+    spki = cose_to_spki(auth["public_key"])
+    return {"credential_id": b64u(auth["credential_id"]), "public_key": spki, "counter": auth["counter"],
+            "code": short_code(auth["credential_id"], spki)}
 
 
 def verify_assertion(authenticator_data, client_data_json, signature, challenge, rp_id, origin, public_key,
@@ -519,6 +530,15 @@ async function post(path, body) {
                                credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'});
   const j = await r.json(); if (!r.ok) throw new Error(j.title || r.status); return j;
 }
+async function codeOf(rawId, spki) {
+  const both = new Uint8Array(rawId.byteLength + spki.byteLength);
+  both.set(new Uint8Array(rawId), 0); both.set(new Uint8Array(spki), rawId.byteLength);
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', both));
+  let n = 0n; for (let i = 0; i < 8; i++) n = (n << 8n) | BigInt(h[i]);
+  const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let out = '';
+  for (let i = 0; i < 6; i++) { out += A[Number(n % 31n)]; n = n / 31n; }
+  return out;
+}
 async function assertWith(challenge, ids) {
   const a = await navigator.credentials.get({publicKey: {challenge: unb64u(challenge), userVerification: 'required',
     allowCredentials: ids.map(id => ({type: 'public-key', id: unb64u(id)})), timeout: 120000}});
@@ -553,8 +573,9 @@ def headers(csp_nonce):
 def enroll_page(wid, csp_nonce):
     w = json.dumps(str(wid)).replace("<", "\\u003c")
     body = ("<h1>Enroll this phone's passkey</h1><p>Your organization's owner opened this window at their machine. "
-            "Create the passkey, then read the code shown here to the owner: they compare it with the code in their "
-            "terminal before they sign.</p><button id='go'>Create the passkey</button><p id='code'></p>")
+            "Create the passkey, then read the code shown here to the owner. This phone computes it from the key it "
+            "made; their terminal computes its own from the key it would sign, and they sign only when the two "
+            "match.</p><button id='go'>Create the passkey</button><p id='code'></p>")
     script = (f"const W = {w};" + r"""
 document.getElementById('go').onclick = async () => {
   try {
@@ -564,13 +585,17 @@ document.getElementById('go').onclick = async () => {
       user: {id: unb64u(o.user.id), name: o.user.name, displayName: o.user.displayName},
       pubKeyCredParams: o.pubKeyCredParams, authenticatorSelection: o.authenticatorSelection,
       attestation: o.attestation, timeout: o.timeout}});
+    const spki = c.response.getPublicKey ? c.response.getPublicKey() : null;
+    if (!spki) throw new Error('this browser does not give the new public key to the page; use another browser');
+    const mine = await codeOf(c.rawId, spki);   // computed here, from the key this phone made
     const reg = await post('/v1/passkey/windows/' + encodeURIComponent(W) + '/register',
       {attestation_object: b64u(c.response.attestationObject), client_data_json: b64u(c.response.clientDataJSON)});
     say('Now confirm once more, to test the new passkey.');
     const t = await post('/v1/passkey/windows/' + encodeURIComponent(W) + '/test',
       await assertWith(reg.test_challenge, [reg.credential]));
-    document.getElementById('code').textContent = t.code;
-    say('Read this code to the owner. Nothing is enrolled until they sign at their machine.');
+    document.getElementById('code').textContent = mine;
+    say(mine === t.code ? 'Read this code to the owner. Nothing is enrolled until they sign at their machine.'
+                        : 'Warning: the server holds another key than this phone made. Tell the owner not to sign.');
     document.getElementById('go').disabled = true;
   } catch (e) { say('Not enrolled: ' + e.message); }
 };""")
