@@ -168,7 +168,11 @@ diff:
 - `of diff check` runs the validity checks: the registry, grant attenuation, the single writer, the accountability path, no widened critical grant.
 - `of diff apply` writes the events (`of.diff_applied`, plus `of.mandate_changed`, holder and grant events) and schedules the review.
 - `of diff review` compares observed signals with `predicted` and proposes keep, extend or revert. Every diff and its review go to the archive.
-- **`goal_change`** (2026-11-12, `of_architect`; `of_conductor`'s message `01a1cf8f-1d75`) adds, rewrites or closes goals and conditions (docs/registry.md, Goals). One diff may carry a whole tree, so the owner approves the exact text once. Its tier is medium at least, and `approvals: [owner]`: the organization's owner for a root goal or a condition held for the whole organization. `of diff apply` writes the approval's ask id into each node's `decided`. Its `predicted` names what the tree should change, for example the open works on no goal or condition going to zero, or a measure per sub-goal.
+- **`goal_change`** (2026-11-12, `of_architect`; `of_conductor`'s message `01a1cf8f-1d75`) adds, rewrites or closes goals and conditions (docs/registry.md, Goals). One diff may carry a whole tree, so its approvers approve the exact text once. Its tier is medium at least. Each node it touches is approved by the owner of that node's parent (docs/registry.md, Goals, "Who decides"):
+  - a root goal, or a condition held for the whole organization, by the organization's owner (`approvals: [owner]`);
+  - a node under a unit owner's goal, or a condition held `under` it, by that unit owner (`approvals: [<the unit owner's position>]`), who approves it as the organization's owner does: `of diff approve` on a machine enrolled for the person who holds that position (docs/registry.md, People, `machines`), or that person's passkey (docs/remote.md §6);
+  - a diff that touches both kinds names every approver it needs, and applies only when all have approved.
+  Until `of diff approve` accepts a unit owner (`of_platform`), the organization's owner approves those nodes too. `of diff apply` writes each approval's id into the `decided` of the nodes it covers. Its `predicted` names what the tree should change, for example the open works on no goal or condition going to zero, or a measure per sub-goal.
 
 ## 4. Order of implementation
 
