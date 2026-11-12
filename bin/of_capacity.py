@@ -1665,6 +1665,22 @@ def _herdr(*args, timeout=30):
         return out.stdout
 
 
+KILL_LINE = "\x15"  # Ctrl-U as a raw byte: send-keys "ctrl+u" arrives as a kitty sequence zsh types out ("7;5u")
+
+
+def _run_in_pane(pane, cmd, herdr=None):
+    """Run `cmd` at the pane's shell prompt, its input line emptied first (Ctrl-U).
+
+    2026-11-12: the shell left behind by a session the founder closed by accident held a recalled history line (an
+    older resume of another position's session). `herdr pane run` appended the resume to it, so that other session
+    started a second copy in this pane, on another account, and the intended resume was chained behind it with
+    `&&`. Nothing typed before the command may survive."""
+    herdr = herdr or _herdr
+    herdr("pane", "send-text", pane, KILL_LINE)
+    time.sleep(0.2)
+    return herdr("pane", "run", pane, cmd)
+
+
 def _agent_by_session(sid):
     for a in _herdr("agent", "list")["agents"]:
         if ((a.get("agent_session") or {}).get("value")) == sid:
@@ -2197,7 +2213,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         read = lambda: _zellij(zs, "dump-screen", "--pane-id", zp, "--ansi").splitlines()[-60:]  # noqa: E731
         key = lambda k: _zellij(zs, "send-keys", "--pane-id", zp, k)  # noqa: E731
     else:
-        run = lambda: _herdr("pane", "run", new_pane, cmd)  # noqa: E731
+        run = lambda: _run_in_pane(new_pane, cmd)  # noqa: E731
         read = lambda: _pane_lines(new_pane)  # noqa: E731
         key = lambda k: _herdr("pane", "send-keys", new_pane, k.lower())  # noqa: E731
     new = start_session(sid, name, s["cwd"], target, prompt, run, read, key, f"{what}: hand-over note", log=log)
@@ -2318,7 +2334,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
         fh.write(resume_note(name, sid, target, account_of(target), _iso(time.time()),
                              last_field(transcript, "timestamp"), extra_note))
     new = start_session(sid, name, cwd, target, launch_prompt(note_path, resumed=True),
-                        lambda: _herdr("pane", "run", pane, cmd), lambda: _pane_lines(pane),
+                        lambda: _run_in_pane(pane, cmd), lambda: _pane_lines(pane),
                         lambda k: _herdr("pane", "send-keys", pane, k.lower()), "account move: resume note", log=log)
     log(f"  resumed: pid {new['pid']}, session {new['session']}, pane {pane}")
     if bypass:
@@ -2686,7 +2702,7 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     os.makedirs(work, mode=0o700, exist_ok=True)
     with open(note_path, "w") as fh:
         fh.write(reboot_note(e, account_of(target), ts, plan.get("prepared_at"), bool(plan.get("tmp_kept"))))
-    new = start_session(sid, name, cwd, target, prompt, lambda: _herdr("pane", "run", pane, cmd),
+    new = start_session(sid, name, cwd, target, prompt, lambda: _run_in_pane(pane, cmd),
                         lambda: _pane_lines(pane), lambda k: _herdr("pane", "send-keys", pane, k.lower()),
                         "reboot: resume note", log=log)
     if bypass:
