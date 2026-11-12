@@ -11,6 +11,7 @@ import re
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")  # the same rule as a work's id
 GOAL_STATES = ("active", "achieved", "dropped")
 CONDITION_STATES = ("active", "dropped")
+BUDGET_KEYS = {"tokens_month", "usd_month"}
 FEW = 7  # more active ones at one level is a warning: a goal list is a choice, not an inventory
 OPEN_WORK = lambda w: (w or {}).get("state") not in ("done", "parked")  # noqa: E731
 
@@ -82,6 +83,31 @@ def check(goals, conditions, works, warn="warning: "):
         p = goals.get(parent) if parent else None
         if g.get("state") == "active" and isinstance(p, dict) and p.get("state") in ("achieved", "dropped"):
             out.append(f"{warn}{tag}: active under {parent}, which is {p['state']}: a closed parent closes its branch")
+    for kind, nodes in (("goals", goals), ("conditions", conditions)):  # docs/registry.md, Budgets
+        for nid, n in nodes.items():
+            b = n.get("budget") if isinstance(n, dict) else None
+            if b is None:
+                continue
+            tag = f"{kind}: {nid}: budget"
+            if not isinstance(b, dict) or not b:
+                out.append(f"{tag} is a mapping of tokens_month and/or usd_month")
+                continue
+            for k in sorted(set(b) - BUDGET_KEYS):
+                out.append(f"{tag}: unknown key {k!r} (tokens_month, usd_month)")
+            for k in sorted(set(b) & BUDGET_KEYS):
+                if not isinstance(b[k], (int, float)) or isinstance(b[k], bool) or b[k] <= 0:
+                    out.append(f"{tag}.{k} must be a positive number")
+    for parent, ids in sorted(kids.items()):  # sub-budgets are parts of the parent's
+        pb = (goals.get(parent) or {}).get("budget") if isinstance(goals.get(parent), dict) else None
+        if not isinstance(pb, dict):
+            continue
+        for k in sorted(BUDGET_KEYS):
+            parts = [((goals[i] or {}).get("budget") or {}).get(k) for i in ids if isinstance(goals.get(i), dict)
+                     and isinstance((goals[i] or {}).get("budget"), dict)]
+            parts = [x for x in parts if isinstance(x, (int, float)) and not isinstance(x, bool)]
+            if isinstance(pb.get(k), (int, float)) and parts and sum(parts) > pb[k]:
+                out.append(f"{warn}goals: {parent}: its sub-goals' budgets add up to {sum(parts):,} {k}, more than "
+                           f"its own {pb[k]:,}")
     for gid in goals:  # a cycle: following parents comes back to the goal
         seen, cur = [], gid
         while isinstance(goals.get(cur), dict) and goals[cur].get("parent") is not None and cur not in seen:

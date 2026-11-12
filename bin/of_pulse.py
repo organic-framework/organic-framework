@@ -208,6 +208,15 @@ def nudge_text(waiter, note, peer):
             f"[reply: of send {waiter} \"…\", or tell it you can't: of status ... ]")
 
 
+def _fyi(to, text):
+    """One --fyi message from of_platform (the inbox only, never typed into a pane)."""
+    import subprocess
+    here = os.path.dirname(os.path.realpath(__file__))
+    subprocess.run([os.path.join(here, "of"), "send", to, "--from", "organic-framework-build:of_platform", "--fyi",
+                    text], capture_output=True, text=True, timeout=60,
+                   env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+
+
 def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None, log=print, handovers=None,
         offer=None, elsewhere=None, observed=None):
     """One pulse. Returns the projection. handovers: of_handover.project(...); offer(h) types a
@@ -344,6 +353,13 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
             remote_notes(positions, live, asks, rows_, mem, prompt, now, log)
     except Exception as e:  # noqa: BLE001
         log(f"remote notes: {e}")
+    try:  # docs/registry.md, Budgets: 80% warns the structure keeper, 100% files one card a month; nothing stops
+        import of_budgets
+        import of_spend
+        import of_tools
+        of_budgets.check(of_spend.load(), of_tools.registries(), positions, mem, now, _fyi, log)
+    except Exception as e:  # noqa: BLE001
+        log(f"budgets: {e}")
     save_memory(mem)
     return rows_
 
