@@ -171,6 +171,7 @@ class GrantGuardTest(unittest.TestCase):
                     "of grant revoke --org acme --id g-2026-11-09-015 --note moved",
                     "~/organic-framework/bin/of grant revoke --org t --id g-1",
                     "python3 bin/of grant issue --org t --subject x --tier observe",
+                    "of passkey enroll founder", "python3 bin/of passkey revoke founder cred-1",
                     'bash -c "of grant revoke --org t --id g-1"',
                     "ssh-keygen -Y sign -f ~/.config/of/grant_ed25519 -n of-grant /tmp/g",
                     "python3 -c 'import of_grants; of_grants.sign_ed25519(g)'",

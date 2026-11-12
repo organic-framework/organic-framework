@@ -1046,6 +1046,11 @@ def _grant_deny(head, args, stext):
     if head == "of" and words[:1] == ["grant"] and len(words) > 1 and words[1] in ("issue", "revoke", "rekey") and \
             not any(w in ("-h", "--help") for w in words):
         return GRANT_DENY, "of grant " + words[1]
+    # docs/remote.md §6: a passkey's enrollment window and its revocation are the owner's acts, signed with the grant
+    # key like a grant (of_architect's hand-over e15207eb)
+    if head == "of" and words[:1] == ["passkey"] and len(words) > 1 and words[1] in ("enroll", "revoke") and \
+            not any(w in ("-h", "--help") for w in words):
+        return GRANT_DENY, "of passkey " + words[1]
     if head == "ssh-keygen" and "-Y" in args and "sign" in args and \
             any(_GRANT_KEY_NAME.search(a) for a in [_opt_value(args, ("-f",)) or ""]):
         return GRANT_DENY, "ssh-keygen -Y sign with the tenant's grant key"
