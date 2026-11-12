@@ -121,17 +121,24 @@ def protection(cat):
 
 
 def cached_protection(state_dir):
-    """protection() from the guard's cache file alone, with no YAML: the hook calls it before the critical denies,
-    which decide before PyYAML is imported (docs/guard.md, How a rule changes). A missing or old cache gives nothing;
-    the catalogue step of the same hook call rebuilds it."""
+    """protection() from the guard's cache file alone, with no YAML, or None when the file is missing, unreadable or
+    of an older version."""
     try:
         with open(os.path.join(state_dir, CACHE)) as fh:
             c = json.load(fh)
     except (OSError, ValueError):
-        return [], []
+        return None
     if c.get("version") != CACHE_VERSION or not isinstance(c.get("orgs"), dict):
-        return [], []
+        return None
     return protection(c["orgs"])
+
+
+def guard_protection(state_dir, orgs_file=None):
+    """(keychain, code) for the hook, before the critical denies. The cache is read with no YAML in the common case;
+    when it is missing or old, it is rebuilt here first, so a removed cache never lifts G20 and G21 for a call
+    (of_review's review of organic-framework PR 65). The guard denies agents any write to the cache file."""
+    got = cached_protection(state_dir)
+    return got if got is not None else protection(cached(state_dir, orgs_file))
 
 
 def load(orgs_file=None):

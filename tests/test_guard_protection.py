@@ -96,6 +96,20 @@ class ProtectedCodeTest(unittest.TestCase):
             self.assertIsNone(bash(cmd, self.root), cmd)
 
 
+class GuardStateTest(unittest.TestCase):
+    def test_the_caches_these_rules_read_are_not_an_agents_to_change(self):
+        """of_review's probe on organic-framework PR 65: rm, an overwrite, a forged cache."""
+        for cmd in ("rm ~/.local/state/of/guard-credentials.json", "echo '{}' > ~/.local/state/of/guard-credentials.json",
+                    "cp forged.json ~/.local/state/of/guard-credentials.json",
+                    "mv ~/.local/state/of/passkey-revoked.json /tmp/x", "truncate -s 0 ~/.local/state/of/passkey-revoked.json"):
+            self.assertIn("guard's own cache", bash(cmd, os.path.expanduser("~")) or "", cmd)
+        for tool in ("Write", "Edit"):
+            hit = of_guard.critical_deny(tool, {"file_path": os.path.expanduser("~/.local/state/of/guard-credentials.json")})
+            self.assertIn("guard's own cache", (hit or [""])[0], tool)
+        self.assertIsNone(bash("cat ~/.local/state/of/guard-credentials.json"))
+        self.assertIsNone(bash("ls -la ~/.local/state/of/"))
+
+
 class CatalogueTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -143,7 +157,9 @@ class CatalogueTest(unittest.TestCase):
     def test_the_hook_reads_the_cache_and_denies(self):
         state = os.path.join(self.tmp.name, "state")
         os.makedirs(state)
-        self.assertEqual(of_credentials.cached_protection(state), ([], []))  # no cache yet
+        self.assertIsNone(of_credentials.cached_protection(state))  # no cache yet
+        self.assertIn("acme-backup-r2-key-id", of_credentials.guard_protection(state, self.orgs)[0])  # built first
+        os.remove(os.path.join(state, of_credentials.CACHE))
         of_credentials.cached(state, self.orgs)
         self.assertIn("acme-backup-r2-key-id", of_credentials.cached_protection(state)[0])
         path = os.path.join(state, of_credentials.CACHE)
@@ -152,9 +168,10 @@ class CatalogueTest(unittest.TestCase):
         c["version"] = 1
         with open(path, "w") as fh:
             json.dump(c, fh)
-        self.assertEqual(of_credentials.cached_protection(state), ([], []))  # an old cache is rebuilt, not read
+        self.assertIsNone(of_credentials.cached_protection(state))  # an old cache is rebuilt, not read
         self.assertEqual(of_credentials.cached(state, self.orgs)["acme"]["credentials"]["backup-keys"]["keychain"],
                          ["acme-backup-r2-key-id", "acme-backup-*"])
+        os.remove(path)  # a removed cache: the hook rebuilds it before the critical denies
         saved = (of_events.STATE_DIR, of_hook.STATE, os.environ.get("OF_ORGS"))
         of_events.STATE_DIR = of_hook.STATE = state
         os.environ["OF_ORGS"] = self.orgs

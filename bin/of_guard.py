@@ -1351,6 +1351,18 @@ KEYCHAIN_DENY = ("a macOS keychain item that an organization keeps from every ag
 PROTECTED_CODE_DENY = ("code that runs with an organization's secrets, which agents never change (its registry's "
                        "protected_code:; docs/guard.md G21)")
 _SEC_ARG_OPTS = set("acCdDGjlpPrst")  # security find-*-password options that take a value
+# The caches these rules and the passkey check read: an agent that removed or rewrote one would lift them
+# (of_review's probe on organic-framework PR 65: rm, an overwrite, and a forged version-2 cache that is never rebuilt).
+_GUARD_STATE_FILES = re.compile(r"(?:^|/)\.local/state/of/(?:guard-credentials|passkey-revoked)\.json(?:\.\d+)?$")
+GUARD_STATE_DENY = ("the guard's own cache of what organizations protect, which only OF writes (docs/guard.md G20, "
+                    "G21)")
+
+
+def _guard_state_file(path, cwd=None):
+    p = str(path or "").strip("'\"")
+    if p and not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    return bool(p) and bool(_GUARD_STATE_FILES.search(os.path.normpath(os.path.expanduser(p))))
 
 
 def use_protection(keychain=(), code=()):
@@ -1443,11 +1455,14 @@ def _protected_code(path, cwd, removal=False):
 
 
 def _protected_code_deny(head, args, stext, cwd):
-    """(reason, path) for G21 on one simple command, else None."""
-    if not _ORG_PROTECTION["code"]:
-        return None
+    """(reason, path) for G21 on one simple command, else None; and the guard's own state files, always."""
     removal = head in ("rm", "rmdir", "mv", "unlink", "shred")
     files = _changed_files(head, args, stext) + ([a for a in args if not a.startswith("-")] if head == "rmdir" else [])
+    state = next((f for f in files if _guard_state_file(f, cwd)), None)
+    if state:
+        return GUARD_STATE_DENY, state
+    if not _ORG_PROTECTION["code"]:
+        return None
     hit = next((f for f in files if _protected_code(f, cwd, removal)), None)
     return (PROTECTED_CODE_DENY, hit) if hit else None
 
@@ -1800,6 +1815,8 @@ def critical_deny(tool, tool_input, cwd=None):
         return PLUGINS_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _protected_code(path, cwd):
         return PROTECTED_CODE_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _guard_state_file(path, cwd):
+        return GUARD_STATE_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Grep") and _memory_path(path):
