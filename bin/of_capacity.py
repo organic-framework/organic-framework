@@ -4892,6 +4892,11 @@ class ListenerProcessor:
             loop_costs(conn, now)  # RFC 0005 step 5: cost per cycle for of_studio's loop card
         except Exception:
             pass
+        try:  # spend per goal (bin/of_spend.py; docs/registry.md, Goals, "Budgets"): its own view and cursor
+            import of_spend
+            of_spend.tick(conn, now)
+        except Exception:
+            pass
         if load_policy().get("auto"):
             spawn_balance()
         return False
