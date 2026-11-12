@@ -684,10 +684,15 @@ class FiveHourRelief(unittest.TestCase):
                                      wcalib={"/gg": 28.8, "/mm": 7.2})
         self.assertEqual(m, [])
 
-    def test_an_account_without_a_measured_week_keeps_the_tier_prior(self):
+    def test_an_account_without_a_measured_week_is_sized_from_the_others_week(self):
+        # 2026-11-12 (AfterAWeekReset): a week just reset has no measure of its own; the others' week, scaled by tier,
+        # sizes it (here /mm's $7.2 per 1% times 4 is /gg's own $28.8). With no week measured anywhere, no room.
         pol = dict(POLICY)
         m = of_capacity.balance_plan(self.rows(), self.SESS, self.POS, self.RATES, {"/mm": 0.94}, pol, self.NOW,
                                      wcalib={"/mm": 7.2})
+        self.assertEqual([(x["position"], x["to"]) for x in m], [("st", "/gg")])
+        m = of_capacity.balance_plan(self.rows(), self.SESS, self.POS, self.RATES, {"/mm": 0.94}, pol, self.NOW,
+                                     wcalib={})
         self.assertEqual(m, [])
 
 
@@ -2245,6 +2250,27 @@ class ReliefAhead(unittest.TestCase):
         rows[0]["windows"]["seven_day"]["utilization"] = 60  # plenty of week left: nothing moves
         self.assertEqual(of_capacity.balance_plan(rows, sess, pos, rates, {"/ez": 8.6}, pol, now,
                                                   contexts={"a": 200_000}, wcalib={"/ez": 26.0}), [])
+
+
+class AfterAWeekReset(unittest.TestCase):
+    """2026-11-12: the founder reset ~/.claude-g's week to 0%. It reports no 5-hour window and had no week
+    measure of its own yet, so it looked to have no room; ~/.claude-a, whose week resets 3 hours earlier, had none
+    left; and fill moved nothing while ~/.claude spent $127/h toward its weekly limit."""
+    def test_a_fresh_week_is_sized_from_the_others_and_fill_passes_to_it(self):
+        now = Balance.NOW
+        iso = lambda h: of_capacity._iso(now + h * 3600)  # noqa: E731
+        acct = lambda d, used, reset_h: {"config_dir": d, "logged_in": True, "status": "allowed",  # noqa: E731
+                                          "tier": "default_claude_max_20x",
+                                          "windows": {"seven_day": {"utilization": used, "resets_at": iso(reset_h)}}}
+        rows = [acct("/ap", 59, 67), acct("/gg", 0, 70), acct("/cl", 51, 160)]
+        pos = [{"name": n, "holder": {"session": n}} for n in ("ap1", "c1", "c2", "c3")]
+        sess = {"/ap": [{"session": "ap1", "status": "busy"}], "/gg": [],
+                "/cl": [{"session": n, "status": "idle"} for n in ("c1", "c2", "c3")]}
+        rates = {"ap1": 67, "c1": 18, "c2": 15, "c3": 2}
+        wcalib = {"/ap": 31.2, "/cl": 20.5}  # $ per 1% of the week; /gg has none since its reset
+        m = of_capacity.balance_plan(rows, sess, pos, rates, {}, dict(POLICY), now,
+                                     contexts={"c1": 200_000, "c2": 200_000, "c3": 200_000}, wcalib=wcalib)
+        self.assertEqual([(x["position"], x["from"], x["to"]) for x in m], [("c1", "/cl", "/gg"), ("c2", "/cl", "/gg")])
 
 
 class HerdrIntegration(unittest.TestCase):
