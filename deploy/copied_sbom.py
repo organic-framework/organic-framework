@@ -6,8 +6,9 @@ it loads that the runtime image lacks, copied from a build stage where openssh-c
 package. So that scanners still see what was copied, the build stage writes a CycloneDX SBOM from its own dpkg records,
 never by hand: each copied file's package, exact version and source package, and the file's MD5 (equal to the line in
 the package's dpkg file list, checked here) and SHA-256. CI proves the copies in the runtime image are those files and
-that Trivy reads the SBOM (.github/workflows/of-server-image.yml). Basis: 2026-11-12, a user organization's security
-keeper accepted leaving the package out only on these two conditions.
+that Trivy takes its packages as the image's own (.github/workflows/of-server-image.yml). Basis: 2026-11-12, a user
+organization's security keeper accepted leaving the package out only on these two conditions (msg 01a1cf70), and
+accepted the MD5 in dpkg's file list as the anchor, with SHA-256 from the build stage to the image (msg 01a1cf80).
 
   copied_sbom.py build --before SONAMES --out DIR BINARY   build stage: copy BINARY and each library it loads whose
                                                             soname is not in the file SONAMES under DIR, and write the
@@ -230,21 +231,32 @@ def verify_final(path):
 
 
 def seen(sbom_path, report_path):
-    """Every package the SBOM names is in Trivy's report of the image, by deb purl and version."""
+    """Every package the SBOM names is an OS package in Trivy's report of the image: a deb component at its version
+    that the report's operating-system component depends on. Trivy matches Debian's advisories only to the packages
+    of that component, so a deb listed elsewhere would be seen and never checked (organic-framework PR 57 review)."""
     report = json.loads(read(report_path))
-    have = set()
+    os_refs = {c.get("bom-ref") for c in report.get("components", []) if c.get("type") == "operating-system"}
+    of_os = {r for d in report.get("dependencies", []) if d.get("ref") in os_refs for r in d.get("dependsOn") or []}
+    have, listed = set(), set()
     for c in report.get("components", []):
         m = re.match(r"pkg:deb/[^/]+/([^@]+)@([^?#]+)(?:\?([^#]*))?", str(c.get("purl", "")))
         if m:
             q = dict(kv.split("=", 1) for kv in (m.group(3) or "").split("&") if "=" in kv)
             v = unquote(m.group(2))
-            have |= {(m.group(1), c.get("version")), (m.group(1), f"{q['epoch']}:{v}" if q.get("epoch") else v)}
+            keys = {(m.group(1), c.get("version")), (m.group(1), f"{q['epoch']}:{v}" if q.get("epoch") else v)}
+            listed |= keys
+            if c.get("bom-ref") in of_os:
+                have |= keys
     wanted = {(pkg, version) for pkg, version, *_ in parse_files(json.loads(read(sbom_path)))}
-    missing = sorted(wanted - have)
+    missing = sorted(wanted - listed)
     if missing:
         fail("Trivy does not list " + ", ".join(f"{p} {v}" for p, v in missing))
+    loose = sorted(wanted - have)
+    if loose:
+        fail("Trivy lists, but not as packages of the image's operating system (so no Debian advisory is matched to "
+             "them): " + ", ".join(f"{p} {v}" for p, v in loose))
     for pkg, version in sorted(wanted):
-        print(f"ok Trivy lists {pkg} {version}")
+        print(f"ok Trivy lists {pkg} {version} as a package of the image's operating system")
 
 
 def main(argv=None):
