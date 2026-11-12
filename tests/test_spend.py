@@ -162,6 +162,7 @@ class Store(unittest.TestCase):
         self.ev(T0 + H, "of.hook", "S1", "acme_a")
         self.ev(T0 + 5 * H, "of.hook", "S1", "acme_a")
         self.ev(T0 + 3 * H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        self.ev(T0 + 3.5 * H, "of.agent_question", "S1", "acme_a", {"work": "w-cache"})  # an ask about another work
         self.rec("S1", "m1", T0 + 2 * H, inp=100, out=0)        # before the declaration: acme_a has two open works
         self.rec("S1", "m2", T0 + 4 * H, inp=200, out=0)        # declared: w-retry
         self.rec("S3", "m3", T0 + 4 * H, inp=7, out=0)          # no position ever held S3
@@ -169,7 +170,8 @@ class Store(unittest.TestCase):
         out = of_spend.compute(DOCS, self.conn, now=now)
         o = out["orgs"]["acme"]
         self.assertEqual(o["unattributed"]["acme_a"]["fresh"], 100)
-        self.assertEqual(o["works"]["w-retry"]["fresh"], 200)
+        self.assertEqual(o["works"]["w-retry"]["fresh"], 200)   # the ask with --work moved nothing (PR 86)
+        self.assertNotIn("w-cache", o["works"])
         self.assertEqual(o["goals"]["g-root"]["total"]["fresh"], 200)
         self.assertEqual(out["unowned"]["fresh"], 7)
         self.assertEqual(out["total"]["fresh"], 307)

@@ -6,7 +6,7 @@ are attributed session -> position -> work -> goal, and summed per calendar mont
 - a response goes to the position whose holder its session was at that moment: the positions the session's events
   name, each over the span of its events (the one with more events wins where two overlap; aliases resolve to the
   canonical name), else the registry's holder.session and of.holder_changed;
-- from the position to a work: the work it last declared (`of status --work`, `of ask --work`) until it declares
+- from the position to a work: the work it last declared with `of status --work` until it declares
   another; without one, its one open work when it is a doer of exactly one; or the goal, when all its open works
   serve one goal; else unattributed under the position;
 - a goal's spend is its works', what went to it directly, and its sub-goals'; a condition's, its works'.
@@ -29,7 +29,7 @@ import of_events
 VERSION = "1"                 # bump to rebuild view_spend_month from the first record
 TICK_BUDGET_S = 20            # the listener's share per tick while the view catches up
 REFRESH_S = 1800              # the sums are recomputed at most this often by the listener
-DECLARING = ("of.state_declared", "of.agent_question")
+DECLARING = ("of.state_declared",)  # `of status --work` only: an ask about a work is not the work being done (PR 86)
 DONE = {"done", "parked", "park"}
 
 MONTH_DDL = """
