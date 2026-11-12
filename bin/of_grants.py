@@ -676,11 +676,11 @@ def rekey(staged=None, orgs_file=None, sock=None):
             continue
         with open(path) as fh:
             doc = yaml.safe_load(fh) or {}
-        for g in doc.get("grants") or []:
+        for g in (doc.get("grants") or []) + (doc.get("passkey_revocations") or []):
             g.pop("signature", None)
             g["signature"] = sign_with_agent(g, staged, sock)
             if not verify(g, keys):
-                raise RuntimeError(f"{org}: grant {g.get('id')}: the new signature does not verify")
+                raise RuntimeError(f"{org}: {g.get('id') or g.get('credential')}: the new signature does not verify")
             n += 1
         docs[path] = doc
     for path, doc in docs.items():

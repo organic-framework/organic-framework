@@ -392,3 +392,84 @@ class HttpTest(FlowTest):
         self.app.passkey_rate.limit = 2                          # the unauthenticated routes are rate-limited
         codes = [self.open("GET", "/v1/passkey/windows/x/options")[0] for _ in range(3)]
         self.assertEqual(codes[-1], 429)
+
+
+class OwnerTerminalTest(unittest.TestCase):
+    """`of passkey enroll|revoke` (bin/of_passkey_owner.py): the owner signs only after the codes match, never while
+    the grant key is a plain file, and a revocation lands in the grants file every machine reads."""
+
+    def setUp(self):
+        import of_grants
+        self.tmp = tempfile.TemporaryDirectory()
+        self.key = os.path.join(self.tmp.name, "grant_ed25519")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", self.key], check=True,
+                       env=of_grants.no_agent_env())
+        with open(self.key + ".pub") as fh:
+            self.keys = of_grants.Keys(ed25519=[fh.read().strip()])
+        self.sign = lambda rec: of_grants.sign_ed25519(rec, self.key)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    class Client:
+        def __init__(self, states):
+            self.states, self.calls = list(states), []
+
+        def _authed(self, method, path, body=None):
+            self.calls.append((method, path, body))
+            if path == "/v1/passkey/windows":
+                return 200, {"window": "w1", "url": "https://of.acme.test/passkey/enroll?w=w1", "expires": "t"}
+            if path.startswith("/v1/passkey/windows/"):
+                return 200, self.states.pop(0) if len(self.states) > 1 else self.states[0]
+            return 200, {}
+
+    def state(self, st):
+        return {"state": st, "org": "acme", "person": "founder", "code": "ABC234", "credential": "cred-1",
+                "public_key": "AAAA", "rp_id": "of.acme.test", "origin": ORIGIN}
+
+    def test_signs_only_after_the_owner_confirms_the_code(self):
+        import io
+        import of_grants
+        import of_passkey_owner as O
+        c = self.Client([self.state("open"), self.state("tested")])
+        out = io.StringIO()
+        self.assertEqual(O.enroll(c, "acme", "founder", ask=lambda q: "yes", out=out, poll=0, sign=self.sign), "cred-1")
+        rec = c.calls[-1][2]["record"]
+        self.assertEqual((c.calls[-1][1], rec["person"], rec["origin"]), ("/v1/passkey/enrollments", "founder", ORIGIN))
+        self.assertTrue(of_grants.verify(rec, self.keys))
+        self.assertIn("ABC234", out.getvalue())
+        c = self.Client([self.state("tested")])
+        self.assertIsNone(O.enroll(c, "acme", "founder", ask=lambda q: "no", out=io.StringIO(), poll=0, sign=self.sign))
+        self.assertNotIn("/v1/passkey/enrollments", [p for _, p, _ in c.calls])
+
+    def test_refuses_while_the_grant_key_is_a_plain_file(self):
+        import of_grants
+        import of_passkey_owner as O
+        saved = of_grants.GRANT_KEY
+        of_grants.GRANT_KEY = self.key            # a private key file exists
+        try:
+            with self.assertRaises(PermissionError) as e:
+                O.enroll(self.Client([self.state("tested")]), "acme", "founder", ask=lambda q: "yes", poll=0)
+            self.assertIn("behind Touch ID", str(e.exception))
+        finally:
+            of_grants.GRANT_KEY = saved
+
+    def test_a_revocation_lands_in_the_grants_file_and_is_read_there(self):
+        import io
+        import of_grants
+        import of_passkey_owner as O
+        org_dir = os.path.join(self.tmp.name, "org", "registry")
+        orgs = os.path.join(self.tmp.name, "orgs.yaml")
+        with open(orgs, "w") as fh:
+            fh.write("orgs:\n  - {name: acme, path: org}\n")
+        path = os.path.join(org_dir, "grants.yaml")
+        c = self.Client([self.state("tested")])
+        O.revoke("acme", "founder", "cred-1", path, client=c, sign=self.sign, out=io.StringIO())
+        O.revoke("acme", "founder", "cred-1", path, client=None, sign=self.sign, out=io.StringIO())   # kept once
+        with open(path) as fh:
+            text = fh.read()
+        self.assertTrue(text.startswith(of_grants.GRANTS_HEADER))
+        self.assertEqual(text.count("credential: cred-1"), 1)
+        self.assertEqual(c.calls[-1][1], "/v1/passkey/revocations")
+        self.assertTrue(of_grants.passkey_revoked("acme", "cred-1", orgs, self.keys,
+                                                  os.path.join(self.tmp.name, "state")))
