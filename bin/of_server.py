@@ -1159,6 +1159,37 @@ def make_handler(app):
             except of_relay.RelayError as e:
                 return self._problem(e.status, e.typ, e.title, e.extra)
 
+        def _passkey(self, fn, status=200):
+            import of_server_passkey as P
+            try:
+                return self._send(status, fn())
+            except P.Refused as e:
+                return self._problem(e.status, e.typ, e.title)
+
+        def _passkey_open(self):
+            """The unauthenticated passkey routes: rate-limited per address; True when the call may go on."""
+            ip = self.client_address[0]
+            if app.passkey_rate.blocked(ip):
+                self._problem(429, "too_many", "too many passkey requests; wait")
+                return False
+            app.passkey_rate.add(ip)
+            return True
+
+        def _passkey_page(self, render):
+            import of_server_passkey as P
+            nonce = secrets.token_urlsafe(16)
+            try:
+                body, status, ctype = render(nonce), 200, "text/html; charset=utf-8"
+            except P.Refused as e:
+                body, status, ctype = e.title.encode(), e.status, "text/plain; charset=utf-8"
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in P.headers(nonce):
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
         def _problem(self, status, typ, title, extra=None):
             self._send(status, {"type": typ, "title": title, "status": status, **(extra or {})})
 
@@ -1191,6 +1222,19 @@ def make_handler(app):
                     return self._send(200, {"schemas": list(SCHEMAS), "types": {k: list(v) for k, v in REQUIRED.items()}})
                 if u.path == "/studio" or u.path.startswith("/studio/"):
                     return self._studio("GET", u)
+                if u.path in ("/passkey/enroll", "/approve/diff") or (
+                        u.path.startswith("/v1/passkey/windows/") and u.path.endswith("/options")):
+                    import of_server_passkey as P  # docs/remote.md §6: the phone's pages, behind a single-use token
+                    if not self._passkey_open():
+                        return None
+                    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                    if u.path == "/passkey/enroll":
+                        return self._passkey_page(lambda n: (app.passkeys.window_options(q.get("w")),
+                                                             P.enroll_page(q.get("w"), n))[1])
+                    if u.path == "/approve/diff":
+                        return self._passkey_page(lambda n: P.approve_page(dict(app.passkeys.approval_page(
+                            q.get("org"), q.get("id"), q.get("digest"), q.get("n")), nonce=q.get("n")), n))
+                    return self._passkey(lambda: app.passkeys.window_options(u.path.split("/")[4]))
                 if u.path == "/v1/terms":
                     cur = app.cfg["terms_current"]
                     return self._send(200, {"current": cur, "tiers": list(TIERS), "required": ["typed"],
@@ -1214,6 +1258,8 @@ def make_handler(app):
                         d["tiers"] = json.loads(d["tiers"] or "{}")
                         out.append(d)
                     return self._send(200, {"receipts": out})
+                if u.path.startswith("/v1/passkey/windows/"):  # the owner's terminal follows its window
+                    return self._passkey(lambda: app.passkeys.window_state(m, u.path.split("/")[4]))
                 if u.path == "/v1/presence":
                     return self._relay(lambda: app.relay.get_presence(m, (parse_qs(u.query).get("org") or [""])[0]))
                 if u.path == "/v1/messages":
@@ -1333,9 +1379,48 @@ def make_handler(app):
                         if e.status in (404, 410):
                             app.bad_codes.add(ip)
                         return self._problem(e.status, e.typ, e.title)
+                if u.path == "/v1/passkey/approve" or (u.path.startswith("/v1/passkey/windows/") and
+                                                       u.path.endswith(("/register", "/test"))):
+                    if not self._passkey_open():
+                        return None
+                    try:
+                        b = json.loads(raw or b"{}") or {}
+                    except ValueError:
+                        return self._problem(400, "bad_request", "the body is not JSON")
+                    if u.path.endswith("/register"):
+                        return self._passkey(lambda: app.passkeys.register(
+                            u.path.split("/")[4], b.get("attestation_object"), b.get("client_data_json")))
+                    if u.path.endswith("/test"):
+                        return self._passkey(lambda: app.passkeys.test(
+                            u.path.split("/")[4], b.get("credential"), b.get("authenticator_data"),
+                            b.get("client_data_json"), b.get("signature")))
+
+                    def approve():
+                        import of_server_passkey as P
+                        payload = app.passkeys.approve(b.get("nonce"), b.get("credential"), b.get("authenticator_data"),
+                                                       b.get("client_data_json"), b.get("signature"))
+                        of_server_coord.copy(app.store, payload["org"], [P.feed_row(payload["org"], payload)])
+                        return {"approved": payload["id"], "digest": payload["digest"]}
+                    return self._passkey(approve)
                 m = self._machine()
                 if not m:
                     return self._problem(401, "unauthorized", "missing or expired token")
+                if u.path.startswith("/v1/passkey/"):  # docs/remote.md §6: the tenant's terminal and `of diff link`
+                    try:
+                        b = json.loads(raw or b"{}") or {}
+                    except ValueError:
+                        return self._problem(400, "bad_request", "the body is not JSON")
+                    routes = {
+                        "/v1/passkey/windows": lambda: app.passkeys.open_window(m, b.get("org"), b.get("person"),
+                                                                                b.get("ttl") or 600),
+                        "/v1/passkey/enrollments": lambda: app.passkeys.enroll(m, b.get("record")),
+                        "/v1/passkey/links": lambda: app.passkeys.put_link(m, b.get("org"), b.get("id"), b.get("diff"),
+                                                                           b.get("digest"), b.get("ttl") or 900),
+                        "/v1/passkey/revocations": lambda: app.passkeys.revoke(m, b.get("record")),
+                    }
+                    if u.path in routes:
+                        return self._passkey(routes[u.path])
+                    return self._problem(404, "not_found", "no such passkey route")
                 if u.path == "/v1/studio/link":
                     if not m["tenant"]:
                         return self._problem(403, "forbidden", "tenant only")
@@ -1698,6 +1783,9 @@ class App:
         self._grants_loader = grants_loader or (lambda: load_grants_files(self.cfg["grants_files"])
                                                 if self.cfg.get("grants_files") else of_grants.load())
         self._grant_key = grant_key or (lambda: grant_keys(self.cfg))
+        import of_server_passkey  # docs/remote.md §6: a diff approved with a passkey
+        self.passkeys = of_server_passkey.Passkeys(self.store, self.cfg, self._grant_key)
+        self.passkey_rate = BadCodes(limit=120, window=600)  # the unauthenticated passkey routes, per address
 
     def router(self):
         if self._router is None or time.time() - self._router_at > 30:  # pick up registry changes

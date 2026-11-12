@@ -267,3 +267,128 @@ class FlowTest(unittest.TestCase):
         self.now[0] += 4000                                               # links expire
         with self.assertRaises(S.Refused):
             self.pk.approval_page("acme", "sd-2", of_diff.digest(diff), link["nonce"])
+
+
+class HttpTest(FlowTest):
+    """The same path over HTTP, through of-server's routes: the pages' headers, the rate limit's place, and the
+    approval reaching another machine through the organization's coordination feed."""
+
+    def setUp(self):
+        import threading
+        import urllib.request
+        import of_client
+        import of_events
+        import of_server
+        self.tmp = tempfile.TemporaryDirectory()
+        root = self.tmp.name
+        self.saved = of_events.STATE_DIR
+        of_events.STATE_DIR = os.path.join(root, "state")
+        ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False, "tenant": "t"}
+        cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
+                   orgs={"acme": "db_acme"}, public_url=ORIGIN)
+
+        class CH:
+            def insert(self, *a):
+                pass
+        self.app = of_server.App(cfg, ch=CH(), ship_cfg=ship_cfg, grants_loader=lambda: {}, mask_key=b"m" * 32,
+                                 grant_key=lambda: self.keys)
+        self.httpd = self.app.serve(host="127.0.0.1", port=0)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.phone = Phone(root)
+
+        def machine(name, tenant):
+            d = os.path.join(root, name)
+            os.makedirs(d)
+            c = of_client.Client(self.url, key_path=os.path.join(d, "key"), state_dir=d)
+            c.machine_id = f"m-{name}"
+            of_server.enroll(self.app.store, c.machine_id, of_client.ensure_key(c.key_path), ["acme"], [], tenant=tenant)
+            return c
+        self.tenant, self.colleague = machine("tenant", True), machine("colleague", False)
+        self.urlopen = urllib.request.urlopen
+
+    def tearDown(self):
+        import of_events
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.app.writer.stop.set()
+        of_events.STATE_DIR = self.saved
+        self.tmp.cleanup()
+
+    def open(self, method, path, body=None):
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(self.url + path, method=method, data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with self.urlopen(req, timeout=10) as r:
+                return r.status, dict(r.headers), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, dict(e.headers), e.read()
+
+    def enroll(self):
+        import of_grants
+        _, w = self.tenant._authed("POST", "/v1/passkey/windows", body={"org": "acme", "person": "founder"})
+        wid = w["window"]
+        st, hd, page = self.open("GET", f"/passkey/enroll?w={wid}")
+        self.assertEqual(st, 200)
+        self.assertEqual((hd.get("Cache-Control"), hd.get("Referrer-Policy")), ("no-store", "no-referrer"))
+        self.assertIn("frame-ancestors 'none'", hd.get("Content-Security-Policy", ""))
+        opts = json.loads(self.open("GET", f"/v1/passkey/windows/{wid}/options")[2])
+        att, client = self.phone.create(S.unb64u(opts["challenge"]))
+        st, _, raw = self.open("POST", f"/v1/passkey/windows/{wid}/register",
+                               {"attestation_object": S.b64u(att), "client_data_json": S.b64u(client)})
+        reg = json.loads(raw)
+        self.assertEqual(st, 200, reg)
+        auth, cdj, sig = self.phone.get(S.unb64u(reg["test_challenge"]))
+        st, _, raw = self.open("POST", f"/v1/passkey/windows/{wid}/test",
+                               {"credential": reg["credential"], "authenticator_data": S.b64u(auth),
+                                "client_data_json": S.b64u(cdj), "signature": S.b64u(sig)})
+        code = json.loads(raw)["code"]
+        _, state = self.tenant._authed("GET", f"/v1/passkey/windows/{wid}")
+        self.assertEqual((state["state"], state["code"]), ("tested", code))
+        rec = {"kind": "passkey_enrollment", "org": "acme", "person": "founder", "credential": state["credential"],
+               "public_key": state["public_key"], "rp_id": state["rp_id"], "origin": state["origin"],
+               "issued_at": "2026-11-12T13:00:00Z", "expires": "2027-11-12T13:00:00Z"}
+        rec["signature"] = of_grants.sign_ed25519(rec, self.key)
+        self.tenant._authed("POST", "/v1/passkey/enrollments", body={"record": rec})
+        return w, reg, rec
+
+    def test_enroll_link_approve_and_the_client_accepts_it(self):
+        import of_client
+        import of_diff
+        w, reg, rec = self.enroll()
+        diff = {"id": "sd-9", "kind": "spawn", "org": "acme", "tier": "high", "approvals": ["owner"]}
+        dg = of_diff.digest(diff)
+        _, link = self.colleague._authed("POST", "/v1/passkey/links",
+                                         body={"org": "acme", "id": "sd-9", "diff": diff, "digest": dg})
+        path = link["url"][len(ORIGIN):]
+        st, hd, page = self.open("GET", path)
+        self.assertEqual(st, 200)
+        self.assertIn(b"&quot;kind&quot;: &quot;spawn&quot;", page)
+        self.assertEqual(hd.get("Cache-Control"), "no-store")
+        self.assertEqual(self.open("GET", path.replace(link["nonce"], "guess"))[0], 404)   # no nonce, nothing shown
+        data = self.app.passkeys.approval_page("acme", "sd-9", dg, link["nonce"])
+        auth, cdj, sig = self.phone.get(S.unb64u(data["challenge"]), count=1)
+        st, _, raw = self.open("POST", "/v1/passkey/approve", {"nonce": link["nonce"], "credential": reg["credential"],
+                                                                "authenticator_data": S.b64u(auth),
+                                                                "client_data_json": S.b64u(cdj),
+                                                                "signature": S.b64u(sig)})
+        self.assertEqual((st, json.loads(raw)["approved"]), (200, "sd-9"))
+        feed = self.colleague._authed("GET", "/v1/coord?org=acme&after=0&wait=0")[1]["events"]
+        ev = [e for e in feed if e["name"] == "of.diff_approved"]
+        self.assertEqual(len(ev), 1)
+        p = ev[0]["record"]["of.payload"]
+        self.assertEqual((p["id"], p["digest"], p["via"], p["enrollment"]["person"]), ("sd-9", dg, "passkey", "founder"))
+        self.assertIsInstance(of_client, object)
+
+    def test_what_is_refused(self):
+        import of_client
+        with self.assertRaises(of_client.ServerError) as e:     # a colleague's machine opens no window
+            self.colleague._authed("POST", "/v1/passkey/windows", body={"org": "acme", "person": "founder"})
+        self.assertEqual(e.exception.status, 403)
+        st, _, body = self.open("GET", "/approve/diff?org=acme&id=x&digest=y&n=z")
+        self.assertEqual((st, body[:8]), (404, b"no such "))
+        self.app.passkey_rate.limit = 2                          # the unauthenticated routes are rate-limited
+        codes = [self.open("GET", "/v1/passkey/windows/x/options")[0] for _ in range(3)]
+        self.assertEqual(codes[-1], 429)
