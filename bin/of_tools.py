@@ -10,7 +10,7 @@
       Validate every listed registry's `tools:` catalogue and the positions' `tools:` lists; exit 1 on problems.
   of tools plan <position> [--config-dir D] [--json]
       The session config the launcher generates for the position on that account: the --mcp-config file (the
-      position's portable MCP servers), and the --settings keys (allowedMcpServers, enabledPlugins). Nothing holds a
+      position's portable MCP servers), and with `tools_mode: enforce` the --settings keys (allowedMcpServers, enabledPlugins). Nothing holds a
       secret: a credential reaches only the MCP server's own process, through `of secret run` at its start.
 
 How a session is bound (Claude Code, checked on 2.1.322, 2026-11-11; docs/tools.md §4 has the probes):
@@ -114,6 +114,9 @@ def _has_key(v, key):
     return isinstance(v, list) and any(_has_key(x, key) for x in v)
 
 
+MODES = ("add", "enforce")
+
+
 def check(docs):
     """Problems in every registry's `tools:` catalogue and the positions' lists, as strings."""
     out = []
@@ -125,6 +128,8 @@ def check(docs):
             out.append(f"{org}: tools: is not a mapping of tool ids")
             cat = {}
         cat = cat or {}
+        if doc.get("tools_mode", "add") not in MODES:
+            out.append(f"{org}: tools_mode is add or enforce")
         for tid, e in cat.items():
             where = f"{org}: tools.{tid}"
             if not ID_RE.match(str(tid)):
@@ -208,8 +213,14 @@ def installed_plugins(config_dir):
 
 def session_config(position, doc, config_dir=None, ofb=None, installed=None):
     """{"mcp": the --mcp-config JSON or None, "settings": the --settings keys, "account_bound": [ids],
-    "notes": [str]} for this position on this account."""
+    "mode": add|enforce, "notes": [str]} for this position on this account.
+
+    `tools_mode: enforce` in the registry makes the session see exactly its profile. Until its keeper sets it (the
+    default, `add`), the profile only adds its portable servers and the account's own tools stay: a catalogue that
+    is still being filled must not strip a session (2026-11-12: one entry made every position of an organization
+    strict, and two moved keepers lost the Cloudflare and Grafana tools their work needs)."""
     cat = doc.get("tools") or {}
+    mode = doc.get("tools_mode") if doc.get("tools_mode") in MODES else "add"
     ids = profile(position, doc)
     ofb = ofb or of_bin()
     servers, allowed, plugins_on, bound, notes = {}, [], set(), [], []
@@ -254,8 +265,12 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
     settings = {"allowedMcpServers": allowed}
     if plugins:
         settings["enabledPlugins"] = plugins
+    if mode == "add":
+        settings = {}
+        notes.append("tools_mode add: the profile's portable servers are added and the account's own tools stay; "
+                     "the keeper sets tools_mode: enforce once the catalogue is complete")
     return {"position": position.get("name"), "tools": ids, "mcp": {"mcpServers": servers} if servers else None,
-            "settings": settings, "account_bound": bound, "notes": notes}
+            "settings": settings, "account_bound": bound, "mode": mode, "notes": notes}
 
 
 def write_mcp_config(cfg, sid, state_dir=None):
