@@ -254,8 +254,9 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
                 cmd = [ofb, "secret", "run", c["id"], *how, "--", *cmd]
             s = {"type": "stdio", "command": cmd[0], "args": cmd[1:]}
             if e.get("env"):
-                # a leading ~ expanded as in the command: Claude Code expands only ${VAR} (docs/tools.md §4)
-                s["env"] = {str(k): _expand_home(v) if str(v).startswith("~") else str(v) for k, v in e["env"].items()}
+                # a leading ~, ${HOME} or $HOME expanded here, as in the command: Claude Code expands only the braced
+                # ${VAR} form (docs/tools.md §4), and the check accepts all three
+                s["env"] = {str(k): _expand_home(v) for k, v in e["env"].items()}
             servers[tid] = s
             allowed.append({"serverName": tid})
         elif kind == "mcp-remote" and not e.get("account_bound"):
