@@ -1358,11 +1358,29 @@ GUARD_STATE_DENY = ("the guard's own cache of what organizations protect, which 
                     "G21)")
 
 
+_GUARD_STATE_NAMES = ("guard-credentials.json", "passkey-revoked.json")
+
+
 def _guard_state_file(path, cwd=None):
+    """Does PATH name one of the guard's own cache files? By its real path, so a link to the state folder counts, and
+    by pattern, so a glob the shell would expand to one counts (of_secrets-review on organic-framework PR 65)."""
     p = str(path or "").strip("'\"")
-    if p and not p.startswith(("/", "~", "$")) and cwd:
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
-    return bool(p) and bool(_GUARD_STATE_FILES.search(os.path.normpath(os.path.expanduser(p))))
+    p = os.path.expanduser(p)
+    if _GUARD_STATE_FILES.search(os.path.normpath(p)):
+        return True
+    state = os.path.realpath(os.path.expanduser("~/.local/state/of"))
+    targets = [os.path.join(state, n) for n in _GUARD_STATE_NAMES]
+    if any(ch in p for ch in "*?["):
+        import fnmatch
+        rp = _real_pattern(p)
+        return any(fnmatch.fnmatchcase(t, rp) or fnmatch.fnmatchcase(t + ".0", rp) for t in targets)
+    real = os.path.realpath(p)
+    return real in targets or bool(re.match(re.escape(state) + r"/(?:guard-credentials|passkey-revoked)\.json\.\d+$",
+                                            real))
 
 
 def use_protection(keychain=(), code=()):
