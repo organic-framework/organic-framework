@@ -496,7 +496,7 @@ What stays without a rule: a task given to the wrong role. A task message carrie
 
 ### 2.27 Unsourced or strengthened requirement — `ap.unsourced-requirement@0`
 
-*v0 (2026-11-11), built. Asked by `of_architect` (relay message 01a1cb93) after two incidents the founder raised that day, in which a claim lost its basis as it moved and grew stronger at each step. The rule it checks is [`handover.md`](handover.md) §1.1 (organic-framework cfda02c): every claim that drives work carries its basis (an owner's ask, a source with the quote, evidence, or an inference), passed on unchanged.*
+*v0 (2026-11-11), built. Asked by `of_architect` (relay message 01a1cb93) after two incidents the founder raised that day, in which a claim lost its basis as it moved and grew stronger at each step. The rule it checks is [`handover.md`](handover.md) §1.1 (organic-framework 20b2f02): every claim that drives work carries its basis (an owner's ask, a source with the quote, evidence, or an inference), passed on unchanged.*
 
 The first user organization's case (2026-11-10):
 1. A compliance watcher read two laws and marked its reading "[confirm with counsel]" in a hand-over's context.
@@ -505,7 +505,7 @@ The first user organization's case (2026-11-10):
 
 | Part | Fires when | Remedy |
 |---|---|---|
-| `strengthened` | A hand-over's own basis is an inference, and its title and done_when do not say so. Before the hand-over `basis` field (organic-framework 8056acf), the inference is the requester's own word in the context ("[confirm with counsel]", "unconfirmed", "inference"). With the field, the offer already shows `basis: inference` as unconfirmed, so only a title or done_when that calls the work owed grows it. One issue per hand-over; the merged PRs and commits that carry it on are its evidence. A work record also fires on its own when it cites an inference-based hand-over that kept its hedge, and states the work as owed | Restate the basis as an inference in the hand-over and in the work built on it. Confirm it with an owner's ask or a quoted source before the work counts as required. The receiver returns the hand-over until then |
+| `strengthened` | A hand-over's own basis is an inference, and its title and done_when do not say so. Before the hand-over `basis` field (organic-framework 3fe957e), the inference is the requester's own word in the context ("[confirm with counsel]", "unconfirmed", "inference"). With the field, the offer already shows `basis: inference` as unconfirmed, so only a title or done_when that calls the work owed grows it. One issue per hand-over; the merged PRs and commits that carry it on are its evidence. A work record also fires on its own when it cites an inference-based hand-over that kept its hedge, and states the work as owed | Restate the basis as an inference in the hand-over and in the work built on it. Confirm it with an owner's ask or a quoted source before the work counts as required. The receiver returns the hand-over until then |
 | `unsourced` | A hand-over or a work record states the work as owed, with no basis at all | Add the basis, or return the work to its requester |
 
 - **What counts as stating an obligation:** the work is owed to an authority. Examples: "compliance requirement", "legal obligation", "required by …", "the law requires", "requirement REG-02".
@@ -526,7 +526,7 @@ The first user organization's case (2026-11-10):
   - questions (a title ending in "?").
 - **Decider:** the structure keeper, through the daily keeper digest. The organization's structure keeper fixes its instance (`of_architect`, relay message 01a1cb93).
 - *p* = 0.6 (`strengthened`), 0.4 (`unsourced`); *m_decide* = 5 and 3 min. Severity medium and low.
-- **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML); the run's loaders take `reads` kinds since organic-framework 4f018b9 (`of_studio`), and they never block a rule.
+- **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML); the run's loaders take `reads` kinds since organic-framework 12ba7dc (`of_studio`), and they never block a rule.
   - A merged PR's body and review count are not in work records yet. Until `of import github` stores them, the hand-over id and the obligation wording are read from titles only.
 - **Calibration** (2026-11-11, the 7 days to that evening):
   - The first user organization: 2 issues, both from the same watcher's hand-overs with "[confirm with counsel]" in the context.
