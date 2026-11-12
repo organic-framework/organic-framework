@@ -112,6 +112,23 @@ def access_headers(url, orgs_file=None):
     return dict(_ACCESS_CACHE[key])
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """of-server never redirects. A redirect is refused, never followed: urllib would carry the request to another
+    host, even over http (of_review's and of_architect's reviews of organic-framework PR 68). Behind Cloudflare Access,
+    a refused service token is answered with a redirect to its login page."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        where = str(newurl).split("?")[0]
+        raise ServerError(code, f"of-server answered with a redirect to {where}; OF never follows one (behind "
+                                "Cloudflare Access this usually means the machine's service token was refused)")
+
+
+def urlopen_no_redirect(req, timeout=None, context=None):
+    """urllib.request.urlopen with redirects refused."""
+    handlers = [_NoRedirect()] + ([urllib.request.HTTPSHandler(context=context)] if context is not None else [])
+    return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
+
+
 RETRIES = 4
 RETRY_BASE_S = 0.5
 RETRY_STATUS = (429, 502, 503, 504)
@@ -184,7 +201,7 @@ def _uuid7():
 class Client:
     def __init__(self, url, key_path=KEY_PATH, state_dir=None):
         self.url = url.rstrip("/")
-        self.opener = urllib.request.urlopen  # tests replace it
+        self.opener = urlopen_no_redirect  # tests replace it
         self.key_path = key_path
         import hashlib
         tag = hashlib.sha256(self.url.encode()).hexdigest()[:12]  # one token per server
