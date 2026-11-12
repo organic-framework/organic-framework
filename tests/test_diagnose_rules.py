@@ -134,12 +134,12 @@ class RulesTest(unittest.TestCase):
                                             "k8s": {"keeper": "k8s_keeper", "parent": "top"}}, units=units), [])
         self.assertEqual(self.unkept({"keeper": "k8s_keeper"}), [])   # no units in the organization: no unit part
 
-    def mcheck(self, i, sid, verdict, tool="Edit", system=None, rv="rt-v5"):
+    def mcheck(self, i, sid, verdict, tool="Edit", system=None, rv="rt-v5", path="/acme/infra/x.yaml"):
         return ev(f"mc{i}", "2026-11-03T10:00Z", "of.mandate_check", sid,
-                  {"verdict": verdict, "tool_name": tool, "system": system, "path": "/acme/infra/x.yaml", "router_version": rv})
+                  {"verdict": verdict, "tool_name": tool, "system": system, "path": path, "router_version": rv})
 
-    def off_map(self, rows):
-        m = of_model.build(self.DOC2, rows, at=self.B)
+    def off_map(self, rows, doc=None):
+        m = of_model.build(doc or self.DOC2, rows, at=self.B)
         return R.rule_off_map_work(m, rows, of_model.epoch(self.A), of_model.epoch(self.B), of_diagnose.catalogue(),
                                    R_spec("off-map-work"))
 
@@ -158,6 +158,19 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(self.off_map([self.mcheck(i, "s-op", "unowned", rv="rt-v3") for i in range(12)]), [])
         self.assertEqual(self.off_map([self.mcheck(i, "s-op", "unowned") for i in range(12)]), [])   # the map's gap: orphan-work's
         self.assertEqual(self.off_map(away[:9]), [])
+
+    def test_off_map_work_keys_an_unowned_worktree_edit_by_its_repository(self):
+        # of_studio, 2026-11-12: '~/<org>/.worktrees' as the area made a structure keeper read an issue as a worktree bug
+        doc = {**self.DOC2, "systems": {**self.DOC2["systems"], "k8s": {"keeper": "k8s_keeper", "repos": ["infra"]}}}
+        away = [self.mcheck(i, "s-op", "owned_by:k8s_keeper", system="k8s") for i in range(12)]
+        loose = [self.mcheck(100 + i, "s-op", "unowned", path=p) for i, p in enumerate((
+            "~/acme/.worktrees/infra-fix-a/charts/new/x.yaml",   # a removed worktree, by the repository it is named after
+            "~/acme/.worktrees/infra-fix-b/charts/y.yaml",
+            "~/acme/.worktrees/scratch/z.md",                    # no repository the map claims: keeps its own name
+            "~/acme/tools/bin/w.sh", ""))]
+        got = self.off_map(away + loose, doc)
+        self.assertEqual(got[0]["evidence"]["unowned"], {"~/acme/infra": 2, "~/acme/.worktrees/scratch": 1, "~/acme/tools": 1,
+                                                         "(no path)": 1})
 
     CELLS = {"systems": {"eng": {"keeper": "lead", "needs": ["build", "verify", "operate"]},
                          "ops": {"keeper": "lead", "needs": ["operate"]},

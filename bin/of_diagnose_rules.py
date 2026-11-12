@@ -963,9 +963,12 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
     under `in_mandate_share_lt`. Reads are left out (reading others' code is normal), and so are Bash calls (a shell
     at a repository root is unscoped), paths outside the organization, and paths no system claims: those are the map's
     gap, orphan-work's cluster part (shown here as evidence only). One issue per position; part no_own_paths when none
-    of its edits falls in its own system (the registry fix: name its subsystem with paths), else mostly_elsewhere."""
+    of its edits falls in its own system (the registry fix: name its subsystem with paths), else mostly_elsewhere.
+    An unowned edit is keyed by of_model.area_of, as the model's orphan_work keys it: an edit in a linked worktree
+    counts under its repository (of_studio, 2026-11-12: '~/<org>/.worktrees' read as a worktree bug)."""
     t = spec.get("thresholds") or {}
     positions = model["positions"]
+    repos = model.get("map_repos") or ()
     sessions = of_model.session_index(positions)
     tools, min_rv = set(t.get("edit_tools") or EDIT_TOOLS), t.get("min_router", 4)
     per = collections.defaultdict(lambda: {"in_mandate": 0, "owned_by": collections.Counter(), "unowned": collections.Counter(),
@@ -986,7 +989,7 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
         elif v.startswith("owned_by:"):
             x["owned_by"][v[9:]] += 1
         elif v == "unowned":
-            x["unowned"][pl.get("system") or "/".join([y for y in str(pl.get("path") or "").split("/") if y][:3]) or "(no path)"] += 1
+            x["unowned"][pl.get("system") or of_model.area_of(pl.get("path"), repos=repos)] += 1
         else:
             continue
         if pl.get("system"):
