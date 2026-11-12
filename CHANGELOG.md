@@ -9,18 +9,46 @@
 
 Every notable change to Organic Framework, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). What each part can do today, and how far it has come, is in [`FEATURES.md`](FEATURES.md).
 
-## Unreleased
+## [Unreleased]
+
+## [0.2.0] - YYYY-MM-DD
+
+OF on herdr as a plugin, one screen for the questions that wait on you, and an organization run from the conductor's chat alone.
 
 ### Added
 
-- `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
-- `of init --language`: the language agents use with the organization's head, one explicit setting kept in `~/.config/of/owner.yaml`.
-- `of init --surface remote`, for a head who reaches OF only through the chat with their conductor (Remote Control, the desktop or the mobile app): the conductor starts with Remote Control on, and every agent starts in tmux. Kept in `~/.config/of/owner.yaml`; the design is `docs/remote.md`.
-- `of init --refresh` brings a new organization's package briefs, `AGENTS.md` and `onboarding/README.md` up to date after an update. A file the organization edited is kept, with the new version beside it as `<file>.package-new`. A re-run of `of init` keeps the organization's owner.
-- `of init --capacity yes|no`: on a machine with two or more Claude accounts (`of account list`), the head decides once whether agents on a spent account move to one with room, with their capacity keeper `<org>_capacity` keeping watch. Without the flag, `of init` asks in a terminal, or files one card.
-- `of init` lists the plugins the machine has for OF (`docs/plugins.md`), and `--plugin family=name` writes the machine's choice to `~/.config/of/plugins.yaml`. Where the organization keeps its secrets stays its own choice, made when the first secret is needed.
-- One locale layer: every string OF shows a person is English in the code and comes in their language (`language` in `~/.config/of/owner.yaml`) from a catalogue, `bin/locale/<lang>.json`; a missing entry shows the English. Russian is the first catalogue.
-- A default model and effort per organization: `of init` writes `agents: {model: opus, effort: xhigh}` on the organization's entry in `orgs.yaml` (`--model` and `--effort` change it). `of spawn` starts with it unless `--model` or the new `--effort` says otherwise; `of resume-command` falls back to it when a session names neither.
+**On herdr**
+
+- **OF's herdr plugin** (`herdr-plugin/`, for herdr 0.9.5). Agents are named by their positions as soon as herdr sees them and after every herdr restart, with no `of apply`. The sidebar's Agents view lists the agents with a question for you first, then those that need attention, and keeps every agent listed. `prefix+a` opens the questions screen as a popup, and a red counter on each workspace shows how many questions wait there. herdr resumes OF's sessions on their own Claude account, model and permission mode (`of claude --resume`). `of init` links the plugin and adds the key and the counter after asking; `herdr plugin unlink organic-framework` takes the plugin out.
+- **The questions screen** (`of asks --watch`): the queue and the open card side by side, in streams (holds work; money and production; for your hands; everything else), with a search and keys that wrap around. It opens on the most urgent stream that holds anything.
+- **The questions panel** (`of asks --panel`): a small panel that stays in sight, with each stream's count, the longest wait, the first cards and a button that opens the questions screen. The more room it has, the more it shows.
+
+**From the conductor's chat alone** ([`docs/remote.md`](docs/remote.md))
+
+- `of init --surface remote`, for a person who reaches OF only through the chat with their conductor (Remote Control, the desktop or the mobile app): the conductor starts with Remote Control on, and every agent runs in tmux. The relay delivers messages into tmux and `screen` as it does into herdr.
+- Questions answered in the chat. `of asks --chat` gives the conductor the person's queue to tell them, and `of asks answer --prompt` records an answer only on the person's own recorded words (`of prompts --mine`). A card about money, security, production or anything irreversible stays at the machine, and approving a diff from the chat is held back until a person's words are recorded where agents cannot write ([`docs/remote.md`](docs/remote.md) §5). A task says where it can be done (`of ask --where phone|browser|machine`), and the pulse tells the person's conductor when something waits on them.
+- Provisional positions: work raised during the onboarding starts on the person's yes in their conductor's chat, as a project with no powers over money, secrets, production or delegation, until the structure step folds it in.
+
+**Setting up**
+
+- `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on.
+- New steps in `of init`:
+  - `--language`: the language agents use with the head, kept in `~/.config/of/owner.yaml`;
+  - a default model and effort per organization, Opus at `xhigh` (`--model`, `--effort`), which `of spawn` (new `--effort`) and `of resume-command` use;
+  - the relay and the listener installed as user services and checked running;
+  - OF's herdr plugin, its questions key and its counter, after asking;
+  - with two or more Claude accounts, `--capacity yes|no`: agents on a spent account move to one with room, and the person's capacity keeper `<org>_capacity` keeps watch;
+  - the plugins the machine has for OF, and `--plugin family=name`;
+  - `--refresh`: a new organization's package briefs, `AGENTS.md` and `onboarding/README.md` brought up to date after an update; a file the organization edited is kept, with the new version beside it as `<file>.package-new`. A re-run keeps the organization's owner.
+- `of account` and `of claude`: the machine's Claude accounts as OF's own list (`~/.config/of/accounts.yaml`), with no shell aliases ([`docs/accounts.md`](docs/accounts.md)). `bench/capacity`: the capacity package, one keeper per person.
+
+**Plugins**
+
+- One plugin mechanism for the client and of-server ([`docs/plugins.md`](docs/plugins.md)): families with built-in, shipped or installed implementations. The first family is `secret_stores`, with 1Password, the macOS keychain and an env file for the lab. Where an organization keeps its secrets is its own choice, made when the first secret is needed.
+
+**Running an organization**
+
+- One locale layer: every string OF shows a person is English in the code and comes in their language from a catalogue, `bin/locale/<lang>.json`; a missing entry shows the English. Russian is the first catalogue.
 - Hand-overs carry a basis: `of handover propose --basis` takes an ask id, a quoted source, evidence or `inference`, and a title or done-when that states an obligation is refused without one. `of handover note` adds a note to an open hand-over without changing its state.
 - `of diff` move_position: a position moves between two units delegated alike, and each delegation's list follows it.
 - `of model usage`: a delegated unit's month per position, day and model.
@@ -29,17 +57,30 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ### Changed
 
-- Grants signed with the old HMAC signature are no longer trusted.
-- The guard takes `executors*.txt` and file names with the misspelling `secrtets` for secret files.
+- No agent asks the organization's head to run a command. The head may talk to agents through Remote Control, the desktop or the mobile app, where a command typed into the chat does not run. The conductor asks in words and starts the onboarding lead itself; what only the head can do (a login, trusting the folder) is a step in words with its place. Without herdr, every agent but the conductor starts in a detached session, tmux or else `screen`. `INSTALL.md` tells the installing agent the same.
 - The conductor's and the onboarding lead's briefs: do everything they can themselves, and say at each step in plain words what they do and why.
+- The relay types what is queued for an agent as one prompt as soon as the agent is idle; the 15-minute window per receiver is gone.
 - The README follows the OF design: the photograph and the type of the design, light and dark; "install it with your agent" comes first.
-- No agent asks the organization's head to run a command. The head may talk to agents through Remote Control, the desktop or the mobile app, where a command typed into the chat does not run. The conductor asks in words and starts the onboarding lead itself; what only the head can do (a login, trusting the folder) is a step in words with its place. Without herdr, every agent but the conductor starts in a detached `screen` session. `INSTALL.md` tells the installing agent the same.
 
 ### Fixed
 
-- The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
-- On a new machine the relay never started, so agents' messages did not arrive. `of init` now installs the relay and the listener as user services and checks that each runs; it exits with code 2 when one does not. `of status` and `of send` warn when no relay runs on the machine, and `of relay on` installs the service when it is missing.
+- On a new machine the relay never started, so agents' messages did not arrive. `of init` now installs it, `of status` and `of send` warn when no relay runs on the machine, and `of relay on` installs the service when it is missing.
+- The relay could type one message more than once while a hook record of its delivery was still in the spool.
+- `of import git` and the flow measure read each repository's default branch, not `main`.
 - Capacity: a probe that got no reading (the network down) no longer moves sessions ahead of a stop, and `of capacity balance` makes no move while the API does not answer.
+- The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
+
+### Security
+
+- Fixes from the review of 2026-11-11 of the commits pushed after 0.1.0, each through a reviewed pull request:
+  - a diff is approved only in the owner's popup or terminal, never by an answer recorded through the conductor's chat (finding 1, high);
+  - a card's own words hold it at the machine, whatever tags were declared (finding 2, high);
+  - a remote approval passes the same checks as an answer from the chat, and a digest counts only where it is named as one (findings 3 and 7);
+  - a remote person is told of an item only once its delivery is confirmed, and no queue reaches another organization's conductor (findings 4 and 5);
+  - delivery into `screen` never pastes the previous message (finding 8), and the chat reads a merged card as the check does (finding 9);
+  - grant signing reaches the owner's SSH agent only from the owner's own terminal (finding 10); a full ask id is accepted as a hand-over's basis (finding 6).
+- The guard: the release gate's hooks are not skipped or moved (G17); only the release position writes to the public repository (G18); agents do not write the code OF loads as plugins, herdr's plugin folders included (G19); every secret store's commands that print a value are denied to agents; `executors*.txt` and file names with the misspelling `secrtets` are secret files.
+- Grants signed with the old HMAC signature are no longer trusted.
 
 ## 0.1.0 - 2026-11-11
 
@@ -59,3 +100,6 @@ The first public release.
 - **The lab.** Isolated environments and scenarios that test OF itself (`lab/`).
 - **The framework's documents** in `docs/`: mission, ontology, method, systems, the registry and event schemas, the RFCs.
 - **License:** Apache License 2.0.
+
+[Unreleased]: https://github.com/organic-framework/organic-framework/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/organic-framework/organic-framework/releases/tag/v0.2.0
