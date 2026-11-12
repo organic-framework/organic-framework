@@ -1729,15 +1729,17 @@ class LoopTest(unittest.TestCase):
         self.assertNotIn("<th>Segment</th>", html)
 
     def test_the_target_keeps_its_segment(self):
-        # docs/registry.md Works (of_architect 26bdee1): the controlled segment, and the parts outside it as context
+        # docs/registry.md Works (organic-framework PR 58): the controlled segment, the parts outside it as context, each
+        # a text or a mapping {what, name}
         seg = {"start": "the input reaches our entry point", "end": "the output leaves our exit",
-               "context": ["the network after the send", "a third party's ordering rule"]}
+               "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
         spec = dict(self.SPEC, target=dict(self.SPEC["target"], segment=seg))
         c = self.card(spec=spec)
         self.assertEqual(c["target"]["segment"], seg)
         import of_loops
-        self.assertEqual(of_loops.spec_of(dict(spec, target=dict(spec["target"], segment=dict(seg, context="the network"))))
-                         ["target"]["segment"]["context"], ["the network"])
+        ctx = lambda v: of_loops.spec_of(dict(spec, target=dict(spec["target"], segment=dict(seg, context=v))))["target"]["segment"]["context"]
+        self.assertEqual(ctx("the network"), ["the network"])
+        self.assertEqual(ctx(["a", {"name": "x"}, 7, {"what": "b"}]), ["a", {"what": "b"}])   # a part of another shape is left out
 
         class D:
             org, now, unit = "acme", of_model.epoch(self.NOW), None
@@ -1746,7 +1748,7 @@ class LoopTest(unittest.TestCase):
                 return c
         html = of_studio._loop_card(D(), {"id": "w1", "title": "Search", "owner": "x"})
         self.assertIn("the input reaches our entry point → the output leaves our exit", html)
-        self.assertIn("the network after the send; a third party&#x27;s ordering rule (outside the segment", html)
+        self.assertIn("the network after the send; a third party&#x27;s ordering rule (rival_ordering) (outside the segment", html)
 
 
 class StandingWorkTest(unittest.TestCase):

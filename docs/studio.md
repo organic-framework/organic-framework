@@ -357,14 +357,14 @@ A run starts an open hypothesis (`testing`); `keep` and `drop` end it (`kept`, `
 - **The register** shows the hypotheses in test, then the open ones by value of information per runner-hour (`voi` 1, 2 or 3 over the cost's runner hours, at least 0.1).
 
 **One projection for the card and the rules.** `of_model.build` computes `model["loops"][<work>]` once, for every registry work with a `loop:` or with loop events. Studio feeds it each loop event the organization has. The loop rules read it through `of_model.loops(model)` on the rule surface, in the shape of [`diagnose.md`](diagnose.md) §4.1:
-- `owner` and `doers`; `target` (with `better`, `higher` by default, and `segment` as the registry writes it, `{start, end, context}` with `context` always a list of texts, or `null` when the target names none; docs/registry.md Works) and `measures`;
+- `owner` and `doers`; `target` (with `better`, `higher` by default, and `segment` as the registry writes it, `{start, end, context}` with `context` always a list of its parts, each a text or a mapping `{what, name}`, or `null` when the target names none; docs/registry.md Works) and `measures`;
 - `ladder_spec` (with `production` and `since`); `checkpoint_days`, `wip_arms` and `babysit_model` (default `sonnet`);
 - `hypotheses` (each with `id`, `ts`, `status`, `status_at`, `change` and `predict`), `runs` and `decisions_all`;
 - `metrics`: `rungs.<rung>` {runs, cycle_time, wait_share}, `wip` as `[(ts, n)]`, `production` {last_at, days_since}, and `babysit`: per doer, the tool calls whose `of.mandate_check` `command_class` is `runner` or `monitor`, by model, this week.
 
 A unit owner's view keeps the loops whose owner or doers are in the unit. In the run, `present()` counts `registry.works.loop` when a projected loop is declared, and `of.loop_run` when a run ended in the window. Two more deciders route a loop rule's issue: `doer`, the work's doers, whom the pulse nudges and whom the inbox lists apart; and `work_owner`, the work's owner, which leaves the founder's list when that owner owns a delegated unit. Each comes from the issue's `work` or `evidence.work`.
 
-**The card** sits on the work's card in Works: the target, its controlled segment (start → end) with the parts outside it as context beside it, money and stake, with a red line on drift; the ladder with the highest rung marked; the checkpoint; the curve with the plateau window; the register; the cost; the decision log. The Works list opens with one row per work with a loop. `of model loops [--org O] [--json]` prints the same.
+**The card** sits on the work's card in Works: the target, its controlled segment (start → end) with the parts outside it as context beside it, each by its text, or its `what` and `name`, money and stake, with a red line on drift; the ladder with the highest rung marked; the checkpoint; the curve with the plateau window; the register; the cost; the decision log. The Works list opens with one row per work with a loop. `of model loops [--org O] [--json]` prints the same.
 
 **A standing work** (`standing: true`; docs/registry.md, `of_architect` bd1d454, 2026-11-10) has no final end: its loop is its end condition.
 - **Never derived as done.** Nothing in Studio derives done for any work; a standing work ends only when the keeper sets `state: done` or `parked`, on the owner's decision.
