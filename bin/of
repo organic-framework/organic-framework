@@ -3662,6 +3662,25 @@ def _org_server(org, orgs_file=None):
     return next((o.get("server") for o in doc.get("orgs") or [] if o.get("name") == org), None)
 
 
+def _passkey_link(e, client=None, ttl=900):
+    """The approval page's address, issued by the organization's of-server (POST /v1/passkey/links, of_server's
+    751328f): it checks the digest against the diff, and the address carries a single-use nonce, without which the
+    page shows nothing (docs/remote.md §6, item 2)."""
+    import of_client
+    import of_ship
+    d = e["diff"]
+    if client is None:
+        client = of_client.Client(_org_server(d["org"]) or of_ship.config()["server_url"])
+    try:
+        got = client._authed("POST", "/v1/passkey/links",
+                             body={"org": d["org"], "id": e["id"], "diff": d, "digest": e["digest"], "ttl": ttl})
+    except Exception as exc:  # noqa: BLE001 - the server says why (no HTTPS name, digest mismatch, not enrolled)
+        raise OfError(f"of diff link: {exc}")
+    if not isinstance(got, dict) or not got.get("url"):
+        raise OfError(f"of diff link: of-server answered without an address: {got!r}"[:300])
+    return got["url"]
+
+
 def _proposed_diff(conn, target):
     """The proposed diff `target`, refused when it was proposed with the old 16-character digest, which an approval
     must not bind (of_server, 2026-11-12; hand-over ab02a7db)."""
@@ -3691,12 +3710,8 @@ def cmd_diff(args):
     if not args.target:
         raise OfError(f"usage: of diff {args.action} <file|id>")
     if args.action == "link":  # docs/remote.md §6: the page where the person approves with their passkey
-        import of_passkey
         e = _proposed_diff(conn, args.target)
-        url, why = of_passkey.link(_org_server(e["diff"]["org"]), e["diff"]["org"], e["id"], e["digest"])
-        if why:
-            raise OfError(why)
-        print(url)
+        print(_passkey_link(e))
         return 0
     if args.action == "approve" and getattr(args, "prompt", None):  # docs/remote.md §3 row 2
         e = _proposed_diff(conn, args.target)
