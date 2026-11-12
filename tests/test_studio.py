@@ -1922,6 +1922,8 @@ class GoalTreeTest(unittest.TestCase):
         with mock.patch.object(of_studio, "works_of", return_value=[]):
             with mock.patch.object(of_spend, "load", return_value=None):
                 self.assertIn("no sums for this month yet", of_studio.view_goals(d))
+            with mock.patch.dict(sys.modules, {"of_spend": None}):   # of-server's image has no of_spend
+                self.assertIn("this host does not count spend", of_studio.view_goals(d))
             with mock.patch.object(of_spend, "load", return_value=dict(sums, month="2026-10")):   # another month: none
                 self.assertIsNone(of_studio.goal_spend(d))
         with mock.patch.object(of_studio, "works_of", return_value=self.works()), mock.patch.object(of_spend, "load", return_value=sums):
@@ -2015,6 +2017,9 @@ class StructureInputTest(unittest.TestCase):
             out(8, "2026-11-04T06:00:00Z", "s-k8s", {"to": "acme:plat_owner", "to_position": "plat_owner", "msg_id": "m4"}),
             out(9, "2026-11-04T07:00:00Z", "s-op", {"to": "nobody", "delivery": "unresolved", "text": "hello"}, src="hook"),
             out(10, "2026-11-03T07:00:00Z", "s-op", {"to": "acme:k8s_keeper", "msg_id": "m0"}),            # before the window
+            # sent before the window, delivered in it: the window it was sent in counts it (PR 96 review)
+            out(15, "2026-11-03T23:59:58Z", "s-search", {"to": "acme:k8s_keeper", "msg_id": "m5"}, pos="bot_search"),
+            inn(16, "2026-11-04T00:00:03Z", "s-k8s", {"from": "acme:bot_search", "msg_id": "m5", "delivery": "delivered"}),
             ev(11, "2026-11-04T08:00:00Z", "of.turn_end", "s-op"), ev(12, "2026-11-04T09:00:00Z", "of.turn_end", "s-op"),
             ev(13, "2026-11-04T08:00:00Z", "of.turn_end", "s-k8s"), ev(14, "2026-11-04T08:00:00Z", "of.turn_end", "s-search"),
         ]
