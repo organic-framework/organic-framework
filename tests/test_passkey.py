@@ -140,12 +140,31 @@ class PasskeyApprovalTest(unittest.TestCase):
         del of_grants.passkey_revoked  # no reader yet: nothing could be taken back, so nothing is accepted
         self.assertIn("wait for revocation to exist", self.check(self.approval()))
 
-    def test_the_link_needs_https(self):
-        url, why = P.link("https://of.acme.example/", ORG, DIFF, DIGEST)
-        self.assertEqual((url, why), (f"https://of.acme.example/approve/diff?org=acme&id={DIFF}&digest={DIGEST}", None))
-        url, why = P.link("http://127.0.0.1:18200", ORG, DIFF, DIGEST)
-        self.assertIsNone(url)
-        self.assertIn("not at an HTTPS address", why)
+    def test_the_link_comes_from_of_server(self):
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        sent = []
+
+        class Server:
+            def __init__(self, answer):
+                self.answer = answer
+
+            def _authed(self, method, path, body=None):
+                sent.append((method, path, body))
+                if isinstance(self.answer, Exception):
+                    raise self.answer
+                return self.answer
+        e = {"id": DIFF, "digest": DIGEST, "diff": {"id": DIFF, "org": ORG}}
+        url = of._passkey_link(e, Server({"url": "https://of.acme.example/approve?n=x1", "nonce": "x1"}))
+        self.assertEqual(url, "https://of.acme.example/approve?n=x1")
+        self.assertEqual(sent[0][:2], ("POST", "/v1/passkey/links"))
+        self.assertEqual({k: sent[0][2][k] for k in ("org", "id", "digest")}, {"org": ORG, "id": DIFF, "digest": DIGEST})
+        self.assertEqual(sent[0][2]["diff"], e["diff"])
+        with self.assertRaises(of.OfError) as cm:
+            of._passkey_link(e, Server(RuntimeError("of-server 409: digest does not match the diff")))
+        self.assertIn("digest does not match", str(cm.exception))
 
     def test_apply_takes_a_checked_passkey_approval_of_any_tier(self):
         loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))

@@ -1,6 +1,6 @@
 """A diff approved with the person's passkey (docs/remote.md §6; hand-over b4e83a73 from of_architect).
 
-The client's half: `of diff link` and the checks `of diff apply` runs. of-server (of_server) enrolls the passkey,
+The client's half: the checks `of diff apply` runs (`of diff link` asks of-server for the page's address). of-server (of_server) enrolls the passkey,
 serves the approval page and records the approval; nothing here trusts of-server, since every check is on signatures.
 
 The approval event, `of.diff_approved` with `via: passkey` (docs/remote.md §6, item 2), carries what a check needs:
@@ -200,14 +200,3 @@ def verified_counter(approval, org, keys):
     except (TypeError, ValueError):
         return 0
     return (counter(approval) or 0) if assertion_problem(approval, record, pre) is None else 0
-
-
-def link(server, org, diff_id, digest):
-    """The approval page's address on the organization's of-server, or (None, why). WebAuthn needs HTTPS at a stable
-    name (docs/remote.md §6, item 4)."""
-    from urllib.parse import quote
-    s = str(server or "").rstrip("/")
-    if not s.startswith("https://"):
-        return None, (f"{org}'s of-server is at {s or 'no address'}, not at an HTTPS address a phone can reach; a "
-                      "passkey needs one (docs/remote.md §6, item 4). Exposing it is the owner's decision")
-    return f"{s}/approve/diff?org={quote(org)}&id={quote(diff_id)}&digest={quote(digest)}", None
