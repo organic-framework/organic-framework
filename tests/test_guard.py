@@ -390,6 +390,22 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("python3 - <<'EOF'\np = 'k8s/secrets.sh'\nnew = '''" + line + "\n'''\n"
                                "open(p, 'w').write(open(p).read() + new)\nEOF"))
 
+    def test_a_triple_quoted_block_of_one_word_is_a_literal(self):
+        # docs/guard.md G8 (of_review and of_secrets-review on organic-framework PR 93): a block that is a secret path
+        # alone, once stripped, is a path the code may open, not carried text
+        key = "~/.ssh/id_" + "ed25519"
+        pw = "$HOME/.config/example-org/clickhouse/reader_ro." + "password"
+        for code in ("print(open('''" + key + "''').read())",
+                     "p = '''" + pw + "'''\nprint(open(p).read())",
+                     "p = '''\n" + key + "\n'''.strip()\nprint(open(p).read())",
+                     "import os\nprint(open(os.path.expandvars(\"\"\"" + pw + "\"\"\")).read())"):
+            self.assertTrue(deny("python3 - <<'EOF'\n" + code + "\nEOF"), code)
+        self.assertTrue(deny("python3 -c \"p = '''" + key + "'''; print(open(p).read())\""))
+        self.assertTrue(deny("python3 - <<'EOF'\nimport subprocess\nsubprocess.run('''" + "print" + "env''')\nEOF"))
+        # a block that holds the path inside longer text stays carried, and so does a one-word block that is no path
+        self.assertIsNone(deny("python3 - <<'EOF'\nnew = '''password_file = \"" + pw + "\"'''\nprint(len(new))\nEOF"))
+        self.assertIsNone(deny("python3 - <<'EOF'\nprint('''README.md''')\nEOF"))
+
     def test_a_line_naming_a_password_file_goes_into_a_script_by_edit(self):
         # docs/guard.md G8 (a user organization's keeper, 2026-11-12): a python heredoc inserting a line that names a
         # future reader's password file was denied for the path in a one-line literal. The Edit tool, which never

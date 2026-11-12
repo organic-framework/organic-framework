@@ -183,6 +183,16 @@ _ENV_DUMP_CODE = re.compile(
     r"|(?:dict|list|str|vars)\s*\(\s*(?:os\.environ|process\.env)\s*\)")
 
 
+_BLOCK = re.compile(r"'''(.*?)'''|\"\"\"(.*?)\"\"\"", re.S)
+
+
+def _block_words(code):
+    """The triple-quoted blocks that hold one word once stripped of whitespace: a path the code may open, not text
+    it carries (docs/guard.md G8)."""
+    words = ((m.group(1) if m.group(1) is not None else m.group(2)).strip() for m in _BLOCK.finditer(code))
+    return [w for w in words if w and len(w) <= 300 and not re.search(r"\s", w)]
+
+
 def _code_deny(code):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
@@ -195,10 +205,11 @@ def _code_deny(code):
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
     # a triple-quoted block is text the code carries (a file edit's old and new strings), never a path it
-    # opens: its inner quotes are not literals (docs/guard.md G8; of_capacity, of_platform, of_server, 2026-11-07)
+    # opens: its inner quotes are not literals (docs/guard.md G8; of_capacity, of_platform, of_server, 2026-11-07).
+    # A block that is one word once stripped is read as a literal: `open('''~/.ssh/id_ed25519''')` read the key
+    # (of_review and of_secrets-review on organic-framework PR 93).
     carried = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
-    for m in _LITERAL.finditer(carried):
-        lit = m.group(2).strip()
+    for lit in _block_words(code) + [m.group(2).strip() for m in _LITERAL.finditer(carried)]:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
         if " " not in lit and _secret_path(lit):
