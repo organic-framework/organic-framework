@@ -374,3 +374,40 @@ class HookTest(KeyCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasskeyRevokedTest(KeyCase):
+    """of_grants.passkey_revoked (docs/remote.md §6; of diff apply refuses a revoked credential): a signed revocation
+    in the organization's grants file, kept once verified, never lifted by deleting it."""
+
+    def test_signed_revocations_count_and_stay(self):
+        import yaml
+        d = tempfile.mkdtemp(dir=self.tmp.name)
+        os.makedirs(os.path.join(d, "org", "registry"))
+        orgs = os.path.join(d, "orgs.yaml")
+        with open(orgs, "w") as fh:
+            fh.write("orgs:\n  - {name: acme, path: org}\n")
+        state = os.path.join(d, "state")
+        rec = {"kind": "passkey_revocation", "org": "acme", "credential": "cred-lost", "issued_at": "2026-11-12T12:00:00Z"}
+        signed = dict(rec, signature=of_grants.sign_ed25519(rec, self.key))
+        forged = dict(rec, credential="cred-other", signature=signed["signature"])   # the signature of another record
+        other_org = dict(rec, org="beta")
+        other_org["signature"] = of_grants.sign_ed25519(other_org, self.key)
+        path = os.path.join(d, "org", "registry", "grants.yaml")
+
+        def put(records):
+            with open(path, "w") as fh:
+                yaml.safe_dump({"grants": [], "passkey_revocations": records}, fh)
+
+        revoked = lambda c: of_grants.passkey_revoked("acme", c, orgs, self.keys, state)
+        self.assertFalse(revoked("cred-lost"))                     # no file yet
+        put([signed, forged, other_org])
+        self.assertTrue(revoked("cred-lost"))
+        self.assertFalse(revoked("cred-other"))                    # its signature covers another record
+        self.assertFalse(of_grants.passkey_revoked("beta", "cred-lost", orgs, self.keys, state))  # not beta's file
+        put([])
+        self.assertTrue(revoked("cred-lost"))                      # deleting the entry does not bring it back
+        with open(path, "w") as fh:
+            fh.write("{broken")
+        self.assertTrue(revoked("cred-lost"))
+        self.assertFalse(revoked(""))

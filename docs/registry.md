@@ -547,6 +547,10 @@ An organization's own policy on what its positions may run ([`guard.md`](guard.m
   
   Deleting the entry therefore does not lift the rule.
 
+### Passkey revocations (2026-11-12, `of_server`; docs/remote.md §6)
+
+A passkey enrolled to approve diffs from a phone is revoked by a record under `passkey_revocations:` in the organization's `registry/grants.yaml`: `{kind: passkey_revocation, org, credential, issued_at, signature}`, signed with the tenant's grant key like a grant. `of diff apply` refuses an approval made with a revoked credential (`of_grants.passkey_revoked`). A verified revocation is kept on the machine (`~/.local/state/of/passkey-revoked.json`, mode 600), so deleting or editing the entry never brings the key back. A lost phone is revoked at the machine, by the owner.
+
 ## Systems map (proposal, 2026-11-05, `of_architect`)
 
 Each organization's registry may carry a top-level `systems:` map. It is the functional layer of the model (RFC 0001 §5.2) and the source of the system DSM.
