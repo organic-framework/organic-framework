@@ -1,4 +1,4 @@
-"""The locale layer: a person reads OF in their own language (organic-framework 5462bab; the founder, 2026-11-11).
+"""The locale layer: a person reads OF in their own language (organic-framework 15168b1; the founder, 2026-11-11).
 
 Every string in the code is English and is the key. A translation lives only in the catalogue,
 `bin/locale/<language>.json` ({English source: translation}). The person's language is `language` in
