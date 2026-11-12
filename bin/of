@@ -3607,17 +3607,42 @@ def _diff_approved_by_answer(conn, ask_id):
     return False
 
 
-def _passkey_approval(e, d, dg):
-    """(True, None) when one of the diff's passkey approvals passes the three checks of docs/remote.md §6 for its
-    current digest; else (False, the reason of the newest one), or (False, None) when there is none."""
+def _passkey_approval(e, d, dg, events=None, positions=None):
+    """(True, None) when one of the diff's passkey approvals passes the checks of docs/remote.md §6 for its current
+    digest; else (False, the reason of the newest one), or (False, None) when there is none. `events`: every diff's
+    entry (_diff_events), for the signature counters each credential gave before."""
     import of_grants
     import of_passkey
-    why = None
+    approvers = _diff_approvers(d, positions if positions is not None else _load_quiet())
+    seen = [(ts, p) for x in (events or {e.get("id"): e}).values() for ts, p in x.get("passkey") or []]
+    newest = None
     for ts, p in reversed(e.get("passkey") or []):
-        why = of_passkey.approval_problem(p, d["id"], d["org"], dg, of_grants.local_keys(), recorded_at=ts)
+        last = max([of_passkey.counter(q) or 0 for t, q in seen
+                    if t < ts and q.get("credential") == p.get("credential")] or [0])
+        why = of_passkey.approval_problem(p, d["id"], d["org"], dg, of_grants.local_keys(), recorded_at=ts,
+                                          approvers=approvers, server=_org_server(d["org"]), last_counter=last)
         if why is None:
             return True, None
-    return False, why
+        newest = newest or why
+    return False, newest
+
+
+def _diff_approvers(d, positions):
+    """The people a diff's approval needs (docs/remote.md §6, item 3): the person who holds the organization's owner
+    position, else the registry's tenant (the owner who runs it). A goal_change node under a unit owner's goal needs
+    that unit owner's person once of diff approve accepts unit owners; until then the organization's owner approves it
+    (docs/handover.md §3)."""
+    owner = _org_owner(positions, d["org"])
+    p = next((x for x in positions if x.get("name") == owner and d["org"] in (x.get("_org"), x.get("_orgid"))), None)
+    person = ((p or {}).get("holder") or {}).get("person")
+    if person:
+        return {str(person)}
+    try:
+        with open(_diff_registry(d["org"])) as fh:
+            tenant = (yaml.safe_load(fh) or {}).get("tenant")
+    except (OSError, yaml.YAMLError, OfError):
+        tenant = None
+    return {str(tenant)} if tenant else set()
 
 
 def _org_server(org, orgs_file=None):
@@ -3742,7 +3767,7 @@ def cmd_diff(args):
             if e.get("digest") != dg:
                 raise OfError(f"{d['id']} is not proposed in this exact form: `of diff propose` it first")
             if e.get("state") != "approved" and not _diff_approved_by_answer(conn, e.get("ask")):
-                ok, why = _passkey_approval(e, d, dg)  # any tier, on the person's passkey (docs/remote.md §6)
+                ok, why = _passkey_approval(e, d, dg, _diff_events(conn))  # any tier, the person's passkey (§6)
                 if why:
                     raise OfError(f"{d['id']}: the passkey approval is refused: {why}")
                 if not ok:
