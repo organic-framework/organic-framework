@@ -2251,7 +2251,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         except MoveError as e:
             log(f"  herdr name: not set ({e}); `of apply` sets it")
     if of_bin:
-        subprocess.run([of_bin, "apply"], capture_output=True, text=True, timeout=120)
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
     return {"position": name, "pane": new_pane, "session": new["session"], "pid": new["pid"], "work": work,
             "conflicts": conflicts, "registry_diff": diff_path}
 
@@ -2349,7 +2349,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     except MoveError as e:
         log(f"  herdr name: not set ({e}); `of apply` sets it")
     if of_bin:
-        subprocess.run([of_bin, "apply"], capture_output=True, text=True, timeout=120)
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
     return {"position": name, "pane": pane, "session": new["session"], "pid": new["pid"], "work": work}
 
 
@@ -2787,7 +2787,7 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
             log(f"{e['name']}: NOT resumed: {err}")
             done.append((e["name"], "failed", str(err)))
     if of_bin and not dry_run:
-        subprocess.run([of_bin, "apply"], capture_output=True, text=True, timeout=180)
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=180)
     failed = [n for n, s, _ in done if s == "failed"]
     if not dry_run:
         of_events.emit("capacity_reboot_restored", {"resumed": sum(1 for _, s, _ in done if s == "resumed"),
@@ -4799,8 +4799,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                     ask(text, options) if options else ask(text)
                 log(f"balance: invariant {kind}: no capacity position; {'the owner has a card' if ask else text}")
                 continue
-            r = subprocess.run([of_bin, "send", to, "--from", to, x], capture_output=True, text=True, timeout=60,
-                               env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+            r = subprocess.run([sys.executable, of_bin, "send", to, "--from", to, x], capture_output=True, text=True,
+                               timeout=60, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
             log(f"balance: invariant {kind}: {(r.stdout or r.stderr).strip()[-160:]}")
     if plan_ and not dry_run:
         cache = load_cache()
