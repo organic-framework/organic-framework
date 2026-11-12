@@ -302,6 +302,33 @@ Rules:
 - **Why the tree.** The founder asked on 2026-11-12 for a goal broken into sub-goals, and those into sub-goals, with the agents on each, and the tree managed (prompts in `of_conductor`'s session, 11:24–11:25Z; its message `01a1cf84-418b`). A user organization had broken its money target into three factors, one of them a chain of seven links. The decomposition lived only in a prose report, with no measure per sub-goal, and 85 of its 101 works hung on its one flat goal. The practice: a hierarchy of objectives, each with its own measure (Keeney, *Value-Focused Thinking*, 1992), and the actors on each impact (Adzic, *Impact Mapping*, 2012).
 - **The checks** (to build, `of_platform` in `of registry check` and `of works`, `of_studio` in Studio, from 2026-11-12): `of registry check` validates the ids; `parent` (an existing goal, no cycle); `rank` (unique integers among siblings); `state`; `decided` (present); `measure` (present), and `target` on a sub-goal; the dates; each work's `goal` (an existing goal), with the leaf and no-goal warnings above.
 
+### Budgets (2026-11-12, `of_architect`; the founder through `of_conductor`)
+
+A goal, a sub-goal or a condition may carry a token budget: what the organization is willing to spend on it a month. Speed and optimization work has no natural end, so its budget is what bounds it.
+
+```yaml
+goals:
+  g-revenue-orders:
+    budget: {tokens_month: 400000000, usd_month: 3000}   # optional, either or both
+```
+
+- **Counting.** As for a delegation's budget (Delegations, "Budget"): `tokens_month` counts fresh tokens (input, cache writes and output, each response once by its message id), and `usd_month` is the cost at list prices, cache reads included. A month is a calendar month in UTC.
+- **Attribution: session, position, work, goal.**
+  - A response's tokens go to the position whose holder the session was at that moment (`holder.session` and its history).
+  - From the position they go to a work: the work it last declared with `of status --work <id>` or `of ask --work <id>`, until it declares another. Without a declaration, they go to its one open work when it is a doer of exactly one; or to the goal when all its open works serve the same goal. Otherwise they are shown as unattributed under the position, which is a prompt to declare `--work`.
+  - A goal's spend is that of its works and of its sub-goals; a condition's, that of its works.
+- **Sub-budgets.** A sub-goal's budget is a part of its parent's. Children whose budgets add up to more than the parent's is a warning. A node without a budget counts inside its nearest ancestor that has one.
+- **Reading before stopping.** Budgets are generous for now, so OF reads and warns and never stops work:
+  - Studio and `of works` show each node's spend this month against its budget, with a straight-line forecast to the month's end;
+  - at 80%, the pulse records `of.budget_warning` and tells the organization's structure keeper (`--fyi`);
+  - at 100%, it files one card a month to the goal's owner (a person): raise the budget, or narrow the work.
+- **Who sets it.** The budget is part of the goal's text, so the goal's approver decides it, and a change is a `goal_change` (docs/handover.md §3). A first budget, as generous as the founder asked, is twice the last 30 days' spend of the node's works, or the owner's own figure for new work (`of_architect`'s default).
+- **Why.** The founder, 2026-11-12 12:54Z: speeding up and optimizing are open-ended problems, so a token budget is set for each goal, generous and large for now (`of_conductor`'s session, prompt `01a1cfd2-af5f`; its message `01a1cfd3-b557`).
+- **The build** (from 2026-11-12):
+  - attribution and the monthly sums from the spend `of_capacity` already counts per session (`of_capacity.usage`): `of_capacity`;
+  - `budget` in `of registry check`, the warning and the card: `of_platform`, with the goal tree;
+  - spend against budget in Studio: `of_studio`.
+
 ### Conditions (2026-11-12, `of_architect`; asked by a user organization's structure keeper)
 
 A top-level `conditions:` map: what must hold at a level while the goals are pursued, such as the platform's availability, security or compliance. A condition is not a goal. Nothing is gained by raising it past its level, and a breach comes before progress.
