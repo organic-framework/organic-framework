@@ -3672,7 +3672,7 @@ def _passkey_link(e, client=None, ttl=900):
     if client is None:
         client = of_client.Client(_org_server(d["org"]) or of_ship.config()["server_url"])
     try:
-        got = client._authed("POST", "/v1/passkey/links",
+        _, got = client._authed("POST", "/v1/passkey/links",  # (status, body), as of_client returns it
                              body={"org": d["org"], "id": e["id"], "diff": d, "digest": e["digest"], "ttl": ttl})
     except Exception as exc:  # noqa: BLE001 - the server says why (no HTTPS name, digest mismatch, not enrolled)
         raise OfError(f"of diff link: {exc}")

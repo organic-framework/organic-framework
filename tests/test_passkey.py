@@ -155,7 +155,7 @@ class PasskeyApprovalTest(unittest.TestCase):
                 sent.append((method, path, body))
                 if isinstance(self.answer, Exception):
                     raise self.answer
-                return self.answer
+                return 200, self.answer   # (status, body), as of_client.Client._authed returns (of_review on PR 88)
         e = {"id": DIFF, "digest": DIGEST, "diff": {"id": DIFF, "org": ORG}}
         url = of._passkey_link(e, Server({"url": "https://of.acme.example/approve?n=x1", "nonce": "x1"}))
         self.assertEqual(url, "https://of.acme.example/approve?n=x1")
@@ -165,6 +165,32 @@ class PasskeyApprovalTest(unittest.TestCase):
         with self.assertRaises(of.OfError) as cm:
             of._passkey_link(e, Server(RuntimeError("of-server 409: digest does not match the diff")))
         self.assertIn("digest does not match", str(cm.exception))
+        # and with the real client over HTTP, so the client's return shape is the one used (of_review on PR 88)
+        import http.server
+        import threading
+        import of_client
+        got = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                got.append((self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
+                body = json.dumps({"url": "https://of.acme.example/approve?n=x2", "nonce": "x2"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        client = of_client.Client(f"http://127.0.0.1:{srv.server_address[1]}", state_dir=self.tmp.name)
+        client.token = lambda refresh=False: "t"
+        self.assertEqual(of._passkey_link(e, client), "https://of.acme.example/approve?n=x2")
+        self.assertEqual((got[0][0], got[0][1]["digest"]), ("/v1/passkey/links", DIGEST))
 
     def test_apply_takes_a_checked_passkey_approval_of_any_tier(self):
         loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
