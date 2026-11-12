@@ -499,8 +499,8 @@ def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, co
         "backup; a key or sidebar rows of your own are kept.")
     try:
         if not _ask("Link OF's plugin into herdr and add the questions key and counter?", yes):
-            out("  not linked: of apply names the agents when you run it; python3 bin/of_herdr_plugin.py install "
-                "links it later")
+            out("  not linked: of apply names the agents when you run it; "
+                f"{sys.executable} {os.path.join(HERE, 'of_herdr_plugin.py')} install links it later")
             return False
     except NoTTY as e:
         out(f"  not linked: {e}")

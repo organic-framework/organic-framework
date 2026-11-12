@@ -2105,8 +2105,11 @@ def _panel_panes(v, panes_now, dry_run, say, anchor=None):
                            "--no-focus") if anchor else None
             hit = of_capacity.first_pane_id(r) if r else None
             if hit:
-                cmd = str(command).replace("of ", f"{os.path.realpath(__file__)} ", 1) if str(command).startswith(
-                    "of ") else str(command)
+                # this Python, not the login shell's first python3, which may lack PyYAML (a machine with OF in its
+                # own venv and no Homebrew, 2026-11-12)
+                import shlex
+                me = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))} "
+                cmd = str(command).replace("of ", me, 1) if str(command).startswith("of ") else str(command)
                 herdr_do(["pane", "run", hit, cmd], False)
                 herdr_do(["pane", "rename", hit, label], False)
                 say(f"  panel {name}: started in {hit}")

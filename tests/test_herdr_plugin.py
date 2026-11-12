@@ -109,7 +109,15 @@ class HookTest(unittest.TestCase):
             self.assertEqual(sum(1 for c in calls if c == ["plugin", "link"]), 1)  # linked once
             with open(os.path.join(cfg, "of_home")) as fh:
                 self.assertEqual(fh.read().strip(), home)
+            with open(os.path.join(cfg, "python")) as fh:  # the Python OF runs on, which run.sh tries first
+                self.assertEqual(fh.read().strip(), sys.executable)
             self.assertFalse(plugin.install("/no/such/of", run=run)[0])
+            calls.clear()
+            ok, why = plugin.install(home, run=run, python="/usr/bin/python3", yaml_ok=lambda py: False)
+            self.assertFalse(ok)
+            self.assertIn("no PyYAML", why)
+            self.assertEqual(calls, [])  # refused before anything was linked
+            self.assertFalse(plugin.install(home, run=run, python="python3", yaml_ok=lambda py: True)[0])  # not absolute
 
     def test_the_agents_view_puts_open_questions_first_and_lists_everyone(self):
         sent = []
@@ -276,6 +284,67 @@ class ResumeTest(unittest.TestCase):
         self.assertIsNone(self.h.resume_argv(env={}))
         self.h._SESSION = "x; rm -rf"  # never typed into a shell
         self.assertIsNone(self.h.resume_argv(env={}))
+
+
+class CleanMachineTest(unittest.TestCase):
+    """A user organization's Mac, 2026-11-12 (of_conductor msg 01a1d10d): OF runs from its own venv, there is no
+    Homebrew, and the system python3 has no PyYAML. The hooks printed "no python3 with PyYAML found" on every herdr
+    start and agent detection. run.sh, run by sh as herdr runs it, with only the interpreter install() recorded."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = os.path.join(self.tmp, "of")  # an OF checkout whose hooks module says who ran it
+        os.makedirs(os.path.join(self.home, "bin"))
+        with open(os.path.join(self.home, "bin", "of_herdr_plugin.py"), "w") as fh:
+            fh.write("hook module\n")
+        self.cfg = os.path.join(self.tmp, "plugin-config")
+        os.makedirs(self.cfg)
+        with open(os.path.join(self.cfg, "of_home"), "w") as fh:
+            fh.write(self.home + "\n")
+        self.path = os.path.join(self.tmp, "path")  # PATH: a python3 without PyYAML, and sh's own tools
+        os.makedirs(self.path)
+        self.stub(os.path.join(self.path, "python3"), "exit 1")
+        self.venv = os.path.join(self.tmp, "venv", "bin", "python3")  # OF's own venv: imports yaml, runs the hook
+        os.makedirs(os.path.dirname(self.venv))
+        self.stub(self.venv, 'echo "venv python: $*"')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def stub(self, path, body):
+        with open(path, "w") as fh:
+            fh.write(f"#!/bin/sh\n{body}\n")
+        os.chmod(path, 0o755)
+
+    def run_hook(self, **env):
+        run = os.path.join(ROOT, "herdr-plugin", "run.sh")
+        base = {"PATH": f"{self.path}:/usr/bin:/bin", "HOME": self.tmp, "HERDR_PLUGIN_CONFIG_DIR": self.cfg,
+                "OF_PY_FALLBACKS": ""}  # no Homebrew, no /usr/local, no system python3 with PyYAML
+        return subprocess.run(["sh", run, "startup"], capture_output=True, text=True, env=dict(base, **env),
+                              cwd=os.path.dirname(run), timeout=30)
+
+    def test_the_hook_runs_on_the_recorded_python_and_says_what_to_do_without_it(self):
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no Python with PyYAML found, and none is recorded", r.stderr)
+        self.assertIn("bin/of_herdr_plugin.py install with the Python OF runs on", r.stderr)
+        with open(os.path.join(self.cfg, "python"), "w") as fh:  # what install() writes under OF's own Python
+            fh.write(self.venv + "\n")
+        r = self.run_hook()
+        self.assertEqual((r.returncode, r.stdout.strip()),
+                         (0, f"venv python: {self.home}/bin/of_herdr_plugin.py startup"))
+        os.remove(self.venv)  # the venv was rebuilt elsewhere: the message names the stale record
+        r = self.run_hook()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(f"the recorded Python {self.venv} is gone or has no PyYAML", r.stderr)
+
+    def test_of_python_still_comes_first(self):
+        other = os.path.join(self.tmp, "other-python")
+        self.stub(other, 'echo "OF_PYTHON: $*"')
+        with open(os.path.join(self.cfg, "python"), "w") as fh:
+            fh.write(self.venv + "\n")
+        self.assertTrue(self.run_hook(OF_PYTHON=other).stdout.startswith("OF_PYTHON: "))
 
 
 if __name__ == "__main__":

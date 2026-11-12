@@ -4179,8 +4179,8 @@ def file_signin_task(d, missing, position, ask=None, of_bin=None, moved=False, n
         if ask:
             ask(title, task=steps)
         else:
-            subprocess.run([of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"), "ask", title,
-                            "--task", steps, "--from", actor()], capture_output=True, text=True, timeout=60,
+            subprocess.run([sys.executable, of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"),
+                            "ask", title, "--task", steps, "--from", actor()], capture_output=True, text=True, timeout=60,
                            check=True)
     except Exception as e:  # noqa: BLE001 - the move's own message still names what is missing
         log(f"  sign-in task for {short(d)} not filed: {type(e).__name__}: {e}")
