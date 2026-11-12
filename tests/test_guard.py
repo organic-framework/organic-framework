@@ -383,21 +383,24 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny(edit))
         self.assertTrue(deny("python3 - <<'EOF'\nprint(open('" + tok + "').read())\nEOF"))  # a literal it opens
         self.assertTrue(deny("python3 - <<'EOF'\nimport os\nprint(os.environ)\n'''doc'''\nEOF"))
+        # the carve-out is a gap, not advice (docs/guard.md Gaps; of_review and of_secrets-review on organic-framework
+        # PR 93): a line naming a password file, carried in a block, passes
+        pw = "$HOME/.config/example-org/clickhouse/reader_ro." + "password"
+        line = 'kubectl create secret generic reader-ro --from-file=password="' + pw + '"'
+        self.assertIsNone(deny("python3 - <<'EOF'\np = 'k8s/secrets.sh'\nnew = '''" + line + "\n'''\n"
+                               "open(p, 'w').write(open(p).read() + new)\nEOF"))
 
     def test_a_line_naming_a_password_file_goes_into_a_script_by_edit(self):
         # docs/guard.md G8 (a user organization's keeper, 2026-11-12): a python heredoc inserting a line that names a
         # future reader's password file was denied for the path in a one-line literal. The Edit tool, which never
-        # runs the text, is the way; a read of the file stays denied. The triple-quoted pass below is the carve-out
-        # of 2026-11-07, not advice: docs/guard.md lists it under Gaps (of_review on organic-framework PR 93).
+        # runs the text, is the way; the one-line literal and a read of the file stay denied.
         script = "/w/devops/k8s/clickhouse/secrets.sh"
         pw = "$HOME/.config/example-org/clickhouse/reader_ro." + "password"
         line = 'kubectl create secret generic reader-ro --from-file=password="' + pw + '"'
         self.assertIsNone(of_guard.critical_deny("Edit", {"file_path": script, "old_string": "# readers\n",
                                                           "new_string": "# readers\n" + line + "\n"}))
-        head = "python3 - <<'EOF'\np = '" + script + "'\n"
-        tail = "open(p, 'w').write(open(p).read().replace('# readers\\n', '# readers\\n' + new))\nEOF"
-        self.assertIsNone(deny(head + "new = '''" + line + "\n'''\n" + tail))
-        self.assertTrue(deny(head + "new = '" + pw + "'\n" + tail))
+        self.assertTrue(deny("python3 - <<'EOF'\np = '" + script + "'\nnew = '" + pw + "'\n"
+                             "open(p, 'w').write(open(p).read() + new)\nEOF"))
         self.assertTrue(of_guard.critical_deny("Read", {"file_path": pw.replace("$HOME", "/home/u")}))
 
     def test_every_ssh_private_key_name(self):
