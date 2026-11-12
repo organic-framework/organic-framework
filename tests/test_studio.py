@@ -1620,6 +1620,7 @@ class LoopTest(unittest.TestCase):
                 run(17, "2026-11-06T00:00Z", "h4", "day_pass", 326.2, runner_h=6),
                 run(18, "2026-11-07T00:00Z", "h4", "day_pass", 326.4, runner_h=6),
                 self.ev(19, "2026-11-07T01:00Z", "of.loop_hypothesis", {"id": "h5", "change": "faster", "voi": "low",
+                                                                        "predict": "latency_p50_ms down 10%",
                                                                         "cost": {"rung": "gate", "runner_h": 1}}),
                 run(20, "2026-11-07T02:00Z", "h5", "gate", 41, metric="latency_p50_ms"),
                 run(21, "2026-11-07T03:00Z", "h5", "gate", 38, metric="latency_p50_ms"),
@@ -1683,6 +1684,9 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(w["metrics"]["babysit"], {"bot_search": {"runner": {}, "monitor": {"claude-opus-5-5": 1}}})
         self.assertEqual(next(h for h in w["hypotheses"] if h["id"] == "h1")["status"], "kept")
         self.assertEqual({r["rung"] for r in w["runs"]}, {"offline", "day_pass", "gate"})
+        self.assertIsNone(w["target"]["segment"])                          # the target names no segment
+        h5 = next(h for h in w["hypotheses"] if h["id"] == "h5")
+        self.assertEqual((h5["change"], h5["predict"]), ("faster", "latency_p50_ms down 10%"))   # objective-drift reads both
         # the run: inputs present, and the two deciders
         have = of_diagnose.present(m, rows, of_model.epoch("2026-11-01T00:00Z"), of_model.epoch(self.NOW), of_diagnose.catalogue())
         self.assertIn("registry.works.loop", have)
@@ -1722,6 +1726,27 @@ class LoopTest(unittest.TestCase):
                      "No production checkpoint in the 6 d", "Hit rate 67% (2 of 3 decided)", "30 runner-h", "no cost recorded yet",
                      "production checkpoint overdue", "highest rung day_pass", "acme_throughput-owner"):
             self.assertIn(want, html)
+        self.assertNotIn("<th>Segment</th>", html)
+
+    def test_the_target_keeps_its_segment(self):
+        # docs/registry.md Works (of_architect 26bdee1): the controlled segment, and the parts outside it as context
+        seg = {"start": "the input reaches our entry point", "end": "the output leaves our exit",
+               "context": ["the network after the send", "a third party's ordering rule"]}
+        spec = dict(self.SPEC, target=dict(self.SPEC["target"], segment=seg))
+        c = self.card(spec=spec)
+        self.assertEqual(c["target"]["segment"], seg)
+        import of_loops
+        self.assertEqual(of_loops.spec_of(dict(spec, target=dict(spec["target"], segment=dict(seg, context="the network"))))
+                         ["target"]["segment"]["context"], ["the network"])
+
+        class D:
+            org, now, unit = "acme", of_model.epoch(self.NOW), None
+
+            def loop_of(self, w):
+                return c
+        html = of_studio._loop_card(D(), {"id": "w1", "title": "Search", "owner": "x"})
+        self.assertIn("the input reaches our entry point → the output leaves our exit", html)
+        self.assertIn("the network after the send; a third party&#x27;s ordering rule (outside the segment", html)
 
 
 class StandingWorkTest(unittest.TestCase):
