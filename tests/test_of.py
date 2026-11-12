@@ -243,6 +243,16 @@ class RegistryTest(unittest.TestCase):
         for a, b in no:
             self.assertFalse(of.globs_intersect(a, b), (a, b))
 
+    def test_a_negated_class_matches_what_it_says(self):
+        # a user organization, 2026-11-12: [!x] was read as a regex class, matching only "!" and "x"
+        for pat in ("src/[!t]*.py", "src/[^t]*.py"):
+            rx = of.glob_regex(pat)
+            self.assertTrue(rx.match("src/main.py"), pat)
+            self.assertFalse(rx.match("src/test.py"), pat)
+            self.assertFalse(rx.match("src//a.py"), pat)
+        self.assertTrue(of.glob_regex("x[0-9].toml").match("x5.toml"))
+        self.assertFalse(of.glob_regex("x[0-9].toml").match("x!.toml"))
+
     def test_path_conflicts_use_real_files_when_the_repo_is_local(self):
         with tempfile.TemporaryDirectory() as root:
             repo = os.path.join(root, "cfg")
