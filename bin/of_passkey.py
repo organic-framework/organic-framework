@@ -135,6 +135,11 @@ def approval_problem(approval, diff_id, org, digest, keys, recorded_at=None):
         return why
     if approval.get("credential") and approval["credential"] != record["credential"]:
         return "the approval names another credential than the enrolled one"
+    import of_grants
+    revoked = getattr(of_grants, "passkey_revoked", None)  # of_server's reader of the signed passkey_revocation
+    # records in the organization's grants file (agreed 2026-11-12); none can exist before it lands
+    if revoked and revoked(org, record["credential"]):
+        return f"the passkey {record['credential']!r} was revoked by the owner"
     return assertion_problem(approval.get("assertion") or {}, record,
                              challenge(org, diff_id, digest, ch["nonce"], ch["expires"]))
 

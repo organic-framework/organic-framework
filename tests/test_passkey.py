@@ -112,6 +112,14 @@ class PasskeyApprovalTest(unittest.TestCase):
         broken["assertion"] = {"signature": "x"}
         self.assertIn("not readable", self.check(broken))
 
+    def test_a_revoked_passkey_is_refused(self):
+        """of_server's reader of the owner's signed passkey_revocation records (agreed 2026-11-12)."""
+        saved = getattr(of_grants, "passkey_revoked", None)
+        of_grants.passkey_revoked = lambda org, credential: (org, credential) == (ORG, "cred-1")
+        self.addCleanup(lambda: setattr(of_grants, "passkey_revoked", saved) if saved else
+                        delattr(of_grants, "passkey_revoked"))
+        self.assertIn("'cred-1' was revoked", self.check(self.approval()))
+
     def test_the_link_needs_https(self):
         url, why = P.link("https://of.acme.example/", ORG, DIFF, DIGEST)
         self.assertEqual((url, why), (f"https://of.acme.example/approve/diff?org=acme&id={DIFF}&digest={DIGEST}", None))
