@@ -265,7 +265,10 @@ class ModelTest(unittest.TestCase):
             mc = ev(1, "2026-11-04T10:00Z", "of.mandate_check", "s-search",
                     {"verdict": "unowned", "system": None, "tool_name": "Edit", "router_version": "rt-v5",
                      "path": org + "/.worktrees/arb-old/README.md"})
-            self.assertEqual(of_model.build(DOC, [mc], at="2026-11-05T00:00Z")["orphan_work"], {org + "/arb": {"bot_search": 1}})
+            built = of_model.build(DOC, [mc], at="2026-11-05T00:00Z")
+            self.assertEqual(built["orphan_work"], {org + "/arb": {"bot_search": 1}})
+            self.assertEqual(built["map_repos"], ["arb", "infra"])          # the rules' repos for area_of
+            self.assertNotIn("map_repos", of_model.snapshot(built))       # no repository names in snapshots
 
     def test_snapshot_is_stable_and_textless(self):
         m = of_model.build(DOC, [question(1, "2026-11-04T00:00Z", "s-search")], at="2026-11-05T00:00Z", rev="abc")
@@ -1489,7 +1492,8 @@ class RuleSurfaceTest(unittest.TestCase):
               "little": "(asks, a, b)", "owner_measures": "(model, rows, a, b, who='founder')",
               "inbound_queues": "(model, rows, a, b, old_after_s=None)",
               "issue": "(cat, name, affected, evidence, summary, delta_m=0.0, critical=False, part=None, key=None)",
-              "issue_id": "(rule, affected)", "spec_part": "(spec, key, part, default=None)", "loops": "(model)"}
+              "issue_id": "(rule, affected)", "spec_part": "(spec, key, part, default=None)", "loops": "(model)",
+              "area_of": "(path, depth=3, repos=())"}
     CONSTANTS = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS")
 
     def test_surface_is_pinned(self):

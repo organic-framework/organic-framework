@@ -724,6 +724,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
         "system_dsm": dsm, "dmm": dmm, "position_dsm": pdsm, "coverage": coverage(positions, systems, dmm, orphan),
         "unmapped_work_records": unmapped, "bot_work_records": bots,
         "mandate": mandate, "orphan_work": orphan,
+        "map_repos": sorted(map_repos),   # the repository names the map claims (area_of's repos; the rule surface)
         "work_records": {"total": len(wr_ids), "attributed": wr_attributed, "unmapped": unmapped, "by_system": wr_by_system},
         "loops": loops_of(doc, events, at_s),
         "cells": cells_of(positions, systems, methods_of(doc)),   # RFC 0007 §2.3
@@ -1036,6 +1037,7 @@ def snapshot(model):
     out["position_dsm"] = {k(t): dict(v, weight=round(v["weight"], 4)) for t, v in sorted(model["position_dsm"].items())}
     out["positions"] = {n: {kk: vv for kk, vv in p.items() if kk != "session"} for n, p in model["positions"].items()}
     out["systems"] = {n: {kk: vv for kk, vv in x.items() if kk not in ("paths", "repos")} for n, x in model["systems"].items()}
+    out.pop("map_repos", None)
     orphan = {}
     for area, v in (model.get("orphan_work") or {}).items():   # no paths in snapshots: unclaimed areas fold into one
         key = area if area in model["systems"] else "(paths no system claims)"
@@ -1284,4 +1286,4 @@ RULE_SURFACE = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS", "epoch", "iso", "
                 "received_labels", "owner_prompt", "session_index", "position_of", "session_positions",
                 "message_senders", "structure_keeper", "overlay", "pr_key", "pr_attribution",
                 "founder_messages", "message_categories", "asks_of", "little", "owner_measures", "inbound_queues",
-                "loops", "issue", "issue_id", "spec_part")
+                "loops", "issue", "issue_id", "spec_part", "area_of")
