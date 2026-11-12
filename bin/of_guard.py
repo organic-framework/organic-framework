@@ -8,9 +8,11 @@ founder's personal 1Password account; also inside ssh, sudo, docker/kubectl exec
 prompt_secret_mention(prompt) finds an @-mention of a secret path in a prompt. of_hook's _guard and _mention_guard
 turn their verdicts into the hook's output and of.mandate_check events. Tests: tests/test_guard*.py."""
 
+import ast
 import os
 import re
 import shlex
+import warnings
 
 import of_classify
 
@@ -235,17 +237,30 @@ def _py_strings(code):
         m = _STRING_HEAD.match(s)
         if not m or not s.endswith(m.group(2)) or len(s) < len(m.group(0)) + len(m.group(2)):
             continue
-        body = s[len(m.group(0)):len(s) - len(m.group(2))]
-        if len(m.group(2)) == 3:
-            body = body.strip()
-            if body and len(body) <= 300 and not re.search(r"\s", body):
-                words.append(body)
-            continue  # otherwise carried text: a file edit's old or new string, a docstring
-        # a quoted span inside a one-line string is a literal too, as the regex read it: a shell command the code
-        # builds (`"cat '<path>'"`), an f-string's inner literal before python 3.12 (the 21-day replay: 9 denies)
-        words += [x.group(2).strip() for x in _LITERAL.finditer(body)]
-        if "\n" not in body and len(body) <= 300:
-            words.append(body.strip())
+        bodies = [s[len(m.group(0)):len(s) - len(m.group(2))]]
+        if not set(m.group(1).lower()) & {"f", "t"}:
+            # its value too, escapes decoded: "\x7e/.ssh/…" or a backslash-newline inside the string hid a path
+            # (of_review on organic-framework PR 97)
+            try:
+                with warnings.catch_warnings():  # an invalid escape ("\$") warns on stderr, which a hook must not
+                    warnings.simplefilter("ignore")
+                    value = ast.literal_eval(s)
+            except (ValueError, SyntaxError, MemoryError, RecursionError):
+                value = None
+            value = value.decode("latin-1") if isinstance(value, bytes) else value
+            if isinstance(value, str) and value != bodies[0]:
+                bodies.append(value)
+        for body in bodies:
+            if len(m.group(2)) == 3:
+                body = body.strip()
+                if body and len(body) <= 300 and not re.search(r"\s", body):
+                    words.append(body)
+                continue  # otherwise carried text: a file edit's old or new string, a docstring
+            # a quoted span inside a one-line string is a literal too, as the regex read it: a shell command the
+            # code builds (`"cat '<path>'"`), an f-string's inner literal before python 3.12 (the replay: 9 denies)
+            words += [x.group(2).strip() for x in _LITERAL.finditer(body)]
+            if "\n" not in body and len(body) <= 300:
+                words.append(body.strip())
     bare, last = [], 0
     for a, b in sorted(cut):
         if a >= last:
@@ -329,6 +344,13 @@ def _scan(text, i=0, nested=False):
         elif c == "\\":
             out.append(text[i:i + 2])
             i += 2
+            continue
+        elif c == "$" and not double and text.startswith("$'", i) and _ANSI_WORD.match(text, i):
+            # a $'…' word: its escapes (\' included) are bash's, so it is read whole and decoded, and the line
+            # every rule reads holds its value single-quoted (of_secrets-review on organic-framework PR 97)
+            m = _ANSI_WORD.match(text, i)
+            out.append(shlex.quote(_ansi_c_body(m.group(1))))
+            i = m.end()
             continue
         elif c == "'" and not double:
             single = True
@@ -861,10 +883,76 @@ def _nested(head, args):
     return out
 
 
+_ANSI_WORD = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.S)
+_ANSI_ESC = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+             "\\": "\\", "'": "'", '"': '"', "?": "?"}
+
+
+def _ansi_c_body(body):
+    """The value of a $'…' word's body, as bash decodes it (\\n, \\t, \\nnn, \\xHH, \\uHHHH, \\cX …)."""
+    out, i, n = [], 0, len(body)
+    while i < n:
+        c = body[i]
+        if c != "\\" or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        e = body[i + 1]
+        m = (re.match(r"[0-7]{1,3}", body[i + 1:]) if e in "01234567" else
+             re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:]) if e == "x" else
+             re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if e == "u" else 8), body[i + 2:]) if e in "uU" else None)
+        if e in _ANSI_ESC:
+            out.append(_ANSI_ESC[e])
+            i += 2
+        elif m and e in "01234567":
+            out.append(chr(int(m.group(0), 8) & 0xFF))
+            i += 1 + len(m.group(0))
+        elif m:
+            out.append(chr(min(int(m.group(0), 16), 0x10FFFF)))
+            i += 2 + len(m.group(0))
+        elif e == "c" and i + 2 < n:
+            out.append(chr(ord(body[i + 2]) & 0x1F))
+            i += 3
+        else:
+            out.append("\\" + e)
+            i += 2
+    return "".join(out)
+
+
+def _ansi_c(text):
+    """TEXT with each $'…' word outside other quotes replaced by its decoded value, single-quoted as shlex reads it
+    (shlex keeps `$` and the escapes: `python3 <<< $'# x\\nopen(…)'` read as one comment line; of_secrets-review on
+    organic-framework PR 97)."""
+    if "$'" not in text:
+        return text
+    out, i, n, single, double = [], 0, len(text), False, False
+    while i < n:
+        c = text[i]
+        if single:
+            single = c != "'"
+        elif c == "\\" and not single:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        elif c == '"':
+            double = not double
+        elif c == "'" and not double:
+            single = True
+        elif c == "$" and not double and text.startswith("$'", i):
+            m = _ANSI_WORD.match(text, i)
+            if m:
+                out.append(shlex.quote(_ansi_c_body(m.group(1))))
+                i = m.end()
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _simple(stext):
     """(head, args, words, to_file, here-string) for one simple command's raw text, honoring redirections
-    and a <<< here-string; or None when it runs nothing."""
-    toks, words, to_file, herestr, k = _tokens(stext), [], False, None, 0
+    and a <<< here-string; or None when it runs nothing. A $'…' word is read decoded, as bash runs it."""
+    toks, words, to_file, herestr, k = _tokens(_ansi_c(stext)), [], False, None, 0
     while k < len(toks):
         w = toks[k]
         if w == "<<<":
