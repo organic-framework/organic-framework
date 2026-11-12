@@ -94,6 +94,37 @@ class AccessTest(unittest.TestCase):
         c._request("GET", "/v1/health")
         self.assertNotIn("cf-access-client-id", seen[1])
 
+    def test_no_credential_follows_a_redirect(self):
+        """urllib copies a request's ordinary headers to a redirect's target, any host, even http."""
+        import urllib.request
+        reqs = []
+
+        class Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(req, timeout=None, context=None):
+            reqs.append(req)
+            return Resp(b"{}")
+
+        c = of_client.Client("https://of.acme.test")
+        c.opener = opener
+        c._request("GET", "/v1/presence", token="tok-not-real")   # urllib redirects a GET; a POST's 307 it refuses
+        req = reqs[0]
+        sent = {k.lower(): v for k, v in req.header_items()}
+        self.assertEqual(sent.get("cf-access-client-secret"), FAKE_SECRET)
+        self.assertEqual(sent.get("authorization"), "Bearer tok-not-real")
+        moved = urllib.request.HTTPRedirectHandler().redirect_request(
+            req, io.BytesIO(), 302, "Found", {}, "http://elsewhere.test/v1/presence")
+        carried = {k.lower(): v for k, v in moved.header_items()}
+        for h in ("cf-access-client-id", "cf-access-client-secret", "authorization"):
+            self.assertNotIn(h, carried, h)
+
 
 if __name__ == "__main__":
     unittest.main()

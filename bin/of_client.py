@@ -193,12 +193,15 @@ class Client:
 
     def _request(self, method, path, body=None, token=None, raw=None, encoding=None):
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-        headers = {"Content-Type": "application/json", **access_headers(self.url)}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {"Content-Type": "application/json"}
         if encoding:
             headers["Content-Encoding"] = encoding
         req = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
+        # credentials never follow a redirect: urllib copies a request's ordinary headers to the redirect target,
+        # any host, even http (of_architect's review of organic-framework PR 68)
+        secret = dict(access_headers(self.url), **({"Authorization": f"Bearer {token}"} if token else {}))
+        for k, v in secret.items():
+            req.add_unredirected_header(k, v)
         import ssl
         ctx = ssl.create_default_context() if self.url.startswith("https:") else None  # certificates always verified
         # Every endpoint is idempotent on retry (batch_id, msg_id, acks, PUTs), except POST /v1/enroll
