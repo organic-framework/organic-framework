@@ -287,7 +287,7 @@ class ResumeTest(unittest.TestCase):
 
 
 class CleanMachineTest(unittest.TestCase):
-    """A user organization's Mac, 2026-11-12 (of_conductor msg 01a1d10d): OF runs from its own venv, there is no
+    """A user organization's Mac, 2026-11-12 (of_conductor msg 01a1d10d-0ccf): OF runs from its own venv, there is no
     Homebrew, and the system python3 has no PyYAML. The hooks printed "no python3 with PyYAML found" on every herdr
     start and agent detection. run.sh, run by sh as herdr runs it, with only the interpreter install() recorded."""
 
@@ -338,6 +338,21 @@ class CleanMachineTest(unittest.TestCase):
         r = self.run_hook()
         self.assertEqual(r.returncode, 1)
         self.assertIn(f"the recorded Python {self.venv} is gone or has no PyYAML", r.stderr)
+
+    def test_a_link_to_this_python_is_asked_itself(self):
+        """of_review on PR 102: a venv's python links to a base interpreter without the venv's PyYAML, so only the
+        very path this process runs under answers from here; any other path is run and asked."""
+        link = os.path.join(self.tmp, "linked-python")
+        os.symlink(sys.executable, link)
+        asked, saved = [], subprocess.run
+        plugin.subprocess.run = lambda argv, **k: (asked.append(argv[0]), saved(["false"]))[1]
+        try:
+            self.assertFalse(plugin.has_yaml(link))
+            self.assertEqual(asked, [link])
+            self.assertEqual(plugin.has_yaml(sys.executable), True)  # this process: answered from here
+            self.assertEqual(asked, [link])
+        finally:
+            plugin.subprocess.run = saved
 
     def test_of_python_still_comes_first(self):
         other = os.path.join(self.tmp, "other-python")
