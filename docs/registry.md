@@ -294,13 +294,39 @@ Rules:
 - **A tree, not a web.** A sub-goal names one `parent` in the same organization. A goal with no `parent` is a root.
 - **Each node is measured.** Every goal has its own `measure`, and every sub-goal its own `target`. A sub-goal is measured on what the organization controls: a link outside its control is context of its parent, never a sub-goal (Works, "The target's controlled segment").
 - **Few at each level.** More than 7 active root goals, or more than 7 active sub-goals under one goal, is a warning. A goal list is a choice, not an inventory.
-- **Works hang on leaves.** A work names one goal, the one it serves most, and that goal is a leaf. A work on a goal that has sub-goals is a warning: attach it to the sub-goal it moves. When the organization has goals, a work that is not done or parked and names no goal is a warning, a question for the owner.
+- **Works hang on leaves.** A work names one goal, the one it serves most, and that goal is a leaf. A work on a goal that has sub-goals is a warning: attach it to the sub-goal it moves. When the organization has goals or conditions, a work that is not done or parked and names neither is a warning, a question for the owner.
 - **The agents on each goal are derived, never written.** A goal's doers are the doers of the works under it, and its owner answers for it. Studio and `of works` show the tree in rank order, each node with its measure, target, works, doers, open asks and progress.
 - **Who decides.** An agent never adds, ranks or rewrites a goal without a yes on that exact text, recorded in `decided`. A root goal needs the organization's owner's yes. A sub-goal needs the yes of its parent's owner, recorded the same way: the founder's ask id, or, when the parent is a unit owner's goal, the id of the ask that unit owner answered. A whole decomposition may be proposed in one ask; each node then records that ask id. The structure keeper writes it.
 - **A closed parent closes its branch.** An active sub-goal under an achieved or dropped goal is a warning.
 - Asks and declared states reach a goal through their work (`--work`).
 - **Why the tree.** The founder asked on 2026-11-12 for a goal broken into sub-goals, and those into sub-goals, with the agents on each, and the tree managed (prompts in `of_conductor`'s session, 11:24–11:25Z; its message `01a1cf84`). A user organization had broken its money target into three factors, one of them a chain of seven links. The decomposition lived only in a prose report, with no measure per sub-goal, and 85 of its 101 works hung on its one flat goal. The practice: a hierarchy of objectives, each with its own measure (Keeney, *Value-Focused Thinking*, 1992), and the actors on each impact (Adzic, *Impact Mapping*, 2012).
 - **The checks** (to build, `of_platform` in `of registry check` and `of works`, `of_studio` in Studio, from 2026-11-12): `of registry check` validates the ids; `parent` (an existing goal, no cycle); `rank` (unique integers among siblings); `state`; `decided` (present); `measure` (present), and `target` on a sub-goal; the dates; each work's `goal` (an existing goal), with the leaf and no-goal warnings above.
+
+### Conditions (2026-11-12, `of_architect`; asked by a user organization's structure keeper)
+
+A top-level `conditions:` map: what must hold at a level while the goals are pursued, such as the platform's availability, security or compliance. A condition is not a goal. Nothing is gained by raising it past its level, and a breach comes before progress.
+
+```yaml
+conditions:
+  c-compliance:                               # the id, unique across goals and conditions
+    title: "<what is held, in the owner's words>"
+    measure: "<how it is seen>"               # required
+    level: "<the level held, e.g. no dated duty missed>"   # required
+    metric: null                              # optional: a Studio measure name when one exists
+    under: g-revenue                          # optional: the goal it is held for; absent, the whole organization
+    owner: acme_owner                         # optional: absent, the owner of `under`, else the organization's owner
+    state: active                             # active | dropped
+    decided: <ask id>                         # the yes of the owner of `under`, else of the organization's owner
+works:
+  acme-tax-calendar:
+    condition: c-compliance                   # a work names one goal or one condition, never both
+```
+
+- **A work keeps a condition or moves a goal.** It names one of them. Several works may keep one condition.
+- **A condition has no sub-goals and no rank.** More than 7 active conditions is a warning.
+- **Studio and `of works` show the conditions beside the tree**, each with its measure, level, current reading when it has a `metric`, works and doers. A breach shows above progress.
+- **Why.** On a user organization's goal, the founder decided that its platform and security conditions are held at their level and are not goals (ask `2780d584`), and its compliance works are of the same kind. Its structure keeper asked how to write them once works must hang on goals (2026-11-12). The practice is to keep health metrics beside the objectives (Wodtke, *Radical Focus*, 2nd ed., 2021).
+- **The checks** (to build with the goal tree): ids unique across goals and conditions; `measure`, `level` and `decided` present; `state`; `under` an existing goal; each work's `condition` an existing condition; a work naming both a goal and a condition is a problem.
 
 ## Tools (2026-11-11, `of_tools`; method in [`tools.md`](tools.md))
 
