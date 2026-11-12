@@ -5068,8 +5068,8 @@ def cmd_capacity(args):
             print(f"{args.position}: resumed in {r['pane']} as {r['session']}. Work dir: {r['work']}")
         return 0
     if args.action == "move":
-        if not args.position or not (args.to or args.model):
-            raise OfError("usage: of capacity move <position> --to <config-dir> | --model M [--reason R] "
+        if not args.position or not (args.to or args.model or args.restart):
+            raise OfError("usage: of capacity move <position> --to <config-dir> | --model M | --restart [--reason R] "
                           "[--dry-run] [--allow-shells]")
         p = _me(positions, args.position)
         if args.session:  # a holder the registry does not name yet (its keeper decides)
@@ -5088,6 +5088,7 @@ def cmd_capacity(args):
         try:
             r = of_capacity.move(p, args.to, dry_run=args.dry_run, allow_shells=args.allow_shells, place=place,
                                  extra_note=note, in_place=args.in_place, model=args.model, why=args.reason,
+                                 restart=args.restart,
                                  assume_empty_input=args.assume_empty_input,
                                  of_bin=os.path.realpath(__file__),
                                  registry_file=os.path.join(p["_root"], "registry", "positions.yaml") if p.get("_root") else None)
@@ -5618,10 +5619,13 @@ def main(argv=None):
                     help="creds --adopt: read the token on stdin; it is hashed and never kept")
     cp.add_argument("--consumer", help="creds --adopt: who uses it, e.g. acme:discovery tax workers")
     cp.add_argument("--session", help="close, move, resume: the session id (the registry may not name it)")
-    cp.add_argument("--reason", help="close: why, e.g. 'wave 0, founder approved'; move --model: why the model "
-                                     "changes, said to the session in its note")
+    cp.add_argument("--reason", help="close: why, e.g. 'wave 0, founder approved'; move --model or --restart: why, "
+                                     "said to the session in its note")
     cp.add_argument("--model", help="move: restart the session on this model (its effort and permissions kept), "
                                     "on the same account unless --to names another")
+    cp.add_argument("--restart", action="store_true",
+                    help="move: restart the session on its own account and model, so it starts with what a start "
+                         "gives it now (its tool profile, deny rules, memory directory)")
     cp.add_argument("position", nargs="?", help="move: the position (canonical name or alias)")
     cp.add_argument("--to", help="move: the target config dir, e.g. ~/.claude-e; resume: the config dir that holds the session")
     cp.add_argument("--dry-run", "-n", action="store_true", help="move: checks and the plan only")

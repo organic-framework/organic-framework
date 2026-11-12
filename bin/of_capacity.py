@@ -1054,9 +1054,11 @@ def place_command(ws_label, tab_label, cwd, workspaces, tabs, panes):
     return ["pane", "split", ps[-1], "--direction", split, "--cwd", cwd, "--no-focus"], None
 
 
-def launch_prompt(note_path, resumed=False, model=None):
+def launch_prompt(note_path, resumed=False, model=None, restarted=False):
     """The first prompt of a moved session: the text `_inject` declares and the command line carries.
-    model: the new model, when the move changes it."""
+    model: the new model, when the move changes it; restarted: a restart on the same account and model."""
+    if restarted:
+        return f"of_capacity restarted this session on the same account. Read {note_path} and follow it."
     if model:
         return f"of_capacity restarted this session on {model}. Read {note_path} and follow it."
     if resumed:
@@ -1248,9 +1250,16 @@ HOLDER_LAG_NOTE = ("If `of inbox --mine` or `of send` answers `403 not_holder` r
                    "10 to 20 seconds, do not investigate.")
 
 
-def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None):
-    """model: (old, new) when the move changes the session's model; why: the reason, said to the session."""
-    if model:
+def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False):
+    """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
+    restarted: a restart on the same account and model (move --restart)."""
+    if restarted:
+        lines = [f"# Restart: {name}", "",
+                 f"`of_capacity` restarted this session (`{sid}`) at {ts} on the same account, `{short(dst)}` "
+                 f"({account}). " + (f"{why.strip()} " if why else "")
+                 + "Same session, same pane, same name; your context, memory and files are carried, and your model, "
+                   "effort and permissions are unchanged.", ""]
+    elif model:
         moved = f" and moved it from `{short(src)}` to `{short(dst)}` ({account})" if src != dst else ""
         lines = [f"# Model change: {name}", "",
                  f"`of_capacity` restarted this session (`{sid}`) at {ts} on `{model[1]}` (was `{model[0]}`){moved}. "
@@ -1860,19 +1869,21 @@ def hold_after_move(session, now=None):
 
 def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
          extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
-         ask=None):
+         ask=None, restart=False):
     """Move one position's live session to the config dir `target`. Raises MoveError before anything
     irreversible when a precondition fails; the old session then keeps running untouched.
     The session may run in a herdr pane (it resumes in the same pane) or in a Zellij pane (it resumes
     in a new herdr pane in `place` = (workspace label, tab label); the Zellij pane is left at its shell).
     `model` restarts it on another model (on the same account when `target` is None); `why` goes into its note.
+    `restart` allows a restart on its own account and model, so the session starts with what a start gives it now
+    (2026-11-12: two keepers moved with a partial tool profile got their tools back this way).
     An account where one of the position's account-bound tools is not signed in stops the move and files the
     founder's task for that account (docs/tools.md §5); `allow_unsigned` (a rescue) moves anyway, says so in the
     note and files the task. `ask`: the balancer's, else `of ask`."""
     name, sid = p["name"], ((p.get("holder") or {}).get("session") or "").strip()
     if not sid:
         raise MoveError(f"{name}: no holder.session in the registry")
-    if not target and not model:
+    if not target and not model and not restart:
         raise MoveError(f"{name}: give a target config dir, a model, or both")
     sessions = {d: live_sessions(d) for d in config_dirs()}
     src = dir_of_position(p, sessions)
@@ -1911,7 +1922,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     a = _agent_by_session(sid)
     if a:
         runtime, pane = "herdr", a["pane_id"]
-        if src == target and not switch:
+        if src == target and not switch and not restart:
             raise MoveError(f"{name}: already on {short(target)} in herdr pane {pane}"
                             + (f", on {ctx_model}" if model else ""))
         lines = _pane_lines(pane)
@@ -2017,7 +2028,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     # ran at xhigh on accounts set to high (2026-11-10), and a move by the setting would have lowered them
     effort = flags_from_args(args)[1] or (effort_of(src, ctx_model) if ctx_model else None)
     model = model or ctx_model
-    what = "model change" if switch and src == target else "account move"
+    restarted = bool(restart) and src == target and not switch
+    what = "restart" if restarted else "model change" if switch and src == target else "account move"
     bypass = "--dangerously-skip-permissions" in args or "bypassPermissions" in args
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     work = os.path.join(STATE_DIR, "capacity", "moves", f"{name}-{stamp}")
@@ -2025,7 +2037,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     import of_memory
     on_own = bool(flags_from_args(args)[3])  # started by of spawn on its own directory: keep it
     mem_dir = of_memory.directory(p) if on_own or load_policy().get("position_memory") else None
-    prompt = launch_prompt(note_path, model=model if switch else None)
+    prompt = launch_prompt(note_path, model=model if switch else None, restarted=restarted)
     cmd = launch_command(s["cwd"], target, sid, name, note_path, model=model, effort=effort, bypass=bypass,
                          memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
     key = project_key(src, sid)
@@ -2061,7 +2073,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     with open(note_path, "w") as fh:
         fh.write(handover_note(name, sid, src, target, account_of(target), cont, _iso(time.time()),
                                (extra_note or "").replace("<name>", name) or None,
-                               model=(ctx_model, model) if switch else None, why=why))
+                               model=(ctx_model, model) if switch else None, why=why, restarted=restarted))
     held = False  # a Zellij pane whose command is claude itself is "held" after exit; Esc drops it to a shell
     if runtime == "zellij":
         try:
@@ -2157,10 +2169,12 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
           else "herdr", "pane": new_pane}
     prev = {"config_dir": src, "account": account_of(src), "runtime": runtime, "pane": pane}
     of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": new["session"],
-                                      "evidence": "of capacity move" + (" --model" if switch else ""),
+                                      "evidence": "of capacity move" + (" --model" if switch else "")
+                                                  + (" --restart" if restarted else ""),
                                       "workplace": ws, "previous_workplace": prev,
                                       "model": model, "effort": effort, "files": [r for _, r in files],
                                       **({"previous_model": ctx_model, "reason": why} if switch else {}),
+                                      **({"reason": why} if restarted and why else {}),
                                       "memory": mem, "registry_diff": diff_path,
                                       "trust": {"state": trust[0], "path": trust[1],
                                                 **({"from": src} if trust[0] == "carried" else {})},
