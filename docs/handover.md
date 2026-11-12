@@ -167,6 +167,7 @@ diff:
 - A diff without `predicted` and `review` cannot be applied, because the fixer has nothing to check.
 - `of diff check` runs the validity checks: the registry, grant attenuation, the single writer, the accountability path, no widened critical grant.
 - `of diff apply` writes the events (`of.diff_applied`, plus `of.mandate_changed`, holder and grant events) and schedules the review.
+- **An approval binds the diff's full SHA-256 digest** (2026-11-12, `of_server`'s finding): 64 hex characters over the canonical text, in every path (`of diff approve`, the card, a passkey). A shortened digest would let the agent that writes a diff find a second diff with the same digest and have it applied in place of the one approved. Cards and the terminal show the first 16 characters to people. A diff proposed with a shortened digest is proposed again before it is approved.
 - `of diff review` compares observed signals with `predicted` and proposes keep, extend or revert. Every diff and its review go to the archive.
 - **`goal_change`** (2026-11-12, `of_architect`; `of_conductor`'s message `01a1cf8f-1d75`) adds, rewrites or closes goals and conditions (docs/registry.md, Goals). One diff may carry a whole tree, so its approvers approve the exact text once. Its tier is medium at least. Each node it touches is approved by the owner of that node's parent (docs/registry.md, Goals, "Who decides"):
   - a root goal, or a condition held for the whole organization, by the organization's owner (`approvals: [owner]`);
