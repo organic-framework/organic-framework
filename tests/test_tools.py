@@ -79,6 +79,17 @@ class SessionConfigTest(unittest.TestCase):
         self.assertEqual(s["command"], "python3")
         self.assertNotIn("secret", s["args"])
 
+    def test_a_tilde_in_env_reaches_the_server_expanded(self):
+        doc = {"tools_mode": "enforce", "credentials": {"g": {"paths": ["~/.secrets/g.token"]}},
+               "tools": {"g": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana"],
+                               "env": {"TOKEN_FILE": "~/.secrets/g.token", "HOMEY": "${HOME}/x", "URL": "https://g"},
+                               "credential": {"id": "g"}, "acts_as": "s", "scope": "read", "keeper": "a"}},
+               "positions": [{"name": "a", "tools": ["g"]}]}
+        env = of_tools.session_config(doc["positions"][0], doc, ofb="/of/bin/of", installed=[])["mcp"]["mcpServers"]["g"]["env"]
+        self.assertEqual(env["TOKEN_FILE"], os.path.expanduser("~/.secrets/g.token"))
+        self.assertEqual(env["HOMEY"], "${HOME}/x")  # left to Claude Code's own expansion
+        self.assertEqual(env["URL"], "https://g")
+
     def test_no_tools_allows_no_server(self):
         c = self.cfg("acme_org", [])
         self.assertEqual(c["settings"]["allowedMcpServers"], [])
@@ -110,6 +121,10 @@ class CheckTest(unittest.TestCase):
                                "env": {"GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": "~/.secrets/g.token"},
                                "credential": {"id": "g"}, "acts_as": "s", "scope": "read", "keeper": "a"}}}
         self.assertEqual(of_tools.check({"acme": doc}), [])
+        doc["tools"]["g"]["env"]["GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE"] = "${HOME}/.secrets/g.token"
+        self.assertEqual(of_tools.check({"acme": doc}), [])  # Claude Code expands ${HOME} itself
+        doc["tools"]["g"]["env"] = ["GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE=~/.secrets/g.token"]
+        self.assertIn("acme: tools.g: env is a mapping NAME: value", of_tools.check({"acme": doc}))  # reported, no raise
 
     def test_problems(self):
         bad = {"tools_mode": "strict", "positions": [{"name": "a", "tools": ["nope"]}], "credentials": {},

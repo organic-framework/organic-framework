@@ -38,7 +38,7 @@ SCOPES = ("read", "write", "act-as-person")
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 SECRETISH = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE|AUTH|COOKIE|SESSION)", re.I)
-REF_LIKE = re.compile(r"^(\$\{[A-Z_][A-Z0-9_]*(:-[^}]*)?\}|\$[A-Z_][A-Z0-9_]*|op://.*|~?/.*)$")
+REF_LIKE = re.compile(r"^((\$\{[A-Z_][A-Z0-9_]*(:-[^}]*)?\}|\$[A-Z_][A-Z0-9_]*)(/.*)?|op://.*|~?/.*)$")
 STATE_DIR = os.environ.get("OF_STATE") or os.path.expanduser("~/.local/state/of")
 
 
@@ -99,10 +99,20 @@ def profile(position, doc):
     return sorted(want, key=lambda t: order.index(t) if t in order else len(order))
 
 
+HOME_VAR = re.compile(r"^(\$\{HOME\}|\$HOME)(?=/|$)")
+
+
+def _expand_home(v):
+    """A leading ~ or ${HOME}/$HOME as the user's home; anything else unchanged."""
+    v = HOME_VAR.sub("~", str(v))
+    return os.path.expanduser(v) if v == "~" or v.startswith("~/") else v
+
+
 def _names_path(arg, pattern):
-    """Whether a command argument names a credential path: the path itself, or a file or folder under a glob's
-    literal stem (`~/.config/acme/x/**` is named by `~/.config/acme/x`)."""
-    a = os.path.expanduser(str(arg)).rstrip("/")
+    """Whether a command argument or an env value names a credential path: the path itself, or a file or folder
+    under a glob's literal stem (`~/.config/acme/x/**` is named by `~/.config/acme/x`). `~`, `${HOME}` and `$HOME`
+    are the same home."""
+    a = _expand_home(arg).rstrip("/")
     p = os.path.expanduser(str(pattern))
     stem = re.split(r"[*?[]", p, maxsplit=1)[0].rstrip("/")
     return a == p.rstrip("/") or (stem != p.rstrip("/") and (a == stem or a.startswith(stem + "/")))
@@ -171,13 +181,16 @@ def check(docs):
                 if isinstance(c, dict) and ent.get("ref") and not (c.get("env") or c.get("file")) \
                         and kind == "mcp-stdio":
                     out.append(f"{where}: say how the server takes the credential: env: NAME or file: NAME")
-                named = list(e.get("command") or []) + [str(v) for v in (e.get("env") or {}).values()]
+                env = e.get("env") if isinstance(e.get("env"), dict) else {}
+                named = list(_as_list(e.get("command"))) + [str(v) for v in env.values()]
                 if cid in creds and not ent.get("ref") and kind == "mcp-stdio" and not any(
                         _names_path(x, pth) for x in named for pth in ent.get("paths") or []):
                     out.append(f"{where}: credential {cid} is a file: the command or an env value names its path")
                 if isinstance(c, dict) and kind in ("mcp-remote",):
                     out.append(f"{where}: a header credential for a remote server is not built yet (docs/tools.md §5)")
             for field in ("env", "headers"):
+                if e.get(field) is not None and not isinstance(e.get(field), dict):
+                    out.append(f"{where}: {field} is a mapping NAME: value")
                 for k, v in (e.get(field) or {}).items() if isinstance(e.get(field), dict) else []:
                     if field == "env" and not ENV_NAME_RE.match(str(k)):
                         out.append(f"{where}: env name {k} is not a variable name")
@@ -241,7 +254,8 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
                 cmd = [ofb, "secret", "run", c["id"], *how, "--", *cmd]
             s = {"type": "stdio", "command": cmd[0], "args": cmd[1:]}
             if e.get("env"):
-                s["env"] = {str(k): str(v) for k, v in e["env"].items()}
+                # a leading ~ expanded as in the command: Claude Code expands only ${VAR} (docs/tools.md §4)
+                s["env"] = {str(k): _expand_home(v) if str(v).startswith("~") else str(v) for k, v in e["env"].items()}
             servers[tid] = s
             allowed.append({"serverName": tid})
         elif kind == "mcp-remote" and not e.get("account_bound"):
