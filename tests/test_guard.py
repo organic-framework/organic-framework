@@ -384,6 +384,21 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("python3 - <<'EOF'\nprint(open('" + tok + "').read())\nEOF"))  # a literal it opens
         self.assertTrue(deny("python3 - <<'EOF'\nimport os\nprint(os.environ)\n'''doc'''\nEOF"))
 
+    def test_a_line_naming_a_password_file_goes_into_a_script_by_edit(self):
+        # docs/guard.md G8 (a user organization's keeper, 2026-11-12): a python heredoc inserting a line that names a
+        # future reader's password file was denied for the path in a one-line literal. The Edit tool, whose text is
+        # not scanned as a read, and a triple-quoted block are the reviewed ways; a read of the file stays denied.
+        script = "/w/devops/k8s/clickhouse/secrets.sh"
+        pw = "$HOME/.config/example-org/clickhouse/reader_ro." + "password"
+        line = 'kubectl create secret generic reader-ro --from-file=password="' + pw + '"'
+        self.assertIsNone(of_guard.critical_deny("Edit", {"file_path": script, "old_string": "# readers\n",
+                                                          "new_string": "# readers\n" + line + "\n"}))
+        head = "python3 - <<'EOF'\np = '" + script + "'\n"
+        tail = "open(p, 'w').write(open(p).read().replace('# readers\\n', '# readers\\n' + new))\nEOF"
+        self.assertIsNone(deny(head + "new = '''" + line + "\n'''\n" + tail))
+        self.assertTrue(deny(head + "new = '" + pw + "'\n" + tail))
+        self.assertTrue(of_guard.critical_deny("Read", {"file_path": pw.replace("$HOME", "/home/u")}))
+
     def test_every_ssh_private_key_name(self):
         # of_server, 2026-11-07 (docs/guard.md G1.1): the native rules denied id_ecdsa, the guard let cat read it
         for name in ("id_rsa", "id_ed25519", "id_ed25519_sk", "id_ecdsa", "id_ecdsa_sk", "id_dsa"):
