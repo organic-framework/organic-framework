@@ -50,7 +50,10 @@ def load(path):
 
 
 def digest(d):
-    return hashlib.sha256(json.dumps(d, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+    """The full SHA-256 of the diff's canonical JSON. An approval binds this, so it must resist a collision: a 64-bit
+    prefix let a diff's author find two diffs with one digest in about 2^32 hashes, have the benign one approved and
+    apply the other (of_server, 2026-11-12). People are shown its first 16 characters."""
+    return hashlib.sha256(json.dumps(d, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
 # ------------------------------------------------------------------ format

@@ -231,6 +231,8 @@ class GoalChangeTest(unittest.TestCase):
 
     def test_add_then_rewrite_and_close(self):
         self.assertEqual(of_diff.check_format(self.D), [])
+        # an approval binds the full SHA-256: a 64-bit prefix could be collided by the diff's author (of_server)
+        self.assertRegex(of_diff.digest(self.D), r"^[0-9a-f]{64}$")
         new, problems = of_diff.preview(self.D, REG)
         self.assertEqual(problems, [])
         doc = yaml.safe_load(new)
