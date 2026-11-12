@@ -229,6 +229,43 @@ class ModelTest(unittest.TestCase):
         self.assertEqual(pm.system("arb", "crates/bot/x.rs"), "bot")
         self.assertIsNone(pm.system("arb", "README.md"))      # the repo is only claimed by paths
         self.assertEqual(pm.system("infra", "any/file"), "k8s")
+        self.assertEqual(pm.repo_names(), {"arb", "infra"})
+
+    def test_a_negated_glob_class_matches_what_it_says(self):
+        # a user organization, 2026-11-12: [!x] was read as a regex class, matching only "!" and "x" (as bin/of's)
+        for pat in ("src/[!t]*.py", "src/[^t]*.py"):
+            rx = of_model.glob_regex(pat)
+            self.assertTrue(rx.match("src/main.py"), pat)
+            self.assertFalse(rx.match("src/test.py"), pat)
+            self.assertFalse(rx.match("src//a.py"), pat)
+        self.assertTrue(of_model.glob_regex("k8s/[ARt]*").match("k8s/Rx"))
+        self.assertFalse(of_model.glob_regex("k8s/[ARt]*").match("k8s/x"))
+
+    def test_an_orphan_area_in_a_worktree_is_its_repository(self):
+        # a user organization's structure keeper, 2026-11-12: unowned edits in worktrees showed as '~/<org>/.worktrees'
+        import subprocess
+        import tempfile
+        home = os.path.realpath(os.path.expanduser("~"))
+        with tempfile.TemporaryDirectory(dir=home) as root:
+            git = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t"]
+            repo = os.path.join(root, "arb")
+            os.makedirs(repo)
+            subprocess.run(git + ["init", "-q", repo], check=True)
+            subprocess.run(git + ["-C", repo, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            wt = os.path.join(root, ".worktrees", "fix-a")
+            subprocess.run(git + ["-C", repo, "worktree", "add", "-q", wt], check=True)
+            org = "~" + root[len(home):]
+            self.assertEqual(of_model.area_of(org + "/.worktrees/fix-a/crates/new/x.rs"), org + "/arb")   # by its .git file
+            self.assertEqual(of_model.area_of(org + "/.worktrees/gone-b/crates/x.rs"), org + "/.worktrees/gone-b")
+            self.assertEqual(of_model.area_of(org + "/.worktrees/arb-gone/crates/x.rs", repos={"arb"}), org + "/arb")
+            self.assertEqual(of_model.area_of(org + "/arb-wt/feat/x.rs", repos={"arb"}), org + "/arb")
+            self.assertEqual(of_model.area_of(org + "/arb-wt-feat/x.rs", repos={"arb"}), org + "/arb")
+            self.assertEqual(of_model.area_of(org + "/arb/.claude/worktrees/x/a.rs"), org + "/arb")
+            self.assertEqual(of_model.area_of(org + "/scratch/x.py"), org + "/scratch")
+            mc = ev(1, "2026-11-04T10:00Z", "of.mandate_check", "s-search",
+                    {"verdict": "unowned", "system": None, "tool_name": "Edit", "router_version": "rt-v5",
+                     "path": org + "/.worktrees/arb-old/README.md"})
+            self.assertEqual(of_model.build(DOC, [mc], at="2026-11-05T00:00Z")["orphan_work"], {org + "/arb": {"bot_search": 1}})
 
     def test_snapshot_is_stable_and_textless(self):
         m = of_model.build(DOC, [question(1, "2026-11-04T00:00Z", "s-search")], at="2026-11-05T00:00Z", rev="abc")

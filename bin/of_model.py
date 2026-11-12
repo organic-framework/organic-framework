@@ -37,10 +37,26 @@ def router_version(pl):
     return int(m.group(1)) if m else 1
 
 
-def area_of(path, depth=3):
-    """A path no system claims, as a short area: its first directories under the home ('~/acme/storefront')."""
-    parts = [x for x in str(path or "").split("/") if x]
-    return "/".join(parts[:depth]) if parts else "(no path)"
+def area_of(path, depth=3, repos=()):
+    """A path no system claims, as a short area: its first directories under the home ('~/acme/storefront').
+    A path in a linked git worktree is its repository's (a user organization's structure keeper, 2026-11-12: six
+    edits in worktrees showed as the area '~/<org>/.worktrees'): by the worktree's .git file while the worktree is
+    there (of_router.worktree_main), else by the folder layouts the router knows (of_router.unworktree, with
+    `repos` the repository names the map claims). A `.worktrees/<name>` whose repository is not known keeps its name."""
+    import of_router
+    p = str(path or "")
+    full = os.path.expanduser(p)
+    wt = of_router.worktree_main(full) if os.path.isabs(full) else None
+    if wt:
+        p, home = wt[1] + full[len(wt[0]):], os.path.expanduser("~")
+        p = "~" + p[len(home):] if p.startswith(home + os.sep) else p
+    parts = [x for x in p.split("/") if x]
+    if not parts:
+        return "(no path)"
+    if len(parts) > depth:
+        parts = parts[:depth - 1] + [x for x in of_router.unworktree("/".join(parts[depth - 1:]), repos).split("/") if x]
+        depth += len(parts) >= depth and parts[depth - 1] == ".worktrees"
+    return "/".join(parts[:depth])
 ASK_KINDS = ("of.agent_question", "of.permission_request")
 MODEL_VERSION = 1
 # Authors whose work records carry no coupling: merge-queue copies of another PR, and dependency bumps (2026-11-05)
@@ -203,6 +219,14 @@ def keeper_since(repo, system, keeper):
 
 # ------------------------------------------------------------------ globs (same rule as `of registry check`)
 
+def _class_regex(body):
+    """A glob class as a regex class, as bin/of reads it: `[!x]` and `[^x]` are negated and, like `*` and `?`, never
+    match `/` (a regex reading of `[!x]` matched only `!` and `x`; a user organization, 2026-11-12)."""
+    if body.startswith(("!", "^")):
+        return "[^" + body[1:].replace("\\", "\\\\") + "/]"
+    return "[" + body.replace("\\", "\\\\") + "]"
+
+
 def glob_regex(p):
     out, i = [], 0
     while i < len(p):
@@ -213,7 +237,7 @@ def glob_regex(p):
         elif p[i] == "?":
             out.append("[^/]"); i += 1
         elif p[i] == "[" and "]" in p[i + 1:]:
-            j = p.index("]", i + 1); out.append(f"[{p[i + 1:j]}]"); i = j + 1
+            j = p.index("]", i + 1); out.append(_class_regex(p[i + 1:j])); i = j + 1
         else:
             out.append(re.escape(p[i])); i += 1
     return re.compile("^" + "".join(out) + "$")
@@ -232,6 +256,12 @@ class PathMap:
                 for r in s.get("repos") or []:
                     self.repos.setdefault(str(r), sid)
         self.globs.sort(key=lambda g: -g[0])
+        self.names = {str(x).split("/")[0] for s in (systems or {}).values()
+                      for x in ((s or {}).get("paths") or []) + ((s or {}).get("repos") or [])}
+
+    def repo_names(self):
+        """The repository names the map claims: each `paths` glob's first folder and each whole-repo claim."""
+        return {n for n in self.names if n and not any(c in n for c in "*?[")}
 
     def system(self, repo, path=None):
         full = f"{repo}/{path}" if path else str(repo)
@@ -563,6 +593,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
     positions, systems = _positions(doc), _systems(doc)
     sessions = session_index(positions)
     pmap = PathMap(doc.get("systems"))
+    map_repos = pmap.repo_names()
 
     dsm = {}
     for sid, s in systems.items():
@@ -660,7 +691,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
             elif v.startswith("non_live:"):
                 mc["non_live"] += 1   # work on an unsupported or retired system: shown, not a finding (registry.md)
             if v == "unowned" and router_version(pl) >= MIN_ROUTER_UNOWNED:
-                area = sysid or area_of(pl.get("path"))
+                area = sysid or area_of(pl.get("path"), repos=map_repos)
                 orphan.setdefault(area, {})
                 orphan[area][who] = orphan[area].get(who, 0) + 1
             if sysid in systems:
