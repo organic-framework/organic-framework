@@ -6,6 +6,7 @@ Inputs:
 - the registry and systems map of [`registry.md`](registry.md);
 - the owner measures of [`studio.md`](studio.md) §3.
 Calibration ran on the history of the first user organization, from 2026-11-06; its report stays in that organization's own repository.
+Framework changes are cited by their commit on the public `main`. A change made before 2026-11-11 is cited by its date and position: such changes entered the public history together, in its first commit (organic-framework 74cbd41).
 
 Every threshold below is a **hypothesis, to be confirmed in the Lab (`lab-drift-v0`, [`lab.md`](lab.md)) and by owner labels**.
 
@@ -168,7 +169,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 ### 2.7 Orphan work — `ap.orphan-work@3`
 
 *v1 (2026-11-06): three parts, each with its own prior, decision time, remedies and decider.*
-*v2 (2026-11-07, from the first user organization through `of_architect`): `keeperless` fires only on a system that is live and kept by nobody, by the registry fields of organic-framework commit 5523cb6. Labels carry over: v2 only narrows what fires.*
+*v2 (2026-11-07, from the first user organization through `of_architect`): `keeperless` fires only on a system that is live and kept by nobody, by the registry fields `of_architect` added on 2026-11-07. Labels carry over: v2 only narrows what fires.*
 *v3 (2026-11-10): the `keeperless` part moves to §2.23 `unkept-system`, which flags a live system nobody keeps whether or not work passes through it, with its merged PRs as evidence, and goes to the structure keeper. Two rules on one finding would have reached two deciders. A `cluster` on a system nobody keeps is evidence on that system's §2.23 issue (`merge_into`). Labels carry over: v3 only narrows what fires.*
 
 - **Signals:**
@@ -187,7 +188,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   | `cluster` | `unowned` verdicts | A new position with a brief draft, or the nearest mandate extended | owner | 0.6 | 10 min |
   | `unmapped` | WR with no system | Extend the systems map (paths or a new system) | the structure keeper | 0.8 | 3 min |
 
-- **Input rule** (2026-11-07, no version bump: it fixes the input, not the rule): `cluster` counts `unowned` verdicts only from mandate router `rt-v4` on (`of_studio` 13b781f). `rt-v2` and `rt-v3` judged paths in linked worktrees outside the repository unowned: `<repo>-wt/<name>`, `<repo>-wt-<name>`, `.worktrees/<other name>`. Those false clusters were most of the first user organization's 7 cluster issues. `rt-v4` resolves a linked worktree through its `.git` file.
+- **Input rule** (2026-11-07, no version bump: it fixes the input, not the rule): `cluster` counts `unowned` verdicts only from mandate router `rt-v4` on (`of_studio`, 2026-11-07). `rt-v2` and `rt-v3` judged paths in linked worktrees outside the repository unowned: `<repo>-wt/<name>`, `<repo>-wt-<name>`, `.worktrees/<other name>`. Those false clusters were most of the first user organization's 7 cluster issues. `rt-v4` resolves a linked worktree through its `.git` file.
 - **Calibration of v2.** Two `keeperless` issues of the first user organization reached the owner as high, and its money-side owner labelled them on 2026-11-07:
   - a research system, kept by an external colleague: `true_but_not_now`;
   - a second bot, unsupported and not running: `wrong_remedy`.
@@ -230,7 +231,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
 ### 2.10 Chatty coordination — `ap.chatty@2`
 
-*v1 (2026-11-07), at the founder's request through `of_architect` and `of_lab`: the receiver's side. v0 saw chatter only as messages per merged PR, from the sender's side. v1 adds two parts: a position whose turns are mostly started by typed-in text, and a waiter whose wait is pushed again and again by nudges. Built by `of_studio` (b8242dd). The pair and organization part keep their issue ids, so owner labels on @0 still apply to them.*
+*v1 (2026-11-07), at the founder's request through `of_architect` and `of_lab`: the receiver's side. v0 saw chatter only as messages per merged PR, from the sender's side. v1 adds two parts: a position whose turns are mostly started by typed-in text, and a waiter whose wait is pushed again and again by nudges. Built by `of_studio` (2026-11-07). The pair and organization part keep their issue ids, so owner labels on @0 still apply to them.*
 *v2 (2026-11-10): decided by the structure keeper, not the owner, through `of_platform`'s daily keeper digest (`of_architect`'s decision). Its remedies, a published interface, a queue or a hand-over, are structure diffs the owner approves. With PRs attributed it raised 56 issues in the first user organization that would otherwise have reached its owner. Labels carry over: only the decider changed.*
 
 *Counting rule (no version bump: it fixes the input, not the rule): only days that have ended and whose merged PRs are imported count, for the parts that read WR and for §2.13. Otherwise, today's missing PRs inflate msgs per WR.*
@@ -328,7 +329,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
 ### 2.15 Inbound backlog — `ap.inbound-backlog@0`
 
-*v0 (2026-11-06), defined on the relay's `of.inbound_queue` events (from 2a5ad71). Queue data starts on 2026-11-06 at 12:47Z, so the rule is blocked until queues are observed on 3 days, and its thresholds are uncalibrated.*
+*v0 (2026-11-06), defined on the relay's `of.inbound_queue` events (`of_studio`, 2026-11-06). Queue data starts on 2026-11-06 at 12:47Z, so the rule is blocked until queues are observed on 3 days, and its thresholds are uncalibrated.*
 
 A position receives more than it takes: peer messages wait in its queue on the server, and their senders wait with them.
 
@@ -337,7 +338,7 @@ A position receives more than it takes: peer messages wait in its queue on the s
   - backlog minutes: minutes when the oldest waiting message was older than 30 min (`of pulse`'s stall threshold);
   - whether the position has a live holder. In v0 this comes from the registry: status `active` and a holder session, or a person. Presence is not in the model.
 
-  Until 2026-11-06 12:53Z (of_platform's f888177) the relay recorded only a change of depth, so earlier ages are upper bounds. From then on it also records a change of the oldest message at the same depth, and ages are exact.
+  Until 2026-11-06 12:53Z (`of_platform`) the relay recorded only a change of depth, so earlier ages are upper bounds. From then on it also records a change of the oldest message at the same depth, and ages are exact.
 - **Rule.** Over 7 days, the queue was observed on ≥ 3 days, and one of two parts holds.
 
   A day counts as observed when the organization had any queue change that day. A day with no messages does not count, so the unblock can slip by quiet days. This can only delay the rule, never make it fire. A relay heartbeat is not needed for v0.
@@ -358,7 +359,7 @@ A position receives more than it takes: peer messages wait in its queue on the s
 
 ### 2.16–2.22 Development-loop rules (RFC 0005 §6)
 
-*v0 (2026-11-07), built: `bin/of_diagnose_rules.py`, on `of_studio`'s projection (`of_model.loops`, ce4d547) and `of_platform`'s loop events (3a9a476, 1b22476).* [RFC 0005](rfc/0005-development-loops.md) makes a work's development loop an object:
+*v0 (2026-11-07), built: `bin/of_diagnose_rules.py`, on `of_studio`'s projection (`of_model.loops`) and `of_platform`'s loop events, both of that day.* [RFC 0005](rfc/0005-development-loops.md) makes a work's development loop an object:
 - a target in money;
 - the measures that map each rung's metric to money;
 - an evaluation ladder, cheapest rung first;
@@ -527,12 +528,13 @@ The first user organization's case (2026-11-10):
 - **Decider:** the structure keeper, through the daily keeper digest. The organization's structure keeper fixes its instance (`of_architect`, relay message 01a1cb93).
 - *p* = 0.6 (`strengthened`), 0.4 (`unsourced`); *m_decide* = 5 and 3 min. Severity medium and low.
 - **Inputs.** It needs `of.handover_proposed`. It also reads hand-over states and work records when present (`reads` in the YAML); the run's loaders take `reads` kinds since organic-framework 12ba7dc (`of_studio`), and they never block a rule.
-  - A merged PR's body and review count are not in work records yet. Until `of import github` stores them, the hand-over id and the obligation wording are read from titles only.
+  - Since organic-framework 11aee30 (2026-11-11, `of_platform`), a merged PR's work record keeps its body (masked, at most 2,000 bytes) and its count of submitted reviews, and a commit's keeps its message body. The rule reads them with the title. Records imported earlier get them on their next re-import.
 - **Calibration** (2026-11-11, the 7 days to that evening):
   - The first user organization: 2 issues, both from the same watcher's hand-overs with "[confirm with counsel]" in the context.
-    - One is the case above. The register token links its PR, whose body was restated the next day as "Precaution, unconfirmed".
+    - One is the case above. On titles alone, the register token linked its PR. With bodies, the PR's body cites the hand-over id, and its record shows 0 reviews. The body was restated the next day as "Precaution, unconfirmed".
     - In the other, an unconfirmed duty became a row of the organization's legal obligations calendar.
   - The OF team: quiet.
+  - Rerun on 2026-11-12, the 7 days to 00:45Z, with the new fields: the same 2 issues and no new ones. Of the work records read (the 9 days before the run), 675 of the first user organization's 2,002 carry a PR body, and 442 of the OF team's 1,404 carry a commit message body. The OF team stays quiet.
   - Two calibration notes:
     - "Must" and "required" matched the titles of 4 merged PRs (each also as a merge-queue copy), all describing behaviour.
     - "Assume" as a hedge word matched 3 CI PRs ("assume the publisher role"), so v0 does not use it.
@@ -565,20 +567,20 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | Rule | Needs | Where it is planned |
 |---|---|---|
 | 2.1, 2.2 | `rq-v0` (is a request) on `agent_message_in`; **`paste_source`** on `relay_paste` prompts, the session whose output was pasted, found at derive by matching the pasted text against other sessions' full assistant texts of the previous 24 h | `rq-v0`: of_classify (asked 2026-11-06), of_measures applies it meanwhile; `paste_source`: new, derive |
-| 2.3, 2.4, 2.6, 2.9, 2.10 (pair, organization) | WR attributed to positions; systems per WR | Both exist. Systems by paths come from `of import github`. Positions come from transcript PR links joined onto the merged PR, and from organic-framework 39332c3 (2026-11-10) the `Position:` line of a PR body. On 2026-11-10 only 90 of the first user organization's 820 merged PRs in the window were attributed, so these rules were blocked |
+| 2.3, 2.4, 2.6, 2.9, 2.10 (pair, organization) | WR attributed to positions; systems per WR | Both exist. Systems by paths come from `of import github`. Positions come from transcript PR links joined onto the merged PR, and, since 2026-11-10, from the `Position:` line of a PR body (in the public history from its first commit, organic-framework 74cbd41). On 2026-11-10 only 90 of the first user organization's 820 merged PRs in the window were attributed, so these rules were blocked |
 | 2.4, 2.8 | `blocked_on` with an end | backlog v1.1 item 7 |
 | 2.5 | `of.compaction` (v1); rereads; `of.correction` kind `fact` | v1; reread detection new; backlog item 9 |
 | 2.6 runtime | runtime writes as work records (deploys, host actions, settings) | `of.deployment` (backlog item 2); host actions: new |
 | 2.9 | `reverts`/`fixes` relations; review evidence | backlog item 10; review relation new |
 | 2.10 | reply and reference tracking on messages | new |
 | 2.11 | `of.mandate_changed` (v1.1); `reason_class` (item 11); MAST sampling | backlog; RFC §5.3.5 |
-| 2.12 | `mandate_functions` on positions | registry (e152e3d); the stakeholder map as data is still new |
-| 2.14 | `mandate_exit` on positions | registry (e152e3d) |
-| 2.15 | `of.inbound_queue` on ≥ 3 days; presence for the live-holder test | Queue events exist, with exact ages since f888177 (2026-11-06 12:53Z). Presence: new; v0 uses the registry |
+| 2.12 | `mandate_functions` on positions | registry (`of_platform`, 2026-11-05); the stakeholder map as data is still new |
+| 2.14 | `mandate_exit` on positions | registry (`of_platform`, 2026-11-05) |
+| 2.15 | `of.inbound_queue` on ≥ 3 days; presence for the live-holder test | Queue events exist, with exact ages since 2026-11-06 12:53Z (`of_platform`). Presence: new; v0 uses the registry |
 | §3 | T and OE events per organization | app adapters |
 | 2.16–2.22 | The loop projection of §4.1 | RFC 0005 §8 steps 1–3 |
 | 2.25, 2.26 | `needs:` on systems and `owns:` on positions | RFC 0007 steps 1 and 3: the schema exists; each organization's system architect fills it |
-| 2.27 | A merged PR's body and review count on its work record | `of import github` (`of_platform`, asked 2026-11-11) |
+| 2.27 | A merged PR's body and review count on its work record | Exist since organic-framework 11aee30 (2026-11-11); records imported earlier get them on their next re-import |
 
 ### 4.1 What the loop rules read
 
@@ -655,7 +657,7 @@ The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live 
 
 ## 6. Implementation v0
 
-Agreed with `of_studio`, 2026-11-06. Split on 2026-11-07 (organic-framework commit 113dffc, hand-over e42c1acf):
+Agreed with `of_studio`, 2026-11-06. Split on 2026-11-07 (`of_studio`, hand-over e42c1acf):
 
 - **Modules.**
   - The rules are `bin/of_diagnose_rules.py` (`of_field-analyst`), with their tests in `tests/test_diagnose_rules.py`. A rule reads the model and the rows only through `of_model.RULE_SURFACE`, the query surface `of_studio` keeps; a reading the surface lacks is added there by `of_studio` first.
@@ -736,7 +738,7 @@ The share is what moves when the owner's volume changes; the count is what the o
 | The OF team | 178 | 4 | 2.2% |
 | Both | 725 | 51 | 7.0% |
 
-The labels come from a scan by wording of all the week's messages, plus two polls found in `of_studio`'s sample and one found by its implementation (90a4413), so 51 is a lower bound. Owner messages are counted after `of_platform`'s origin corrections of 2026-11-06 20:12Z, which turned 15 briefs and capacity notes into injected text, and without the brief and move-note templates (of_studio dc35391). `of model polls` reproduces the labels: 47 of 46 + 1 and 4 of 4 before that label was added, fitted on the same week, so this is a fit and not a test.
+The labels come from a scan by wording of all the week's messages, plus two polls found in `of_studio`'s sample and one found by its implementation (2026-11-06), so 51 is a lower bound. Owner messages are counted after `of_platform`'s origin corrections of 2026-11-06 20:12Z, which turned 15 briefs and capacity notes into injected text, and without the brief and move-note templates (`of_studio`, 2026-11-06). `of model polls` reproduces the labels: 47 of 46 + 1 and 4 of 4 before that label was added, fitted on the same week, so this is a fit and not a test.
 - The top position is the k8s keeper with 15. Next come the main bot's search agent (6), its operator (5) and the dispatcher (5).
 - 4 polls came from sessions with no position.
 
