@@ -228,5 +228,6 @@
  "↑↓ page · ←→ stream": "↑↓ листать · ←→ поток",
  "↑↓ select · ←→ stream · 1-9 answer · r write · h snooze · d hand over · / search · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · h отложить · d передать · / поиск · ? помощь · Esc назад",
  "↑↓ select · ←→ stream · 1-9 answer · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · ? помощь · Esc назад",
- "the next, the previous stream (a click on its tab too)": "следующий, предыдущий поток (или щелчок по его вкладке)"
+ "the next, the previous stream (a click on its tab too)": "следующий, предыдущий поток (или щелчок по его вкладке)",
+ "Done, you may close this tab.": "Готово, можно закрыть вкладку."
 }

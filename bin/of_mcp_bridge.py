@@ -165,7 +165,8 @@ def login(url, store, scopes=None, open_browser=True, port=0):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write("Готово, можно закрыть вкладку. Done, you may close this tab.".encode())
+            from of_locale import tr  # the person's language (owner.yaml), English by default
+            self.wfile.write(tr("Done, you may close this tab.").encode())
 
     srv = HTTPServer(("127.0.0.1", port), Callback)
     redirect = f"http://127.0.0.1:{srv.server_address[1]}/callback"
