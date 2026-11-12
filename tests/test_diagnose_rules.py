@@ -651,7 +651,7 @@ class LoopRulesTest(unittest.TestCase):
         self.assertEqual(self.found("loop-objective-drift", runs, priced)[0], [])
 
     SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
-               "context": ["the network after the send", "a third party's ordering rule"]}
+               "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
 
     def test_objective_drift_on_a_context_part(self):
         # hand-over 9e2140b6 (docs/registry.md Works): a part outside the segment is context, never a target or a lever
@@ -665,13 +665,19 @@ class LoopRulesTest(unittest.TestCase):
         self.assertIn("The network after the send is outside the segment: report it, and act inside (1 hypothesis names it)",
                       got[0]["summary"])
         self.assertEqual(got[0]["decider"], "work_owner")
-        # a run whose metric names the part, and a hypothesis whose change does; one issue for the work, ids stable
-        run = [self.run_(2, "2026-11-05T12:00Z", "offline", "h2", 14, metric="ordering_rule_third_party_rank")]
-        lever = [self.hyp(2, "2026-11-05T10:00Z", "h-order", change="lobby the third party to change its ordering rules")]
+        # a run whose metric is a named part's name (PR 58: a name matches the same name exactly), and a hypothesis
+        # whose change holds the part's words; one issue for the work, ids stable
+        run = [self.run_(2, "2026-11-05T12:00Z", "offline", "h2", 14, metric="rival_ordering")]
+        lever = [self.hyp(2, "2026-11-05T10:00Z", "h-order", change="get the third party's ordering rule changed for us")]
         both, _ = self.found("loop-objective-drift", on_target + run + lever, seg)
         self.assertEqual([i["issue_id"] for i in both], [got[0]["issue_id"]])
-        self.assertEqual({x["part"] for x in both[0]["evidence"]["context"]}, {"a third party's ordering rule"})
+        self.assertEqual({x["part"] for x in both[0]["evidence"]["context"]}, {"a third party's ordering rule (rival_ordering)"})
+        self.assertIn("A third party's ordering rule (rival_ordering) is outside the segment", both[0]["summary"])
         self.assertIn("(1 run and 1 hypothesis name it)", both[0]["summary"])
+        # a metric that is a name matches only a part with that name, never a text part's words
+        near = [self.run_(3, "2026-11-05T12:00Z", "offline", "h2", 14, metric="rival_ordering_rank"),
+                self.run_(4, "2026-11-05T13:00Z", "offline", "h2", 14, metric="network_after_send")]
+        self.assertEqual(self.found("loop-objective-drift", on_target + near, seg)[0], [])
         # quiet: the same hypothesis with no segment declared; a lever inside the segment; a dropped hypothesis of last month
         self.assertEqual(self.found("loop-objective-drift", on_target + hyp)[0], [])
         inside = [self.hyp(3, "2026-11-04T10:00Z", "h-in", predict="sending the bundle 3 ms after our node sees the block lifts day_pass")]

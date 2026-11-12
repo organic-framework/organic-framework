@@ -964,7 +964,7 @@ SCENARIOS += [
 # ---- loop-objective-drift part context (of_field-analyst, v1 2026-11-12; hand-over 9e2140b6, docs/registry.md Works)
 # A segment is declared; one climb on the target keeps the other loop rules quiet; the case adds what names a context part.
 _SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
-            "context": ["the network after the send", "a third party's ordering rule"]}
+            "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
 _SEG_DOC = _loop_doc(target={"metric": "day_pass", "money": "USD per day", "stake": "65 USD a day", "segment": _SEGMENT})
 
 
@@ -977,9 +977,12 @@ SCENARIOS += [
     _loop_case("loop-objective-drift/positive-context-hypothesis",
                _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-net", "a faster RPC path cuts the network after the send by 20 ms")],
                "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
-    _loop_case("loop-objective-drift/positive-context-run",
-               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="ordering_rule_third_party_rank")],
+    _loop_case("loop-objective-drift/positive-context-named-run",   # PR 58: a metric that is a name matches the part's name
+               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering")],
                "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
+    _loop_case("loop-objective-drift/negative-context-name-near",   # a name close to the part's name is not the name
+               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering_rank")],
+               "negative", rule="ap.loop-objective-drift", doc=_SEG_DOC),
     _loop_case("loop-objective-drift/negative-context-inside",
                _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-in",
                                            "sending the bundle 3 ms after our node sees the block lifts day_pass")],
