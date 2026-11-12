@@ -298,8 +298,10 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
 
 
 def has_yaml(python):
-    """Does this interpreter import PyYAML, as bin/of and the plugin's hooks need?"""
-    if os.path.realpath(python) == os.path.realpath(sys.executable):
+    """Does this interpreter import PyYAML, as bin/of and the plugin's hooks need? Only the very path this process
+    runs under answers from here: a venv's python and the base interpreter it links to share a realpath but not their
+    site-packages (of_review on PR 102)."""
+    if python == sys.executable:
         import importlib.util
         return importlib.util.find_spec("yaml") is not None
     try:
