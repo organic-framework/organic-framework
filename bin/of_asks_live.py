@@ -60,7 +60,8 @@ def live_sessions(dirs=None, run=subprocess.run):
 def decide(ask, live, blocked_sessions):
     """The reason to close this open ask now, or None to keep it."""
     sid = ask.get("session_id")
-    if not sid or ask.get("kind", "").startswith("question (declared") or ask.get("task"):
+    kind = ask.get("kind") or ""
+    if not sid or kind.startswith("question (declared") or ask.get("task") or kind == "task":  # a view row: kind task
         return None  # declared asks and the founder's tasks wait on him, whatever the asker's session does
     if sid in blocked_sessions:
         return None
@@ -90,11 +91,20 @@ def reconcile(asks, live, blocked_sessions=(), emit=None):
     return done
 
 
-def run(conn, positions=None, agents=None, bind=None, log=print):
-    """One reconcile pass over the store (pulse, popup)."""
+def run(conn, positions=None, agents=None, bind=None, log=print, view=False):
+    """One reconcile pass over the store (pulse, popup). view: the asks as the listener's view holds them (a few ms),
+    and no pass when the listener is not fresh, for the questions screen: its pass projected the whole log, 16 s of
+    CPU and 8 s of reads on 2026-11-12, and the cards waited behind it (the founder: the screen opened in 10 to 30 s;
+    of_conductor msg 01a1d09c). The pulse reconciles every 5 minutes either way."""
     import of_asks
     import of_events
-    asks = of_asks.project(of_asks.load(conn))
+    if view:
+        import of_listen
+        if not of_listen.fresh(conn):
+            return []
+        asks = of_listen.read_asks(conn)
+    else:
+        asks = of_asks.project(of_asks.load(conn))
     try:
         import of_coord
         remote = {eid for (eid,) in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' "

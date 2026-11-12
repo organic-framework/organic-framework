@@ -25,6 +25,14 @@ def item(aid, text, kind="question (declared)", since="2026-11-11T10:00:00Z", **
 
 
 class LogicTest(unittest.TestCase):
+    def test_the_risk_of_a_card_is_kept_until_its_words_change(self):
+        a = item("A", "Pay 90 USD to the operator?")
+        self.assertEqual(I.risk_of(a), ["money"])
+        self.assertEqual(I.risk_of(dict(a)), ["money"])
+        self.assertIn((I.key_of(a), a["text"], repr(a["first"])), I._RISK)
+        b = item("A", "Rename the channel?")
+        self.assertEqual(I.risk_of(b), [])
+
     def test_streams_and_their_order(self):
         now = T._ts("2026-11-11T12:00:00Z")
         xs = [item("A", "Rename the channel?", since="2026-11-11T09:00:00Z"),
@@ -190,6 +198,17 @@ class ScreenTest(unittest.TestCase):
                     time.sleep(k)
                     return -1
                 return k
+
+            def get_wch(self):
+                import curses
+                k = self.keys.pop(0) if self.keys else "\x1b"
+                if isinstance(k, float):
+                    time.sleep(k)
+                    raise curses.error("no input")
+                return k
+
+            def move(self, y, x):
+                test.cursor = (y, x)
         return Scr()
 
     def text(self, frame):
@@ -392,6 +411,68 @@ class ScreenTest(unittest.TestCase):
     def test_help(self):
         self.inbox([0.05, ord("?"), 0.05], [item("A", "First plain question?")])
         self.assertTrue(any("select; wraps from the first card to the last" in self.text(f) for f in self.frames))
+
+    def test_the_answer_is_written_under_the_card_with_the_question_in_sight(self):
+        """The founder, 2026-11-12 16:32Z (of_conductor msg 01a1d09c-4562): writing an answer hid the question; he
+        wants the reply under the question, which stays readable and scrolls while he types, for long questions."""
+        import curses
+        long = {"A": {"question": "Back up the data room?\n" + "\n".join(f"paragraph {i}" for i in range(60)),
+                      "options": ["yes", "no"]}}
+        hello = "\u041f\u0440\u0438\u0432\u0435\u0442"  # a Cyrillic word, written as escapes (text here is English)
+        typed = list(hello) + ["\n"] + list("second")
+        box = self.inbox([0.1, ord("r")] + typed + [0.05, curses.KEY_NPAGE, 0.05, "\x04", 0.3, 0.05],
+                         [item("A", "Back up the data room?", who="of_b")], cards=long, size=(30, 140))
+        writing = [self.text(f) for f in self.frames if hello in self.text(f)]
+        self.assertTrue(writing)
+        self.assertIn("Back up the data room?", writing[0])          # the question, above the answer
+        self.assertIn("── Your answer to of_b", writing[0])
+        self.assertTrue(any("PgUp PgDn scroll" in t and "paragraph" in t for t in writing))  # it scrolls meanwhile
+        self.assertIn("Ctrl+D send", writing[0])                      # the editor's keys on the keys line
+        self.assertEqual(self.sent, [("A", hello + "\nsecond")])
+        self.assertEqual(box.mode, "main")
+
+    def test_esc_keeps_the_draft_and_r_goes_on_with_it(self):
+        self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("r"), "c", "\n", "\n", 0.3, 0.05],
+                   [item("A", "First plain question?")])
+        self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
+        self.assertEqual(self.sent, [("A", "abc")])  # Enter on an empty line sends, as before
+
+    def test_g_goes_to_the_agent_and_the_keys_line_says_so(self):
+        """The founder, 2026-11-12: g goes to the agent again, shown in the footer; Home and End move to the ends."""
+        import curses
+        data = [item("A", "First plain question?", since="2026-11-11T08:00:00Z"),
+                item("B", "Second plain question?", since="2026-11-11T09:00:00Z")]
+        box = self.inbox([0.05, curses.KEY_END, 0.05], data)
+        self.assertEqual(box.sel["rest"], "B")
+        self.assertIn("g go to the agent", self.text(self.frames[0]))
+        self.sent = []
+        self.inbox([0.05, ord("g")], data)
+        self.assertEqual(self.sent, [("A", "go")])
+
+    def test_a_card_built_before_the_registry_shows_its_options_and_is_completed(self):
+        calls = []
+
+        def card_of(it):
+            calls.append(1)
+            c = {"question": it["text"], "who": it["who"], "answerable": True, "ids": it["ids"],
+                 "options": ["yes", "no"]}
+            return dict(c, partial=True) if len(calls) == 1 else dict(c, context="I checked the nodes.")
+        box = I.Inbox(self.scr([0.1, 0.05, 0.7, 0.1, 0.05]), lambda: ([("Waiting on you", [item("A", "Plain?")])], {}),
+                      card_of, lambda it, text: (True, "recorded"), lambda what, it: (True, what),
+                      initial=([item("A", "Plain?")], {}))
+        box.run()
+        self.assertTrue(any("1  yes" in self.text(f) and "I checked" not in self.text(f) for f in self.frames))
+        self.assertIn("I checked the nodes.", self.text(self.frames[-1]))
+        self.assertEqual(len(calls), 2)
+
+    def test_the_opening_is_timed(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "asks-open.log")
+            t0 = time.time()
+            I.log_open({"start": t0, "frame": t0 + 0.2, "list": t0 + 0.4, "card": t0 + 1.5}, [40, 140], path)
+            with open(path) as fh:
+                row = json.loads(fh.read())
+            self.assertEqual((row["frame"], row["list"], row["card"], row["size"]), (0.2, 0.4, 1.5, [40, 140]))
 
 
 class PanelTest(ScreenTest):
