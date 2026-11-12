@@ -44,6 +44,8 @@ WORKDIR /app
 COPY bin/of_server.py bin/of_server_relay.py bin/of_server_coord.py bin/of_server_finance.py bin/of_server_otlp.py \
      bin/of_mask.py bin/of_route.py bin/of_coord.py bin/of_plugins.py bin/of_family.py bin/of_grants.py \
      bin/of_events.py bin/of_ship.py bin/of_store.py ./
+# A diff approved with a passkey (docs/remote.md §6): of-server's half, the digest's shared code and the record's.
+COPY bin/of_server_passkey.py bin/of_diff.py bin/of_passkey.py ./
 # The secrets broker (docs/agent-secrets.md §5.3) and the catalogue it reads.
 COPY bin/of_server_secrets.py bin/of_credentials.py ./
 # Studio (of_studio's modules), served under /studio/ when present.

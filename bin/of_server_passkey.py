@@ -505,3 +505,111 @@ class Passkeys:
             n = c.execute("UPDATE passkey_enrollments SET revoked_at = ? WHERE credential_id = ? AND org = ?",
                           (self.clock(), record.get("credential"), record.get("org"))).rowcount
         return {"revoked": record.get("credential"), "known": bool(n)}
+
+
+# ------------------------------------------------------------------------------------------------ the pages
+# Served with no cache, no referrer, no framing and a script nonce (headers()). Text is English: the locale layer runs
+# on the person's machine, not on of-server; the page says only what to check and what was done.
+_JS = r"""
+const b64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0));
+const say = t => { document.getElementById('status').textContent = t; };
+async function post(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+                               credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer'});
+  const j = await r.json(); if (!r.ok) throw new Error(j.title || r.status); return j;
+}
+async function assertWith(challenge, ids) {
+  const a = await navigator.credentials.get({publicKey: {challenge: unb64u(challenge), userVerification: 'required',
+    allowCredentials: ids.map(id => ({type: 'public-key', id: unb64u(id)})), timeout: 120000}});
+  return {credential: b64u(a.rawId), authenticator_data: b64u(a.response.authenticatorData),
+          client_data_json: b64u(a.response.clientDataJSON), signature: b64u(a.response.signature)};
+}
+"""
+
+_STYLE = ("body{font:16px/1.45 -apple-system,system-ui,sans-serif;max-width:40rem;margin:1.5rem auto;padding:0 1rem}"
+          "pre{white-space:pre-wrap;word-break:break-word;background:#f4f4f4;padding:.75rem;border-radius:6px}"
+          "button{font-size:1.1rem;padding:.6rem 1.2rem}#code{font:700 2rem ui-monospace,monospace;letter-spacing:.2em}")
+
+
+def _page(title, body, script, csp_nonce):
+    import html
+    return ("<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' "
+            f"content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>"
+            f"<style nonce='{csp_nonce}'>{_STYLE}</style></head><body>{body}"
+            f"<p id='status' role='status'></p><script nonce='{csp_nonce}'>{_JS}{script}</script></body></html>"
+            ).encode()
+
+
+def headers(csp_nonce):
+    """The headers both pages carry (of_architect, msg 01a1cfbd-2805, point 2)."""
+    return (("Cache-Control", "no-store"), ("Referrer-Policy", "no-referrer"), ("X-Frame-Options", "DENY"),
+            ("Content-Security-Policy", f"default-src 'none'; script-src 'nonce-{csp_nonce}'; "
+                                        f"style-src 'nonce-{csp_nonce}'; connect-src 'self'; frame-ancestors 'none'; "
+                                        "base-uri 'none'; form-action 'none'"),
+            ("X-Content-Type-Options", "nosniff"))
+
+
+def enroll_page(wid, csp_nonce):
+    w = json.dumps(str(wid)).replace("<", "\\u003c")
+    body = ("<h1>Enroll this phone's passkey</h1><p>Your organization's owner opened this window at their machine. "
+            "Create the passkey, then read the code shown here to the owner: they compare it with the code in their "
+            "terminal before they sign.</p><button id='go'>Create the passkey</button><p id='code'></p>")
+    script = (f"const W = {w};" + r"""
+document.getElementById('go').onclick = async () => {
+  try {
+    const o = await (await fetch('/v1/passkey/windows/' + encodeURIComponent(W) + '/options', {cache: 'no-store'})).json();
+    if (!o.challenge) throw new Error(o.title || 'the window is closed');
+    const c = await navigator.credentials.create({publicKey: {challenge: unb64u(o.challenge), rp: o.rp,
+      user: {id: unb64u(o.user.id), name: o.user.name, displayName: o.user.displayName},
+      pubKeyCredParams: o.pubKeyCredParams, authenticatorSelection: o.authenticatorSelection,
+      attestation: o.attestation, timeout: o.timeout}});
+    const reg = await post('/v1/passkey/windows/' + encodeURIComponent(W) + '/register',
+      {attestation_object: b64u(c.response.attestationObject), client_data_json: b64u(c.response.clientDataJSON)});
+    say('Now confirm once more, to test the new passkey.');
+    const t = await post('/v1/passkey/windows/' + encodeURIComponent(W) + '/test',
+      await assertWith(reg.test_challenge, [reg.credential]));
+    document.getElementById('code').textContent = t.code;
+    say('Read this code to the owner. Nothing is enrolled until they sign at their machine.');
+    document.getElementById('go').disabled = true;
+  } catch (e) { say('Not enrolled: ' + e.message); }
+};""")
+    return _page("Enroll a passkey", body, script, csp_nonce)
+
+
+def approve_page(data, csp_nonce):
+    """DATA: Passkeys.approval_page(...) plus the nonce. The diff's exact text is shown escaped; the phone signs the
+    SHA-256 of the preimage that names its full digest."""
+    import html
+    payload = json.dumps({"nonce": data["nonce"], "challenge": data["challenge"], "credentials": data["credentials"]})
+    payload = payload.replace("<", "\\u003c")  # never closes the script element
+    body = (f"<h1>Approve a change to {html.escape(data['org'])}</h1>"
+            f"<p>Diff <b>{html.escape(data['id'])}</b>. Read its exact text. Your passkey signs this text's digest, "
+            f"and nothing else can be applied with your approval.</p><pre>{html.escape(data['text'])}</pre>"
+            f"<p>Digest: <code>{html.escape(data['digest'][:16])}</code>… (all 64 characters are signed). "
+            f"The link expires at {html.escape(data['expires'])}.</p><button id='go'>Approve with my passkey</button>")
+    script = (f"const D = {payload};" + r"""
+document.getElementById('go').onclick = async () => {
+  try {
+    if (!D.credentials.length) throw new Error('no passkey is enrolled for this organization');
+    const a = await assertWith(D.challenge, D.credentials);
+    await post('/v1/passkey/approve', Object.assign({nonce: D.nonce}, a));
+    say('Approved. The machine checks your signature again before it applies the diff.');
+    document.getElementById('go').disabled = true;
+  } catch (e) { say('Not approved: ' + e.message); }
+};""")
+    return _page("Approve a change", body, script, csp_nonce)
+
+
+def feed_row(org, payload, clock=None):
+    """The of.diff_approved event of-server writes into the organization's coordination feed (of_server_coord.copy):
+    every machine's relay stores it, and `of diff apply` checks it again there (docs/remote.md §6, step 3)."""
+    import time
+    import uuid
+    t = (clock or time.time)()
+    eid = str(uuid.uuid7() if hasattr(uuid, "uuid7") else uuid.uuid4())
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
+    rec = {"of.schema": 1, "of.event.id": eid, "timestamp": ts, "event.name": "of.diff_approved",
+           "host.id": "of-server", "host.name": "of-server", "of.org": org, "of.source": "of-server",
+           "of.payload": payload}
+    return {"event_id": eid, "name": "of.diff_approved", "ts": ts, "host_id": "of-server", "record": json.dumps(rec)}
