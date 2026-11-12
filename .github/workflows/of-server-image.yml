@@ -40,6 +40,11 @@ jobs:
           file: deploy/Dockerfile
           load: true
           tags: of-server:ci
+          # the full commit, which an organization that copies the image reads to tag its copy; the source links
+          # the package to this repository
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - name: The build stage that holds openssh-client, from the same build's cache (the checks below read its dpkg records)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
         with:
@@ -50,6 +55,8 @@ jobs:
           tags: of-keygen:ci
       - name: Every module the image holds imports, so every module they import at load is in it; pip is gone
         run: |
+          [ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' of-server:ci)" \
+            = "$GITHUB_SHA" ] || { echo "the image's revision label is not this commit"; exit 1; }
           docker run --rm --entrypoint python3 of-server:ci -c \
             "import glob, importlib, os; ms = sorted(os.path.basename(f)[:-3] for f in glob.glob('/app/of_*.py')); [importlib.import_module(m) for m in ms]; print('imports ok:', len(ms))"
           docker run --rm --entrypoint python3 of-server:ci -c \
