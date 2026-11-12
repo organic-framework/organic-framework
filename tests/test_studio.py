@@ -1493,8 +1493,8 @@ class RuleSurfaceTest(unittest.TestCase):
               "inbound_queues": "(model, rows, a, b, old_after_s=None)",
               "issue": "(cat, name, affected, evidence, summary, delta_m=0.0, critical=False, part=None, key=None)",
               "issue_id": "(rule, affected)", "spec_part": "(spec, key, part, default=None)", "loops": "(model)",
-              "area_of": "(path, depth=3, repos=())"}
-    CONSTANTS = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS")
+              "area_of": "(path, depth=3, repos=())", "context_matches": "(field, part, prose=False)"}
+    CONSTANTS = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS", "CONTEXT_NAME")
 
     def test_surface_is_pinned(self):
         import inspect
@@ -1503,6 +1503,16 @@ class RuleSurfaceTest(unittest.TestCase):
             self.assertEqual(str(inspect.signature(getattr(of_model, n))), sig, n)
         for n in self.CONSTANTS:
             self.assertTrue(hasattr(of_model, n), n)
+
+    def test_context_parts_match_as_registry_check_matches_them(self):
+        # one matcher for of registry check and the loop rules: of_loop's, re-exported (of_field-analyst, 2026-11-12)
+        import of_loop
+        self.assertIs(of_model.context_matches, of_loop.context_matches)
+        self.assertIs(of_model.CONTEXT_NAME, of_loop.CONTEXT_NAME)
+        part = {"name": "rival_ordering", "what": "a third party's ordering rule"}
+        self.assertTrue(of_model.context_matches("rival_ordering", part))
+        self.assertTrue(of_model.context_matches("faster wins under the third party's ordering rule", part, prose=True))
+        self.assertFalse(of_model.context_matches("latency_p50_ms", part))
 
     def test_rules_read_only_the_surface(self):
         import ast

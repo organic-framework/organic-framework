@@ -1282,8 +1282,22 @@ def loops(model):
     return model.get("loops") or {}
 
 
+# A context part of a loop target's segment is matched by one matcher, of_platform's bin/of_loop.py, for `of registry
+# check` and the loop rules alike (docs/registry.md, Works, "How a check matches a context part"; asked by
+# of_field-analyst, 2026-11-12). Re-exported on first use, not at load: the of-server image copies of_model and not
+# of_loop (tests/test_image_modules.py), as it leaves out of_loops, which loops_of imports the same way.
+_FROM_OF_LOOP = ("context_matches", "CONTEXT_NAME")
+
+
+def __getattr__(name):
+    if name in _FROM_OF_LOOP:
+        import of_loop
+        return getattr(of_loop, name)
+    raise AttributeError(f"module 'of_model' has no attribute {name!r}")
+
+
 RULE_SURFACE = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS", "epoch", "iso", "in_window", "is_received",
                 "received_labels", "owner_prompt", "session_index", "position_of", "session_positions",
                 "message_senders", "structure_keeper", "overlay", "pr_key", "pr_attribution",
                 "founder_messages", "message_categories", "asks_of", "little", "owner_measures", "inbound_queues",
-                "loops", "issue", "issue_id", "spec_part", "area_of")
+                "loops", "issue", "issue_id", "spec_part", "area_of", "context_matches", "CONTEXT_NAME")
