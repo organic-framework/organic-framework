@@ -494,7 +494,7 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("may set only", "\n".join(problems))
 
 
-MOVE_REG = """organization: mt
+MOVE_REG = """organization: acme
 methods: {}
 positions:
   - name: wf_keeper
@@ -591,7 +591,7 @@ class MoveAndOwnsTest(unittest.TestCase):
         self.assertIn("'vibes' is not a kind of work", "\n".join(p))
 
 
-POS_REG = """organization: mt
+POS_REG = """organization: acme
 positions:
   - name: tp_owner
     system: ops

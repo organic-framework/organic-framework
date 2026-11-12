@@ -138,7 +138,7 @@ class SpawnPlanTest(unittest.TestCase):
 CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
     "acme": {"roots": ["/h/.config/acme"],
            "credentials": {"graf": {"paths": ["/h/.config/acme/grafana/viewer.token"], "keeper": "obs_keeper"},
-                           "deploy": {"paths": ["/h/.ssh/mt-deploy"], "keeper": "net_keeper"},
+                           "deploy": {"paths": ["/h/.ssh/acme-deploy"], "keeper": "net_keeper"},
                            "pg": {"paths": ["/h/.config/acme/pg/*.pgpass"], "keeper": "db_keeper"}},
            "positions": {"app_dev": ["pg"]}},
     "globex": {"roots": ["/h/.config/globex"],
@@ -149,15 +149,15 @@ class CredentialDenyTest(unittest.TestCase):
     def test_rules_deny_what_the_position_may_not_use(self):
         self.assertEqual(of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=False), [])  # both layers off: nothing
         self.assertFalse(any(x.endswith("/**)") for x in of_spawn.deny_rules("app_dev", "acme", CAT, named=True, roots=False)))
-        self.assertEqual([x for x in of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=True) if "mt-deploy" in x], [])
+        self.assertEqual([x for x in of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=True) if "acme-deploy" in x], [])
         r = of_spawn.deny_rules("app_dev", "acme", CAT, named=True, roots=True)
         self.assertIn("Read(//h/.config/acme/grafana/viewer.token)", r)   # absolute: two slashes
-        self.assertIn("Edit(//h/.ssh/mt-deploy)", r)                            # outside the roots, named
+        self.assertIn("Edit(//h/.ssh/acme-deploy)", r)                            # outside the roots, named
         self.assertIn("Read(//h/.config/globex/**)", r)                         # another organization's root
         self.assertNotIn("Read(//h/.config/acme/**)", r)                   # it uses a file there: the guard's
         self.assertFalse(any("pgpass" in x for x in r))                         # what it lists is never denied
         keeper = of_spawn.deny_rules("net_keeper", "acme", CAT, named=True, roots=True)
-        self.assertNotIn("Read(//h/.ssh/mt-deploy)", keeper)                    # its keeper uses it
+        self.assertNotIn("Read(//h/.ssh/acme-deploy)", keeper)                    # its keeper uses it
         self.assertIn("Read(//h/.config/acme/**)", keeper)                 # it uses nothing under its root
         self.assertEqual(of_spawn.deny_rules("app_dev", "acme", {}), [])
 
