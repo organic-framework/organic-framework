@@ -254,7 +254,7 @@ class ClickHouseViewTest(unittest.TestCase):
                                                                                 "schema.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        sql = mod.schema(["of_zeta"], "of_mt_vault", "of_mt_un")
+        sql = mod.schema(["of_zeta"], "of_zeta_vault", "of_zeta_un")
         self.assertIn("CREATE OR REPLACE VIEW of_zeta.v_event SQL SECURITY DEFINER AS SELECT * FROM of_zeta.event"
                       " WHERE name != 'of.finance_fact';", sql)
         self.assertNotIn("of_finance_fact", sql.replace("of.finance_fact", ""))
