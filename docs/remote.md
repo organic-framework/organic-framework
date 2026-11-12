@@ -64,11 +64,18 @@ The founder, 2026-11-12 ~11:38Z, after a user organization's head answered yes t
    - the signature over `authenticator_data` followed by the SHA-256 of `client_data_json` verifies with the enrolled public key, and a non-zero signature counter is higher than the last one seen;
    - the enrollment record verifies against the organization's pinned grant public key;
    - the preimage names this organization, this diff and its current digest, and has not expired.
+   - the enrolled person is an approver this diff needs: the person who holds the organization's owner position, or, for a `goal_change` node under a unit owner's goal, the person who holds that unit owner's position (docs/handover.md §3);
+   - the credential is not revoked (step 6).
 
    Anyone can run these checks again on the record, so a forged approval is visible to anyone who looks.
 4. **Where the page runs.** WebAuthn binds a passkey to a domain, so the phone must reach of-server over HTTPS at a stable name.
    - An organization whose of-server runs on its own servers has that already.
    - Where of-server runs only on the agents' machine, it needs a tunnel or a private network, and exposing it is that organization's owner's decision, on a card.
    - The page must be served where agents cannot change it: on another machine, or under of-server's own operating-system user with its code under `protected_code` (docs/registry.md, Credentials; guard rule G21). Otherwise an agent could show one text while the challenge covers another.
+6. **Revoking one passkey**, for a lost or replaced phone, without a grant rekey. A revocation names the credential id, the person and the organization, and is signed in one of two ways:
+   - by the owner with the organization's grant key at the machine (`of passkey revoke <person> <credential>`, denied to agents' sessions as `of grant` is);
+   - or by another passkey enrolled for the same person, from any device, over a challenge that names the credential to revoke.
+
+   A revocation only takes a power away, so either path is enough. of-server refuses assertions from a revoked credential at once. `of diff apply` refuses every approval made with it for a diff not yet applied.
 5. **What does not change.** Grants and secrets stay at the machine (§4). A yes in the chat alone still approves no diff (§5).
 
