@@ -1221,6 +1221,16 @@ class Resume(unittest.TestCase):
         self.assertEqual(self.calls[texts[-1]][2:], ("w6:p18", "\x15"))
         self.assertEqual(texts[-1], run - 1)
 
+    def test_of_apply_runs_on_ofs_own_python_not_the_shebang(self):
+        """of_review on PR 105: a Mac's system python3 may have no PyYAML, so bin/of never runs by its shebang."""
+        import sys as _sys
+        from unittest import mock
+        ran = []
+        with mock.patch.object(of_capacity.subprocess, "run", lambda argv, **k: ran.append(argv)):
+            of_capacity.resume("runners_keeper", "s1", self.cfg, "w6:p18", log=lambda *_: None, of_bin="/x/bin/of")
+        self.assertIn([_sys.executable, "/x/bin/of", "apply"], ran)
+        self.assertFalse([a for a in ran if a and a[0] == "/x/bin/of"])
+
     def test_refuses_a_busy_pane_a_live_session_and_an_untrusted_folder(self):
         self.fg, self.screen = [1], ["> working"]
         with self.assertRaises(of_capacity.MoveError):
