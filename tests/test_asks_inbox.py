@@ -64,13 +64,6 @@ class EditorTest(unittest.TestCase):
         ed.backspace()                                       # at a line's start: it joins the line above
         self.assertEqual(ed.lines, ["aXbcde"])
 
-    def test_enter_sends_only_on_an_empty_last_line(self):
-        ed = I.Editor("first\n")
-        self.assertTrue(ed.on_empty_last_line())
-        ed = I.Editor("first\n\nlast")
-        ed.vertical(-1, 80)
-        self.assertFalse(ed.on_empty_last_line())            # an empty line in the middle: a new line
-
 
 class LogicTest(unittest.TestCase):
     def test_the_risk_of_a_card_is_kept_until_its_words_change(self):
@@ -487,12 +480,12 @@ class ScreenTest(unittest.TestCase):
     def test_a_pasted_blank_line_on_a_money_card_never_runs_the_rest_of_the_paste_as_keys(self):
         """of_herdr's review of PR 98: herdr pastes as plain text; a blank line sends, the card asks to confirm, and
         the paste's rest ("P", then "a": answered elsewhere) must not reach the screen's keys."""
-        # in the editor keys come as characters (get_wch); after it, as the main screen reads them (getch)
-        self.inbox([0.1, ord("r"), "O", "K", "\n", "\n", ord("P"), ord("a")],
+        # Ctrl+D sends; keys typed ahead of the confirm are dropped, whatever they are
+        self.inbox([0.1, ord("r"), "O", "K", "\x04", ord("P"), ord("a")],
                    [item("C", "Pay 90 USD to the operator?")], flush=True)
         self.assertEqual(self.sent, [])
-        # of_review's probe: the paste's rest holds a y, which would confirm the answer itself
-        self.inbox([0.1, ord("r"), "o", "k", "\n", "\n", ord("y"), ord("e"), ord("s")],
+        # of_review's probe: what follows holds a y, which would confirm the answer itself
+        self.inbox([0.1, ord("r"), "o", "k", "\x04", ord("y"), ord("e"), ord("s")],
                    [item("C", "Pay 90 USD to the operator?")], flush=True)
         self.assertEqual(self.sent, [])
 
@@ -530,25 +523,55 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("PgUp PgDn scroll the card", writing[0])
         self.assertEqual(box.ctop, 0)
 
-    def test_a_cancelled_confirm_keeps_the_written_answer(self):
-        """of_herdr's note on PR 98: a stray key that cancels a money card's confirm lost the text."""
+    def test_any_key_but_yes_at_the_confirm_goes_back_to_the_answer(self):
+        """The founder, 2026-11-12 18:47Z (of_conductor msg 01a1d119-779b): three answers to a money card were lost to
+        a key that was not y (a Russian layout, or a change he meant to make). Declining returns to the field with
+        the whole text; the Russian layout's letter on y's key confirms."""
         with tempfile.TemporaryDirectory() as d:
             store = I.ReplyDrafts(d)
-            self.inbox([0.1, ord("r"), "o", "k", "\x04", ord("x"), 0.05], [item("C", "Pay 90 USD to the operator?")],
-                       store=store)
+            money = [item("C", "Pay 90 USD to the operator?")]
+            box = self.inbox([0.1, ord("r"), "o", "k", "\x04", "x", 0.05], money, store=store)
             self.assertEqual(self.sent, [])
-            self.assertEqual(store.load(), {"C": "ok"})
-            self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
-            self.inbox([0.1, ord("r"), "\x04", ord("y"), 0.3, 0.05], [item("C", "Pay 90 USD to the operator?")],
-                       store=store)
-            self.assertEqual(self.sent, [("C", "ok")])
+            self.assertEqual(store.load(), {"C": "ok"})        # kept meanwhile
+            self.assertTrue(any("back in the field" in self.text(f) for f in self.frames))
+            self.assertTrue(any("ok" in self.text(f) and "Your answer to" in self.text(f) for f in self.frames[-3:]))
+            self.inbox([0.1, ord("r"), "!", "\x04", "\u043d", 0.3, 0.05], money, store=store)  # the Russian y
+            self.assertEqual(self.sent, [("C", "ok!")])
             self.assertEqual(store.load(), {})                 # confirmed and sent: the draft is gone
 
+    def test_enter_and_shift_enter_only_add_lines_and_ctrl_d_sends(self):
+        """The founder, 2026-11-12 18:47Z: two Shift+Enters (a terminal gives Enter) sent the answer."""
+        self.inbox([0.1, ord("r"), "a", "\n", "\n", "b", "\n", "\n", 0.05, "\x04", 0.3, 0.05],
+                   [item("A", "First plain question?")])
+        self.assertEqual(self.sent, [("A", "a\n\nb")])
+
+    def test_u_brings_a_written_answer_back_into_its_field(self):
+        self.inbox([0.1, ord("r"), "a", "b", "c", "\x04", ord("u"), "d", "\x04", 0.3, 0.05],
+                   [item("A", "First plain question?")])
+        self.assertEqual(self.sent, [("A", "abcd")])
+        self.assertTrue(any("in the field again" in self.text(f) for f in self.frames))
+
+    def test_the_field_is_saved_while_he_writes(self):
+        """A window herdr closes ends the process without a goodbye: the draft follows the field."""
+        with tempfile.TemporaryDirectory() as d:
+            store = I.ReplyDrafts(d)
+            box = I.Inbox(self.scr([]), lambda: ([("Waiting on you", [])], {}), None, None, None,
+                          reply_store=store)
+            box.mode, box.reply = "reply", {"key": "A", "item": item("A", "Q?"), "ed": I.Editor("half"), "top": 0}
+            box.autosave()
+            self.assertEqual(store.load(), {"A": "half"})
+            box.reply["ed"].insert(" more")
+            box.autosave()                                     # within the second: not yet
+            self.assertEqual(store.load(), {"A": "half"})
+            box.reply["saved_at"] = 0
+            box.autosave()
+            self.assertEqual(store.load(), {"A": "half more"})
+
     def test_esc_keeps_the_draft_and_r_goes_on_with_it(self):
-        self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("r"), "c", "\n", "\n", 0.3, 0.05],
+        self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("r"), "c", "\x04", 0.3, 0.05],
                    [item("A", "First plain question?")])
         self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
-        self.assertEqual(self.sent, [("A", "abc")])  # Enter on an empty line sends, as before
+        self.assertEqual(self.sent, [("A", "abc")])
 
     def test_g_goes_to_the_agent_and_the_keys_line_says_so(self):
         """The founder, 2026-11-12: g goes to the agent again, shown in the footer; Home and End move to the ends."""

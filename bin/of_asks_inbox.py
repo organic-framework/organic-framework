@@ -295,11 +295,6 @@ class Editor:
             c += 1
         self.cl, self.cc, self.goal = li, c, goal
 
-    def on_empty_last_line(self):
-        """Enter here sends, as it did when the cursor was always at the end: an empty last line under some text."""
-        return (self.cl == len(self.lines) - 1 and self.lines[-1] == ""
-                and any(x.strip() for x in self.lines[:-1]))
-
 
 class ReplyDrafts:
     """The answers he put aside with Esc while writing one, kept across openings: one file per ask id under
@@ -353,6 +348,16 @@ class ReplyDrafts:
             os.replace(self._file(key), os.path.join(arch, f"{os.path.basename(str(key))}-{int(time.time())}.json"))
         except OSError:
             pass
+
+
+YES = ("y", "Y", "\u043d", "\u041d")  # y, and the letter on its key in the Russian layout (the founder, 2026-11-12)
+
+
+def char_of(ch):
+    """A key as its character ('' for a function key): get_wch gives a str, getch an int."""
+    if isinstance(ch, str):
+        return ch
+    return chr(ch) if isinstance(ch, int) and 0 <= ch < 0x110000 and ch not in (-1,) and ch < curses.KEY_MIN else ""
 
 
 def needs_confirm(item, card=None):
@@ -490,12 +495,13 @@ class Outgoing:
 
     def __init__(self, answer, act, handoff=None):
         self.answer, self.act, self.handoff = answer, act, handoff
-        self.pending, self.hidden, self.errors = [], set(), {}
+        self.pending, self.hidden, self.errors, self.undone = [], set(), {}, None
 
-    def queue(self, item, what, text=None):
+    def queue(self, item, what, text=None, written=False):
         k = key_of(item)
         self.errors.pop(k, None)
         self.pending.append({"key": k, "item": item, "what": what, "text": text, "at": time.time(), "started": False,
+                             "written": written,
                              "done": False, "ok": None, "status": None})
 
     def _start(self, p):
@@ -541,10 +547,12 @@ class Outgoing:
         return ("failed", self.errors[k]) if k in self.errors else None
 
     def undo(self):
+        """Take back the last answer still in its window: its key; self.undone keeps the whole entry (its text)."""
         p = next((p for p in reversed(self.pending) if not p["started"]), None)
         if not p:
             return None
         self.pending.remove(p)
+        self.undone = p
         return p["key"]
 
     def undo_line(self):
@@ -606,6 +614,7 @@ class Inbox:
         self.attr, self.lw, self.cx, self.xtop, self.tab_rects = {}, 0, 0, 0, []
         self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
         self.store = reply_store  # where Esc's drafts outlive the window (ReplyDrafts)
+        self.confirm_reply = None  # the field a written answer's confirm came from: any key but yes goes back to it
         if reply_store:
             try:
                 self.reply_drafts = dict(reply_store.load())
@@ -835,6 +844,9 @@ class Inbox:
     def overlay_line(self):
         if self.mode == "confirm" and self.confirm:
             item, n, text, _ = self.confirm
+            if self.confirm_reply:
+                return tr("Money or irreversible: press y to send «{text}» to {who}; any other key takes you back to "
+                          "your answer", text=T.cut(text, 50), who=", ".join(item.get("who") or []))
             return tr("Money or irreversible: press {n} again (or y) to send «{text}» to {who}; any other key cancels",
                       n=n, text=T.cut(text, 50), who=", ".join(item.get("who") or []))
         return None
@@ -960,7 +972,8 @@ class Inbox:
 
     def reply_key(self, ch, h):
         """One key while he writes: the arrows, Home and End move the cursor (wrapped rows included); PgUp, PgDn and the
-        wheel scroll the card; Enter a new line, Enter on an empty last line or Ctrl+D sends; Esc keeps the draft."""
+        wheel scroll the card; Enter (and Shift+Enter, which a terminal gives as Enter) a new line, blank ones too;
+        Ctrl+D sends, the one key that does (the founder, 2026-11-12: two Shift+Enters sent); Esc keeps the draft."""
         r = self.reply
         ed = r["ed"]
         if ch in ("\x1b", 27):
@@ -968,20 +981,21 @@ class Inbox:
             if self.keep_draft(r["key"], text) and text.strip():
                 self.msg = tr("The answer is kept as a draft: r goes on with it.")
             self.end_reply()
-        elif ch in ("\x04", 4) or (ch in ("\n", "\r", 10, 13, curses.KEY_ENTER) and ed.on_empty_last_line()):
+        elif ch in ("\x04", 4):
             text = ed.text().strip()
             item, c = r["item"], self.cards.get(r["key"])
-            self.end_reply()
-            # what was typed or pasted after the send never reaches the screen's keys: a pasted blank line sends,
-            # and the rest of the paste would answer the confirm and the next cards (of_herdr's review of PR 98)
+            # what was typed or pasted after the send never reaches the screen's keys (of_herdr's review of PR 98)
             curses.flushinp()
-            if text:
-                if needs_confirm(item, c):  # the text stays a draft until he confirms: a cancel loses nothing
-                    self.keep_draft(r["key"], ed.text())
-                    self.mode, self.confirm = "confirm", (item, "y", text, "answer")
-                else:
-                    self.keep_draft(r["key"], None)
-                    self.send(item, "answer", text)
+            if not text:
+                return True
+            self.end_reply()
+            if needs_confirm(item, c):  # the text stays a draft until he confirms, and any other key brings it back
+                self.keep_draft(r["key"], ed.text())
+                self.mode, self.confirm, self.confirm_reply = "confirm", (item, "y", text, "answer"), r
+                curses.curs_set(0)
+            else:
+                self.keep_draft(r["key"], None)
+                self.send(item, "answer", text, written=True)
         elif ch in ("\n", "\r", 10, 13, curses.KEY_ENTER):
             ed.newline()
         elif ch in (curses.KEY_BACKSPACE, "\x7f", "\b", 127, 8):
@@ -1090,8 +1104,8 @@ class Inbox:
             return
         self.send(item, what, text)
 
-    def send(self, item, what, text):
-        self.out.queue(item, what, text if what == "answer" else None)
+    def send(self, item, what, text, written=False):
+        self.out.queue(item, what, text if what == "answer" else None, written=written)
         self.msg = ""
         curses.flushinp()  # keys typed meanwhile never reach the next card
         its, idx = self.current(self.groups())
@@ -1146,14 +1160,17 @@ class Inbox:
             return self.reply_key(ch, h)
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
-            self.mode, self.confirm = "main", None
-            k = key_of(item_)
-            if ch in (ord(str(n)), ord("y"), ord("Y")):
-                if what == "answer" and k in self.reply_drafts:
-                    self.keep_draft(k, None)
-                self.send(item_, what, text)
-            elif what == "answer" and k in self.reply_drafts:
-                self.msg = tr("cancelled; the answer is kept as a draft: r goes on with it")
+            back, self.mode, self.confirm, self.confirm_reply = self.confirm_reply, "main", None, None
+            c = char_of(ch)
+            if c == str(n) or c in YES:
+                if back:
+                    self.keep_draft(back["key"], None)
+                self.send(item_, what, text, written=bool(back))
+            elif back:  # a written answer: back in its field, whole, with the cursor where it was (the founder,
+                # 2026-11-12: three answers were lost to a key that was not y, a Russian layout or a change of mind)
+                self.mode, self.reply = "reply", back
+                curses.curs_set(1)
+                self.msg = tr("Not sent: your answer is back in the field. Ctrl+D sends it, Esc keeps it as a draft.")
             else:
                 self.msg = tr("cancelled")
             return True
@@ -1211,6 +1228,13 @@ class Inbox:
                 for s in self.tabs(self.groups()):
                     if any(key_of(x) == k for x in self.groups().get(s) or []):
                         self.cur, self.sel[s] = s, k
+                p = self.out.undone or {}
+                if p.get("written") and p.get("text"):  # a written answer taken back: in its field again, never lost
+                    self.keep_draft(k, p["text"])
+                    self.mode = "reply"
+                    self.reply = {"key": k, "item": p["item"], "ed": Editor(p["text"]), "top": 0}
+                    curses.curs_set(1)
+                    self.msg = tr("Taken back: your answer is in the field again.")
         elif ch == ord("r") and item and item.get("ids"):
             self.start_reply(item)
         elif ch == ord("h") and item and item.get("ids"):
@@ -1283,14 +1307,25 @@ class Inbox:
                 self.out.queue(dict(d["item"], first=None), "answer", d["text"])
         return True
 
+    def autosave(self):
+        """While he writes, the draft on disk follows the field at most a second behind: herdr closing the popup ends
+        the process without a goodbye, and what he typed is kept (the founder, 2026-11-12: no path loses typed text)."""
+        r = self.reply
+        if self.mode != "reply" or not r or not self.store:
+            return
+        text = r["ed"].text()
+        if text != r.get("saved", self.reply_drafts.get(r["key"], "")) and time.time() - r.get("saved_at", 0) >= 1.0:
+            r["saved"], r["saved_at"] = text, time.time()
+            self.keep_draft(r["key"], text)
+
     def mark(self, what):
         if self.timing is not None and what not in self.timing:
             self.timing[what] = time.time()
 
     def key(self):
-        """The next key, -1 when none came in time. While he writes, whole characters (get_wch): getch gives a
-        Cyrillic letter as its bytes."""
-        if self.mode == "reply" and hasattr(self.scr, "get_wch"):
+        """The next key, -1 when none came in time. While he writes and at a confirm, whole characters (get_wch): getch
+        gives a Cyrillic letter as its bytes."""
+        if self.mode in ("reply", "confirm") and hasattr(self.scr, "get_wch"):
             try:
                 return self.scr.get_wch()
             except curses.error:
@@ -1321,6 +1356,7 @@ class Inbox:
                 self.msg = line
             if self.studio_note.get("m"):
                 self.msg = self.studio_note.pop("m")
+            self.autosave()
             self.draw()
             ch = self.key()
             if ch == -1:
@@ -1335,8 +1371,8 @@ def keys_line(w, mode="main"):
     """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there; g goes to the agent
     (the founder, 2026-11-12: "add g, go to the agent"). While he writes: the editor's."""
     if mode == "reply":
-        forms = [tr("Enter new line · Enter on an empty last line or Ctrl+D send · ↑↓←→ Home End move · "
-                    "PgUp PgDn scroll the card · Esc keep as a draft"),
+        forms = [tr("Ctrl+D send · Enter new line · ↑↓←→ Home End move · PgUp PgDn scroll the card · "
+                    "Esc keep as a draft"),
                  tr("Enter new line · Ctrl+D send · ↑↓←→ move · PgUp PgDn card · Esc draft"),
                  "Enter · Ctrl+D · ↑↓←→ · PgUp PgDn · Esc"]
         return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
@@ -1353,7 +1389,7 @@ def help_rows():
             "Home End     " + tr("the first, the last card"),
             "← → Tab      " + tr("the next, the previous stream (a click on its tab too)"),
             "1-9          " + tr("answer with that option (money or irreversible: press it twice)"),
-            "r            " + tr("write your own answer under the card; Esc keeps it as a draft"),
+            "r            " + tr("write your own answer under the card: Ctrl+D sends, Esc keeps it as a draft"),
             "u            " + tr("take back the last answer while its seconds run"),
             "h            " + tr("snooze: in an hour, tomorrow at 9:00, next Monday at 9:00 (in Snoozed: back now)"),
             "d            " + tr("hand it to a position, which gets the card in its pane to settle"),
