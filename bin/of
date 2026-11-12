@@ -1915,13 +1915,14 @@ def cmd_loop(args):
                 pr = " ".join(str(h["predict"]).split())
                 print(f"      prediction (not a result): {pr[:240] + ('…' if len(pr) > 240 else '')}")
             lr = h.get("last_run")
-            if lr:
-                verdict = {True: "accept criterion met", False: "accept criterion NOT met: the prediction did not hold",
+            if lr:  # what the run records, nothing more: accepted is the rung's accept criterion (docs/events.md)
+                verdict = {True: "accept criterion met", False: "accept criterion not met",
                            None: "no accept verdict recorded"}[lr.get("accepted")]
                 print(f"      latest run {lr['ts'][:16]} on {lr.get('rung') or '?'}: {verdict}")
-            if h.get("contradicted"):
-                print(f"      warning: its latest run refutes it and it is still {h['status']}; record drop, park or keep "
-                      f"(of loop decision {args.work} drop --hypothesis {h['id']})")
+            if h.get("unmet_open"):
+                print(f"      note: its latest run did not meet the {lr.get('rung') or '?'} rung's accept criterion and "
+                      f"no decision follows it; it is still {h['status']} "
+                      f"(of loop decision {args.work} <decision> --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
         return 0
@@ -2000,8 +2001,8 @@ def cmd_loop(args):
                                            "status_at": of_events.now_iso()}, position=me["name"], org=me.get("_orgid") or org)
     print(f"{kind}: {args.work}" + (f" {payload['hypothesis']}" if payload.get("hypothesis") else ""))
     if kind == "loop_run" and payload.get("accepted") is False and cur and cur["status"] in ("open", "testing"):
-        print(f"  the run did not meet its accept criterion, so it refutes {hid}'s prediction; report it as refuted, "
-              f"not as a finding, and record the decision: of loop decision {args.work} drop|park|keep --hypothesis {hid}")
+        print(f"  the run did not meet the {payload.get('rung')} rung's accept criterion; {hid} stays undecided until a "
+              f"decision is recorded: of loop decision {args.work} <{'|'.join(of_loop.DECISIONS)}> --hypothesis {hid}")
     return 0
 
 
