@@ -59,7 +59,7 @@ The founder approved the agents' own identity (ask `29ea1baa`, 2026-11-07) and c
   - every external account's login and generated password, in the item's notes.
 
   The founder sees every item in his own 1Password app, so the accounts stay the company's and stay in his hands.
-- **The service account.** One per organization (for example `mt-agents`), with `read_items,write_items` on that vault only. It never gets `share_items` or `--can-create-vaults`, and it can never reach a personal or private vault.
+- **The service account.** One per organization (for example `acme-agents`), with `read_items,write_items` on that vault only. It never gets `share_items` or `--can-create-vaults`, and it can never reach a personal or private vault.
 - **Its token is the one secret on disk**, in `~/.config/<org>/agent-identity/op-sa.token`, the directory mode 700 and the file mode 600. `op service-account create --raw` writes the token there straight from the founder's terminal, so it is never shown.
 
 Rules:
