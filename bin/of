@@ -3662,6 +3662,19 @@ def _org_server(org, orgs_file=None):
     return next((o.get("server") for o in doc.get("orgs") or [] if o.get("name") == org), None)
 
 
+def _proposed_diff(conn, target):
+    """The proposed diff `target`, refused when it was proposed with the old 16-character digest, which an approval
+    must not bind (of_server, 2026-11-12; hand-over ab02a7db)."""
+    import of_diff
+    e = _diff_events(conn).get(target)
+    if not e or e["state"] != "proposed":
+        raise OfError(f"no proposed diff {target!r} (of diff list)")
+    if not of_diff.full_digest(e.get("digest")):
+        raise OfError(f"{target} was proposed with the old short digest, which an approval no longer binds: propose "
+                      "it again (`of diff propose`)")
+    return e
+
+
 def cmd_diff(args):
     import of_diff
     import of_events
@@ -3679,18 +3692,14 @@ def cmd_diff(args):
         raise OfError(f"usage: of diff {args.action} <file|id>")
     if args.action == "link":  # docs/remote.md §6: the page where the person approves with their passkey
         import of_passkey
-        e = _diff_events(conn).get(args.target)
-        if not e or e["state"] != "proposed":
-            raise OfError(f"no proposed diff {args.target!r} (of diff list)")
+        e = _proposed_diff(conn, args.target)
         url, why = of_passkey.link(_org_server(e["diff"]["org"]), e["diff"]["org"], e["id"], e["digest"])
         if why:
             raise OfError(why)
         print(url)
         return 0
     if args.action == "approve" and getattr(args, "prompt", None):  # docs/remote.md §3 row 2
-        e = _diff_events(conn).get(args.target)
-        if not e or e["state"] != "proposed":
-            raise OfError(f"no proposed diff {args.target!r} (of diff list)")
+        e = _proposed_diff(conn, args.target)
         why, prompt = _remote_approval(conn, e, args.prompt, _load_quiet())
         if why:
             raise OfError(f"not approved: {why}")
@@ -3706,9 +3715,7 @@ def cmd_diff(args):
         if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_AUTOMATION") or not _s.stdin.isatty():
             raise OfError("only the owner approves, from a terminal: not from an agent session or a script; from "
                           "the owner's conductor, `--prompt <event id>` of their recorded yes (docs/remote.md)")
-        e = _diff_events(conn).get(args.target)
-        if not e or e["state"] != "proposed":
-            raise OfError(f"no proposed diff {args.target!r} (of diff list)")
+        e = _proposed_diff(conn, args.target)
         d = e["diff"]
         print(f"{d['id']} ({d['kind']}, tier {d['tier']}) by {d['author']}\n  {d['hypothesis']}")
         typed = input("Type the diff id to approve it: ").strip()
@@ -3773,9 +3780,9 @@ def cmd_diff(args):
             raise OfError(f"{d['id']} was applied already")
         approval = None
         if d["tier"] != "low":
-            if e.get("digest") != dg:  # a proposal from before the full digest is proposed again (of_server, 2026-11-12)
+            if not of_diff.same_digest(e.get("digest"), dg):  # the full SHA-256 or nothing (of_server, 2026-11-12)
                 raise OfError(f"{d['id']} is not proposed in this exact form, or was proposed with the old short "
-                              "digest: `of diff propose` it again")
+                              "digest: propose it again (`of diff propose`)")
             if e.get("state") == "approved":  # the approval each goal_change node cites (of_review on PR 70)
                 approval = e.get("approval_event")
             elif _diff_approved_by_answer(conn, e.get("ask")):
