@@ -426,6 +426,25 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("python3 -c \"# " + t + "\nprint(open('" + key + "').read())\""))
         # code that does not tokenize gets no carve-out: every quoted span is a literal, blocks included
         self.assertTrue(deny(py("print(open(" + t + key + t + ").read())\nx = ((")))
+        # a $'…' word is read decoded, as bash runs it: its \n is a line break and its \' no quote's end
+        # (of_secrets-review on organic-framework PR 97: the tokenizer read the escaped code as one comment)
+        self.assertTrue(deny("python3 <<< $'# x\\nprint(open(\"" + key + "\").read())'"))
+        self.assertTrue(deny("python3 <<< $'# \\'\\'\\'\\nprint(open(\"" + key + "\").read())'"))
+        self.assertTrue(deny("python3 -c $'# x\\nprint(open(\"" + key + "\").read())'"))
+        self.assertTrue(deny("cat $'\\x2e'env"))
+        self.assertEqual(of_guard._ansi_c_body(r"a\nb\t\176\x41\u00e9\cA\q\'"), "a\nb\t~A\u00e9\x01\\q'")
+        self.assertIsNone(deny("printf $'%s\\n' done"))
+        # a python string's value counts too: an escape or a backslash-newline inside it hid a path (of_review on
+        # organic-framework PR 97)
+        for hidden in ("'~/.ssh/id_\\x65d25519'", "'~/.ssh/id_\\\ned25519'", "b'~/.ssh/id_\\x65d25519'",
+                       "'''~/.ssh/id_\\x65d25519'''"):
+            self.assertFalse(of_guard._secret_path(hidden.strip("b'")), hidden)  # the raw text names no key
+            self.assertTrue(deny(py("print(open(" + hidden + ").read())")), hidden)
+        import warnings
+        with warnings.catch_warnings(record=True) as seen:  # a hook writes nothing to stderr for an odd escape
+            warnings.simplefilter("always")
+            self.assertIsNone(deny(py('x = "a\\$b\\`c"\nprint(x)')))
+        self.assertEqual([w for w in seen if issubclass(w.category, SyntaxWarning)], [])
         # a comment is not code: a quoted path in it, or a stray quote, denies nothing
         self.assertIsNone(deny(py("# never open('" + key + "') here\nprint(1)")))
         self.assertIsNone(deny(py("def f():\n    " + t + "Docstring." + t + "\n    return 1")))
