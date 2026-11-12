@@ -5095,6 +5095,21 @@ def cmd_capacity(args):
               + ("" if of_capacity.load_policy().get("position_memory") else
                  "; of spawn starts on it; moves and resumes too once capacity.yaml has position_memory: true"))
         return 0
+    if args.action == "spend":  # docs/registry.md, Goals, "Budgets": the month's spend per work, goal and condition
+        import time
+        import of_spend
+        want = args.month or time.strftime("%Y-%m", time.gmtime())
+        out = None if args.fresh else of_spend.load()
+        if out is None or out.get("month") != want:
+            import of_store
+            import of_tools
+            conn = of_store.connect()
+            of_spend.ingest(conn, time.time(), budget_s=60)
+            out = of_spend.compute(of_tools.registries(), conn, month=args.month)
+            if not args.month:  # this month's: the file of works and Studio read
+                of_spend.write(out)
+        print(json.dumps(out, indent=1, sort_keys=True) if args.json else of_spend.render(out, org=args.org))
+        return 0
     if args.action == "babysit":
         import time
         if not args.position:
@@ -5766,9 +5781,11 @@ def main(argv=None):
     co.set_defaults(fn=cmd_corrections)
     cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
-                                                  "vault", "vault-setup", "mint", "babysit", "memory", "reboot"],
+                                                  "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend"],
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
+    cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
+    cp.add_argument("--org", help="spend: this organization only")
     cp.add_argument("--until", help="babysit: until this date or time (default: now)")
     cp.add_argument("--op-account", dest="op_account", help="vault-setup: the 1Password account (default: the business one)")
     cp.add_argument("--all-due", dest="all_due", action="store_true",
