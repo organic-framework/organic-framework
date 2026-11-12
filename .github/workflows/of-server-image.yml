@@ -56,11 +56,12 @@ jobs:
             "import importlib.util, sys; sys.exit('pip is in the image' if importlib.util.find_spec('pip') else 0)"
       - name: The copied OpenSSH files are the ones the build stage's dpkg lists; no OpenSSH package (deploy/copied_sbom.py)
         run: |
+          set -o pipefail   # a run step's default shell is bash -e: without this, tee hides a failed check
           docker run --rm --entrypoint python3 of-keygen:ci -I /of-build/copied_sbom.py verify --stage | tee stage.txt
           docker run --rm -v "$PWD/deploy/copied_sbom.py:/tmp/copied_sbom.py:ro" --entrypoint python3 of-server:ci \
             -I /tmp/copied_sbom.py verify --final | tee final.txt
           [ "$(tail -n 1 stage.txt)" = "$(tail -n 1 final.txt)" ] || { echo "the image's SBOM is not the build stage's"; exit 1; }
-      - name: Trivy reads the SBOM, so scanners see openssh-client and its version
+      - name: Trivy takes the SBOM's packages as the image's OS packages, so Debian advisories match openssh-client
         run: |
           curl -fsSL -o trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz
           echo "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  trivy.tgz" | sha256sum -c -

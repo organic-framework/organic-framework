@@ -9,7 +9,7 @@
 # scanners still see openssh-client and its version, and CI proves the copies are the files dpkg listed and that Trivy
 # reads the SBOM (2026-11-12: a user organization's scanner flagged CVE-2026-123158, on CISA's KEV list, on
 # openssh-client; the flaw is sshd's password check on musl libc without PAM, absent here; their security keeper
-# accepted the copy with an SBOM on those two conditions). pip is removed once PyYAML is in: the server never runs it,
+# accepted the copy with an SBOM on those two conditions, msgs 01a1cf70 and 01a1cf80). pip is removed once PyYAML is in: the server never runs it,
 # and the libraries pip vendors carried the image's only fixable findings. Debian's security updates are applied at
 # build, and the build stops unless ssh-keygen signs and verifies.
 FROM python:3.14-slim AS keygen

@@ -150,16 +150,23 @@ class SbomTest(unittest.TestCase):
         path = self.sbom_file(self.items)
         report = os.path.join(self.root, "trivy.cdx.json")
 
-        def trivy(components):
+        def trivy(components, of_os=None):
+            os_comp = {"bom-ref": "os-1", "type": "operating-system", "name": "debian", "version": "13.7"}
+            refs = [c["bom-ref"] for c in components] if of_os is None else of_os
             with open(report, "w") as fh:
-                json.dump({"bomFormat": "CycloneDX", "components": components}, fh)
+                json.dump({"bomFormat": "CycloneDX", "components": [os_comp] + components,
+                           "dependencies": [{"ref": "os-1", "dependsOn": refs}]}, fh)
 
-        ssh = {"name": "openssh-client", "version": "10.0p1-7+deb13u4",
+        ssh = {"bom-ref": "r-ssh", "name": "openssh-client", "version": "10.0p1-7+deb13u4",
                "purl": "pkg:deb/debian/openssh-client@10.0p1-7%2Bdeb13u4?arch=amd64&distro=debian-13.7&epoch=1"}
-        fido = {"name": "libfido2-1", "version": "1.15.0-1+b1",
+        fido = {"bom-ref": "r-fido", "name": "libfido2-1", "version": "1.15.0-1+b1",
                 "purl": "pkg:deb/debian/libfido2-1@1.15.0-1%2Bb1?arch=amd64&distro=debian-13.7"}
         trivy([ssh, fido])
         copied_sbom.seen(path, report)
+        trivy([ssh, fido], of_os=["r-fido"])   # listed, but not under the operating system: no advisory matched
+        with self.assertRaises(SystemExit) as e:
+            copied_sbom.seen(path, report)
+        self.assertIn("not as packages of the image's operating system", str(e.exception))
         trivy([fido, dict(ssh, purl=ssh["purl"].replace("&epoch=1", ""))])   # the version without its epoch
         with self.assertRaises(SystemExit) as e:
             copied_sbom.seen(path, report)
