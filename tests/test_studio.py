@@ -1825,6 +1825,136 @@ class StandingWorkTest(unittest.TestCase):
         self.assertEqual((tr["change"], tr["pct"]), (6, round(6 / 41, 4)))
 
 
+class GoalTreeTest(unittest.TestCase):
+    """The goal tree (docs/registry.md, Goals, of_architect 2026-11-12; hand-over 3ed608c0): goals in rank order with
+    their sub-goals, each with its measure, target, owner, works, doers, open asks and progress; the conditions beside
+    the tree, a breach above progress; the works with no goal apart."""
+    NOW = "2026-11-08T00:00Z"
+    GOALS = {"g-rev": {"title": "Revenue", "rank": 1, "measure": "USD a week", "owner": "colleague", "decided": "a1"},
+             "g-orders": {"parent": "g-rev", "title": "Orders", "rank": 2, "measure": "orders a day", "target": "300",
+                          "decided": "a2", "drives": "revenue = orders x order value"},
+             "g-aov": {"parent": "g-rev", "title": "Order value", "rank": 1, "measure": "USD per order", "target": "40",
+                       "owner": "bot_operator", "decided": "a2"},
+             "g-old": {"title": "Old goal", "rank": 2, "measure": "m", "state": "dropped", "decided": "a0"},
+             "g-orphan": {"parent": "g-old", "title": "Left over", "rank": 1, "measure": "m", "target": "t", "decided": "a0"},
+             "g-loop-a": {"parent": "g-loop-b", "title": "A", "measure": "m", "target": "t"},
+             "g-loop-b": {"parent": "g-loop-a", "title": "B", "measure": "m", "target": "t"}}
+    CONDITIONS = {"c-asks": {"title": "Answers stay quick", "measure": "agent-hours waited", "level": "<= 1",
+                             "metric": "agent_hours_waited", "decided": "a3"},
+                  "c-tax": {"title": "No dated duty missed", "measure": "duties", "level": "none missed", "under": "g-rev"}}
+
+    def doc(self):
+        return dict(DOC, goals=self.GOALS, conditions=self.CONDITIONS)
+
+    def work(self, wid, goal=None, condition=None, doers=("bot_search",), state="active", progress=1, waits=()):
+        return {"id": wid, "title": wid, "kind": "project", "goal": goal, "condition": condition, "doers": list(doers),
+                "state": state, "progress_7d": progress, "last_progress": of_model.epoch(self.NOW) - 3600, "waits": list(waits),
+                "past_review": False, "systems": [], "issues": [], "doc": {}, "stages": [], "review": None}
+
+    def works(self):
+        ask = {"position": "bot_search", "kind": "waiting_owner", "on": "colleague", "since": "2026-11-07T00:00Z", "ask_id": "q1"}
+        return [self.work("w-orders", "g-orders", waits=[ask]), self.work("w-orders2", "g-orders", doers=["k8s_keeper"], progress=2),
+                self.work("w-aov", "g-aov", doers=["bot_operator"], state="quiet", progress=0),
+                self.work("w-top", "g-rev", doers=["bot_operator"]), self.work("w-done", "g-orders", state="done"),
+                self.work("w-tax", condition="c-tax", doers=["k8s_keeper"]), self.work("w-loose"),
+                self.work("w-ghost", "g-nowhere"), self.work("w-old", state="parked")]
+
+    def test_the_model_reads_goals_and_conditions(self):
+        m = of_model.build(self.doc(), [], at=self.NOW)
+        g, c = m["goals"], m["conditions"]
+        self.assertEqual((g["g-orders"]["owner"], g["g-orders"]["owner_from"]), ("colleague", "g-rev"))   # its parent's
+        self.assertEqual((g["g-aov"]["owner"], g["g-aov"]["owner_from"]), ("bot_operator", "g-aov"))
+        self.assertEqual(g["g-old"]["owner"], of_model.HUMAN)                                              # no owner up the tree
+        self.assertEqual((c["c-tax"]["owner"], c["c-tax"]["under"]), ("colleague", "g-rev"))
+        self.assertEqual((c["c-asks"]["owner"], c["c-asks"]["under"]), (of_model.HUMAN, None))
+        self.assertIsNone(of_model.goals_of({"goals": {"x": {"parent": "nope"}}})["x"]["parent"])        # a dangling parent: a root
+
+    def test_the_tree_in_rank_order_with_its_rollup(self):
+        import of_works
+        m = of_model.build(self.doc(), [], at=self.NOW)
+        t = of_works.goal_tree(m, self.works())
+        self.assertEqual([n["id"] for n in t["roots"]], ["g-rev", "g-old", "g-loop-a"])   # by rank; a cycle last
+        rev = t["roots"][0]
+        self.assertEqual([c["id"] for c in rev["children"]], ["g-aov", "g-orders"])        # rank 1 before rank 2
+        self.assertEqual([w["id"] for w in rev["works"]], ["w-top"])
+        self.assertIn("1 work on a goal with sub-goals: each belongs on the sub-goal it moves", rev["notes"])
+        r = rev["rollup"]
+        self.assertEqual((r["works"], r["open"], r["asks"], r["on_owner"], r["progress_7d"]), (5, 4, 1, 1, 4))
+        self.assertEqual(r["doers"], ["bot_operator", "bot_search", "k8s_keeper"])
+        self.assertEqual(r["states"], {"active": 3, "quiet": 1, "done": 1})
+        self.assertEqual(t["roots"][1]["children"][0]["notes"], ["active under a goal that is achieved or dropped"])
+        self.assertIn("its parents form a cycle: no root goal reaches it", t["roots"][2]["notes"])
+        self.assertEqual([w["id"] for w in t["loose"]], ["w-loose", "w-ghost", "w-old"])
+        self.assertEqual(t["unknown"], [("w-ghost", "g-nowhere")])
+        self.assertEqual({c["id"]: c["rollup"]["open"] for c in t["conditions"]}, {"c-asks": 0, "c-tax": 1})
+        unit = of_works.goal_tree(m, [w for w in self.works() if "bot_operator" in w["doers"]], keep={"bot_operator"})
+        self.assertEqual([n["id"] for n in unit["roots"]], ["g-rev"])                       # its branches and their ancestors
+        self.assertEqual([c["id"] for c in unit["roots"][0]["children"]], ["g-aov"])
+        self.assertEqual(unit["conditions"], [])
+
+    def test_a_work_ask_belongs_to_the_work_it_names(self):
+        import of_works
+        q = ev("q1", "2026-11-07T00:00Z", "of.agent_question", "s-search",
+               {"source": "declared", "question": "which bucket?", "work": "w-b", "to": "founder"}, position="bot_search")
+        m = of_model.build(DOC, [q], at=self.NOW)
+        a = [{"position": "bot_search", "kind": "waiting_owner", "on": "founder", "since": "2026-11-07T00:00Z", "ask_id": "eq1"},
+             {"position": "bot_search", "kind": "waiting_peer", "on": "k8s_keeper", "since": "2026-11-07T01:00Z", "ask_id": None}]
+        ws = [dict(self.work("w-a"), source="registry/positions.yaml", match={}, prs=[]),
+              dict(self.work("w-b", doers=["k8s_keeper"]), source="registry/positions.yaml", match={}, prs=[])]
+        got = {w["id"]: w for w in of_works.evidence(m, [q], ws, of_model.epoch(self.NOW), attention=a)}
+        self.assertEqual([x["ask_id"] for x in got["w-a"]["waits"]], [None])     # its asker's other work keeps only the rest
+        self.assertEqual([x["ask_id"] for x in got["w-b"]["waits"]], ["eq1"])    # the ask names w-b, whoever asked
+
+    def test_the_page(self):
+        from unittest import mock
+        import of_works
+        now = of_model.epoch(self.NOW)
+        d = of_studio.Data.__new__(of_studio.Data)
+        d.orgs, d.org, d.now, d.rows, d.unit = ["acme"], "acme", now, [], None
+        d.a, d.b = now - 7 * 86400, now
+        d.compute(of_model.build(self.doc(), [], at=now, org="acme", rev="x", window_h=168), None)
+        d.owner = dict(d.owner, agent_hours_waited=2.5)                           # the condition's reading: above its level
+        with mock.patch.object(of_studio, "works_of", return_value=self.works()):
+            html = of_studio.view_goals(d)
+        self.assertLess(html.index("A condition is breached"), html.index('<section class="tiles">'))    # above progress
+        for want in ("1. <b>Revenue</b>", "decided a1", "drives: revenue = orders x order value", "target 300",
+                     "colleague <span class=\"sub\">from g-rev</span>", "3 works on this goal", "1 on an owner",
+                     "flag breach", "now 2.5", "none missed", "Works with no goal: 2 open",
+                     "<code>w-ghost</code> → <code>g-nowhere</code>", "its parents form a cycle"):
+            self.assertIn(want, html)
+        self.assertLess(html.index("<b>Order value</b>"), html.index("<b>Orders</b>"))
+        self.assertIn('href="/studio/goals', of_studio.page(d, "goals", html))
+        self.assertEqual((of_studio.level_breached("<= 1", 2.5), of_studio.level_breached(">= 99.5%", 99.9),
+                          of_studio.level_breached("none missed", 3), of_studio.level_breached("<= 1", None)), (True, False, None, None))
+        self.assertIsNone(of_studio.metric_reading(d, "orders per day, from the shop's database"))   # prose names no measure
+        # of works: the same tree in the terminal, and as JSON
+        import contextlib
+        import io
+        import json
+        import of_studio_cli
+        t = of_works.goal_tree(d.full, self.works())
+        for as_json in (False, True):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                of_studio_cli._goal_tree_out(d, t, as_json)
+            out = buf.getvalue()
+            if as_json:
+                j = json.loads(out)
+                self.assertEqual([c["id"] for c in j["goals"][0]["children"]], ["g-aov", "g-orders"])
+                self.assertEqual((j["conditions"][0]["id"], j["conditions"][0]["breached"]), ("c-asks", True))
+                self.assertEqual(j["no_goal"], ["w-loose", "w-ghost"])
+            else:
+                self.assertTrue(out.startswith("BREACHED  c-asks: Answers stay quick: level <= 1, now 2.5"))
+                for want in ("  1. g-rev: Revenue  (owner colleague)", "    1. g-aov: Order value  (owner bot_operator)",
+                             "measure: orders a day; target 300", "4 open of 5 works; doers bot_operator, bot_search, k8s_keeper, "
+                             "1 open ask (1 on an owner); 4 progress marks in 7 d", "! active under a goal that is achieved or dropped",
+                             "Works with no goal: 2 open (w-loose, w-ghost)", "now no metric"):
+                    self.assertIn(want, out)
+        with mock.patch.object(of_studio, "works_of", return_value=[]):
+            d.full = dict(d.full, goals={}, conditions={})
+            self.assertIn("No goals in this organization", of_studio.view_goals(d))
+
+
 def correction(i, ts, sid=None, position=None, repeat_of=None, rule="say the money metric before a speed change", **pl):
     payload = dict({"position": position, "rule": rule, "kind": "process", "repeat_of": repeat_of}, **pl)
     return dict(ev(i, ts, "of.founder_correction", sid, {k: v for k, v in payload.items() if v is not None}), source="of")

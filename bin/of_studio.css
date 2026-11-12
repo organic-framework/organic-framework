@@ -110,3 +110,19 @@ line.goal { stroke: var(--flag); stroke-dasharray: 2 3; stroke-width: 1; }
 table.works { width: 100%; max-width: 1500px; }
 table.works td.why { max-width: 300px; }
 table.facts th { color: var(--mute); font-weight: 500; white-space: nowrap; }
+
+/* Goals (docs/registry.md, Goals): the tree by depth, the conditions beside it */
+.goalgrid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 1200px) { .goalgrid { grid-template-columns: 1fr; } }
+table.goals, table.conditions { width: 100%; }
+table.goals td.why, table.conditions td.why { max-width: 320px; }
+tr.goal.d1 td.g, tr.goal-works.d1 > td { padding-left: 30px; }
+tr.goal.d2 td.g, tr.goal-works.d2 > td { padding-left: 50px; }
+tr.goal.d3 td.g, tr.goal-works.d3 > td { padding-left: 70px; }
+tr.goal.d4 td.g, tr.goal-works.d4 > td { padding-left: 90px; }
+tr.goal.d5 td.g, tr.goal-works.d5 > td { padding-left: 110px; }
+tr.goal.d0 td.g { border-top: 2px solid var(--line); }
+tr.closed { opacity: .6; }
+div.breach { margin-bottom: 16px; }
+tr.crit td { background: var(--flag-bg); }
+.flag.breach { color: var(--panel); background: var(--flag); }

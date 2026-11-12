@@ -15,6 +15,7 @@ waits (position × hour heatmap by cause). Every number comes from bin/of_model.
 import collections
 import html
 import os
+import re
 import time
 import urllib.parse
 
@@ -24,7 +25,7 @@ import of_measures
 import of_model
 
 DAY = 86400
-VIEWS = (("inbox", "Inbox"), ("works", "Works"), ("owner", "Owner"), ("review", "Review"), ("coverage", "Coverage"), ("structure", "Structure"),
+VIEWS = (("inbox", "Inbox"), ("goals", "Goals"), ("works", "Works"), ("owner", "Owner"), ("review", "Review"), ("coverage", "Coverage"), ("structure", "Structure"),
          ("systems", "Systems"), ("cells", "Cells"), ("waits", "Waits"))
 CAUSE_CLASS = {"owner": "c-owner", "peer": "c-peer", "capacity": "c-capacity", "suspended": "c-suspended",
                "external": "c-external", "stalled": "c-stalled"}
@@ -1933,6 +1934,168 @@ def _loop_curve(c, w=560, hgt=120):
             f'<text x="2" y="{sy(v1) + 4:.1f}" font-size="11">{v1:g}</text><text x="2" y="{sy(v0) + 4:.1f}" font-size="11">{v0:g}</text></svg>')
 
 
+# ------------------------------------------------------------------ goals (docs/registry.md, Goals)
+
+LEVEL = re.compile(r"^\s*(<=|>=|<|>|==|=)\s*(-?\d+(?:\.\d+)?)\s*%?\s*$")
+
+
+def metric_reading(d, metric):
+    """A goal's or a condition's `metric` read as a Studio measure: a dotted name in the owner's measures for the page's
+    window (of_measures.owner, e.g. answer_delay_min.p50), or None when it names none (most are prose today)."""
+    if not isinstance(metric, str) or not re.fullmatch(r"[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*", metric):
+        return None
+    v = of_measures.dotted(getattr(d, "owner", None) or {}, metric)
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def level_breached(level, value):
+    """True or False when the level is a comparison ('<= 2', '>= 99.5%') and there is a reading; else None."""
+    m = LEVEL.match(str(level or ""))
+    if not m or value is None:
+        return None
+    op, x = m.group(1), float(m.group(2))
+    ok = {"<=": value <= x, ">=": value >= x, "<": value < x, ">": value > x, "==": value == x, "=": value == x}[op]
+    return not ok
+
+
+def _names(xs, n=6):
+    xs = list(xs)
+    return e(", ".join(xs[:n])) + (f' <span class="sub">+{len(xs) - n} more</span>' if len(xs) > n else "") if xs else '<span class="na">nobody</span>'
+
+
+def _rollup_cells(r, now):
+    import of_works
+    asks = (f'{r["asks"]}' + (f' <span class="flag">{r["on_owner"]} on an owner</span>' if r["on_owner"] else "")) if r["asks"] else "–"
+    last = of_works.age(r["last_progress"], now)
+    states = " · ".join(f"{n} {k}" for k, n in sorted(r["states"].items(), key=lambda kv: of_works.ORDER.get(kv[0], 9)))
+    prog = (f'{r["progress_7d"]} progress marks in 7 d' + (f' · last {e(last)} ago' if last else "")
+            + (f'<div class="src">{e(states)}{" · " + str(r["past_review"]) + " past review" if r["past_review"] else ""}</div>' if states else ""))
+    return (f'<td class="num">{r["open"]}<span class="sub">of {r["works"]}</span></td><td>{_names(r["doers"])}</td>'
+            f'<td>{asks}</td><td>{prog if r["works"] else "<span class=na>no work yet</span>"}</td>')
+
+
+def _goal_rows(d, n, out):
+    import of_works
+    reading = metric_reading(d, n.get("metric"))
+    measure = [e(n.get("measure") or "no measure: every goal needs one")]
+    if n.get("target"):
+        measure.append(f'target {e(n["target"])}')
+    elif n["depth"]:
+        measure.append('<span class="flag">no target: a sub-goal needs one</span>')
+    if n.get("by"):
+        measure.append(f'by {e(n["by"])}')
+    if n.get("metric"):
+        measure.append(f'<span class="src">{e(n["metric"])}{": now " + num(reading) if reading is not None else ""}</span>')
+    head = (f'{str(n["rank"]) + ". " if n["rank"] is not None else ""}<b>{e(n["title"])}</b>'
+            f'<div class="src"><code>{e(n["id"])}</code>{"" if n["state"] == "active" else " · " + e(n["state"])}'
+            f'{" · decided " + e(n["decided"]) if n.get("decided") else " · <span class=flag>no decided ask id</span>"}</div>'
+            + (f'<div class="src">drives: {e(n["drives"])}</div>' if n.get("drives") else "")
+            + "".join(f'<div><span class="flag">{e(x)}</span></div>' for x in n["notes"]))
+    owner = e(n["owner"]) + ('' if n.get("owner_from") in (n["id"], None) else f' <span class="sub">from {e(n["owner_from"])}</span>')
+    out.append(f'<tr class="goal d{min(n["depth"], 5)}{"" if n["state"] == "active" else " closed"}"><td class="g">{head}</td>'
+               f'<td class="why">{"<br>".join(measure)}</td><td>{owner}</td>{_rollup_cells(n["rollup"], d.now)}</tr>')
+    if n["works"]:
+        k = len(n["works"])
+        out.append(f'<tr class="goal-works d{min(n["depth"], 5)}"><td colspan="7"><details{" open" if k <= 5 else ""}><summary>'
+                   f'{k} work{"s" if k != 1 else ""} on this goal</summary><div class="scroll"><table class="works">{WORKS_HEAD}<tbody>'
+                   + "".join(_work_row(w, d) for w in n["works"]) + "</tbody></table></div></details></td></tr>")
+    for c in n["children"]:
+        _goal_rows(d, c, out)
+
+
+def _conditions_html(d, conds, compact=False):
+    """The conditions table: full width (the breach block), or compact beside the goal tree (three columns, the
+    rollup in one cell)."""
+    import of_works
+    rows = []
+    for c in conds:
+        reading = metric_reading(d, c.get("metric"))
+        c["breached"] = level_breached(c.get("level"), reading)
+        flag = ('<span class="flag breach">breached</span>' if c["breached"] else
+                '<span class="flag">held</span>' if c["breached"] is False else "")
+        read = (num(reading) if reading is not None else
+                (f'<span class="na">{e(c["metric"])}: not a Studio measure</span>' if c.get("metric") else '<span class="na">no metric</span>'))
+        name = (f'<b>{e(c["title"])}</b> {flag}<div class="src"><code>{e(c["id"])}</code>'
+                f'{" · held for " + e(c["under"]) if c.get("under") else " · the whole organization"}'
+                f'{"" if c["state"] == "active" else " · " + e(c["state"])}</div>')
+        cls = f'{"crit" if c["breached"] else ""}{" closed" if c["state"] != "active" else ""}'.strip()
+        measure = f'<td class="why">{e(c.get("measure") or "–")}<br>level {e(c.get("level") or "–")}<br>now {read}</td>'
+        if compact:
+            r = c["rollup"]
+            last = of_works.age(r["last_progress"], d.now)
+            works = (f'{r["open"]} open of {r["works"]}<div class="src">{_names(r["doers"], 3)}</div>'
+                     + (f'<div class="src">{r["asks"]} open ask{"s" if r["asks"] != 1 else ""}</div>' if r["asks"] else "")
+                     + (f'<div class="src">{r["progress_7d"]} progress marks in 7 d{" · last " + e(last) + " ago" if last else ""}</div>'
+                        if r["works"] else "")) if r["works"] else '<span class="na">no work yet</span>'
+            rows.append(f'<tr class="{cls}"><td>{name}<div class="src">owner {e(c["owner"])}</div></td>{measure}<td>{works}</td></tr>')
+        else:
+            rows.append(f'<tr class="{cls}"><td>{name}</td>{measure}<td>{e(c["owner"])}</td>{_rollup_cells(c["rollup"], d.now)}</tr>')
+    head = ('<th>Condition</th><th>Measure · level · now</th><th>Works</th>' if compact else
+            '<th>Condition</th><th>Measure · level · now</th><th>Owner</th><th>Open works</th><th>Doers</th><th>Open asks</th><th>Progress</th>')
+    return (f'<div class="scroll"><table class="conditions"><thead><tr>{head}</tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>")
+
+
+def view_goals(d):
+    """The goal tree in rank order, each goal with its measure, target, owner, the works under it, their doers, open asks
+    and progress; the conditions beside it, a breach above everything; the works that name no goal apart."""
+    import of_works
+    ws = works_of(d)
+    if ws is None:
+        return '<p class="note">Choose an organization above: goals are kept per organization.</p>'
+    keep = set(d.model["positions"]) if d.unit else None
+    t = of_works.goal_tree(d.full, ws, keep)
+    if not t["roots"] and not t["conditions"]:
+        return (empty_note(d) + '<p class="note">No goals in this organization\'s registry yet. Goals are the owner\'s: the '
+                'structure keeper writes them, a tree of goals and sub-goals, each with its measure, and records the ask id of the '
+                'owner\'s yes on each (docs/registry.md, Goals). Works name the goal they serve; until then they are listed in Works.</p>')
+    nodes = []
+
+    def walk(n):
+        nodes.append(n)
+        for c in n["children"]:
+            walk(c)
+    for r in t["roots"]:
+        walk(r)
+    live = lambda w: w.get("state") not in ("done", "parked")
+    loose = [w for w in t["loose"] if live(w)]
+    cond_html = _conditions_html(d, t["conditions"], compact=bool(t["roots"])) if t["conditions"] else ""
+    breached = [c for c in t["conditions"] if c.get("breached")]
+    on_goals = sum(n["rollup"]["open"] for n in t["roots"])
+    tiles = "".join(tile(lbl, num(v), hint) for lbl, v, hint in (
+        ("Goals", sum(1 for n in nodes if n["state"] == "active" and not n["depth"]), "active root goals"),
+        ("Sub-goals", sum(1 for n in nodes if n["state"] == "active" and n["depth"]), "active, at every level below"),
+        ("Works on goals", on_goals, "open works under the tree"),
+        ("No goal", len(loose), "open works naming no goal or condition"),
+        ("Conditions", sum(1 for c in t["conditions"] if c["state"] == "active"), f'{len(breached)} breached' if breached else ""),
+        ("Open asks", sum(n["rollup"]["asks"] for n in t["roots"]), "from the works on goals")))
+    out = [empty_note(d)]
+    if breached:   # docs/registry.md: a breach comes before progress
+        out.append(f'<div class="breach"><h2 class="lead crit">A condition is breached <span class="sub">it comes before progress on any '
+                   f'goal</span></h2>{_conditions_html(d, breached)}</div>')
+    out.append(f'<section class="tiles">{tiles}</section>')
+    out += [f'<p class="note">{e(x)}</p>' for x in t["notes"]]
+    tree = []
+    for r in t["roots"]:
+        _goal_rows(d, r, tree)
+    tree_html = ('<h2 class="lead">Goals <span class="sub">in rank order; each goal adds up the works of its whole branch; '
+                 'its doers are derived from its works, never written</span></h2><div class="scroll"><table class="goals"><thead><tr>'
+                 '<th>Goal</th><th>Measure · target</th><th>Owner</th><th>Open works</th><th>Doers</th><th>Open asks</th>'
+                 '<th>Progress</th></tr></thead><tbody>' + "".join(tree) + '</tbody></table></div>') if tree else \
+        '<p class="note">No goals in the registry yet; the conditions stand alone.</p>'
+    side = (f'<h2 class="lead">Conditions <span class="sub">held at their level while the goals are pursued; '
+            f'never raised past it</span></h2>{cond_html}') if cond_html else ""
+    out.append(f'<div class="goalgrid"><div>{tree_html}</div><div>{side}</div></div>' if side else tree_html)
+    if t["unknown"]:
+        out.append('<p class="note">Works naming a goal or condition the registry does not have: '
+                   + ", ".join(f"<code>{e(w)}</code> → <code>{e(g)}</code>" for w, g in t["unknown"]) + "</p>")
+    if loose:
+        out.append(f'<details{" open" if len(loose) <= 10 else ""}><summary>Works with no goal: {len(loose)} open '
+                   f'<span class="sub">a question for the owner: which goal does each serve, or which condition does it keep?</span>'
+                   f'</summary><div class="scroll"><table class="works">{WORKS_HEAD}<tbody>'
+                   + "".join(_work_row(w, d) for w in loose) + "</tbody></table></div></details>")
+    return "".join(out)
+
+
 def _works_source_note(ws):
     src = ws[0].get("source") if ws else ""
     if src and src.startswith("registry/"):
@@ -2577,6 +2740,8 @@ def render(view, d, query=None, inline_css=None):
         body = view_review(d)
     elif view == "works":
         body = view_works(d, query.get("w"))
+    elif view == "goals":
+        body = view_goals(d)
     elif view == "structure":
         try:
             n = max(1, min(99, int(query.get("n")))) if query.get("n") else None
