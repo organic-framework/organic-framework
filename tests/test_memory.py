@@ -55,7 +55,7 @@ class ScopeTest(unittest.TestCase):
             self.assertEqual(d, os.path.join(base, "acme", "storefront_checkout"))
             for x in (d, os.path.dirname(d)):
                 self.assertEqual(stat.S_IMODE(os.stat(x).st_mode), 0o700)
-            cmd = of_spawn.launch_command("/w/arb", "/u/.claude-e", "sid", "storefront_checkout", "/u/.claude",
+            cmd = of_spawn.launch_command("/w/store", "/u/.claude-e", "sid", "storefront_checkout", "/u/.claude",
                                           memory=flag, state_dir=base)
             argv = shlex.split(cmd)
             with open(argv[argv.index("--settings") + 1]) as fh:  # a settings file: the line stays short (of_spawn)
@@ -85,23 +85,23 @@ class RegistryMemoryTest(unittest.TestCase):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "w") as fh:
                     fh.write(textwrap.dedent(text))
-            write("mt/registry/positions.yaml", """
-                organization: mt
+            write("acme/registry/positions.yaml", """
+                organization: acme
                 memory: team
                 units:
-                  arb: {owner: acme_a, systems: [s], memory: everyone}
+                  store: {owner: acme_a, systems: [s], memory: everyone}
                 positions:
-                  - {name: acme_a, system: s, role: a, unit: arb, memory: unit}
+                  - {name: acme_a, system: s, role: a, unit: store, memory: unit}
                   - {name: acme_b, system: s, role: b, memory: folder}
                 """)
-            write("conf/orgs.yaml", "orgs:\n  - {name: mt, path: %s/mt}\n" % root)
+            write("conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/acme}\n" % root)
             positions, problems = of.load_positions(os.path.join(root, "conf/orgs.yaml"))
             text = "\n".join(problems)
-            self.assertIn("mt:registry/positions.yaml: memory 'team' is not one of position, unit, org", text)
-            self.assertIn("units: arb: memory 'everyone'", text)
+            self.assertIn("acme:registry/positions.yaml: memory 'team' is not one of position, unit, org", text)
+            self.assertIn("units: store: memory 'everyone'", text)
             self.assertIn("acme_b: memory 'folder'", text)
             self.assertNotIn("acme_a: memory", text)
-            self.assertEqual(of_memory.scope_id(next(x for x in positions if x["name"] == "acme_a")), "unit-arb")
+            self.assertEqual(of_memory.scope_id(next(x for x in positions if x["name"] == "acme_a")), "unit-store")
 
 
 if __name__ == "__main__":
