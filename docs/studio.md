@@ -93,6 +93,16 @@ An owner is the position or person that a position's `owner` field names. Owners
 - A **delegated unit** is the set of positions whose chain reaches a colleague before the founder. In the founder's views it is one row, named after the colleague, with its measures rolled up; the colleague's views show its inside.
 - No delegated unit exists in either registry today. Delegation itself is RFC 0001 phase 4; this projection only needs `owner: <colleague>` on the unit's top positions and an entry for the colleague (kind `owner`, holder a human). **(proposal to `of_architect`: a human holder is `holder: {runtime: human, person: <id>}`.)**
 
+### 2.5 Who works with whom (`of model coupling`; 2026-11-12, for a user organization's structure design)
+
+The input to a structure review: who actually works with whom over a window, how work couples units, and where load sits (`of_conductor`'s message `01a1d096-4ca3`). `of model coupling --org O [--days 14] [--at T] [--top 20] [--json]` prints it. `of_model.structure_input` computes it from the model at *t*, the window's rows, the works (`of_works`), the hand-overs (`of_handover.project`) and the asks with their recipients (`of_measures.asks_routed`, the lifecycle `asks_of` filters).
+
+- **Messages, each counted once** (`of_model.peer_pairs`). A relay message (`of send`) is counted by its `msg_id`: from the sender's `of.agent_message_out` (source `of`), or, when it was sent from another machine, from the receiver's delivery log. A direct message (Claude Code's SendMessage, recorded by the hook or an import) goes to its `to_position`, else to the session that received the same text within 5 seconds. Undelivered messages, messages to another organization and in-process subagents are not counted. The relay records messages from 2026-11-06; before that only direct messages are seen.
+- **Hand-overs** proposed in the window, from the proposer to the receiver. **Asks** raised in the window: one that waits on a delegated unit's owner is a pair; one that waits on the human owner is the asker's load, counted apart for `of ask` (declared).
+- **Units.** A position's unit is the declared unit holding its system (registry `units:`, through the system's parents), else "(no unit)". A unit's owner sits in the unit of its own system, so a pair of a position and its accountable owner is marked **line**: the units' DSM shows how much of each cell is line, and the strongest cross-unit pairs are listed twice, peers and line.
+- **Works across units**: the open works whose doers are in more than one unit, and those whose systems are; the open works by system.
+- **Load per position**: turns (`of.turn_end`), messages out and in, distinct senders, other units sending to it, hand-overs out and in, asks to the owner (with `of ask`), asks routed to it as a unit's owner, open and active works, and works waiting on it now. **Most depended on**: positions ranked by what they received (messages, hand-overs and asks), with the part from other units. **Finished**: a status other than active; **no turn and no open work**; **turns but no open work on the map**.
+
 ## 3. Measures of the owner's constraint
 
 Per owner *O* and window *[a, b)*. Every measure states its events, its classifier versions and the registry revision it used.
@@ -419,6 +429,7 @@ of model corrections [--org O] [--weeks N] [--json]   # the repeat-correction ra
 of model evidence [--org O] [--days 30] [--json]       # each system's evidence (RFC 0007 §2.2): the Systems page
 of model activity [--org O] [--days 30] [--areas DEPTH] [--json]   # code activity and co-change per system, per directory
 of model cells [--org O] [--json]                      # ownership cells: gaps, overlaps, two deciders (RFC 0007 §2.3)
+of model coupling [--org O] [--days 14] [--top 20] [--json]   # who works with whom, by position and unit; load (§2.5)
 of studio [--org O]
 ```
 
