@@ -76,6 +76,15 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual([(h["id"], h["status"]) for h in reg["hypotheses"]], [("h1", "open"), ("h2", "testing"),
                                                                                ("h3", "dropped")])
         self.assertEqual((len(reg["runs"]), len(reg["decisions"])), (1, 1))
+        self.assertEqual([h["contradicted"] for h in reg["hypotheses"]], [False, False, False])
+        # of_conductor, 2026-11-12: a run that missed its accept criterion refutes the prediction until a decision
+        refuted = rows + [ev(7, "of.loop_run", 7, work="w", rung="day_pass", hypothesis="h2", value=1.0, accepted=False)]
+        h2 = next(h for h in of_loop.register(refuted, "w")["hypotheses"] if h["id"] == "h2")
+        self.assertEqual((h2["status"], h2["contradicted"], h2["last_run"]["accepted"], h2["last_run"]["rung"]),
+                         ("testing", True, False, "day_pass"))
+        closed = refuted + [ev(8, "of.loop_decision", 8, work="w", decision="drop", hypothesis="h2")]
+        h2 = next(h for h in of_loop.register(closed, "w")["hypotheses"] if h["id"] == "h2")
+        self.assertEqual((h2["status"], h2["contradicted"]), ("dropped", False))
         self.assertEqual(of_loop.cost_hours("day_pass, 6 runner-h"), 6.0)
         self.assertEqual(of_loop.cost_hours("gate, 40 min"), 40 / 60)
         self.assertEqual(of_loop.cost_hours("0"), 0.0)
@@ -138,6 +147,16 @@ class LoopCliTest(unittest.TestCase):
             self.assertEqual(run("decision", "w-search", "keep", "--hypothesis", hid, "--from", "lab_doer").returncode, 0)
             out = run("show", "w-search").stdout
             self.assertIn(f"{hid} kept", out)
+            self.assertIn("prediction (not a result): ", out)
+            self.assertIn("accept criterion met", out)
+            r = run("hypothesis", "w-search", "second", "--predict", "p50 under 3 ms", "--cost", "oracle, 0", "--voi", "low",
+                    "--from", "lab_doer")
+            h2 = r.stdout.split()[-1]
+            r = run("run", "w-search", "--rung", "oracle", "--hypothesis", h2, "--accepted", "no", "--from", "lab_doer")
+            self.assertIn(f"refutes {h2}'s prediction", r.stdout)
+            out = run("show", "w-search").stdout
+            self.assertIn("accept criterion NOT met: the prediction did not hold", out)
+            self.assertIn(f"warning: its latest run refutes it and it is still testing", out)
             self.assertIn("oracle > offline > day_pass", out)
 
 
