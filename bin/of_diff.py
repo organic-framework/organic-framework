@@ -58,6 +58,16 @@ def digest(d):
 
 # ------------------------------------------------------------------ format
 
+def full_digest(h):
+    return isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h) is not None
+
+
+def same_digest(recorded, current):
+    """True only for two full digests that are equal: a shared 16-character prefix, or a recorded short digest, is
+    no match."""
+    return full_digest(recorded) and full_digest(current) and recorded == current
+
+
 def check_format(d, catalogue=None):
     """Problems in the diff itself (before looking at any registry)."""
     out = []

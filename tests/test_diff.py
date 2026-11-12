@@ -233,6 +233,11 @@ class GoalChangeTest(unittest.TestCase):
         self.assertEqual(of_diff.check_format(self.D), [])
         # an approval binds the full SHA-256: a 64-bit prefix could be collided by the diff's author (of_server)
         self.assertRegex(of_diff.digest(self.D), r"^[0-9a-f]{64}$")
+        a, b = "0123456789abcdef" + "0" * 48, "0123456789abcdef" + "1" * 48   # two digests, one 16-character prefix
+        self.assertFalse(of_diff.same_digest(a, b))
+        self.assertFalse(of_diff.same_digest(a[:16], a))                      # a proposal with the old short digest
+        self.assertFalse(of_diff.same_digest(a[:16], a[:16]))
+        self.assertTrue(of_diff.same_digest(a, a))
         new, problems = of_diff.preview(self.D, REG)
         self.assertEqual(problems, [])
         doc = yaml.safe_load(new)
@@ -322,6 +327,37 @@ class GoalChangeTest(unittest.TestCase):
                 doc = yaml.safe_load(fh)
             self.assertEqual(doc["goals"]["g-orders"]["decided"], "-".join(eid.split("-")[:2]))
             self.assertEqual(doc["goals"]["g-revenue"]["decided"], cite)
+
+    def test_a_short_digest_proposal_is_proposed_again(self):
+        """hand-over ab02a7db: a diff proposed before the full digest is refused at approve and apply."""
+        import subprocess
+        import tempfile
+        of = os.path.join(HERE, "..", "bin", "of")
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "org", "registry"))
+            os.makedirs(os.path.join(t, "state"))
+            with open(os.path.join(t, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write(REG)
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {t}/org\n    workspace: ofb\n")
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=os.path.join(t, "orgs.yaml"),
+                       OF_CONFIG_DIR=t, PATH="/usr/bin:/bin")
+            short = of_diff.digest(self.D)[:16]
+            code = ("import sys; sys.path.insert(0, %r); import of_events; of_events.emit('diff_proposed', "
+                    "{'id': %r, 'kind': 'goal_change', 'tier': 'medium', 'org': 'ofb', 'author': 'of_a', 'digest': %r, "
+                    "'diff': %r})" % (os.path.join(HERE, "..", "bin"), self.D["id"], short, self.D))
+            subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True, timeout=60)
+            r = run("diff", "approve", self.D["id"], "--prompt", "p-1")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("proposed with the old short digest", r.stdout + r.stderr)
+            code = ("import sys; sys.path.insert(0, %r); import of_events; "
+                    "of_events.emit('diff_approved', {'id': %r, 'digest': %r, 'by': 'owner'})"
+                    % (os.path.join(HERE, "..", "bin"), self.D["id"], short))
+            subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            r = run("diff", "apply", self.D["id"])   # approved with the short digest: still refused
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("propose it again", r.stdout + r.stderr)
 
     def test_refusals(self):
         self.assertIn("medium tier at least", "\n".join(of_diff.check_format(dict(self.D, tier="low"))))
