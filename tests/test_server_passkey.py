@@ -152,3 +152,118 @@ class RegistrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlowTest(unittest.TestCase):
+    """The whole of-server side: a window, registration, the test assertion, the owner's signed record, a single-use
+    link, the approval, and the client half's own checks (of_passkey) passing on what of-server records."""
+
+    @classmethod
+    def setUpClass(cls):
+        import of_grants
+        cls.keydir = tempfile.TemporaryDirectory()
+        cls.key = os.path.join(cls.keydir.name, "grant_ed25519")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", cls.key], check=True,
+                       env=of_grants.no_agent_env())
+        with open(cls.key + ".pub") as fh:
+            cls.keys = of_grants.Keys(ed25519=[fh.read().strip()])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.keydir.cleanup()
+
+    def setUp(self):
+        import of_server
+        self.tmp = tempfile.TemporaryDirectory()
+        self.now = [1_800_000_000.0]
+        self.pk = S.Passkeys(of_server.Store(os.path.join(self.tmp.name, "srv")), {"public_url": ORIGIN},
+                             lambda: self.keys, clock=lambda: self.now[0])
+        self.tenant = {"machine_id": "m-tenant", "orgs": json.dumps(["acme"]), "tenant": 1}
+        self.colleague = {"machine_id": "m-other", "orgs": json.dumps(["acme"]), "tenant": 0}
+        self.phone = Phone(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def enroll(self):
+        import of_grants
+        w = self.pk.open_window(self.tenant, "acme", "founder")
+        opts = self.pk.window_options(w["window"])
+        att, client = self.phone.create(S.unb64u(opts["challenge"]))
+        reg = self.pk.register(w["window"], S.b64u(att), S.b64u(client))
+        auth, cdj, sig = self.phone.get(S.unb64u(reg["test_challenge"]))
+        code = self.pk.test(w["window"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))["code"]
+        st = self.pk.window_state(self.tenant, w["window"])
+        self.assertEqual((st["state"], st["code"]), ("tested", code))
+        rec = {"kind": "passkey_enrollment", "org": "acme", "person": "founder", "credential": st["credential"],
+               "public_key": st["public_key"], "rp_id": st["rp_id"], "origin": st["origin"],
+               "issued_at": "2027-01-15T08:00:00Z", "expires": "2028-01-15T08:00:00Z"}
+        rec["signature"] = of_grants.sign_ed25519(rec, self.key)
+        self.pk.enroll(self.tenant, rec)
+        return w, reg, rec
+
+    def test_enroll_link_approve_and_the_client_accepts_it(self):
+        import of_diff
+        import of_grants
+        import of_passkey
+        w, reg, rec = self.enroll()
+        diff = {"id": "sd-1", "kind": "goal_change", "org": "acme", "tier": "high", "approvals": ["owner"]}
+        dg = of_diff.digest(diff)
+        link = self.pk.put_link(self.colleague, "acme", "sd-1", diff, dg)
+        self.assertIn(f"&n={link['nonce']}", link["url"])
+        page = self.pk.approval_page("acme", "sd-1", dg, link["nonce"])
+        self.assertIn('"kind": "goal_change"', page["text"])
+        self.assertEqual(page["credentials"], [reg["credential"]])
+        auth, cdj, sig = self.phone.get(S.unb64u(page["challenge"]), count=3)
+        rec_ = self.pk.approve(link["nonce"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))
+        saved = getattr(of_grants, "passkey_revoked", None)
+        of_grants.passkey_revoked = lambda org, cred: False
+        try:
+            why = of_passkey.approval_problem(rec_, "sd-1", "acme", dg, self.keys, recorded_at="2027-01-15T08:00:00Z",
+                                              approvers={"founder"}, server=ORIGIN)
+        finally:
+            if saved:
+                of_grants.passkey_revoked = saved
+        self.assertIsNone(why)
+        with self.assertRaises(S.Refused) as e:   # single use
+            self.pk.approve(link["nonce"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))
+        self.assertEqual(e.exception.status, 404)
+
+    def test_what_is_refused(self):
+        import of_diff
+        import of_grants
+        with self.assertRaises(S.Refused) as e:
+            self.pk.open_window(self.colleague, "acme", "founder")       # only the tenant's machine
+        self.assertEqual(e.exception.status, 403)
+        w = self.pk.open_window(self.tenant, "acme", "founder")
+        opts = self.pk.window_options(w["window"])
+        att, client = self.phone.create(S.unb64u(opts["challenge"]))
+        self.pk.register(w["window"], S.b64u(att), S.b64u(client))
+        intruder = Phone(self.tmp.name)                                   # the window took one credential
+        att2, client2 = intruder.create(S.unb64u(opts["challenge"]))
+        with self.assertRaises(S.Refused):
+            self.pk.register(w["window"], S.b64u(att2), S.b64u(client2))
+        w2, reg, rec = self.enroll()
+        forged = dict(rec, person="mallory")                              # the owner's signature covers the person
+        with self.assertRaises(S.Refused):
+            self.pk.enroll(self.tenant, forged)
+        diff = {"id": "sd-2", "org": "acme", "kind": "spawn"}
+        with self.assertRaises(S.Refused) as e:
+            self.pk.put_link(self.colleague, "acme", "sd-2", diff, "0" * 64)
+        self.assertEqual(e.exception.typ, "digest_mismatch")
+        link = self.pk.put_link(self.colleague, "acme", "sd-2", diff, of_diff.digest(diff))
+        with self.assertRaises(S.Refused):                                # without the nonce, nothing
+            self.pk.approval_page("acme", "sd-2", of_diff.digest(diff), "guess")
+        rev = {"kind": "passkey_revocation", "org": "acme", "person": "founder", "credential": reg["credential"],
+               "issued_at": "2027-01-15T09:00:00Z"}
+        rev["signature"] = of_grants.sign_ed25519(rev, self.key)
+        self.pk.revoke(self.tenant, rev)
+        page = self.pk.approval_page("acme", "sd-2", of_diff.digest(diff), link["nonce"])
+        self.assertEqual(page["credentials"], [])
+        auth, cdj, sig = self.phone.get(S.unb64u(page["challenge"]))
+        with self.assertRaises(S.Refused) as e:
+            self.pk.approve(link["nonce"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))
+        self.assertEqual(e.exception.typ, "revoked")
+        self.now[0] += 4000                                               # links expire
+        with self.assertRaises(S.Refused):
+            self.pk.approval_page("acme", "sd-2", of_diff.digest(diff), link["nonce"])
