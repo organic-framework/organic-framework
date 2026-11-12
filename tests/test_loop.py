@@ -91,6 +91,8 @@ class LoopCheckTest(unittest.TestCase):
         self.assertTrue(of_loop.context_matches("lobby the third party to change its ordering rules",
                                                 "a third party's ordering rule", prose=True))
         self.assertEqual(of_loop.content_words("parties process the bus"), {"party", "process", "bus"})
+        self.assertTrue(of_loop.context_matches("ordering_rule_third_party_rank", "a third party's ordering rule",
+                                                prose=True))   # of_review's probe on PR 59
 
     def test_a_loop_yaml_beside_the_doc_is_checked_and_one_place_only(self):
         import importlib.machinery
