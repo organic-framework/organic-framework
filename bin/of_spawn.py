@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import uuid
 
@@ -323,7 +324,9 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
         of_capacity.check_bypass_after_start(pane, log, wait=0, herdr=herdr)
     log(f"  agent name: {rename(pane, pl['position'], pl['session'])}")
     if of_bin:
-        subprocess.run([of_bin, "apply"], capture_output=True, text=True, timeout=120)
+        # the Python OF runs on, not bin/of's shebang: a machine may have OF in its own venv and a python3 without
+        # PyYAML on PATH (organic-framework PR 102, review)
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
     return pane
 
 
