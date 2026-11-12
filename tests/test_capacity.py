@@ -2373,9 +2373,9 @@ class PositionMemory(unittest.TestCase):
     def test_launch_command_points_auto_memory_at_the_position(self):
         with tempfile.TemporaryDirectory() as t:
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
-                                             memory_dir="/s/memory/mt/net_keeper", state_dir=t)
-            self.assertEqual(self.settings_of(cmd), {"autoMemoryDirectory": "/s/memory/mt/net_keeper"})
-            self.assertEqual(of_capacity.flags_from_args(cmd)[3], "/s/memory/mt/net_keeper")
+                                             memory_dir="/s/memory/acme/net_keeper", state_dir=t)
+            self.assertEqual(self.settings_of(cmd), {"autoMemoryDirectory": "/s/memory/acme/net_keeper"})
+            self.assertEqual(of_capacity.flags_from_args(cmd)[3], "/s/memory/acme/net_keeper")
         self.assertNotIn("--settings", of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md"))
 
     def test_launch_command_carries_the_credential_deny_rules_in_a_file(self):
@@ -2551,9 +2551,9 @@ class Reboot(unittest.TestCase):
 
     def test_flags_from_args(self):
         args = ('claude --resume 1234 -n k8s_keeper --settings {"autoMemoryDirectory": "/Users/alex/.local/state/of/'
-                'memory/mt/k8s_keeper"} --model claude-opus-5-5 --effort xhigh --dangerously-skip-permissions hi')
+                'memory/acme/k8s_keeper"} --model claude-opus-5-5 --effort xhigh --dangerously-skip-permissions hi')
         self.assertEqual(of_capacity.flags_from_args(args),
-                         ("claude-opus-5-5", "xhigh", True, "/Users/alex/.local/state/of/memory/mt/k8s_keeper"))
+                         ("claude-opus-5-5", "xhigh", True, "/Users/alex/.local/state/of/memory/acme/k8s_keeper"))
         self.assertEqual(of_capacity.flags_from_args("claude"), (None, None, False, None))
         with tempfile.TemporaryDirectory() as t:  # of spawn and moves pass a settings file
             f = os.path.join(t, "s1.settings.json")
