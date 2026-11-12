@@ -54,8 +54,8 @@ class RelayTest(unittest.TestCase):
         with open(positions, "w") as fh:
             fh.write("positions:\n  - {name: ofb_lead, holder: {session: S-lead}}\n")
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"ofb": "db_ofb", "mt": "db_mt"}, positions_files={"ofb": positions})
-        self.grants = {"ofb": [], "mt": []}
+                   orgs={"ofb": "db_ofb", "zeta": "db_zeta"}, positions_files={"ofb": positions})
+        self.grants = {"ofb": [], "zeta": []}
         self.app = of_server.App(cfg, ch=self.ch, ship_cfg=ship_cfg, grants_loader=lambda: self.grants,
                                  grant_key=lambda: of_grants.Keys(ed25519=[self.grant_pub]), mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
@@ -359,19 +359,19 @@ class RelayTest(unittest.TestCase):
         h = self.call(a, "GET", "/v1/presence?org=ofb")["holders"]
         self.assertEqual([(x["position"], x["kind"], x["person"]) for x in h], [("ofb_dev", "human", "alice")])
         with self.assertRaises(of_client.ServerError) as cm:
-            self.call(a, "GET", "/v1/presence?org=mt")
+            self.call(a, "GET", "/v1/presence?org=zeta")
         self.assertEqual(cm.exception.status, 403)
         with self.assertRaises(of_client.ServerError) as cm:
-            self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "mt", "position": "acme_x"}]})
+            self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "acme_x"}]})
         self.assertEqual(cm.exception.status, 403)
 
     def test_cross_org_needs_a_grant_and_the_sender_must_hold_the_position(self):
-        a, b = self.machine("a", ["ofb", "mt"]), self.machine("b", ["mt"])
-        msg = {"msg_id": "x1", "to": "mt:acme_org", "from": "ofb:ofb_lead", "text": "hello"}
+        a, b = self.machine("a", ["ofb", "zeta"]), self.machine("b", ["zeta"])
+        msg = {"msg_id": "x1", "to": "zeta:acme_org", "from": "ofb:ofb_lead", "text": "hello"}
         with self.assertRaises(of_client.ServerError) as cm:              # no grant
             self.call(a, "POST", "/v1/messages", msg)
         self.assertEqual(cm.exception.status, 403)
-        g = {"id": "g-x", "subject": "ofb_lead", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["mt"]}}
+        g = {"id": "g-x", "subject": "ofb_lead", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["zeta"]}}
         g["signature"] = of_grants.sign_ed25519(g, self.grant_key)
         with self.assertRaises(of_client.ServerError) as cm:              # grant fine, but a is not the holder
             self.call(a, "POST", "/v1/messages", dict(msg, grants=[g]))
@@ -383,31 +383,31 @@ class RelayTest(unittest.TestCase):
         self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
         r = self.call(a, "POST", "/v1/messages", dict(msg, grants=[g]))
         self.assertEqual(r["authority"], "verified")
-        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "mt", "position": "acme_org"}]})
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "acme_org"}]})
         got = self.call(b, "GET", "/v1/messages?wait=0")["messages"][0]
         self.assertEqual((got["from"], got["authority"], got["sender_machine"]), ("ofb:ofb_lead", "verified", "m-a"))
-        forged = dict(g, scope={"to_org": ["mt", "other"]})              # tampered after signing
+        forged = dict(g, scope={"to_org": ["zeta", "other"]})              # tampered after signing
         with self.assertRaises(of_client.ServerError):
             self.call(a, "POST", "/v1/messages", dict(msg, msg_id="x2", grants=[forged]))
         sent = self.events("of.message_sent")
         by_db = {d: p for d, p in sent}
-        self.assertIn("text", by_db["db_mt"])
+        self.assertIn("text", by_db["db_zeta"])
         self.assertNotIn("text", by_db["db_ofb"])                          # the sender's side gets a slim copy
 
     def test_a_reply_across_organizations_needs_no_grant(self):
         """docs/registry.md, Grants (of_architect 2eeabd5, 2026-11-09): a reply to a message from the other
         organization, delivered to the replier at most 7 days ago, goes back to its sender only, without a grant
         and without authority."""
-        a, b = self.machine("a", ["ofb"]), self.machine("b", ["mt"])
-        g = {"id": "g-mt", "subject": "acme_org", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["ofb"]}}
+        a, b = self.machine("a", ["ofb"]), self.machine("b", ["zeta"])
+        g = {"id": "g-zeta", "subject": "acme_org", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["ofb"]}}
         g["signature"] = of_grants.sign_ed25519(g, self.grant_key)
-        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "mt", "position": "acme_org", "session_id": "S-mt"}]})
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "acme_org", "session_id": "S-zeta"}]})
         self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
         self.assertEqual(self.call(b, "POST", "/v1/messages",
-                                   {"msg_id": "q1", "to": "ofb:ofb_lead", "from": "mt:acme_org",
+                                   {"msg_id": "q1", "to": "ofb:ofb_lead", "from": "zeta:acme_org",
                                     "text": "a guard request", "grants": [g]})["authority"],
                          "verified")
-        reply = {"msg_id": "r1", "to": "mt:acme_org", "from": "ofb:ofb_lead", "text": "done", "reply_to": "q1"}
+        reply = {"msg_id": "r1", "to": "zeta:acme_org", "from": "ofb:ofb_lead", "text": "done", "reply_to": "q1"}
         with self.assertRaises(of_client.ServerError) as cm:              # not delivered yet
             self.call(a, "POST", "/v1/messages", reply)
         self.assertEqual(cm.exception.status, 403)
@@ -419,10 +419,10 @@ class RelayTest(unittest.TestCase):
         got = self.call(b, "GET", "/v1/messages?wait=0")["messages"][0]
         self.assertEqual(got["reply_to_from"], got["to"])  # a reply to its own message: typed at once (R9)
         self.assertEqual((got["msg_id"], got["reply_to"], got["authority"], got["grant_id"]), ("r1", "q1", "none", None))
-        for bad, why in ((dict(reply, msg_id="r2", to="mt:acme_other"),
-                          "is not a message from mt:acme_other"),  # only back
+        for bad, why in ((dict(reply, msg_id="r2", to="zeta:acme_other"),
+                          "is not a message from zeta:acme_other"),  # only back
                          (dict(reply, msg_id="r3", reply_to="q"), "names no message (give its full id)"),  # a short id
-                         (dict(reply, msg_id="r4", reply_to="r1"), "is not a message from mt:acme_org")):  # its own
+                         (dict(reply, msg_id="r4", reply_to="r1"), "is not a message from zeta:acme_org")):  # its own
             with self.assertRaises(of_client.ServerError) as cm:
                 self.call(a, "POST", "/v1/messages", bad)
             self.assertEqual(cm.exception.status, 403, bad["msg_id"])
@@ -442,16 +442,16 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(cm.exception.status, 403)
 
     def test_a_grant_limited_to_positions_admits_no_other(self):
-        a = self.machine("a", ["ofb", "mt"])
+        a = self.machine("a", ["ofb", "zeta"])
         self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
         g = {"id": "g-p", "subject": "ofb_lead", "issuer": "tenant", "tier": "propose",
-             "scope": {"to_org": ["mt"], "to_positions": ["mt:acme_org", "ofb:ofb_dev"]}}
+             "scope": {"to_org": ["zeta"], "to_positions": ["zeta:acme_org", "ofb:ofb_dev"]}}
         g["signature"] = of_grants.sign_ed25519(g, self.grant_key)
-        ok = self.call(a, "POST", "/v1/messages", {"msg_id": "p1", "to": "mt:acme_org", "from": "ofb:ofb_lead",
+        ok = self.call(a, "POST", "/v1/messages", {"msg_id": "p1", "to": "zeta:acme_org", "from": "ofb:ofb_lead",
                                                    "text": "hi", "grants": [g]})
         self.assertEqual(ok["authority"], "verified")
         with self.assertRaises(of_client.ServerError):                     # same organization, another position
-            self.call(a, "POST", "/v1/messages", {"msg_id": "p2", "to": "mt:acme_other", "from": "ofb:ofb_lead",
+            self.call(a, "POST", "/v1/messages", {"msg_id": "p2", "to": "zeta:acme_other", "from": "ofb:ofb_lead",
                                                   "text": "hi", "grants": [g]})
         inside = self.call(a, "POST", "/v1/messages", {"msg_id": "p3", "to": "ofb:ofb_dev", "from": "ofb:ofb_lead",
                                                        "text": "hi", "grants": [g]})

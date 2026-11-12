@@ -47,7 +47,7 @@ class CoordFeedTest(unittest.TestCase):
         of_events.STATE_DIR = os.path.join(root, "state")
         ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False, "tenant": "t"}
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"ofb": "db_ofb", "mt": "db_mt"})
+                   orgs={"ofb": "db_ofb", "zeta": "db_zeta"})
         self.app = of_server.App(cfg, ch=FakeCH(), ship_cfg=ship_cfg, grants_loader=lambda: {}, mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -72,11 +72,11 @@ class CoordFeedTest(unittest.TestCase):
         return c._authed("GET", f"/v1/coord?org={org}&after={after}&wait=0")[1]
 
     def test_an_organizations_coordination_reaches_its_other_machines_masked(self):
-        a, b, c = self.machine("a", ["ofb", "mt"]), self.machine("b", ["ofb"]), self.machine("c", ["mt"])
+        a, b, c = self.machine("a", ["ofb", "zeta"]), self.machine("b", ["ofb"]), self.machine("c", ["zeta"])
         records = [event("e1", "ofb", "of.agent_question", {"questions": [{"question": f"deploy with {KEY}?"}]}),
                    event("e2", "ofb", "of.human_prompt", {"text": "a prompt stays on its machine"}),
                    event("e3", "ofb", "of.handover_proposed", {"to": "ofb_dev"}),
-                   event("e4", "mt", "of.state_declared", {"state": "working"})]
+                   event("e4", "zeta", "of.state_declared", {"state": "working"})]
         a.send_batch(records, batch_id="b1")
         self.app.writer.drain()
         got = self.feed(b, "ofb")
@@ -87,7 +87,7 @@ class CoordFeedTest(unittest.TestCase):
         self.assertEqual(got["events"][0]["record"]["of.event.id"], "e1")   # a record the client stores as it is
         self.assertEqual((got["next"], got["last"]), (got["events"][-1]["seq"], got["events"][-1]["seq"]))
         self.assertEqual(self.feed(b, "ofb", after=got["next"])["events"], [])
-        self.assertEqual([e["event_id"] for e in self.feed(c, "mt")["events"]], ["e4"])
+        self.assertEqual([e["event_id"] for e in self.feed(c, "zeta")["events"]], ["e4"])
         with self.assertRaises(of_client.ServerError) as cm:          # an organization this machine has not joined
             self.feed(c, "ofb")
         self.assertEqual(cm.exception.status, 403)
@@ -103,7 +103,7 @@ class CoordFeedTest(unittest.TestCase):
     def test_shape_copies_and_other_names_stay_out(self):
         store = self.app.store
         own = event("s1", "ofb", "of.state_declared")["data"]
-        shaped = event("s2", "ofb", "of.state_declared", **{"of.shape": True, "of.serves": "mt"})["data"]
+        shaped = event("s2", "ofb", "of.state_declared", **{"of.shape": True, "of.serves": "zeta"})["data"]
         other = event("s3", "ofb", "of.turn_end")["data"]
         self.assertEqual(of_server_coord.copy(store, "ofb", [own, shaped, other]), 1)
         self.assertEqual(of_server_coord.copy(store, "ofb", [own]), 0)   # idempotent
