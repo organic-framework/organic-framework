@@ -71,14 +71,14 @@ class RotationsTest(unittest.TestCase):
             os.makedirs(os.path.join(root, "storefront"))
             enc = "".join(c if c.isalnum() else "-" for c in os.path.realpath(os.path.join(root, "storefront")))
             loc = f"/x/.claude/projects/{enc}--claude-worktrees-wt/s.jsonl:12"
-            items = [{"hmac": "aa" * 8, "kind": "private-key/evm-wallet", "rule": "evm-private-key", "orgs": ["mt"],
+            items = [{"hmac": "aa" * 8, "kind": "private-key/evm-wallet", "rule": "evm-private-key", "orgs": ["zeta"],
                       "locations": [loc], "first": "2026-10-01T00:00:00Z", "last": "2026-10-02T00:00:00Z", "context": "x"},
-                     {"hmac": "bb" * 8, "kind": "url-password", "rule": "url-password", "orgs": ["mt"],
+                     {"hmac": "bb" * 8, "kind": "url-password", "rule": "url-password", "orgs": ["zeta"],
                       "locations": [loc], "first": "2026-10-01", "last": "2026-10-01", "context": "y"},
                      {"hmac": "cc" * 8, "kind": "aws-access-token", "rule": "aws-access-token", "orgs": ["other"],
                       "locations": [loc], "first": "", "last": "", "context": "z"}]
             marks = {"aa" * 8: "rotate", "bb" * 8: "false_positive", "cc" * 8: "rotate"}
-            rows = of_secrets.rotations(items, marks, "mt", [root], {"storefront": {"repos": ["storefront"]}})
+            rows = of_secrets.rotations(items, marks, "zeta", [root], {"storefront": {"repos": ["storefront"]}})
             self.assertEqual(len(rows), 1)
             r = rows[0]
             self.assertEqual((r["priority"], r["class"], r["systems"], r["repos"], r["ref"]),

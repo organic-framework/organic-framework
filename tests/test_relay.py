@@ -13,7 +13,7 @@ import of_relay_client as of_relay  # noqa: E402
 import of_store  # noqa: E402
 
 LOCAL = {"ofb:of_a": {"org": "ofb", "position": "of_a", "kind": "agent", "pane": "w1:p1", "session_id": "S"},
-         "mt:acme_owner": {"org": "mt", "position": "acme_owner", "kind": "human", "pane": None, "session_id": None}}
+         "zeta:acme_owner": {"org": "zeta", "position": "acme_owner", "kind": "human", "pane": None, "session_id": None}}
 
 
 class RelayTest(unittest.TestCase):
@@ -38,17 +38,17 @@ class RelayTest(unittest.TestCase):
         return deliver
 
     def test_agent_delivery_once_with_header(self):
-        m = {"msg_id": "m1", "to": "ofb:of_a", "from": "mt:acme_org", "text": "please review", "authority": "verified"}
+        m = {"msg_id": "m1", "to": "ofb:of_a", "from": "zeta:acme_org", "text": "please review", "authority": "verified"}
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, self.fake()), ("delivered", None))
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, self.fake()), ("delivered", "duplicate"))
         self.assertEqual(len(self.typed), 1)
         pane, text = self.typed[0]
         self.assertEqual(pane, "w1:p1")
-        self.assertTrue(text.startswith("Message from mt:acme_org (via relay, authority: verified; machine ?; msg m1)"))
-        self.assertIn("of send mt:acme_org --reply-to m1", text)
+        self.assertTrue(text.startswith("Message from zeta:acme_org (via relay, authority: verified; machine ?; msg m1)"))
+        self.assertIn("of send zeta:acme_org --reply-to m1", text)
 
     def test_human_goes_to_inbox_and_failures_are_reported(self):
-        m = {"msg_id": "m2", "to": "mt:acme_owner", "from": "ofb:of_a", "text": "hi", "authority": "none"}
+        m = {"msg_id": "m2", "to": "zeta:acme_owner", "from": "ofb:of_a", "text": "hi", "authority": "none"}
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, self.fake()), ("delivered", "inbox"))
         self.assertEqual(self.typed, [])
         self.assertEqual(self.conn.execute("SELECT text FROM inbox").fetchone()[0], "hi")
@@ -67,7 +67,7 @@ class RelayTest(unittest.TestCase):
 
     def test_a_locked_store_never_repeats_an_injection(self):
         import sqlite3
-        m = {"msg_id": "m9", "to": "ofb:of_a", "from": "mt:x", "text": "hi"}
+        m = {"msg_id": "m9", "to": "ofb:of_a", "from": "zeta:x", "text": "hi"}
         holder = of_store.connect(timeout=0.1)
         holder.execute("BEGIN IMMEDIATE")  # another process holds the write lock (6.4 GB store, 1.2 GB WAL)
         try:
@@ -82,7 +82,7 @@ class RelayTest(unittest.TestCase):
         of_relay._SEEN.clear()  # a restarted relay reads the file
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, self.fake()), ("delivered", "duplicate"))
         self.assertEqual(len(self.typed), 1)
-        h = {"msg_id": "m10", "to": "mt:acme_owner", "from": "ofb:of_a", "text": "for a person"}
+        h = {"msg_id": "m10", "to": "zeta:acme_owner", "from": "ofb:of_a", "text": "for a person"}
         holder = of_store.connect(timeout=0.1)
         holder.execute("BEGIN IMMEDIATE")
         try:
@@ -155,7 +155,7 @@ class RelayTest(unittest.TestCase):
 
     def test_taken_messages_are_never_typed_in(self):
         """of_architect's test: 3 queued for a busy pane, the agent takes 2, the pane goes idle: only the third."""
-        msgs = [{"msg_id": f"q{i}", "to": "ofb:of_a", "from": "mt:x", "text": f"t{i}", "created_at": "2026-11-06T12:00:00Z"}
+        msgs = [{"msg_id": f"q{i}", "to": "ofb:of_a", "from": "zeta:x", "text": f"t{i}", "created_at": "2026-11-06T12:00:00Z"}
                 for i in range(3)]
         taken = []
 
@@ -190,7 +190,7 @@ class RelayTest(unittest.TestCase):
 
         class Server:
             def queued_messages(self, to, session):
-                return {"messages": [{"msg_id": "L1", "to": to, "from": "mt:x", "text": "hi", "state": "leased"}]}
+                return {"messages": [{"msg_id": "L1", "to": to, "from": "zeta:x", "text": "hi", "state": "leased"}]}
 
             def take_message(self, msg_id, to, session):
                 raise Leased("of-server 409: leased")
@@ -207,7 +207,7 @@ class RelayTest(unittest.TestCase):
     def test_take_all_takes_only_what_a_listing_showed_and_keeps_the_text(self):
         """From a user organization, 2026-11-08: `of inbox --take all >/dev/null` took a reply that arrived after the
         agent's listing, and its text was kept nowhere."""
-        queue = [{"msg_id": "a1", "to": "ofb:of_a", "from": "mt:x", "text": "read me", "created_at": "2026-11-08T10:00Z"}]
+        queue = [{"msg_id": "a1", "to": "ofb:of_a", "from": "zeta:x", "text": "read me", "created_at": "2026-11-08T10:00Z"}]
         taken = []
 
         class Server:
@@ -218,7 +218,7 @@ class RelayTest(unittest.TestCase):
                 taken.append(msg_id)
                 return {"msg_id": msg_id, "state": "delivered"}
         of_relay.pull(Server(), "ofb:of_a", "S")                                   # the agent reads a1
-        queue.append({"msg_id": "b2", "to": "ofb:of_a", "from": "mt:y", "text": "delete node-3",
+        queue.append({"msg_id": "b2", "to": "ofb:of_a", "from": "zeta:y", "text": "delete node-3",
                       "created_at": "2026-11-08T10:01Z"})                           # arrives meanwhile
         got = of_relay.pull(Server(), "ofb:of_a", "S", take="all")                 # output thrown away
         self.assertEqual(taken, ["a1"])
@@ -236,7 +236,7 @@ class RelayTest(unittest.TestCase):
 
     def test_a_take_in_another_process_reaches_the_running_relay(self):
         """2026-11-06: the relay loaded its seen set once, so a take by of inbox --mine was typed in."""
-        m = {"msg_id": "x1", "to": "ofb:of_a", "from": "mt:x", "text": "hi"}
+        m = {"msg_id": "x1", "to": "ofb:of_a", "from": "zeta:x", "text": "hi"}
         self.assertFalse(of_relay.seen("x1"))  # the running relay has read the file
         with open(of_relay._seen_path(), "a") as fh:  # another process (the CLI) appends its take
             fh.write(json.dumps({"msg_id": "x1", "outcome": "pulled"}) + "\n")
@@ -244,7 +244,7 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(self.typed, [])
 
     def test_a_take_during_the_relays_wait_wins(self):
-        m = {"msg_id": "r1", "to": "ofb:of_a", "from": "mt:x", "text": "hi"}
+        m = {"msg_id": "r1", "to": "ofb:of_a", "from": "zeta:x", "text": "hi"}
 
         def slow(pane, text, session, sender, working_ok=False, skip_if=None):
             of_relay.mark_seen("r1", "pulled")  # the agent ran of inbox --mine --take while the relay waited for idle
@@ -277,31 +277,31 @@ class RelayTest(unittest.TestCase):
         import calendar
         import time as _t
         now = calendar.timegm(_t.strptime("2026-11-09T11:14:00", "%Y-%m-%dT%H:%M:%S"))
-        item = lambda i, created, **k: dict({"msg_id": i, "to": "mt:k8s_keeper", "created_at": created,
+        item = lambda i, created, **k: dict({"msg_id": i, "to": "zeta:k8s_keeper", "created_at": created,
                                              "priority": "normal", "state": "queued", "present": True,
                                              "reason": "batched: the receiver's 15-minute window",
                                              "next_at": "2026-11-09T11:14:16.000Z"}, **k)
         of_relay._LAST_QUEUES.clear()
-        of_relay.record_queues({}, now=now, unsent={"mt:dpc": {"n": 2, "items": [
+        of_relay.record_queues({}, now=now, unsent={"zeta:dpc": {"n": 2, "items": [
             item("g1", "2026-11-09T11:05:39.650Z"), item("g2", "2026-11-09T11:12:00.000Z")]}})
-        self.assertEqual(of_relay.queue_note("mt:dpc", now=now),
-                         "1 message you sent is not delivered yet: to mt:k8s_keeper (8m; batched, next in 1m)")  # g2: <5m
-        of_relay.record_queues({}, now=now, unsent={"mt:dpc": {"n": 4, "items": [
+        self.assertEqual(of_relay.queue_note("zeta:dpc", now=now),
+                         "1 message you sent is not delivered yet: to zeta:k8s_keeper (8m; batched, next in 1m)")  # g2: <5m
+        of_relay.record_queues({}, now=now, unsent={"zeta:dpc": {"n": 4, "items": [
             item("o1", "2026-11-06T11:00:00.000Z", present=False, next_at=None),           # 3 days old: not repeated
             item("g1", "2026-11-09T11:05:39.650Z"), item("g3", "2026-11-09T11:06:00.000Z"),
-            item("h1", "2026-11-09T11:07:00.000Z", to="mt:catalogue_keeper", state="leased")]}})
-        self.assertEqual(of_relay.queue_note("mt:dpc", now=now),
-                         "3 messages you sent are not delivered yet: 2 to mt:k8s_keeper (oldest 8m; batched, next in 1m);"
-                         " to mt:catalogue_keeper (7m; being typed now)")
-        of_relay.record_queues({"mt:dpc": {"n": 1, "oldest": "2026-11-09T11:04:00Z"}}, now=now, unsent={"mt:dpc": {
+            item("h1", "2026-11-09T11:07:00.000Z", to="zeta:catalogue_keeper", state="leased")]}})
+        self.assertEqual(of_relay.queue_note("zeta:dpc", now=now),
+                         "3 messages you sent are not delivered yet: 2 to zeta:k8s_keeper (oldest 8m; batched, next in 1m);"
+                         " to zeta:catalogue_keeper (7m; being typed now)")
+        of_relay.record_queues({"zeta:dpc": {"n": 1, "oldest": "2026-11-09T11:04:00Z"}}, now=now, unsent={"zeta:dpc": {
             "n": 1, "items": [item("g1", "2026-11-09T11:05:39.650Z", present=False, next_at=None)]}})
-        note = of_relay.queue_note("mt:dpc", now=now)
+        note = of_relay.queue_note("zeta:dpc", now=now)
         self.assertEqual(note.split("\n"), ["1 message waiting for you (oldest 10m): of inbox --mine",
-                                            "1 message you sent is not delivered yet: to mt:k8s_keeper (8m; no live holder)"])
-        of_relay.mark_seen("g1", "pane", to="mt:k8s_keeper")                               # typed in here since
-        self.assertEqual(of_relay.queue_note("mt:dpc", now=now), "1 message waiting for you (oldest 10m): of inbox --mine")
-        of_relay.set_queue("mt:dpc", 0, None, now=now)                                     # of inbox --mine keeps unsent
-        self.assertEqual(of_relay.read_unsent()["mt:dpc"]["n"], 1)
+                                            "1 message you sent is not delivered yet: to zeta:k8s_keeper (8m; no live holder)"])
+        of_relay.mark_seen("g1", "pane", to="zeta:k8s_keeper")                               # typed in here since
+        self.assertEqual(of_relay.queue_note("zeta:dpc", now=now), "1 message waiting for you (oldest 10m): of inbox --mine")
+        of_relay.set_queue("zeta:dpc", 0, None, now=now)                                     # of inbox --mine keeps unsent
+        self.assertEqual(of_relay.read_unsent()["zeta:dpc"]["n"], 1)
 
     def test_status_counts_only_what_will_not_arrive_by_itself(self):
         """of_architect: 'of status' said 1 waiting for a message the relay was typing; the take found 0."""
@@ -321,7 +321,7 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(of_relay.arriving("ofb:of_a", now=now + 1000), set())
 
     def test_deliver_marks_arriving_while_deferred(self):
-        m = {"msg_id": "d1", "to": "ofb:of_a", "from": "mt:x", "text": "hi"}
+        m = {"msg_id": "d1", "to": "ofb:of_a", "from": "zeta:x", "text": "hi"}
         busy = lambda pane, text, session, sender, working_ok=False, skip_if=None: ("deferred", "busy")
         self.assertEqual(of_relay.deliver(self.conn, m, LOCAL, busy)[0], "deferred")
         self.assertEqual(of_relay.arriving("ofb:of_a"), {"d1"})
@@ -349,7 +349,7 @@ class RelayTest(unittest.TestCase):
         of_relay.subprocess.run = lambda argv, **k: (calls.append(argv), R())[1]
         try:
             ok, _ = of_relay.herdr_deliver("w1:p1", "curl -H @/Users/alex/.config/g/header.txt and mail vp@example.me",
-                                           "S", "mt:x")
+                                           "S", "zeta:x")
         finally:
             of_relay.subprocess.run = saved
         typed = calls[-1][-1]
@@ -445,7 +445,7 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(f("hello", "of_platform"), "Message from of_platform (via of, authority: none)\nhello")
         self.assertTrue(f("Reminder: hand-over", "of-pulse:a").startswith("Message from a (via of pulse, authority: none)"))
         self.assertTrue(f("brief", "of_spawn", "of spawn").startswith("Message from of_spawn (via of spawn,"))
-        for framed in ("Message from mt:x (via relay, authority: none)\nhi", "Question from k8s_keeper (unit p, …): x",
+        for framed in ("Message from zeta:x (via relay, authority: none)\nhi", "Question from k8s_keeper (unit p, …): x",
                        "Answer from the founder to your question 1234abcd: yes"):
             self.assertEqual(f(framed, "s"), framed)
         res, typed = self._deliver_with_box(self._screen(""))
@@ -501,7 +501,7 @@ class RelayTest(unittest.TestCase):
         takes every message one by one."""
         local = dict(LOCAL)
         to = next(k for k, v in local.items() if v.get("kind") != "human")
-        m = lambda i, **k: dict({"msg_id": f"b{i}", "to": to, "from": "mt:x", "text": f"t{i}"}, **k)  # noqa: E731
+        m = lambda i, **k: dict({"msg_id": f"b{i}", "to": to, "from": "zeta:x", "text": f"t{i}"}, **k)  # noqa: E731
         plan = of_relay.plan_batch([m(1), m(2), m(3, priority="fyi"), m(4, priority="urgent")], local)
         self.assertEqual(sorted((a, len(ms), r) for a, ms, r in plan),
                          [("deliver", 3, None), ("fyi", 1, of_relay.FYI_RETRY_S)])
@@ -530,10 +530,10 @@ class RelayTest(unittest.TestCase):
         to = next(k for k, v in local.items() if v.get("kind") != "human")
         typed = []
         ok = lambda pane, text, session, sender, working_ok=False, skip_if=None: (typed.append(text), (True, None))[1]
-        ms = [{"msg_id": f"j{i}", "to": to, "from": "mt:x", "text": f"body {i}"} for i in (1, 2)]
+        ms = [{"msg_id": f"j{i}", "to": to, "from": "zeta:x", "text": f"body {i}"} for i in (1, 2)]
         self.assertEqual(of_relay.deliver_joined(self.conn, ms, local, ok), ("delivered", None))
         self.assertEqual(len(typed), 1)
-        self.assertEqual(typed[0].count("Message from mt:x (via relay"), 2)
+        self.assertEqual(typed[0].count("Message from zeta:x (via relay"), 2)
         self.assertTrue(of_relay.seen("j1") and of_relay.seen("j2"))
 
     def test_a_dialog_on_screen_defers(self):
@@ -557,7 +557,7 @@ class RelayTest(unittest.TestCase):
     def test_confirmation_by_the_hooks_record_and_a_late_one(self):
         import of_events as ev_
         self.assertFalse(of_relay.hook_saw(self.conn, "S", "m-77"))
-        rec = ev_.record("agent_message_in", {"via": "relay", "text": "Message from mt:x (via relay, authority: none; "
+        rec = ev_.record("agent_message_in", {"via": "relay", "text": "Message from zeta:x (via relay, authority: none; "
                                               "machine m; msg m-77)\nhi"}, session="S", source="hook")
         of_store.add_event(self.conn, rec)
         self.assertTrue(of_relay.hook_saw(self.conn, "S", "m-77"))
@@ -569,14 +569,14 @@ class RelayTest(unittest.TestCase):
         local = {to: dict(LOCAL[to], session_id="S")}
         typed = []
         ok = lambda pane, text, session, sender, working_ok=False, skip_if=None: (typed.append(text), (True, None))[1]
-        got = of_relay.deliver(self.conn, {"msg_id": "m-77", "to": to, "from": "mt:x", "text": "hi"}, local, ok)
+        got = of_relay.deliver(self.conn, {"msg_id": "m-77", "to": to, "from": "zeta:x", "text": "hi"}, local, ok)
         self.assertEqual((got, typed), (("delivered", "confirmed late"), []))
 
     def test_presence_only_own_org_per_server(self):
-        bodies = of_relay.presence_bodies(LOCAL, {"mt": "https://mt"}, "http://local")
-        self.assertEqual([h["position"] for h in bodies["https://mt"]], ["acme_owner"])
+        bodies = of_relay.presence_bodies(LOCAL, {"zeta": "https://zeta"}, "http://local")
+        self.assertEqual([h["position"] for h in bodies["https://zeta"]], ["acme_owner"])
         self.assertEqual([h["position"] for h in bodies["http://local"]], ["of_a"])
-        self.assertEqual(bodies["https://mt"][0]["kind"], "human")
+        self.assertEqual(bodies["https://zeta"][0]["kind"], "human")
 
     def test_after_a_cutover_the_old_server_is_drained(self):
         """docs/server-several-machines.md §4.6: messages still queued on the old server for a moved organization
@@ -584,15 +584,15 @@ class RelayTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             orgs = os.path.join(t, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: ofb, path: x}\n  - {name: mt, path: y, server: 'https://mt/', "
+                fh.write("orgs:\n  - {name: ofb, path: x}\n  - {name: zeta, path: y, server: 'https://zeta/', "
                          "drain_from: local}\n")
             drains = of_relay.org_drains("http://local", orgs)
-            self.assertEqual(drains, {"mt": ["http://local"]})
-            bodies = of_relay.presence_bodies(LOCAL, {"mt": "https://mt"}, "http://local", drains)
-            self.assertEqual([h["position"] for h in bodies["https://mt"]], ["acme_owner"])
+            self.assertEqual(drains, {"zeta": ["http://local"]})
+            bodies = of_relay.presence_bodies(LOCAL, {"zeta": "https://zeta"}, "http://local", drains)
+            self.assertEqual([h["position"] for h in bodies["https://zeta"]], ["acme_owner"])
             self.assertEqual(sorted(h["position"] for h in bodies["http://local"]), ["acme_owner", "of_a"])
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: ofb, path: x}\n  - {name: mt, path: y, server: 'https://mt/'}\n")
+                fh.write("orgs:\n  - {name: ofb, path: x}\n  - {name: zeta, path: y, server: 'https://zeta/'}\n")
             self.assertEqual(of_relay.org_drains("http://local", orgs), {})
 
 

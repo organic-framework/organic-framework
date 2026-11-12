@@ -281,15 +281,15 @@ class HandleTest(unittest.TestCase):
         self.fire("UserPromptSubmit", prompt=answer)
         p = self.events()[2]["of.payload"]
         self.assertEqual((p["origin"], p["channel"], p.get("injector")), ("human", "asks-ui", None))
-        relayed = "Message from mt:x (via relay, authority: none)\nlong text"  # typed long: wrapped as a paste
+        relayed = "Message from zeta:x (via relay, authority: none)\nlong text"  # typed long: wrapped as a paste
         with open(os.path.join(of_hook.STATE, "injections.jsonl"), "a") as fh:
-            fh.write(json.dumps({"ts": time.time(), "session": "S1", "injector": "of-relay:mt:x",
+            fh.write(json.dumps({"ts": time.time(), "session": "S1", "injector": "of-relay:zeta:x",
                                  "sha256": hashlib.sha256(relayed.encode()).hexdigest()}) + "\n")
         self.fire("UserPromptSubmit", prompt=f'<pasted_content id="9">\n{relayed}\n</pasted_content id="9">')
         e = self.events()[3]  # a relay delivery is a peer's message, never the owner's
         self.assertEqual((e["event.name"], e["of.payload"]["from"], e["of.payload"]["via"]),
-                         ("of.agent_message_in", "mt:x", "relay"))
-        self.assertTrue(e["of.payload"]["text"].startswith("Message from mt:x"))
+                         ("of.agent_message_in", "zeta:x", "relay"))
+        self.assertTrue(e["of.payload"]["text"].startswith("Message from zeta:x"))
 
     def test_busy_database_spools_and_the_worker_drains(self):
         import io
@@ -639,32 +639,32 @@ class RouterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: mt, database: db_mt, paths: [~/acme]}\n"
+                fh.write("orgs:\n  - {name: zeta, database: db_mt, paths: [~/acme]}\n"
                          "  - {name: ofb, database: db_ofb, paths: [~/organic-framework]}\n")
             r = of_ship.Router(dict(of_ship.DEFAULTS), orgs)
-            r.org_by_session = {"S-mt": "mt"}
+            r.org_by_session = {"S-zeta": "zeta"}
             self.assertEqual(r.org_of("ofb"), "ofb")
-            self.assertEqual(r.org_of(None, "S-mt"), "mt")
-            self.assertEqual(r.org_of(None, None, home + "/acme/storefront/x"), "mt")
+            self.assertEqual(r.org_of(None, "S-zeta"), "zeta")
+            self.assertEqual(r.org_of(None, None, home + "/acme/storefront/x"), "zeta")
             self.assertEqual(r.org_of(None, None, "~/organic-framework"), "ofb")
             self.assertEqual(r.org_of(None, None, None,
                                       home + "/.claude-x/projects/" + re.sub(r"[^A-Za-z0-9]", "-", home) + "-acme-storefront/abc.jsonl"),
-                             "mt")  # Claude Code's project folder: the cwd, every non-alphanumeric as '-'; any home
+                             "zeta")  # Claude Code's project folder: the cwd, every non-alphanumeric as '-'; any home
             self.assertIsNone(r.org_of(None, None, "/tmp/elsewhere"))
             self.assertEqual(r.database(None), "of_unassigned")
-            self.assertEqual(r.database("mt"), "db_mt")
-            r.org_by_session = {"S-fa": "mt"}  # an OF position that serves Acme
-            self.assertEqual(r.org_of("ofb", "S-fa", "~/organic-framework"), "mt")
-            self.assertEqual(r.org_of("ofb", None, None, serves="mt"), "mt")
+            self.assertEqual(r.database("zeta"), "db_mt")
+            r.org_by_session = {"S-fa": "zeta"}  # an OF position that serves Acme
+            self.assertEqual(r.org_of("ofb", "S-fa", "~/organic-framework"), "zeta")
+            self.assertEqual(r.org_of("ofb", None, None, serves="zeta"), "zeta")
 
 
 class PublishedCopyTest(unittest.TestCase):
     def test_receiving_copy_keeps_reference_grant_and_note_only(self):
         import of_ship
-        payload = {"from_org": "mt", "to_org": "ofb", "artifact": "docs/x.md", "grant": "d7", "note": "generic",
+        payload = {"from_org": "zeta", "to_org": "ofb", "artifact": "docs/x.md", "grant": "d7", "note": "generic",
                    "tool_use_id": "t", "transcript_record": "u", "edited_at": "ts"}
         rec = of_events.record("published", payload, position="p", org="ofb", session="S")
-        out = {"name": "of.published", "org_id": "mt", "session_id": "S", "raw_ref": "hook_record:1",
+        out = {"name": "of.published", "org_id": "zeta", "session_id": "S", "raw_ref": "hook_record:1",
                "payload": json.dumps(payload), "record": json.dumps(rec)}
         c = of_ship.published_copy(out, payload)
         self.assertEqual(json.loads(c["payload"]), {k: payload[k] for k in ("from_org", "to_org", "artifact", "grant", "note")})
@@ -679,8 +679,8 @@ class ShapeTest(unittest.TestCase):
         payload = {"origin": "human", "channel": "herdr", "chars": 120, "reply_to": "e1",
                    "text": "secret Acme detail", "questions": [{"question": "q"}, {"question": "r"}]}
         rec = of_events.record("human_prompt", payload, position="of_field-analyst", org="ofb", session="S",
-                               extra={"of.serves": "mt", "of.cwd": "~/acme/x", "of.transcript": {"path": "p"}})
-        out = {"name": "of.human_prompt", "org_id": "mt", "session_id": "S", "raw_ref": "hook_record:3",
+                               extra={"of.serves": "zeta", "of.cwd": "~/acme/x", "of.transcript": {"path": "p"}})
+        out = {"name": "of.human_prompt", "org_id": "zeta", "session_id": "S", "raw_ref": "hook_record:3",
                "payload": json.dumps(payload), "record": json.dumps(rec)}
         sh = of_ship.shape_event(out, "ofb")
         p = json.loads(sh["payload"])
@@ -689,7 +689,7 @@ class ShapeTest(unittest.TestCase):
         self.assertNotIn("of.cwd", json.loads(sh["record"]))
         self.assertEqual((sh["org_id"], sh["raw_ref"], json.loads(sh["record"])["of.shape"]), ("ofb", "", True))
         t = of_ship.shape_transcript({"raw": "content", "source_path": "/x/-Users-alex-acme/y", "tool_names": "Read",
-                                      "sha256": "a" * 64, "org_id": "mt"}, "ofb")
+                                      "sha256": "a" * 64, "org_id": "zeta"}, "ofb")
         self.assertEqual((t["raw"], t["source_path"], t["tool_names"], t["org_id"]), ("", "", "Read", "ofb"))
 
     def test_builder_only_when_routed_elsewhere(self):
@@ -697,11 +697,11 @@ class ShapeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: mt, database: db_mt}\n  - {name: ofb, database: db_ofb}\n")
+                fh.write("orgs:\n  - {name: zeta, database: db_mt}\n  - {name: ofb, database: db_ofb}\n")
             r = of_ship.Router(dict(of_ship.DEFAULTS), orgs)
-            r.own_org_by_session = {"S-fa": "ofb", "S-mt": "mt"}
-            self.assertEqual(r.builder_of("mt", "S-fa"), "ofb")
-            self.assertIsNone(r.builder_of("mt", "S-mt"))
+            r.own_org_by_session = {"S-fa": "ofb", "S-zeta": "zeta"}
+            self.assertEqual(r.builder_of("zeta", "S-fa"), "ofb")
+            self.assertIsNone(r.builder_of("zeta", "S-zeta"))
             self.assertIsNone(r.builder_of("ofb", "S-fa"))
 
 
@@ -712,11 +712,11 @@ class PerOrgWireTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: mt, database: db_mt, server: 'https://mt.example'}\n"
+                fh.write("orgs:\n  - {name: zeta, database: db_mt, server: 'https://zeta.example'}\n"
                          "  - {name: ofb, database: db_ofb}\n")
             cfg = dict(of_ship.DEFAULTS)
             r = of_ship.Router(cfg, orgs)
-            r.org_by_session, r.own_org_by_session = {"FA": "mt", "B": "ofb"}, {"FA": "ofb", "B": "ofb"}
+            r.org_by_session, r.own_org_by_session = {"FA": "zeta", "B": "ofb"}, {"FA": "ofb", "B": "ofb"}
             servers = of_ship.org_servers(cfg, orgs)
             default = cfg["server_url"]
 
@@ -725,20 +725,20 @@ class PerOrgWireTest(unittest.TestCase):
                        **({"of.serves": serves} if serves else {}), "of.payload": payload or {"last_message": "secret"}}
                 return {"event_id": eid, "org": "ofb", "ts": "t", "name": name, "session_id": sid,
                         "payload": json.dumps(payload or {"last_message": "secret"}), "raw_ref": "r", "record": json.dumps(rec)}
-            batch = [ev("e1", "FA", serves="mt"), ev("e2", "B"),
-                     ev("e3", "FA", "of.published", {"from_org": "mt", "to_org": "ofb", "artifact": "a", "note": "n",
-                                                     "transcript_record": "u"}, serves="mt")]
+            batch = [ev("e1", "FA", serves="zeta"), ev("e2", "B"),
+                     ev("e3", "FA", "of.published", {"from_org": "zeta", "to_org": "ofb", "artifact": "a", "note": "n",
+                                                     "transcript_record": "u"}, serves="zeta")]
             wire = of_ship.plan_wire("event", batch, r, servers, default)
-            mt = wire["https://mt.example"]
+            zeta = wire["https://zeta.example"]
             local = wire[default]
-            self.assertEqual([(x["data"]["event_id"], x.get("copy")) for x in mt], [("e1", None), ("e3", None)])
+            self.assertEqual([(x["data"]["event_id"], x.get("copy")) for x in zeta], [("e1", None), ("e3", None)])
             self.assertEqual(sorted((x["data"]["event_id"], x.get("copy")) for x in local),
                              [("e1", "shape"), ("e2", None), ("e3", "published")])
             shape = next(x for x in local if x.get("copy") == "shape")["data"]
             self.assertNotIn("secret", shape["payload"] + shape["record"])
             pub = next(x for x in local if x.get("copy") == "published")["data"]
             self.assertNotIn("transcript_record", pub["payload"])
-            self.assertTrue(all(x["data"]["org_id"] == "mt" for x in mt))
+            self.assertTrue(all(x["data"]["org_id"] == "zeta" for x in zeta))
 
 
 class RawConsentTest(unittest.TestCase):
@@ -748,11 +748,11 @@ class RawConsentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = os.path.join(d, "orgs.yaml")
             with open(f, "w") as fh:
-                fh.write("orgs:\n  - {name: mt, server: https://mt.example}\n"
+                fh.write("orgs:\n  - {name: zeta, server: https://zeta.example}\n"
                          "  - {name: ofb, server: https://ofb.example, raw: true}\n  - {name: home}\n"
                          "  - {name: own, raw: false}\n")
             consent = of_ship.raw_consent(f)
-        self.assertEqual(consent, {"mt": False, "ofb": True, "home": True, "own": False})
+        self.assertEqual(consent, {"zeta": False, "ofb": True, "home": True, "own": False})
         self.assertFalse(of_ship.raw_allowed("unknown", consent))
 
         class R:
@@ -762,11 +762,11 @@ class RawConsentTest(unittest.TestCase):
             def builder_of(self, *a, **k):
                 return None
         rec = {"session_id": "S", "raw": "SECRET CONTENT", "record_uuid": "u"}
-        for org, sent in (("mt", ""), ("ofb", "SECRET CONTENT")):
+        for org, sent in (("zeta", ""), ("ofb", "SECRET CONTENT")):
             orig = of_ship.route_org
             of_ship.route_org = lambda table, d, router, _o=org: _o
             try:
-                wire = of_ship.plan_wire("transcript_record", [rec], R(), {"mt": "m", "ofb": "o"}, "x", consent)
+                wire = of_ship.plan_wire("transcript_record", [rec], R(), {"zeta": "m", "ofb": "o"}, "x", consent)
             finally:
                 of_ship.route_org = orig
             (records,) = wire.values()
