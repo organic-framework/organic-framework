@@ -214,7 +214,9 @@ class ScreenTest(unittest.TestCase):
     def text(self, frame):
         return "\n".join(t for _, t in sorted(frame.items()))
 
-    def inbox(self, keys, data, cards=None, size=(40, 140), loader=None, seq=None):
+    def inbox(self, keys, data, cards=None, size=(40, 140), loader=None, seq=None, store=None, flush=False):
+        """flush: curses.flushinp drops the keys not read yet, as a terminal drops a paste's rest."""
+        import curses
         cards = cards or {}
 
         def card_of(it):
@@ -224,11 +226,14 @@ class ScreenTest(unittest.TestCase):
         def answer(it, text):
             self.sent.append((it["ids"][0], text))
             return True, "recorded"
-        box = I.Inbox(self.scr(keys, size), loader or (lambda: ([("Waiting on you", data)], {})), card_of, answer,
+        scr = self.scr(keys, size)
+        if flush:
+            curses.flushinp = lambda: scr.keys.clear()
+        box = I.Inbox(scr, loader or (lambda: ([("Waiting on you", data)], {})), card_of, answer,
                       lambda what, it: (self.sent.append((it["ids"][0], what)) or (True, what)),
                       positions=lambda: [{"name": "of_b"}, {"name": "of_conductor"}],
                       record=lambda kind, payload: self.records.append((kind, payload)) or "E1", seq=seq,
-                      initial=(list(data), {}))
+                      initial=(list(data), {}), reply_store=store)
         box.run()
         return box
 
@@ -431,6 +436,34 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(self.sent, [("A", hello + "\nsecond")])
         self.assertEqual(box.mode, "main")
 
+    def test_a_pasted_blank_line_on_a_money_card_never_runs_the_rest_of_the_paste_as_keys(self):
+        """of_herdr's review of PR 98: herdr pastes as plain text; a blank line sends, the card asks to confirm, and
+        the paste's rest ("P", then "a": answered elsewhere) must not reach the screen's keys."""
+        # in the editor keys come as characters (get_wch); after it, as the main screen reads them (getch)
+        self.inbox([0.1, ord("r"), "O", "K", "\n", "\n", ord("P"), ord("a")],
+                   [item("C", "Pay 90 USD to the operator?")], flush=True)
+        self.assertEqual(self.sent, [])
+
+    def test_a_draft_outlives_the_window_and_one_whose_ask_closed_is_archived(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = I.ReplyDrafts(d)
+            long = "First plain question, with a title much longer than the queue's column has room for?"
+            data = [item("A", long), item("B", "Second plain question?")]
+            self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("q")], data, store=store)
+            self.assertEqual(store.load(), {"A": "ab"})
+            self.assertEqual(oct(os.stat(os.path.join(d, "A.json")).st_mode & 0o777), "0o600")
+            self.frames = []
+            self.inbox([0.1, 0.05, ord("r"), "c", "\x04", 0.3, 0.05], data, store=store)  # a new window
+            self.assertTrue(any("✎" in self.text(f) for f in self.frames[:3]))  # the row says it has a draft, even
+            # when its title fills the row
+            self.assertEqual(self.sent, [("A", "abc")])
+            self.assertEqual(store.load(), {})  # sent: the draft is gone
+            store.save("B", "half an answer")
+            self.inbox([0.1, 0.05], [item("A", "First plain question?")], store=store)  # B closed elsewhere
+            self.assertEqual(store.load(), {})
+            self.assertEqual(len(os.listdir(os.path.join(d, "archive"))), 1)  # kept aside, never lost
+            self.assertTrue(any("archived" in self.text(f) for f in self.frames))
+
     def test_esc_keeps_the_draft_and_r_goes_on_with_it(self):
         self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("r"), "c", "\n", "\n", 0.3, 0.05],
                    [item("A", "First plain question?")])
@@ -473,6 +506,7 @@ class ScreenTest(unittest.TestCase):
             with open(path) as fh:
                 row = json.loads(fh.read())
             self.assertEqual((row["frame"], row["list"], row["card"], row["size"]), (0.2, 0.4, 1.5, [40, 140]))
+            self.assertIn("herdr", row)  # herdr's popup has HERDR_ENV and no pane id
 
 
 class PanelTest(ScreenTest):

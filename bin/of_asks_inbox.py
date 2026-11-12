@@ -181,6 +181,60 @@ def overlay(conn, now=None):
     return {k: v for k, v in out.items() if v}
 
 
+class ReplyDrafts:
+    """The answers he put aside with Esc while writing one, kept across openings: one file per ask id under
+    asks-reply-drafts in OF's state folder (mode 600). A draft whose ask closed goes to its archive folder, never lost.
+    Not the outbox's drafts (of_asks_answer.save_draft): those are answers sent and not yet recorded, which D sends;
+    these are unfinished (of_herdr's review of PR 98: Esc's draft lived only while the window was open)."""
+
+    def __init__(self, path=None):
+        if path is None:
+            import of_events
+            path = os.path.join(of_events.STATE_DIR, "asks-reply-drafts")
+        self.dir = path
+
+    def _file(self, key):
+        return os.path.join(self.dir, f"{os.path.basename(str(key))}.json")
+
+    def load(self):
+        out = {}
+        try:
+            names = sorted(os.listdir(self.dir))
+        except OSError:
+            return out
+        for f in names:
+            if f.endswith(".json"):
+                try:
+                    with open(os.path.join(self.dir, f)) as fh:
+                        d = json.load(fh)
+                    out[d["ask_id"]] = d["text"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+        return out
+
+    def save(self, key, text):
+        """text: the draft; None or blank removes it."""
+        try:
+            if not (text or "").strip():
+                os.remove(self._file(key))
+                return
+        except FileNotFoundError:
+            return
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        tmp = self._file(key) + f".{os.getpid()}"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump({"ask_id": key, "text": text, "saved_at": time.time()}, fh, ensure_ascii=False)
+        os.replace(tmp, self._file(key))
+
+    def archive(self, key):
+        arch = os.path.join(self.dir, "archive")
+        try:
+            os.makedirs(arch, mode=0o700, exist_ok=True)
+            os.replace(self._file(key), os.path.join(arch, f"{os.path.basename(str(key))}-{int(time.time())}.json"))
+        except OSError:
+            pass
+
+
 def needs_confirm(item, card=None):
     return bool(set((card or {}).get("risk") or risk_of(item)) & set(CONFIRM_TAGS))
 
@@ -416,7 +470,8 @@ def colors():
 
 class Inbox:
     def __init__(self, scr, loader, card_of, answer, act, positions=lambda: [], record=None, handoff=None,
-                 studio=None, drafts=None, seq=None, initial=None, chat=None, archive=None, timing=None):
+                 studio=None, drafts=None, seq=None, initial=None, chat=None, archive=None, timing=None,
+                 reply_store=None):
         self.scr, self.loader, self.card_of, self.act = scr, loader, card_of, act
         self.positions, self.record, self.studio, self.drafts, self.seq = positions, record, studio, drafts, seq
         self.chat, self.archive = chat, archive
@@ -430,6 +485,12 @@ class Inbox:
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
         self.attr, self.lw, self.cx, self.xtop, self.tab_rects = {}, 0, 0, 0, []
         self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
+        self.store = reply_store  # where Esc's drafts outlive the window (ReplyDrafts)
+        if reply_store:
+            try:
+                self.reply_drafts = dict(reply_store.load())
+            except Exception:  # noqa: BLE001 - a broken folder never keeps the screen from opening
+                self.reply_drafts = {}
         self.timing = timing  # {name: time.time()} of this opening's first frame, true list and full card
 
     # data
@@ -455,11 +516,18 @@ class Inbox:
         self.mark("list")
         self.items = [x for _, g in data for x in g]
         self.over = over
-        if self.archive:
-            gone = self.archive({i for x in self.items for i in x.get("ids") or []})
-            if gone:
-                self.msg = tr("{n} draft(s) archived: the question is closed already ({ids})", n=len(gone),
-                              ids=", ".join(g[-8:] for g in gone))
+        open_ids = {i for x in self.items for i in x.get("ids") or []}
+        gone = self.archive(open_ids) if self.archive else []
+        put_aside = [k for k in self.reply_drafts if k not in open_ids
+                     and not (self.reply and self.reply["key"] == k)]
+        for k in put_aside:
+            self.reply_drafts.pop(k, None)
+            if self.store:
+                self.store.archive(k)
+        gone = list(gone or []) + put_aside
+        if gone:
+            self.msg = tr("{n} draft(s) archived: the question is closed already ({ids})", n=len(gone),
+                          ids=", ".join(str(g)[-8:] for g in gone))
 
     def groups(self):
         visible = [x for x in self.items if key_of(x) not in self.out.hidden]
@@ -632,8 +700,11 @@ class Inbox:
                 tail, a = f"  ✗ {st[1]}", self.attr.get("red", 0)
             elif x.get("claimed_at"):
                 tail = "  ✓"
+            elif k in self.reply_drafts:
+                tail = "  ✎"  # an answer he began and put aside: r goes on with it
             room = max(4, width - 3 - T.dwidth(age) - 1)
-            text = T.cut(title + tail, room)
+            tail = T.cut(tail, room // 2) if tail else ""  # the mark stays in sight: a long title is cut, not it
+            text = T.cut(title, max(4, room - T.dwidth(tail))) + tail
             y = top_y + i
             sel = top + i == idx
             self.put(y, 0, "●", self.attr.get(COLOR[self.cur if self.cur != "search" else
@@ -743,6 +814,20 @@ class Inbox:
         self.reply = {"key": k, "item": item, "lines": (self.reply_drafts.get(k) or "").split("\n")}
         curses.curs_set(1)
 
+    def keep_draft(self, key, text):
+        """Esc's draft, on disk too; None or blank removes it. False when the disk refused it (said on screen)."""
+        if (text or "").strip():
+            self.reply_drafts[key] = text
+        else:
+            self.reply_drafts.pop(key, None)
+        if self.store:
+            try:
+                self.store.save(key, text)
+            except OSError as e:
+                self.msg = tr("not saved: {why}", why=f"{type(e).__name__}: {e}"[:80])
+                return False
+        return True
+
     def end_reply(self):
         self.mode, self.reply, self.cursor = "main", None, None
         curses.curs_set(0)
@@ -752,19 +837,19 @@ class Inbox:
         r = self.reply
         if ch in ("\x1b", 27):
             text = "\n".join(r["lines"])
-            if text.strip():
-                self.reply_drafts[r["key"]] = text
+            if self.keep_draft(r["key"], text) and text.strip():
                 self.msg = tr("The answer is kept as a draft: r goes on with it.")
-            else:
-                self.reply_drafts.pop(r["key"], None)
             self.end_reply()
         elif ch in ("\x04", 4) or (ch in ("\n", "\r", 10, 13, curses.KEY_ENTER) and r["lines"][-1] == ""
                                      and any(x.strip() for x in r["lines"][:-1])):
             text = "\n".join(r["lines"]).strip()
             item, c = r["item"], self.cards.get(r["key"])
             self.end_reply()
+            # what was typed or pasted after the send never reaches the screen's keys: a pasted blank line sends,
+            # and the rest of the paste would answer the confirm and the next cards (of_herdr's review of PR 98)
+            curses.flushinp()
             if text:
-                self.reply_drafts.pop(r["key"], None)
+                self.keep_draft(r["key"], None)
                 if needs_confirm(item, c):
                     self.mode, self.confirm = "confirm", (item, "y", text, "answer")
                 else:
@@ -1218,17 +1303,21 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
 
     answer = T.threaded_answer(positions, pane_of, T.debounced(after) if after else None)
     first = (T.read_cache(), {})
-    size = []
+    size, boxes, store = [], [], ReplyDrafts()
 
     def run(scr):
         size.extend(scr.getmaxyx())
-        Inbox(scr, loader, card_of, answer, T.act_cli(of_path), positions=lambda: T._positions(positions),
+        box = Inbox(scr, loader, card_of, answer, T.act_cli(of_path), positions=lambda: T._positions(positions),
               record=record, handoff=handoff, studio=studio, drafts=of_asks_answer.unsent_drafts, seq=of_listen.seq,
               initial=([x for _, g in first[0] for x in g], first[1]), chat=T.chat_screen,
-              archive=of_asks_answer.archive_drafts, timing=timing).run()
+              archive=of_asks_answer.archive_drafts, timing=timing, reply_store=store)
+        boxes.append(box)
+        box.run()
     try:
         curses.wrapper(run)
     finally:
+        if boxes and boxes[0].reply:  # closed while he wrote: what he wrote is a draft
+            _quiet(lambda: store.save(boxes[0].reply["key"], "\n".join(boxes[0].reply["lines"])))
         log_open(timing, size)
     return 0
 
@@ -1240,8 +1329,10 @@ def log_open(timing, size, path=None):
     import of_events
     path = path or os.path.join(of_events.STATE_DIR, "asks-open.log")
     t0 = timing.get("start")
+    # where it ran: herdr's popup has HERDR_ENV and no pane id (herdr removes it from a popup), a herdr pane has
+    # both, a plain terminal neither (of_herdr's note on PR 98)
     row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0)), "size": size[:2],
-           "pane": os.environ.get("HERDR_PANE_ID")}  # herdr's popup, or a terminal (None)
+           "herdr": os.environ.get("HERDR_ENV") == "1", "pane": os.environ.get("HERDR_PANE_ID")}
     row.update({k: round(v - t0, 2) for k, v in timing.items() if k != "start"})
     try:
         if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
