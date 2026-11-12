@@ -35,7 +35,7 @@ WHERES = ("phone", "browser", "machine")
 PROMPT_MAX_AGE_H = 24  # an older prompt is not taken as an answer: the person is asked again
 AT_MACHINE_KINDS = ("permission", "registry")  # answered by keys in a pane or in a terminal, never from a chat
 GONE = ("left", "closed", "retired")
-# docs/remote.md §5 (of_architect, 2026-11-11, 4557113): the event store is a file the agents' operating-system user
+# docs/remote.md §5 (of_architect, 2026-11-11, aaa3edd): the event store is a file the agents' operating-system user
 # can write, so a process could add a forged prompt. Until prompts are recorded by a component the agents cannot write
 # to (of-server under its own user), a card with one of these tags is answered at the machine, and every diff too.
 HELD_TAGS = ("money", "security_incident", "prod_change", "irreversible")
@@ -102,7 +102,7 @@ TOP = ("founder", "owner")  # the organization's top owner, as a card's `to` and
 
 
 def conductors(positions, to, asker=None):
-    """The conductors that serve the person a card waits on (of_architect's review of 3962757: a colleague's
+    """The conductors that serve the person a card waits on (of_architect's review of ebf8e1d: a colleague's
     conductor must not answer a card addressed to the founder). A card routed to a position a person holds: the
     conductors that position owns. A card to the top owner (`to` founder, owner or none): a conductor owned by the
     top owner by address (founder or owner; the founder's serves him across his organizations, docs/conductor.md

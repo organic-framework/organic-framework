@@ -96,7 +96,7 @@ def _clause(text, start, end, width=80):
 
 
 # What people type, used by the asks popup (bin/of_asks_tui.py), kept here with the other patterns of the founder's
-# words so the screens hold English only (AGENTS.md, Language; organic-framework 5462bab):
+# words so the screens hold English only (AGENTS.md, Language; organic-framework 15168b1):
 RECOMMENDED = re.compile(r"(?i)рекоменд|recommend")  # the option the asker recommends, copied by c
 YES_KEYS = "yYдД"  # the keys that confirm "Done?" for a task, on a Latin or a Russian keyboard layout
 
