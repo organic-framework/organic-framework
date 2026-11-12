@@ -170,7 +170,7 @@
  "Nothing here.": "Здесь пусто.",
  "No card matches.": "Ничего не найдено.",
  "{n} unsent answer(s) kept as drafts: D sends them": "Неотправленных ответов в черновиках: {n}; D — отправить",
- "Money or irreversible: press {n} again (or y) to send «{text}» to {who}; any other key cancels": "Деньги или необратимое: нажми {n} ещё раз (или y), чтобы отправить «{text}» для {who}; любая другая клавиша — отмена",
+ "Money or irreversible: press {n} again (or y) to send «{text}» to {who}; any other key cancels": "Деньги или необратимое: нажми {n} ещё раз (или y/н), чтобы отправить «{text}» для {who}; любая другая клавиша — отмена",
  "snoozed until {t}": "отложено до {t}",
  "handed to {p}": "передано: {p}",
  "Snooze until:": "Отложить до:",
@@ -231,9 +231,11 @@
  "The card you are answering was closed elsewhere: Esc keeps your text as a draft.": "Карточку, на которую ты отвечаешь, закрыли в другом месте: Esc сохранит текст как черновик.",
  "↑↓ select · ←→ stream · 1-9 answer · r write · g go to the agent · h snooze · d hand over · / search · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · g к агенту · h отложить · d передать · / поиск · ? помощь · Esc назад",
  "↑↓ select · ←→ stream · 1-9 answer · r write · g agent · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · g к агенту · ? помощь · Esc назад",
- "write your own answer under the card; Esc keeps it as a draft": "написать свой ответ под карточкой; Esc сохранит его как черновик",
  "lines {a}-{b} of {n} · PgUp PgDn scroll": "строки {a}–{b} из {n} · PgUp PgDn — прокрутка",
- "Enter new line · Enter on an empty last line or Ctrl+D send · ↑↓←→ Home End move · PgUp PgDn scroll the card · Esc keep as a draft": "Enter — новая строка · Enter на пустой последней строке или Ctrl+D — отправить · ↑↓←→ Home End — курсор · PgUp PgDn — листать карточку · Esc — в черновик",
  "Enter new line · Ctrl+D send · ↑↓←→ move · PgUp PgDn card · Esc draft": "Enter — строка · Ctrl+D — отправить · ↑↓←→ — курсор · PgUp PgDn — карточка · Esc — черновик",
- "cancelled; the answer is kept as a draft: r goes on with it": "отменено; ответ сохранён как черновик: r — продолжить"
+ "Money or irreversible: press y to send «{text}» to {who}; any other key takes you back to your answer": "Деньги или необратимое: нажми y (или н), чтобы отправить «{text}» для {who}; любая другая клавиша вернёт к ответу",
+ "Not sent: your answer is back in the field. Ctrl+D sends it, Esc keeps it as a draft.": "Не отправлено: ответ снова в поле. Ctrl+D — отправить, Esc — в черновик.",
+ "Taken back: your answer is in the field again.": "Отозвано: ответ снова в поле.",
+ "Ctrl+D send · Enter new line · ↑↓←→ Home End move · PgUp PgDn scroll the card · Esc keep as a draft": "Ctrl+D — отправить · Enter — новая строка · ↑↓←→ Home End — курсор · PgUp PgDn — листать карточку · Esc — в черновик",
+ "write your own answer under the card: Ctrl+D sends, Esc keeps it as a draft": "написать свой ответ под карточкой: Ctrl+D — отправить, Esc — в черновик"
 }
