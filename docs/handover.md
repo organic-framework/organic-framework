@@ -174,7 +174,7 @@ diff:
   - a node under a unit owner's goal, or a condition held `under` it, by that unit owner (`approvals: [<the unit owner's position>]`), who approves it as the organization's owner does: `of diff approve` on a machine enrolled for the person who holds that position (docs/registry.md, People, `machines`), or that person's passkey (docs/remote.md §6);
   - **only a person's yes approves.** When an agent holds the unit owner's position, the organization's owner approves those nodes; an agent's yes never approves a diff (docs/remote.md §5 and §6). A position in `approvals` resolves to its holder's person when the diff is applied, not when it is proposed, so a change of holder in between carries no approval over;
   - a diff that touches both kinds names every approver it needs, and applies only when all have approved.
-  Until `of diff approve` accepts a unit owner (`of_platform`), the organization's owner approves those nodes too. `of diff apply` writes each approval's id into the `decided` of the nodes it covers. Its `predicted` names what the tree should change, for example the open works on no goal or condition going to zero, or a measure per sub-goal.
+  Until `of diff approve` accepts a unit owner (`of_platform`), the organization's owner approves those nodes too. `of diff apply` writes each approval's full id into the `decided` of the nodes it covers. Its `predicted` names what the tree should change, for example the open works on no goal or condition going to zero, or a measure per sub-goal.
 
 ## 4. Order of implementation
 
