@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import of_tools  # noqa: E402
 
 DOC = {
+    "tools_mode": "enforce",
     "units": {"obs": {"tools": ["grafana-read"]}},
     "credentials": {"grafana-viewer": {"ref": "op://acme-agents/grafana-viewer/credential", "keeper": "obs_keeper"},
                     "books-mcp": {"paths": ["~/.config/acme/books-mcp/url"], "keeper": "books_keeper"}},
@@ -82,6 +83,18 @@ class SessionConfigTest(unittest.TestCase):
         c = self.cfg("acme_org", [])
         self.assertEqual(c["settings"]["allowedMcpServers"], [])
 
+    def test_add_mode_keeps_the_accounts_own_tools(self):
+        # 2026-11-12: one catalogue entry made every position of an organization strict, and moved sessions lost
+        # the account's tools; until the keeper sets tools_mode: enforce, a profile only adds its portable servers
+        doc = dict(DOC, tools_mode="add")
+        p = next(x for x in doc["positions"] if x["name"] == "obs_keeper")
+        c = of_tools.session_config(p, doc, ofb="/of/bin/of", installed=["cloudflare@claude-plugins-official"])
+        self.assertIn("grafana-read", c["mcp"]["mcpServers"])
+        self.assertEqual(c["settings"], {})
+        self.assertEqual(c["mode"], "add")
+        doc.pop("tools_mode")
+        self.assertEqual(of_tools.session_config(p, doc, ofb="/of/bin/of", installed=[])["settings"], {})
+
     def test_plugin_missing_on_the_account_is_noted(self):
         c = self.cfg("acme_dispatcher", [])
         self.assertTrue(any("slack@anthropic-plugin-directory is not installed" in n for n in c["notes"]))
@@ -92,7 +105,7 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(of_tools.check({"acme": DOC}), [])
 
     def test_problems(self):
-        bad = {"positions": [{"name": "a", "tools": ["nope"]}], "credentials": {},
+        bad = {"tools_mode": "strict", "positions": [{"name": "a", "tools": ["nope"]}], "credentials": {},
                "tools": {"x": {"kind": "mcp-stdio", "command": ["p"], "env": {"API_TOKEN": "abc123"},
                                "credential": {"id": "missing", "env": "T"}, "acts_as": "s", "scope": "read",
                                "keeper": "ghost"},
@@ -105,7 +118,8 @@ class CheckTest(unittest.TestCase):
         probs = "\n".join(of_tools.check({"acme": bad}))
         for want in ("tool nope is not in the catalogue", "keeper ghost", "credential missing",
                      "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference",
-                     "credential f is a file: the command names its path"):
+                     "credential f is a file: the command names its path",
+                     "tools_mode is add or enforce"):
             self.assertIn(want, probs)
 
 

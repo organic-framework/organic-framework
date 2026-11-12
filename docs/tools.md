@@ -31,6 +31,7 @@ The structure keeper of the organization decides, from the position's brief, in 
 The catalogue is a top-level `tools:` mapping in the organization's registry. Positions and units name tools from it.
 
 ```yaml
+tools_mode: add                           # add (the default) | enforce
 tools:
   superpowers:
     kind: plugin                          # mcp-stdio | mcp-remote | plugin | connector
@@ -66,6 +67,7 @@ positions:
 
 Rules:
 - **A tool names its credential by id** from the organization's credentials catalogue (`registry.md`, Credentials), with the variable the server reads: `env:` for the value, `file:` for the path of a temporary file that holds it. It never carries a vault reference or a value. The position that uses the tool must list that credential too; the broker checks this at launch.
+- **`tools_mode`** says whether the catalogue is complete. With `add`, the default, a session gets its profile's portable servers on top of the account's own tools, and nothing is filtered. With `enforce`, the session sees exactly its profile (§4). The keeper sets `enforce` only when every position's tools are declared (2026-11-12: one catalogue entry, applied strictly, took Cloudflare and Grafana from two keepers moved to another account).
 - **`keeper`** owns the integration: its credential and rotation, its version, its scope.
 - **`account_bound: true`** marks a tool whose sign-in lives in one Claude account. A `connector` is always account-bound.
 - **`url`** of a plugin or connector is the server address the session allows. `of tools inventory` shows it per account.
@@ -76,7 +78,7 @@ Rules:
 Every start of a position's session generates its configuration from the profile: `of spawn`, `of capacity move` and `resume`, the reboot restore, and a manual `of start`. They call `of_tools.launch_parts(position, session, config_dir)`, which returns:
 
 - **`--mcp-config <file>`** (`~/.local/state/of/tools/<session>.mcp.json`, mode 600): the position's portable MCP servers. A server that needs a credential is started as `of secret run <credential> --file|--env NAME -- <server command>`. The broker gives the value to that one process. It is never in the file, never in the Claude Code process's environment, and so never visible to the session's shell commands.
-- **The `--settings` keys**, merged into the session's one settings file (`bin/of_spawn.py`, `session_settings`):
+- **The `--settings` keys**, only with `tools_mode: enforce`, merged into the session's one settings file (`bin/of_spawn.py`, `session_settings`):
   - `allowedMcpServers`: exactly the profile's servers. Portable ones pass by `serverName`, account-bound ones by `serverUrl`.
   - `enabledPlugins`: every plugin installed on the account, `true` for the profile's and `false` for the rest.
 
