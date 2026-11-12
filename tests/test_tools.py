@@ -82,13 +82,16 @@ class SessionConfigTest(unittest.TestCase):
     def test_a_tilde_in_env_reaches_the_server_expanded(self):
         doc = {"tools_mode": "enforce", "credentials": {"g": {"paths": ["~/.secrets/g.token"]}},
                "tools": {"g": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana"],
-                               "env": {"TOKEN_FILE": "~/.secrets/g.token", "HOMEY": "${HOME}/x", "URL": "https://g"},
+                               "env": {"TOKEN_FILE": "~/.secrets/g.token", "HOMEY": "${HOME}/x", "BARE": "$HOME/y",
+                                       "URL": "https://g", "OTHER": "$GRAFANA_ORG/z"},
                                "credential": {"id": "g"}, "acts_as": "s", "scope": "read", "keeper": "a"}},
                "positions": [{"name": "a", "tools": ["g"]}]}
         env = of_tools.session_config(doc["positions"][0], doc, ofb="/of/bin/of", installed=[])["mcp"]["mcpServers"]["g"]["env"]
         self.assertEqual(env["TOKEN_FILE"], os.path.expanduser("~/.secrets/g.token"))
-        self.assertEqual(env["HOMEY"], "${HOME}/x")  # left to Claude Code's own expansion
+        self.assertEqual(env["HOMEY"], os.path.expanduser("~/x"))
+        self.assertEqual(env["BARE"], os.path.expanduser("~/y"))  # Claude Code would not expand the bare form
         self.assertEqual(env["URL"], "https://g")
+        self.assertEqual(env["OTHER"], "$GRAFANA_ORG/z")
 
     def test_no_tools_allows_no_server(self):
         c = self.cfg("acme_org", [])
