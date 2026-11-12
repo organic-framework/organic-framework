@@ -295,8 +295,31 @@ class GoalChangeTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             with open(os.path.join(t, "org", "registry", "positions.yaml")) as fh:
                 doc = yaml.safe_load(fh)
-            self.assertEqual({g["decided"] for g in doc["goals"].values()}, {ask})
-            self.assertEqual(doc["conditions"]["c-uptime"]["decided"], ask)
+            cite = "-".join(ask.split("-")[:2])  # the answered ask, by its first two groups
+            self.assertEqual({g["decided"] for g in doc["goals"].values()}, {cite})
+            self.assertEqual(doc["conditions"]["c-uptime"]["decided"], cite)
+            # approved at the terminal (an of.diff_approved event, no answered ask): its event id is cited
+            later = dict(self.D, id="sd-2026-11-12-goals-2",
+                         changes={"goals": [{"op": "rewrite", "id": "g-orders", "value": {"target": "+15%"}}]})
+            with open(good, "w") as fh:
+                yaml.safe_dump({"diff": later}, fh)
+            r = run("diff", "propose", good, "--from", "of_a", "--ask", "Raise the orders target to +15%?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            c = sqlite3.connect(os.path.join(t, "state", "of.db"))
+            dg = json.loads(c.execute("SELECT payload FROM event WHERE name = 'of.diff_proposed' "
+                                      "AND payload LIKE '%goals-2%'").fetchone()[0])["digest"]
+            c.close()
+            code = ("import sys; sys.path.insert(0, %r); import of_events; "
+                    "print(of_events.emit('diff_approved', {'id': %r, 'digest': %r, 'by': 'owner'}))"
+                    % (os.path.join(HERE, "..", "bin"), later["id"], dg))
+            eid = subprocess.run([sys.executable, "-c", code], env=env, check=True, capture_output=True,
+                                 text=True).stdout.strip()
+            r = run("diff", "apply", later["id"])
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            with open(os.path.join(t, "org", "registry", "positions.yaml")) as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["goals"]["g-orders"]["decided"], "-".join(eid.split("-")[:2]))
+            self.assertEqual(doc["goals"]["g-revenue"]["decided"], cite)
 
     def test_refusals(self):
         self.assertIn("medium tier at least", "\n".join(of_diff.check_format(dict(self.D, tier="low"))))

@@ -130,7 +130,7 @@ def check(goals, conditions, works, warn="warning: "):
         if g is not None:
             if str(g) not in goals:
                 out.append(f"{tag}: goal {g!r} is not a goal")
-            elif kids.get(str(g)):
+            elif active(kids.get(str(g)) or []):  # closed sub-goals leave a leaf (of_review on PR 70)
                 out.append(f"{warn}{tag}: goal {g} has sub-goals; attach the work to the sub-goal it moves")
         if c is not None and str(c) not in conditions:
             out.append(f"{tag}: condition {c!r} is not a condition")

@@ -78,6 +78,8 @@ class GoalCheckTest(unittest.TestCase):
         kids = dict(GOALS, **{f"g-k{i}": goal(parent="g-other", rank=i, target="t") for i in range(8)})
         self.assertIn("warning: goals: g-other: 8 active sub-goals, more than 7", "\n".join(lines(goals=kids)))
         self.assertIn("warning: works: w: goal g-revenue has sub-goals", "\n".join(lines(works={"w": {"goal": "g-revenue"}})))
+        closed_kids = dict(GOALS, **{k: dict(GOALS[k], state="dropped") for k in ("g-orders", "g-aov")})
+        self.assertNotIn("has sub-goals", "\n".join(lines(goals=closed_kids, works={"w": {"goal": "g-revenue"}})))
         out = lines(works={"w-open": {}, "w-parked": {"state": "parked"}})
         self.assertEqual(out, ["warning: works: w-open: names no goal or condition while the organization has them "
                                "(a question for the owner)"])
