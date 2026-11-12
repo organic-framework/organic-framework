@@ -303,6 +303,20 @@ class HookTest(KeyCase):
         self.assertEqual([(c["verdict"], c["decision"]) for c in self.checks() if c.get("grant_id") == "g-1"],
                          [("org_rule", "deny")])
 
+    def test_the_index_is_rebuilt_when_the_router_version_changes(self):
+        """of_studio's review of PR 49 (2026-11-12): the cached index kept the old router's compiled patterns after
+        the router changed, while the verdicts were labelled with the new version."""
+        import of_router
+        self.assertEqual(of_hook._registry_index()["router"], of_router.VERSION)
+        cached = of_hook._registry_index()
+        self.assertEqual(cached["router"], of_router.VERSION)  # unchanged: read from the cache
+        saved = of_router.VERSION
+        self.addCleanup(setattr, of_router, "VERSION", saved)
+        of_router.VERSION = "rt-v99"
+        self.assertEqual(of_hook._registry_index()["router"], "rt-v99")
+        with open(os.path.join(of_hook.STATE, "index.json")) as fh:
+            self.assertEqual(json.load(fh)["router"], "rt-v99")
+
     def _stale_index(self, positions_yaml=None):
         """Build the index cache, then change the registry so the cache is stale; count rebuilds from then on."""
         of_hook._registry_index()
