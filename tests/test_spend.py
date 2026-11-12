@@ -1,4 +1,4 @@
-"""Spend per goal (bin/of_spend.py; docs/registry.md, Goals, "Budgets"): attribution session -> position -> work ->
+"""Spend per goal (bin/of_spend.py; docs/registry.md, Goals, "Spend per goal"): attribution session -> position -> work ->
 goal, and the month's sums."""
 import calendar
 import json
@@ -26,10 +26,10 @@ DOCS = {"acme": {
     "positions": [{"name": "acme_a", "aliases": ["acme_old"], "holder": {"session": "S1"}},
                   {"name": "acme_b", "holder": {"session": "S2"}},
                   {"name": "acme_c"}, {"name": "acme_d"}, {"name": "acme_e"}],
-    "goals": {"g-root": {"title": "r", "budget": {"tokens_month": 1000, "usd_month": 10}},
+    "goals": {"g-root": {"title": "r"},
               "g-orders": {"parent": "g-root", "title": "o"},
               "g-cost": {"parent": "g-root", "title": "c"}},
-    "conditions": {"c-up": {"title": "u", "budget": {"usd_month": 4}}},
+    "conditions": {"c-up": {"title": "u"}},
     "works": {"w-retry": {"goal": "g-orders", "doers": ["acme_a", "acme_c"]},
               "w-cache": {"goal": "g-cost", "doers": ["acme_a"]},
               "w-old": {"goal": "g-cost", "doers": ["acme_c"], "state": "done"},
@@ -91,18 +91,16 @@ class Sums(unittest.TestCase):
         self.assertEqual(o["unattributed"]["acme_b"]["fresh"], 7)
         self.assertEqual(out["unowned"]["fresh"], 5)
         self.assertEqual(out["total"]["fresh"], 382)
-        self.assertAlmostEqual(o["goals"]["g-root"]["share"]["tokens"], 0.34)
-        self.assertAlmostEqual(o["goals"]["g-root"]["share"]["usd"], 0.34)
-        self.assertEqual(o["goals"]["g-root"]["forecast"]["fresh"], 680)  # half the month gone: twice
-        self.assertAlmostEqual(o["conditions"]["c-up"]["share"]["usd"], 0.075)
+        for node in (o["goals"]["g-root"], o["conditions"]["c-up"]):  # a reading: nothing compares it with a budget
+            self.assertFalse({"budget", "share", "forecast"} & set(node))
         self.assertEqual(set(o["by_method"]), {"declared", "one_goal", "one_open_work", "unattributed"})
 
-    def test_the_text_shows_the_tree_budgets_and_the_unattributed(self):
+    def test_the_text_shows_the_tree_and_the_unattributed(self):
         segs = [("acme", "acme_a", "w-retry", self.s(600, 6.0)), ("acme", "acme_b", None, self.s(7, 0.07))]
         text = of_spend.render(of_spend.summarize(segs, DOCS, T0, T0 + 30 * 86400, T0 + 15 * 86400))
         self.assertIn("g-root", text)
         self.assertIn("    g-orders", text)                   # a sub-goal under its parent
-        self.assertIn("60% of 1k; 60% of $10; forecast 1k $12", text)
+        self.assertNotIn("forecast", text)
         self.assertIn("w-retry -> g-orders", text)
         self.assertIn("unattributed", text)
         self.assertIn("acme_b", text)

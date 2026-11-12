@@ -1,4 +1,4 @@
-"""Spend per goal (docs/registry.md, Goals, "Budgets"; owned by of_capacity).
+"""Spend per goal (docs/registry.md, Goals, "Spend per goal"; owned by of_capacity).
 
 Each API response's fresh tokens (input, cache writes and output) and its cost at list prices (cache reads included)
 are attributed session -> position -> work -> goal, and summed per calendar month (UTC):
@@ -15,7 +15,8 @@ The responses come from the event store's transcript records (each response once
 session; a fork's copies of its parent's records left out), kept in `view_spend_month` from the start of the
 previous month. The listener advances it in of_capacity's tick and writes the month's sums to
 `~/.local/state/of/capacity/goal-spend.json` at most every 30 minutes; `of works` and Studio read that file
-(`load()`); `of capacity spend` prints it. Nothing here stops work: the warning and the card are of_platform's.
+(`load()`); `of capacity spend` prints it. It is a reading: no node carries a budget (goal budgets were withdrawn
+on 2026-11-12, docs/registry.md), and nothing warns, files a card or stops work on spend.
 """
 
 import calendar
@@ -327,18 +328,6 @@ def summarize(seg_sums, docs, start, end, now, totals=None):
             return t
         for gid in o["goals"]:
             total(gid)
-        for kind, specs in (("goals", goals), ("conditions", conds)):
-            for nid, node in o[kind].items():
-                spec = specs.get(nid) if isinstance(specs.get(nid), dict) else {}
-                b = spec.get("budget") if isinstance(spec.get("budget"), dict) else None
-                t = node["total"]
-                node["forecast"] = ({"fresh": int(t["fresh"] / elapsed), "cost_usd": t["cost_usd"] / elapsed}
-                                    if elapsed > 0 else None)
-                if b:
-                    node["budget"] = {k: b[k] for k in ("tokens_month", "usd_month") if isinstance(b.get(k), (int, float))}
-                    node["share"] = {
-                        **({"tokens": t["fresh"] / b["tokens_month"]} if b.get("tokens_month") else {}),
-                        **({"usd": t["cost_usd"] / b["usd_month"]} if b.get("usd_month") else {})}
     total_all = _zero()
     for org, pos, work, s in seg_sums:
         _add(total_all, s)
@@ -441,20 +430,8 @@ def _num(n):
     return f"{n / 1e9:.2f}B" if n >= 1e9 else f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e3 else str(int(n))
 
 
-def _line(label, s, extra=""):
-    return f"  {label:<44} {_num(s['fresh']):>8}  ${s['cost_usd']:>10,.2f}{extra}"
-
-
-def _budget(node):
-    sh, b, fc = node.get("share") or {}, node.get("budget") or {}, node.get("forecast") or {}
-    bits = []
-    if "tokens" in sh:
-        bits.append(f"{100 * sh['tokens']:.0f}% of {_num(b['tokens_month'])}")
-    if "usd" in sh:
-        bits.append(f"{100 * sh['usd']:.0f}% of ${b['usd_month']:,.0f}")
-    if fc and bits:
-        bits.append(f"forecast {_num(fc['fresh'])} ${fc['cost_usd']:,.0f}")
-    return ("  [" + "; ".join(bits) + "]") if bits else ""
+def _line(label, s):
+    return f"  {label:<44} {_num(s['fresh']):>8}  ${s['cost_usd']:>10,.2f}"
 
 
 def render(out, org=None):
@@ -478,8 +455,7 @@ def render(out, org=None):
 
         def walk(gid, depth):
             g = goals[gid]
-            lines.append(_line("  " * depth + gid + ("" if g.get("known", True) else " (not in goals:)"), g["total"],
-                               _budget(g)))
+            lines.append(_line("  " * depth + gid + ("" if g.get("known", True) else " (not in goals:)"), g["total"]))
             for c in sorted(kids.get(gid, [])):
                 walk(c, depth + 1)
         if goals:
@@ -489,7 +465,7 @@ def render(out, org=None):
         if o.get("conditions"):
             lines.append(" conditions")
             for cid, c in sorted(o["conditions"].items()):
-                lines.append(_line("  " + cid, c["total"], _budget(c)))
+                lines.append(_line("  " + cid, c["total"]))
         if o.get("works"):
             lines.append(" works")
             for wid, w in sorted(o["works"].items(), key=lambda x: -x[1]["cost_usd"]):
