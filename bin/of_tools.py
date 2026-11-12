@@ -104,7 +104,7 @@ def _names_path(arg, pattern):
     literal stem (`~/.config/acme/x/**` is named by `~/.config/acme/x`)."""
     a = os.path.expanduser(str(arg)).rstrip("/")
     p = os.path.expanduser(str(pattern))
-    stem = re.split(r"[*?[]", p, 1)[0].rstrip("/")
+    stem = re.split(r"[*?[]", p, maxsplit=1)[0].rstrip("/")
     return a == p.rstrip("/") or (stem != p.rstrip("/") and (a == stem or a.startswith(stem + "/")))
 
 
@@ -171,9 +171,10 @@ def check(docs):
                 if isinstance(c, dict) and ent.get("ref") and not (c.get("env") or c.get("file")) \
                         and kind == "mcp-stdio":
                     out.append(f"{where}: say how the server takes the credential: env: NAME or file: NAME")
+                named = list(e.get("command") or []) + [str(v) for v in (e.get("env") or {}).values()]
                 if cid in creds and not ent.get("ref") and kind == "mcp-stdio" and not any(
-                        _names_path(x, pth) for x in e.get("command") or [] for pth in ent.get("paths") or []):
-                    out.append(f"{where}: credential {cid} is a file: the command names its path")
+                        _names_path(x, pth) for x in named for pth in ent.get("paths") or []):
+                    out.append(f"{where}: credential {cid} is a file: the command or an env value names its path")
                 if isinstance(c, dict) and kind in ("mcp-remote",):
                     out.append(f"{where}: a header credential for a remote server is not built yet (docs/tools.md §5)")
             for field in ("env", "headers"):
