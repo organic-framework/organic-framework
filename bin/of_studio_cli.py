@@ -72,6 +72,8 @@ def _table(rows, head):
 
 
 def cmd_model(args):
+    if getattr(args, "days", 0) is None:
+        args.days = 14 if args.what == "coupling" else of_model.CODE_DAYS
     if args.what == "measures":
         return cmd_measures(args)
     if args.what == "snapshot":
@@ -102,6 +104,8 @@ def cmd_model(args):
         return cmd_evidence(args)
     if args.what == "cells":
         return cmd_cells(args)
+    if args.what == "coupling":
+        return cmd_coupling(args)
     org, m, _ = _model(args)
     if args.json:
         print(of_model.snapshot(m))
@@ -571,6 +575,90 @@ def cmd_evidence(args):
     return 0
 
 
+def coupling_input(args):
+    """(org, structure input) over --days up to --at: of_model.structure_input with the works, hand-overs and asks."""
+    import of_handover
+    import of_measures
+    import of_works
+    org = _org(args.org)
+    b = of_model.epoch(args.at) if args.at else time.time()
+    a = b - max(1, args.days) * 86400
+    doc, rev = of_model.registry_at(org["repo"], b)
+    rows = of_studio.org_rows(_rows(of_model.iso(a - 2 * 86400), names=of_studio.kinds()), org,
+                              [o for o in of_studio.orgs() if o["name"] != org["name"]])
+    rows = [r for r in rows if (of_model.epoch(r.get("ts")) or 0) <= b]
+    m = of_model.build(doc, rows, at=b, org=org["name"], rev=rev, window_h=max(1, args.days) * 24)
+    works = of_works.rows_for(m, rows, org, b, of_measures.attention(m, rows, b))
+    hs = of_handover.project([r for r in rows if str(r.get("name")).startswith("of.handover_")])
+    return org, of_model.structure_input(m, rows, a, b, works, hs.values(), of_measures.asks_routed(m, rows))
+
+
+def cmd_coupling(args):
+    """Who works with whom over --days (default 14), for a structure review (docs/studio.md §2.5): the units' DSM, the
+    strongest cross-unit pairs, the works that couple units, each position's load, the positions most depended on,
+    and those finished or without work. --json: all of it, pairs keyed `from>to`."""
+    org, s = coupling_input(args)
+    if args.json:
+        by_pair = lambda d: {f"{a}>{b}": v for (a, b), v in sorted(d.items())}
+        print(json.dumps(dict(s, pairs=by_pair(s["pairs"]), unit_dsm=by_pair(s["unit_dsm"]),
+                              works_across_units={k: by_pair(v) for k, v in s["works_across_units"].items()}),
+                         indent=1, ensure_ascii=False, sort_keys=True))
+        return 0
+    P, top = s["positions"], args.top
+    tot = lambda e: e["messages"] + e["handovers"] + e["asks"]
+    act = [n for n, x in P.items() if x["status"] == "active"]
+    print(f"{s['org']} · {s['from'][:16]}Z to {s['to'][:16]}Z ({args.days} days) · registry {str(s['registry_rev'])[:12]}")
+    print(f"positions {len(P)} ({len(act)} active) in {len(s['units'])} units · messages "
+          f"{sum(e['messages'] for e in s['pairs'].values())} · hand-overs {sum(e['handovers'] for e in s['pairs'].values())} · "
+          f"asks to a unit owner {sum(e['asks'] for e in s['pairs'].values())} · asks to the owner "
+          f"{sum(x['asks_owner'] for x in P.values())} ({sum(x['asks_owner_declared'] for x in P.values())} with of ask)")
+    print("units: " + "; ".join(f"{u} {len(ns)}" for u, ns in s["units"].items()))
+    print(f"open works {len(s['works'])} ({sum(1 for w in s['works'] if w['doers'])} with a doer); "
+          "a unit is the one holding the position's system (registry units:); line: a position and its accountable owner")
+    print("\nBETWEEN UNITS (from sends to; within a unit: its own row; line: of all, between a position and its owner)")
+    _table([(u, v, e["messages"], e["handovers"], e["asks"], e["line"], e["pairs"])
+            for (u, v), e in sorted(s["unit_dsm"].items(), key=lambda kv: (kv[0][0] == kv[0][1], -tot(kv[1])))],
+           ["from unit", "to unit", "messages", "hand-overs", "asks", "line", "position pairs"])
+    cross = [(k, e) for k, e in s["pairs"].items() if P[k[0]]["unit"] != P[k[1]]["unit"]]
+    for title, keep in (("PEERS (not a position and its owner)", lambda e: not e["line"]), ("LINE (a position and its owner)", lambda e: e["line"])):
+        print(f"\nSTRONGEST CROSS-UNIT PAIRS, {title} (top {top})")
+        _table([(p, P[p]["unit"], q, P[q]["unit"], e["messages"], e["handovers"], e["asks"])
+                for (p, q), e in sorted(cross, key=lambda kv: -tot(kv[1])) if keep(e)][:top],
+               ["from", "unit", "to", "unit", "messages", "hand-overs", "asks"])
+    print(f"\nSTRONGEST PAIRS, ANY UNIT (top {top})")
+    _table([(p, q, e["messages"], e["handovers"], e["asks"], "line" if e["line"] else "") for (p, q), e in sorted(s["pairs"].items(), key=lambda kv: -tot(kv[1]))[:top]],
+           ["from", "to", "messages", "hand-overs", "asks", ""])
+    for how, d in s["works_across_units"].items():
+        print(f"\nOPEN WORKS ACROSS UNITS, {how.replace('_', ' ')}")
+        _table([(u, v, len(ws), ", ".join(ws[:3]) + (" …" if len(ws) > 3 else "")) for (u, v), ws in sorted(d.items(), key=lambda kv: -len(kv[1]))],
+               ["unit", "unit", "works", "for example"])
+    print(f"\nOPEN WORKS BY SYSTEM (top {top})")
+    by_sys = {}
+    for w in s["works"]:
+        for x in w["systems"]:
+            by_sys.setdefault(x, []).append(w["id"])
+    _table([(x, len(ws), ", ".join(ws[:3]) + (" …" if len(ws) > 3 else "")) for x, ws in sorted(by_sys.items(), key=lambda kv: -len(kv[1]))[:top]],
+           ["system", "open works", "for example"])
+    print("\nLOAD PER ACTIVE POSITION (most turns first)")
+    _table([(n, x["unit"], x["turns"], x["messages_out"], x["messages_in"], len(x["senders"]), len(x["units_in"]),
+             f"{x['handovers_out']}/{x['handovers_in']}", f"{x['asks_owner']} ({x['asks_owner_declared']})", x["asks_in"],
+             len(x["works_open"]), len(x["works_active"]), len(x["waited_on"]))
+            for n, x in sorted(P.items(), key=lambda kv: -kv[1]["turns"]) if x["status"] == "active"],
+           ["position", "unit", "turns", "msgs out", "msgs in", "senders", "units in", "h-o out/in",
+            "asks owner (of ask)", "asks in", "open works", "active", "waited on"])
+    print(f"\nMOST DEPENDED ON (messages, hand-overs and asks received, most first; top {top})")
+    rec = lambda x: x["messages_in"] + x["handovers_in"] + x["asks_in"]
+    _table([(n, x["unit"], rec(x), x["received_other_units"], len(x["senders"]), len(x["units_in"]), x["asks_in"],
+             len(x["waited_on"]), x["turns"], f"{x['asks_owner']} ({x['asks_owner_declared']})")
+            for n, x in sorted(P.items(), key=lambda kv: -rec(kv[1]))[:top]],
+           ["position", "unit", "received", "from other units", "senders", "units in", "asks in", "waited on", "turns",
+            "asks owner (of ask)"])
+    print(f"\nFINISHED (status not active): {', '.join(s['finished']) or '-'}")
+    print(f"ACTIVE, NO TURN AND NO OPEN WORK: {', '.join(s['idle']) or '-'}")
+    print(f"ACTIVE WITH TURNS, NO OPEN WORK ON THE MAP: {', '.join(s['busy_without_work']) or '-'}")
+    return 0
+
+
 def cmd_cells(args):
     """Ownership cells (RFC 0007 §2.3): the needed cells of live systems with no owner, cells with 3 or more doers,
     two deciders, and unknown systems or kinds of work in owns and needs; --json: every cell."""
@@ -824,7 +912,7 @@ def main(argv=None):
     mo.add_argument("what", nargs="?", default="summary",
                     choices=["summary", "positions", "systems", "dsm", "dmm", "coverage", "position-dsm",
                              "measures", "snapshot", "gate", "issues", "escalations", "senders", "queues", "works", "polls", "loops", "corrections", "usage",
-                             "activity", "evidence", "cells"])
+                             "activity", "evidence", "cells", "coupling"])
     mo.add_argument("--org")
     mo.add_argument("--at", help="ISO time (UTC); default now")
     mo.add_argument("--json", action="store_true")
@@ -847,7 +935,9 @@ def main(argv=None):
     mo.add_argument("--exclude-unit", help="polls: leave out this unit's positions (a unit judged apart)")
     mo.add_argument("--write", action="store_true", help="escalations: record newly fired ones as of.escalation_due")
     mo.add_argument("--weeks", type=int, default=of_studio.CORRECTION_WEEKS, help="corrections: ISO weeks up to --at")
-    mo.add_argument("--days", type=int, default=of_model.CODE_DAYS, help="activity, evidence: days of code up to --at")
+    mo.add_argument("--days", type=int, help=f"activity, evidence: days of code up to --at (default {of_model.CODE_DAYS}); "
+                                              "coupling: days of records (default 14)")
+    mo.add_argument("--top", type=int, default=20, help="coupling: rows in each ranked table")
     mo.add_argument("--areas", type=int, metavar="DEPTH", help="activity: also per changed directory DEPTH levels deep")
     wk = sub.add_parser("works", prog="of works", help="the works map and each work's state (= of model works; docs/works.md)",
                         description="The works of an organization and each work's state, the rows of Studio's Works view (docs/works.md).")

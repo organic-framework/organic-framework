@@ -1287,6 +1287,190 @@ def unresolved_senders(model, rows, a, b):
     return out
 
 
+# ------------------------------------------------------------------ who works with whom (a structure review's input)
+
+NO_UNIT = "(no unit)"
+UNDELIVERED = ("unresolved", "failed", "expired")
+
+
+def party(addr, org=None):
+    """A relay or hand-over address (`org:name` or `name`) as a bare position name when it is organization `org`'s
+    (or names no organization), else None."""
+    o, sep, n = str(addr or "").partition(":")
+    if not sep:
+        return o or None
+    return n if (org is None or o == org) else None
+
+
+def peer_pairs(model, rows, a, b, slack_s=5.0):
+    """Counter{(sender, receiver)}: messages between two registered positions sent in [a, b), each counted once.
+    Relay messages (`of send`) by msg_id: the sender's of.agent_message_out (source of), else, for one sent from
+    another machine, the receiver's delivery log (of.agent_message_in, source of). Direct messages (Claude Code's
+    SendMessage: of.agent_message_out from the hook or an import): the receiver is to_position, else the session of
+    the received of.agent_message_in with the same text within ±slack_s. Undelivered messages are not counted."""
+    positions, org = model["positions"], model.get("org")
+    sp = session_positions(model, rows)
+
+    def who(r):
+        return r.get("position") if r.get("position") in positions else sp.get(r.get("session_id"))
+
+    got = {}   # a direct message as received: text prefix -> [(t, receiver)]
+    for r in rows:
+        pl = r.get("payload") or {}
+        if r.get("name") == "of.agent_message_in" and is_received(r) and pl.get("from_kind") != "subagent":
+            k = _prefix(_WRAPPED.sub("", str(pl.get("text") or ""), count=1))
+            if k and who(r):
+                got.setdefault(k, []).append((epoch(r.get("ts")) or 0, who(r)))
+    out, sent, logged = collections.Counter(), set(), []
+    for r in rows:
+        if r.get("name") not in PEER_KINDS or not in_window(r, a, b):
+            continue
+        pl = r.get("payload") or {}
+        if r["name"] == "of.agent_message_in":
+            if r.get("source") == "of" and pl.get("msg_id"):
+                logged.append(r)
+            continue
+        if pl.get("delivery") in UNDELIVERED:
+            continue
+        p = who(r)
+        if pl.get("msg_id"):   # the relay
+            sent.add(pl["msg_id"])
+            q = party(pl.get("to"), org)
+        else:
+            q = pl.get("to_position")
+            if q not in positions:
+                t = epoch(r.get("ts")) or 0
+                c = [(abs(t - t2), q2) for t2, q2 in got.get(_prefix(pl.get("text")), ()) if abs(t - t2) <= slack_s]
+                q = min(c)[1] if c else None
+        if p in positions and q in positions and p != q:
+            out[(p, q)] += 1
+    for r in logged:   # sent from another machine: only its delivery log is here
+        pl = r.get("payload") or {}
+        if pl["msg_id"] in sent:
+            continue
+        sent.add(pl["msg_id"])
+        p, q = party(pl.get("from"), org), who(r)
+        if p in positions and q in positions and p != q:
+            out[(p, q)] += 1
+    return out
+
+
+def interactions(model, rows, a, b, handovers=(), asks=()):
+    """{(p, q): {messages, handovers, asks}}: who works with whom in [a, b), the position DSM of a structure review.
+    messages: peer_pairs; handovers: those p proposed to q in the window (states from of_handover.project);
+    asks: those p raised in the window that wait on q, a delegated unit's owner ([(ask, recipient)] from
+    of_measures.asks_routed). An ask that waits on the human owner is the position's load, not a pair."""
+    positions, org = model["positions"], model.get("org")
+    out = {}
+
+    def cell(p, q):
+        return out.setdefault((p, q), {"messages": 0, "handovers": 0, "asks": 0})
+
+    for (p, q), n in peer_pairs(model, rows, a, b).items():
+        cell(p, q)["messages"] += n
+    for h in handovers:
+        t = epoch(h.get("proposed_at"))
+        p, q = party(h.get("from"), org), party(h.get("to"), org)
+        if t is not None and a <= t < b and p in positions and q in positions and p != q:
+            cell(p, q)["handovers"] += 1
+    for k, q in asks:
+        t, p = epoch(k.get("ts")), k.get("position")
+        if t is not None and a <= t < b and p in positions and q in positions and p != q:
+            cell(p, q)["asks"] += 1
+    return out
+
+
+def unit_of_system(model, sid):
+    """The declared unit (registry `units:`) holding a system, through its parents; None when no unit holds it."""
+    by = {s: uid for uid, u in (model.get("org_units") or {}).items() for s in u["systems"]}
+    seen = set()
+    while sid and sid not in seen:
+        if sid in by:
+            return by[sid]
+        seen.add(sid)
+        sid = (model["systems"].get(sid) or {}).get("parent")
+    return None
+
+
+CLOSED_WORK = ("done", "parked", "finished")
+
+
+def structure_input(model, rows, a, b, works=(), handovers=(), asks=()):
+    """Who works with whom over [a, b), for a structure review (docs/studio.md §2.5): the position DSM and its roll-up
+    to units, the works that couple units (by their doers and by their systems), each position's load, and the
+    positions finished or without work. works: rows of of_works (id, state, doers, systems, waits); handovers and
+    asks: as interactions() takes them."""
+    positions = model["positions"]
+    unit = {n: p.get("unit") or NO_UNIT for n, p in positions.items()}
+    pairs = interactions(model, rows, a, b, handovers, asks)
+    sp = session_positions(model, rows)
+    load = {n: {"unit": unit[n], "system": p.get("system"), "kind": p.get("kind"), "status": p.get("status"),
+                "accountable": p.get("accountable"), "turns": 0, "messages_out": 0, "messages_in": 0,
+                "handovers_out": 0, "handovers_in": 0, "asks_out": 0, "asks_in": 0, "asks_owner": 0,
+                "asks_owner_declared": 0, "received_other_units": 0, "senders": [], "receivers": [], "units_in": [], "units_out": [],
+                "works_open": [], "works_active": [], "waited_on": []}
+            for n, p in positions.items()}
+    for r in rows:
+        if r.get("name") == "of.turn_end" and in_window(r, a, b):
+            p = r.get("position") if r.get("position") in positions else sp.get(r.get("session_id"))
+            if p:
+                load[p]["turns"] += 1
+    units_dsm = {}
+    for (p, q), e in pairs.items():
+        # line: a position and its accountable owner (a delegated unit's owner sits in the unit of its own system)
+        e["line"] = positions[p].get("accountable") == q or positions[q].get("accountable") == p
+        n = e["messages"] + e["handovers"] + e["asks"]
+        for k in ("messages", "handovers", "asks"):
+            load[p][k + "_out"] += e[k]
+            load[q][k + "_in"] += e[k]
+        if unit[p] != unit[q]:
+            load[q]["received_other_units"] += n
+        load[p]["receivers"].append(q)
+        load[q]["senders"].append(p)
+        u = units_dsm.setdefault((unit[p], unit[q]), {"messages": 0, "handovers": 0, "asks": 0, "pairs": 0, "line": 0})
+        u["pairs"] += 1
+        u["line"] += n if e["line"] else 0
+        for k in ("messages", "handovers", "asks"):
+            u[k] += e[k]
+    for x in load.values():
+        x["units_in"] = sorted({unit[s] for s in x["senders"]} - {x["unit"]})
+        x["units_out"] = sorted({unit[s] for s in x["receivers"]} - {x["unit"]})
+        x["senders"], x["receivers"] = sorted(x["senders"]), sorted(x["receivers"])
+    for k, acc in asks:
+        t, p = epoch(k.get("ts")), k.get("position")
+        if p in positions and t is not None and a <= t < b and acc == HUMAN:
+            load[p]["asks_owner"] += 1
+            load[p]["asks_owner_declared"] += str(k.get("kind") or "").startswith("question (declared)")   # `of ask`
+    by_doers, by_systems, wrows = {}, {}, []
+    for w in works:
+        if w.get("state") in CLOSED_WORK:
+            continue
+        doers = [d for d in w.get("doers") or [] if d in positions]
+        du = sorted({unit[d] for d in doers})
+        su = sorted({unit_of_system(model, s) or NO_UNIT for s in w.get("systems") or []})
+        for d in doers:
+            load[d]["works_open"].append(w["id"])
+            if w.get("state") == "active":
+                load[d]["works_active"].append(w["id"])
+        for x in w.get("waits") or []:
+            if x.get("on") in positions:
+                load[x["on"]]["waited_on"].append(w["id"])
+        for us, into in ((du, by_doers), (su, by_systems)):
+            for i, u in enumerate(us):
+                for v in us[i + 1:]:
+                    into.setdefault((u, v), []).append(w["id"])
+        wrows.append({"id": w["id"], "state": w.get("state"), "doers": doers, "systems": list(w.get("systems") or []),
+                      "units_by_doers": du, "units_by_systems": su})
+    finished = sorted(n for n, p in positions.items() if p.get("status") != "active")
+    idle = sorted(n for n, x in load.items() if x["status"] == "active" and not x["turns"] and not x["works_open"])
+    unmapped = sorted(n for n, x in load.items() if x["status"] == "active" and x["turns"] and not x["works_open"])
+    return {"org": model.get("org"), "from": iso(a), "to": iso(b), "registry_rev": model.get("registry_rev"),
+            "units": {u: sorted(n for n in positions if unit[n] == u) for u in sorted(set(unit.values()))},
+            "pairs": pairs, "unit_dsm": units_dsm, "positions": load, "works": wrows,
+            "works_across_units": {"by_doers": by_doers, "by_systems": by_systems},
+            "finished": finished, "idle": idle, "busy_without_work": unmapped}
+
+
 # readings of the measures (bin/of_measures.py, which imports this module: imported when called)
 
 def founder_messages(rows):

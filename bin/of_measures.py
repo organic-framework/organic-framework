@@ -127,6 +127,13 @@ def _cats(r, version):
 def asks_of(model, rows, who=of_model.HUMAN, effective=None):
     """The ask lifecycle of bin/of_asks.py, restricted to asks whose accountable human is `who`.
     Asks from sessions without a position go to the founder."""
+    return [k for k, acc in asks_routed(model, rows, effective) if acc == who]
+
+
+def asks_routed(model, rows, effective=None):
+    """[(ask, recipient)]: every ask of bin/of_asks.py's lifecycle with whom it waits on: the position's accountable
+    owner at the ask's time (a delegated unit's owner once its delegation took effect), an escalated copy whom it names,
+    the human owner for a session without a position. Asks the judge called no question are left out."""
     positions = model["positions"]
     sessions = of_model.session_index(positions)
     named = []
@@ -155,8 +162,7 @@ def asks_of(model, rows, who=of_model.HUMAN, effective=None):
                        position=pl.get("from_position") or p)   # the copy is written in the escalating session
         else:
             acc = of_model.accountable_at(positions[p], epoch(ask.get("ts")), effective) if p in positions else of_model.HUMAN
-        if acc == who:
-            out.append(ask)
+        out.append((ask, acc))
     return out
 
 

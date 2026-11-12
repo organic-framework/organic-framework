@@ -1978,6 +1978,114 @@ class GoalTreeTest(unittest.TestCase):
             self.assertIn("No goals in this organization", of_studio.view_goals(d))
 
 
+class StructureInputTest(unittest.TestCase):
+    """Who works with whom over a window, for a structure review (of_conductor msg 01a1d096-4ca3, 2026-11-12): messages
+    once each, hand-overs and asks as pairs, rolled up to units with the line to one's owner apart; works that couple
+    units; each position's load; positions finished or without work (`of model coupling`)."""
+    A, B = "2026-11-04T00:00Z", "2026-11-05T00:00Z"
+    DOC = {"organization": "acme",
+           "systems": {"acme": {"keeper": "acme_org"}, "k8s": {"keeper": "k8s_keeper"}, "bot": {"keeper": "bot_operator"},
+                       "bot.send": {"parent": "bot"}},
+           "units": {"platform": {"owner": "plat_owner", "systems": ["k8s"]}, "trading": {"owner": "founder", "systems": ["bot"]}},
+           "delegations": [{"id": "del-1", "unit": "platform", "systems": ["k8s"], "positions": ["k8s_keeper"],
+                            "from_owner": "founder", "to_owner": "plat_owner"}],
+           "positions": [{"name": "k8s_keeper", "system": "k8s", "holder": {"session": "s-k8s"}},
+                         {"name": "plat_owner", "system": "acme", "holder": {"runtime": "human"}},
+                         {"name": "bot_operator", "system": "bot", "holder": {"session": "s-op"}},
+                         {"name": "bot_search", "system": "bot", "owner": "bot_operator", "holder": {"session": "s-search"}},
+                         {"name": "acme_org", "system": "acme", "holder": {"session": "s-org"}},
+                         {"name": "idle_pos", "system": "k8s"},
+                         {"name": "old_pos", "system": "bot", "status": "finished"}]}
+
+    def rows(self):
+        out = lambda i, ts, sid, pl, src="of", pos=None: ev(i, ts, "of.agent_message_out", sid, pl, position=pos, source=src)
+        inn = lambda i, ts, sid, pl, src="of", pos=None: ev(i, ts, "of.agent_message_in", sid, pl, position=pos, source=src)
+        return [
+            out(1, "2026-11-04T01:00:00Z", "s-search", {"to": "acme:k8s_keeper", "to_position": "k8s_keeper", "msg_id": "m1",
+                                                        "delivery": "queued", "via": "relay"}, pos="bot_search"),
+            inn(2, "2026-11-04T01:00:05Z", "s-k8s", {"from": "acme:bot_search", "msg_id": "m1", "delivery": "delivered"}),
+            inn(3, "2026-11-04T02:00:00Z", "s-op", {"from": "acme:k8s_keeper", "msg_id": "m2", "delivery": "delivered"}),  # another machine
+            out(4, "2026-11-04T03:00:00Z", "s-k8s", {"to": "other:k8s_keeper", "to_position": "k8s_keeper", "msg_id": "m3"}),
+            out(5, "2026-11-04T04:00:00Z", "s-op", {"to": "k8s_keeper", "to_position": "k8s_keeper", "delivery": "delivered",
+                                                    "text": "deploy please"}, src="hook"),
+            out(6, "2026-11-04T05:00:00Z", "s-k8s", {"to": "uds:/tmp/x.sock", "to_position": None, "delivery": "delivered",
+                                                     "text": "the node is back"}, src="hook"),
+            inn(7, "2026-11-04T05:00:01Z", "s-op", {"from": "uds:/tmp/y.sock", "from_kind": "peer",
+                                                    "text": '<cross-session-message from="uds:/tmp/y.sock">the node is back'}, src="hook"),
+            out(8, "2026-11-04T06:00:00Z", "s-k8s", {"to": "acme:plat_owner", "to_position": "plat_owner", "msg_id": "m4"}),
+            out(9, "2026-11-04T07:00:00Z", "s-op", {"to": "nobody", "delivery": "unresolved", "text": "hello"}, src="hook"),
+            out(10, "2026-11-03T07:00:00Z", "s-op", {"to": "acme:k8s_keeper", "msg_id": "m0"}),            # before the window
+            ev(11, "2026-11-04T08:00:00Z", "of.turn_end", "s-op"), ev(12, "2026-11-04T09:00:00Z", "of.turn_end", "s-op"),
+            ev(13, "2026-11-04T08:00:00Z", "of.turn_end", "s-k8s"), ev(14, "2026-11-04T08:00:00Z", "of.turn_end", "s-search"),
+        ]
+
+    def inputs(self):
+        hs = [{"from": "acme_org", "to": "acme:k8s_keeper", "proposed_at": "2026-11-04T10:00Z"},
+              {"from": "bot_search", "to": "bot_operator", "proposed_at": "2026-11-03T10:00Z"}]           # before the window
+        asks = [({"ts": "2026-11-04T11:00Z", "position": "k8s_keeper", "kind": "question (declared)"}, "plat_owner"),
+                ({"ts": "2026-11-04T11:00Z", "position": "bot_operator", "kind": "question (declared) blocking"}, of_model.HUMAN),
+                ({"ts": "2026-11-04T11:00Z", "position": "bot_search", "kind": "question (heuristic)"}, of_model.HUMAN)]
+        works = [{"id": "w1", "state": "active", "doers": ["bot_operator", "k8s_keeper"], "systems": ["bot.send", "k8s"],
+                  "waits": [{"position": "bot_operator", "on": "k8s_keeper"}]},
+                 {"id": "w2", "state": "done", "doers": ["bot_search"], "systems": ["bot"]}]
+        return works, hs, asks
+
+    def test_messages_are_counted_once_each(self):
+        m = of_model.build(self.DOC, [], at=self.B, org="acme")
+        a, b = of_model.epoch(self.A), of_model.epoch(self.B)
+        self.assertEqual(dict(of_model.peer_pairs(m, self.rows(), a, b)),
+                         {("bot_search", "k8s_keeper"): 1, ("k8s_keeper", "bot_operator"): 2,
+                          ("bot_operator", "k8s_keeper"): 1, ("k8s_keeper", "plat_owner"): 1})
+        works, hs, asks = self.inputs()
+        pairs = of_model.interactions(m, self.rows(), a, b, hs, asks)
+        self.assertEqual(pairs[("acme_org", "k8s_keeper")], {"messages": 0, "handovers": 1, "asks": 0})
+        self.assertEqual(pairs[("k8s_keeper", "plat_owner")], {"messages": 1, "handovers": 0, "asks": 1})
+        self.assertNotIn(("bot_search", "bot_operator"), pairs)
+
+    def test_units_load_and_works(self):
+        m = of_model.build(self.DOC, [], at=self.B, org="acme")
+        works, hs, asks = self.inputs()
+        s = of_model.structure_input(m, self.rows(), of_model.epoch(self.A), of_model.epoch(self.B), works, hs, asks)
+        self.assertEqual(s["units"], {"(no unit)": ["acme_org", "plat_owner"], "platform": ["idle_pos", "k8s_keeper"],
+                                      "trading": ["bot_operator", "bot_search", "old_pos"]})
+        self.assertTrue(s["pairs"][("k8s_keeper", "plat_owner")]["line"])      # its delegated unit's owner, in another unit
+        self.assertFalse(s["pairs"][("bot_search", "k8s_keeper")]["line"])
+        self.assertEqual(s["unit_dsm"][("platform", "(no unit)")], {"messages": 1, "handovers": 0, "asks": 1, "pairs": 1, "line": 2})
+        k = s["positions"]["k8s_keeper"]
+        self.assertEqual((k["turns"], k["messages_in"], k["senders"], k["units_in"], k["received_other_units"]),
+                         (1, 2, ["acme_org", "bot_operator", "bot_search"], ["(no unit)", "trading"], 3))
+        self.assertEqual((k["works_open"], k["works_active"], k["waited_on"]), (["w1"], ["w1"], ["w1"]))
+        self.assertEqual((s["positions"]["bot_operator"]["asks_owner"], s["positions"]["bot_operator"]["asks_owner_declared"]), (1, 1))
+        self.assertEqual((s["positions"]["bot_search"]["asks_owner"], s["positions"]["bot_search"]["asks_owner_declared"]), (1, 0))
+        self.assertEqual(s["works_across_units"], {"by_doers": {("platform", "trading"): ["w1"]},
+                                                   "by_systems": {("platform", "trading"): ["w1"]}})   # bot.send: bot's unit
+        self.assertEqual((s["finished"], s["idle"], s["busy_without_work"]),
+                         (["old_pos"], ["acme_org", "idle_pos", "plat_owner"], ["bot_search"]))
+        # the command: text and JSON
+        import contextlib
+        import io
+        import json
+        import types
+        from unittest import mock
+        import of_studio_cli
+        args = types.SimpleNamespace(json=False, days=1, top=5)
+        for as_json in (False, True):
+            args.json, buf = as_json, io.StringIO()
+            with mock.patch.object(of_studio_cli, "coupling_input", return_value=({"name": "acme"}, s)), \
+                    contextlib.redirect_stdout(buf):
+                of_studio_cli.cmd_coupling(args)
+            out = buf.getvalue()
+            if as_json:
+                j = json.loads(out)
+                self.assertEqual(j["pairs"]["k8s_keeper>plat_owner"]["line"], True)
+                self.assertEqual(j["works_across_units"]["by_doers"], {"platform>trading": ["w1"]})
+            else:
+                for want in ("messages 5 · hand-overs 1 · asks to a unit owner 1 · asks to the owner 2 (1 with of ask)",
+                             "STRONGEST CROSS-UNIT PAIRS, PEERS", "MOST DEPENDED ON", "FINISHED (status not active): old_pos",
+                             "ACTIVE, NO TURN AND NO OPEN WORK: acme_org, idle_pos, plat_owner"):
+                    self.assertIn(want, out)
+
+
 def correction(i, ts, sid=None, position=None, repeat_of=None, rule="say the money metric before a speed change", **pl):
     payload = dict({"position": position, "rule": rule, "kind": "process", "repeat_of": repeat_of}, **pl)
     return dict(ev(i, ts, "of.founder_correction", sid, {k: v for k, v in payload.items() if v is not None}), source="of")
