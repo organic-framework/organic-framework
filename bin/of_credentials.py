@@ -27,6 +27,8 @@ sys.path.insert(0, HERE)
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CACHE = "guard-credentials.json"
+CACHE_VERSION = 2  # 2: keychain items and protected_code (docs/guard.md G20, G21)
+KEYCHAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}\*?$")  # a service name, or a prefix with a trailing *
 # warn: allowed, noted once per session and recorded; deny: denied. Two switches (a user organization's plan, msg
 # 01a1c89d, 2026-11-11): a file a credential names, read by a position that neither lists nor keeps it (MODE_NAMED;
 # phase 1, a catalogue of explicit paths and no root), and an undeclared file under a root (MODE_ROOT; phase 2, once
@@ -78,9 +80,11 @@ def _org_entry(org, doc):
     for cid, c in (doc.get("credentials") or {}).items() if isinstance(doc.get("credentials"), dict) else ():
         c = c if isinstance(c, dict) else {}
         paths = c.get("paths") if isinstance(c.get("paths"), list) else []
+        keychain = c.get("keychain") if isinstance(c.get("keychain"), list) else []
         creds[str(cid)] = {"paths": [_abs(p) for p in paths if isinstance(p, str)], "keeper": c.get("keeper"),
                            "acts_as": c.get("acts_as"), "ref": c.get("ref") if isinstance(c.get("ref"), str) else None,
-                           "rotate_days": c.get("rotate_days") if isinstance(c.get("rotate_days"), int) else 90}
+                           "rotate_days": c.get("rotate_days") if isinstance(c.get("rotate_days"), int) else 90,
+                           "keychain": [k for k in keychain if _keychain_ok(k)]}
     positions = {}
     for p in doc.get("positions") or []:
         if isinstance(p, dict) and p.get("name"):
@@ -88,8 +92,46 @@ def _org_entry(org, doc):
             positions[str(p["name"])] = [str(i) for i in ids]
     contacts = sorted({str(c).strip().lower() for a in doc.get("authorities") or [] if isinstance(a, dict)
                        for c in a.get("contacts") or [] if isinstance(c, str) and c.strip()})
+    code = doc.get("protected_code") if isinstance(doc.get("protected_code"), list) else []
     return {"roots": [r for r in roots if r not in NOT_A_ROOT], "credentials": creds, "positions": positions,
-            "authorities": contacts}  # docs/guard.md G16: the organization's own regulators, hosts and addresses
+            "authorities": contacts,  # docs/guard.md G16: the organization's own regulators, hosts and addresses
+            "protected_code": [_abs(c) for c in code if _code_path_ok(c)]}  # G21
+
+
+def _keychain_ok(k):
+    """A keychain: entry: a service name, or a prefix of at least four characters with a trailing *."""
+    return isinstance(k, str) and bool(KEYCHAIN_RE.match(k)) and len(k.rstrip("*")) >= 4
+
+
+def _code_path_ok(p):
+    """A protected_code entry: an absolute or home path, or a glob of one, never the home folder or / itself."""
+    if not isinstance(p, str) or not p.strip().startswith(("~/", "/", "$HOME/", "${HOME}/")) or "\n" in p:
+        return False
+    a = _abs(p)
+    return a not in ("/", os.path.expanduser("~")) and len(a.strip("/").split("/")) >= 2
+
+
+def protection(cat):
+    """(keychain services, protected code paths) of every organization: what docs/guard.md G20 and G21 keep from
+    every agent session."""
+    keychain = sorted({k for e in cat.values() for c in (e.get("credentials") or {}).values()
+                       for k in c.get("keychain") or []})
+    code = sorted({p for e in cat.values() for p in e.get("protected_code") or []})
+    return keychain, code
+
+
+def cached_protection(state_dir):
+    """protection() from the guard's cache file alone, with no YAML: the hook calls it before the critical denies,
+    which decide before PyYAML is imported (docs/guard.md, How a rule changes). A missing or old cache gives nothing;
+    the catalogue step of the same hook call rebuilds it."""
+    try:
+        with open(os.path.join(state_dir, CACHE)) as fh:
+            c = json.load(fh)
+    except (OSError, ValueError):
+        return [], []
+    if c.get("version") != CACHE_VERSION or not isinstance(c.get("orgs"), dict):
+        return [], []
+    return protection(c["orgs"])
 
 
 def load(orgs_file=None):
@@ -123,11 +165,12 @@ def cached(state_dir, orgs_file=None):
     stamp = [mt(_orgs_file(orgs_file))]
     regs = c.get("registries") or []
     stamp += [mt(r) for r in regs]
-    if c.get("stamp") == stamp and isinstance(c.get("orgs"), dict):
+    if c.get("stamp") == stamp and c.get("version") == CACHE_VERSION and isinstance(c.get("orgs"), dict):
         return c["orgs"]
     regs = [r for _, r in _registries(orgs_file)]
     orgs = load(orgs_file)
-    c = {"stamp": [mt(_orgs_file(orgs_file))] + [mt(r) for r in regs], "registries": regs, "orgs": orgs}
+    c = {"stamp": [mt(_orgs_file(orgs_file))] + [mt(r) for r in regs], "registries": regs, "orgs": orgs,
+         "version": CACHE_VERSION}
     try:
         os.makedirs(state_dir, exist_ok=True)
         tmp = f"{path}.{os.getpid()}"
@@ -331,10 +374,20 @@ def check(orgs_file=None):
                 refs.setdefault(str(ref).lower(), cid)
             if c.get("rotate_days") is not None and not (isinstance(c["rotate_days"], int) and c["rotate_days"] > 0):
                 problems.append(f"{where}: rotate_days must be a whole number of days")
-            if paths is None and ref is not None:
+            keychain = c.get("keychain")
+            if keychain is not None:  # docs/guard.md G20: macOS keychain items no agent session may name
+                if not isinstance(keychain, list) or not keychain:
+                    problems.append(f"{where}: keychain must be a non-empty list of keychain service names")
+                    keychain = []
+                for k in keychain:
+                    if not _keychain_ok(k):
+                        problems.append(f"{where}: keychain: {str(k)[:40]!r} is not a service name (letters, digits, "
+                                        "._@:-, at least four before an optional trailing *)")
+            if paths is None and (ref is not None or keychain):
                 paths = []
             elif not isinstance(paths, list) or not paths:
-                problems.append(f"{where}: needs ref (a secret reference) or paths (a non-empty list of file paths)")
+                problems.append(f"{where}: needs ref (a secret reference), paths (a non-empty list of file paths) or "
+                                "keychain (macOS keychain service names)")
                 paths = []
             for p in paths:
                 if not isinstance(p, str) or not p.startswith(("~/", "/", "$HOME/")) or "\n" in p or " " in p.strip():
@@ -352,6 +405,13 @@ def check(orgs_file=None):
             if c.get("acts_as") is not None and not isinstance(c.get("acts_as"), str):
                 problems.append(f"{where}: acts_as must be text (what the credential acts as)")
         problems += authorities_problems(rel, doc.get("authorities"))
+        code = doc.get("protected_code")
+        if code is not None and not isinstance(code, list):
+            problems.append(f"{rel}: protected_code must be a list of paths or globs (docs/guard.md G21)")
+        for pth in code if isinstance(code, list) else []:
+            if not _code_path_ok(pth):
+                problems.append(f"{rel}: protected_code: {str(pth)[:60]!r} is not a path or glob under / or ~/ two "
+                                "levels deep at least (docs/guard.md G21)")
         for p in doc.get("positions") or []:
             if not isinstance(p, dict) or p.get("credentials") is None:
                 continue
