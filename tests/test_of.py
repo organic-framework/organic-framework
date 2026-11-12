@@ -80,7 +80,8 @@ class RegistryTest(unittest.TestCase):
                       ladder: [{rung: oracle, accept: ok}]
                   w-b: {title: B, kind: speed, owner: nobody_here}
                 """)
-            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: mt, path: %s/org}\n" % root)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: wk, path: %s/org}\n" % root)
+            of.BROKEN.discard("wk")  # another test may leave its organization marked broken
             orgs = os.path.join(root, "conf/orgs.yaml")
             quick, deep = ("\n".join(of.load_positions(orgs, deep=d)[1]) for d in (False, True))
             self.assertNotIn("has no segment", quick)
