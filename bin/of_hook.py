@@ -868,7 +868,8 @@ def _guard(hook, sess):
     global OUTPUT
     try:  # G20, G21: the organizations' keychain items and protected code, from the catalogue's cache (no YAML)
         import of_credentials
-        of_guard.use_protection(*of_credentials.cached_protection(STATE))
+        of_guard.use_protection(*of_credentials.guard_protection(
+            STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")))
     except Exception:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
         pass
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
