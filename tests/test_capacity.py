@@ -1213,12 +1213,13 @@ class Resume(unittest.TestCase):
 
     def test_the_shell_input_line_is_emptied_right_before_the_command(self):
         """2026-11-12: a recalled history line left at the prompt took the resume as its tail, and another position's
-        session started a second copy in the pane. Ctrl-U goes as a raw byte: send-keys "ctrl+u" types "7;5u"."""
+        session started a second copy in the pane. Ctrl-C, which drops continuation lines too, goes as a raw byte:
+        send-keys "ctrl+u" typed "7;5u"."""
         self.resume()
         texts = [i for i, c in enumerate(self.calls) if c[:2] == ("pane", "send-text")]
         run = next(i for i, c in enumerate(self.calls) if c[:2] == ("pane", "run"))
         self.assertTrue(texts)
-        self.assertEqual(self.calls[texts[-1]][2:], ("w6:p18", "\x15"))
+        self.assertEqual(self.calls[texts[-1]][2:], ("w6:p18", "\x03"))
         self.assertEqual(texts[-1], run - 1)
 
     def test_of_apply_runs_on_ofs_own_python_not_the_shebang(self):
