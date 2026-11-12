@@ -39,6 +39,7 @@ read a snooze yet.
 """
 
 import curses
+import functools
 import json
 import os
 import threading
@@ -181,16 +182,24 @@ def overlay(conn, now=None):
     return {k: v for k, v in out.items() if v}
 
 
+@functools.lru_cache(maxsize=8192)
+def cell(ch):
+    """A character's display cells (T.dwidth), kept: wrapping a pasted answer asked unicodedata twice per character
+    on every key (of_herdr's review of PR 104: a 3,000-character paste spent 8 to 17 s in it)."""
+    return T.dwidth(ch)
+
+
 def wrap_line(line, width):
     """[(start, end)] of a line's display rows at `width` cells: a row breaks after its last space that fits, a word
     longer than a row is broken; an empty line is one empty row."""
     if not line:
         return [(0, 0)]
     rows, start, width = [], 0, max(2, width)
+    ws = [cell(c) for c in line]
     while start < len(line):
         w, i, space = 0, start, -1
-        while i < len(line) and w + T.dwidth(line[i]) <= width:
-            w += T.dwidth(line[i])
+        while i < len(line) and w + ws[i] <= width:
+            w += ws[i]
             if line[i] == " ":
                 space = i
             i += 1
@@ -212,6 +221,7 @@ class Editor:
     def __init__(self, text=""):
         self.lines = (text or "").split("\n")
         self.cl, self.cc, self.goal = len(self.lines) - 1, len(self.lines[-1]), None
+        self._wrapped = {}  # (line, width) -> its rows: a key changes one line, the others keep theirs
 
     def text(self):
         return "\n".join(self.lines)
@@ -268,14 +278,22 @@ class Editor:
 
     def rows(self, width):
         """[(line, start, end)]: every display row of the text."""
-        return [(li, a, b) for li, ln in enumerate(self.lines) for a, b in wrap_line(ln, width)]
+        if len(self._wrapped) > 4 * len(self.lines) + 64:
+            self._wrapped = {}
+        out = []
+        for li, ln in enumerate(self.lines):
+            k = (ln, width)
+            if k not in self._wrapped:
+                self._wrapped[k] = wrap_line(ln, width)
+            out += [(li, a, b) for a, b in self._wrapped[k]]
+        return out
 
     def cursor(self, rows):
         """(row index, cells from the row's start) of the cursor."""
         ln = self.lines[self.cl]
         for ri, (li, a, b) in enumerate(rows):
             if li == self.cl and (a <= self.cc < b or self.cc == b == len(ln)):
-                return ri, T.dwidth(ln[a:self.cc])
+                return ri, sum(cell(c) for c in ln[a:self.cc])
         return len(rows) - 1, 0
 
     def vertical(self, delta, width):
@@ -290,8 +308,8 @@ class Editor:
         ln = self.lines[li]
         last = b if b == len(ln) else max(a, b - 1)  # a row that wraps: its end is the next row's start
         c, w = a, 0
-        while c < last and w + T.dwidth(ln[c]) <= goal:
-            w += T.dwidth(ln[c])
+        while c < last and w + cell(ln[c]) <= goal:
+            w += cell(ln[c])
             c += 1
         self.cl, self.cc, self.goal = li, c, goal
 
@@ -1148,16 +1166,16 @@ class Inbox:
 
     def handle(self, ch):
         """One key. Returns False to leave."""
+        h, w = self.scr.getmaxyx()
+        if self.mode == "reply" and ch != curses.KEY_MOUSE:  # straight to the editor: no sorting of the streams per key
+            return self.reply_key(ch, h)
         g = self.groups()
         its, idx = self.current(g)
         item = its[idx] if its else None
-        h, w = self.scr.getmaxyx()
         if ch == curses.KEY_MOUSE:
             if self.mode in ("main", "reply"):
                 self.mouse(its, idx)
             return True
-        if self.mode == "reply":
-            return self.reply_key(ch, h)
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
             back, self.mode, self.confirm, self.confirm_reply = self.confirm_reply, "main", None, None
@@ -1365,6 +1383,27 @@ class Inbox:
                 continue
             if not self.handle(ch):
                 return
+            self.drain()
+
+    def drain(self):
+        """In the field, every key already waiting is taken before the next frame: herdr pastes as keys, one per
+        character, and a frame per key made a long paste cost seconds while herdr's popup held the whole session
+        (of_herdr's review of PR 104). Stops when a key ends the field (Ctrl+D flushes the rest itself)."""
+        if self.mode != "reply" or not hasattr(self.scr, "get_wch"):
+            return
+        self.scr.timeout(0)
+        try:
+            for _ in range(100000):
+                if self.mode != "reply":
+                    break
+                try:
+                    ch = self.scr.get_wch()
+                except curses.error:
+                    break
+                if ch != curses.KEY_RESIZE:
+                    self.handle(ch)
+        finally:
+            self.scr.timeout(T.SEQ_POLL_MS)
 
 
 def keys_line(w, mode="main"):
