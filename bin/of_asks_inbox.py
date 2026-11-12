@@ -181,6 +181,126 @@ def overlay(conn, now=None):
     return {k: v for k, v in out.items() if v}
 
 
+def wrap_line(line, width):
+    """[(start, end)] of a line's display rows at `width` cells: a row breaks after its last space that fits, a word
+    longer than a row is broken; an empty line is one empty row."""
+    if not line:
+        return [(0, 0)]
+    rows, start, width = [], 0, max(2, width)
+    while start < len(line):
+        w, i, space = 0, start, -1
+        while i < len(line) and w + T.dwidth(line[i]) <= width:
+            w += T.dwidth(line[i])
+            if line[i] == " ":
+                space = i
+            i += 1
+        if i >= len(line):
+            rows.append((start, len(line)))
+            break
+        end = space + 1 if space >= start else max(i, start + 1)
+        rows.append((start, end))
+        start = end
+    return rows
+
+
+class Editor:
+    """The reply field's text and its cursor (the founder, 2026-11-12 18:41Z: up and down did not move in the field).
+    lines: the logical lines; (cl, cc): the cursor's line and character. Up and down move by display rows, wrapped
+    rows included, keeping the column they started from; left and right cross line ends; Home and End go to the
+    line's start and end."""
+
+    def __init__(self, text=""):
+        self.lines = (text or "").split("\n")
+        self.cl, self.cc, self.goal = len(self.lines) - 1, len(self.lines[-1]), None
+
+    def text(self):
+        return "\n".join(self.lines)
+
+    def insert(self, chars):
+        ln = self.lines[self.cl]
+        self.lines[self.cl] = ln[:self.cc] + chars + ln[self.cc:]
+        self.cc, self.goal = self.cc + len(chars), None
+
+    def newline(self):
+        ln = self.lines[self.cl]
+        self.lines[self.cl:self.cl + 1] = [ln[:self.cc], ln[self.cc:]]
+        self.cl, self.cc, self.goal = self.cl + 1, 0, None
+
+    def backspace(self):
+        if self.cc:
+            ln = self.lines[self.cl]
+            self.lines[self.cl] = ln[:self.cc - 1] + ln[self.cc:]
+            self.cc -= 1
+        elif self.cl:
+            self.cc = len(self.lines[self.cl - 1])
+            self.lines[self.cl - 1] += self.lines.pop(self.cl)
+            self.cl -= 1
+        self.goal = None
+
+    def delete(self):
+        ln = self.lines[self.cl]
+        if self.cc < len(ln):
+            self.lines[self.cl] = ln[:self.cc] + ln[self.cc + 1:]
+        elif self.cl < len(self.lines) - 1:
+            self.lines[self.cl] += self.lines.pop(self.cl + 1)
+        self.goal = None
+
+    def left(self):
+        if self.cc:
+            self.cc -= 1
+        elif self.cl:
+            self.cl -= 1
+            self.cc = len(self.lines[self.cl])
+        self.goal = None
+
+    def right(self):
+        if self.cc < len(self.lines[self.cl]):
+            self.cc += 1
+        elif self.cl < len(self.lines) - 1:
+            self.cl, self.cc = self.cl + 1, 0
+        self.goal = None
+
+    def home(self):
+        self.cc, self.goal = 0, None
+
+    def end(self):
+        self.cc, self.goal = len(self.lines[self.cl]), None
+
+    def rows(self, width):
+        """[(line, start, end)]: every display row of the text."""
+        return [(li, a, b) for li, ln in enumerate(self.lines) for a, b in wrap_line(ln, width)]
+
+    def cursor(self, rows):
+        """(row index, cells from the row's start) of the cursor."""
+        ln = self.lines[self.cl]
+        for ri, (li, a, b) in enumerate(rows):
+            if li == self.cl and (a <= self.cc < b or self.cc == b == len(ln)):
+                return ri, T.dwidth(ln[a:self.cc])
+        return len(rows) - 1, 0
+
+    def vertical(self, delta, width):
+        """Up (-1) or down (+1) one display row, to the cell nearest the column the moves started from."""
+        rows = self.rows(width)
+        ri, x = self.cursor(rows)
+        goal = x if self.goal is None else self.goal
+        t = ri + delta
+        if not 0 <= t < len(rows):
+            return
+        li, a, b = rows[t]
+        ln = self.lines[li]
+        last = b if b == len(ln) else max(a, b - 1)  # a row that wraps: its end is the next row's start
+        c, w = a, 0
+        while c < last and w + T.dwidth(ln[c]) <= goal:
+            w += T.dwidth(ln[c])
+            c += 1
+        self.cl, self.cc, self.goal = li, c, goal
+
+    def on_empty_last_line(self):
+        """Enter here sends, as it did when the cursor was always at the end: an empty last line under some text."""
+        return (self.cl == len(self.lines) - 1 and self.lines[-1] == ""
+                and any(x.strip() for x in self.lines[:-1]))
+
+
 class ReplyDrafts:
     """The answers he put aside with Esc while writing one, kept across openings: one file per ask id under
     asks-reply-drafts in OF's state folder (mode 600). A draft whose ask closed goes to its archive folder, never lost.
@@ -776,8 +896,10 @@ class Inbox:
         """The answer written under the card, which stays in sight and scrolls (↑↓, PgUp PgDn, the wheel) while he
         types (the founder, 2026-11-12: the editor over the whole screen hid a long question he answers with thought).
         The editor grows with the text up to half the card's height; the card takes the rest."""
-        wrapped = T.wrap_rows(self.reply["lines"], width - 2)
-        eh = max(3, min(len(wrapped) + 1, height // 2))
+        ed = self.reply["ed"]
+        tw = self.reply["tw"] = max(4, width - 2)
+        erows = ed.rows(tw)
+        eh = max(3, min(len(erows) + 1, height // 2))
         qh = max(1, height - eh - 1)
         over = len(rows) > qh
         bh = qh - 1 if over else qh
@@ -785,20 +907,24 @@ class Inbox:
         for i, (ln, kind) in enumerate(rows[self.ctop:self.ctop + bh]):
             self.put(top_y + i, x0, ln, style.get(kind, 0))
         if over:
-            self.put(top_y + bh, x0, tr("lines {a}-{b} of {n} · ↑↓ PgUp PgDn scroll", a=self.ctop + 1,
+            self.put(top_y + bh, x0, tr("lines {a}-{b} of {n} · PgUp PgDn scroll", a=self.ctop + 1,
                                         b=min(len(rows), self.ctop + bh), n=len(rows)), curses.A_DIM)
         hy = top_y + qh
         head = "── " + tr("Your answer to {who}", who=", ".join(self.reply["item"].get("who") or [])) + " "
         head = T.cut(head, width)
         self.put(hy, x0, head + "─" * max(0, width - T.dwidth(head)), curses.A_BOLD)
-        shown = wrapped[-eh:]
-        for i, ln in enumerate(shown):
-            self.put(hy + 1 + i, x0 + 1, ln)
-        last = shown[-1] if shown else ""
-        y, x = hy + max(1, len(shown)), x0 + 1 + T.dwidth(last)
-        if x >= x0 + width - 1:
-            y, x = min(y + 1, hy + eh), x0 + 1
-        self.cursor = (y, x)
+        ri, cx = ed.cursor(erows)
+        top = self.reply.get("top", 0)  # the field's own scroll: the cursor's row stays in sight
+        top = min(top, ri) if ri < top else (ri - eh + 1 if ri >= top + eh else top)
+        top = max(0, min(top, max(0, len(erows) - eh)))
+        self.reply["top"] = top
+        for i, (li, a, b) in enumerate(erows[top:top + eh]):
+            self.put(hy + 1 + i, x0 + 1, ed.lines[li][a:b])
+        if top:
+            self.put(hy + 1, x0 + width - 1, "▲", curses.A_BOLD)
+        if top + eh < len(erows):
+            self.put(hy + eh, x0 + width - 1, "▼", curses.A_BOLD)
+        self.cursor = (hy + 1 + ri - top, x0 + 1 + cx)
 
     def start_reply(self, item):
         """r: the editor opens under the card, with the draft he left on it (Esc keeps one)."""
@@ -811,7 +937,7 @@ class Inbox:
             self.msg = tr("Answered in its pane: g goes there.")
             return
         self.mode, self.msg = "reply", ""
-        self.reply = {"key": k, "item": item, "lines": (self.reply_drafts.get(k) or "").split("\n")}
+        self.reply = {"key": k, "item": item, "ed": Editor(self.reply_drafts.get(k) or ""), "top": 0}
         curses.curs_set(1)
 
     def keep_draft(self, key, text):
@@ -833,46 +959,53 @@ class Inbox:
         curses.curs_set(0)
 
     def reply_key(self, ch, h):
-        """One key while he writes: Enter a new line, Enter on an empty line or Ctrl+D sends, Esc keeps the draft."""
+        """One key while he writes: the arrows, Home and End move the cursor (wrapped rows included); PgUp, PgDn and the
+        wheel scroll the card; Enter a new line, Enter on an empty last line or Ctrl+D sends; Esc keeps the draft."""
         r = self.reply
+        ed = r["ed"]
         if ch in ("\x1b", 27):
-            text = "\n".join(r["lines"])
+            text = ed.text()
             if self.keep_draft(r["key"], text) and text.strip():
                 self.msg = tr("The answer is kept as a draft: r goes on with it.")
             self.end_reply()
-        elif ch in ("\x04", 4) or (ch in ("\n", "\r", 10, 13, curses.KEY_ENTER) and r["lines"][-1] == ""
-                                     and any(x.strip() for x in r["lines"][:-1])):
-            text = "\n".join(r["lines"]).strip()
+        elif ch in ("\x04", 4) or (ch in ("\n", "\r", 10, 13, curses.KEY_ENTER) and ed.on_empty_last_line()):
+            text = ed.text().strip()
             item, c = r["item"], self.cards.get(r["key"])
             self.end_reply()
             # what was typed or pasted after the send never reaches the screen's keys: a pasted blank line sends,
             # and the rest of the paste would answer the confirm and the next cards (of_herdr's review of PR 98)
             curses.flushinp()
             if text:
-                self.keep_draft(r["key"], None)
-                if needs_confirm(item, c):
+                if needs_confirm(item, c):  # the text stays a draft until he confirms: a cancel loses nothing
+                    self.keep_draft(r["key"], ed.text())
                     self.mode, self.confirm = "confirm", (item, "y", text, "answer")
                 else:
+                    self.keep_draft(r["key"], None)
                     self.send(item, "answer", text)
         elif ch in ("\n", "\r", 10, 13, curses.KEY_ENTER):
-            r["lines"].append("")
+            ed.newline()
         elif ch in (curses.KEY_BACKSPACE, "\x7f", "\b", 127, 8):
-            if r["lines"][-1]:
-                r["lines"][-1] = r["lines"][-1][:-1]
-            elif len(r["lines"]) > 1:
-                r["lines"].pop()
-        elif ch == curses.KEY_UP:
-            self.ctop = max(0, self.ctop - 1)
-        elif ch == curses.KEY_DOWN:
-            self.ctop += 1
+            ed.backspace()
+        elif ch == curses.KEY_DC:
+            ed.delete()
+        elif ch == curses.KEY_LEFT:
+            ed.left()
+        elif ch == curses.KEY_RIGHT:
+            ed.right()
+        elif ch in (curses.KEY_HOME, "\x01"):  # Ctrl+A too
+            ed.home()
+        elif ch in (curses.KEY_END, "\x05"):  # Ctrl+E too
+            ed.end()
+        elif ch in (curses.KEY_UP, curses.KEY_DOWN):
+            ed.vertical(-1 if ch == curses.KEY_UP else 1, r.get("tw") or 1000)  # the width it was drawn at
         elif ch == curses.KEY_PPAGE:
             self.ctop = max(0, self.ctop - max(1, h // 3))
         elif ch == curses.KEY_NPAGE:
             self.ctop += max(1, h // 3)
         elif isinstance(ch, str) and ch.isprintable():
-            r["lines"][-1] += ch
+            ed.insert(ch)
         elif isinstance(ch, int) and 32 <= ch < 127:
-            r["lines"][-1] += chr(ch)
+            ed.insert(chr(ch))
         return True
 
     # input
@@ -1014,8 +1147,13 @@ class Inbox:
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
             self.mode, self.confirm = "main", None
+            k = key_of(item_)
             if ch in (ord(str(n)), ord("y"), ord("Y")):
+                if what == "answer" and k in self.reply_drafts:
+                    self.keep_draft(k, None)
                 self.send(item_, what, text)
+            elif what == "answer" and k in self.reply_drafts:
+                self.msg = tr("cancelled; the answer is kept as a draft: r goes on with it")
             else:
                 self.msg = tr("cancelled")
             return True
@@ -1197,8 +1335,10 @@ def keys_line(w, mode="main"):
     """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there; g goes to the agent
     (the founder, 2026-11-12: "add g, go to the agent"). While he writes: the editor's."""
     if mode == "reply":
-        forms = [tr("Enter new line · Enter on an empty line or Ctrl+D send · ↑↓ PgUp PgDn scroll the card · "
-                    "Esc keep as a draft"), tr("Enter new line · Ctrl+D send · Esc draft"), "Enter · Ctrl+D · Esc"]
+        forms = [tr("Enter new line · Enter on an empty last line or Ctrl+D send · ↑↓←→ Home End move · "
+                    "PgUp PgDn scroll the card · Esc keep as a draft"),
+                 tr("Enter new line · Ctrl+D send · ↑↓←→ move · PgUp PgDn card · Esc draft"),
+                 "Enter · Ctrl+D · ↑↓←→ · PgUp PgDn · Esc"]
         return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
     forms = [tr("↑↓ select · ←→ stream · 1-9 answer · r write · g go to the agent · h snooze · d hand over · / search · "
                 "? help · Esc back"), tr("↑↓ select · ←→ stream · 1-9 answer · r write · g agent · ? help · Esc back"),
@@ -1317,7 +1457,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         curses.wrapper(run)
     finally:
         if boxes and boxes[0].reply:  # closed while he wrote: what he wrote is a draft
-            _quiet(lambda: store.save(boxes[0].reply["key"], "\n".join(boxes[0].reply["lines"])))
+            _quiet(lambda: store.save(boxes[0].reply["key"], boxes[0].reply["ed"].text()))
         log_open(timing, size)
     return 0
 

@@ -24,6 +24,54 @@ def item(aid, text, kind="question (declared)", since="2026-11-11T10:00:00Z", **
                  "first": {"text": text, "tags": kw.pop("tags", [])}}, **kw)
 
 
+class EditorTest(unittest.TestCase):
+    """The reply field's cursor (the founder, 2026-11-12 18:41Z: up and down did not move in the field)."""
+
+    def test_up_and_down_move_by_wrapped_rows_and_keep_their_column(self):
+        self.assertEqual(I.wrap_line("one two three four", 8), [(0, 8), (8, 14), (14, 18)])
+        ed = I.Editor("one two three four")
+        self.assertEqual((ed.cl, ed.cc), (0, 18))          # it opens at the end
+        ed.vertical(-1, 8)
+        self.assertEqual(ed.cc, 12)                          # "thre|e": the same column, one row up
+        ed.vertical(-1, 8)
+        self.assertEqual(ed.cc, 4)                           # "one |two"
+        ed.vertical(-1, 8)
+        self.assertEqual(ed.cc, 4)                           # the first row: it stays
+        ed.vertical(1, 8)
+        ed.vertical(1, 8)
+        self.assertEqual(ed.cc, 18)                          # back down to the column it started from
+        ed.insert("!")
+        self.assertEqual(ed.text(), "one two three four!")
+
+    def test_left_right_home_end_and_joins(self):
+        ed = I.Editor("abc\nde")
+        ed.vertical(-1, 80)
+        self.assertEqual((ed.cl, ed.cc), (0, 2))
+        ed.left()
+        ed.insert("X")
+        self.assertEqual(ed.text(), "aXbc\nde")
+        ed.end()
+        ed.right()
+        self.assertEqual((ed.cl, ed.cc), (1, 0))             # past the line's end: the next line's start
+        ed.left()
+        self.assertEqual((ed.cl, ed.cc), (0, 4))
+        ed.home()
+        self.assertEqual(ed.cc, 0)
+        ed.end()
+        ed.delete()                                          # at a line's end: the next line joins it
+        self.assertEqual(ed.lines, ["aXbcde"])
+        ed.newline()
+        ed.backspace()                                       # at a line's start: it joins the line above
+        self.assertEqual(ed.lines, ["aXbcde"])
+
+    def test_enter_sends_only_on_an_empty_last_line(self):
+        ed = I.Editor("first\n")
+        self.assertTrue(ed.on_empty_last_line())
+        ed = I.Editor("first\n\nlast")
+        ed.vertical(-1, 80)
+        self.assertFalse(ed.on_empty_last_line())            # an empty line in the middle: a new line
+
+
 class LogicTest(unittest.TestCase):
     def test_the_risk_of_a_card_is_kept_until_its_words_change(self):
         a = item("A", "Pay 90 USD to the operator?")
@@ -467,6 +515,34 @@ class ScreenTest(unittest.TestCase):
             self.assertEqual(store.load(), {})
             self.assertEqual(len(os.listdir(os.path.join(d, "archive"))), 1)  # kept aside, never lost
             self.assertTrue(any("archived" in self.text(f) for f in self.frames))
+
+    def test_the_arrows_move_in_the_field_and_the_card_scrolls_only_with_pgup_pgdn(self):
+        import curses
+        long = {"A": {"question": "Back up the data room?\n" + "\n".join(f"paragraph {i}" for i in range(60)),
+                      "options": ["yes", "no"]}}
+        box_keys = [0.1, ord("r")] + list("abcdef") + ["\n"] + list("gh") + [curses.KEY_UP, "X", 0.05]
+        box = self.inbox(box_keys + [curses.KEY_DOWN, curses.KEY_END, "\x04", 0.3, 0.05],
+                         [item("A", "Back up the data room?")], cards=long, size=(30, 140))
+        self.assertEqual(self.sent, [("A", "abXcdef\ngh")])
+        writing = [self.text(f) for f in self.frames if "abXcdef" in self.text(f)]
+        self.assertTrue(writing and "Back up the data room?" in writing[0])  # up moved the cursor, not the card
+        self.assertIn("↑↓←→ Home End move", writing[0])
+        self.assertIn("PgUp PgDn scroll the card", writing[0])
+        self.assertEqual(box.ctop, 0)
+
+    def test_a_cancelled_confirm_keeps_the_written_answer(self):
+        """of_herdr's note on PR 98: a stray key that cancels a money card's confirm lost the text."""
+        with tempfile.TemporaryDirectory() as d:
+            store = I.ReplyDrafts(d)
+            self.inbox([0.1, ord("r"), "o", "k", "\x04", ord("x"), 0.05], [item("C", "Pay 90 USD to the operator?")],
+                       store=store)
+            self.assertEqual(self.sent, [])
+            self.assertEqual(store.load(), {"C": "ok"})
+            self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
+            self.inbox([0.1, ord("r"), "\x04", ord("y"), 0.3, 0.05], [item("C", "Pay 90 USD to the operator?")],
+                       store=store)
+            self.assertEqual(self.sent, [("C", "ok")])
+            self.assertEqual(store.load(), {})                 # confirmed and sent: the draft is gone
 
     def test_esc_keeps_the_draft_and_r_goes_on_with_it(self):
         self.inbox([0.1, ord("r"), "a", "b", "\x1b", 0.05, ord("r"), "c", "\n", "\n", 0.3, 0.05],
