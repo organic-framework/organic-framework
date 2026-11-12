@@ -40,6 +40,78 @@ class TransportError(ServerError):
         self.status, self.body = 0, str(cause)
 
 
+class AccessError(Exception):
+    """The Cloudflare Access token file named for a server cannot be used (its path and the reason, never a value)."""
+
+
+# Cloudflare Access in front of an organization's of-server (deploy/RUNBOOK.md section 4; docs/registry.md, orgs.yaml
+# server_access): a service token per machine, sent as two headers. 2026-11-12: the runbook promised it and the client
+# sent none, so a cutover behind Access would have failed at its switch step.
+ACCESS_HEADERS = ("CF-Access-Client-Id", "CF-Access-Client-Secret")
+_ACCESS_CACHE = {}
+_ACCESS_MAP = {}
+
+
+def access_file(url, orgs_file=None):
+    """The server_access file of the organization whose server: or drain_from: is URL, or None. Only over https: the
+    token never goes in clear, and never to a host the organization does not name."""
+    url = str(url or "").rstrip("/")
+    if not url.startswith("https://"):
+        return None
+    orgs = orgs_file or os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")
+    try:
+        stamp = (orgs, os.stat(orgs).st_mtime_ns)
+    except OSError:
+        return None
+    if _ACCESS_MAP.get("stamp") != stamp:  # one YAML read per change of orgs.yaml, not per request
+        try:
+            import yaml
+            with open(orgs) as fh:
+                doc = yaml.safe_load(fh) or {}
+        except Exception:  # noqa: BLE001 - a broken orgs.yaml: no Access token to send
+            doc = {}
+        m = {}
+        for o in doc.get("orgs") or []:
+            if isinstance(o, dict) and isinstance(o.get("server_access"), str):
+                d = o.get("drain_from")
+                for u in [o.get("server")] + (d if isinstance(d, list) else [d]):
+                    if isinstance(u, str) and u.startswith("https://"):
+                        m.setdefault(u.rstrip("/"), os.path.expanduser(o["server_access"]))
+        _ACCESS_MAP.clear()
+        _ACCESS_MAP.update(stamp=stamp, map=m)
+    return _ACCESS_MAP["map"].get(url)
+
+
+def access_headers(url, orgs_file=None):
+    """{CF-Access-Client-Id, CF-Access-Client-Secret} for URL from its organization's server_access file, or {}. The
+    file is JSON {client_id, client_secret}, mode 600 or stricter, owned by this user; any other state raises
+    AccessError naming the path and the reason."""
+    path = access_file(url, orgs_file)
+    if not path:
+        return {}
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        raise AccessError(f"the Cloudflare Access token file {path} for {url} cannot be read ({type(e).__name__})")
+    if st.st_mode & 0o077 or (hasattr(os, "getuid") and st.st_uid != os.getuid()):
+        raise AccessError(f"the Cloudflare Access token file {path} must be this user's, mode 600 "
+                          f"(it is {oct(st.st_mode & 0o777)}): chmod 600 it")
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _ACCESS_CACHE:
+        try:
+            with open(path) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as e:
+            raise AccessError(f"the Cloudflare Access token file {path} is not JSON ({type(e).__name__})") from None
+        cid, secret = (doc.get("client_id"), doc.get("client_secret")) if isinstance(doc, dict) else (None, None)
+        if not (isinstance(cid, str) and cid.strip() and isinstance(secret, str) and secret.strip()):
+            raise AccessError(f"the Cloudflare Access token file {path} needs client_id and client_secret")
+        for k in [k for k in _ACCESS_CACHE if k[0] == path]:
+            del _ACCESS_CACHE[k]
+        _ACCESS_CACHE[key] = dict(zip(ACCESS_HEADERS, (cid.strip(), secret.strip())))
+    return dict(_ACCESS_CACHE[key])
+
+
 RETRIES = 4
 RETRY_BASE_S = 0.5
 RETRY_STATUS = (429, 502, 503, 504)
@@ -121,7 +193,7 @@ class Client:
 
     def _request(self, method, path, body=None, token=None, raw=None, encoding=None):
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **access_headers(self.url)}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if encoding:
