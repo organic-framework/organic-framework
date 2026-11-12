@@ -77,12 +77,18 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   everything detected meanwhile causes exactly one more run (at most five in a row). A name binding recorded by
   `of apply` has a fixed event id, so repeated runs keep it once. The log is `<state>/herdr-plugin.log`; herdr
   keeps its own (`herdr plugin log list --plugin organic-framework`).
-- **Install and remove.** `python3 bin/of_herdr_plugin.py install` (or `of_herdr_plugin.install()`, for `of init`)
-  links the folder and writes `of_home`; it is idempotent. By hand: `herdr plugin link <OF checkout>/herdr-plugin`.
-  `herdr plugin unlink organic-framework` removes it. herdr registers plugins for the user, in every session. The runner finds OF
-  through the file `of_home` in the plugin's config dir (`herdr plugin config-dir organic-framework`), else the
-  folder above the plugin. It looks for Python 3 with PyYAML in `$OF_PYTHON`, then on `PATH`, then in the usual
-  Homebrew places.
+- **Install and remove.** `of init` runs `of_herdr_plugin.install()`. By hand, run `bin/of_herdr_plugin.py install`
+  with the Python that `of` runs on. It links the folder and writes two files into the plugin's config dir
+  (`herdr plugin config-dir organic-framework`): `of_home` and `python`, the interpreter it ran under. It is
+  idempotent, and it refuses an interpreter without PyYAML before it links anything. `herdr plugin unlink
+  organic-framework` removes the plugin. herdr registers plugins for the user, in every session.
+  The runner `run.sh` finds OF through `of_home`, else the folder above the plugin. It takes the first interpreter
+  that imports PyYAML, in this order: `$OF_PYTHON`, the recorded `python`, `python3` on `PATH`, then
+  `$OF_PY_FALLBACKS` (by default Homebrew's, `/usr/local`'s and the system's `python3`).
+  On 2026-11-12 a user organization's Mac showed why the recorded interpreter comes first. OF ran from its own venv,
+  there was no Homebrew, and the system `python3` had no PyYAML, so every hook failed. When none is found, the hook
+  says what to run. After updating OF on such a machine, run `of init` again, or `install` as above.
+  `tests/test_herdr_plugin.py` (CleanMachineTest) runs `run.sh` on such a machine.
 - **The Agents sidebar: what needs you first** (the founder, ~21:25Z via of_conductor). The plugin installs a herdr
   Agents view (`agent.view.set`, label "OF: needs you first"). First come the agents with an open question to the
   owner (the `ask` pane token), then herdr's attention (a dialog or permission, a finished turn not yet seen,

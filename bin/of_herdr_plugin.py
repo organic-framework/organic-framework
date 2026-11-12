@@ -297,15 +297,35 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     return True, notes
 
 
-def install(of_home=None, run=None):
-    """Link OF's herdr plugin for this user (herdr registers it in every session) and record OF's home in the plugin's
-    config dir (`of_home`, which run.sh reads), for `of init` and for a person installing by hand. Idempotent.
-    Returns (True, note) or (False, reason). herdr must be installed; no server needs to run."""
+def has_yaml(python):
+    """Does this interpreter import PyYAML, as bin/of and the plugin's hooks need?"""
+    if os.path.realpath(python) == os.path.realpath(sys.executable):
+        import importlib.util
+        return importlib.util.find_spec("yaml") is not None
+    try:
+        return subprocess.run([python, "-c", "import yaml"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def install(of_home=None, run=None, python=None, yaml_ok=None):
+    """Link OF's herdr plugin for this user (herdr registers it in every session) and record, in the plugin's config
+    dir, OF's home (`of_home`) and the Python this runs under (`python`), which run.sh reads first; for `of init` and
+    for a person installing by hand. A machine may run OF from its own venv, with no Homebrew and a system python3
+    without PyYAML: there the hooks found no Python until it was recorded (a user organization, 2026-11-12). A Python
+    without PyYAML is refused before anything is linked. Idempotent. Returns (True, note) or (False, reason). herdr
+    must be installed; no server needs to run."""
     run = run or subprocess.run
+    python = python or sys.executable
     of_home = os.path.abspath(of_home or os.path.join(HERE, ".."))
     folder = os.path.join(of_home, "herdr-plugin")
     if not os.path.isfile(os.path.join(folder, "herdr-plugin.toml")):
         return False, f"no plugin folder at {folder}"
+    if not python or not os.path.isabs(python) or re.search(r"[\x00-\x1f\x7f]", python):
+        return False, f"cannot record the Python {python!r}: an absolute path on one line is needed"
+    if not (yaml_ok or has_yaml)(python):
+        return False, (f"{python} has no PyYAML: run this with the Python OF runs on (the one `of` starts), "
+                       "or run of init again")
     herdr = os.environ.get("OF_HERDR", "herdr")
     try:
         listed = run([herdr, "plugin", "list"], capture_output=True, text=True, timeout=15)
@@ -320,9 +340,12 @@ def install(of_home=None, run=None):
     if not cfg:
         return False, "herdr gave no config dir for the plugin"
     os.makedirs(cfg[0], exist_ok=True)
-    with open(os.path.join(cfg[0], "of_home"), "w") as fh:
-        fh.write(of_home + "\n")
-    return True, f"linked {folder}; of_home {of_home}"
+    for name, value in (("of_home", of_home), ("python", python)):
+        tmp = os.path.join(cfg[0], f".{name}.{os.getpid()}")
+        with open(tmp, "w") as fh:
+            fh.write(value + "\n")
+        os.replace(tmp, os.path.join(cfg[0], name))
+    return True, f"linked {folder}; of_home {of_home}; python {python}"
 
 
 def open_questions(of_path=None, run=None):

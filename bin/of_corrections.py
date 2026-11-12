@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 import of_events
@@ -276,7 +277,8 @@ def structure_issues(org, runner=subprocess.run):
     keeper in this digest, never as separate messages."""
     here = os.path.dirname(os.path.realpath(__file__))
     try:
-        r = runner([os.path.join(here, "of"), "model", "issues", "--org", org, "--decider", "structure_keeper", "--json"],
+        r = runner([sys.executable, os.path.join(here, "of"), "model", "issues", "--org", org, "--decider",
+                    "structure_keeper", "--json"],
                    capture_output=True, text=True, timeout=600, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
         return json.loads(r.stdout or "{}").get("issues") or [] if r.returncode == 0 else None
     except Exception:  # noqa: BLE001
@@ -369,7 +371,7 @@ def send_digests(conn, positions, now=None, force=False, dry_run=False, log=prin
 
 def _send(to, text, log):
     here = os.path.dirname(os.path.realpath(__file__))
-    r = subprocess.run([os.path.join(here, "of"), "send", to, "--from", SENDER, "--fyi", text],
+    r = subprocess.run([sys.executable, os.path.join(here, "of"), "send", to, "--from", SENDER, "--fyi", text],
                        capture_output=True, text=True, timeout=60,
                        env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
     log(f"of corrections: digest to {to}: {(r.stdout or r.stderr).strip()[-200:]}")
