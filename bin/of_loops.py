@@ -38,6 +38,18 @@ def _num(x):
         return None
 
 
+def _segment(raw):
+    """The target's controlled segment as the registry writes it (docs/registry.md Works, of_architect 26bdee1:
+    {start, end, context: [text]}), or None when the target names none. `context` is always a list of texts: one text
+    alone becomes a list of one, anything else none (`of registry check` calls both a problem)."""
+    if not isinstance(raw, dict):
+        return None
+    seg = dict(raw)
+    ctx = raw.get("context")
+    seg["context"] = [str(x) for x in ctx if x is not None] if isinstance(ctx, list) else ([ctx] if isinstance(ctx, str) else [])
+    return seg
+
+
 def spec_of(raw):
     """The work's `loop:` normalized, or None."""
     if not isinstance(raw, dict):
@@ -50,6 +62,7 @@ def spec_of(raw):
         prod = set(names[names.index("shadow"):])
     t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
+    t["segment"] = _segment(target.get("segment"))
     return {"target": t,
             "measures": [m for m in raw.get("measures") or [] if isinstance(m, dict) and m.get("name")],
             "ladder": ladder, "rungs": names, "production": prod,
@@ -245,8 +258,8 @@ def project(work_id, spec, rows, now, days=7, work=None):
                          "production": str(x["rung"]) in spec["production"],
                          "since": epoch(x.get("since")) or loop_start} for x in spec["ladder"]],
         "checkpoint_days": spec["checkpoint_days"], "wip_arms": spec["wip_arms"], "babysit_model": spec["babysit_model"],
-        "hypotheses": [{"id": h["id"], "ts": h["recorded_at"], "status": h.get("status"), "status_at": h.get("status_at")}
-                       for h in hyp.values()],
+        "hypotheses": [{"id": h["id"], "ts": h["recorded_at"], "status": h.get("status"), "status_at": h.get("status_at"),
+                        "change": h.get("change"), "predict": h.get("predict")} for h in hyp.values()],
         "runs": [{"id": r["event_id"], "rung": r["rung"], "hypothesis": r["hypothesis"], "metric": r["metric"], "value": r["value"],
                   "accepted": r["accepted"], "queued_at": r["queued_at"], "started_at": r["started"], "ended_at": r["ended"],
                   "position": r["position"], "session": r["session"], "model": r["model"], "usd": r["usd"],
