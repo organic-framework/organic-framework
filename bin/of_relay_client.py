@@ -984,6 +984,18 @@ def org_drains(default, orgs_file=None):
     return out
 
 
+
+def inbox_servers(org, main, default, orgs_file=None):
+    """The servers `of inbox --mine` reads for ORG: its own, then the old servers its orgs.yaml `drain_from` names. An
+    --fyi message still queued on the old server after a cutover is never typed in, so without this it would stay
+    there and the old queue would never empty (2026-11-12, found while checking a user organization's cutover steps)."""
+    urls = [str(main).rstrip("/")]
+    for u in org_drains(default, orgs_file).get(org) or []:
+        if u not in urls:
+            urls.append(u)
+    return urls
+
+
 # No window (the founder, 2026-11-11: "remove the 15-minute window entirely"). The relay types whatever is queued
 # for a receiver as soon as it is idle, joined into one prompt (deliver_joined); herdr_deliver never types into a
 # blocked pane. fyi is never typed: the receiver reads it with of inbox --mine, and `of status` counts it. From

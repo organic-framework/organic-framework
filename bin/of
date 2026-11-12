@@ -3045,10 +3045,20 @@ def _inbox_mine(args):
             print(f"\n[taken {time.strftime('%Y-%m-%dT%H:%M', time.gmtime(at))}Z] {(m.get('created_at') or '')[:16]}\n"
                   f"{of_relay.header(m)}")
         return 0
-    try:
-        got = of_relay.pull(of_client.Client(url.rstrip("/")), key, session, take=args.take, pane_busy=busy)
-    except Exception as e:  # noqa: BLE001 - the server's 403 says why (not the holder, or a person)
-        raise OfError(f"of inbox --mine: {e}")
+    got, unread = [], []
+    try:  # the organization's server, then the old ones its drain_from names (docs/registry.md, drain_from)
+        urls = of_relay.inbox_servers(me.get("_org"), url, cfg["server_url"])
+    except Exception:  # noqa: BLE001 - a broken orgs.yaml: the organization's own server still answers
+        urls = [url.rstrip("/")]
+    for i, u in enumerate(urls):
+        try:
+            got += of_relay.pull(of_client.Client(u), key, session, take=args.take, pane_busy=busy)
+        except Exception as e:  # noqa: BLE001 - the server's 403 says why (not the holder, or a person)
+            if i == 0:
+                raise OfError(f"of inbox --mine: {e}")
+            unread.append(f"{u} (drain_from): {e}")  # the old server never stops the read of the new one
+    for line in unread:
+        print(f"not read: {line}")
     if args.take and args.take != "all" and not any(t for _, t in got):
         raise OfError(f"no queued message for {me['name']} matches {args.take!r}")
     print(f"{len(got)} message(s) queued for {me['name']}" + ("" if args.take else
