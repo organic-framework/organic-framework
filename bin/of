@@ -3574,19 +3574,19 @@ def _diff_check(d):
 
 
 def _diff_events(conn):
-    rows = conn.execute("SELECT ts, name, payload FROM event WHERE name IN ('of.diff_proposed', 'of.diff_approved', "
-                        "'of.diff_applied', 'of.diff_rejected') ORDER BY ts, rowid").fetchall()
+    rows = conn.execute("SELECT ts, name, payload, event_id FROM event WHERE name IN ('of.diff_proposed', "
+                        "'of.diff_approved', 'of.diff_applied', 'of.diff_rejected') ORDER BY ts, rowid").fetchall()
     out = {}
-    for ts, name, pl in rows:
+    for ts, name, pl, eid in rows:
         p = json.loads(pl or "{}")
         e = out.setdefault(p.get("id"), {"id": p.get("id"), "state": None, "digest": None, "diff": None})
         if name == "of.diff_proposed":
             e.update(state="proposed", digest=p.get("digest"), diff=p.get("diff"), proposed_at=ts, ask=p.get("ask_id"))
         elif name == "of.diff_approved" and p.get("via") == "passkey":
             # a passkey approval is checked on its signatures where it counts, at `of diff apply` (docs/remote.md §6)
-            e.setdefault("passkey", []).append((ts, p))
+            e.setdefault("passkey", []).append((ts, dict(p, _event_id=eid)))
         elif name == "of.diff_approved" and p.get("digest") == e.get("digest"):
-            e.update(state="approved", approved_at=ts)
+            e.update(state="approved", approved_at=ts, approval_event=eid)
         elif name == "of.diff_rejected":
             e.update(state="rejected")
         elif name == "of.diff_applied":
@@ -3629,6 +3629,7 @@ def _passkey_approval(e, d, dg, events=None, positions=None):
         why = of_passkey.approval_problem(p, d["id"], d["org"], dg, of_grants.local_keys(), recorded_at=ts,
                                           approvers=approvers, server=_org_server(d["org"]), last_counter=last)
         if why is None:
+            e["approved_by_event"] = p.get("_event_id")  # the approval goal_change nodes cite (docs/handover.md §3)
             return True, None
         newest = newest or why
     return False, newest
@@ -3770,19 +3771,26 @@ def cmd_diff(args):
         e = _diff_events(conn).get(d["id"]) or {}
         if e.get("state") == "applied":
             raise OfError(f"{d['id']} was applied already")
+        approval = None
         if d["tier"] != "low":
             if e.get("digest") != dg:
                 raise OfError(f"{d['id']} is not proposed in this exact form: `of diff propose` it first")
-            if e.get("state") != "approved" and not _diff_approved_by_answer(conn, e.get("ask")):
+            if e.get("state") == "approved":  # the approval each goal_change node cites (of_review on PR 70)
+                approval = e.get("approval_event")
+            elif _diff_approved_by_answer(conn, e.get("ask")):
+                approval = e.get("ask")
+            else:
                 ok, why = _passkey_approval(e, d, dg, _diff_events(conn))  # any tier, the person's passkey (§6)
                 if why:
                     raise OfError(f"{d['id']}: the passkey approval is refused: {why}")
                 if not ok:
                     raise OfError(f"{d['id']} waits for the owner's approval")
+                approval = e.get("approved_by_event")
         repo = os.path.dirname(os.path.dirname(path))
         written = [path]
-        if d["kind"] == "goal_change":  # docs/handover.md §3: each node's decided is the approval's id
-            new = of_diff.stamp_decided(new, d, e.get("ask") or e.get("approval_event") or d["id"])
+        if d["kind"] == "goal_change":  # docs/handover.md §3: each node's decided is the approval's id, cited by
+            # its first two groups (AGENTS.md): the answered ask, else the of.diff_approved event
+            new = of_diff.stamp_decided(new, d, "-".join(str(approval).split("-")[:2]))
         with open(path, "w") as fh:
             fh.write(new)
         for b in briefs:
