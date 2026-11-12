@@ -30,10 +30,11 @@ def _qr(url, out=sys.stdout):
     out.write(url + "\n")
 
 
-def enrollment_record(state, now=None):
-    """The record the owner signs, from the window's state as of-server gives it."""
+def enrollment_record(state, org, person, now=None):
+    """The record the owner signs: the organization and the person from the owner's own command, the credential and
+    key from the window's state (whose code the owner just compared)."""
     now = time.time() if now is None else now
-    return {"kind": "passkey_enrollment", "org": state["org"], "person": state["person"],
+    return {"kind": "passkey_enrollment", "org": org, "person": person,
             "credential": state["credential"], "public_key": state["public_key"], "rp_id": state["rp_id"],
             "origin": state["origin"], "issued_at": _iso(now), "expires": _iso(now + ENROLLMENT_DAYS * 86400)}
 
@@ -59,13 +60,17 @@ def enroll(client, org, person, ttl=600, ask=input, out=sys.stdout, poll=2.0, si
             out.write("The window expired before a passkey was tested. Nothing is enrolled.\n")
             return None
         time.sleep(poll)
+    if (state.get("org"), state.get("person")) != (org, person):  # of_secrets-review on organic-framework PR 81
+        out.write(f"of-server names {state.get('person')!r} of {state.get('org')!r} for this window, not {person!r} of "
+                  f"{org!r}. Nothing is signed.\n")
+        return None
     import of_server_passkey
     code = of_server_passkey.short_code(state["credential"], state["public_key"])  # computed here, never relayed
     out.write(f"\nThe passkey this terminal would sign has code  {code}\n")
     if ask("Does the phone show exactly this code? Type yes to sign the enrollment: ").strip().lower() != "yes":
         out.write("Not signed. Nothing is enrolled.\n")
         return None
-    record = enrollment_record(state)
+    record = enrollment_record(state, org, person)
     record["signature"] = sign(record)
     client._authed("POST", "/v1/passkey/enrollments", body={"record": record})
     out.write(f"Enrolled the passkey {state['credential'][:12]}… for {person} in {org}, until {record['expires']}.\n")

@@ -348,6 +348,15 @@ class Passkeys:
             raise Refused(404, "not_found", "no such open enrollment window (it expired, closed or took its credential)")
         return w
 
+    def token_known(self, token):
+        """Is TOKEN an open window's id or an unused link's nonce? The unauthenticated routes count requests only
+        under such a token, so random tokens leave nothing behind (of_review's probe on organic-framework PR 81)."""
+        t, now = str(token or "")[:64], self.clock()
+        with self.store.conn() as c:
+            return bool(c.execute("SELECT 1 FROM passkey_windows WHERE id = ? AND expires > ? AND state != 'closed'"
+                                  " UNION ALL SELECT 1 FROM passkey_links WHERE nonce = ? AND used IS NULL AND"
+                                  " expires > ? LIMIT 1", (t, now, t, now)).fetchone())
+
     def window_options(self, wid):
         """What the phone's page passes to navigator.credentials.create."""
         self._need_origin()
