@@ -21,6 +21,7 @@ STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked"}
 MODELS = ("haiku", "sonnet", "opus", "fable")
 LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "babysit_model"}
 SEGMENT_KEYS = {"start", "end", "context"}  # the target's controlled segment (docs/registry.md, Works)
+CONTEXT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 THROUGHPUT = ("raise", "sustain", "expense", "measure", "coordinate")
 
 
@@ -106,15 +107,60 @@ def _check_segment(target, measures, tag, warn):
     ctx = seg.get("context")
     if ctx is None:
         return out
-    if not isinstance(ctx, list) or not all(isinstance(c, str) and c.strip() for c in ctx):
-        return out + [f"{tag}: target.segment.context must be a list of texts (the parts outside the segment)"]
-    parts = {_norm(c) for c in ctx}
-    if isinstance(target.get("metric"), str) and _norm(target["metric"]) in parts:
-        out.append(f"{tag}: target.metric {target['metric']!r} is a context part, outside the controlled segment")
+    if not isinstance(ctx, list):
+        return out + [f"{tag}: target.segment.context must be a list (the parts outside the segment)"]
+    names = set()
+    for i, c in enumerate(ctx):
+        if isinstance(c, str) and c.strip():
+            continue
+        if not isinstance(c, dict) or not isinstance(c.get("what"), str) or not c["what"].strip():
+            out.append(f"{tag}: target.segment.context[{i}] is neither a text nor a mapping with what (and an "
+                       "optional name)")
+            continue
+        if c.get("name") is not None:
+            if not isinstance(c["name"], str) or not CONTEXT_NAME.match(c["name"]):
+                out.append(f"{tag}: target.segment.context[{i}].name must match {CONTEXT_NAME.pattern}")
+            elif c["name"] in names:
+                out.append(f"{tag}: target.segment.context: the name {c['name']!r} appears twice")
+            else:
+                names.add(c["name"])
+        for k in sorted(set(c) - {"name", "what"}):
+            out.append(f"{warn}{tag}: target.segment.context[{i}]: unknown key {k!r}")
+    metric = target.get("metric")
+    for c in ctx:
+        if isinstance(metric, str) and (context_matches(metric, c, prose=True) or context_matches(metric, c)):
+            out.append(f"{tag}: target.metric {metric!r} matches the context part {part_label(c)!r}, outside the "
+                       "controlled segment")
     for m in measures if isinstance(measures, list) else []:
-        if isinstance(m, dict) and m.get("name") and _norm(m["name"]) in parts:
-            out.append(f"{tag}: measure {m['name']!r} is a context part, outside the controlled segment")
+        for c in ctx:
+            if isinstance(m, dict) and m.get("name") and context_matches(m["name"], c):
+                out.append(f"{tag}: measure {m['name']!r} is the context part {part_label(c)!r}, outside the "
+                           "controlled segment")
     return out
+
+
+STOP = frozenset("a an the of to in on at by for from and or with without after before into onto its it is are be "
+                 "our their his her your my this that these those per via".split())
+
+
+def content_words(text):
+    """The words of a text that carry its meaning: letters and digits, lowercased, without the small words."""
+    return {w for w in re.findall(r"[^\W_]+", str(text or "").casefold()) if w not in STOP}
+
+
+def part_label(part):
+    return part.get("name") or part.get("what") if isinstance(part, dict) else part
+
+
+def context_matches(field, part, prose=False):
+    """True when a field matches a context part (docs/registry.md, Works, "How a check matches a context part"):
+    a name (a measure's name, a metric that is a name) matches a part with the same name; a prose field (a
+    hypothesis's change or prediction, a target's metric) matches when every content word of the part's text is
+    among its words. For the loop rules too (of_field-analyst)."""
+    if not prose:
+        return isinstance(part, dict) and bool(part.get("name")) and str(field).strip() == part["name"]
+    words = content_words(part.get("what") if isinstance(part, dict) else part)
+    return bool(words) and words <= content_words(field)
 
 
 def rungs(loop):

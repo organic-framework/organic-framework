@@ -59,18 +59,33 @@ class LoopCheckTest(unittest.TestCase):
                  "target.segment.start is required": {"end": "b"},
                  "target.segment.end is required": {"start": "a", "end": " "},
                  "start and end are the same event": {"start": "Order sent", "end": "order  sent"},
-                 "context must be a list of texts": {"start": "a", "end": "b", "context": "the network"},
-                 "context must be a list of texts ": {"start": "a", "end": "b", "context": ["x", 3]},
+                 "context must be a list": {"start": "a", "end": "b", "context": "the network"},
+                 "context[1] is neither a text nor a mapping": {"start": "a", "end": "b", "context": ["x", 3]},
+                 "context[0] is neither": {"start": "a", "end": "b", "context": [{"name": "net"}]},
+                 "context[0].name must match": {"start": "a", "end": "b", "context": [{"name": "Net", "what": "n"}]},
+                 "the name 'net' appears twice": {"start": "a", "end": "b",
+                                                  "context": [{"name": "net", "what": "x"}, {"name": "net", "what": "y"}]},
+                 "warning: w: loop: target.segment.context[0]: unknown key 'gate'":
+                     {"start": "a", "end": "b", "context": [{"what": "x", "gate": 4}]},
                  "warning: w: loop: target.segment: unknown key 'gates'": {"start": "a", "end": "b", "gates": 4}}
         for want, seg in cases.items():
             out = check(seg)
             self.assertTrue(any(want.strip() in x for x in out), (want, out))
             self.assertEqual(len(out), 1, out)
-        seg = {"start": "a", "end": "b", "context": ["Network after the send"]}
-        self.assertEqual(check(seg, metric="network after the send"),
-                         ["w: loop: target.metric 'network after the send' is a context part, outside the controlled segment"])
-        self.assertEqual(check(seg, measures=[{"name": "network  after the send", "to_money": "x"}]),
-                         ["w: loop: measure 'network  after the send' is a context part, outside the controlled segment"])
+        # PR 58's matching: a name matches a part's name; a prose metric matches when it holds every content word
+        seg = {"start": "a", "end": "b", "context": ["the network after the send",
+                                                      {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
+        self.assertEqual(check(seg), [])
+        self.assertEqual(check(seg, metric="p50 of the network after our send, in ms"),
+                         ["w: loop: target.metric 'p50 of the network after our send, in ms' matches the context part "
+                          "'the network after the send', outside the controlled segment"])
+        self.assertEqual(check(seg, metric="network latency"), [])           # not every content word: no match
+        self.assertEqual(check(seg, measures=[{"name": "rival_ordering", "to_money": "x"}]),
+                         ["w: loop: measure 'rival_ordering' is the context part 'rival_ordering', outside the "
+                          "controlled segment"])
+        self.assertEqual(check(seg, measures=[{"name": "network after the send", "to_money": "x"}]), [])  # names only
+        self.assertTrue(of_loop.context_matches("the change moves the third party's ordering rule", seg["context"][1],
+                                                prose=True))
 
     def test_a_loop_yaml_beside_the_doc_is_checked_and_one_place_only(self):
         import importlib.machinery
@@ -192,6 +207,8 @@ class LoopCliTest(unittest.TestCase):
                           "it; it is still testing", out)
             self.assertNotIn("refute", out)
             self.assertIn("oracle > offline > day_pass", out)
+            self.assertIn("segment (controlled): the block reaches our node -> the order leaves our sender", out)
+            self.assertIn("context (outside the segment, never a target): network after the send;", out)
 
 
 class LoopWorkTest(unittest.TestCase):
