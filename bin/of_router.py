@@ -16,10 +16,11 @@ The systems index (compiled globs per organization root) is cached with the regi
 import os
 import re
 
-VERSION = "rt-v5"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
+VERSION = "rt-v6"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
 #                    rt-v3: a path outside every organization (scratchpads, harness memory) is outside;
 #                    rt-v4: a worktree resolves by its .git file (gitdir), whatever its folder is called;
-#                    rt-v5: a keeper-less system that is not live (unsupported, retired) is non_live:<lifecycle>
+#                    rt-v5: a keeper-less system that is not live (unsupported, retired) is non_live:<lifecycle>;
+#                    rt-v6: a character class in a paths pattern ([a-f], [!x]) matches as in bin/of, not literally
 
 PATH_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path",
               "Read": "file_path", "Grep": "path", "Glob": "path"}
@@ -37,6 +38,11 @@ def glob_rx(p):
         elif p[i] == "?":
             out.append("[^/]")
             i += 1
+        elif p[i] == "[" and "]" in p[i + 1:]:  # as bin/of's glob_regex: [!x] and [^x] never match a slash
+            j = p.index("]", i + 1)
+            body = p[i + 1:j].replace("\\", "\\\\")
+            out.append("[^" + body[1:] + "/]" if body.startswith(("!", "^")) else "[" + body + "]")
+            i = j + 1
         else:
             out.append(re.escape(p[i]))
             i += 1
