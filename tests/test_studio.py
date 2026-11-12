@@ -660,10 +660,10 @@ class DiagnoseTest(unittest.TestCase):
         self.assertEqual(tuple(mod.MANAGEMENT_FUNCTIONS), of_model.MANAGEMENT_FUNCTIONS)
 
     def owner_doc(self):
-        return {"systems": {"mt": {"kind": "creating", "keeper": "acme_org"},
+        return {"systems": {"acme": {"kind": "creating", "keeper": "acme_org"},
                             "bot": {"keeper": "bot_operator"}, "k8s": {"keeper": "k8s_keeper"}},
                 "positions": [{"name": n, "system": s, "holder": {"session": f"s-{n}"}}
-                              for n, s in (("bot_operator", "bot"), ("k8s_keeper", "k8s"), ("acme_org", "mt"),
+                              for n, s in (("bot_operator", "bot"), ("k8s_keeper", "k8s"), ("acme_org", "acme"),
                                            ("bot_search", "bot"), ("bot_nonce", "bot"))]}
 
     def test_sender_from_the_matching_out_message(self):
@@ -717,7 +717,7 @@ class DiagnoseTest(unittest.TestCase):
 
 class DelegationTest(unittest.TestCase):
     NOW = "2026-11-05T00:00Z"
-    DOC = {"systems": {"mt": {"kind": "creating", "keeper": "acme_org"}, "k8s": {"keeper": "k8s_keeper"},
+    DOC = {"systems": {"acme": {"kind": "creating", "keeper": "acme_org"}, "k8s": {"keeper": "k8s_keeper"},
                        "bot": {"keeper": "bot_operator"}},
            "units": {"platform": {"owner": "plat_owner", "systems": ["k8s"]}, "trading": {"owner": "founder_pos", "systems": ["bot"]}},
            "delegations": [{"id": "del-1", "unit": "platform", "systems": ["k8s"], "positions": ["k8s_keeper"],
@@ -726,7 +726,7 @@ class DelegationTest(unittest.TestCase):
            "positions": [{"name": "k8s_keeper", "system": "k8s", "holder": {"session": "s-k8s"}},
                          {"name": "plat_owner", "system": "k8s", "holder": {"runtime": "human"}},
                          {"name": "bot_operator", "system": "bot", "holder": {"session": "s-op"}},
-                         {"name": "acme_org", "system": "mt"}]}
+                         {"name": "acme_org", "system": "acme"}]}
 
     def test_asks_route_to_the_unit_owner(self):
         m = of_model.build(self.DOC, [], at=self.NOW)
