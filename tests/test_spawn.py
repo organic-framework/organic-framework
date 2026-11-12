@@ -11,8 +11,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_spawn  # noqa: E402
 
-SYSTEMS = {"net": {"repos": ["ansible-creek"]}, "mt": {"repos": ["org"]}, "sec": {}}
-P = {"name": "net_keeper", "system": "net", "_org": "mt", "_unit": "platform", "mandate": "registry/briefs/net_keeper.md",
+SYSTEMS = {"net": {"repos": ["ansible-creek"]}, "acme": {"repos": ["org"]}, "sec": {}}
+P = {"name": "net_keeper", "system": "net", "_org": "acme", "_unit": "platform", "mandate": "registry/briefs/net_keeper.md",
      "holder": {"runtime": "claude-code"}}
 
 
@@ -50,7 +50,7 @@ class SpawnPlanTest(unittest.TestCase):
             plan(config_dir=None, cwd="/tmp", capacity_rows=[], best_target=lambda rows: None)
 
     def test_an_untrusted_folder_is_a_task_for_the_founder(self):
-        pl = of_spawn.plan(P, [P], [], bind, SYSTEMS, ["~/acme"], "/h", lambda q: "mt", config_dir="/x/.claude-b",
+        pl = of_spawn.plan(P, [P], [], bind, SYSTEMS, ["~/acme"], "/h", lambda q: "acme", config_dir="/x/.claude-b",
                            cwd="/tmp/w", trusted=lambda d, c: None, sid="S")
         self.assertIsNone(pl["trusted"])
         title, steps = of_spawn.trust_task(pl)
@@ -61,7 +61,7 @@ class SpawnPlanTest(unittest.TestCase):
         rows = [{"config_dir": "/u/.claude-d", "free": 90}, {"config_dir": "/u/.claude-e", "free": 60},
                 {"config_dir": "/u/.claude", "free": 70}]
         best = lambda rs: max(rs, key=lambda r: r["free"]) if rs else None
-        pick = lambda trusted: of_spawn.plan(P, [P], [], bind, SYSTEMS, ["~/acme"], "/h", lambda q: "mt",
+        pick = lambda trusted: of_spawn.plan(P, [P], [], bind, SYSTEMS, ["~/acme"], "/h", lambda q: "acme",
                                              cwd="/w/ansible-creek", capacity_rows=rows, best_target=best,
                                              trusted=trusted, sid="S")["config_dir"]
         self.assertEqual(pick(lambda d, c: "k" if not d.endswith("-d") else None), "/u/.claude")
@@ -136,7 +136,7 @@ class SpawnPlanTest(unittest.TestCase):
 
 
 CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
-    "mt": {"roots": ["/h/.config/acme"],
+    "acme": {"roots": ["/h/.config/acme"],
            "credentials": {"graf": {"paths": ["/h/.config/acme/grafana/viewer.token"], "keeper": "obs_keeper"},
                            "deploy": {"paths": ["/h/.ssh/mt-deploy"], "keeper": "net_keeper"},
                            "pg": {"paths": ["/h/.config/acme/pg/*.pgpass"], "keeper": "db_keeper"}},
@@ -147,19 +147,19 @@ CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
 
 class CredentialDenyTest(unittest.TestCase):
     def test_rules_deny_what_the_position_may_not_use(self):
-        self.assertEqual(of_spawn.deny_rules("app_dev", "mt", CAT, named=False, roots=False), [])  # both layers off: nothing
-        self.assertFalse(any(x.endswith("/**)") for x in of_spawn.deny_rules("app_dev", "mt", CAT, named=True, roots=False)))
-        self.assertEqual([x for x in of_spawn.deny_rules("app_dev", "mt", CAT, named=False, roots=True) if "mt-deploy" in x], [])
-        r = of_spawn.deny_rules("app_dev", "mt", CAT, named=True, roots=True)
+        self.assertEqual(of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=False), [])  # both layers off: nothing
+        self.assertFalse(any(x.endswith("/**)") for x in of_spawn.deny_rules("app_dev", "acme", CAT, named=True, roots=False)))
+        self.assertEqual([x for x in of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=True) if "mt-deploy" in x], [])
+        r = of_spawn.deny_rules("app_dev", "acme", CAT, named=True, roots=True)
         self.assertIn("Read(//h/.config/acme/grafana/viewer.token)", r)   # absolute: two slashes
         self.assertIn("Edit(//h/.ssh/mt-deploy)", r)                            # outside the roots, named
         self.assertIn("Read(//h/.config/globex/**)", r)                         # another organization's root
         self.assertNotIn("Read(//h/.config/acme/**)", r)                   # it uses a file there: the guard's
         self.assertFalse(any("pgpass" in x for x in r))                         # what it lists is never denied
-        keeper = of_spawn.deny_rules("net_keeper", "mt", CAT, named=True, roots=True)
+        keeper = of_spawn.deny_rules("net_keeper", "acme", CAT, named=True, roots=True)
         self.assertNotIn("Read(//h/.ssh/mt-deploy)", keeper)                    # its keeper uses it
         self.assertIn("Read(//h/.config/acme/**)", keeper)                 # it uses nothing under its root
-        self.assertEqual(of_spawn.deny_rules("app_dev", "mt", {}), [])
+        self.assertEqual(of_spawn.deny_rules("app_dev", "acme", {}), [])
 
     def setUp(self):
         import of_events
@@ -172,7 +172,7 @@ class CredentialDenyTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_one_settings_value_with_memory_and_rules(self):
-        deny = of_spawn.deny_rules("app_dev", "mt", CAT, named=True)
+        deny = of_spawn.deny_rules("app_dev", "acme", CAT, named=True)
         pl = plan(memory='{"autoMemoryDirectory": "/m/app"}', deny=deny * 20, cwd="/w")
         self.assertLess(len(pl["command"]), 1024)  # a fresh shell in canonical mode takes 1,024 bytes a line
         path = shlex.split(pl["command"].split("--settings ", 1)[1])[0]

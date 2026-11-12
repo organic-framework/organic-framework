@@ -38,7 +38,7 @@ class Store(unittest.TestCase):
         self.tmp.cleanup()
 
     def ev(self, kind, payload, position=None, minutes=0):
-        rec = of_events.record(kind, payload, position=position, session=f"S-{position}", org="mt")
+        rec = of_events.record(kind, payload, position=position, session=f"S-{position}", org="acme")
         rec["timestamp"] = at(minutes)
         of_store.add_event(self.conn, rec)
         return rec["of.event.id"]
@@ -47,7 +47,7 @@ class Store(unittest.TestCase):
         return self.ev("human_prompt", {"origin": origin, "channel": channel, "text": text}, position, minutes)
 
 
-POSITIONS = [{"name": n, "summary": s, "_orgid": "mt", "_unit": "shop"} for n, s in (
+POSITIONS = [{"name": n, "summary": s, "_orgid": "acme", "_unit": "shop"} for n, s in (
     ("acme_throughput-owner", "owner of the money units"), ("accounting_keeper", "Accountant Dog/Spy"),
     ("storefront_checkout", "nonces and wallets"), ("forecasting_keeper", "AI factory"),
     ("platform_owner", "owner of the platform unit"))]
@@ -83,7 +83,7 @@ class DigestTest(Store):
         text = of_case.render(d)
         self.assertIn("to acme_throughput-owner: Откуда этот всплеск?", text)
         self.assertIn("acme_throughput-owner <-> accounting_keeper: 2 messages, 3 KB", text)
-        self.assertIn("- platform_owner: owner of the platform unit (mt/shop)", text)
+        self.assertIn("- platform_owner: owner of the platform unit (acme/shop)", text)
 
     def test_no_prompts_no_inference(self):
         self.said("acme_throughput-owner", "старое", -200)

@@ -68,7 +68,7 @@ class GithubTest(unittest.TestCase):
             of_events.STATE_DIR = root
             try:
                 conn = of_store.connect()
-                of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: prs.get(r, []),
+                of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: prs.get(r, []),
                                      log=lambda m: None,
                                      position_system={"storefront_search": "storefront", "disc_keeper": "discovery"})
                 rows = {r["number"]: (r, pos) for pl, pos in conn.execute(
@@ -91,8 +91,8 @@ class GithubTest(unittest.TestCase):
             try:
                 conn = of_store.connect()
                 of_store.add_event(conn, of_events.record("work_record", {"source": "pr-link", "repo": "M/storefront",
-                                                                          "number": 8}, position="disc_keeper", org="mt"))
-                of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: PRS.get(r, []),
+                                                                          "number": 8}, position="disc_keeper", org="acme"))
+                of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: PRS.get(r, []),
                                      log=lambda m: None, position_system={"disc_keeper": "discovery"})
                 rows = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM event WHERE name = 'of.work_record'")]
                 pr8 = next(r for r in rows if r.get("source") == "gh" and r["number"] == 8)
@@ -171,7 +171,7 @@ class WorksMatchTest(unittest.TestCase):
                           {"number": 32, "mergedAt": None, "updatedAt": "2026-10-31T11:00:00Z", "closedAt": "2026-10-31T11:00:00Z",
                            "headRefName": "other"}]
                 for _ in range(2):  # an unchanged PR writes nothing on the next run
-                    of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: merged.get(r, []),
+                    of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: merged.get(r, []),
                                          log=lambda m: None, works=WORKS,
                                          open_fetcher=lambda r: open_ if r == "M/storefront" else [],
                                          closed_fetcher=lambda r, s: closed if r == "M/storefront" else [],
@@ -188,10 +188,10 @@ class WorksMatchTest(unittest.TestCase):
                 self.assertEqual((st[32]["state"], st[32]["works"]), ("closed", []))
                 self.assertEqual(calls, [31])  # details only for a changed open PR, once
                 open_[0]["updatedAt"] = "2026-11-01T10:00:00Z"  # a new push or review: one more state
-                of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
+                of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
                                      works=WORKS, open_fetcher=lambda r: open_ if r == "M/storefront" else [],
                                      detail_fetcher=lambda r, n: {"files": [], "commits": []})
-                bad = of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
+                bad = of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
                                            works=WORKS, open_fetcher=lambda r: 1 / 0)
                 self.assertEqual(bad, 0)  # a PR-state failure never stops the import
                 self.assertEqual(conn.execute("SELECT count(*) FROM event WHERE name = 'of.pr_state'").fetchone()[0], 3)
@@ -209,17 +209,17 @@ class RematchTest(unittest.TestCase):
                 merged = {"M/storefront": [{"number": 40, "author": {"login": "a"}, "mergedAt": "2026-10-30T10:00:00Z",
                                            "headRefName": "claude/spam-1", "files": [{"path": "crates/x.rs"}]}]}
                 works = {"w1": {"title": "t", "kind": "rfc", "systems": ["storefront"], "match": {"branches": ["claude/wallet-*"]}}}
-                of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: merged.get(r, []),
+                of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: merged.get(r, []),
                                      log=lambda m: None, works=works)
                 get = lambda: json.loads(conn.execute("SELECT payload FROM event WHERE name = 'of.work_record'").fetchone()[0])["works"]
                 self.assertEqual(get(), [])
                 works["w1"]["match"]["branches"].append("claude/spam-*")   # the keeper sharpens the match
-                n = of_github.import_org(conn, "mt", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
+                n = of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25", fetcher=lambda r, s: [], log=lambda m: None,
                                          works=works)
                 self.assertEqual((n, get()), (0, ["w1"]))                 # no PR fetched, the stored record re-matched
                 rec = json.loads(conn.execute("SELECT record FROM event WHERE name = 'of.work_record'").fetchone()[0])
                 self.assertEqual(rec["of.payload"]["works"], ["w1"])
-                self.assertEqual(of_github.rematch(conn, "mt", SYSTEMS, works, log=lambda m: None), 0)  # unchanged map
+                self.assertEqual(of_github.rematch(conn, "acme", SYSTEMS, works, log=lambda m: None), 0)  # unchanged map
             finally:
                 of_events.STATE_DIR = saved
 

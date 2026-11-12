@@ -136,9 +136,9 @@ class ParkedButWorkingTest(unittest.TestCase):
     """A position parked in the registry while it works: to the structure keeper once a day (of_architect)."""
 
     def test_keeper_told_once_a_day_never_the_founder(self):
-        pos = [{"name": "acme_org", "role": "org", "status": "active", "_org": "mt"},
-               {"name": "k8s_keeper", "role": "keeper", "status": "parked", "_org": "mt"},
-               {"name": "old_one", "role": "keeper", "status": "parked", "_org": "mt"},
+        pos = [{"name": "acme_org", "role": "org", "status": "active", "_org": "acme"},
+               {"name": "k8s_keeper", "role": "keeper", "status": "parked", "_org": "acme"},
+               {"name": "old_one", "role": "keeper", "status": "parked", "_org": "acme"},
                {"name": "of_architect", "role": "architect", "status": "active", "_org": "ofb"}]
         agents = [{"pane_id": "p0", "agent_status": "working", "name": "acme_org"},
                   {"pane_id": "p1", "agent_status": "working", "name": "k8s_keeper"},
@@ -191,14 +191,14 @@ if __name__ == "__main__":
 class WorkspaceCountTest(unittest.TestCase):
     def test_counts_per_org_workspace_and_desk(self):
         import of_asks_tui
-        positions = [{"name": "a", "_org": "ofb"}, {"name": "b", "_org": "mt"}, {"name": "c", "_org": "mt"}]
+        positions = [{"name": "a", "_org": "ofb"}, {"name": "b", "_org": "acme"}, {"name": "c", "_org": "acme"}]
         agents = [{"pane_id": "p1", "workspace_id": "w6", "name": "a"}, {"pane_id": "p2", "workspace_id": "w4", "name": "b"}]
         bind = lambda ps, ags: ([(p, next(x for x in ags if x["name"] == p["name"])) for p in ps
                                  if any(x["name"] == p["name"] for x in ags)], [], [])
         asks = [{"state": "open", "position": "a"}, {"state": "open", "position": "b"}, {"state": "answered", "position": "c"}]
         ws = [{"workspace_id": "w3", "label": "organic-framework"}, {"workspace_id": "w4", "label": "acme"},
               {"workspace_id": "w6", "label": "desk"}]
-        counts = of_asks_tui.workspace_counts(positions, agents, asks, bind, ws, {"ofb": "organic-framework", "mt": "acme"})
+        counts = of_asks_tui.workspace_counts(positions, agents, asks, bind, ws, {"ofb": "organic-framework", "acme": "acme"})
         self.assertEqual(counts, {"w3": 1, "w4": 1, "w6": 1})
 
     def test_tui_items_group_and_registry(self):
@@ -234,14 +234,14 @@ class InboundStallTest(unittest.TestCase):
         import time as _t
         import of_pulse
         now = calendar.timegm(_t.strptime("2026-11-06T13:00:00", "%Y-%m-%dT%H:%M:%S"))
-        q = {"mt:platform_owner": {"n": 25, "oldest": "2026-11-06T09:27:00Z", "at": now - 30},
-             "mt:fresh": {"n": 2, "oldest": "2026-11-06T12:50:00Z", "at": now - 30},
-             "mt:relay_down": {"n": 9, "oldest": "2026-11-06T09:00:00Z", "at": now - 3600}}
+        q = {"acme:platform_owner": {"n": 25, "oldest": "2026-11-06T09:27:00Z", "at": now - 30},
+             "acme:fresh": {"n": 2, "oldest": "2026-11-06T12:50:00Z", "at": now - 30},
+             "acme:relay_down": {"n": 9, "oldest": "2026-11-06T09:00:00Z", "at": now - 3600}}
         sent, mem = [], {}
         saved = of_pulse.of_events.emit
         of_pulse.of_events.emit = lambda *a, **k: None
         try:
-            self.assertEqual(of_pulse.inbound_stalls(mem, now, lambda t, b: sent.append((t, b)), q), ["mt:platform_owner"])
+            self.assertEqual(of_pulse.inbound_stalls(mem, now, lambda t, b: sent.append((t, b)), q), ["acme:platform_owner"])
             self.assertEqual(of_pulse.inbound_stalls(mem, now, lambda t, b: sent.append((t, b)), q), [])  # once
         finally:
             of_pulse.of_events.emit = saved
@@ -362,7 +362,7 @@ class StudioEscalationTest(unittest.TestCase):
                                                   "from_owner": "acme_platform-owner", "to": "acme_owner", "evidence": ["iss1"]},
                                position="acme_platform-owner")
                 ran = []
-                pos = [{"name": "a", "_org": "mt", "_delegations": [{"id": "del-x"}]}]
+                pos = [{"name": "a", "_org": "acme", "_delegations": [{"id": "del-x"}]}]
                 self.assertEqual(of_pulse.studio_escalations(pos, conn, log=lambda m: None, run=lambda *a, **k: ran.append(a)), 1)
                 self.assertEqual(of_pulse.studio_escalations(pos, conn, log=lambda m: None, run=lambda *a, **k: None), 0)
                 self.assertIn("escalations", ran[0][0])
@@ -1186,7 +1186,7 @@ class JudgeTest(unittest.TestCase):
                 conn = of_store.connect(os.path.join(d, "of.db"))
 
                 def add(kind, payload, position="mto"):
-                    rec = of_events.record(kind, payload, position=position, session="S", org="mt")
+                    rec = of_events.record(kind, payload, position=position, session="S", org="acme")
                     of_store.add_event(conn, rec)
                     return rec["of.event.id"]
                 gw2 = add("agent_question", {"detected_by": "declared", "to": "founder",
