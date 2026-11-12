@@ -127,6 +127,19 @@ class RegistrationTest(unittest.TestCase):
         auth, cdj, sig = self.phone.get(c, count=8)
         self.assertEqual(S.verify_assertion(auth, cdj, sig, c, RP, ORIGIN, key, last_counter=7), 8)
 
+    def test_the_pure_python_es256_check_agrees_with_openssl(self):
+        att, client = self.phone.create(self.chal)
+        key = S.verify_registration(att, client, self.chal, RP, ORIGIN)["public_key"]
+        auth, cdj, sig = self.phone.get(os.urandom(32))
+        data = auth + hashlib.sha256(cdj).digest()
+        self.assertTrue(S.es256_verify(key, data, sig))
+        self.assertFalse(S.es256_verify(key, data + b"x", sig))
+        self.assertFalse(S.es256_verify(key, data, sig[:-1] + bytes([sig[-1] ^ 1])))
+        self.assertFalse(S.es256_verify(key, data, b"\x30\x00"))
+        import base64
+        bad = base64.b64decode(key)[:-1] + bytes([base64.b64decode(key)[-1] ^ 1])   # off the curve
+        self.assertFalse(S.es256_verify(base64.b64encode(bad).decode(), data, sig))
+
     def test_cbor_and_short_codes(self):
         self.assertEqual(S.cbor_decode(cbor({"a": [1, -2, b"\x00", True, None], 3: "x"}))[0],
                          {"a": [1, -2, b"\x00", True, None], 3: "x"})
