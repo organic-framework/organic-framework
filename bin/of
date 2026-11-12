@@ -5110,7 +5110,7 @@ def cmd_capacity(args):
               + ("" if of_capacity.load_policy().get("position_memory") else
                  "; of spawn starts on it; moves and resumes too once capacity.yaml has position_memory: true"))
         return 0
-    if args.action == "spend":  # docs/registry.md, Goals, "Budgets": the month's spend per work, goal and condition
+    if args.action == "spend":  # docs/registry.md, Goals, "Spend per goal": the month's spend per work, goal and condition
         import time
         import of_spend
         want = args.month or time.strftime("%Y-%m", time.gmtime())
