@@ -77,6 +77,18 @@ class BlockedTest(unittest.TestCase):
         self.assertEqual(of_blocked.detect(old + LOGIN)["type"], "login")
         real = "\n Not logged in · Please run /login\n\n╭────────╮\n│ > \n╰────────╯\n  ? for shortcuts\n"
         self.assertEqual(of_blocked.detect(real)["type"], "login")  # the open input box under it changes nothing
+        self.assertEqual(of_blocked.detect("\n  ⎿  API Error: 401 · Please run /login\n")["type"], "login")
+
+    def test_this_files_own_diff_on_a_screen_is_not_a_stop(self):
+        """2026-11-12, asks 111979d0, 13cdd01f, 9673dae6 (of_capacity): the fix's diff, below the last finished turn
+        and above an open input box, quoted the login line in a comment and in tests."""
+        diff = ("\n✻ Cooked for 14s\n\n✻ Conversation compacted\n"
+                "  57 +# Claude Code's login stops name /login (\"Not logged in · Please run /login\").\n"
+                '  31  LOGIN = "\\n Invalid API key · Please run /login\\n"\n'
+                '  80 +        real = "\\n Not logged in · Please run /login\\n"\n'
+                "  81 +  Not logged in · Please run /login\n"
+                "\n❯ go on\n  ⏵⏵ bypass permissions on\n")
+        self.assertIsNone(of_blocked.detect(diff))
 
     def test_the_inbox_note_for_a_limit(self):
         d = of_blocked.detect(LIMIT)

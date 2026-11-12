@@ -61,15 +61,17 @@ def _limit_stop(lines):
     return _still(lines, lambda ln: _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln))
 
 
-# Claude Code's login stops name /login ("Not logged in · Please run /login", "Invalid API key · Please run /login").
-# A bare "not logged in" is anybody's text: an agent printed a source title, "Keep Tailscale running when not logged
-# in", and got a login ask (of_capacity, 2026-11-12, ask ef5a87c6). As for a limit, a finished turn after the line
-# makes it history. The input box below says nothing here: Claude Code reopens it under a real login error too.
-_LOGIN = re.compile(r"(?i)(please run /login|login required|session expired.*log ?in|/login to)")
+# Claude Code's login stop is its own line that ends with /login ("Not logged in · Please run /login", "Invalid API
+# key · Please run /login"), at most under its ⎿ or ⏺ marker. The same words inside an agent's text are not one: a
+# source title "Keep Tailscale running when not logged in" (of_capacity, 2026-11-12, ask ef5a87c6), and then this
+# file's own diff on agents' screens, its comment and its tests quoting the line (asks 111979d0, 13cdd01f, 9673dae6).
+# As for a limit, a finished turn after the line makes it history. The open input box below says nothing: Claude Code
+# reopens it under a real login error too.
+_LOGIN = re.compile(r"(?i)^\s*(?:[⎿⏺│]\s*)?[a-z][^\"'`#=()\[\]{}]*/login[\s.│]*$")
 
 
 def _login_stop(lines):
-    return _still(lines, _LOGIN.search)
+    return _still(lines, _LOGIN.match)
 _EXIT = re.compile(r"(?i)exit and stop tasks")
 # Claude Code's offer to compact (2026-11-10, of_capacity msg 01a1c64d; of_server msg 01a1c650): its rows have no
 # numbers, and Enter there compacts the conversation. Esc ("not now") leaves the session as it was.
