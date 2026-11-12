@@ -50,11 +50,26 @@ _LIMIT_WARNING = re.compile(r"(?i)you've used \d+\s*% of your")
 _TURN_DONE = re.compile(r"(?i)\b[a-z]+ed for \d+\s*[smh]\b")
 
 
+def _still(lines, hit):
+    """Lines matching hit(line) that are still the session's state: no finished turn after the last of them."""
+    hits = [i for i, ln in enumerate(lines) if hit(ln)]
+    return bool(hits) and not any(_TURN_DONE.search(ln) for ln in lines[hits[-1] + 1:])
+
+
 def _limit_stop(lines):
     """A usage-limit line that is still the session's state: no warning-only line, and no finished turn after it."""
-    hits = [i for i, ln in enumerate(lines) if _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln)]
-    return bool(hits) and not any(_TURN_DONE.search(ln) for ln in lines[hits[-1] + 1:])
-_LOGIN = re.compile(r"(?i)(please run /login|login required|not logged in|session expired.*log ?in|/login to)")
+    return _still(lines, lambda ln: _LIMIT.search(ln) and not _LIMIT_WARNING.search(ln))
+
+
+# Claude Code's login stops name /login ("Not logged in · Please run /login", "Invalid API key · Please run /login").
+# A bare "not logged in" is anybody's text: an agent printed a source title, "Keep Tailscale running when not logged
+# in", and got a login ask (of_capacity, 2026-11-12, ask ef5a87c6). As for a limit, a finished turn after the line
+# makes it history. The input box below says nothing here: Claude Code reopens it under a real login error too.
+_LOGIN = re.compile(r"(?i)(please run /login|login required|session expired.*log ?in|/login to)")
+
+
+def _login_stop(lines):
+    return _still(lines, _LOGIN.search)
 _EXIT = re.compile(r"(?i)exit and stop tasks")
 # Claude Code's offer to compact (2026-11-10, of_capacity msg 01a1c64d; of_server msg 01a1c650): its rows have no
 # numbers, and Enter there compacts the conversation. Esc ("not now") leaves the session as it was.
@@ -108,7 +123,7 @@ def detect(screen):
         opts = COMPACT_OPTIONS
     elif _limit_stop(lines):
         kind = "limit"
-    elif _LOGIN.search(text):
+    elif _login_stop(lines):
         kind = "login"
     elif _MCP.search(text):
         kind = "mcp_auth"
