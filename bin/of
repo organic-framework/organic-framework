@@ -1911,6 +1911,12 @@ def cmd_loop(args):
     reg = of_loop.register(rows, args.work)
     if args.action == "show":
         print(f"{args.work} ({org}): target {(loop.get('target') or {}).get('metric')}; ladder {' > '.join(of_loop.rungs(loop))}")
+        seg = (loop.get("target") or {}).get("segment")
+        if isinstance(seg, dict):  # docs/registry.md, Works: the segment and its context beside the target
+            print(f"  segment (controlled): {seg.get('start')} -> {seg.get('end')}")
+            parts = [str(of_loop.part_label(c)) for c in seg.get("context") or [] if c]
+            if parts:
+                print(f"  context (outside the segment, never a target): {'; '.join(parts)}")
         for h in reg["hypotheses"]:  # the change, the prediction and the latest run's verdict each say what they are:
             # a prediction printed alone was read as a finding (of_conductor, 2026-11-12)
             print(f"  {h['id']} {h['status']:<8} voi {h['voi'] or '?':<4} cost {h['cost'] or '?':<22} runs {h['runs']}  {h['change']}")
