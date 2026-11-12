@@ -255,33 +255,48 @@ works:
 
 Other keys (notes such as `why`, `last_progress`) are allowed and ignored by the checks. `of registry check` validates the id, `kind`, the systems, `owner` and `doers` (a position here or `external:<name>`), `state`, the dates, the stages (unique ids, `done_when`, `state`) and the `match` types. When a work's systems span more than one unit, `owner` is required (the unit owner would be ambiguous). A doer whose position is parked or finished is a warning, not a problem: the work has lost its doer, and Studio shows it. `of import github` names the works each PR matches (`works` on `of.work_record` and `of.pr_state`): a number in `prs` within the doc's repository; a `branches` glob, `<repo>:<glob>` in that repository or a bare glob in the doc's repository or one where the work's systems live; a merge queue's batch PR (head `mergify/merge-queue/…` or `gh-readonly-queue/…`) matches no work, since it copies PRs already counted; a `paths` glob, `<repo>:<glob>` over the PR's changed paths or a plain glob over `<repo dir>/<path>` as systems' paths are written; or a change to the `doc` file itself. `of ask --work <id>` and `of status --work <id>` link an ask or a declared state to a work explicitly (the id must exist in the organization's `works:`); otherwise evidence attaches by `match`. Studio shows `external:` doers as people, not positions.
 
-## Goals (2026-11-07, `of_architect`; implemented once an owner sets goals)
+## Goals (2026-11-07, `of_architect`; the goal tree 2026-11-12)
 
-A top-level `goals:` map: the few outcomes the organization's owner wants, above the works. A work names the goal it serves, so the owner sees what the organization works toward and what matters first, not a flat list of works. Goals are the owner's: an agent proposes them, and they enter the registry only with the owner's yes, whose ask id each goal records.
+A top-level `goals:` map: the few outcomes the organization's owner wants, above the works. A goal may be broken into sub-goals, and those into sub-goals again, so the owner sees what the organization works toward, what matters first, and which agents work on each part, not a flat list of works. Goals are the owner's: an agent proposes them, and they enter the registry only with a yes whose ask id each goal records.
 
 ```yaml
 goals:
-  g-example:                                  # the id, same rule as a work's (illustration only)
+  g-revenue:                                  # a root goal; the id, same rule as a work's (illustration only)
     title: "<the outcome, one line, in the owner's words>"
-    rank: 1                                   # unique within the organization: 1 matters most
-    measure: "<how success is seen>"          # free text
+    rank: 1                                   # unique among its siblings (here, the root goals): 1 matters most
+    measure: "<how success is seen>"          # free text; required
     metric: null                              # optional: a Studio measure name when one exists
-    target: "<the level that counts as success>"   # optional
+    target: "<the level that counts as success>"   # optional on a root goal
     by: 2026-12-31                            # optional date
     owner: acme_owner                         # who answers for it; usually the organization's owner
     state: active                             # active | achieved | dropped
     decided: <ask id>                         # the owner's yes on this text; required
+  g-revenue-orders:
+    parent: g-revenue                         # a sub-goal
+    title: "<the part of the parent it stands for>"
+    drives: "revenue = orders x average order value"   # optional: how it moves the parent's measure
+    rank: 1                                   # among g-revenue's sub-goals
+    measure: "<its own measure>"              # required
+    target: "<its own level>"                 # required on a sub-goal
+    owner: acme_storefront-owner              # optional: absent, the parent's owner
+    state: active
+    decided: <ask id>                         # the yes of the parent's owner on this text
 works:
-  mt-nonces-wallets:
-    goal: g-example                           # optional: the one goal the work mainly serves
+  acme-checkout-retries:
+    goal: g-revenue-orders                    # the one goal the work mainly serves: a leaf
 ```
 
 Rules:
-- Few: more than 7 active goals is a warning; a goal list is a choice, not an inventory.
-- One goal per work. A work that serves two names the one it serves most; a work with no goal is shown apart in Studio, "no goal", which is a question for the owner, not an error.
-- An agent never adds, ranks or rewrites a goal without the owner's yes on that exact text (an ask); the structure keeper writes it and records `decided`.
-- Asks and declared states reach a goal through their work (`--work`). Studio groups works, their open asks and their progress under each goal, in rank order.
-- `of registry check` validates the ids, `rank` (unique integers), `state`, `decided` (present), the dates, and each work's `goal` (an existing goal).
+- **A tree, not a web.** A sub-goal names one `parent` in the same organization. A goal with no `parent` is a root.
+- **Each node is measured.** Every goal has its own `measure`, and every sub-goal its own `target`. A sub-goal is measured on what the organization controls: a link outside its control is context of its parent, never a sub-goal (Works, "The target's controlled segment").
+- **Few at each level.** More than 7 active root goals, or more than 7 active sub-goals under one goal, is a warning. A goal list is a choice, not an inventory.
+- **Works hang on leaves.** A work names one goal, the one it serves most, and that goal is a leaf. A work on a goal that has sub-goals is a warning: attach it to the sub-goal it moves. When the organization has goals, a work that is not done or parked and names no goal is a warning, a question for the owner.
+- **The agents on each goal are derived, never written.** A goal's doers are the doers of the works under it, and its owner answers for it. Studio and `of works` show the tree in rank order, each node with its measure, target, works, doers, open asks and progress.
+- **Who decides.** An agent never adds, ranks or rewrites a goal without a yes on that exact text, recorded in `decided`. A root goal needs the organization's owner's yes. A sub-goal needs the yes of its parent's owner, recorded the same way: the founder's ask id, or, when the parent is a unit owner's goal, the id of the ask that unit owner answered. A whole decomposition may be proposed in one ask; each node then records that ask id. The structure keeper writes it.
+- **A closed parent closes its branch.** An active sub-goal under an achieved or dropped goal is a warning.
+- Asks and declared states reach a goal through their work (`--work`).
+- **Why the tree.** The founder asked on 2026-11-12 for a goal broken into sub-goals, and those into sub-goals, with the agents on each, and the tree managed (through `of_conductor`). A user organization had broken its money target into three factors, one of them a chain of seven links. The decomposition lived only in a prose report, with no measure per sub-goal, and 85 of its 101 works hung on its one flat goal. The practice: a hierarchy of objectives, each with its own measure (Keeney, *Value-Focused Thinking*, 1992), and the actors on each impact (Adzic, *Impact Mapping*, 2012).
+- **The checks** (to build, `of_platform` in `of registry check` and `of works`, `of_studio` in Studio, from 2026-11-12): `of registry check` validates the ids; `parent` (an existing goal, no cycle); `rank` (unique integers among siblings); `state`; `decided` (present); `measure` (present), and `target` on a sub-goal; the dates; each work's `goal` (an existing goal), with the leaf and no-goal warnings above.
 
 ## Tools (2026-11-11, `of_tools`; method in [`tools.md`](tools.md))
 
