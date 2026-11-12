@@ -443,6 +443,10 @@ class ScreenTest(unittest.TestCase):
         self.inbox([0.1, ord("r"), "O", "K", "\n", "\n", ord("P"), ord("a")],
                    [item("C", "Pay 90 USD to the operator?")], flush=True)
         self.assertEqual(self.sent, [])
+        # of_review's probe: the paste's rest holds a y, which would confirm the answer itself
+        self.inbox([0.1, ord("r"), "o", "k", "\n", "\n", ord("y"), ord("e"), ord("s")],
+                   [item("C", "Pay 90 USD to the operator?")], flush=True)
+        self.assertEqual(self.sent, [])
 
     def test_a_draft_outlives_the_window_and_one_whose_ask_closed_is_archived(self):
         with tempfile.TemporaryDirectory() as d:
