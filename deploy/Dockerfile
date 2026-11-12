@@ -37,6 +37,7 @@ RUN ldconfig \
  && rm -f /tmp/probe* \
  && pip install --no-cache-dir "PyYAML==6.0.2" \
  && python3 -m pip uninstall -y -q pip \
+ && rm -rf /root/.cache \
  && useradd --uid 10001 --create-home --home-dir /data of
 
 WORKDIR /app
