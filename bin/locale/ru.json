@@ -229,12 +229,5 @@
  "↑↓ select · ←→ stream · 1-9 answer · r write · h snooze · d hand over · / search · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · h отложить · d передать · / поиск · ? помощь · Esc назад",
  "↑↓ select · ←→ stream · 1-9 answer · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · ? помощь · Esc назад",
  "the next, the previous stream (a click on its tab too)": "следующий, предыдущий поток (или щелчок по его вкладке)",
- "Done, you may close this tab.": "Готово, можно закрыть вкладку.",
- "goal|dative": "цели",
- "condition|dative": "условию",
- "{used}M of {limit}M tokens": "{used} млн из {limit} млн токенов",
- "${used} of ${limit}": "${used} из ${limit}",
- "The {what} {node} ({title}) of {org} has used {pct}% of its monthly budget this month ({amounts}). Raise its budget, or narrow the work on it? OF only reads and warns: nothing stops by itself. A new budget is a goal_change diff that the structure keeper writes and you approve.": "Расход по {what} {node} ({title}) в {org} в этом месяце достиг {pct}% месячного бюджета ({amounts}). Поднять бюджет или сузить работу? OF только читает и предупреждает: само ничего не останавливается. Новый бюджет оформляется диффом goal_change: его пишет хранитель структуры, а одобряешь ты.",
- "raise the budget (a goal_change diff)": "поднять бюджет (дифф goal_change)",
- "narrow the work": "сузить работу"
+ "Done, you may close this tab.": "Готово, можно закрыть вкладку."
 }
