@@ -406,6 +406,30 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("python3 - <<'EOF'\nnew = '''password_file = \"" + pw + "\"'''\nprint(len(new))\nEOF"))
         self.assertIsNone(deny("python3 - <<'EOF'\nprint('''README.md''')\nEOF"))
 
+    def test_python_code_is_read_with_its_own_tokenizer(self):
+        # docs/guard.md G8 (of_secrets-review on organic-framework PR 97): a stray triple quote in a comment or a
+        # string shifted the regex's blocks and hid any literal after it; python's tokenizer reads comments and strings
+        # as python does
+        key = "~/.ssh/id_" + "ed25519"
+        t = "'" * 3
+
+        def py(code, opener="python3 -"):
+            return opener + " <<'EOF'\n" + code + "\nEOF"
+        for code in ('s = "' + t + '"\nprint(open(' + t + key + t + ').read())',
+                     "# " + t + "\nprint(open(" + t + key + t + ").read())\n# " + t,
+                     "# " + t + "\nprint(open('" + key + "').read())\n# " + t,
+                     "# " + t + "\nimport os\nprint(os.environ)\n# " + t,
+                     "import os\nh = os.environ['HOME']\nprint(open(f'{h}/.ssh/id_" + "ed25519').read())",
+                     "print(f\"{open('" + key + "').read()}\")"):
+            self.assertTrue(deny(py(code)), code)
+        self.assertTrue(deny(py("# " + t + "\nprint(open('" + key + "').read())\n# " + t, "ssh h python3 -")))
+        self.assertTrue(deny("python3 -c \"# " + t + "\nprint(open('" + key + "').read())\""))
+        # code that does not tokenize gets no carve-out: every quoted span is a literal, blocks included
+        self.assertTrue(deny(py("print(open(" + t + key + t + ").read())\nx = ((")))
+        # a comment is not code: a quoted path in it, or a stray quote, denies nothing
+        self.assertIsNone(deny(py("# never open('" + key + "') here\nprint(1)")))
+        self.assertIsNone(deny(py("def f():\n    " + t + "Docstring." + t + "\n    return 1")))
+
     def test_a_line_naming_a_password_file_goes_into_a_script_by_edit(self):
         # docs/guard.md G8 (a user organization's keeper, 2026-11-12): a python heredoc inserting a line that names a
         # future reader's password file was denied for the path in a one-line literal. The Edit tool, which never
