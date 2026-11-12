@@ -50,7 +50,7 @@ A component that records prompts outside the agents' reach would protect what is
 
 ## 6. Approving a diff from the phone with a passkey (design, 2026-11-12)
 
-The founder, 2026-11-12 ~11:38Z, after a user organization's head answered yes to a high-tier diff in the conductor's chat and the yes was recorded but not applied: if OF does not give a person who works through Remote Control this feature, it must be made to work for them (`of_conductor`'s session, prompt `01a1cf8d`; its message `01a1cf8e`). The person approves with a passkey on their phone (WebAuthn: Face ID or Touch ID). The private key never leaves the phone's secure hardware, so no agent on any machine can make the signature.
+The founder, 2026-11-12 ~11:38Z, after a user organization's head answered yes to a high-tier diff in the conductor's chat and the yes was recorded but not applied: if OF does not give a person who works through Remote Control this feature, it must be made to work for them (`of_conductor`'s session, prompt `01a1cf8d-8f27`; its message `01a1cf8e-9146`). The person approves with a passkey on their phone (WebAuthn: Face ID or Touch ID). The private key never leaves the phone's secure hardware, so no agent on any machine can make the signature.
 
 1. **Enrollment, once per device, with the owner at the machine.** A browser on the agents' machine can hold a software authenticator, so the enrollment page alone would let an agent enroll a key of its own. So:
    - The owner opens one enrollment window from a plain terminal: `of passkey enroll <person>`, denied to agents' sessions as `of grant` is (docs/guard.md, G13). The window accepts exactly one credential and closes after it or when it expires.
