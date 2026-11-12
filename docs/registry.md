@@ -222,7 +222,7 @@ works:
       tags: [payments]                        # ask tags
 ```
 
-**A development loop** (RFC 0005 §4, 2026-11-07) is a work's optional `loop:` with `target` (`metric` and `money` required, `stake`, `throughput_class`), `measures` (each with a `name` and its `to_money` chain), `ladder` (rungs, cheapest first, each a unique `rung` id with `cost`, `latency` and an `accept` criterion; `production: true` on shadow and higher rungs, which the production-checkpoint rule counts; `since`, the date the rung became available, so runs before it never count as skipping it), `checkpoint_days`, `wip_arms` and `babysit_model`. `target.better` is `higher` (the default) or `lower`. A work with a loop needs `owner` and `doers`, since the loop rules route to them (`work_owner`, `doer`; of_field-analyst's input contract, docs/diagnose.md §4.1). It may live instead in a `loop.yaml` beside the work's doc, never in both. `of registry check` validates it (a rung without `accept` and an unknown key are warnings). The hypotheses, runs and decisions are events (`of loop`; docs/events.md).
+**A development loop** (RFC 0005 §4, 2026-11-07) is a work's optional `loop:` with `target` (`metric` and `money` required, `stake`, `throughput_class`, `segment`: below), `measures` (each with a `name` and its `to_money` chain), `ladder` (rungs, cheapest first, each a unique `rung` id with `cost`, `latency` and an `accept` criterion; `production: true` on shadow and higher rungs, which the production-checkpoint rule counts; `since`, the date the rung became available, so runs before it never count as skipping it), `checkpoint_days`, `wip_arms` and `babysit_model`. `target.better` is `higher` (the default) or `lower`. A work with a loop needs `owner` and `doers`, since the loop rules route to them (`work_owner`, `doer`; of_field-analyst's input contract, docs/diagnose.md §4.1). It may live instead in a `loop.yaml` beside the work's doc, never in both. `of registry check` validates it (a rung without `accept` and an unknown key are warnings). The hypotheses, runs and decisions are events (`of loop`; docs/events.md).
 
 **A standing work** (2026-11-10, `of_architect`; from a user organization: the founder wants some roles to improve without end) is a work with `standing: true`. It has no final end, so its end condition is its loop.
 - It needs a `loop:` with a `target` and `checkpoint_days`. `done_when` may be left out.
@@ -231,6 +231,27 @@ works:
 - It is not a goal. The goal stays the owner's outcome (for example `g-throughput`); the standing work is the lever one position keeps working on for it.
 - A position's mandate still ends: its `mandate_exit` stays checkable, and the standing work carries on under the next mandate.
 - A plateau over checkpoints is the loop-plateau rule's question to the owner: keep, change the objective, or stop.
+
+**The target's controlled segment** (2026-11-12, `of_architect`; a user organization's lesson, through `of_conductor`). A loop's target is measured on the part of the chain the organization controls, named by the events that start and end it. The parts outside it are context.
+
+```yaml
+      target:
+        metric: "<measured from segment.start to segment.end>"
+        segment:
+          start: "<the event that starts it, e.g. the input reaches the organization's own entry point>"
+          end: "<the event that ends it, e.g. the output leaves the organization's own exit>"
+          context: ["<a part outside it, e.g. the network after the send>", "<a third party's ordering rule>"]
+```
+
+- **A lever moves a time or a rule inside the segment.** The loop's hypotheses and measures, and the work a position is set to do for the target, act there.
+- **A part outside the segment is context.** It is reported beside the target, so the owner sees the whole chain. It is never a target, a measure or the subject of a position's work. A hypothesis about it reaches the owner as an inference, never as a finding (AGENTS.md, "Every claim that drives work carries its basis").
+- **Dropping the segment's measure needs the owner's yes on that change.** The structure keeper asks before writing a change that removes the segment or replaces its measure, even when an owner's decision on something else seems to imply it (AGENTS.md: a decision covers only what its words name).
+- **Why.** A user organization's standing speed work had a target decomposed into four gates, two of them outside its control: the network after its send, and a third party's ordering rule. A position was set to work on one of those two, and a hypothesis about it reached the founder as a finding. The one segment the organization controls, from the input reaching its own entry point to its output leaving, had no measure, and nothing in the schema asked for one (the founder's correction, 2026-11-12). The practice is to manage the inputs you control and watch the outputs as context (Bryar and Carr, *Working Backwards*, 2021, ch. 6, "Metrics: Manage Your Inputs, Not Your Outputs").
+- **The checks** (to build, `of_platform` in `bin/of_loop.py` and `of_field-analyst` in the loop rules, from 2026-11-12):
+  - in `of registry check`, a loop target without `segment` is a warning;
+  - a `segment` without `start` or `end`, with the same start and end, or with a `context` that is not a list of texts, is a problem;
+  - a measure, or the target's metric, that is one of the context parts is a problem;
+  - the objective-drift rule (RFC 0005 §6) also fires on a run or a hypothesis whose metric or predicted effect is a context part.
 
 Other keys (notes such as `why`, `last_progress`) are allowed and ignored by the checks. `of registry check` validates the id, `kind`, the systems, `owner` and `doers` (a position here or `external:<name>`), `state`, the dates, the stages (unique ids, `done_when`, `state`) and the `match` types. When a work's systems span more than one unit, `owner` is required (the unit owner would be ambiguous). A doer whose position is parked or finished is a warning, not a problem: the work has lost its doer, and Studio shows it. `of import github` names the works each PR matches (`works` on `of.work_record` and `of.pr_state`): a number in `prs` within the doc's repository; a `branches` glob, `<repo>:<glob>` in that repository or a bare glob in the doc's repository or one where the work's systems live; a merge queue's batch PR (head `mergify/merge-queue/…` or `gh-readonly-queue/…`) matches no work, since it copies PRs already counted; a `paths` glob, `<repo>:<glob>` over the PR's changed paths or a plain glob over `<repo dir>/<path>` as systems' paths are written; or a change to the `doc` file itself. `of ask --work <id>` and `of status --work <id>` link an ask or a declared state to a work explicitly (the id must exist in the organization's `works:`); otherwise evidence attaches by `match`. Studio shows `external:` doers as people, not positions.
 

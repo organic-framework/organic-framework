@@ -58,6 +58,10 @@ works:
         money: "bot revenue per day"                              # how it becomes money
         stake: "about 65 a day over the route table"         # what is at stake, roughly
         throughput_class: raise
+        segment:                                                  # what the organization controls (2026-11-12; docs/registry.md, Works)
+          start: "a block reaches the organization's node"
+          end: "the bot's transaction leaves its sender"
+          context: ["the network after the send", "the block builder's ordering rule"]   # reported, never a target or a lever
       measures:                                                   # the chain from each rung to money
         - name: latency_p50_ms
           to_money: "revenue per ms from the race arithmetic"        # required before a rung may optimize it
@@ -120,7 +124,7 @@ Each rule is a diagnose anti-pattern with an owner and a test, `of_field-analyst
 | **Plateau** | 3 cycles in a row gain under 1% of the target | A step back and an outside review. The owner is asked for a reframe review by a second position (double loop) |
 | **WIP limit** | More than `wip_arms` arms in flight | "Finish or park one arm" |
 | **Babysitting model** | Runner commands and monitors run on a model above `babysit_model` | To `of_capacity` and the doer: route babysitting to the cheaper model |
-| **Objective drift** | A run's metric is not the target and has no `to_money` in `measures` | "Price a ms in revenue before more speed work" |
+| **Objective drift** | A run's metric is not the target and has no `to_money` in `measures`; or a run's metric or a hypothesis's predicted effect is a context part of the target's segment (2026-11-12) | "Price a ms in revenue before more speed work"; for a context part, "The network after the send is outside the segment: report it, and act inside" |
 | **Evaluation bottleneck** | Wait share over 40% on one rung | To the owner: elevate the rung (more runners, a cheaper rung) |
 
 Decision rights follow acc-v0:
