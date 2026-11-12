@@ -501,7 +501,8 @@ TURN_END_GRACE_S = 90  # a turn end this recent is the one this delivery follows
 
 def busy_since(conn, position, ts, now):
     """True when the position ended no turn between ts and the last TURN_END_GRACE_S: it was busy all along, and the
-    answer waited for this turn end by design, not because an attempt failed (of_platform, 2026-11-10)."""
+    answer waited for this turn end by design (of_platform, 2026-11-09), not because an attempt failed (of_platform,
+    2026-11-10)."""
     return not conn.execute("SELECT 1 FROM event WHERE name = 'of.turn_end' AND position = ? AND ts > ? AND ts < ? "
                             "LIMIT 1", (position, ts, _iso(now - TURN_END_GRACE_S))).fetchone()
 
