@@ -66,7 +66,11 @@ jobs:
             docker tag of-server:ci "ghcr.io/organic-framework/of-server:$tag"
             docker push "ghcr.io/organic-framework/of-server:$tag"
           done
-          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/organic-framework/of-server:${GITHUB_SHA::12}")
+          # The registry's digest, never RepoDigests' first entry: that can be the local name of-server@sha256:…,
+          # which the scan then looks up on Docker Hub (run 43173141870).
+          DIGEST=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            "ghcr.io/organic-framework/of-server:${GITHUB_SHA::12}" | grep -m1 '^ghcr\.io/organic-framework/of-server@sha256:' || true)
+          [ -n "$DIGEST" ] || { echo "no ghcr.io digest for the pushed image"; exit 1; }
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Pushed \`$DIGEST\` (tags ${GITHUB_SHA::12}, $VERSION, main)" >> "$GITHUB_STEP_SUMMARY"
 
@@ -90,5 +94,6 @@ jobs:
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
+          case "$IMAGE" in ghcr.io/organic-framework/of-server@sha256:*) ;; *) echo "not a ghcr.io digest: $IMAGE"; exit 1;; esac
           ./trivy image --scanners vuln --severity HIGH,CRITICAL --format table "$IMAGE" | tee scan.txt
           { echo "### Scan of \`$IMAGE\` (Trivy 0.76.1, high and critical)"; echo '```'; cat scan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
