@@ -1222,7 +1222,7 @@ class WorksTest(unittest.TestCase):
     def test_stages_from_an_rfc(self):
         import of_works
         text = ("# RFC\nStatus: phases 0 and 1 are built; phase 2 in review\n## 1. Summary\n## Phase 0: bench\n## Phase 1: shadow\n"
-                "## Phase 2: live\n### 5.1 P1 (Robinhood): children\n| ID | Hypothesis |\n|---|---|\n"
+                "## Phase 2: live\n### 5.1 P1 (marketplace): children\n| ID | Hypothesis |\n|---|---|\n"
                 "| H1 (SP1) | siblings rarely land | x |\n| H3 (SP3) | our own storefront. **Closed 2026-10-30** | x |\n"
                 "| P1 | a problem row is not a stage |\n")
         st = of_works.stages_from_doc(text, of_works._status_of(text))
