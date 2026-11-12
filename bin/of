@@ -3566,6 +3566,9 @@ def _diff_events(conn):
         e = out.setdefault(p.get("id"), {"id": p.get("id"), "state": None, "digest": None, "diff": None})
         if name == "of.diff_proposed":
             e.update(state="proposed", digest=p.get("digest"), diff=p.get("diff"), proposed_at=ts, ask=p.get("ask_id"))
+        elif name == "of.diff_approved" and p.get("via") == "passkey":
+            # a passkey approval is checked on its signatures where it counts, at `of diff apply` (docs/remote.md §6)
+            e.setdefault("passkey", []).append((ts, p))
         elif name == "of.diff_approved" and p.get("digest") == e.get("digest"):
             e.update(state="approved", approved_at=ts)
         elif name == "of.diff_rejected":
@@ -3595,6 +3598,28 @@ def _diff_approved_by_answer(conn, ask_id):
     return False
 
 
+def _passkey_approval(e, d, dg):
+    """(True, None) when one of the diff's passkey approvals passes the three checks of docs/remote.md §6 for its
+    current digest; else (False, the reason of the newest one), or (False, None) when there is none."""
+    import of_grants
+    import of_passkey
+    why = None
+    for ts, p in reversed(e.get("passkey") or []):
+        why = of_passkey.approval_problem(p, d["id"], d["org"], dg, of_grants.local_keys(), recorded_at=ts)
+        if why is None:
+            return True, None
+    return False, why
+
+
+def _org_server(org, orgs_file=None):
+    try:
+        with open(orgs_file or ORGS_FILE) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    return next((o.get("server") for o in doc.get("orgs") or [] if o.get("name") == org), None)
+
+
 def cmd_diff(args):
     import of_diff
     import of_events
@@ -3605,10 +3630,21 @@ def cmd_diff(args):
             d = e.get("diff") or {}
             print(f"  {e['id']:<40} {e['state']:<9} {d.get('kind', ''):<16} {d.get('org', ''):<24} "
                   f"{str(e.get('digest') or '')[:8]:<9}"  # the yes from the chat may name it (docs/remote.md)
+                  f"{'passkey approval recorded (checked at apply) ' if e.get('passkey') and e['state'] == 'proposed' else ''}"
                   f"{('review ' + e['review_due']) if e.get('review_due') else ''}")
         return 0
     if not args.target:
         raise OfError(f"usage: of diff {args.action} <file|id>")
+    if args.action == "link":  # docs/remote.md §6: the page where the person approves with their passkey
+        import of_passkey
+        e = _diff_events(conn).get(args.target)
+        if not e or e["state"] != "proposed":
+            raise OfError(f"no proposed diff {args.target!r} (of diff list)")
+        url, why = of_passkey.link(_org_server(e["diff"]["org"]), e["diff"]["org"], e["id"], e["digest"])
+        if why:
+            raise OfError(why)
+        print(url)
+        return 0
     if args.action == "approve" and getattr(args, "prompt", None):  # docs/remote.md §3 row 2
         e = _diff_events(conn).get(args.target)
         if not e or e["state"] != "proposed":
@@ -3697,7 +3733,11 @@ def cmd_diff(args):
             if e.get("digest") != dg:
                 raise OfError(f"{d['id']} is not proposed in this exact form: `of diff propose` it first")
             if e.get("state") != "approved" and not _diff_approved_by_answer(conn, e.get("ask")):
-                raise OfError(f"{d['id']} waits for the owner's approval")
+                ok, why = _passkey_approval(e, d, dg)  # any tier, on the person's passkey (docs/remote.md §6)
+                if why:
+                    raise OfError(f"{d['id']}: the passkey approval is refused: {why}")
+                if not ok:
+                    raise OfError(f"{d['id']} waits for the owner's approval")
         repo = os.path.dirname(os.path.dirname(path))
         written = [path]
         with open(path, "w") as fh:
@@ -5463,8 +5503,9 @@ def main(argv=None):
     ls = sub.add_parser("listen", help="the listener: of listen run|rebuild|status|install|uninstall")
     ls.add_argument("action", choices=["run", "rebuild", "status", "install", "uninstall"])
     ls.set_defaults(fn=cmd_listen)
-    df = sub.add_parser("diff", help="structural diffs: of diff check|propose|apply <file|id>, approve <id>, list")
-    df.add_argument("action", choices=["check", "propose", "approve", "apply", "list"])
+    df = sub.add_parser("diff", help="structural diffs: of diff check|propose|apply <file|id>, approve <id>, list, "
+                                     "link <id> (the passkey approval page, docs/remote.md §6)")
+    df.add_argument("action", choices=["check", "propose", "approve", "apply", "list", "link"])
     df.add_argument("target", nargs="?", help="a diff file (YAML with diff:) or a proposed diff's id")
     df.add_argument("--from", dest="sender")
     df.add_argument("--prompt", help="approve: the event id of the owner's recorded yes in their conductor's chat "
