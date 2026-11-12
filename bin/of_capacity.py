@@ -4166,6 +4166,7 @@ def tools_for(p, sid, target, log=print):
 TIER_SCALE = {"default_claude_ai": 1, "default_claude_max_5x": 5, "default_claude_max_20x": 20}  # Pro, Max 5x, Max 20x
 RESUME_USD_PER_MTOK = 8.0  # a moved session's first turn writes its whole context to the new account's 1-hour cache
 RESUME_SHARE_MAX = 0.10    # of the target's 5-hour window
+RESUME_WEEK_PCT = 1.0      # or, with no 5-hour measure, percent of its week (about $20-30 on Max 20x, $1.2 on Pro)
 
 
 def rate_tier(d):
@@ -4504,7 +4505,9 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         f, f_reset = win(sink, "five_hour")
         load = sum(rates.get(s["session"], 0.0) for s in sessions.get(d, [])) + extra_load
         cal = calib.get(d) or prior_calib(sink)
-        week_only = f is None and bool((wcalib or {}).get(d))
+        # a week just reset has no measure of its own yet: the others' week, scaled by tier, sizes it (2026-11-12:
+        # ~/.claude-g reset to 0% looked to have no room, and fill and relief left it empty)
+        week_only = f is None and bool((wcalib or {}).get(d) or prior_calib(sink, wcalib or {}))
         if f is None or not f_reset:  # no 5-hour window open yet: a whole window ahead, nothing used
             f, f_reset = 0, now + 5 * 3600
         if week_only:
@@ -4521,7 +4524,9 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
             if horizon_h:
                 hours_w = min(hours_w, horizon_h)
             room = min(room, ((policy["week_max"] - 3 - wk) * wcal - load * hours_w) / hours_w)
-        return room, (cal or 0) * 100 * RESUME_SHARE_MAX
+        # with no 5-hour measure (Max accounts report none), a resume may cost a share of the week instead
+        resume_max = cal * 100 * RESUME_SHARE_MAX if cal else (wcal or 0) * RESUME_WEEK_PCT
+        return room, resume_max
 
     def resume_ok(sid, resume_max):
         return (contexts or {}).get(sid, 0) * RESUME_USD_PER_MTOK / 1e6 <= resume_max
@@ -4566,18 +4571,24 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                                   "reason": "relief: the account is about to stall"})
                     added[t["config_dir"]] += rate
                     break
-    # 2. fill: the account whose week resets first takes load until its 5-hour window is projected full
+    # 2. fill: the account whose week resets first takes load until its 5-hour window is projected full; one with no
+    #    room left passes the turn to the next (2026-11-12: ~/.claude-a, resetting 3 hours before a freshly reset
+    #    ~/.claude-g, had no room, and fill moved nothing while ~/.claude ran toward its weekly limit)
     sinks = sorted((r for r in acct.values() if not stalled(r) and win(r, "seven_day")[1]),
                    key=lambda r: win(r, "seven_day")[1])
-    if sinks and len(moves) < policy["max_moves"]:
-        sink = sinks[0]
+    for sink in sinks:
+        if len(moves) >= policy["max_moves"]:
+            break
         d = sink["config_dir"]
         room, resume_max = room_of(sink, sum(m["rate"] for m in moves if m["to"] == d))
+        if room < policy["min_rate"]:
+            continue
         week_reset = win(sink, "seven_day")[1]
         sources = [x for x in acct.values() if x["config_dir"] != d and (win(x, "seven_day")[1] or 0) > week_reset]
         cands = sorted((c + (x["config_dir"],) for x in sources for c in movable(x["config_dir"])),
                        key=lambda c: (tier(c[1]), -c[0], c[1]))
         planned = {m["session"] for m in moves}  # relief took it already: one move per session and run (2026-11-11)
+        before = len(moves)
         for rate, name, sid, src in cands:
             if sid in planned or len(moves) >= policy["max_moves"] or rate < policy["min_rate"] or rate > room \
                     or lacks(sid, d):
@@ -4587,6 +4598,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
             moves.append({"position": name, "session": sid, "from": src, "to": d, "rate": rate,
                           "reason": f"fill: its week resets first; 5-hour window projected under {policy['fill_to']}%"})
             room -= rate
+        if len(moves) > before:
+            break  # one sink per run
     return moves
 
 
