@@ -16,6 +16,9 @@ SINKS = {"print", "write", "info", "warning", "error", "debug", "exception", "lo
 
 # (file, the call's source line stripped): why it is safe
 REVIEWED = {
+    ("of_passkey_owner.py", 'out.write(f"Revoked the passkey {credential[:12]}… of {person} in {grants_path} (its '
+                            'structure keeper commits it).\\n")'):
+        "a passkey's credential id is a public identifier, sent to the phone in every request; no key or value",
     ("of_capacity.py", "log(f\"  memory {key}: {[x for x in merge_memory(mem_src, mem_dst, mem_base, '/nonexistent', "
                        "dry_run=True) if x[1] != 'same']}\")"): "key is a memory directory's name, not a credential",
     ("of_hook.py", 'write("mandate_check", {"verdict": "warn", "decision": "admit", "mode": "enforce",'):
