@@ -1235,15 +1235,19 @@ def exit_dialog(cursor=1):
             + ["", "   Enter to confirm · Esc to cancel"])
 
 
+def worktree_dialog(cursor=1):
+    opts = ["Keep worktree", "Remove worktree"]
+    return (["✻ Brewed for 2m 3s", "▔▔▔▔▔▔▔▔", "   Exiting worktree session",
+             "   You are working in a worktree. Keep it to continue working there, or remove it to clean up.", ""]
+            + [f"   {'❯' if i == cursor else ' '} {i}. {o}" for i, o in enumerate(opts, 1)]
+            + ["", "   Enter to confirm · Esc to cancel"])
+
+
 INPUT_BOX = ["⏺ earlier answer", "❯ an earlier prompt in the history", "──────── aws_keeper ─", "❯\xa0",
              "────────", "  ⏵⏵ bypass permissions on"]
 
 
-class ExitByTheScreen(unittest.TestCase):
-    """The exit step watches the screen (aws_keeper, 2026-11-07): a blind Enter 20 s after /exit missed the
-    "Background work is running" dialog, the move failed and left the dialog open for 2.5 h, and two messages
-    typed into it were lost. It answers the dialog only with "Exit and stop tasks", never "Move to background",
-    and on any failure it closes the dialog (Esc) so the session stays as it was."""
+class _ExitScreen(unittest.TestCase):
     def setUp(self):
         from unittest import mock
         self.alive, self.keys, self.screens = True, [], []
@@ -1267,6 +1271,12 @@ class ExitByTheScreen(unittest.TestCase):
                                         allow_shells=allow_shells, wait=0.2, settle=0.02, step=0.001,
                                         log=lambda *_: None)
 
+
+class ExitByTheScreen(_ExitScreen):
+    """The exit step watches the screen (aws_keeper, 2026-11-07): a blind Enter 20 s after /exit missed the
+    "Background work is running" dialog, the move failed and left the dialog open for 2.5 h, and two messages
+    typed into it were lost. It answers the dialog only with "Exit and stop tasks", never "Move to background",
+    and on any failure it closes the dialog (Esc) so the session stays as it was."""
     def test_a_late_dialog_is_answered_with_exit_and_stop_tasks(self):
         reads = {"n": 0}
 
@@ -1328,6 +1338,56 @@ class ExitByTheScreen(unittest.TestCase):
             self.run_exit(exit_dialog())  # Esc changes nothing
         self.assertTrue(e.exception.stuck)
         self.assertIn("Esc", self.keys)
+
+
+class ExitAWorktreeSession(_ExitScreen):
+    """2026-11-12, a user organization's session: inside a git worktree, /exit opens "Exiting worktree session", which the move did
+    not read. It gave up, reported the dialog closed while it stayed open, two relay messages went into it, and the
+    second one's Enter exited the session 37 minutes later. Now the dialog is answered with "Keep worktree"."""
+    def test_the_worktree_is_kept_and_the_session_exits_without_allow_shells(self):
+        reads = {"n": 0}
+
+        def screen_then_dialog():
+            reads["n"] += 1
+            return INPUT_BOX if reads["n"] < 3 else worktree_dialog()
+
+        def key(k):
+            self.keys.append(k)
+            if k == "Enter":
+                self.assertGreaterEqual(reads["n"], 3)
+                self.alive = False
+        of_capacity.exit_session(7, lambda: self.keys.append("/exit"), screen_then_dialog, key,
+                                 allow_shells=False, wait=0.5, settle=0.02, step=0.001, log=lambda *_: None)
+        self.assertEqual(self.keys, ["/exit", "Enter"])
+
+    def test_never_removes_the_worktree(self):
+        def on_key(k):
+            if k == "Up":
+                self.screen = worktree_dialog(1)
+            if k == "Enter":
+                self.assertIn("❯ 1. Keep worktree", "\n".join(self.screen))
+                self.alive = False
+        self.run_exit(worktree_dialog(cursor=2), on_key)
+        self.assertEqual(self.keys, ["/exit", "Up", "Enter"])
+
+    def test_a_dialog_left_on_screen_is_never_reported_closed(self):
+        with self.assertRaises(of_capacity.MoveError) as e:
+            self.run_exit(worktree_dialog())  # neither Enter nor Esc changes anything
+        self.assertTrue(e.exception.stuck)
+        self.assertIn("still open", str(e.exception))
+        self.assertNotIn("Remove", " ".join(self.keys))
+
+    def test_an_unknown_dialog_is_closed_with_esc_before_the_session_is_said_to_stay(self):
+        other = ["⏺ earlier answer", "   Something new to decide", "   ❯ 1. Yes", "     2. No", "",
+                 "   Enter to confirm · Esc to cancel"]
+
+        def on_key(k):
+            if k == "Esc":
+                self.screen = INPUT_BOX
+        with self.assertRaises(of_capacity.MoveError) as e:
+            self.run_exit(other, on_key)
+        self.assertEqual(self.keys, ["/exit", "Esc"])
+        self.assertFalse(e.exception.stuck)
 
 
 class StuckPane(unittest.TestCase):
@@ -2335,12 +2395,13 @@ class ExitDialogComesBack(unittest.TestCase):
                 state["esc"] += 1
                 # the first Esc closes it, then it comes back once; the second Esc closes it for good
                 state["screen"] = INPUT_BOX if state["esc"] != 1 else INPUT_BOX
-        reads = {"n": 0}
+        reads = {"after_esc": 0}
 
         def read():
-            reads["n"] += 1
-            if state["esc"] == 1 and reads["n"] in (8, 9):
-                state["screen"] = exit_dialog()  # it reappears after the first Esc
+            if state["esc"] == 1:
+                reads["after_esc"] += 1
+                if reads["after_esc"] == 2:
+                    state["screen"] = exit_dialog()  # it reappears a moment after the first Esc closed it
             return list(state["screen"])
         with mock.patch.object(of_capacity.time, "sleep", lambda *_: None), \
                 mock.patch.object(of_capacity, "_alive", lambda pid: True):
