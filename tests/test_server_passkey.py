@@ -143,7 +143,7 @@ class RegistrationTest(unittest.TestCase):
     def test_cbor_and_short_codes(self):
         self.assertEqual(S.cbor_decode(cbor({"a": [1, -2, b"\x00", True, None], 3: "x"}))[0],
                          {"a": [1, -2, b"\x00", True, None], 3: "x"})
-        for bad in (b"\x5f", b"\x58", b"\xa1\x01"):   # indefinite length, a length past the end, a map cut short
+        for bad in (b"\x5f", b"\x58", b"\xa1\x01", b"\xa1\x80\x01", b"\x81" * 40):   # ... an unhashable key, deep nesting
             with self.assertRaises(S.PasskeyError):
                 S.cbor_decode(bad)
         self.assertNotEqual(S.short_code(b"a", b"k"), S.short_code(b"b", b"k"))
@@ -243,6 +243,37 @@ class FlowTest(unittest.TestCase):
             self.pk.approve(link["nonce"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))
         self.assertEqual(e.exception.status, 404)
 
+    def test_a_key_swapped_in_the_store_shows_another_code_at_the_terminal(self):
+        """of_secrets-review on PR 81: a window row rewritten after the phone's test step to hold another key."""
+        w = self.pk.open_window(self.tenant, "acme", "founder")
+        att, client = self.phone.create(S.unb64u(self.pk.window_options(w["window"])["challenge"]))
+        reg = self.pk.register(w["window"], S.b64u(att), S.b64u(client))
+        auth, cdj, sig = self.phone.get(S.unb64u(reg["test_challenge"]))
+        phone_code = self.pk.test(w["window"], reg["credential"], S.b64u(auth), S.b64u(cdj), S.b64u(sig))["code"]
+        attacker = Phone(self.tmp.name)
+        att2, _ = attacker.create(b"x" * 32)
+        swapped = S.cose_to_spki({1: 2, 3: -7, -1: 1, -2: attacker.x, -3: attacker.y})
+        with self.pk.store.tx() as c:
+            c.execute("UPDATE passkey_windows SET public_key = ? WHERE id = ?", (swapped, w["window"]))
+        st = self.pk.window_state(self.tenant, w["window"])
+        self.assertEqual(st["code"], phone_code)                                  # the server relays the old code...
+        self.assertNotEqual(S.short_code(st["credential"], st["public_key"]), phone_code)   # ...the terminal's differs
+
+    def test_a_known_credential_is_not_registered_again(self):
+        self.enroll()
+        w = self.pk.open_window(self.tenant, "acme", "founder")
+        att, client = self.phone.create(S.unb64u(self.pk.window_options(w["window"])["challenge"]))
+        with self.assertRaises(S.Refused) as e:
+            self.pk.register(w["window"], S.b64u(att), S.b64u(client))
+        self.assertEqual(e.exception.typ, "already_registered")
+
+    def test_invisible_characters_are_shown(self):
+        page = S.approve_page({"org": "acme", "id": "sd-1", "digest": "0" * 64, "text": 'role: "a\u202eb"',
+                               "expires": "t", "nonce": "n", "challenge": "c", "credentials": []}, "N")
+        self.assertIn(b"[U+202E]", page)
+        self.assertIn(b"invisible or direction-changing", page)
+        self.assertNotIn("\u202e".encode(), page)
+
     def test_what_is_refused(self):
         import of_diff
         import of_grants
@@ -286,6 +317,9 @@ class FlowTest(unittest.TestCase):
 class HttpTest(FlowTest):
     """The same path over HTTP, through of-server's routes: the pages' headers, the rate limit's place, and the
     approval reaching another machine through the organization's coordination feed."""
+    # these two work on the store directly; FlowTest runs them
+    test_a_key_swapped_in_the_store_shows_another_code_at_the_terminal = None
+    test_a_known_credential_is_not_registered_again = None
 
     def setUp(self):
         import threading

@@ -42,7 +42,9 @@ def unb64u(text):
 def cbor_decode(data):
     """The first CBOR item of DATA and the bytes after it. Enough of RFC 8949 for WebAuthn: unsigned and negative
     integers, byte and text strings, arrays, maps, false, true and null; definite lengths only."""
-    def item(i):
+    def item(i, depth=0):
+        if depth > 16:
+            raise PasskeyError("the CBOR data nests too deep")
         if i >= len(data):
             raise PasskeyError("the CBOR data ends early")
         major, info = data[i] >> 5, data[i] & 0x1F
@@ -68,14 +70,16 @@ def cbor_decode(data):
         if major == 4:
             out = []
             for _ in range(arg):
-                v, i = item(i)
+                v, i = item(i, depth + 1)
                 out.append(v)
             return out, i
         if major == 5:
             out = {}
             for _ in range(arg):
-                k, i = item(i)
-                v, i = item(i)
+                k, i = item(i, depth + 1)
+                v, i = item(i, depth + 1)
+                if isinstance(k, (list, dict)):
+                    raise PasskeyError("a CBOR map key must be a number or a string")
                 out[k] = v
             return out, i
         if major == 7 and info in (20, 21, 22):
@@ -366,6 +370,10 @@ class Passkeys:
         except (PasskeyError, ValueError) as e:
             raise Refused(400, "bad_registration", str(e)) from None
         test = os.urandom(32)
+        with self.store.conn() as c:  # WebAuthn L2 §7.1 step 22: a credential id registered already is refused
+            if c.execute("SELECT 1 FROM passkey_enrollments WHERE credential_id = ?",
+                         (reg["credential_id"],)).fetchone():
+                raise Refused(409, "already_registered", "this passkey is registered already (or was revoked)")
         with self.store.tx() as c:
             n = c.execute("UPDATE passkey_windows SET state = 'registered', credential_id = ?, public_key = ?, code = ?,"
                           " test_challenge = ? WHERE id = ? AND state = 'open'",
@@ -419,7 +427,10 @@ class Passkeys:
         if not of_grants.verify(record, self.grant_keys()):
             raise Refused(403, "bad_signature", "the record does not verify against the tenant's pinned grant key")
         with self.store.tx() as c:
-            c.execute("INSERT OR REPLACE INTO passkey_enrollments (credential_id, org, person, public_key, record,"
+            if c.execute("SELECT 1 FROM passkey_enrollments WHERE credential_id = ?",
+                         (w["credential_id"],)).fetchone():
+                raise Refused(409, "already_registered", "this passkey is enrolled already (or was revoked)")
+            c.execute("INSERT INTO passkey_enrollments (credential_id, org, person, public_key, record,"
                       " enrolled_at) VALUES (?, ?, ?, ?, ?, ?)", (w["credential_id"], w["org"], w["person"],
                                                                  w["public_key"], json.dumps(record), self.clock()))
             c.execute("UPDATE passkey_windows SET state = 'enrolled' WHERE id = ?", (w["id"],))
@@ -602,15 +613,34 @@ document.getElementById('go').onclick = async () => {
     return _page("Enroll a passkey", body, script, csp_nonce)
 
 
+def visible(text):
+    """TEXT with every control, format, bidi, private-use and separator character other than newline and tab shown as
+    a visible marker, so the page shows what the text is, not how such characters make it read (of_secrets-review
+    on organic-framework PR 81: an agent writes the diff, and U+202E reorders what follows it). Returns (text, how
+    many were marked)."""
+    import unicodedata
+    out, n = [], 0
+    for ch in str(text):
+        if ch not in "\n\t" and unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp"):
+            out.append(f"[U+{ord(ch):04X}]")
+            n += 1
+        else:
+            out.append(ch)
+    return "".join(out), n
+
+
 def approve_page(data, csp_nonce):
     """DATA: Passkeys.approval_page(...) plus the nonce. The diff's exact text is shown escaped; the phone signs the
     SHA-256 of the preimage that names its full digest."""
     import html
     payload = json.dumps({"nonce": data["nonce"], "challenge": data["challenge"], "credentials": data["credentials"]})
     payload = payload.replace("<", "\\u003c")  # never closes the script element
-    body = (f"<h1>Approve a change to {html.escape(data['org'])}</h1>"
-            f"<p>Diff <b>{html.escape(data['id'])}</b>. Read its exact text. Your passkey signs this text's digest, "
-            f"and nothing else can be applied with your approval.</p><pre>{html.escape(data['text'])}</pre>"
+    text, marked = visible(data["text"])
+    warn = (f"<p><b>Warning:</b> {marked} invisible or direction-changing character(s) in this text are shown as "
+            "[U+XXXX]. Ask why before you approve.</p>") if marked else ""
+    body = (f"<h1>Approve a change to {html.escape(visible(data['org'])[0])}</h1>"
+            f"<p>Diff <b>{html.escape(visible(data['id'])[0])}</b>. Read its exact text. Your passkey signs this "
+            f"text's digest, and nothing else can be applied with your approval.</p>{warn}<pre>{html.escape(text)}</pre>"
             f"<p>Digest: <code>{html.escape(data['digest'][:16])}</code>… (all 64 characters are signed). "
             f"The link expires at {html.escape(data['expires'])}.</p><button id='go'>Approve with my passkey</button>")
     script = (f"const D = {payload};" + r"""
