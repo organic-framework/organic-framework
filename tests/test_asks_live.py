@@ -64,5 +64,23 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(of_asks.project(rows)[0]["state"], "moved_on")  # S1 went on: the wait ended, no answer
 
 
+    def test_the_screen_reconciles_from_the_view_and_never_projects_the_log(self):
+        """2026-11-12: the screen's pass projected the whole log (16 s of CPU) and its cards waited behind it."""
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        saved = of_asks.load
+
+        def boom(*a, **k):
+            raise AssertionError("the log was projected")
+        of_asks.load = boom
+        try:
+            self.assertEqual(of_asks_live.run(conn, view=True), [])  # no listener: no pass at all
+        finally:
+            of_asks.load = saved
+            conn.close()
+        task = {"event_id": "t", "session_id": "S-gone", "kind": "task", "state": "open"}  # a view row: no task key
+        self.assertIsNone(of_asks_live.decide(task, {}, set()))
+
+
 if __name__ == "__main__":
     unittest.main()

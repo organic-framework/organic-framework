@@ -2293,7 +2293,7 @@ def cmd_asks(args):
                 agents = None
             own = of_store.connect()
             try:
-                of_asks_live.run(own, positions(), agents, bind, log=lambda m: None)
+                of_asks_live.run(own, positions(), agents, bind, log=lambda m: None, view=True)
             finally:
                 own.close()
             _reconcile_ask_tokens(positions())

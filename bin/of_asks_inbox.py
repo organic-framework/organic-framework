@@ -12,16 +12,18 @@ The screen:
   irreversible or security_incident, declared or found in its words by of_classify.tags_of), For your hands (tasks),
   Everything else. Snoozed and Handed over appear when they hold anything; a search shows its results as a stream.
   Inside a stream: due soonest first, then oldest.
-- left: the queue of the current stream; ↑↓ (j/k) select and wrap at both ends, PgUp/PgDn page, g/G first and last.
+- left: the queue of the current stream; ↑↓ (j/k) select and wrap at both ends, PgUp/PgDn page, Home/End first and
+  last.
 - right: the selected card in full: the question, who asks and from which organization, how long it waits, why now,
   the context, the options under their numbers with the recommended one marked, the links last.
 - bottom: a permanent line of keys; the status line above it.
 
-Keys: 1-9 answer with that option (a task's 1 is "done", which its asker then checks); r write an answer; h snooze
-(in an hour, tomorrow at 9:00, next Monday at 9:00; in Snoozed: back now); d hand it to a position, which gets it in
-its pane to settle; / search; ? help; u take back the last answer within UNDO_S; J/K or Space scroll the card; o go to
-the asking agent's pane; a answered elsewhere, w withdraw, n not a question, b side chat, c/C copy, s Studio, D send
-unsent drafts; Esc closes what is open, else the window, like q.
+Keys: 1-9 answer with that option (a task's 1 is "done", which its asker then checks); r write an answer under the
+card, which stays in sight and scrolls while he types (Esc keeps a draft); h snooze (in an hour, tomorrow at 9:00,
+next Monday at 9:00; in Snoozed: back now); d hand it to a position, which gets it in its pane to settle; / search;
+? help; u take back the last answer within UNDO_S; J/K or Space scroll the card; g (or o) go to the asking agent's
+pane; a answered elsewhere, w withdraw, n not a question, b side chat, c/C copy, s Studio, D send unsent drafts; Esc
+closes what is open, else the window, like q.
 
 What must hold (the design's "behaviour that must hold"):
 - The selection is an ask id: new cards never move it, and a key answers the card on the screen. When the selected
@@ -45,6 +47,7 @@ import time
 import of_asks_tui as T
 from of_locale import tr
 
+PARTIAL_RETRY_S = 0.5  # a card built before the registry loaded asks again after this
 NARROW_W = 100       # below this many columns: one card per screen (layout B)
 WIDE_W = 180         # from this many columns: a third column with the agent's context (the founder, 2026-11-12 ~21:08Z:
 #                      "lots of room, more information; less room, less information")
@@ -75,11 +78,21 @@ def key_of(x):
     return (x.get("ids") or [None])[0] or ("registry", tuple(x.get("who") or ()))
 
 
+_RISK = {}
+
+
 def risk_of(item):
-    """The risk tags of the card's first ask: declared, or found in its words (of_asks_chat.held_tags)."""
+    """The risk tags of the card's first ask: declared, or found in its words (of_asks_chat.held_tags). Kept per card
+    and its words: the screen sorts every card into its stream on each frame, and the classifier's patterns over 65
+    cards took a quarter of a core while the screen only waited for a key (2026-11-12)."""
     import of_asks_chat
     first = item.get("first") or {"text": item.get("text"), "tags": []}
-    return [t for t in of_asks_chat.held_tags(first) if t in RISK_TAGS]
+    k = (key_of(item), item.get("text"), repr(first))
+    if k not in _RISK:
+        if len(_RISK) > 4000:
+            _RISK.clear()
+        _RISK[k] = [t for t in of_asks_chat.held_tags(first) if t in RISK_TAGS]
+    return list(_RISK[k])
 
 
 def stream_of(item, now=None):
@@ -288,7 +301,7 @@ def card_rows(c, item, width, overlay_note=None, context=True):
         elif c.get("answerable"):
             rows += [("", None), (tr("No options: r writes an answer."), "dim")]
         elif not c.get("loading"):
-            rows += [("", None), (tr("Answered in its pane: o goes there."), "dim")]
+            rows += [("", None), (tr("Answered in its pane: g goes there."), "dim")]
     if context and c.get("context"):
         rows += [("", None), (tr("The agent's last message before the question:"), "head")]
         rows += [(ln, "dim") for ln in wrap(c["context"], width)]
@@ -403,7 +416,7 @@ def colors():
 
 class Inbox:
     def __init__(self, scr, loader, card_of, answer, act, positions=lambda: [], record=None, handoff=None,
-                 studio=None, drafts=None, seq=None, initial=None, chat=None, archive=None):
+                 studio=None, drafts=None, seq=None, initial=None, chat=None, archive=None, timing=None):
         self.scr, self.loader, self.card_of, self.act = scr, loader, card_of, act
         self.positions, self.record, self.studio, self.drafts, self.seq = positions, record, studio, drafts, seq
         self.chat, self.archive = chat, archive
@@ -416,6 +429,8 @@ class Inbox:
         self.msg, self.moved_at, self.note, self.studio_note = "", 0.0, {}, {}
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
         self.attr, self.lw, self.cx, self.xtop, self.tab_rects = {}, 0, 0, 0, []
+        self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
+        self.timing = timing  # {name: time.time()} of this opening's first frame, true list and full card
 
     # data
     def refresh(self, force=False):
@@ -437,6 +452,7 @@ class Inbox:
             return
         data, over = self.bg["data"]
         self.bg["data"] = None
+        self.mark("list")
         self.items = [x for _, g in data for x in g]
         self.over = over
         if self.archive:
@@ -472,6 +488,8 @@ class Inbox:
         if k is not None and its:  # it closed elsewhere: its neighbour, and the answer keys wait a moment
             idx = min(self.row.get(("idx", self.cur), 0), len(its) - 1)
             self.moved_at, self.msg = time.time(), tr("The card you were on was closed elsewhere: look again.")
+            if self.mode == "reply" and self.reply and self.reply["key"] == k:
+                self.msg = tr("The card you are answering was closed elsewhere: Esc keeps your text as a draft.")
         else:
             idx = 0
         self.sel[self.cur] = keys[idx] if keys else None
@@ -482,19 +500,24 @@ class Inbox:
         """The full card, loaded in the background; meanwhile a placeholder from the list item."""
         k = key_of(item)
         c = self.cards.get(k)
-        if c is not None:
+        partial = c is not None and c.get("partial") and time.time() - c.get("at", 0) > PARTIAL_RETRY_S
+        if c is not None and not partial:
             return c
         if k not in self.loading and self.card_of:
             self.loading.add(k)
 
             def work():
                 try:
-                    self.cards[k] = self.card_of(item)
+                    new = self.card_of(item)
                 except Exception as e:  # noqa: BLE001
-                    self.cards[k] = {"question": item.get("text") or "", "options": [], "answerable": False,
-                                     "context": tr("could not load: {why}", why=str(e)[:80]), "who": item.get("who")}
+                    new = {"question": item.get("text") or "", "options": [], "answerable": False,
+                           "context": tr("could not load: {why}", why=str(e)[:80]), "who": item.get("who")}
+                new["at"] = time.time()
+                self.cards[k] = new
                 self.loading.discard(k)
             threading.Thread(target=work, daemon=True).start()
+        if c is not None:  # a card built before the registry loaded: its question and options, until the full one
+            return c
         return {"question": item.get("text") or "", "options": [], "who": item.get("who"), "answerable": False,
                 "loading": True, "context": tr("loading…")}
 
@@ -528,6 +551,8 @@ class Inbox:
         body_top, body_h = 2, max(3, h - 5)
         narrow = w < NARROW_W
         item = its[idx] if its else None
+        if self.mode == "reply":
+            item = self.reply["item"]
         if narrow:
             if item:
                 self.put(1, 0, f"‹ {idx + 1} / {len(its)} ›  " + tr("↑↓ page · ←→ stream"), curses.A_DIM)
@@ -566,8 +591,14 @@ class Inbox:
         if line:
             self.put(h - 3, 0, line, self.attr.get("red", 0) if line.startswith(tr("not sent: {why}", why=""))
                      else curses.A_BOLD)
-        self.put(h - 2, 0, keys_line(w), curses.A_DIM)
+        self.put(h - 2, 0, keys_line(w, self.mode), curses.A_DIM)
+        if self.mode == "reply" and self.cursor and hasattr(self.scr, "move"):
+            try:
+                self.scr.move(*self.cursor)
+            except curses.error:
+                pass
         self.scr.refresh()
+        self.mark("frame")
         return its, idx
 
     def draw_list(self, its, idx, top_y, height, width):
@@ -626,8 +657,10 @@ class Inbox:
             note = tr("snoozed until {t}", t=time.strftime("%d.%m %H:%M", time.localtime(o[1])))
         elif o and o[0] == "handed":
             note = tr("handed to {p}", p=o[1])
+        if not c.get("loading"):
+            self.mark("card")
         rows = card_rows(c, item, width, note, context=ctx is None)
-        if ctx and self.mode == "main":
+        if ctx and self.mode in ("main", "reply"):
             side = context_rows(c, ctx[1])
             if self.note.get("key") != k:
                 self.xtop = 0
@@ -640,11 +673,15 @@ class Inbox:
             rows = [(tr("Snooze until:"), "title"), ("", None), ("1  " + tr("in an hour"), "option"),
                     ("2  " + tr("tomorrow at 9:00"), "option"), ("3  " + tr("next Monday at 9:00"), "option"),
                     ("", None), (tr("Esc cancels"), "dim")]
-        if self.note.get("key") != k or self.note.get("mode") != self.mode:
-            self.ctop, self.note = 0, {"key": k, "mode": self.mode}
+        if self.note.get("key") != k or (self.note.get("mode") != self.mode
+                                         and "reply" not in (self.mode, self.note.get("mode"))):
+            self.ctop = 0  # a new card or a help screen starts at the top; writing an answer keeps the place he read
+        self.note = {"key": k, "mode": self.mode}
         style = {"title": curses.A_BOLD, "dim": curses.A_DIM, "why": self.attr.get("amber", 0),
                  "head": curses.A_UNDERLINE, "option": 0, "recommended": self.attr.get("amber", 0) | curses.A_BOLD,
                  "text": 0}
+        if self.mode == "reply":
+            return self.draw_reply(rows, style, top_y, height, x0, width)
         opts = [r for r in rows if r[1] in ("option", "recommended")]
         body, foot = rows, []
         if self.mode == "main" and opts and len(rows) > height and len(opts) <= max(3, height // 2):
@@ -663,6 +700,95 @@ class Inbox:
                                         b=min(len(body), self.ctop + bh), n=len(body)), curses.A_DIM)
         for i, (ln, kind) in enumerate(foot):
             self.put(top_y + bh + 1 + i, x0, ln, style.get(kind, 0))
+
+    def draw_reply(self, rows, style, top_y, height, x0, width):
+        """The answer written under the card, which stays in sight and scrolls (↑↓, PgUp PgDn, the wheel) while he
+        types (the founder, 2026-11-12: the editor over the whole screen hid a long question he answers with thought).
+        The editor grows with the text up to half the card's height; the card takes the rest."""
+        wrapped = T.wrap_rows(self.reply["lines"], width - 2)
+        eh = max(3, min(len(wrapped) + 1, height // 2))
+        qh = max(1, height - eh - 1)
+        over = len(rows) > qh
+        bh = qh - 1 if over else qh
+        self.ctop = max(0, min(self.ctop, max(0, len(rows) - bh)))
+        for i, (ln, kind) in enumerate(rows[self.ctop:self.ctop + bh]):
+            self.put(top_y + i, x0, ln, style.get(kind, 0))
+        if over:
+            self.put(top_y + bh, x0, tr("lines {a}-{b} of {n} · ↑↓ PgUp PgDn scroll", a=self.ctop + 1,
+                                        b=min(len(rows), self.ctop + bh), n=len(rows)), curses.A_DIM)
+        hy = top_y + qh
+        head = "── " + tr("Your answer to {who}", who=", ".join(self.reply["item"].get("who") or [])) + " "
+        head = T.cut(head, width)
+        self.put(hy, x0, head + "─" * max(0, width - T.dwidth(head)), curses.A_BOLD)
+        shown = wrapped[-eh:]
+        for i, ln in enumerate(shown):
+            self.put(hy + 1 + i, x0 + 1, ln)
+        last = shown[-1] if shown else ""
+        y, x = hy + max(1, len(shown)), x0 + 1 + T.dwidth(last)
+        if x >= x0 + width - 1:
+            y, x = min(y + 1, hy + eh), x0 + 1
+        self.cursor = (y, x)
+
+    def start_reply(self, item):
+        """r: the editor opens under the card, with the draft he left on it (Esc keeps one)."""
+        k = key_of(item)
+        c = self.cards.get(k)
+        if not item.get("task") and (c is None or c.get("loading")):
+            self.msg = tr("loading…")
+            return
+        if not item.get("task") and not c.get("answerable"):
+            self.msg = tr("Answered in its pane: g goes there.")
+            return
+        self.mode, self.msg = "reply", ""
+        self.reply = {"key": k, "item": item, "lines": (self.reply_drafts.get(k) or "").split("\n")}
+        curses.curs_set(1)
+
+    def end_reply(self):
+        self.mode, self.reply, self.cursor = "main", None, None
+        curses.curs_set(0)
+
+    def reply_key(self, ch, h):
+        """One key while he writes: Enter a new line, Enter on an empty line or Ctrl+D sends, Esc keeps the draft."""
+        r = self.reply
+        if ch in ("\x1b", 27):
+            text = "\n".join(r["lines"])
+            if text.strip():
+                self.reply_drafts[r["key"]] = text
+                self.msg = tr("The answer is kept as a draft: r goes on with it.")
+            else:
+                self.reply_drafts.pop(r["key"], None)
+            self.end_reply()
+        elif ch in ("\x04", 4) or (ch in ("\n", "\r", 10, 13, curses.KEY_ENTER) and r["lines"][-1] == ""
+                                     and any(x.strip() for x in r["lines"][:-1])):
+            text = "\n".join(r["lines"]).strip()
+            item, c = r["item"], self.cards.get(r["key"])
+            self.end_reply()
+            if text:
+                self.reply_drafts.pop(r["key"], None)
+                if needs_confirm(item, c):
+                    self.mode, self.confirm = "confirm", (item, "y", text, "answer")
+                else:
+                    self.send(item, "answer", text)
+        elif ch in ("\n", "\r", 10, 13, curses.KEY_ENTER):
+            r["lines"].append("")
+        elif ch in (curses.KEY_BACKSPACE, "\x7f", "\b", 127, 8):
+            if r["lines"][-1]:
+                r["lines"][-1] = r["lines"][-1][:-1]
+            elif len(r["lines"]) > 1:
+                r["lines"].pop()
+        elif ch == curses.KEY_UP:
+            self.ctop = max(0, self.ctop - 1)
+        elif ch == curses.KEY_DOWN:
+            self.ctop += 1
+        elif ch == curses.KEY_PPAGE:
+            self.ctop = max(0, self.ctop - max(1, h // 3))
+        elif ch == curses.KEY_NPAGE:
+            self.ctop += max(1, h // 3)
+        elif isinstance(ch, str) and ch.isprintable():
+            r["lines"][-1] += ch
+        elif isinstance(ch, int) and 32 <= ch < 127:
+            r["lines"][-1] += chr(ch)
+        return True
 
     # input
     def line_input(self, prompt, suggest=None):
@@ -735,7 +861,7 @@ class Inbox:
                 self.msg = tr("loading…")
                 return
             if not c.get("answerable"):
-                self.msg = tr("Answered in its pane: o goes there.")
+                self.msg = tr("Answered in its pane: g goes there.")
                 return
             opts = c.get("options") or []
             if not 1 <= n <= min(9, len(opts)):
@@ -765,6 +891,12 @@ class Inbox:
             return
         down = b & WHEEL_DOWN
         up = b & WHEEL_UP and not down
+        if self.mode == "reply":
+            if (up or down) and self.cx and x >= self.cx:
+                self.xtop = max(0, self.xtop + (-3 if up else 3))
+            elif up or down:
+                self.ctop = max(0, self.ctop + (-3 if up else 3))
+            return
         if y == 0 and b & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):  # a click on a stream's tab
             hit = next((st for x0, x1, st in self.tab_rects if x0 <= x < x1), None)
             if hit:
@@ -789,9 +921,11 @@ class Inbox:
         item = its[idx] if its else None
         h, w = self.scr.getmaxyx()
         if ch == curses.KEY_MOUSE:
-            if self.mode == "main":
+            if self.mode in ("main", "reply"):
                 self.mouse(its, idx)
             return True
+        if self.mode == "reply":
+            return self.reply_key(ch, h)
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
             self.mode, self.confirm = "main", None
@@ -830,9 +964,9 @@ class Inbox:
             self.sel[self.cur] = key_of(its[step(len(its), idx, max(1, h - 6), wrap=False)])
         elif ch == curses.KEY_PPAGE and its:
             self.sel[self.cur] = key_of(its[step(len(its), idx, -max(1, h - 6), wrap=False)])
-        elif ch in (ord("g"), curses.KEY_HOME) and its:
+        elif ch == curses.KEY_HOME and its:
             self.sel[self.cur] = key_of(its[0])
-        elif ch in (ord("G"), curses.KEY_END) and its:
+        elif ch == curses.KEY_END and its:
             self.sel[self.cur] = key_of(its[-1])
         elif ch in (ord("J"), getattr(curses, "KEY_SF", -2)):
             self.ctop += 1
@@ -855,16 +989,7 @@ class Inbox:
                     if any(key_of(x) == k for x in self.groups().get(s) or []):
                         self.cur, self.sel[s] = s, k
         elif ch == ord("r") and item and item.get("ids"):
-            c = self.cards.get(key_of(item)) or {}
-            if item.get("task") or c.get("answerable"):
-                text = T.edit(self.scr, tr("Answer to {who}: {q}", who=", ".join(item.get("who") or []),
-                                           q=(item.get("text") or "").splitlines()[0] if item.get("text") else ""))
-                curses.flushinp()
-                if text:
-                    if needs_confirm(item, c):
-                        self.mode, self.confirm = "confirm", (item, "y", text, "answer")
-                    else:
-                        self.send(item, "answer", text)
+            self.start_reply(item)
         elif ch == ord("h") and item and item.get("ids"):
             if self.cur == "later":  # back now
                 ids = list(item["ids"])
@@ -899,7 +1024,7 @@ class Inbox:
                 self.search, self.cur = q, "search"
         elif ch == ord("?"):
             self.mode = "help"
-        elif ch in (ord("o"),) and item and item.get("who"):
+        elif ch in (ord("g"), ord("o")) and item and item.get("who"):  # g: the founder's key (2026-11-12); o too
             self.out.flush()
             self.act("go", item)
             return False
@@ -935,6 +1060,20 @@ class Inbox:
                 self.out.queue(dict(d["item"], first=None), "answer", d["text"])
         return True
 
+    def mark(self, what):
+        if self.timing is not None and what not in self.timing:
+            self.timing[what] = time.time()
+
+    def key(self):
+        """The next key, -1 when none came in time. While he writes, whole characters (get_wch): getch gives a
+        Cyrillic letter as its bytes."""
+        if self.mode == "reply" and hasattr(self.scr, "get_wch"):
+            try:
+                return self.scr.get_wch()
+            except curses.error:
+                return -1
+        return self.scr.getch()
+
     def run(self):
         curses.curs_set(0)
         self.attr = colors()
@@ -960,7 +1099,7 @@ class Inbox:
             if self.studio_note.get("m"):
                 self.msg = self.studio_note.pop("m")
             self.draw()
-            ch = self.scr.getch()
+            ch = self.key()
             if ch == -1:
                 continue
             if ch == curses.KEY_RESIZE:
@@ -969,10 +1108,16 @@ class Inbox:
                 return
 
 
-def keys_line(w):
-    """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there."""
-    forms = [tr("↑↓ select · ←→ stream · 1-9 answer · r write · h snooze · d hand over · / search · ? help · Esc back"),
-             tr("↑↓ select · ←→ stream · 1-9 answer · ? help · Esc back"), "↑↓ ←→ 1-9 r h d / ? Esc"]
+def keys_line(w, mode="main"):
+    """The permanent line of keys, the longest form that fits: Tab, ? and Esc are always there; g goes to the agent
+    (the founder, 2026-11-12: "add g, go to the agent"). While he writes: the editor's."""
+    if mode == "reply":
+        forms = [tr("Enter new line · Enter on an empty line or Ctrl+D send · ↑↓ PgUp PgDn scroll the card · "
+                    "Esc keep as a draft"), tr("Enter new line · Ctrl+D send · Esc draft"), "Enter · Ctrl+D · Esc"]
+        return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
+    forms = [tr("↑↓ select · ←→ stream · 1-9 answer · r write · g go to the agent · h snooze · d hand over · / search · "
+                "? help · Esc back"), tr("↑↓ select · ←→ stream · 1-9 answer · r write · g agent · ? help · Esc back"),
+             "↑↓ ←→ 1-9 r g h d / ? Esc"]
     return next((f for f in forms if T.dwidth(f) <= w - 1), forms[-1])
 
 
@@ -980,16 +1125,16 @@ def help_rows():
     return [tr("Keys"), "",
             "↑ ↓  j k     " + tr("select; wraps from the first card to the last"),
             "PgUp PgDn    " + tr("a page of the queue"),
-            "g G          " + tr("the first, the last card"),
+            "Home End     " + tr("the first, the last card"),
             "← → Tab      " + tr("the next, the previous stream (a click on its tab too)"),
             "1-9          " + tr("answer with that option (money or irreversible: press it twice)"),
-            "r            " + tr("write your own answer"),
+            "r            " + tr("write your own answer under the card; Esc keeps it as a draft"),
             "u            " + tr("take back the last answer while its seconds run"),
             "h            " + tr("snooze: in an hour, tomorrow at 9:00, next Monday at 9:00 (in Snoozed: back now)"),
             "d            " + tr("hand it to a position, which gets the card in its pane to settle"),
             "/            " + tr("search the questions and who asks"),
             "J K Space    " + tr("scroll the card"),
-            "o            " + tr("go to the asking agent's pane"),
+            "g o          " + tr("go to the asking agent's pane"),
             "a w n        " + tr("answered elsewhere, withdraw, not a question"),
             "b c C s      " + tr("side chat, copy the answer, copy the card, Studio"),
             "Esc q        " + tr("back, close"), "",
@@ -1000,14 +1145,31 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     """The window: the same answer path as the classic popup (of_asks_tui.main), its cache for the first frame."""
     import of_asks_answer
     import of_listen
+    timing = {"start": time.time()}
     os.environ.setdefault("ESCDELAY", "25")
 
+    registry, quick = threading.Event(), set()
+
+    def warm():  # the registry, from the start: a card needs it only for who asks (system, mandate, organization)
+        _quiet(lambda: T._positions(positions))
+        registry.set()
+    threading.Thread(target=warm, daemon=True).start()
+
     def card_of(it):  # in a thread: its own store connection
+        """The card; before the registry loaded (a second of YAML, several under load), the question and its options
+        at once and the rest when it is there: the options he acts on never wait for it (2026-11-12)."""
         import of_store
+        if key_of(it) in quick:
+            registry.wait()  # its quick card is on screen: the full one, once the registry is there
         own = of_store.connect()
         try:
-            c = of_asks_answer.card(own, it, T._positions(positions))
+            ready = registry.is_set()
+            if not ready:
+                quick.add(key_of(it))
+            c = of_asks_answer.card(own, it, T._positions(positions) if ready else [])
             c["risk"] = group_risk(own, c.get("ids") or it.get("ids"))
+            if not ready:
+                c["partial"] = True
             return c
         finally:
             own.close()
@@ -1026,7 +1188,11 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         T.write_cache(data)
         if refresh and not reconciled:  # live sessions and the herdr counts, once, after the first true list
             reconciled.append(True)
-            threading.Thread(target=lambda: _quiet(refresh), daemon=True).start()
+
+            def reconcile():
+                _quiet(refresh)
+                timing.setdefault("reconcile", time.time())
+            threading.Thread(target=reconcile, daemon=True).start()
         return data, over
 
     def record(kind, payload):
@@ -1052,14 +1218,38 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
 
     answer = T.threaded_answer(positions, pane_of, T.debounced(after) if after else None)
     first = (T.read_cache(), {})
+    size = []
 
     def run(scr):
+        size.extend(scr.getmaxyx())
         Inbox(scr, loader, card_of, answer, T.act_cli(of_path), positions=lambda: T._positions(positions),
               record=record, handoff=handoff, studio=studio, drafts=of_asks_answer.unsent_drafts, seq=of_listen.seq,
               initial=([x for _, g in first[0] for x in g], first[1]), chat=T.chat_screen,
-              archive=of_asks_answer.archive_drafts).run()
-    curses.wrapper(run)
+              archive=of_asks_answer.archive_drafts, timing=timing).run()
+    try:
+        curses.wrapper(run)
+    finally:
+        log_open(timing, size)
     return 0
+
+
+def log_open(timing, size, path=None):
+    """One line per opening in asks-open.log: the seconds from the start of the screen to its first frame, the true
+    list, the first card with its options and the end of the background reconcile. The founder saw the screen open
+    in 10 to 30 s in herdr (2026-11-12, of_conductor msg 01a1d09c-4562): this is the measure where he sees it."""
+    import of_events
+    path = path or os.path.join(of_events.STATE_DIR, "asks-open.log")
+    t0 = timing.get("start")
+    row = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0)), "size": size[:2],
+           "pane": os.environ.get("HERDR_PANE_ID")}  # herdr's popup, or a terminal (None)
+    row.update({k: round(v - t0, 2) for k, v in timing.items() if k != "start"})
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
+            os.replace(path, path + ".1")
+        with open(path, "a") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
 
 
 def _quiet(fn):
