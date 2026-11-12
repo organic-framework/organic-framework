@@ -44,7 +44,7 @@ RUN apt-get update \
 WORKDIR /app
 # Only the server's modules and the modules they import; nothing else of the client.
 COPY bin/of_server.py bin/of_server_relay.py bin/of_server_coord.py bin/of_server_finance.py bin/of_server_otlp.py \
-     bin/of_mask.py bin/of_route.py bin/of_coord.py bin/of_plugins.py bin/of_grants.py \
+     bin/of_mask.py bin/of_route.py bin/of_coord.py bin/of_plugins.py bin/of_family.py bin/of_grants.py \
      bin/of_events.py bin/of_ship.py bin/of_store.py ./
 # The secrets broker (docs/agent-secrets.md §5.3) and the catalogue it reads.
 COPY bin/of_server_secrets.py bin/of_credentials.py ./
