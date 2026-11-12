@@ -4500,14 +4500,20 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         An account that reports no 5-hour window but has a measured week is sized by its week alone: on 2026-11-10
         three Max 20x accounts had shown no 5-hour window in 225 probes each while carrying $100-115/h, and the
         tier prior scaled from the Max 5x one ($376 a window) said they had no room, so two sessions stood on the
-        5x account's limit while the others had a third of their week left."""
+        5x account's limit while the others had a third of their week left. A week just reset, with no measure of
+        its own yet, is measured by the others' week scaled by tier; it still needs its own week reading (use and
+        reset), which caps the room."""
         d = sink["config_dir"]
         f, f_reset = win(sink, "five_hour")
         load = sum(rates.get(s["session"], 0.0) for s in sessions.get(d, [])) + extra_load
         cal = calib.get(d) or prior_calib(sink)
         # a week just reset has no measure of its own yet: the others' week, scaled by tier, sizes it (2026-11-12:
-        # ~/.claude-g reset to 0% looked to have no room, and fill and relief left it empty)
-        week_only = f is None and bool((wcalib or {}).get(d) or prior_calib(sink, wcalib or {}))
+        # ~/.claude-g reset to 0% looked to have no room, and fill and relief left it empty). Only with the account's
+        # own week reading, use and reset, which caps the room below; without one, unknown is not infinite
+        # (of_review, PR 55: a target at 90% of its week with no reset took $408/h)
+        wk0, wk0_reset = win(sink, "seven_day")
+        week_only = f is None and wk0 is not None and bool(wk0_reset) \
+            and bool((wcalib or {}).get(d) or prior_calib(sink, wcalib or {}))
         if f is None or not f_reset:  # no 5-hour window open yet: a whole window ahead, nothing used
             f, f_reset = 0, now + 5 * 3600
         if week_only:
@@ -4558,7 +4564,9 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     for d, r in acct.items():
         if not stalled(r) or waits_out(r):
             continue
-        targets = sorted((x for x in acct.values() if not stalled(x) and x["config_dir"] != d),
+        # a target with no reading at all is no target (headroom None; of_review, PR 55: it raised a TypeError here)
+        targets = sorted((x for x in acct.values()
+                          if not stalled(x) and x["config_dir"] != d and headroom(x) is not None),
                          key=lambda x: -headroom(x))
         added = {x["config_dir"]: 0.0 for x in targets}
         for rate, name, sid in movable(d, relief=True):
@@ -4572,7 +4580,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                     added[t["config_dir"]] += rate
                     break
     # 2. fill: the account whose week resets first takes load until its 5-hour window is projected full; one with no
-    #    room left passes the turn to the next (2026-11-12: ~/.claude-a, resetting 3 hours before a freshly reset
+    #    room left, or none that fits what can move, passes the turn to the next, which still resets before its
+    #    sources (2026-11-12: ~/.claude-a, resetting 3 hours before a freshly reset
     #    ~/.claude-g, had no room, and fill moved nothing while ~/.claude ran toward its weekly limit)
     sinks = sorted((r for r in acct.values() if not stalled(r) and win(r, "seven_day")[1]),
                    key=lambda r: win(r, "seven_day")[1])

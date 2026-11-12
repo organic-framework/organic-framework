@@ -2272,6 +2272,39 @@ class AfterAWeekReset(unittest.TestCase):
                                      contexts={"c1": 200_000, "c2": 200_000, "c3": 200_000}, wcalib=wcalib)
         self.assertEqual([(x["position"], x["from"], x["to"]) for x in m], [("c1", "/cl", "/gg"), ("c2", "/cl", "/gg")])
 
+    def test_a_week_reading_without_its_reset_is_still_not_infinite(self):
+        # of_review, PR 55: a Max 20x relief target at 90% of its week with no resets_at took $408/h from a rejected
+        # Max 5x account, because the others' week prior made it week-only and the week cap needs the reset
+        now = Balance.NOW
+        iso = lambda h: of_capacity._iso(now + h * 3600)  # noqa: E731
+        rows = [{"config_dir": "/mm", "logged_in": True, "status": "rejected", "tier": "default_claude_max_5x",
+                 "windows": {"five_hour": {"utilization": 100, "resets_at": iso(0.33)},
+                             "seven_day": {"utilization": 55, "resets_at": iso(124)}}},
+                {"config_dir": "/t", "logged_in": True, "status": "allowed", "tier": "default_claude_max_20x",
+                 "windows": {"seven_day": {"utilization": 90}}}]
+        pos = [{"name": n, "holder": {"session": n}} for n in ("big", "small")]
+        sess = {"/mm": [{"session": "big", "status": "idle"}, {"session": "small", "status": "idle"}], "/t": []}
+        m = of_capacity.balance_plan(rows, sess, pos, {"big": 400, "small": 8}, {"/mm": 0.94}, dict(POLICY), now,
+                                     wcalib={"/mm": 7.2})
+        self.assertNotIn("big", [x["position"] for x in m])
+        rows[1]["windows"] = {}  # no reading at all: no target, and no TypeError on its headroom
+        self.assertEqual(of_capacity.balance_plan(rows, sess, pos, {"big": 400, "small": 8}, {"/mm": 0.94},
+                                                  dict(POLICY), now, wcalib={"/mm": 7.2}), [])
+
+    def test_fill_takes_one_sink_a_run(self):
+        now = Balance.NOW
+        iso = lambda h: of_capacity._iso(now + h * 3600)  # noqa: E731
+        acct = lambda d, used, reset_h: {"config_dir": d, "logged_in": True, "status": "allowed",  # noqa: E731
+                                          "tier": "default_claude_max_20x",
+                                          "windows": {"seven_day": {"utilization": used, "resets_at": iso(reset_h)}}}
+        # /s1 has $35/h of week left for its 50 hours ((94 - 6.5) * $20 / 50), /s2 $31/h
+        rows = [acct("/s1", 6.5, 50), acct("/s2", 0, 60), acct("/cl", 40, 160)]
+        pos = [{"name": n, "holder": {"session": n}} for n in ("c1", "c2", "c3")]
+        sess = {"/s1": [], "/s2": [], "/cl": [{"session": n, "status": "idle"} for n in ("c1", "c2", "c3")]}
+        m = of_capacity.balance_plan(rows, sess, pos, {"c1": 20, "c2": 15, "c3": 10}, {}, dict(POLICY, max_moves=3),
+                                     now, wcalib={"/s1": 20.0, "/s2": 20.0, "/cl": 20.0})
+        self.assertEqual([(x["position"], x["to"]) for x in m], [("c1", "/s1"), ("c2", "/s1")])  # c3 waits a run
+
 
 class HerdrIntegration(unittest.TestCase):
     def test_installs_only_where_the_hook_is_missing(self):
