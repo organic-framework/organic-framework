@@ -561,9 +561,11 @@ class LoopRulesTest(unittest.TestCase):
             pl["started_at"] = started
         return ev(f"run{i}", ts, "of.loop_run", "s-search", pl, position="bot_search")
 
-    def hyp(self, i, ts, hid):
-        return ev(f"h{i}", ts, "of.loop_hypothesis", "s-search", {"work": self.W, "id": hid, "change": hid, "status": "open"},
-                  position="bot_search")
+    def hyp(self, i, ts, hid, predict=None, change=None, status="open"):
+        pl = {"work": self.W, "id": hid, "change": change or hid, "status": status}
+        if predict:
+            pl["predict"] = predict
+        return ev(f"h{i}", ts, "of.loop_hypothesis", "s-search", pl, position="bot_search")
 
     def decide(self, i, ts, hid, kind="drop"):
         return ev(f"d{i}", ts, "of.loop_decision", "s-search", {"work": self.W, "hypothesis": hid, "decision": kind},
@@ -643,10 +645,43 @@ class LoopRulesTest(unittest.TestCase):
         runs = [self.run_(1, "2026-11-04T12:00Z", "day_pass", "h1", 325.8)] + \
                [self.run_(i, f"2026-11-0{4 + i // 2}T1{i}:00Z", "offline", "h2", 18 - i, metric="latency_ms") for i in range(2, 6)]
         got, _ = self.found("loop-objective-drift", runs)
-        self.assertEqual(len(got), 1)
+        self.assertEqual([i["part"] for i in got], ["unpriced"])
         self.assertEqual(got[0]["evidence"]["unpriced"], {"latency_ms": 4})
         priced = self.doc(measures=[{"name": "latency_ms", "to_money": "USD per ms from the checkout arithmetic"}])
         self.assertEqual(self.found("loop-objective-drift", runs, priced)[0], [])
+
+    SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
+               "context": ["the network after the send", "a third party's ordering rule"]}
+
+    def test_objective_drift_on_a_context_part(self):
+        # hand-over 9e2140b6 (docs/registry.md Works): a part outside the segment is context, never a target or a lever
+        target = {"metric": "day_pass", "money": "USD per day", "segment": self.SEGMENT}
+        seg = self.doc(target=target)
+        on_target = [self.run_(1, "2026-11-04T12:00Z", "day_pass", "h1", 325.8)]
+        hyp = [self.hyp(1, "2026-11-04T10:00Z", "h-net", predict="a faster RPC path cuts the network after the send by 20 ms")]
+        got, st = self.found("loop-objective-drift", on_target + hyp, seg)
+        self.assertEqual([(i["part"], i["rule_version"]) for i in got], [("context", "ap.loop-objective-drift@1")])
+        self.assertEqual(got[0]["evidence"]["context"][0]["hypothesis"], "h-net")
+        self.assertIn("The network after the send is outside the segment: report it, and act inside (1 hypothesis names it)",
+                      got[0]["summary"])
+        self.assertEqual(got[0]["decider"], "work_owner")
+        # a run whose metric names the part, and a hypothesis whose change does; one issue for the work, ids stable
+        run = [self.run_(2, "2026-11-05T12:00Z", "offline", "h2", 14, metric="ordering_rule_third_party_rank")]
+        lever = [self.hyp(2, "2026-11-05T10:00Z", "h-order", change="lobby the third party to change its ordering rules")]
+        both, _ = self.found("loop-objective-drift", on_target + run + lever, seg)
+        self.assertEqual([i["issue_id"] for i in both], [got[0]["issue_id"]])
+        self.assertEqual({x["part"] for x in both[0]["evidence"]["context"]}, {"a third party's ordering rule"})
+        self.assertIn("(1 run and 1 hypothesis name it)", both[0]["summary"])
+        # quiet: the same hypothesis with no segment declared; a lever inside the segment; a dropped hypothesis of last month
+        self.assertEqual(self.found("loop-objective-drift", on_target + hyp)[0], [])
+        inside = [self.hyp(3, "2026-11-04T10:00Z", "h-in", predict="sending the bundle 3 ms after our node sees the block lifts day_pass")]
+        self.assertEqual(self.found("loop-objective-drift", on_target + inside, seg)[0], [])
+        old = [self.hyp(4, "2026-10-20T10:00Z", "h-old", predict="the network after the send is the bottleneck", status="dropped")]
+        self.assertEqual(self.found("loop-objective-drift", on_target + old, seg)[0], [])
+        # unpriced runs and a context hit on one work: one issue, part context, with both in its evidence
+        unpriced = [self.run_(i, f"2026-11-0{4 + i // 2}T1{i}:00Z", "offline", "h3", 18 - i, metric="latency_ms") for i in range(3, 7)]
+        mixed, _ = self.found("loop-objective-drift", on_target + unpriced + hyp, seg)
+        self.assertEqual([(i["part"], i["evidence"]["unpriced"]) for i in mixed], [("context", {"latency_ms": 4})])
 
     def test_evaluation_bottleneck(self):
         def gate(i, started):
