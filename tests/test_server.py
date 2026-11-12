@@ -52,7 +52,7 @@ class ServerBase(unittest.TestCase):
         of_events.STATE_DIR = os.path.join(root, "state")
         orgs = os.path.join(root, "orgs.yaml")
         with open(orgs, "w") as fh:
-            fh.write(f"orgs:\n  - {{name: zeta, database: db_mt, paths: ['{HOME}/acme']}}\n"
+            fh.write(f"orgs:\n  - {{name: zeta, database: db_zeta, paths: ['{HOME}/acme']}}\n"
                      f"  - {{name: ofb, database: db_ofb, paths: ['{HOME}/organic-framework']}}\n")
         self.ch = FakeCH()
         self.ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False,
@@ -472,7 +472,7 @@ class PerOrgServerTest(unittest.TestCase):
         self.ch = FakeCH()
         ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False, "tenant": "t"}
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"zeta": "db_mt"})
+                   orgs={"zeta": "db_zeta"})
         self.app = of_server.App(cfg, ch=self.ch, ship_cfg=ship_cfg, grants_loader=lambda: {},
                                  grant_key=lambda: b"k", mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
@@ -512,7 +512,7 @@ class PerOrgServerTest(unittest.TestCase):
         self.assertIn("publication copy", reasons[5])
         self.assertIn("shape copy: carries content", reasons[6])
         self.app.writer.drain()
-        self.assertEqual({(d, t) for d, t, _ in self.ch.inserts}, {("db_mt", "event")})   # no copies made here
+        self.assertEqual({(d, t) for d, t, _ in self.ch.inserts}, {("db_zeta", "event")})   # no copies made here
         self.assertEqual(sorted(r["event_id"] for _, _, rows in self.ch.inserts for r in rows), ["e1", "s1"])
 
 
@@ -617,11 +617,11 @@ class StudioDataTest(unittest.TestCase):
         srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, "db_mt_read.password"), "w") as fh:
+            with open(os.path.join(d, "db_zeta_read.password"), "w") as fh:
                 fh.write("pw\n")
-            cfg = {"clickhouse": {"url": f"http://127.0.0.1:{srv.server_address[1]}", "user": "db_mt_ingest",
-                                  "password_file": os.path.join(d, "db_mt_ingest.password")}}
-            sd = of_server.StudioData(cfg, {"zeta": "db_mt"})
+            cfg = {"clickhouse": {"url": f"http://127.0.0.1:{srv.server_address[1]}", "user": "db_zeta_ingest",
+                                  "password_file": os.path.join(d, "db_zeta_ingest.password")}}
+            sd = of_server.StudioData(cfg, {"zeta": "db_zeta"})
             rows = list(sd.events("zeta", since_iso="2026-10-27T00:00:00Z", names=["of.turn_end", "x' OR 1=1 --"]))
             with self.assertRaises(KeyError):
                 list(sd.events("other"))
@@ -629,11 +629,11 @@ class StudioDataTest(unittest.TestCase):
         srv.server_close()
         self.assertEqual([r["event_id"] for r in rows], ["e1", "e2"])
         q = seen["q"]["query"][0]
-        self.assertIn("FROM db_mt.v_event FINAL", q)
+        self.assertIn("FROM db_zeta.v_event FINAL", q)
         self.assertNotIn("OR 1=1", q)                                   # values never spliced into SQL
         self.assertEqual(seen["q"]["param_names"][0], "['of.turn_end','x\\' OR 1=1 --']")
         self.assertEqual(seen["q"]["param_since"][0], "2026-10-27T00:00:00Z")
-        self.assertEqual(base64.b64decode(seen["auth"].split()[1]).decode(), "db_mt_read:pw")
+        self.assertEqual(base64.b64decode(seen["auth"].split()[1]).decode(), "db_zeta_read:pw")
 
 
 class ExternalWriterTest(unittest.TestCase):
@@ -817,7 +817,7 @@ class AskClosureRoutingTest(unittest.TestCase):
             root = os.path.realpath(root)
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write(f"orgs:\n  - {{name: zeta, database: db_mt, paths: ['{root}/zeta']}}\n")
+                fh.write(f"orgs:\n  - {{name: zeta, database: db_zeta, paths: ['{root}/zeta']}}\n")
             saved = os.environ.get("OF_DB")
             os.environ["OF_DB"] = os.path.join(root, "of.db")
             try:
@@ -834,7 +834,7 @@ class AskClosureRoutingTest(unittest.TestCase):
                 self.assertEqual(of_route.route_org("event", closure({"ask_ids": ["nope", "ask-1"]}), r), "zeta")
                 self.assertIsNone(of_route.route_org("event", closure({"ask_id": "nope"}), r))
                 self.assertIsNone(of_route.route_org("event", closure({"answer": "x"}), r))
-                self.assertIsNone(of_route.route_org("event", closure({}), of_route.StaticRouter({"zeta": "db_mt"}, "u")))
+                self.assertIsNone(of_route.route_org("event", closure({}), of_route.StaticRouter({"zeta": "db_zeta"}, "u")))
             finally:
                 if saved is None:
                     os.environ.pop("OF_DB", None)

@@ -639,7 +639,7 @@ class RouterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: zeta, database: db_mt, paths: [~/acme]}\n"
+                fh.write("orgs:\n  - {name: zeta, database: db_zeta, paths: [~/acme]}\n"
                          "  - {name: ofb, database: db_ofb, paths: [~/organic-framework]}\n")
             r = of_ship.Router(dict(of_ship.DEFAULTS), orgs)
             r.org_by_session = {"S-zeta": "zeta"}
@@ -652,7 +652,7 @@ class RouterTest(unittest.TestCase):
                              "zeta")  # Claude Code's project folder: the cwd, every non-alphanumeric as '-'; any home
             self.assertIsNone(r.org_of(None, None, "/tmp/elsewhere"))
             self.assertEqual(r.database(None), "of_unassigned")
-            self.assertEqual(r.database("zeta"), "db_mt")
+            self.assertEqual(r.database("zeta"), "db_zeta")
             r.org_by_session = {"S-fa": "zeta"}  # an OF position that serves Acme
             self.assertEqual(r.org_of("ofb", "S-fa", "~/organic-framework"), "zeta")
             self.assertEqual(r.org_of("ofb", None, None, serves="zeta"), "zeta")
@@ -697,7 +697,7 @@ class ShapeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: zeta, database: db_mt}\n  - {name: ofb, database: db_ofb}\n")
+                fh.write("orgs:\n  - {name: zeta, database: db_zeta}\n  - {name: ofb, database: db_ofb}\n")
             r = of_ship.Router(dict(of_ship.DEFAULTS), orgs)
             r.own_org_by_session = {"S-fa": "ofb", "S-zeta": "zeta"}
             self.assertEqual(r.builder_of("zeta", "S-fa"), "ofb")
@@ -712,7 +712,7 @@ class PerOrgWireTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write("orgs:\n  - {name: zeta, database: db_mt, server: 'https://zeta.example'}\n"
+                fh.write("orgs:\n  - {name: zeta, database: db_zeta, server: 'https://zeta.example'}\n"
                          "  - {name: ofb, database: db_ofb}\n")
             cfg = dict(of_ship.DEFAULTS)
             r = of_ship.Router(cfg, orgs)

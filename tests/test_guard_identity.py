@@ -32,8 +32,8 @@ DENY += ["ssh gw 'op read op://Acme Agents/x/password'", "op item get x --fields
 
 ALLOW = [
     # the organization's committed scripts, by their file name
-    "~/acme/org/tools/agent-identity/fetch.sh mt-agent-mail",
-    "bash scripts/mt-agent-vault.sh check",
+    "~/acme/org/tools/agent-identity/fetch.sh acme-agent-mail",
+    "bash scripts/acme-agent-vault.sh check",
     "./tools/op-get.sh vault-entry",
     # names, not reads
     "ls -la ~/.config/mt/agent-identity",

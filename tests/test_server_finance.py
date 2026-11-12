@@ -114,7 +114,7 @@ class FinanceServerTest(unittest.TestCase):
             fh.write("positions:\n  - {name: books_keeper, holder: {session: S-books}}\n"
                      "  - {name: k8s_keeper, holder: {session: S-k8s}}\n")
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"zeta": "db_mt", "ofb": "db_ofb"}, positions_files={"zeta": positions})
+                   orgs={"zeta": "db_zeta", "ofb": "db_ofb"}, positions_files={"zeta": positions})
         self.grants = {"zeta": [self.grant("g-books", "books_keeper"), self.grant("g-read", "k8s_keeper", tier="observe"),
                               self.grant("g-plain", "k8s_keeper", data=())], "ofb": []}
         self.app = of_server.App(cfg, ch=self.ch, ship_cfg=ship_cfg, grants_loader=lambda: self.grants,
@@ -158,7 +158,7 @@ class FinanceServerTest(unittest.TestCase):
     def test_the_finance_unit_writes_a_fact_and_only_its_organization_gets_it(self):
         status, ans = self.post(self.a, record("f1", payload()))
         self.assertEqual((status, ans["event_id"], ans["accepted"]), (202, "f1", True))
-        self.assertEqual(self.written(), [("db_mt", "f1")])
+        self.assertEqual(self.written(), [("db_zeta", "f1")])
         self.assertEqual(self.post(self.a, record("f1", payload()))[1].get("already"), True)   # a retry: the same answer
         status, why = self.post(self.a, record("f1", payload(amount="1")))
         self.assertEqual(status, 409)
@@ -230,7 +230,7 @@ class FinanceServerTest(unittest.TestCase):
 class CopyTest(unittest.TestCase):
     def test_no_shape_or_publication_copy(self):
         class R:
-            db_by_org = {"zeta": "db_mt", "ofb": "db_ofb"}
+            db_by_org = {"zeta": "db_zeta", "ofb": "db_ofb"}
             unassigned = "db_un"
 
             def database(self, org):
@@ -242,7 +242,7 @@ class CopyTest(unittest.TestCase):
         row = {"event_id": "f1", "org_id": "zeta", "name": fin.FINANCE, "session_id": "S", "payload": "{}",
                "record": json.dumps({"of.event.id": "f1"})}
         out = of_route.fanout("event", [row], R(), {"vault_database": "db_vault"}, copies=True)
-        self.assertEqual({db: [r["event_id"] for r in rows] for db, rows in out.items()}, {"db_mt": ["f1"]})
+        self.assertEqual({db: [r["event_id"] for r in rows] for db, rows in out.items()}, {"db_zeta": ["f1"]})
 
 
 class ClickHouseViewTest(unittest.TestCase):
@@ -254,8 +254,8 @@ class ClickHouseViewTest(unittest.TestCase):
                                                                                 "schema.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        sql = mod.schema(["of_mt"], "of_mt_vault", "of_mt_un")
-        self.assertIn("CREATE OR REPLACE VIEW of_mt.v_event SQL SECURITY DEFINER AS SELECT * FROM of_mt.event"
+        sql = mod.schema(["of_zeta"], "of_mt_vault", "of_mt_un")
+        self.assertIn("CREATE OR REPLACE VIEW of_zeta.v_event SQL SECURITY DEFINER AS SELECT * FROM of_zeta.event"
                       " WHERE name != 'of.finance_fact';", sql)
         self.assertNotIn("of_finance_fact", sql.replace("of.finance_fact", ""))
         self.assertEqual(sql.count("finance_fact"), 1)   # only the colleagues' event view filters
