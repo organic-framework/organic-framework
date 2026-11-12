@@ -3,11 +3,17 @@
 # in a public repository a step's environment, repository variables included, is printed in public logs. An
 # organization that runs the server copies the image by digest into its own registry, or builds it from a pinned
 # commit, in its own CI (deploy/RUNBOOK.md section 3). Owner: of_server.
+#
+# A pull request builds and checks the image but never logs in or pushes. After a push to main, a separate job with
+# read-only rights scans the pushed digest (Trivy, pinned by its release checksum), so the digest and its scan result
+# are in one run for the organizations that copy it (2026-11-12: a user organization's scanner found a KEV entry).
 name: of-server image
 
 on:
   push:
     branches: [main]
+    paths: ["bin/**", "deploy/Dockerfile", "docs/diagnose-v0.yaml", ".github/workflows/of-server-image.yml"]
+  pull_request:
     paths: ["bin/**", "deploy/Dockerfile", "docs/diagnose-v0.yaml", ".github/workflows/of-server-image.yml"]
   workflow_dispatch:
 
@@ -18,8 +24,12 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069   # v4.4.1
       - name: Build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc   # v7.4.0
@@ -32,15 +42,52 @@ jobs:
         run: |
           docker run --rm --entrypoint python3 of-server:ci -c \
             "import glob, importlib, os; ms = sorted(os.path.basename(f)[:-3] for f in glob.glob('/app/of_*.py')); [importlib.import_module(m) for m in ms]; print('imports ok:', len(ms))"
+      - name: ssh-keygen alone, no OpenSSH package and no ssh, sshd, scp, sftp or ssh-agent (deploy/Dockerfile)
+        run: |
+          docker run --rm --entrypoint sh of-server:ci -c '
+            if dpkg-query -W -f "\${Status}" openssh-client openssh-server 2>/dev/null | grep -q installed; then
+              echo "an OpenSSH package is installed"; exit 1; fi
+            for b in ssh sshd scp sftp ssh-agent; do
+              if command -v "$b" >/dev/null; then echo "$b is in the image"; exit 1; fi; done
+            command -v ssh-keygen && echo "ssh-keygen alone: ok"'
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550   # v4.8.0
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
+        id: push
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' bin/of_server.py)
           for tag in "${GITHUB_SHA::12}" "$VERSION" main; do
             docker tag of-server:ci "ghcr.io/organic-framework/of-server:$tag"
             docker push "ghcr.io/organic-framework/of-server:$tag"
           done
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "ghcr.io/organic-framework/of-server:${GITHUB_SHA::12}")
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$DIGEST\` (tags ${GITHUB_SHA::12}, $VERSION, main)" >> "$GITHUB_STEP_SUMMARY"
+
+  scan:
+    needs: image
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Trivy 0.76.1, checked against the checksum in its release
+        run: |
+          curl -fsSL -o trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz
+          echo "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+      - name: Scan the pushed digest (high and critical; the table is the scan result to hand on with the digest)
+        env:
+          IMAGE: ${{ needs.image.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          ./trivy image --scanners vuln --severity HIGH,CRITICAL --format table "$IMAGE" | tee scan.txt
+          { echo "### Scan of \`$IMAGE\` (Trivy 0.76.1, high and critical)"; echo '```'; cat scan.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
