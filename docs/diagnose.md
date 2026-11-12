@@ -390,7 +390,7 @@ A rule reports `blocked` while the organization has no declared loop or no run i
 | 2.18 | `ap.loop-plateau@0` | 3 consecutive runs on the target metric each improve the best earlier result by < 1% of it | work_owner | medium |
 | 2.19 | `ap.loop-wip@0` | More than `wip_arms` hypotheses in `testing` for ≥ 12 h | doer | low |
 | 2.20 | `ap.loop-babysit-model@0` | ≥ 100 runner commands and monitors by the loop's doers on a model ranked above `babysit_model` (default `sonnet`) | doer, with `of_capacity` | low |
-| 2.21 | `ap.loop-objective-drift@0` | ≥ 3 runs, and ≥ 30% of the loop's runs, measure a metric that is neither the target's nor a measure with `to_money` | work_owner | medium |
+| 2.21 | `ap.loop-objective-drift@1` | `unpriced`: ≥ 3 runs, and ≥ 30% of the loop's runs, measure a metric that is neither the target's nor a measure with `to_money`. `context`: a run, a hypothesis or a change of objective names a part outside the target's segment | work_owner | medium |
 | 2.22 | `ap.loop-eval-bottleneck@0` | On one rung with ≥ 3 runs, the wait share (queued to started, over queued to ended) is > 40% | work_owner | medium |
 
 Per rule:
@@ -425,6 +425,13 @@ Per rule:
   - Nudge: "Price `<metric>` in `<target money>` before more work on it."
   - A `change_objective` decision without a money metric fires at once, whatever the counts.
   - The first user organization's case: from 11-05 the runs measured p50 milliseconds, with no money per millisecond.
+  - **Part `context`** (v1, 2026-11-12; hand-over 9e2140b6 from `of_architect`, basis: `of_conductor`'s relay message 01a1cf7d quoting the founder's correction of that day, "parts outside the segment are reported as context, never a target or a lever"). A loop's `target.segment` names the part of the chain the organization controls, and its `context` lists the parts outside it ([`registry.md`](registry.md), Works).
+    - Fires when, in the window, a run's metric, a live hypothesis's `predict` or `change`, or a `change_objective` decision's metric names a context part. A hypothesis counts while it is `open` or `testing`, or when it was recorded in the window. One is enough.
+    - "Names" means: every content word of the part is among the text's words. Case, `_`, `-` and punctuation are ignored, and so are short function words ("the", "after", "of") and a plural "s". So `ordering_rule_third_party_rank` names "a third party's ordering rule", and "the bundle leaves 3 ms after our node sees the block" names neither example part.
+    - Nudge (RFC 0005 §6): "`<The part>` is outside the segment: report it, and act inside."
+    - Remedies: report the part beside the target and move the work inside the segment, onto a time or a rule between its start and end; restate a hypothesis about the part to the owner as an inference, never a finding.
+    - One issue per work, as before; when both parts fire, `context` names it and the unpriced runs stay in its evidence. Issue ids do not change.
+    - Without a declared segment the part is quiet. On 2026-11-12 no loop of either organization declares one (`of registry check` warns on each).
 - **2.22 Evaluation bottleneck.**
   - The wait share is per rung: (started − queued) summed over (ended − queued) summed, over the rung's runs that ended in the window.
   - Remedy: elevate the rung (more runners for it), or move hypotheses to a cheaper rung. It goes to the owner, since it costs capacity.
@@ -589,11 +596,11 @@ The loop rules read one projection per work, `model["loops"][<work>]`, through `
 | Field | Meaning | Source | Owner | Read by |
 |---|---|---|---|---|
 | `work`, `owner`, `doers` | The work id, its owner (`work_owner`), the positions doing it | registry `works:` | `of_architect` (schema) | all |
-| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`) | registry `works.<w>.loop.target` | `of_architect` | 2.17, 2.18, 2.21 |
+| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`), **`segment`** (`start`, `end`, `context`: a list of texts) | registry `works.<w>.loop.target` | `of_architect`; `segment` asked of `of_studio`'s projection 2026-11-12 | 2.17, 2.18, 2.21 |
 | `measures[]` | `name`, `to_money` (empty means not priced) | `loop.measures` | `of_architect` | 2.21 |
 | `ladder[]` | Cheapest first: `rung`, `cost`, `latency`, `accept`, **`production`** (true for shadow and higher), **`since`** (when the rung became available; default the loop's start) | `loop.ladder` | `of_architect`; `production` and `since` are new | 2.16, 2.17, 2.22 |
 | `checkpoint_days`, `wip_arms`, `babysit_model` | Per work; defaults 3, 2, `sonnet` | `loop` | `of_architect` | 2.17, 2.19, 2.20 |
-| `hypotheses[]` | `id`, `ts`, `status` and `status_at`, the last of `open`, `testing`, `kept`, `dropped`, `parked` | `of.loop_hypothesis` | `of_platform` | 2.16, 2.19 |
+| `hypotheses[]` | `id`, `ts`, `status` and `status_at`, the last of `open`, `testing`, `kept`, `dropped`, `parked`; **`predict`** and **`change`** (texts) | `of.loop_hypothesis` | `of_platform`; `predict` and `change` asked of `of_studio`'s projection 2026-11-12 | 2.16, 2.19, 2.21 |
 | `runs[]` | `id`, `rung`, `hypothesis` (may be empty), `metric`, **`value`** (a number in the metric's unit), **`accepted`** (the rung's `accept` met), **`queued_at`**, `started_at`, `ended_at`, `position`, `session`, `model` | `of.loop_run`, or derived from runner records (cbx) | `of_platform`; `value`, `accepted` and `queued_at` are new beside RFC §4.1's `result` text | 2.16–2.18, 2.21, 2.22 |
 | `decisions[]` | `ts`, `kind` (`keep`, `drop`, `step_up`, `step_back`, `change_objective`), `hypothesis`, and for `change_objective` the new `metric` and its `to_money` | `of.loop_decision` | `of_platform` | 2.21 |
 | `metrics.rungs.<rung>` | `runs`, `cycle_time`, **`wait_share`** | RFC §5 | `of_studio` | 2.22 |
@@ -643,7 +650,7 @@ The columns:
 | loop-plateau@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
 | loop-wip@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | a real case |
 | loop-babysit-model@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-objective-drift@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
+| loop-objective-drift@1 | blocked (no declared loop) | blocked | P/R 1.0 (3 tp: unpriced, context by a hypothesis, context by a run) | — | the search week, once its runs are derived; part `context` once a loop declares its segment |
 | loop-eval-bottleneck@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
 | unkept-system@0 | fired 1 (delivery), 2026-11-10 | quiet | both parts P/R 1.0; negatives: external keeper, unsupported, a supersystem (keeper and unit) | — | — |
 | off-map-work@0 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |

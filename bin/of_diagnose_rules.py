@@ -865,26 +865,79 @@ def rule_loop_babysit_model(model, rows, a, b, cat, spec):
     return out
 
 
+_PART_STOP = {"the", "a", "an", "of", "after", "before", "to", "in", "on", "at", "by", "for", "from", "its", "our", "their",
+              "and", "or", "with", "into", "onto", "over", "under", "per", "this", "that"}
+
+
+def _part_tokens(text):
+    """The content words of a text, for matching a segment's context part: lower case, '_', '-', '/' and punctuation
+    as spaces, one-letter words and stop words dropped, a plural 's' cut from words over three letters."""
+    words = re.findall(r"[a-z0-9]+", str(text or "").lower().replace("_", " "))
+    return {w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+            for w in words if len(w) > 1 and w not in _PART_STOP}
+
+
+def _names_part(text, part):
+    """True when `text` names the context `part`: every content word of the part is among the text's (RFC 0005 §6)."""
+    need = _part_tokens(part)
+    return bool(need) and need <= _part_tokens(text)
+
+
 def rule_loop_objective_drift(model, rows, a, b, cat, spec):
+    """Part unpriced: runs that measure a metric neither the target's nor priced, or a change_objective without money.
+    Part context (v1, 2026-11-12; hand-over 9e2140b6, docs/registry.md Works): a run's metric, a hypothesis's
+    predicted effect or change, or a change_objective's metric names a part of the target's segment.context, which is
+    reported beside the target and is never a target, a measure or a lever. One issue per work; context wins the part."""
     out = []
     for w, lp in _loops(model).items():
-        target = (lp.get("target") or {}).get("metric")
+        tgt = lp.get("target") or {}
+        target = tgt.get("metric")
         priced = {str(m.get("name")) for m in lp.get("measures") or [] if m.get("to_money")}
         runs = [r for r in lp.get("runs") or [] if _ended_in(r, a, b)]
         unpriced = [r for r in runs if (r.get("metric") or target) != target and r.get("metric") not in priced]
         bad = [d for d in lp.get("decisions_all") or [] if d.get("kind") == "change_objective"
                and a <= (d.get("ts") or 0) < b and not (d.get("metric") and d.get("to_money"))]
-        fires = bad or (runs and len(unpriced) >= _t(spec, "unpriced_runs_gte", 3)
+        drift = bad or (runs and len(unpriced) >= _t(spec, "unpriced_runs_gte", 3)
                         and len(unpriced) / len(runs) >= _t(spec, "unpriced_share_gte", 0.30))
-        if fires:
-            metrics = collections.Counter(r.get("metric") for r in unpriced)
-            top = metrics.most_common(1)[0][0] if metrics else (bad[0].get("metric") or "the new objective")
-            money = (lp.get("target") or {}).get("money") or "money"
-            out.append(issue(cat, "loop-objective-drift", [w],
-                             {"work": w, "target": target, "unpriced": dict(metrics), "runs": len(runs),
-                              "change_objective_without_money": len(bad)},
-                             f"{w}: {len(unpriced)} of {len(runs)} runs measure {top}, which has no price: "
-                             f"price it in {money} before more work on it"))
+        seg = tgt.get("segment") if isinstance(tgt.get("segment"), dict) else {}
+        parts = [str(x) for x in seg.get("context") or [] if isinstance(x, str) and x.strip()]
+        hits = []
+        for part in parts:
+            for r in runs:
+                if r.get("metric") and _names_part(r["metric"], part):
+                    hits.append({"part": part, "run": r.get("id"), "metric": r["metric"]})
+            for h in lp.get("hypotheses") or []:
+                live = a <= (h.get("ts") or 0) < b or h.get("status") in ("open", "testing")
+                for f in ("predict", "change"):
+                    if live and h.get(f) and _names_part(h[f], part):
+                        hits.append({"part": part, "hypothesis": h.get("id"), f: str(h[f])[:160]})
+                        break
+            for d in lp.get("decisions_all") or []:
+                if d.get("kind") == "change_objective" and a <= (d.get("ts") or 0) < b and d.get("metric") \
+                        and _names_part(d["metric"], part):
+                    hits.append({"part": part, "decision": "change_objective", "metric": d["metric"]})
+        if not (drift or hits):
+            continue
+        metrics = collections.Counter(r.get("metric") for r in unpriced)
+        ev = {"work": w, "target": target, "unpriced": dict(metrics), "runs": len(runs),
+              "change_objective_without_money": len(bad)}
+        if hits:
+            top = collections.Counter(x["part"] for x in hits).most_common(1)[0][0]
+            n_r = sum(1 for x in hits if x["part"] == top and "run" in x)
+            n_h = sum(1 for x in hits if x["part"] == top and "hypothesis" in x)
+            ev.update(segment={"start": seg.get("start"), "end": seg.get("end"), "context": parts}, context=hits[:20])
+            named = " and ".join(x for x in (n_r and f"{n_r} run{'s' if n_r > 1 else ''}",
+                                             n_h and f"{n_h} hypothes{'es' if n_h > 1 else 'is'}") if x)
+            named = f"{named} name{'' if n_r + n_h > 1 else 's'} it" if named else "a change of objective names it"
+            out.append(issue(cat, "loop-objective-drift", [w], ev,
+                             f"{w}: {top[:1].upper() + top[1:]} is outside the segment: report it, and act inside ({named})",
+                             part="context"))
+            continue
+        top = metrics.most_common(1)[0][0] if metrics else (bad[0].get("metric") or "the new objective")
+        money = tgt.get("money") or "money"
+        out.append(issue(cat, "loop-objective-drift", [w], ev,
+                         f"{w}: {len(unpriced)} of {len(runs)} runs measure {top}, which has no price: "
+                         f"price it in {money} before more work on it", part="unpriced"))
     return out
 
 

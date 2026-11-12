@@ -959,3 +959,32 @@ SCENARIOS += [
     _case("unsourced-requirement/blocked-no-handovers", _org_doc(), [],
           ("ap.unsourced-requirement", _PAIR, "blocked")),
 ]
+
+
+# ---- loop-objective-drift part context (of_field-analyst, v1 2026-11-12; hand-over 9e2140b6, docs/registry.md Works)
+# A segment is declared; one climb on the target keeps the other loop rules quiet; the case adds what names a context part.
+_SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
+            "context": ["the network after the send", "a third party's ordering rule"]}
+_SEG_DOC = _loop_doc(target={"metric": "day_pass", "money": "USD per day", "stake": "65 USD a day", "segment": _SEGMENT})
+
+
+def _lhyp(i, ts, hid, predict, change=None):
+    return ev(f"lh{i}", ts, "of.loop_hypothesis", "s-bot_search",
+              {"work": _LW, "id": hid, "change": change or hid, "predict": predict, "status": "open"}, position="bot_search")
+
+
+SCENARIOS += [
+    _loop_case("loop-objective-drift/positive-context-hypothesis",
+               _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-net", "a faster RPC path cuts the network after the send by 20 ms")],
+               "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
+    _loop_case("loop-objective-drift/positive-context-run",
+               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="ordering_rule_third_party_rank")],
+               "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
+    _loop_case("loop-objective-drift/negative-context-inside",
+               _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-in",
+                                           "sending the bundle 3 ms after our node sees the block lifts day_pass")],
+               "negative", rule="ap.loop-objective-drift", doc=_SEG_DOC),
+    _loop_case("loop-objective-drift/negative-no-segment",
+               _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-net", "a faster RPC path cuts the network after the send by 20 ms")],
+               "negative", rule="ap.loop-objective-drift"),
+]
