@@ -1321,6 +1321,10 @@ def peer_pairs(model, rows, a, b, slack_s=5.0):
             k = _prefix(_WRAPPED.sub("", str(pl.get("text") or ""), count=1))
             if k and who(r):
                 got.setdefault(k, []).append((epoch(r.get("ts")) or 0, who(r)))
+    # every relay message sent here, in the window or before it: one sent before `a` and delivered after it belongs to
+    # the window it was sent in, never to this one through its delivery log (PR 96 review, of_review)
+    sent_here = {(r.get("payload") or {}).get("msg_id") for r in rows
+                 if r.get("name") == "of.agent_message_out" and (r.get("payload") or {}).get("msg_id")}
     out, sent, logged = collections.Counter(), set(), []
     for r in rows:
         if r.get("name") not in PEER_KINDS or not in_window(r, a, b):
@@ -1346,7 +1350,7 @@ def peer_pairs(model, rows, a, b, slack_s=5.0):
             out[(p, q)] += 1
     for r in logged:   # sent from another machine: only its delivery log is here
         pl = r.get("payload") or {}
-        if pl["msg_id"] in sent:
+        if pl["msg_id"] in sent or pl["msg_id"] in sent_here:
             continue
         sent.add(pl["msg_id"])
         p, q = party(pl.get("from"), org), who(r)

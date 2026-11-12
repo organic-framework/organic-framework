@@ -2077,6 +2077,10 @@ def _conditions_html(d, conds, compact=False):
 
 def _spend_note(sp):
     if sp is None:
+        try:
+            import of_spend  # noqa: F401
+        except ImportError:   # of-server's image (PR 95 review, of_review)
+            return '<p class="note">Spend this month: this host does not count spend; the machine running the listener does.</p>'
         return ('<p class="note">Spend this month: no sums for this month yet (the listener writes them; '
                 '<code>of capacity spend --fresh</code> computes them now).</p>')
     when = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(sp.get("computed_at") or 0))
