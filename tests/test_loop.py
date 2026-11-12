@@ -86,6 +86,11 @@ class LoopCheckTest(unittest.TestCase):
         self.assertEqual(check(seg, measures=[{"name": "network after the send", "to_money": "x"}]), [])  # names only
         self.assertTrue(of_loop.context_matches("the change moves the third party's ordering rule", seg["context"][1],
                                                 prose=True))
+        # of_field-analyst, 2026-11-12: a possessive's "s" and a plural must not block a match
+        self.assertEqual(of_loop.content_words("a third party's ordering rule"), {"third", "party", "ordering", "rule"})
+        self.assertTrue(of_loop.context_matches("lobby the third party to change its ordering rules",
+                                                "a third party's ordering rule", prose=True))
+        self.assertEqual(of_loop.content_words("parties process the bus"), {"party", "process", "bus"})
 
     def test_a_loop_yaml_beside_the_doc_is_checked_and_one_place_only(self):
         import importlib.machinery

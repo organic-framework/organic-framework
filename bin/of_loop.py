@@ -143,9 +143,19 @@ STOP = frozenset("a an the of to in on at by for from and or with without after 
                  "our their his her your my this that these those per via".split())
 
 
+def _fold(w):
+    """A plural as its singular, roughly: rules -> rule, parties -> party; process and bus stay."""
+    if len(w) > 4 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
 def content_words(text):
-    """The words of a text that carry its meaning: letters and digits, lowercased, without the small words."""
-    return {w for w in re.findall(r"[^\W_]+", str(text or "").casefold()) if w not in STOP}
+    """The words of a text that carry its meaning: letters and digits, lowercased, plurals folded, without the small
+    words and one-letter pieces (a possessive's s: of_field-analyst, 2026-11-12)."""
+    return {_fold(w) for w in re.findall(r"[^\W_]+", str(text or "").casefold()) if len(w) > 1 and w not in STOP}
 
 
 def part_label(part):
