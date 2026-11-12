@@ -19,7 +19,7 @@ A work is a unit of intended change with a checkable end. It covers:
 
 | Field | Meaning |
 |---|---|
-| `id` | Stable, e.g. `mt-spam-triggers`, `of-rfc-0001` |
+| `id` | Stable, e.g. `acme-spam-triggers`, `of-rfc-0001` |
 | `title` | One line, in the owner's words |
 | `kind` | `rfc`, `project`, `incident`, `window`, `migration` |
 | `doc` | The RFC or brief: a repository and path |
