@@ -32,6 +32,8 @@ class KeychainTest(unittest.TestCase):
         for cmd in ("security find-generic-password -s svc -w", "security find-generic-password -gs svc",
                     "security find-internet-password -s host -g", "security find-generic-password -a me -s svc -gw",
                     "/usr/bin/security find-generic-password -s svc -w", "security export -k login.keychain -o x.p12",
+                    "security -q find-generic-password -gw", "security -v -- find-internet-password -s h -w",
+                    "echo 'find-generic-password -s svc -w' | security -i", "security -p 'k> ' < cmds.txt",
                     "security export", "security dump-keychain -d", "security dump-keychain -ad login.keychain"):
             self.assertIn("would print secrets", bash(cmd) or "", cmd)
         for cmd in ("security find-generic-password -s svc", "security find-generic-password -sw",  # -s takes "w"
@@ -91,6 +93,14 @@ class ProtectedCodeTest(unittest.TestCase):
                     f"mv {a}/com.acme.backup.plist /tmp/x", f"rm -rf {os.path.dirname(b)}", f"rm -r {a}",
                     f"rmdir {b}", f"cd {b} && rm backup.sh", f"install -m 755 x {b}/backup.sh"):
             self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        support = os.path.dirname(os.path.dirname(b))  # the folder above the protected bin
+        for cmd in (f"cp -R newtree/ {support}/", f"cp -a newtree {os.path.dirname(b)}", f"rsync -a newtree/ {support}/",
+                    f"ditto newtree {support}", f"tar -xzf t.tgz -C {support}", f"tar xf t.tar --directory={support}",
+                    f"unzip t.zip -d {support}", f"cd {support} && tar -xf t.tar", f"cd {support} && unzip t.zip"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"cp -R {b} /tmp/backup-copy", f"tar -czf /tmp/t.tgz -C {support} .", f"rsync -a {b}/ /tmp/x/",
+                    f"unzip -l t.zip", f"cp -R newtree /tmp/elsewhere"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
         for cmd in (f"cat {b}/backup.sh", f"ls {a}", f"cp {b}/backup.sh /tmp/copy.sh", f"echo x > {a}/other.plist",
                     f"rm -rf {self.root}/elsewhere", f"bash {b}/backup.sh scan"):
             self.assertIsNone(bash(cmd, self.root), cmd)
