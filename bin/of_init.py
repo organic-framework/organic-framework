@@ -540,7 +540,7 @@ def file_capacity_card(n, position, lang=None, of_bin=None, run=subprocess.run):
     from of_locale import tr
     of_bin = of_bin or OF
     try:
-        r = run([of_bin, "ask", f"{tr(CAPACITY_QUESTION, lang, n=n, position=position)} {tr(CAPACITY_COST, lang)}",
+        r = run([sys.executable, of_bin, "ask", f"{tr(CAPACITY_QUESTION, lang, n=n, position=position)} {tr(CAPACITY_COST, lang)}",
                  "--options", "|".join(tr(o, lang, position=position) for o in CAPACITY_OPTIONS)],
                 capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as e:
