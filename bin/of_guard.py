@@ -1407,7 +1407,15 @@ def _security_opts(args):
 
 def _security_deny(args):
     """G11 and G20 on `security ARGS`: a password printed (find-*-password -w or -g), every item exported, a dump with
-    values (dump-keychain -d), or any subcommand that names a keychain item an organization protects."""
+    values (dump-keychain -d), interactive mode (its commands come from stdin, unseen), or any subcommand that names a
+    keychain item an organization protects. security's own options before the subcommand (-h -i -l -p prompt -q -v)
+    are skipped (of_secrets-review's review of organic-framework PR 65: `security -q find-generic-password -gw`)."""
+    k = 0
+    while k < len(args) and args[k].startswith("-") and args[k] != "--":
+        if any(c in "ip" for c in args[k][1:]):  # -i, -p prompt: commands read from stdin, which the guard never sees
+            return _prints("security -i (interactive mode)")
+        k += 1
+    args = args[k + 1:] if k < len(args) and args[k] == "--" else args[k:]
     sub = args[0] if args else ""
     for a in args[1:]:
         name = _keychain_name(a) or (_keychain_name(a[2:]) if a.startswith("-") and len(a) > 2 else None)
@@ -1454,6 +1462,39 @@ def _protected_code(path, cwd, removal=False):
     return None
 
 
+def _tree_targets(head, args, cwd):
+    """The folders one simple command may write anywhere under: a recursive cp's destination, rsync's and ditto's,
+    and the folder tar or unzip extracts into (cwd when none is named)."""
+    ops = [a for a in args if not a.startswith("-")]
+    short = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+    if head == "cp" and (set(short) & set("Rra") or "--recursive" in args or "--archive" in args):
+        return ops[-1:]
+    if head in ("rsync", "ditto"):
+        return ops[-1:]
+    if head in ("tar", "bsdtar", "gtar"):
+        first = args[0] if args else ""
+        extracting = "x" in short or "--extract" in args or "--get" in args or \
+            (first and not first.startswith("-") and "x" in first)  # tar xf a.tar
+        if not extracting:
+            return []
+        for i, a in enumerate(args):
+            if a in ("-C", "--directory") and i + 1 < len(args):
+                return [args[i + 1]]
+            if a.startswith("--directory="):
+                return [a.split("=", 1)[1]]
+        return [cwd or "."]
+    if head == "unzip":
+        if set(short) & set("ltvZpz"):  # list, test, verbose, zipinfo, to stdout, comment: nothing is written
+            return []
+        for i, a in enumerate(args):
+            if a == "-d" and i + 1 < len(args):
+                return [args[i + 1]]
+            if a.startswith("-d") and len(a) > 2:
+                return [a[2:]]
+        return [cwd or "."]
+    return []
+
+
 def _protected_code_deny(head, args, stext, cwd):
     """(reason, path) for G21 on one simple command, else None; and the guard's own state files, always."""
     removal = head in ("rm", "rmdir", "mv", "unlink", "shred")
@@ -1463,6 +1504,11 @@ def _protected_code_deny(head, args, stext, cwd):
         return GUARD_STATE_DENY, state
     if not _ORG_PROTECTION["code"]:
         return None
+    # a recursive copy or an extraction writes anywhere under its destination: a folder above an entry counts
+    # (of_secrets-review's review of organic-framework PR 65: cp -R, rsync, ditto, tar -C, unzip -d)
+    hit = next((t for t in _tree_targets(head, args, cwd) if _protected_code(t, cwd, removal=True)), None)
+    if hit:
+        return PROTECTED_CODE_DENY, hit
     hit = next((f for f in files if _protected_code(f, cwd, removal)), None)
     return (PROTECTED_CODE_DENY, hit) if hit else None
 
