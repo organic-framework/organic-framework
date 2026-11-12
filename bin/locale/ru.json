@@ -225,14 +225,15 @@
  "↑↓ page · ←→ stream": "↑↓ листать · ←→ поток",
  "the next, the previous stream (a click on its tab too)": "следующий, предыдущий поток (или щелчок по его вкладке)",
  "Done, you may close this tab.": "Готово, можно закрыть вкладку.",
- "lines {a}-{b} of {n} · ↑↓ PgUp PgDn scroll": "строки {a}–{b} из {n} · ↑↓ PgUp PgDn — прокрутка",
  "Your answer to {who}": "Твой ответ для {who}",
  "Answered in its pane: g goes there.": "Отвечается в окне агента: g — перейти туда.",
  "The answer is kept as a draft: r goes on with it.": "Ответ сохранён как черновик: r — продолжить.",
  "The card you are answering was closed elsewhere: Esc keeps your text as a draft.": "Карточку, на которую ты отвечаешь, закрыли в другом месте: Esc сохранит текст как черновик.",
- "Enter new line · Enter on an empty line or Ctrl+D send · ↑↓ PgUp PgDn scroll the card · Esc keep as a draft": "Enter — новая строка · Enter на пустой строке или Ctrl+D — отправить · ↑↓ PgUp PgDn — листать карточку · Esc — в черновик",
- "Enter new line · Ctrl+D send · Esc draft": "Enter — строка · Ctrl+D — отправить · Esc — черновик",
  "↑↓ select · ←→ stream · 1-9 answer · r write · g go to the agent · h snooze · d hand over · / search · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · g к агенту · h отложить · d передать · / поиск · ? помощь · Esc назад",
  "↑↓ select · ←→ stream · 1-9 answer · r write · g agent · ? help · Esc back": "↑↓ выбор · ←→ поток · 1-9 ответ · r написать · g к агенту · ? помощь · Esc назад",
- "write your own answer under the card; Esc keeps it as a draft": "написать свой ответ под карточкой; Esc сохранит его как черновик"
+ "write your own answer under the card; Esc keeps it as a draft": "написать свой ответ под карточкой; Esc сохранит его как черновик",
+ "lines {a}-{b} of {n} · PgUp PgDn scroll": "строки {a}–{b} из {n} · PgUp PgDn — прокрутка",
+ "Enter new line · Enter on an empty last line or Ctrl+D send · ↑↓←→ Home End move · PgUp PgDn scroll the card · Esc keep as a draft": "Enter — новая строка · Enter на пустой последней строке или Ctrl+D — отправить · ↑↓←→ Home End — курсор · PgUp PgDn — листать карточку · Esc — в черновик",
+ "Enter new line · Ctrl+D send · ↑↓←→ move · PgUp PgDn card · Esc draft": "Enter — строка · Ctrl+D — отправить · ↑↓←→ — курсор · PgUp PgDn — карточка · Esc — черновик",
+ "cancelled; the answer is kept as a draft: r goes on with it": "отменено; ответ сохранён как черновик: r — продолжить"
 }
