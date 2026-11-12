@@ -193,23 +193,97 @@ def _block_words(code):
     return [w for w in words if w and len(w) <= 300 and not re.search(r"\s", w)]
 
 
-def _code_deny(code):
+_STRING_HEAD = re.compile(r"([A-Za-z]*)('''|\"\"\"|'|\")")
+_PYTHON = re.compile(r"python[\d.]*$")
+
+
+def _py_strings(code):
+    """(the literals G8 checks, the code without its strings and comments) from python's own tokenizer, or None
+    when the code does not tokenize. A triple-quoted string counts only when it is one word once stripped (carried
+    text otherwise); a comment counts never; a stray triple quote inside a comment or a string shifts nothing
+    (of_secrets-review on organic-framework PR 97)."""
+    import io
+    import tokenize
+    starts = [0]
+    for line in io.StringIO(code).readlines():  # the tokenizer's own lines (str.splitlines splits on more)
+        starts.append(starts[-1] + len(line))
+
+    def off(pos):
+        return starts[pos[0] - 1] + pos[1] if pos[0] - 1 < len(starts) else len(code)
+
+    lits, cut, fstack = [], [], []
+    try:
+        for t in tokenize.generate_tokens(io.StringIO(code).readline):
+            name = tokenize.tok_name.get(t.type, "")
+            if t.type == tokenize.COMMENT:
+                cut.append((off(t.start), off(t.end)))
+            elif name.endswith("STRING_START"):  # an f-string or t-string (python 3.12+): its parts come as tokens
+                fstack.append(off(t.start))
+            elif name.endswith("STRING_END") and fstack:
+                begin = fstack.pop()
+                if not fstack:
+                    cut.append((begin, off(t.end)))
+                    lits.append(code[begin:off(t.end)])
+            elif t.type == tokenize.STRING:
+                if not fstack:
+                    cut.append((off(t.start), off(t.end)))
+                lits.append(t.string)
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return None
+    words = []
+    for s in lits:
+        m = _STRING_HEAD.match(s)
+        if not m or not s.endswith(m.group(2)) or len(s) < len(m.group(0)) + len(m.group(2)):
+            continue
+        body = s[len(m.group(0)):len(s) - len(m.group(2))]
+        if len(m.group(2)) == 3:
+            body = body.strip()
+            if body and len(body) <= 300 and not re.search(r"\s", body):
+                words.append(body)
+            continue  # otherwise carried text: a file edit's old or new string, a docstring
+        # a quoted span inside a one-line string is a literal too, as the regex read it: a shell command the code
+        # builds (`"cat '<path>'"`), an f-string's inner literal before python 3.12 (the 21-day replay: 9 denies)
+        words += [x.group(2).strip() for x in _LITERAL.finditer(body)]
+        if "\n" not in body and len(body) <= 300:
+            words.append(body.strip())
+    bare, last = [], 0
+    for a, b in sorted(cut):
+        if a >= last:
+            bare.append(code[last:a])
+            last = b
+    bare.append(code[last:])
+    return words, "".join(bare)
+
+
+def _lang(word):
+    """"python" for a python interpreter's name (python, python3, python3.12), else None."""
+    return "python" if _PYTHON.match(word or "") else None
+
+
+def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
     the whole environment (print(os.environ)). A false positive is accepted over a miss here: the agent
-    writes such code to a file with the Edit tool. Bare words in comments are not literals and do not count."""
-    # os.environ / process.env named in a STRING the code edits is text, not a dump: strip string literals first
-    bare = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"|'[^'\n]*'|\"[^\"\n]*\"", "", code, flags=re.S)
+    writes such code to a file with the Edit tool. Comments do not count. LANG "python" reads the code with
+    python's tokenizer; python code that does not tokenize is read with no carve-out at all."""
+    py = _py_strings(code) if lang == "python" else None
+    if py is not None:
+        lits, bare = py
+    else:
+        # os.environ / process.env named in a STRING the code edits is text, not a dump: strip string literals first
+        bare = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"|'[^'\n]*'|\"[^\"\n]*\"", "", code, flags=re.S)
+        # a triple-quoted block is text the code carries (a file edit's old and new strings), never a path it
+        # opens: its inner quotes are not literals (docs/guard.md G8; of_capacity, of_platform, of_server,
+        # 2026-11-07). A block that is one word once stripped is read as a literal: `open('''~/.ssh/id_ed25519''')`
+        # read the key (of_review and of_secrets-review on organic-framework PR 93). Python code that does not
+        # tokenize gets no carve-out: every quoted span is a literal (of_secrets-review on organic-framework PR 97).
+        carried = code if lang == "python" else re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
+        lits = _block_words(code) + [m.group(2).strip() for m in _LITERAL.finditer(carried)]
     if _ENV_DUMP_CODE.search(bare):
         return _prints("the whole environment")
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
-    # a triple-quoted block is text the code carries (a file edit's old and new strings), never a path it
-    # opens: its inner quotes are not literals (docs/guard.md G8; of_capacity, of_platform, of_server, 2026-11-07).
-    # A block that is one word once stripped is read as a literal: `open('''~/.ssh/id_ed25519''')` read the key
-    # (of_review and of_secrets-review on organic-framework PR 93).
-    carried = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)
-    for lit in _block_words(code) + [m.group(2).strip() for m in _LITERAL.finditer(carried)]:
+    for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
         if " " not in lit and _secret_path(lit):
@@ -1734,17 +1808,18 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             return hit
     for quoted, body, opener in docs:
         head = _head(opener)
-        remote = None
+        remote, lang = None, _lang(head)
         if head in _REMOTE_HEADS:
             try:
                 ws = _command_words(_segments(opener)[-1])
                 remote = _remote_shell(os.path.basename(ws[0]), ws[1:]) if ws else None
+                lang = next(filter(None, (_lang(os.path.basename(w)) for w in ws[1:])), None)
             except (ValueError, IndexError):
                 remote = None
         if head in _SHELLS or remote == "shell":
             hit = _bash_deny(body, depth + 1)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body)
+            hit = _code_deny(body, lang)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout
@@ -1830,7 +1905,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if head in _SHELLS:
                     hit = _bash_deny(herestr, depth + 1)
                 elif head in _INTERPRETERS:
-                    hit = _code_deny(herestr)
+                    hit = _code_deny(herestr, _lang(head))
                 else:
                     hit = None
                 if hit:
@@ -1842,7 +1917,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             if head in _INTERPRETERS:
                 for flag in ("-c", "-e"):
                     if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1])
+                        hit = _code_deny(args[args.index(flag) + 1], _lang(head))
                         if hit:
                             return hit
             if head == "curl":
