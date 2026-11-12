@@ -3764,7 +3764,7 @@ def cmd_diff(args):
         of_events.emit("diff_proposed", {"id": d["id"], "kind": d["kind"], "tier": d["tier"], "org": d["org"],
                                          "author": d["author"], "digest": dg, "diff": d, "ask_id": ask},
                        position=me, org=pos.get("_orgid"), session=sid)
-        print(f"proposed {d['id']} (digest {dg}); the owner approves it on card {(ask or '?')[-8:]} in the asks popup "
+        print(f"proposed {d['id']} (digest {dg[:16]}); the owner approves it on card {(ask or '?')[-8:]} in the asks popup "
               "or with `of diff approve`")
         return 0
     if args.action == "apply":
@@ -3773,8 +3773,9 @@ def cmd_diff(args):
             raise OfError(f"{d['id']} was applied already")
         approval = None
         if d["tier"] != "low":
-            if e.get("digest") != dg:
-                raise OfError(f"{d['id']} is not proposed in this exact form: `of diff propose` it first")
+            if e.get("digest") != dg:  # a proposal from before the full digest is proposed again (of_server, 2026-11-12)
+                raise OfError(f"{d['id']} is not proposed in this exact form, or was proposed with the old short "
+                              "digest: `of diff propose` it again")
             if e.get("state") == "approved":  # the approval each goal_change node cites (of_review on PR 70)
                 approval = e.get("approval_event")
             elif _diff_approved_by_answer(conn, e.get("ask")):
