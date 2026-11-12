@@ -546,10 +546,20 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(self.sent, [("A", "a\n\nb")])
 
     def test_u_brings_a_written_answer_back_into_its_field(self):
-        self.inbox([0.1, ord("r"), "a", "b", "c", "\x04", ord("u"), "d", "\x04", 0.3, 0.05],
+        self.inbox([0.1, ord("r"), "a", "b", "c", "\x04", ord("u"), 0.05, "d", "\x04", 0.3, 0.05],
                    [item("A", "First plain question?")])
         self.assertEqual(self.sent, [("A", "abcd")])
         self.assertTrue(any("in the field again" in self.text(f) for f in self.frames))
+
+    def test_a_long_paste_is_one_frame_not_one_per_character(self):
+        """of_herdr's review of PR 104: herdr pastes as keys, and a frame per key cost seconds on a long paste."""
+        with tempfile.TemporaryDirectory() as d:
+            store = I.ReplyDrafts(d)
+            paste = list(("Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 60)[:3000])
+            self.inbox([0.1, ord("r")] + paste + [0.05, "\x1b", 0.05], [item("A", "First plain question?")],
+                       store=store)
+            self.assertLess(len(self.frames), 15)
+            self.assertEqual(store.load(), {"A": "".join(paste)})
 
     def test_the_field_is_saved_while_he_writes(self):
         """A window herdr closes ends the process without a goodbye: the draft follows the field."""
