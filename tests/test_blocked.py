@@ -65,6 +65,19 @@ class BlockedTest(unittest.TestCase):
         self.assertIsNone(of_blocked.detect(old))
         self.assertEqual(of_blocked.detect(old + LIMIT)["type"], "limit")  # a new stop after it still is one
 
+    def test_login_words_in_the_agents_own_text_are_not_a_stop(self):
+        """2026-11-12, ask ef5a87c6 (of_capacity): an agent printed a source title with "not logged in", then its turn
+        ended and its prompt was open."""
+        text = ("\n⏺ Sources:\n  - Keep Tailscale running when not logged in\n\n✻ Crunched for 3m 6s\n\n"
+                "╭────────╮\n│ > \n╰────────╯\n  ⏵⏵ bypass permissions on\n")
+        self.assertIsNone(of_blocked.detect(text))
+        self.assertIsNone(of_blocked.detect("\n Not logged in, so the page shows the sign-in form.\n"))
+        old = LOGIN + "\n✻ Worked for 2s\n\n> \n"  # a login line before a finished turn is history
+        self.assertIsNone(of_blocked.detect(old))
+        self.assertEqual(of_blocked.detect(old + LOGIN)["type"], "login")
+        real = "\n Not logged in · Please run /login\n\n╭────────╮\n│ > \n╰────────╯\n  ? for shortcuts\n"
+        self.assertEqual(of_blocked.detect(real)["type"], "login")  # the open input box under it changes nothing
+
     def test_the_inbox_note_for_a_limit(self):
         d = of_blocked.detect(LIMIT)
         self.assertIn("limit", of_blocked.FYI)
