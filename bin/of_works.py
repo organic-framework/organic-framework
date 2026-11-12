@@ -215,6 +215,8 @@ def _from_registry(wid, w, src):
                       "doc": match.get("doc")},
             "loop": w.get("loop") if isinstance(w.get("loop"), dict) else None,   # RFC 0005 §4
             "standing": w.get("standing") is True,   # docs/registry.md: no final end; its loop is its end condition
+            "goal": str(w["goal"]) if w.get("goal") else None,                 # docs/registry.md, Goals: a leaf
+            "condition": str(w["condition"]) if w.get("condition") else None,  # or the condition it keeps
             "source": src}
 
 
@@ -500,8 +502,14 @@ def evidence(model, rows, works, now, attention=None, issues=()):
             if pos:
                 last_turn[pos] = max(last_turn.get(pos, 0), epoch(r.get("ts")) or 0)
     att = collections.defaultdict(list)
+    # an ask declared with --work belongs to that work, whoever asked; one without it, to its asker's works
+    ask_work = {r.get("event_id"): str((r.get("payload") or {})["work"]) for r in rows
+                if r.get("name") == "of.agent_question" and (r.get("payload") or {}).get("work")}
+    by_work = collections.defaultdict(list)
     for x in attention if attention is not None else of_measures.attention(model, rows, now):
         att[x["position"]].append(x)
+        if ask_work.get(x.get("ask_id")):
+            by_work[ask_work[x["ask_id"]]].append(x)
     import fnmatch
 
     def explicit(w, p):
@@ -547,7 +555,10 @@ def evidence(model, rows, works, now, attention=None, issues=()):
         doers = set(w["doers"])
         mine = w["prs"]
         w["last_turn"] = max((last_turn.get(d, 0) for d in doers), default=0) or None
-        w["waits"] = sorted((x for d in doers for x in att.get(d, []) if x["kind"] != "stalled"), key=lambda x: x.get("since") or "")
+        w["waits"] = sorted([x for d in doers for x in att.get(d, []) if x["kind"] != "stalled"
+                             and ask_work.get(x.get("ask_id"), w["id"]) == w["id"]]
+                            + [x for x in by_work.get(w["id"], []) if x["position"] not in doers],
+                            key=lambda x: x.get("since") or "")
         w["stalled"] = [x for d in doers for x in att.get(d, []) if x["kind"] == "stalled"]
         w["issues"] = [i for i in issues if i.get("state") == "open" and (set(i.get("affected") or []) & (doers | set(w["systems"])))]
         marks = ([epoch(p["merged_at"]) or 0 for p in mine[:1]] + (w.get("doc_commits") or [])[:1]
@@ -658,6 +669,83 @@ def rows_for(model, rows, org, now, attention=None, issues=()):
     on_owner = waits_on_owner
     return sorted(works, key=lambda w: (not on_owner(w), not w["past_review"], ORDER.get(w["state"], 9),
                                         -(w["last_progress"] or 0), w["id"]))
+
+
+MAX_SIBLINGS = 7   # docs/registry.md, Goals: more than 7 active goals at one level is a warning
+
+
+def _rollup(works):
+    """What a set of works adds up to on a goal or a condition: the open ones, their doers, open asks, progress."""
+    live = [w for w in works if w.get("state") not in ("done", "parked")]
+    waits = {(x["position"], x.get("ask_id") or x.get("since")): x for w in live for x in w.get("waits") or []}
+    return {"works": len(works), "open": len(live), "doers": sorted({d for w in live for d in w["doers"]}),
+            "asks": len(waits), "on_owner": sum(1 for x in waits.values() if x["kind"] == "waiting_owner"),
+            "progress_7d": sum(w.get("progress_7d") or 0 for w in live),
+            "last_progress": max((w.get("last_progress") or 0 for w in live), default=0) or None,
+            "states": dict(collections.Counter(w.get("state") or "quiet" for w in works)),
+            "past_review": sum(1 for w in live if w.get("past_review"))}
+
+
+def goal_tree(model, works, keep=None):
+    """The goal tree (docs/registry.md, Goals): each goal in rank order (of_goals.tree) with its sub-goals, the works that name it, and
+    the rollup of its whole branch (_rollup); the conditions beside it; the works that name neither apart. `keep`, a
+    set of positions for a unit's view: only the branches with a work of theirs or a goal they own, with their
+    ancestors. A goal no root reaches (a cycle of parents) is shown as a root with a note."""
+    goals, conds = model.get("goals") or {}, model.get("conditions") or {}
+    on_goal, on_cond, loose, unknown = collections.defaultdict(list), collections.defaultdict(list), [], []
+    for w in works:
+        if w.get("goal") in goals:
+            on_goal[w["goal"]].append(w)
+        elif w.get("condition") in conds:
+            on_cond[w["condition"]].append(w)
+        else:
+            loose.append(w)
+            if w.get("goal") or w.get("condition"):
+                unknown.append((w["id"], w.get("goal") or w.get("condition")))
+    import of_goals
+    kids = collections.defaultdict(list)
+    for gid, g in goals.items():
+        kids[g["parent"]].append(gid)
+    pos = {gid: i for i, (_, gid, _) in enumerate(of_goals.tree(goals))}   # one order with of registry check and of works
+    order = lambda gid: (pos.get(gid, 1 << 30), gid)
+    seen = set()
+
+    def node(gid, depth, closed_above):
+        seen.add(gid)
+        g = goals[gid]
+        children = [node(c, depth + 1, closed_above or g["state"] != "active") for c in sorted(kids[gid], key=order) if c not in seen]
+        mine = sorted(on_goal.get(gid, []), key=lambda w: (ORDER.get(w.get("state"), 9), -(w.get("last_progress") or 0), w["id"]))
+        branch = mine + [w for c in children for w in c["branch"]]
+        notes = []
+        if mine and children:
+            notes.append(f"{len(mine)} work{'s' if len(mine) != 1 else ''} on a goal with sub-goals: each belongs on the sub-goal it moves")
+        if closed_above and g["state"] == "active":
+            notes.append("active under a goal that is achieved or dropped")
+        n_active = sum(1 for c in children if c["state"] == "active")
+        if n_active > MAX_SIBLINGS:
+            notes.append(f"{n_active} active sub-goals: more than {MAX_SIBLINGS} is a list, not a choice")
+        return dict(g, id=gid, depth=depth, children=children, works=mine, branch=branch, rollup=_rollup(branch), notes=notes,
+                    leaf=not children)
+
+    roots = [node(gid, 0, False) for gid in sorted(kids[None], key=order)]
+    for gid in sorted(goals, key=order):   # a cycle of parents: no root reaches it
+        if gid not in seen:
+            n = node(gid, 0, False)
+            n["notes"].insert(0, "its parents form a cycle: no root goal reaches it")
+            roots.append(n)
+
+    def wanted(n):
+        n["children"] = [c for c in n["children"] if wanted(c)]
+        return n["owner"] in keep or any(set(w["doers"]) & keep for w in n["works"]) or bool(n["children"])
+    if keep is not None:
+        keep = set(keep)
+        roots = [n for n in roots if wanted(n)]
+    conditions = [dict(c, id=cid, works=on_cond.get(cid, []), rollup=_rollup(on_cond.get(cid, [])))
+                  for cid, c in sorted(conds.items(), key=lambda kv: (kv[1]["state"] != "active", kv[0]))
+                  if keep is None or c["owner"] in keep or any(set(w["doers"]) & keep for w in on_cond.get(cid, []))]
+    n_roots = sum(1 for n in roots if n["state"] == "active" and n["depth"] == 0)
+    return {"roots": roots, "conditions": conditions, "loose": loose, "unknown": unknown,
+            "notes": [f"{n_roots} active root goals: more than {MAX_SIBLINGS} is a list, not a choice"] if n_roots > MAX_SIBLINGS else []}
 
 
 def waits_on_owner(w, who=of_model.HUMAN):

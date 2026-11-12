@@ -336,14 +336,20 @@ def cmd_works(args):
     import of_works
     d = of_studio.Data(args.org)
     ws = of_studio.works_of(d) or []
+    tree = of_works.goal_tree(d.full, ws) if d.full and (d.full.get("goals") or d.full.get("conditions")) else None
+    if getattr(args, "goals", False):
+        return _goal_tree_out(d, tree, args.json)
     if args.json:
         keep = ("id", "kind", "title", "state", "stage_summary", "doers", "systems", "doc", "review", "done_when", "status_line",
-                "past_review", "progress_7d", "source")
+                "past_review", "progress_7d", "source", "goal", "condition")
         print(json.dumps([dict({k: w.get(k) for k in keep}, last_progress=of_model.iso(w["last_progress"]) if w["last_progress"] else None,
                                waiting_on=[of_studio._wait_text(x, d.now) for x in w["waits"]],
                                prs=[f'{p["repo"]}#{p["number"]}' for p in w["prs"][:20]],
                                open_prs=[f'{p["repo"]}#{p["number"]}' for p in (w.get("open_prs") or [])[:20]]) for w in ws], indent=1, ensure_ascii=False))
         return 0
+    if tree:
+        _goal_tree_out(d, tree, False)
+        print()
     stage = lambda w: (w.get("stage_summary") or "-").replace(" done", "").replace(" · moving: ", " >")[:22]
     _table([(w["state"] + ("*" if w["past_review"] else ""), stage(w), w["id"][:46], ",".join(w["doers"])[:34] or "-",
              "; ".join(of_studio._wait_text(x, d.now) for x in w["waits"][:2])[:48] or "-",
@@ -353,6 +359,78 @@ def cmd_works(args):
     if not args.all:
         print(f"({sum(1 for w in ws if not (w['doers'] or w['state'] in ('active', 'waiting')))} more without doers: --all; "
               "* past review; stages: done of all, > moving)")
+    return 0
+
+
+def _goal_tree_out(d, t, as_json):
+    """The goal tree as Studio's Goals tab shows it (docs/registry.md, Goals; docs/studio.md §5.5a): goals in rank
+    order, each with its measure, target, owner and the rollup of its branch; the conditions beside it, a breach
+    first; the open works with no goal."""
+    import of_works
+    if t is None:
+        if as_json:
+            print(json.dumps({"org": d.org, "goals": [], "conditions": [], "no_goal": []}, indent=1))
+        else:
+            print(f"{d.org}: no goals or conditions in the registry (docs/registry.md, Goals: the structure keeper writes them "
+                  "with the ask id of the owner's yes)")
+        return 0
+    for c in t["conditions"]:
+        c["reading"] = of_studio.metric_reading(d, c.get("metric"))
+        c["breached"] = of_studio.level_breached(c.get("level"), c["reading"])
+    live = [w for w in t["loose"] if w.get("state") not in ("done", "parked")]
+    roll = lambda r: dict(r, last_progress=of_model.iso(r["last_progress"]) if r["last_progress"] else None)
+    if as_json:
+        def node(n):
+            return {k: n.get(k) for k in ("id", "title", "rank", "depth", "state", "measure", "metric", "target", "by", "owner",
+                                          "owner_from", "decided", "drives", "notes")} | {
+                "reading": of_studio.metric_reading(d, n.get("metric")), "works": [w["id"] for w in n["works"]],
+                "rollup": roll(n["rollup"]), "children": [node(c) for c in n["children"]]}
+        print(json.dumps({"org": d.org, "goals": [node(n) for n in t["roots"]],
+                          "conditions": [{k: c.get(k) for k in ("id", "title", "measure", "level", "metric", "reading", "breached",
+                                                                 "under", "owner", "state", "decided")}
+                                         | {"works": [w["id"] for w in c["works"]], "rollup": roll(c["rollup"])} for c in t["conditions"]],
+                          "no_goal": [w["id"] for w in live], "unknown": t["unknown"], "notes": t["notes"]},
+                         indent=1, ensure_ascii=False, default=str))
+        return 0
+
+    def line(r):
+        asks = f', {r["asks"]} open ask{"s" if r["asks"] != 1 else ""}' + (f' ({r["on_owner"]} on an owner)' if r["on_owner"] else "")
+        doers = ", ".join(r["doers"][:5]) + (f" +{len(r['doers']) - 5}" if len(r["doers"]) > 5 else "")
+        return (f'{r["open"]} open of {r["works"]} works; doers {doers or "none"}{asks if r["asks"] else ""}; '
+                f'{r["progress_7d"]} progress marks in 7 d')
+    for c in [c for c in t["conditions"] if c["breached"]]:
+        print(f'BREACHED  {c["id"]}: {c["title"]}: level {c.get("level")}, now {c["reading"]:g} (owner {c["owner"]})')
+    print(f"Goals of {d.org}, in rank order (each line adds up its whole branch):")
+
+    def walk(n):
+        pad = "  " * (n["depth"] + 1)
+        head = f'{str(n["rank"]) + ". " if n["rank"] is not None else ""}{n["id"]}: {n["title"]}'
+        print(f'{pad}{head}{"" if n["state"] == "active" else " [" + n["state"] + "]"}  (owner {n["owner"]})')
+        print(f'{pad}   measure: {n.get("measure") or "-"}' + (f'; target {n["target"]}' if n.get("target") else "")
+              + (f'; by {n["by"]}' if n.get("by") else ""))
+        print(f'{pad}   {line(n["rollup"])}')
+        if n["works"]:
+            print(f'{pad}   works: {", ".join(w["id"] for w in n["works"][:8])}' + (f' +{len(n["works"]) - 8}' if len(n["works"]) > 8 else ""))
+        for x in n["notes"]:
+            print(f"{pad}   ! {x}")
+        for c in n["children"]:
+            walk(c)
+    for r in t["roots"]:
+        walk(r)
+    if t["conditions"]:
+        print("Conditions, held at their level:")
+        for c in t["conditions"]:
+            now = f'{c["reading"]:g}' if c["reading"] is not None else ("not a Studio measure" if c.get("metric") else "no metric")
+            flag = " BREACHED" if c["breached"] else (" held" if c["breached"] is False else "")
+            print(f'  {c["id"]}: {c["title"]}{"" if c["state"] == "active" else " [" + c["state"] + "]"}  (owner {c["owner"]}'
+                  f'{", for " + c["under"] if c.get("under") else ""})')
+            print(f'     measure: {c.get("measure") or "-"}; level {c.get("level") or "-"}; now {now}{flag}')
+            print(f'     {line(c["rollup"])}')
+    for x in t["notes"]:
+        print(f"! {x}")
+    if t["unknown"]:
+        print("Works naming a goal or condition the registry lacks: " + ", ".join(f"{w} -> {g}" for w, g in t["unknown"]))
+    print(f"Works with no goal: {len(live)} open" + (f' ({", ".join(w["id"] for w in live[:10])}{" …" if len(live) > 10 else ""})' if live else ""))
     return 0
 
 
@@ -750,6 +828,7 @@ def main(argv=None):
     mo.add_argument("--decider", choices=["owner", "structure_keeper", "unit_owner"], help="issues: only those this decider decides")
     mo.add_argument("--for", dest="for_", help="issues: only those this position decides (a structure keeper or a unit owner)")
     mo.add_argument("--all", action="store_true", help="works: also RFCs nobody holds and finished projects")
+    mo.add_argument("--goals", action="store_true", help="works: only the goal tree and the conditions (docs/registry.md, Goals)")
     mo.add_argument("--labels", action="append", help="polls: a hand-label file (jsonl: event_id, label); repeatable")
     mo.add_argument("--unit", action="append", help="usage: one delegated unit (repeatable; default every delegated unit)")
     mo.add_argument("--per-day", action="store_true", help="usage: each position's use per day")
@@ -765,6 +844,7 @@ def main(argv=None):
     wk.add_argument("--org", help="one organization (default: the last one listed in orgs.yaml)")
     wk.add_argument("--json", action="store_true")
     wk.add_argument("--all", action="store_true", help="also RFCs nobody holds and finished projects")
+    wk.add_argument("--goals", action="store_true", help="only the goal tree and the conditions (docs/registry.md, Goals; with --json, as JSON)")
     st = sub.add_parser("studio", help="open Org Studio through a one-time link from of-server")
     st.add_argument("--org")
     st.add_argument("--file", help="write one static page instead (stylesheet inlined)")

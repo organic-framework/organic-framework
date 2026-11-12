@@ -303,6 +303,55 @@ def owner_chain(name, positions):
 
 # ------------------------------------------------------------------ build
 
+GOAL_STATES = ("active", "achieved", "dropped")
+
+
+def goals_of(doc):
+    """{goal: {title, parent, rank, measure, metric, target, by, owner, owner_from, state, decided, drives}} from the
+    registry's `goals:` (docs/registry.md, Goals: the goal tree, of_architect, 2026-11-12). `parent` is kept only
+    when it names another goal, so a dangling or self parent makes a root (`of registry check` names it). `owner` is the
+    goal's own, else its nearest ancestor's, else the organization's owner; `owner_from` says which goal gave it."""
+    raw = {str(k): v for k, v in (doc.get("goals") or {}).items() if isinstance(v, dict)}
+    out = {}
+    for gid, g in raw.items():
+        parent = str(g["parent"]) if g.get("parent") is not None else None
+        rank = g.get("rank")
+        out[gid] = {"title": g.get("title") or gid, "parent": parent if parent in raw and parent != gid else None,
+                    "rank": rank if isinstance(rank, int) and not isinstance(rank, bool) else None,
+                    "measure": g.get("measure"), "metric": g.get("metric"), "target": g.get("target"),
+                    "by": str(g["by"]) if g.get("by") else None, "state": str(g.get("state") or "active"),
+                    "decided": str(g["decided"]) if g.get("decided") else None, "drives": g.get("drives"),
+                    "own_owner": g.get("owner")}
+    for gid, g in out.items():
+        cur, seen = gid, set()
+        while cur and cur not in seen and not out[cur]["own_owner"]:
+            seen.add(cur)
+            cur = out[cur]["parent"]
+        g["owner"] = (out[cur]["own_owner"] if cur in out and out[cur]["own_owner"] else None) or HUMAN
+        g["owner_from"] = cur if cur in out and out[cur]["own_owner"] else None
+    for g in out.values():
+        g.pop("own_owner")
+    return out
+
+
+def conditions_of(doc, goals=None):
+    """{condition: {title, measure, level, metric, under, owner, state, decided}} from the registry's `conditions:`
+    (docs/registry.md, Goals, "Conditions"). `owner` is its own, else the owner of the goal it is held `under`, else the
+    organization's owner; `under` is kept only when it names a goal."""
+    goals = goals if goals is not None else goals_of(doc)
+    out = {}
+    for cid, c in (doc.get("conditions") or {}).items():
+        if not isinstance(c, dict):
+            continue
+        under = str(c["under"]) if c.get("under") is not None else None
+        under = under if under in goals else None
+        out[str(cid)] = {"title": c.get("title") or str(cid), "measure": c.get("measure"), "level": c.get("level"),
+                         "metric": c.get("metric"), "under": under, "state": str(c.get("state") or "active"),
+                         "decided": str(c["decided"]) if c.get("decided") else None,
+                         "owner": c.get("owner") or (goals[under]["owner"] if under else HUMAN)}
+    return out
+
+
 def org_units(doc):
     """{unit: {name, owner, systems, delegation}} from the registry's `units:` and `delegations:` (docs/registry.md).
     The active delegation of a unit is the last record whose to_owner is the unit's current owner."""
@@ -591,6 +640,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
     at_s = epoch(at) if at is not None else time.time()
     lo = at_s - window_h * 3600 if window_h else None
     positions, systems = _positions(doc), _systems(doc)
+    goals = goals_of(doc)
     sessions = session_index(positions)
     pmap = PathMap(doc.get("systems"))
     map_repos = pmap.repo_names()
@@ -727,6 +777,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
         "map_repos": sorted(map_repos),   # the repository names the map claims (area_of's repos; the rule surface)
         "work_records": {"total": len(wr_ids), "attributed": wr_attributed, "unmapped": unmapped, "by_system": wr_by_system},
         "loops": loops_of(doc, events, at_s),
+        "goals": goals, "conditions": conditions_of(doc, goals),   # docs/registry.md, Goals
         "cells": cells_of(positions, systems, methods_of(doc)),   # RFC 0007 §2.3
     }
 
