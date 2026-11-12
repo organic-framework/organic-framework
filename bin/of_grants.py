@@ -597,6 +597,55 @@ def contact_grants(org, position, orgs_file=None, keys=None, now_iso=None):
     return out
 
 
+PASSKEY_STATE = "passkey-revoked.json"
+PASSKEY_REVOCATION = "passkey_revocation"
+
+
+def passkey_revoked(org, credential, orgs_file=None, keys=None, state_dir=None):
+    """True when the owner revoked this passkey credential for the organization (docs/remote.md §6; of diff apply
+    refuses its approvals). A revocation is a record in the organization's grants file, under `passkey_revocations:`,
+    {kind: passkey_revocation, org, credential, issued_at, signature}, signed with the tenant's grant key over
+    canonical() like a grant. A verified one is kept in state_dir/passkey-revoked.json (mode 600), the way O2 keeps a
+    verified deny: deleting or editing the entry, or a grants file that cannot be read, never brings the key back."""
+    if not org or not credential:
+        return False
+    if state_dir is None:
+        import of_events
+        state_dir = of_events.STATE_DIR
+    state_path = os.path.join(state_dir, PASSKEY_STATE)
+    try:
+        with open(state_path) as fh:
+            kept = json.load(fh) or {}
+    except (OSError, ValueError):
+        kept = {}
+    mine = dict(kept.get(org) or {})
+    try:
+        import yaml
+        path = _org_grants_paths(orgs_file or os.environ.get("OF_ORGS")
+                                 or os.path.expanduser("~/.config/of/orgs.yaml")).get(org)
+        with open(path) as fh:
+            records = (yaml.safe_load(fh) or {}).get("passkey_revocations") or []
+    except Exception:  # noqa: BLE001 - no file or a broken one: the kept revocations still stand
+        records = []
+    keys, added = keys or local_keys(), False
+    for r in records if isinstance(records, list) else []:
+        if isinstance(r, dict) and r.get("kind") == PASSKEY_REVOCATION and r.get("org") == org \
+                and isinstance(r.get("credential"), str) and r["credential"] not in mine and verify(r, keys):
+            mine[r["credential"]] = str(r.get("issued_at") or "")
+            added = True
+    if added:
+        kept[org] = mine
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            tmp = f"{state_path}.{os.getpid()}"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                json.dump(kept, fh)
+            os.replace(tmp, state_path)
+        except OSError:
+            pass  # not kept this time; the signed record still answers while it is in the file
+    return credential in mine
+
+
 GRANTS_HEADER = "# Signed grants (docs/registry.md, Grants). Edit only with `of grant`; a hand edit breaks the signature.\n"
 
 
