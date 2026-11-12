@@ -291,14 +291,25 @@ def _registry_index():
     """{session: [name, org]} and {name or alias: name}, cached by registry mtimes."""
     path = os.path.join(STATE, "index.json")
     orgs = os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")
-    try:
-        with open(path) as fh:
-            cache = json.load(fh)
-        if "paths" in cache and "systems" in cache and "memory" in cache and cache["mtimes"] and \
-                all(os.path.exists(f) and os.path.getmtime(f) == m for f, m in cache["mtimes"].items()):
-            return cache
-    except Exception:
-        cache = None
+    try:  # the router's version is part of the index: its compiled patterns change with it, and a verdict labelled
+        import of_router  # with the new version must not come from the old patterns (of_studio, PR 49, 2026-11-12)
+        router = of_router.VERSION
+    except Exception:  # noqa: BLE001  no router: the index is built without its systems, as before
+        router = None
+
+    def fresh(c):
+        return isinstance(c, dict) and c.get("router") == router == router and "paths" in c and "systems" in c and "memory" in c and \
+            c["mtimes"] and all(os.path.exists(f) and os.path.getmtime(f) == m for f, m in c["mtimes"].items())
+
+    def read():
+        try:
+            with open(path) as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+    cache = read()
+    if fresh(cache):
+        return cache
     # One rebuild at a time: after a registry change every hook of ~40 sessions rebuilt the index at once, 1 to 2.5 s
     # each at a load average of 30 (of_server, 2026-11-10). The one that takes the lock rebuilds; the others use the
     # index they have, a moment old, and the next hook sees the new one.
@@ -308,9 +319,12 @@ def _registry_index():
         lk = open(os.open(os.path.join(STATE, "index.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
         fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        if cache and all(k in cache for k in ("sessions", "paths", "systems", "memory")):
+        if isinstance(cache, dict) and cache.get("router") == router and all(k in cache for k in ("sessions", "paths", "systems", "memory")):
             return cache
-        fcntl.flock(lk, fcntl.LOCK_EX)  # no index at all: wait for the one being built
+        fcntl.flock(lk, fcntl.LOCK_EX)  # no index, or one compiled by another router version: wait for the new one
+        cache = read()
+        if fresh(cache):
+            return cache
     except OSError:
         pass
     import importlib.machinery
@@ -332,7 +346,7 @@ def _registry_index():
         return {"sessions": {}, "names": {}, "labels": {}, "paths": [], "systems": [], "enrolled": [],
                 "pos_system": {}}
     files = [orgs] + [r for _, r, _ in of.org_registries(orgs)]
-    cache = {"mtimes": {f: os.path.getmtime(f) for f in files if os.path.exists(f)},
+    cache = {"mtimes": {f: os.path.getmtime(f) for f in files if os.path.exists(f)}, "router": router,
              "sessions": {}, "names": {}, "labels": {}, "paths": []}
     try:  # working-directory routing, as the shipper does: [realpath prefix, organization]
         import yaml
