@@ -42,14 +42,15 @@ jobs:
         run: |
           docker run --rm --entrypoint python3 of-server:ci -c \
             "import glob, importlib, os; ms = sorted(os.path.basename(f)[:-3] for f in glob.glob('/app/of_*.py')); [importlib.import_module(m) for m in ms]; print('imports ok:', len(ms))"
-      - name: ssh-keygen alone, no OpenSSH package and no ssh, sshd, scp, sftp or ssh-agent (deploy/Dockerfile)
+      - name: No OpenSSH server in the image; the OpenSSH client is a package scanners see (deploy/Dockerfile)
         run: |
           docker run --rm --entrypoint sh of-server:ci -c '
-            if dpkg-query -W -f "\${Status}" openssh-client openssh-server 2>/dev/null | grep -q installed; then
-              echo "an OpenSSH package is installed"; exit 1; fi
-            for b in ssh sshd scp sftp ssh-agent; do
-              if command -v "$b" >/dev/null; then echo "$b is in the image"; exit 1; fi; done
-            command -v ssh-keygen && echo "ssh-keygen alone: ok"'
+            if dpkg-query -W -f "\${Status}" openssh-server 2>/dev/null | grep -q installed; then
+              echo "openssh-server is installed"; exit 1; fi
+            if command -v sshd >/dev/null || [ -e /usr/sbin/sshd ]; then echo "sshd is in the image"; exit 1; fi
+            dpkg-query -W -f "\${Status}" openssh-client | grep -q "install ok installed" || {
+              echo "openssh-client is not a package record"; exit 1; }
+            command -v ssh-keygen && echo "no sshd; openssh-client recorded: ok"'
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550   # v4.8.0
         if: github.event_name != 'pull_request'
         with:
