@@ -1166,13 +1166,15 @@ def make_handler(app):
             except P.Refused as e:
                 return self._problem(e.status, e.typ, e.title)
 
-        def _passkey_open(self):
-            """The unauthenticated passkey routes: rate-limited per address; True when the call may go on."""
-            ip = self.client_address[0]
-            if app.passkey_rate.blocked(ip):
-                self._problem(429, "too_many", "too many passkey requests; wait")
+        def _passkey_open(self, token):
+            """The unauthenticated passkey routes, rate-limited per window id or approval nonce: behind a tunnel every
+            phone shares one address, so a per-address limit would let anyone use up everyone's (of_secrets-review on
+            organic-framework PR 81). A token is 24 random bytes, so guessing one is no way in. True: go on."""
+            key = f"t:{str(token or '')[:64]}"
+            if app.passkey_rate.blocked(key):
+                self._problem(429, "too_many", "too many requests for this window or link; wait")
                 return False
-            app.passkey_rate.add(ip)
+            app.passkey_rate.add(key)
             return True
 
         def _passkey_page(self, render):
@@ -1225,9 +1227,9 @@ def make_handler(app):
                 if u.path in ("/passkey/enroll", "/approve/diff") or (
                         u.path.startswith("/v1/passkey/windows/") and u.path.endswith("/options")):
                     import of_server_passkey as P  # docs/remote.md §6: the phone's pages, behind a single-use token
-                    if not self._passkey_open():
-                        return None
                     q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                    if not self._passkey_open(q.get("w") or q.get("n") or u.path.split("/")[-2]):
+                        return None
                     if u.path == "/passkey/enroll":
                         return self._passkey_page(lambda n: (app.passkeys.window_options(q.get("w")),
                                                              P.enroll_page(q.get("w"), n))[1])
@@ -1381,12 +1383,12 @@ def make_handler(app):
                         return self._problem(e.status, e.typ, e.title)
                 if u.path == "/v1/passkey/approve" or (u.path.startswith("/v1/passkey/windows/") and
                                                        u.path.endswith(("/register", "/test"))):
-                    if not self._passkey_open():
-                        return None
                     try:
                         b = json.loads(raw or b"{}") or {}
                     except ValueError:
                         return self._problem(400, "bad_request", "the body is not JSON")
+                    if not self._passkey_open(b.get("nonce") if u.path == "/v1/passkey/approve" else u.path.split("/")[4]):
+                        return None
                     if u.path.endswith("/register"):
                         return self._passkey(lambda: app.passkeys.register(
                             u.path.split("/")[4], b.get("attestation_object"), b.get("client_data_json")))
@@ -1785,7 +1787,7 @@ class App:
         self._grant_key = grant_key or (lambda: grant_keys(self.cfg))
         import of_server_passkey  # docs/remote.md §6: a diff approved with a passkey
         self.passkeys = of_server_passkey.Passkeys(self.store, self.cfg, self._grant_key)
-        self.passkey_rate = BadCodes(limit=120, window=600)  # the unauthenticated passkey routes, per address
+        self.passkey_rate = BadCodes(limit=30, window=600)  # the unauthenticated passkey routes, per token
 
     def router(self):
         if self._router is None or time.time() - self._router_at > 30:  # pick up registry changes
