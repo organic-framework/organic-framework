@@ -59,7 +59,9 @@ def enroll(client, org, person, ttl=600, ask=input, out=sys.stdout, poll=2.0, si
             out.write("The window expired before a passkey was tested. Nothing is enrolled.\n")
             return None
         time.sleep(poll)
-    out.write(f"\nThe passkey of-server received shows code  {state['code']}\n")
+    import of_server_passkey
+    code = of_server_passkey.short_code(state["credential"], state["public_key"])  # computed here, never relayed
+    out.write(f"\nThe passkey this terminal would sign has code  {code}\n")
     if ask("Does the phone show exactly this code? Type yes to sign the enrollment: ").strip().lower() != "yes":
         out.write("Not signed. Nothing is enrolled.\n")
         return None

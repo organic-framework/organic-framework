@@ -85,7 +85,7 @@ class RegistrationTest(unittest.TestCase):
         att, client = self.phone.create(self.chal)
         reg = S.verify_registration(att, client, self.chal, RP, ORIGIN)
         self.assertEqual(reg["credential_id"], S.b64u(self.phone.cred))
-        self.assertEqual(reg["code"], S.short_code(self.phone.cred))
+        self.assertEqual(reg["code"], S.short_code(self.phone.cred, reg["public_key"]))
         self.assertEqual(len(reg["code"]), 6)
         test_chal = os.urandom(32)
         auth, cdj, sig = self.phone.get(test_chal)
@@ -146,8 +146,22 @@ class RegistrationTest(unittest.TestCase):
         for bad in (b"\x5f", b"\x58", b"\xa1\x01"):   # indefinite length, a length past the end, a map cut short
             with self.assertRaises(S.PasskeyError):
                 S.cbor_decode(bad)
-        self.assertNotEqual(S.short_code(b"a"), S.short_code(b"b"))
-        self.assertTrue(set(S.short_code(b"a")) <= set("ABCDEFGHJKMNPQRSTUVWXYZ23456789"))
+        self.assertNotEqual(S.short_code(b"a", b"k"), S.short_code(b"b", b"k"))
+        self.assertNotEqual(S.short_code(b"a", b"k1"), S.short_code(b"a", b"k2"))   # a swapped key shows
+        self.assertTrue(set(S.short_code(b"a", b"k")) <= set(S.CODE_ALPHABET))
+
+    def test_the_pages_code_is_the_same_function(self):
+        """The phone computes its code in the page's JavaScript; it must be short_code exactly (node, when present)."""
+        import re
+        import shutil
+        if not shutil.which("node"):
+            self.skipTest("no node to run the page's script")
+        js = re.search(r"async function codeOf.*?\n}\n", S._JS, re.S).group(0)
+        cred, key = os.urandom(16), os.urandom(91)
+        prog = (js + f"codeOf(Uint8Array.from({list(cred)}).buffer, Uint8Array.from({list(key)}).buffer)"
+                ".then(c => console.log(c));")
+        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.stdout.strip(), S.short_code(cred, key), out.stderr)
 
 
 if __name__ == "__main__":
@@ -437,7 +451,8 @@ class OwnerTerminalTest(unittest.TestCase):
         rec = c.calls[-1][2]["record"]
         self.assertEqual((c.calls[-1][1], rec["person"], rec["origin"]), ("/v1/passkey/enrollments", "founder", ORIGIN))
         self.assertTrue(of_grants.verify(rec, self.keys))
-        self.assertIn("ABC234", out.getvalue())
+        self.assertIn(S.short_code("cred-1", "AAAA"), out.getvalue())   # computed here, not the server's ABC234
+        self.assertNotIn("ABC234", out.getvalue())
         c = self.Client([self.state("tested")])
         self.assertIsNone(O.enroll(c, "acme", "founder", ask=lambda q: "no", out=io.StringIO(), poll=0, sign=self.sign))
         self.assertNotIn("/v1/passkey/enrollments", [p for _, p, _ in c.calls])
