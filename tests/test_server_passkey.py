@@ -437,9 +437,13 @@ class HttpTest(FlowTest):
         self.assertEqual(e.exception.status, 403)
         st, _, body = self.open("GET", "/approve/diff?org=acme&id=x&digest=y&n=z")
         self.assertEqual((st, body[:8]), (404, b"no such "))
-        self.app.passkey_rate.limit = 2                          # the unauthenticated routes are rate-limited
-        codes = [self.open("GET", "/v1/passkey/windows/x/options")[0] for _ in range(3)]
-        self.assertEqual(codes[-1], 429)
+        for _ in range(50):                                      # random tokens: 404, and nothing kept
+            self.assertEqual(self.open("GET", f"/v1/passkey/windows/{os.urandom(8).hex()}/options")[0], 404)
+        self.assertEqual(self.app.passkey_rate.seen, {})
+        _, w = self.tenant._authed("POST", "/v1/passkey/windows", body={"org": "acme", "person": "founder"})
+        self.app.passkey_rate.limit = 2                          # an existing token is rate-limited
+        codes = [self.open("GET", f"/v1/passkey/windows/{w['window']}/options")[0] for _ in range(3)]
+        self.assertEqual(codes, [200, 200, 429])
 
 
 class OwnerTerminalTest(unittest.TestCase):
@@ -490,6 +494,17 @@ class OwnerTerminalTest(unittest.TestCase):
         c = self.Client([self.state("tested")])
         self.assertIsNone(O.enroll(c, "acme", "founder", ask=lambda q: "no", out=io.StringIO(), poll=0, sign=self.sign))
         self.assertNotIn("/v1/passkey/enrollments", [p for _, p, _ in c.calls])
+
+    def test_a_window_of_another_person_is_not_signed(self):
+        """of_secrets-review on PR 81: the record names the person and organization of the owner's command, and a
+        window of-server says is someone else's is refused, not signed under that name."""
+        import io
+        import of_passkey_owner as O
+        c = self.Client([dict(self.state("tested"), person="mallory")])
+        out = io.StringIO()
+        self.assertIsNone(O.enroll(c, "acme", "founder", ask=lambda q: "yes", out=out, poll=0, sign=self.sign))
+        self.assertNotIn("/v1/passkey/enrollments", [p for _, p, _ in c.calls])
+        self.assertIn("Nothing is signed", out.getvalue())
 
     def test_refuses_while_the_grant_key_is_a_plain_file(self):
         import of_grants

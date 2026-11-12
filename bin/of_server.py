@@ -1166,11 +1166,24 @@ def make_handler(app):
             except P.Refused as e:
                 return self._problem(e.status, e.typ, e.title)
 
-        def _passkey_open(self, token):
+        def _passkey_open(self, token, page=False):
             """The unauthenticated passkey routes, rate-limited per window id or approval nonce: behind a tunnel every
             phone shares one address, so a per-address limit would let anyone use up everyone's (of_secrets-review on
-            organic-framework PR 81). A token is 24 random bytes, so guessing one is no way in. True: go on."""
-            key = f"t:{str(token or '')[:64]}"
+            organic-framework PR 81). Only an existing token is counted, so random ones keep nothing in memory
+            (of_review's probe on the same PR). A token is 24 random bytes, so guessing one is no way in. True: go on."""
+            if not app.passkeys.token_known(token):
+                if page:
+                    body = b"no such window or link (it expired, closed or was used)"
+                    self.send_response(404)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self._problem(404, "not_found", "no such window or link (it expired, closed or was used)")
+                return False
+            key = f"t:{str(token)[:64]}"
             if app.passkey_rate.blocked(key):
                 self._problem(429, "too_many", "too many requests for this window or link; wait")
                 return False
@@ -1228,7 +1241,8 @@ def make_handler(app):
                         u.path.startswith("/v1/passkey/windows/") and u.path.endswith("/options")):
                     import of_server_passkey as P  # docs/remote.md §6: the phone's pages, behind a single-use token
                     q = {k: v[0] for k, v in parse_qs(u.query).items()}
-                    if not self._passkey_open(q.get("w") or q.get("n") or u.path.split("/")[-2]):
+                    if not self._passkey_open(q.get("w") or q.get("n") or u.path.split("/")[-2],
+                                              page=not u.path.startswith("/v1/")):
                         return None
                     if u.path == "/passkey/enroll":
                         return self._passkey_page(lambda n: (app.passkeys.window_options(q.get("w")),
@@ -1736,8 +1750,15 @@ class BadCodes:
     def blocked(self, ip):
         with self.lock:
             now = time.time()
-            self.seen[ip] = [t for t in self.seen.get(ip, []) if now - t < self.window]
-            return len(self.seen[ip]) >= self.limit
+            recent = [t for t in self.seen.get(ip, []) if now - t < self.window]
+            if recent:
+                self.seen[ip] = recent
+            else:
+                self.seen.pop(ip, None)  # an empty key is forgotten, so the map holds only what still counts
+            if len(self.seen) > 10000:   # a backstop: drop keys whose every entry has aged out
+                for k in [k for k, v in self.seen.items() if not v or now - v[-1] >= self.window]:
+                    del self.seen[k]
+            return len(recent) >= self.limit
 
 
 class App:
