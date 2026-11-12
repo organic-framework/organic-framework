@@ -52,14 +52,20 @@ A component that records prompts outside the agents' reach would protect what is
 
 The founder, 2026-11-12 ~11:38Z, after a user organization's head answered yes to a high-tier diff in the conductor's chat and the yes was recorded but not applied: if OF does not give a person who works through Remote Control this feature, it must be made to work for them (`of_conductor`'s session, prompt `01a1cf8d`; its message `01a1cf8e`). The person approves with a passkey on their phone (WebAuthn: Face ID or Touch ID). The private key never leaves the phone's secure hardware, so no agent on any machine can make the signature.
 
-1. **Enrollment, once per device, at the machine.** The person opens their organization's of-server enrollment page on the machine, which shows a QR code. They scan it with the phone and create a passkey there (the platform's cross-device flow). of-server keeps the credential id and public key under the person's id, in the identity store, never in the registry. The owner then signs a record that names the key's fingerprint, the person and the organization with the organization's grant key (`of grant`, Touch ID). An agent can enroll no key, because it has neither the grant key nor the phone.
-2. **Approval.** `of diff link <id>` prints a link for the conductor to give the person. The page, served by of-server, shows the diff's exact text and digest, with an explanation in the person's language. The WebAuthn challenge is the SHA-256 of the organization, the diff id, its digest, a nonce and an expiry. The person confirms with Face ID or Touch ID. of-server checks the assertion against the enrolled key and records `of.diff_approved {via: passkey, credential, digest, challenge, assertion}`.
-3. **Apply.** `of diff apply` accepts a diff of any tier whose approval carries a passkey assertion when three checks pass:
-   - the assertion verifies against the enrolled key;
+1. **Enrollment, once per device, with the owner at the machine.** A browser on the agents' machine can hold a software authenticator, so the enrollment page alone would let an agent enroll a key of its own. So:
+   - The owner opens one enrollment window from a plain terminal: `of passkey enroll <person>`, denied to agents' sessions as `of grant` is (docs/guard.md, G13). The window accepts exactly one credential and closes after it or when it expires.
+   - The person scans the window's QR code with the phone and creates the passkey there (the platform's cross-device flow). Right away the phone makes a test assertion over a fresh challenge, and its page shows a short code derived from the new credential id.
+   - The terminal shows the code of the credential of-server received. The owner checks the two codes are the same, then signs a record of the credential id, its public key, the person and the organization with the organization's grant key (`of grant`, Touch ID).
+   - If an agent's authenticator took the window first, the phone's enrollment fails or the codes differ, and nothing is signed. of-server keeps the credential id and public key under the person's id in the identity store, never in the registry.
+2. **Approval.** `of diff link <id>` prints a link for the conductor to give the person. The page, served by of-server, shows the diff's exact text and digest, with an explanation in the person's language. The WebAuthn challenge is the SHA-256 of a preimage: the organization, the diff id, its digest, a nonce and an expiry. The person confirms with Face ID or Touch ID. of-server records `of.diff_approved {via: passkey, credential, preimage, authenticator_data, client_data_json, signature}`, so that anyone can check the approval again from the record alone.
+3. **Apply.** `of diff apply` accepts a diff of any tier with a passkey approval only when every check of an assertion in W3C WebAuthn Level 2 §7.2 passes, and the chain behind it holds:
+   - `client_data_json` has type `webauthn.get`, the challenge equal to the SHA-256 of the preimage, and the origin of the organization's of-server;
+   - the `rpIdHash` in `authenticator_data` is the SHA-256 of of-server's relying-party id, and the flags show the user present and user verified;
+   - the signature over `authenticator_data` followed by the SHA-256 of `client_data_json` verifies with the enrolled public key, and a non-zero signature counter is higher than the last one seen;
    - the enrollment record verifies against the organization's pinned grant public key;
-   - the challenge covers the diff's current digest and has not expired.
+   - the preimage names this organization, this diff and its current digest, and has not expired.
 
-   Anyone can check the record again later, so a forged approval is visible to anyone who looks.
+   Anyone can run these checks again on the record, so a forged approval is visible to anyone who looks.
 4. **Where the page runs.** WebAuthn binds a passkey to a domain, so the phone must reach of-server over HTTPS at a stable name.
    - An organization whose of-server runs on its own servers has that already.
    - Where of-server runs only on the agents' machine, it needs a tunnel or a private network, and exposing it is that organization's owner's decision, on a card.
