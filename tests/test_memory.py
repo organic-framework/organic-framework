@@ -123,7 +123,7 @@ class SessionStartWarningTest(unittest.TestCase):
                     os.makedirs(d)
                     with open(os.path.join(d, "MEMORY.md"), "w") as fh:
                         fh.write("- a lesson\n" * n)
-                index = {"sessions": {"S1": ["storefront_checkout", "acme"], "S2": ["acme_throughput-owner", "mt"]},
+                index = {"sessions": {"S1": ["storefront_checkout", "acme"], "S2": ["acme_throughput-owner", "acme"]},
                          "memory": {"storefront_checkout": [[own, "acme_org"], [small, "acme_org"]],
                                     "acme_throughput-owner": [[unit, "acme_org"]]}}
                 of_hook._memory_warning({"session_id": "S1", "source": "startup"}, index, now=1_800_000_000)
