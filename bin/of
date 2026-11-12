@@ -4666,6 +4666,29 @@ def _ensure_grant_key():
         print(f"made the tenant grant key: {of_grants.GRANT_KEY} (pin its .pub on each server: trusted_grant_keys)")
 
 
+def cmd_passkey(args):
+    """`of passkey enroll|revoke` (docs/remote.md §6; bin/of_passkey_owner.py): both sign with the grant key, so only in
+    the owner's own terminal (G13 denies them to agents)."""
+    import of_client
+    import of_passkey_owner
+    import of_ship
+    _owners_terminal(f"of passkey {args.action}")
+    url = of_ship.org_servers(of_ship.config()).get(args.org)
+    if not url:
+        raise OfError(f"{args.org} names no server: in orgs.yaml (server:), a passkey needs its of-server")
+    client = of_client.Client(url)
+    try:
+        if args.action == "enroll":
+            return 0 if of_passkey_owner.enroll(client, args.org, args.person, ttl=args.ttl) else 1
+        if not args.credential:
+            raise OfError("usage: of passkey revoke <person> <credential> --org ORG")
+        import of_grants
+        of_passkey_owner.revoke(args.org, args.person, args.credential, of_grants.grants_path(args.org), client=client)
+        return 0
+    except PermissionError as e:
+        raise OfError(str(e)) from None
+
+
 def cmd_grant(args):
     """Issue or revoke a signed grant, or move every grant to the key in the owner's 1Password (rekey). Tenant only:
     it signs with the key file while one exists, else through 1Password's SSH agent (Touch ID)."""
@@ -5410,6 +5433,14 @@ def main(argv=None):
     ak.add_argument("--pane", help="judge: the asking agent's pane, for the correction")
     ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts, write nothing")
     ak.set_defaults(fn=cmd_asks)
+    pk = sub.add_parser("passkey", help="enroll or revoke a person's passkey for approving diffs from a phone "
+                                        "(docs/remote.md §6; the owner's terminal only)")
+    pk.add_argument("action", choices=["enroll", "revoke"])
+    pk.add_argument("person", help="the person's id in the organization's registry")
+    pk.add_argument("credential", nargs="?", help="revoke: the passkey's credential id")
+    pk.add_argument("--org", required=True)
+    pk.add_argument("--ttl", type=int, default=600, help="enroll: how long the window stays open, in seconds")
+    pk.set_defaults(fn=cmd_passkey)
     gr = sub.add_parser("grant", help="issue or revoke a signed grant (tenant only)")
     gr.add_argument("action", choices=["issue", "revoke", "rekey"])
     gr.add_argument("--org")
