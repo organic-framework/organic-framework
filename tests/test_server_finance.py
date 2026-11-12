@@ -26,7 +26,7 @@ def payload(**kw):
     return {k: v for k, v in p.items() if v is not None}
 
 
-def record(eid, p, position="books_keeper", session="S-books", org="mt"):
+def record(eid, p, position="books_keeper", session="S-books", org="zeta"):
     return {"of.schema": 1, "of.event.id": eid, "timestamp": "2026-11-10T21:30:00.000Z", "event.name": fin.FINANCE,
             "host.id": "m-a", "gen_ai.conversation.id": session, "gen_ai.agent.name": position, "of.org": org,
             "of.source": "of", "of.payload": p}
@@ -114,15 +114,15 @@ class FinanceServerTest(unittest.TestCase):
             fh.write("positions:\n  - {name: books_keeper, holder: {session: S-books}}\n"
                      "  - {name: k8s_keeper, holder: {session: S-k8s}}\n")
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"mt": "db_mt", "ofb": "db_ofb"}, positions_files={"mt": positions})
-        self.grants = {"mt": [self.grant("g-books", "books_keeper"), self.grant("g-read", "k8s_keeper", tier="observe"),
+                   orgs={"zeta": "db_mt", "ofb": "db_ofb"}, positions_files={"zeta": positions})
+        self.grants = {"zeta": [self.grant("g-books", "books_keeper"), self.grant("g-read", "k8s_keeper", tier="observe"),
                               self.grant("g-plain", "k8s_keeper", data=())], "ofb": []}
         self.app = of_server.App(cfg, ch=self.ch, ship_cfg=ship_cfg, grants_loader=lambda: self.grants,
                                  grant_key=lambda: of_grants.Keys(ed25519=[self.pub]), mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.a = self.machine("a", ["mt"])
+        self.a = self.machine("a", ["zeta"])
         self.present(self.a, "books_keeper", "S-books")
 
     def tearDown(self):
@@ -141,7 +141,7 @@ class FinanceServerTest(unittest.TestCase):
         return c
 
     def present(self, c, position, session):
-        c._authed("PUT", "/v1/presence", body={"holders": [{"org": "mt", "position": position, "session_id": session,
+        c._authed("PUT", "/v1/presence", body={"holders": [{"org": "zeta", "position": position, "session_id": session,
                                                              "kind": "agent", "pane": "w1:p1"}]})
 
     def post(self, c, rec):
@@ -166,7 +166,7 @@ class FinanceServerTest(unittest.TestCase):
         self.assertIn("finance_facts", terms["capabilities"])
 
     def test_the_grant_and_the_holder_are_checked(self):
-        k = self.machine("k", ["mt"])
+        k = self.machine("k", ["zeta"])
         self.present(k, "k8s_keeper", "S-k8s")
         for gid, want in (("g-read", "it reads finance facts"), ("g-plain", "no data: [finance]"),
                           ("g-books", "grant is for books_keeper, not k8s_keeper"), ("g-none", "unknown grant")):
@@ -176,7 +176,7 @@ class FinanceServerTest(unittest.TestCase):
         status, why = self.post(k, record("k-x", payload()))            # books_keeper's grant from a machine not holding it
         self.assertEqual(status, 403)
         self.assertIn("writer not holder", why)
-        self.grants["mt"].append(self.grant("g-deny", "books_keeper", effect="deny"))
+        self.grants["zeta"].append(self.grant("g-deny", "books_keeper", effect="deny"))
         self.app._grants = None
         status, why = self.post(self.a, record("f-denied", payload()))
         self.assertEqual(status, 403)
@@ -218,7 +218,7 @@ class FinanceServerTest(unittest.TestCase):
         self.assertEqual(status, 400)
 
     def test_a_batch_never_carries_a_fact(self):
-        data = {"event_id": "fb", "org": "mt", "org_id": "mt", "ts": "2026-11-10T21:30:00.000Z", "name": fin.FINANCE,
+        data = {"event_id": "fb", "org": "zeta", "org_id": "zeta", "ts": "2026-11-10T21:30:00.000Z", "name": fin.FINANCE,
                 "session_id": "S-books", "position": "books_keeper", "source": "hook", "payload": json.dumps(payload()),
                 "raw_ref": "", "record": json.dumps(record("fb", payload()))}
         r = self.a.send_batch([{"type": "event", "data": data}], batch_id="b1")
@@ -230,7 +230,7 @@ class FinanceServerTest(unittest.TestCase):
 class CopyTest(unittest.TestCase):
     def test_no_shape_or_publication_copy(self):
         class R:
-            db_by_org = {"mt": "db_mt", "ofb": "db_ofb"}
+            db_by_org = {"zeta": "db_mt", "ofb": "db_ofb"}
             unassigned = "db_un"
 
             def database(self, org):
@@ -239,7 +239,7 @@ class CopyTest(unittest.TestCase):
             def builder_of(self, *a):
                 return "ofb"   # a builder organization that would get shape copies of anything else
 
-        row = {"event_id": "f1", "org_id": "mt", "name": fin.FINANCE, "session_id": "S", "payload": "{}",
+        row = {"event_id": "f1", "org_id": "zeta", "name": fin.FINANCE, "session_id": "S", "payload": "{}",
                "record": json.dumps({"of.event.id": "f1"})}
         out = of_route.fanout("event", [row], R(), {"vault_database": "db_vault"}, copies=True)
         self.assertEqual({db: [r["event_id"] for r in rows] for db, rows in out.items()}, {"db_mt": ["f1"]})

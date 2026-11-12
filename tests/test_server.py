@@ -52,7 +52,7 @@ class ServerBase(unittest.TestCase):
         of_events.STATE_DIR = os.path.join(root, "state")
         orgs = os.path.join(root, "orgs.yaml")
         with open(orgs, "w") as fh:
-            fh.write(f"orgs:\n  - {{name: mt, database: db_mt, paths: ['{HOME}/acme']}}\n"
+            fh.write(f"orgs:\n  - {{name: zeta, database: db_mt, paths: ['{HOME}/acme']}}\n"
                      f"  - {{name: ofb, database: db_ofb, paths: ['{HOME}/organic-framework']}}\n")
         self.ch = FakeCH()
         self.ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False,
@@ -68,7 +68,7 @@ class ServerBase(unittest.TestCase):
         g = {"id": "g1", "subject": "of_a", "issuer": "tenant", "tier": "propose", "scope": {"repos": ["~/x"]}}
         g["signature"] = of_grants.sign(g, self.gkey)
         self.app = of_server.App(cfg, ch=self.ch, router_factory=router, ship_cfg=self.ship_cfg,
-                                 grants_loader=lambda: {"ofb": [g], "mt": []}, grant_key=lambda: self.gkey,
+                                 grants_loader=lambda: {"ofb": [g], "zeta": []}, grant_key=lambda: self.gkey,
                                  mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -99,7 +99,7 @@ class ServerTest(ServerBase):
         self.assertEqual((r["state"], r["accepted"]), ("queued", 2))
         reasons = {x["index"]: x["reason"] for x in r["rejected"]}
         self.assertIn("missing ts", reasons[1])
-        self.assertIn("mt not joined", reasons[2])
+        self.assertIn("zeta not joined", reasons[2])
         self.assertIn("known type", reasons[4])
         self.assertEqual(self.client.send_batch(records, batch_id="b1"), r)   # idempotent retry
         with self.assertRaises(of_client.ServerError) as cm:
@@ -268,7 +268,7 @@ class ServerTest(ServerBase):
         self.assertEqual((r["valid"], r["decision"]), (True, "admit"))
         self.assertFalse(self.client.verify_grant("g1", "ofb:of_b")["valid"])
         with self.assertRaises(of_client.ServerError) as cm:   # an organization the machine has not joined
-            self.client.verify_grant("g1", "mt:of_a")
+            self.client.verify_grant("g1", "zeta:of_a")
         self.assertEqual(cm.exception.status, 403)
 
     def test_auth_failures(self):
@@ -472,13 +472,13 @@ class PerOrgServerTest(unittest.TestCase):
         self.ch = FakeCH()
         ship_cfg = {"unassigned_database": "db_un", "vault_database": "db_vault", "raw_to_org": False, "tenant": "t"}
         cfg = dict(of_server.DEFAULTS, state_dir=os.path.join(root, "server"), port=0, flush_every=3600,
-                   orgs={"mt": "db_mt"})
+                   orgs={"zeta": "db_mt"})
         self.app = of_server.App(cfg, ch=self.ch, ship_cfg=ship_cfg, grants_loader=lambda: {},
                                  grant_key=lambda: b"k", mask_key=b"m" * 32)
         self.httpd = self.app.serve(host="127.0.0.1", port=0)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         key = os.path.join(root, "key")
-        of_server.enroll(self.app.store, of_events.machine_id(), of_client.ensure_key(key), ["mt", "ofb"], [])
+        of_server.enroll(self.app.store, of_events.machine_id(), of_client.ensure_key(key), ["zeta", "ofb"], [])
         self.client = of_client.Client(f"http://127.0.0.1:{self.httpd.server_address[1]}", key_path=key,
                                        state_dir=of_events.STATE_DIR)
 
@@ -491,18 +491,18 @@ class PerOrgServerTest(unittest.TestCase):
 
     def test_client_routed_records_and_copy_allow_list(self):
         shape_rec = {"of.schema": 1, "of.event.id": "s1", "timestamp": "2026-11-05T10:00:00.000Z",
-                     "event.name": "of.turn_end", "of.org": "mt", "of.serves": "ofb", "of.shape": True,
+                     "event.name": "of.turn_end", "of.org": "zeta", "of.serves": "ofb", "of.shape": True,
                      "of.payload": {"chars": 10}}
-        good_shape = event("s1", None, org_id="mt", record=json.dumps(shape_rec), payload=json.dumps({"chars": 10}))
-        bad_shape = event("s2", None, org_id="mt", record=json.dumps(dict(shape_rec, **{"of.event.id": "s2"})),
+        good_shape = event("s1", None, org_id="zeta", record=json.dumps(shape_rec), payload=json.dumps({"chars": 10}))
+        bad_shape = event("s2", None, org_id="zeta", record=json.dumps(dict(shape_rec, **{"of.event.id": "s2"})),
                           payload=json.dumps({"text": "the founder's words"}))
-        pub = {"from_org": "ofb", "to_org": "mt", "artifact": "a", "note": "n", "trace": "t1"}
-        bad_pub = event("p1", None, org_id="mt", name="of.published", payload=json.dumps(pub))
-        recs = [event("e1", None, org_id="mt"),                       # routed by the client: kept
+        pub = {"from_org": "ofb", "to_org": "zeta", "artifact": "a", "note": "n", "trace": "t1"}
+        bad_pub = event("p1", None, org_id="zeta", name="of.published", payload=json.dumps(pub))
+        recs = [event("e1", None, org_id="zeta"),                       # routed by the client: kept
                 event("e2", None),                                    # no org_id: rejected
                 event("e3", None, org_id="ofb"),                      # joined, but not served here
                 good_shape, bad_shape, bad_pub,
-                dict(transcript("u1", "x"), data=dict(transcript("u1", "x")["data"], org_id="mt", shape=True))]
+                dict(transcript("u1", "x"), data=dict(transcript("u1", "x")["data"], org_id="zeta", shape=True))]
         r = self.client.send_batch(recs, batch_id="b1")
         reasons = {x["index"]: x["reason"] for x in r["rejected"]}
         self.assertEqual(r["accepted"], 2, reasons)
@@ -621,8 +621,8 @@ class StudioDataTest(unittest.TestCase):
                 fh.write("pw\n")
             cfg = {"clickhouse": {"url": f"http://127.0.0.1:{srv.server_address[1]}", "user": "db_mt_ingest",
                                   "password_file": os.path.join(d, "db_mt_ingest.password")}}
-            sd = of_server.StudioData(cfg, {"mt": "db_mt"})
-            rows = list(sd.events("mt", since_iso="2026-10-27T00:00:00Z", names=["of.turn_end", "x' OR 1=1 --"]))
+            sd = of_server.StudioData(cfg, {"zeta": "db_mt"})
+            rows = list(sd.events("zeta", since_iso="2026-10-27T00:00:00Z", names=["of.turn_end", "x' OR 1=1 --"]))
             with self.assertRaises(KeyError):
                 list(sd.events("other"))
         srv.shutdown()
@@ -817,24 +817,24 @@ class AskClosureRoutingTest(unittest.TestCase):
             root = os.path.realpath(root)
             orgs = os.path.join(root, "orgs.yaml")
             with open(orgs, "w") as fh:
-                fh.write(f"orgs:\n  - {{name: mt, database: db_mt, paths: ['{root}/mt']}}\n")
+                fh.write(f"orgs:\n  - {{name: zeta, database: db_mt, paths: ['{root}/zeta']}}\n")
             saved = os.environ.get("OF_DB")
             os.environ["OF_DB"] = os.path.join(root, "of.db")
             try:
                 conn = of_store.connect()
                 conn.execute("INSERT INTO event (event_id, ts, name, session_id, cwd, record) VALUES (?,?,?,?,?,?)",
-                             ("ask-1", "2026-11-06T10:00:00Z", "of.agent_question", "S1", f"{root}/mt/x", "{}"))
+                             ("ask-1", "2026-11-06T10:00:00Z", "of.agent_question", "S1", f"{root}/zeta/x", "{}"))
                 conn.close()
                 r = of_route.Router({"unassigned_database": "db_un"}, orgs)
                 r.org_by_session = {}
 
                 def closure(payload):
                     return {"record": "{}", "payload": json.dumps(payload), "session_id": ""}
-                self.assertEqual(of_route.route_org("event", closure({"ask_id": "ask-1", "via": "reconcile"}), r), "mt")
-                self.assertEqual(of_route.route_org("event", closure({"ask_ids": ["nope", "ask-1"]}), r), "mt")
+                self.assertEqual(of_route.route_org("event", closure({"ask_id": "ask-1", "via": "reconcile"}), r), "zeta")
+                self.assertEqual(of_route.route_org("event", closure({"ask_ids": ["nope", "ask-1"]}), r), "zeta")
                 self.assertIsNone(of_route.route_org("event", closure({"ask_id": "nope"}), r))
                 self.assertIsNone(of_route.route_org("event", closure({"answer": "x"}), r))
-                self.assertIsNone(of_route.route_org("event", closure({}), of_route.StaticRouter({"mt": "db_mt"}, "u")))
+                self.assertIsNone(of_route.route_org("event", closure({}), of_route.StaticRouter({"zeta": "db_mt"}, "u")))
             finally:
                 if saved is None:
                     os.environ.pop("OF_DB", None)
