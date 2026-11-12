@@ -104,6 +104,13 @@ class CheckTest(unittest.TestCase):
     def test_the_example_is_clean(self):
         self.assertEqual(of_tools.check({"acme": DOC}), [])
 
+    def test_a_file_credential_named_in_env_is_clean(self):
+        doc = {"positions": [{"name": "a"}], "credentials": {"g": {"paths": ["~/.secrets/g.token"]}},
+               "tools": {"g": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana"],
+                               "env": {"GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": "~/.secrets/g.token"},
+                               "credential": {"id": "g"}, "acts_as": "s", "scope": "read", "keeper": "a"}}}
+        self.assertEqual(of_tools.check({"acme": doc}), [])
+
     def test_problems(self):
         bad = {"tools_mode": "strict", "positions": [{"name": "a", "tools": ["nope"]}], "credentials": {},
                "tools": {"x": {"kind": "mcp-stdio", "command": ["p"], "env": {"API_TOKEN": "abc123"},
@@ -118,7 +125,7 @@ class CheckTest(unittest.TestCase):
         probs = "\n".join(of_tools.check({"acme": bad}))
         for want in ("tool nope is not in the catalogue", "keeper ghost", "credential missing",
                      "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference",
-                     "credential f is a file: the command names its path",
+                     "credential f is a file: the command or an env value names its path",
                      "tools_mode is add or enforce"):
             self.assertIn(want, probs)
 
