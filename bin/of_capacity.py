@@ -1731,17 +1731,37 @@ def _inject(sid, text, reason):
 
 EXIT_DIALOG = "Background work is running"
 EXIT_STOP = "Exit and stop tasks"
+WORKTREE_DIALOG = "Exiting worktree session"  # a session inside a git worktree (EnterWorktree) asks on /exit
+WORKTREE_KEEP = "Keep worktree"                # "Keep worktree" or "Keep worktree and tmux session": nothing is lost
+DIALOG_FOOTER = "Esc to cancel"
 OPTION = _re.compile(r"^\s*❯\s*(\d+)\.\s*(.*)$")
 
 
-def _exit_dialog(lines):
-    """The cursor's option in Claude Code's exit dialog ("Background work is running"), or None if it is not open."""
+def _dialog_cursor(lines, title):
     plain = [ANSI.sub("", x) for x in lines]
-    at = next((i for i, x in enumerate(plain) if EXIT_DIALOG in x), None)
+    at = next((i for i, x in enumerate(plain) if title in x), None)
     if at is None:
         return None
     m = next((OPTION.match(x) for x in plain[at:] if OPTION.match(x)), None)
     return m.group(2).strip() if m else ""
+
+
+def _exit_dialog(lines):
+    """The cursor's option in Claude Code's exit dialog ("Background work is running"), or None if it is not open."""
+    return _dialog_cursor(lines, EXIT_DIALOG)
+
+
+def _worktree_dialog(lines):
+    """The cursor's option in Claude Code's "Exiting worktree session" dialog (keep or remove the worktree), or None."""
+    return _dialog_cursor(lines, WORKTREE_DIALOG)
+
+
+def _a_dialog(lines):
+    """A dialog that would swallow typed text: the two above, or any other whose last lines say "Esc to cancel"."""
+    if _exit_dialog(lines) is not None or _worktree_dialog(lines) is not None:
+        return True
+    tail = [x for x in (ANSI.sub("", y).strip() for y in lines) if x][-4:]
+    return any(DIALOG_FOOTER in x for x in tail)
 
 
 def exit_session(pid, type_exit, read, key, allow_shells=False, wait=50, settle=8, step=1, log=print):
@@ -1752,7 +1772,13 @@ def exit_session(pid, type_exit, read, key, allow_shells=False, wait=50, settle=
     picked "Move to background and exit" there. Now: answer the dialog only once it is on screen, and only with
     "Exit and stop tasks" (the cursor is checked; "Move to background" is never picked). A /exit still in the
     input box is submitted once. Without `allow_shells`, the dialog is cancelled. On any failure the dialog is
-    closed with Esc ("Esc to cancel"), so the session stays as it was; `stuck` says when that did not work."""
+    closed with Esc ("Esc to cancel"), so the session stays as it was; `stuck` says when that did not work.
+
+    2026-11-12, a user organization's session: inside a git worktree, a session answers /exit with "Exiting worktree session"
+    (keep or remove it), which this did not read. The move gave up after 50 s and reported the dialog closed while
+    it stayed open; two relay messages went into it and were lost, and the second one's Enter exited the session
+    37 minutes later. Now that dialog is answered with "Keep worktree" (its default: the worktree, its branch and
+    files stay, and the resume starts in it), and a failure counts any dialog still on screen as open."""
     def press(k):  # a key the pane rejects ends the attempt, never the restore below
         try:
             key(k)
@@ -1762,8 +1788,30 @@ def exit_session(pid, type_exit, read, key, allow_shells=False, wait=50, settle=
             return False
     type_exit()
     end, enters, ups, submitted, why = time.time() + wait, 0, 0, False, "did not exit"
+    kept = 0
     while time.time() < end and _alive(pid):
         lines = read()
+        wt = _worktree_dialog(lines)
+        if wt is not None:  # keep the worktree: nothing is lost, with or without allow_shells
+            if wt.startswith(WORKTREE_KEEP):
+                if kept >= 2:
+                    why = "the worktree exit dialog ignored Enter twice"
+                    break
+                if not press("Enter"):
+                    why = "the pane rejected Enter"
+                    break
+                kept += 1
+                _wait(lambda: not _alive(pid), settle, step=step)
+                continue
+            if ups >= 4:
+                why = f"could not bring the cursor to {WORKTREE_KEEP!r} (it is on {wt!r})"
+                break
+            if not press("Up"):
+                why = "the pane rejected Up"
+                break
+            ups += 1
+            time.sleep(0.3)
+            continue
         cur = _exit_dialog(lines)
         if cur is not None:
             if not allow_shells:
@@ -1794,14 +1842,14 @@ def exit_session(pid, type_exit, read, key, allow_shells=False, wait=50, settle=
         time.sleep(step)
     if not _alive(pid):
         return
-    left = _exit_dialog(read()) is not None
     for pause in (0, 2, 5, 10):  # a closed dialog can come back (2026-11-07: accounting_keeper's, open for 21 hours)
         time.sleep(pause * step)
-        if _exit_dialog(read()) is not None:
+        if _a_dialog(read()):
             press("Esc")
-            _wait(lambda: _exit_dialog(read()) is None, settle, step=step)
-        left = _exit_dialog(read()) is not None
-    left = _exit_dialog(read()) is not None
+            _wait(lambda: not _a_dialog(read()), settle, step=step)
+    if not _alive(pid):  # Esc on the worktree dialog means "keep" and exits: the move goes on
+        return
+    left = _a_dialog(read())
     log(f"  exit failed ({why}); the dialog is {'STILL OPEN' if left else 'closed, the session stays'}")
     raise MoveError(f"pid {pid}: {why}; " + ("the exit dialog is still open in its pane: look at it now"
                                              if left else "closed the exit dialog, the session stays as it was"),
