@@ -549,7 +549,7 @@ An organization's own policy on what its positions may run ([`guard.md`](guard.m
 
 ### Passkey revocations (2026-11-12, `of_server`; docs/remote.md §6)
 
-A passkey enrolled to approve diffs from a phone is revoked by a record under `passkey_revocations:` in the organization's `registry/grants.yaml`: `{kind: passkey_revocation, org, credential, issued_at, signature}`, signed with the tenant's grant key like a grant. `of diff apply` refuses an approval made with a revoked credential (`of_grants.passkey_revoked`). A verified revocation is kept on the machine (`~/.local/state/of/passkey-revoked.json`, mode 600), so deleting or editing the entry never brings the key back. A lost phone is revoked at the machine, by the owner.
+A passkey enrolled to approve diffs from a phone is revoked in either of the two ways docs/remote.md §6 step 6 allows. The owner signs a record under `passkey_revocations:` in the organization's `registry/grants.yaml`, `{kind: passkey_revocation, org, credential, issued_at, signature}`, with the tenant's grant key like a grant (`of passkey revoke`). Or another passkey enrolled for the same person signs a revocation, which of-server puts in the organization's coordination feed; each machine verifies it against that person's enrollment and keeps it the same way (it comes with of-server's half of §6). `of diff apply` refuses an approval made with a revoked credential (`of_grants.passkey_revoked`). A verified revocation is kept on the machine (`~/.local/state/of/passkey-revoked.json`, mode 600), so deleting or editing the entry never brings the key back. A lost phone is revoked at the machine by the owner, or from the person's other phone.
 
 ## Systems map (proposal, 2026-11-05, `of_architect`)
 
