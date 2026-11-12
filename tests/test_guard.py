@@ -386,8 +386,9 @@ class GuardBashTest(unittest.TestCase):
 
     def test_a_line_naming_a_password_file_goes_into_a_script_by_edit(self):
         # docs/guard.md G8 (a user organization's keeper, 2026-11-12): a python heredoc inserting a line that names a
-        # future reader's password file was denied for the path in a one-line literal. The Edit tool, whose text is
-        # not scanned as a read, and a triple-quoted block are the reviewed ways; a read of the file stays denied.
+        # future reader's password file was denied for the path in a one-line literal. The Edit tool, which never
+        # runs the text, is the way; a read of the file stays denied. The triple-quoted pass below is the carve-out
+        # of 2026-11-07, not advice: docs/guard.md lists it under Gaps (of_review on organic-framework PR 93).
         script = "/w/devops/k8s/clickhouse/secrets.sh"
         pw = "$HOME/.config/example-org/clickhouse/reader_ro." + "password"
         line = 'kubectl create secret generic reader-ro --from-file=password="' + pw + '"'
