@@ -126,5 +126,39 @@ class AccessTest(unittest.TestCase):
             self.assertNotIn(h, carried, h)
 
 
+    def test_a_redirect_is_refused_and_never_followed(self):
+        """A real local server answers 302 to a second one; the second never sees a request."""
+        import http.server
+        import threading
+        hits = []
+
+        class Elsewhere(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(dict(self.headers))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        class Redirector(Elsewhere):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{far.server_port}/login")
+                self.end_headers()
+
+        far = http.server.HTTPServer(("127.0.0.1", 0), Elsewhere)
+        near = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+        for srv in (far, near):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        c = of_client.Client(f"http://127.0.0.1:{near.server_port}")
+        with self.assertRaises(of_client.ServerError) as e:
+            c._request("GET", "/v1/health", token="tok-not-real")
+        self.assertIn("redirect", str(e.exception))
+        self.assertEqual(hits, [])
+
 if __name__ == "__main__":
     unittest.main()
