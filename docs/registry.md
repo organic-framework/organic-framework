@@ -25,6 +25,7 @@ The framework defines the schema. Every organization that uses Organic Framework
       paths: [~/acme]
       hold: true                    # optional: `of apply` leaves this organization's panes alone
       drain_from: local             # optional, after a cutover to the organization's own server: local | <url> | [list]
+      server_access: ~/.config/acme/of-server/access.json  # optional: the machine's Cloudflare Access service token
       branches: {storefront: develop}  # optional: a repository's default branch, when OF cannot tell it
       agents: {model: opus, effort: xhigh}  # optional: what OF starts the organization's sessions on
   ```
@@ -34,6 +35,8 @@ The framework defines the schema. Every organization that uses Organic Framework
 - `agents` (2026-11-11, `of_onboarding` and `of_platform`; organic-framework 42d9f80, 69e34a8): the model and effort of the sessions OF starts for the organization. `of init` writes it, Opus at effort `xhigh` unless `--model` or `--effort` names another (the founder, 2026-11-11 17:33Z: "have of set opus xhigh at setup"). `of spawn` starts on it unless the command names another; `of resume-command` keeps the model and effort the session ran on, and falls back to these only when OF cannot tell them. `model` is a Claude Code model name or alias; `effort` is one of `low`, `medium`, `high`, `xhigh`, `max`. With no `agents:`, a session starts on the account's own default.
 
 - `drain_from` (2026-11-11, `of_server`, organic-framework 8d4ec61): after an organization's `server:` points at its own server, the relay still presents its holders to the old server named here and delivers the messages queued there, so none are stranded. `of inbox --mine` reads the old server too, so an `--fyi` message still queued there, which the relay never types in, is read and taken (2026-11-12). Remove it by hand once the old queue is empty. It replaces a re-posting script, which would have needed the new server to accept messages on behalf of their senders ([`server-several-machines.md`](server-several-machines.md) §4.6).
+
+- `server_access` (2026-11-12, `of_server`; announced to `of_architect`, msg `01a1cfa4`): when the organization's of-server sits behind Cloudflare Access, the path of a JSON file `{client_id, client_secret}` holding this machine's service token. `of_client` sends it as `CF-Access-Client-Id` and `CF-Access-Client-Secret` on every request, only over `https://` and only to the organization's `server:` and `drain_from:` URLs. It refuses a file another user can read (it must be mode 600) and never prints the token. Keep the file under the organization's credential root and name it in its catalogue with no position listing it, so the guard keeps agents out of it (docs/guard.md G14). Make it as a task that makes a secret says: in a plain terminal, `umask 077; read -rs ID; read -rs SECRET; printf '{"client_id":"%s","client_secret":"%s"}' "$ID" "$SECRET" > <file>`.
 
 - The `of` CLI reads every listed registry. A canonical name and every alias must be unique across all of them.
 

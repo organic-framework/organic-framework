@@ -65,7 +65,7 @@ helm upgrade --install of-server deploy/helm/of-server -n of-server --create-nam
 
 **Grants and the registry** reach the server one of two ways: `grants.gitSync.*` checks the organization's repository out read-only, or, for a repository without a remote, `grants.configMap: {name, keys: {<org>: {grants: <key>, positions: <key>}}}` mounts a ConfigMap that the organization's keeper fills from `registry/grants.yaml` and `registry/positions.yaml` with a committed script, rerun when they change. Never both. Without either, the server refuses finance facts and new messages that need a grant.
 
-Exposure: point the Cloudflare tunnel at `http://of-server-of-server.of-server.svc:18200`, path prefix `/v1/`, behind Cloudflare Access if the organization uses it for machines (a service token per machine), or enable the chart's Ingress. `/v1/health` answers only `{ok, version}` here.
+Exposure: point the Cloudflare tunnel at `http://of-server-of-server.of-server.svc:18200`, path prefix `/v1/`, behind Cloudflare Access if the organization uses it for machines (a service token per machine, which the machine names in its `orgs.yaml` as `server_access`, docs/registry.md), or enable the chart's Ingress. `/v1/health` answers only `{ok, version}` here.
 
 Sizing: requests 100m CPU and 256 Mi, limits 1 CPU and 1 Gi. Masking costs about 5 CPU-minutes per GB of transcripts.
 
