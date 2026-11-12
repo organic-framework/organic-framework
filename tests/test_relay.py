@@ -619,3 +619,21 @@ class WaitArgvTest(unittest.TestCase):
         self.assertNotIn("blocked", argv)
         self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--until"], ["idle", "done"])
         self.assertEqual(argv[-1], "5000")
+
+
+class InboxServersTest(unittest.TestCase):
+    """`of inbox --mine` reads the old server a cutover drains (orgs.yaml drain_from), so an --fyi message queued there
+    is read and taken, and the old queue can empty."""
+
+    def test_the_organizations_server_then_its_drains(self):
+        with tempfile.TemporaryDirectory() as d:
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write("orgs:\n  - {name: acme, path: a, server: 'https://of.acme.test', drain_from: local}\n"
+                         "  - {name: beta, path: b, drain_from: ['https://old.beta.test/', 'http://127.0.0.1:18200']}\n"
+                         "  - {name: gamma, path: c}\n")
+            local = "http://127.0.0.1:18200"
+            self.assertEqual(of_relay.inbox_servers("acme", "https://of.acme.test/", local, orgs),
+                             ["https://of.acme.test", local])
+            self.assertEqual(of_relay.inbox_servers("beta", local, local, orgs), [local, "https://old.beta.test"])
+            self.assertEqual(of_relay.inbox_servers("gamma", local, local, orgs), [local])
