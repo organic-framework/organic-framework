@@ -1908,8 +1908,20 @@ def cmd_loop(args):
     reg = of_loop.register(rows, args.work)
     if args.action == "show":
         print(f"{args.work} ({org}): target {(loop.get('target') or {}).get('metric')}; ladder {' > '.join(of_loop.rungs(loop))}")
-        for h in reg["hypotheses"]:
+        for h in reg["hypotheses"]:  # the change, the prediction and the latest run's verdict each say what they are:
+            # a prediction printed alone was read as a finding (of_conductor, 2026-11-12)
             print(f"  {h['id']} {h['status']:<8} voi {h['voi'] or '?':<4} cost {h['cost'] or '?':<22} runs {h['runs']}  {h['change']}")
+            if h.get("predict"):
+                pr = " ".join(str(h["predict"]).split())
+                print(f"      prediction (not a result): {pr[:240] + ('…' if len(pr) > 240 else '')}")
+            lr = h.get("last_run")
+            if lr:
+                verdict = {True: "accept criterion met", False: "accept criterion NOT met: the prediction did not hold",
+                           None: "no accept verdict recorded"}[lr.get("accepted")]
+                print(f"      latest run {lr['ts'][:16]} on {lr.get('rung') or '?'}: {verdict}")
+            if h.get("contradicted"):
+                print(f"      warning: its latest run refutes it and it is still {h['status']}; record drop, park or keep "
+                      f"(of loop decision {args.work} drop --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
         return 0
@@ -1987,6 +1999,9 @@ def cmd_loop(args):
         of_events.emit("loop_hypothesis", {"work": args.work, "id": hid, "hypothesis": hid, "status": new_status,
                                            "status_at": of_events.now_iso()}, position=me["name"], org=me.get("_orgid") or org)
     print(f"{kind}: {args.work}" + (f" {payload['hypothesis']}" if payload.get("hypothesis") else ""))
+    if kind == "loop_run" and payload.get("accepted") is False and cur and cur["status"] in ("open", "testing"):
+        print(f"  the run did not meet its accept criterion, so it refutes {hid}'s prediction; report it as refuted, "
+              f"not as a finding, and record the decision: of loop decision {args.work} drop|park|keep --hypothesis {hid}")
     return 0
 
 
