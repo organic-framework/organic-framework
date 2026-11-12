@@ -113,6 +113,79 @@ def cose_to_spki(cose):
     return base64.b64encode(P256_SPKI_PREFIX + b"\x04" + x + y).decode()
 
 
+# ------------------------------------------------------------------------- ES256 verification (FIPS 186-4, P-256)
+# Verification only, so no secret is handled and timing does not matter. Pure Python: the server image has no
+# openssl command, which the client half (of_passkey.es256_verify) calls.
+_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+_A = _P - 3
+_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+_G = (0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+      0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5)
+
+
+def _add(p, q):
+    if p is None:
+        return q
+    if q is None:
+        return p
+    if p[0] == q[0] and (p[1] + q[1]) % _P == 0:
+        return None
+    if p == q:
+        lam = (3 * p[0] * p[0] + _A) * pow(2 * p[1], -1, _P) % _P
+    else:
+        lam = (q[1] - p[1]) * pow(q[0] - p[0], -1, _P) % _P
+    x = (lam * lam - p[0] - q[0]) % _P
+    return x, (lam * (p[0] - x) - p[1]) % _P
+
+
+def _mul(k, p):
+    out = None
+    while k:
+        if k & 1:
+            out = _add(out, p)
+        p, k = _add(p, p), k >> 1
+    return out
+
+
+def _der_ints(sig):
+    """(r, s) of a DER ECDSA signature, or None."""
+    try:
+        if sig[0] != 0x30 or sig[1] != len(sig) - 2:
+            return None
+        out, i = [], 2
+        for _ in range(2):
+            if sig[i] != 0x02:
+                return None
+            n = sig[i + 1]
+            out.append(int.from_bytes(sig[i + 2:i + 2 + n], "big"))
+            i += 2 + n
+        return tuple(out) if i == len(sig) else None
+    except IndexError:
+        return None
+
+
+def es256_verify(spki_b64, data, der_signature):
+    """True when the DER ECDSA P-256 signature over SHA-256(data) verifies with the SubjectPublicKeyInfo key."""
+    try:
+        spki = base64.b64decode(spki_b64, validate=True)
+    except (ValueError, TypeError):
+        return False
+    if len(spki) != 91 or not spki.startswith(P256_SPKI_PREFIX + b"\x04"):
+        return False
+    q = (int.from_bytes(spki[27:59], "big"), int.from_bytes(spki[59:91], "big"))
+    if (q[1] * q[1] - (q[0] ** 3 + _A * q[0] + _B)) % _P:
+        return False  # not a point of the curve
+    rs = _der_ints(bytes(der_signature))
+    if not rs or not (0 < rs[0] < _N and 0 < rs[1] < _N):
+        return False
+    r, s_ = rs
+    e = int.from_bytes(hashlib.sha256(data).digest(), "big")
+    w = pow(s_, -1, _N)
+    pt = _add(_mul(e * w % _N, _G), _mul(r * w % _N, q))
+    return pt is not None and pt[0] % _N == r
+
+
 def short_code(credential_id):
     """The code the phone's page and the owner's terminal both show: six characters from the credential id's hash,
     from an alphabet with no look-alike characters."""
@@ -163,7 +236,6 @@ def verify_registration(attestation_object, client_data_json, challenge, rp_id, 
 def verify_assertion(authenticator_data, client_data_json, signature, challenge, rp_id, origin, public_key,
                      last_counter=0):
     """The counter of an assertion by PUBLIC_KEY over CHALLENGE, else PasskeyError (WebAuthn §7.2)."""
-    import of_passkey
     _client_data(client_data_json, "webauthn.get", challenge, origin)
     auth = parse_auth_data(authenticator_data)
     if auth["rp_id_hash"] != hashlib.sha256(rp_id.encode()).digest():
@@ -172,7 +244,6 @@ def verify_assertion(authenticator_data, client_data_json, signature, challenge,
         raise PasskeyError("the passkey did not verify the person (no user presence or verification)")
     if auth["counter"] and auth["counter"] <= (last_counter or 0):
         raise PasskeyError(f"the signature counter {auth['counter']} is not above {last_counter} (a cloned key?)")
-    if not of_passkey.es256_verify(public_key, bytes(authenticator_data) + hashlib.sha256(client_data_json).digest(),
-                                   signature):
+    if not es256_verify(public_key, bytes(authenticator_data) + hashlib.sha256(client_data_json).digest(), signature):
         raise PasskeyError("the signature does not verify against the enrolled passkey")
     return auth["counter"]
