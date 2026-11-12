@@ -130,16 +130,16 @@ if __name__ == "__main__":
         cfg = os.path.join(self.tmp.name, "config")
         os.makedirs(os.path.join(self.tmp.name, "repo", "registry"))
         with open(os.path.join(self.tmp.name, "repo", "registry", "positions.yaml"), "w") as fh:
-            fh.write("organization: mt\npositions:\n"
-                     "  - {name: acme_org, system: mt, role: org, aliases: [org-keeper]}\n"
-                     "  - {name: acme_owner, system: mt, role: owner}\n")
+            fh.write("organization: zeta\npositions:\n"
+                     "  - {name: acme_org, system: zeta, role: org, aliases: [org-keeper]}\n"
+                     "  - {name: acme_owner, system: zeta, role: owner}\n")
         os.makedirs(cfg)
         with open(os.path.join(cfg, "orgs.yaml"), "w") as fh:
-            fh.write(f"orgs:\n  - {{name: mt, path: '{self.tmp.name}/repo', server: '{self.url}'}}\n")
+            fh.write(f"orgs:\n  - {{name: zeta, path: '{self.tmp.name}/repo', server: '{self.url}'}}\n")
         r = self.of("send", "org-keeper", "please check", "--from", "acme_owner")
         self.assertEqual(r.returncode, 0, r.stderr)
         sent = next(b for p, b, _ in Fake.seen if p == "/v1/messages")
-        self.assertEqual((sent["to"], sent["from"], sent["text"]), ("mt:acme_org", "mt:acme_owner", "please check"))
+        self.assertEqual((sent["to"], sent["from"], sent["text"]), ("zeta:acme_org", "zeta:acme_owner", "please check"))
         self.assertIn("queued:", r.stdout)
 
 
