@@ -1942,6 +1942,9 @@ class GoalTreeTest(unittest.TestCase):
         self.assertIn('href="/studio/goals', of_studio.page(d, "goals", html))
         self.assertEqual((of_studio.level_breached("<= 1", 2.5), of_studio.level_breached(">= 99.5%", 99.9),
                           of_studio.level_breached("none missed", 3), of_studio.level_breached("<= 1", None)), (True, False, None, None))
+        # a level in percent against a share (PR 78 review, of_review): 0.97 is 97%, not a breach of >= 95%
+        self.assertEqual((of_studio.level_breached(">= 95%", 0.97), of_studio.level_breached(">= 95%", 0.9),
+                          of_studio.level_breached("<= 5%", 0.02), of_studio.level_breached(">= 95%", 96.0)), (False, True, False, False))
         self.assertIsNone(of_studio.metric_reading(d, "orders per day, from the shop's database"))   # prose names no measure
         # of works: the same tree in the terminal, and as JSON
         import contextlib
