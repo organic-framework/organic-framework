@@ -295,9 +295,12 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             systems = next((p["_systems"] for p in positions if p.get("_org") == org), {})
             units = next((p["_units"] for p in positions if p.get("_org") == org), None)
             statuses = {p["name"]: p.get("status") for p in positions if p.get("_org") == org}
+            # a works warning is `of registry check`'s (deep); printed by every command, a new warning of the loop
+            # check put 14 lines on each `of` call (2026-11-12)
             problems += [f"{org}:registry/positions.yaml: works: {pr}"
-                         for pr in check_works(works, names, systems, units, statuses)]
-            problems += [f"{org}: works: {pr}" for pr in loop_files(works, _org_paths(orgs_file).get(org) or [])]
+                         for pr in check_works(works, names, systems, units, statuses) if deep or not pr.startswith(WARN)]
+            problems += [f"{org}: works: {pr}" for pr in loop_files(works, _org_paths(orgs_file).get(org) or [])
+                         if deep or not pr.startswith(WARN)]
     if deep:  # tool profiles (docs/tools.md; of_tools.check, of_tools's rules)
         try:
             import of_tools
