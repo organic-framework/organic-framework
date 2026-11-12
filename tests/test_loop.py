@@ -9,7 +9,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_loop  # noqa: E402
 
-LOOP = {"target": {"metric": "day pass, STOREFRONT per day", "money": "STOREFRONT per day of bot revenue", "throughput_class": "raise"},
+LOOP = {"target": {"metric": "day pass, STOREFRONT per day", "money": "STOREFRONT per day of bot revenue", "throughput_class": "raise",
+                   "segment": {"start": "the block reaches our node", "end": "the order leaves our sender",
+                               "context": ["network after the send", "the exchange's ordering rule"]}},
         "measures": [{"name": "latency_p50_ms", "to_money": "STOREFRONT per ms from the race arithmetic"}],
         "ladder": [{"rung": "oracle", "cost": "0", "accept": "0 differing rows"},
                    {"rung": "offline", "cost": "local CPU", "accept": "no candidate lost"},
@@ -40,6 +42,35 @@ class LoopCheckTest(unittest.TestCase):
             self.assertIn(want, out)
         self.assertEqual(of_loop.check_loop("x", "w"), ["w: loop must be a mapping"])
         self.assertIn("ladder is required", "\n".join(of_loop.check_loop({"target": LOOP["target"]}, "w")))
+
+    def test_the_target_segment(self):
+        """docs/registry.md, Works, "The target's controlled segment" (hand-over c35460ef, 2026-11-12)."""
+        def check(segment=None, metric=None, measures=None, drop=False):
+            t = {k: v for k, v in LOOP["target"].items() if not (drop and k == "segment")}
+            if segment is not None:
+                t["segment"] = segment
+            if metric is not None:
+                t["metric"] = metric
+            return of_loop.check_loop(dict(LOOP, target=t, measures=measures or LOOP["measures"]), "w")
+        self.assertEqual(check(drop=True), ["warning: w: loop: target has no segment (the part the organization "
+                                            "controls, from its start event to its end event; docs/registry.md, Works)"])
+        self.assertEqual(check({"start": "a", "end": "b"}), [])                     # context is optional
+        cases = {"target.segment must be a mapping": "a to b",
+                 "target.segment.start is required": {"end": "b"},
+                 "target.segment.end is required": {"start": "a", "end": " "},
+                 "start and end are the same event": {"start": "Order sent", "end": "order  sent"},
+                 "context must be a list of texts": {"start": "a", "end": "b", "context": "the network"},
+                 "context must be a list of texts ": {"start": "a", "end": "b", "context": ["x", 3]},
+                 "warning: w: loop: target.segment: unknown key 'gates'": {"start": "a", "end": "b", "gates": 4}}
+        for want, seg in cases.items():
+            out = check(seg)
+            self.assertTrue(any(want.strip() in x for x in out), (want, out))
+            self.assertEqual(len(out), 1, out)
+        seg = {"start": "a", "end": "b", "context": ["Network after the send"]}
+        self.assertEqual(check(seg, metric="network after the send"),
+                         ["w: loop: target.metric 'network after the send' is a context part, outside the controlled segment"])
+        self.assertEqual(check(seg, measures=[{"name": "network  after the send", "to_money": "x"}]),
+                         ["w: loop: measure 'network  after the send' is a context part, outside the controlled segment"])
 
     def test_a_loop_yaml_beside_the_doc_is_checked_and_one_place_only(self):
         import importlib.machinery

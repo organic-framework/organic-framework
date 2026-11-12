@@ -20,6 +20,7 @@ DECISIONS = ("keep", "drop", "park", "step_up", "step_back", "change_objective")
 STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked"}
 MODELS = ("haiku", "sonnet", "opus", "fable")
 LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "babysit_model"}
+SEGMENT_KEYS = {"start", "end", "context"}  # the target's controlled segment (docs/registry.md, Works)
 THROUGHPUT = ("raise", "sustain", "expense", "measure", "coordinate")
 
 
@@ -40,6 +41,7 @@ def check_loop(loop, wid, warn="warning: "):
             out.append(f"{tag}: target.throughput_class {t['throughput_class']!r} is not one of {', '.join(THROUGHPUT)}")
         if t.get("better") is not None and t["better"] not in ("higher", "lower"):
             out.append(f"{tag}: target.better is higher or lower")
+        out += _check_segment(t, loop.get("measures"), tag, warn)
     ms = loop.get("measures") or []
     if not isinstance(ms, list):
         out.append(f"{tag}: measures must be a list")
@@ -75,6 +77,43 @@ def check_loop(loop, wid, warn="warning: "):
     bm = loop.get("babysit_model")
     if bm is not None and str(bm).split("-")[0] not in MODELS and not str(bm).startswith("claude-"):
         out.append(f"{warn}{tag}: babysit_model {bm!r} is not a known model family ({', '.join(MODELS)})")
+    return out
+
+
+def _norm(text):
+    return " ".join(str(text).split()).casefold()
+
+
+def _check_segment(target, measures, tag, warn):
+    """The target's controlled segment: the part of the chain the organization controls, named by the events that
+    start and end it; the parts outside it are context, never a target or a measure (docs/registry.md, Works,
+    "The target's controlled segment"; the founder's correction through of_conductor, 2026-11-12)."""
+    seg = target.get("segment")
+    if seg is None:
+        return [f"{warn}{tag}: target has no segment (the part the organization controls, from its start event to "
+                "its end event; docs/registry.md, Works)"]
+    if not isinstance(seg, dict):
+        return [f"{tag}: target.segment must be a mapping (start, end, context)"]
+    out = [f"{warn}{tag}: target.segment: unknown key {k!r}" for k in sorted(set(seg) - SEGMENT_KEYS)]
+    ends = {}
+    for k in ("start", "end"):
+        if not isinstance(seg.get(k), str) or not seg[k].strip():
+            out.append(f"{tag}: target.segment.{k} is required (the event that {k}s the controlled segment)")
+        else:
+            ends[k] = _norm(seg[k])
+    if len(ends) == 2 and ends["start"] == ends["end"]:
+        out.append(f"{tag}: target.segment: start and end are the same event")
+    ctx = seg.get("context")
+    if ctx is None:
+        return out
+    if not isinstance(ctx, list) or not all(isinstance(c, str) and c.strip() for c in ctx):
+        return out + [f"{tag}: target.segment.context must be a list of texts (the parts outside the segment)"]
+    parts = {_norm(c) for c in ctx}
+    if isinstance(target.get("metric"), str) and _norm(target["metric"]) in parts:
+        out.append(f"{tag}: target.metric {target['metric']!r} is a context part, outside the controlled segment")
+    for m in measures if isinstance(measures, list) else []:
+        if isinstance(m, dict) and m.get("name") and _norm(m["name"]) in parts:
+            out.append(f"{tag}: measure {m['name']!r} is a context part, outside the controlled segment")
     return out
 
 
