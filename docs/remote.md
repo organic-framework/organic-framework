@@ -1,6 +1,6 @@
 # Remote only: a person who reaches OF through the conductor's chat alone
 
-Status: **design**, 2026-11-11, by `of_architect`. The founder, 18:18Z, working with a new user organization: "we are again sitting through Remote Control, there is no access to herdr, so the cards, the questions, the things to do are not fully usable. Part of it we cannot do through Remote Control at all. We need to design one more use case, where the work goes entirely through Remote Control, and build it too."
+Status: **design**, 2026-11-11, by `of_architect`; §6 added 2026-11-12. The founder, 18:18Z, working with a new user organization: "we are again sitting through Remote Control, there is no access to herdr, so the cards, the questions, the things to do are not fully usable. Part of it we cannot do through Remote Control at all. We need to design one more use case, where the work goes entirely through Remote Control, and build it too."
 
 ## 1. The case
 
@@ -14,7 +14,7 @@ The person's machine records `surface: remote` in `~/.config/of/owner.yaml` (bes
 - **States and stuck threads.** `of who`, `of handover list` and `of conductor panel --once` print text; the conductor reads them and tells the person what waits on them.
 - **Structure during onboarding.** A provisional position on the person's yes in the conductor's chat (docs/registry.md, Fields, `provisional`) starts work without a diff card.
 - **Agents started without herdr** run in a terminal from the lines `of init` prints. Messages to them wait in `of inbox`; until delivery without herdr exists (§3, row 5), each such agent must read `of inbox --mine` at the start of every turn, and `of_onboarding` puts that line into the package's briefs today.
-- **Waits for the machine:** approving a diff (`of diff approve` runs in a plain shell on the owner's machine), signing a grant, a task that makes a secret, Claude Code's folder-trust dialog. The conductor lists them and says they wait until the person is at the machine.
+- **Waits for the machine:** approving a diff (`of diff approve` runs in a plain shell on the owner's machine, until the passkey approval of §6 ships), signing a grant, a task that makes a secret, Claude Code's folder-trust dialog. The conductor lists them and says they wait until the person is at the machine.
 
 ## 3. What to build
 
@@ -26,7 +26,8 @@ The person's machine records `surface: remote` in `~/.config/of/owner.yaml` (bes
 | 4 | **Tasks with a place.** A task for a person's hands says where it can be done: `where: phone` (a link, an app), `browser`, or `machine` (a terminal, a key, Touch ID). The conductor presents only what the person can do from where they are, and keeps the rest for the machine. | `of_asks` | the conductor shows a `machine` task as waiting, never as steps to type on a phone |
 | 5 | **Delivery without herdr.** Agents that run without herdr run in tmux; the relay delivers into a tmux pane as it does into a herdr pane (idle, empty input box, declared injection). | `of_herdr` with `of_platform` | a message reaches an agent in tmux without anyone typing it |
 | 6 | **The onboarding's remote path**: `of init --surface remote`, agents started in tmux, the conductor's brief with §2's steps. | `of_onboarding` | a new organization's head runs the onboarding from the conductor's chat alone |
-| 7 | **The lab proof**, `lab-remote-v0`: a person reaches only the conductor's session; a card is answered, a medium diff approved, a `machine` task shown as waiting, a message delivered to an agent in tmux, a stuck thread surfaced. | `of_lab` | the scenario passes on a clean VM |
+| 7 | **The lab proof**, `lab-remote-v0`: a person reaches only the conductor's session; a card is answered, a medium diff approved, a `machine` task shown as waiting, a message delivered to an agent in tmux, a stuck thread surfaced; and, once row 8 ships, a high-tier diff approved with a virtual authenticator. | `of_lab` | the scenario passes on a clean VM |
+| 8 | **A diff approved from the phone with the person's passkey**, any tier (§6): enrollment once per device at the machine, the approval page that shows the diff's exact text, the signed record, and `of diff apply` checking it. | `of_server` (of-server: enrollment, page, record) with `of_platform` (`of diff link`, `of diff apply`) | a high-tier diff approved from a phone applies; a forged or stale approval is refused with the reason |
 
 The conductor finds the event id of the person's words with `of prompts --mine`: the recorded prompts of its own session, with their ids (`of_platform`, asked by `of_onboarding` for provisional positions). Rows 1 and 2 and provisional positions all use it.
 
@@ -35,7 +36,7 @@ The conductor finds the event id of the person's words with `of prompts --mine`:
 - **Signing a grant**: the founder's key and Touch ID.
 - **A task that makes a secret**: a value must never pass through a chat (AGENTS.md, tasks that make a secret).
 - **Claude Code's folder-trust dialog** for a new folder.
-- **A high-tier diff** (a delegation, a change of a unit's owner): the owner approves its exact text at the machine.
+- **A high-tier diff** (a delegation, a change of a unit's owner): the owner approves its exact text at the machine, or from the phone with their passkey once §6 ships.
 
 The conductor keeps these in one list and gives it to the person when they say they are at the machine.
 
@@ -44,3 +45,24 @@ The conductor keeps these in one list and gives it to the person when they say t
 A remote answer rests on the person's own words, recorded by the hook in the session that holds their conductor; the conductor points to them and never states a decision of its own (docs/conductor.md, rule 4). The limit (`of_asks`, 2026-11-11): the event store is a file that the agents' operating-system user can write, so a process running as that user could add a forged prompt. Until prompts are recorded by a component the agents cannot write to (of-server under its own operating-system user, the same fix as the independent secrets review's first finding, organic-framework-build `reports/agent-secrets-review-2026-11-11.md`):
 - **answers to cards from the chat** are allowed only for cards that carry no `money`, `security_incident`, `prod_change` or `irreversible` tag;
 - **diff approvals from the chat** (§3, row 2) are on hold: `of diff approve --prompt` refuses, and diffs are approved at the machine.
+
+A component that records prompts outside the agents' reach would protect what is recorded, but it would not show that a prompt is the person's. Any process of the agents' operating-system user can submit a prompt to it as the hook does. So it does not lift the hold on diff approvals from the chat. §6 replaces the chat's yes with a proof only the person can give.
+
+## 6. Approving a diff from the phone with a passkey (design, 2026-11-12)
+
+The founder, 2026-11-12 ~11:38Z, after a user organization's head answered yes to a high-tier diff in the conductor's chat and the yes was recorded but not applied: if OF does not give a person who works through Remote Control this feature, it must be made to work for them (`of_conductor`'s session, prompt `01a1cf8d`; its message `01a1cf8e`). The person approves with a passkey on their phone (WebAuthn: Face ID or Touch ID). The private key never leaves the phone's secure hardware, so no agent on any machine can make the signature.
+
+1. **Enrollment, once per device, at the machine.** The person opens their organization's of-server enrollment page on the machine, which shows a QR code. They scan it with the phone and create a passkey there (the platform's cross-device flow). of-server keeps the credential id and public key under the person's id, in the identity store, never in the registry. The owner then signs a record that names the key's fingerprint, the person and the organization with the organization's grant key (`of grant`, Touch ID). An agent can enroll no key, because it has neither the grant key nor the phone.
+2. **Approval.** `of diff link <id>` prints a link for the conductor to give the person. The page, served by of-server, shows the diff's exact text and digest, with an explanation in the person's language. The WebAuthn challenge is the SHA-256 of the organization, the diff id, its digest, a nonce and an expiry. The person confirms with Face ID or Touch ID. of-server checks the assertion against the enrolled key and records `of.diff_approved {via: passkey, credential, digest, challenge, assertion}`.
+3. **Apply.** `of diff apply` accepts a diff of any tier whose approval carries a passkey assertion when three checks pass:
+   - the assertion verifies against the enrolled key;
+   - the enrollment record verifies against the organization's pinned grant public key;
+   - the challenge covers the diff's current digest and has not expired.
+
+   Anyone can check the record again later, so a forged approval is visible to anyone who looks.
+4. **Where the page runs.** WebAuthn binds a passkey to a domain, so the phone must reach of-server over HTTPS at a stable name.
+   - An organization whose of-server runs on its own servers has that already.
+   - Where of-server runs only on the agents' machine, it needs a tunnel or a private network, and exposing it is that organization's owner's decision, on a card.
+   - The page must be served where agents cannot change it: on another machine, or under of-server's own operating-system user with its code under `protected_code` (docs/registry.md, Credentials; guard rule G21). Otherwise an agent could show one text while the challenge covers another.
+5. **What does not change.** Grants and secrets stay at the machine (§4). A yes in the chat alone still approves no diff (§5).
+
