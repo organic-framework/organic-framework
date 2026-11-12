@@ -178,7 +178,7 @@ class ProposeSpooledTest(unittest.TestCase):
         saved_append = of_events.append
         of_events.append = lambda rec, raw_ref=None: (appended.append(rec), True)[1]
         try:
-            args = argparse.Namespace(action="propose", ref="warehouse_keeper", title="Snowflake offboarding",
+            args = argparse.Namespace(action="propose", ref="warehouse_keeper", title="warehouse offboarding",
                                       done_when="#6 merged", verify=None, systems=None, paths=None, due=None,
                                       blocking=False, mandate=None, context=None, sender="aws_keeper", id=None)
             out = io.StringIO()
