@@ -247,3 +247,261 @@ def verify_assertion(authenticator_data, client_data_json, signature, challenge,
     if not es256_verify(public_key, bytes(authenticator_data) + hashlib.sha256(client_data_json).digest(), signature):
         raise PasskeyError("the signature does not verify against the enrolled passkey")
     return auth["counter"]
+
+
+# ------------------------------------------------------------------------------------------------ the store
+DDL = """
+CREATE TABLE IF NOT EXISTS passkey_windows (id TEXT PRIMARY KEY, org TEXT NOT NULL, person TEXT NOT NULL,
+  by_machine TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL, state TEXT NOT NULL,
+  reg_challenge BLOB NOT NULL, test_challenge BLOB, credential_id TEXT, public_key TEXT, code TEXT);
+CREATE TABLE IF NOT EXISTS passkey_enrollments (credential_id TEXT PRIMARY KEY, org TEXT NOT NULL,
+  person TEXT NOT NULL, public_key TEXT NOT NULL, record TEXT NOT NULL, counter INTEGER NOT NULL DEFAULT 0,
+  enrolled_at REAL NOT NULL, revoked_at REAL);
+CREATE TABLE IF NOT EXISTS passkey_links (nonce TEXT PRIMARY KEY, org TEXT NOT NULL, diff_id TEXT NOT NULL,
+  digest TEXT NOT NULL, text TEXT NOT NULL, created REAL NOT NULL, expires REAL NOT NULL, used REAL);
+"""
+WINDOW_TTL_MAX = 900        # an enrollment window: one credential, then it closes
+LINK_TTL_MAX = 3600         # an approval link
+ENROLLMENT_DAYS = 365       # the signed enrollment record's own expiry, written by the owner's terminal
+
+
+class Refused(Exception):
+    """A refusal the routes answer with: (status, type, title). The title never carries a key or a value."""
+    def __init__(self, status, typ, title):
+        super().__init__(title)
+        self.status, self.typ, self.title = status, typ, title
+
+
+def _iso(t):
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+class Passkeys:
+    """of-server's passkey state for every organization it serves. cfg: `public_url` (https://<host>, the page's
+    origin; its host is the relying party id). grant_keys: () -> the tenant's pinned keys (of_grants.Keys)."""
+
+    def __init__(self, store, cfg, grant_keys, clock=None):
+        import time
+        self.store, self.cfg, self.grant_keys, self.clock = store, cfg, grant_keys, clock or time.time
+        url = str(cfg.get("public_url") or "").rstrip("/")
+        self.origin = url if url.startswith("https://") else None
+        self.rp_id = url[len("https://"):].split("/")[0].split(":")[0] if self.origin else None
+        with store.conn() as c:
+            c.executescript(DDL)
+
+    def _need_origin(self):
+        if not self.origin:
+            raise Refused(409, "not_configured", "passkeys need of-server's public_url, an https address a phone "
+                                                 "reaches (docs/remote.md §6, item 4)")
+
+    @staticmethod
+    def _tenant_of(m, org):
+        orgs = m.get("orgs")
+        orgs = json.loads(orgs) if isinstance(orgs, str) else (orgs or [])
+        if not m.get("tenant") or org not in orgs:
+            raise Refused(403, "forbidden", f"only the tenant's machine, joined to {org}, may do this")
+
+    # -- enrollment ------------------------------------------------------------------------------------------
+    def open_window(self, m, org, person, ttl=600):
+        """A one-credential window for PERSON of ORG. It enrolls nothing by itself: the owner's grant-key signature
+        after the code match does (of_architect, msg 01a1cfbd-2805, point 1)."""
+        import os
+        import secrets
+        self._need_origin()
+        self._tenant_of(m, org)
+        if not person or not isinstance(person, str) or len(person) > 64:
+            raise Refused(400, "bad_request", "person is the person's id in the organization's registry")
+        now, wid = self.clock(), secrets.token_urlsafe(24)
+        ttl = max(60, min(int(ttl or 600), WINDOW_TTL_MAX))
+        with self.store.tx() as c:
+            c.execute("UPDATE passkey_windows SET state = 'closed' WHERE org = ? AND person = ? AND state != 'closed'"
+                      " AND state != 'enrolled'", (org, person))  # one open window per person
+            c.execute("INSERT INTO passkey_windows (id, org, person, by_machine, created, expires, state, reg_challenge)"
+                      " VALUES (?, ?, ?, ?, ?, ?, 'open', ?)", (wid, org, person, m["machine_id"], now, now + ttl,
+                                                                 os.urandom(32)))
+        return {"window": wid, "url": f"{self.origin}/passkey/enroll?w={wid}", "expires": _iso(now + ttl)}
+
+    def _window(self, wid, *states):
+        with self.store.conn() as c:
+            row = c.execute("SELECT id, org, person, by_machine, created, expires, state, reg_challenge, test_challenge,"
+                            " credential_id, public_key, code FROM passkey_windows WHERE id = ?", (str(wid),)).fetchone()
+        keys = ("id", "org", "person", "by_machine", "created", "expires", "state", "reg_challenge", "test_challenge",
+                "credential_id", "public_key", "code")
+        w = dict(zip(keys, row)) if row else None
+        if not w or w["expires"] < self.clock() or (states and w["state"] not in states):
+            raise Refused(404, "not_found", "no such open enrollment window (it expired, closed or took its credential)")
+        return w
+
+    def window_options(self, wid):
+        """What the phone's page passes to navigator.credentials.create."""
+        self._need_origin()
+        w = self._window(wid, "open")
+        return {"challenge": b64u(w["reg_challenge"]), "rp": {"id": self.rp_id, "name": "Organic Framework"},
+                "user": {"id": b64u(hashlib.sha256(f"{w['org']}:{w['person']}".encode()).digest()),
+                         "name": f"{w['person']} ({w['org']})", "displayName": w["person"]},
+                "pubKeyCredParams": [{"type": "public-key", "alg": -7}],
+                "authenticatorSelection": {"userVerification": "required", "residentKey": "preferred"},
+                "attestation": "none", "timeout": 120000}
+
+    def register(self, wid, attestation_object, client_data_json):
+        """The phone's registration: verified, kept on the window, and answered with the test challenge."""
+        import os
+        self._need_origin()
+        w = self._window(wid, "open")
+        try:
+            reg = verify_registration(unb64u(attestation_object), unb64u(client_data_json), w["reg_challenge"],
+                                      self.rp_id, self.origin)
+        except (PasskeyError, ValueError) as e:
+            raise Refused(400, "bad_registration", str(e)) from None
+        test = os.urandom(32)
+        with self.store.tx() as c:
+            n = c.execute("UPDATE passkey_windows SET state = 'registered', credential_id = ?, public_key = ?, code = ?,"
+                          " test_challenge = ? WHERE id = ? AND state = 'open'",
+                          (reg["credential_id"], reg["public_key"], reg["code"], test, wid)).rowcount
+        if n != 1:  # another registration took the window first: this one enrolls nothing
+            raise Refused(409, "window_taken", "the window already took a credential")
+        return {"credential": reg["credential_id"], "test_challenge": b64u(test)}
+
+    def test(self, wid, credential, authenticator_data, client_data_json, signature):
+        """The new key's test assertion; the answer is the code the phone shows."""
+        self._need_origin()
+        w = self._window(wid, "registered")
+        if credential != w["credential_id"]:
+            raise Refused(400, "bad_assertion", "the test assertion is not by the window's credential")
+        try:
+            verify_assertion(unb64u(authenticator_data), unb64u(client_data_json), unb64u(signature),
+                             w["test_challenge"], self.rp_id, self.origin, w["public_key"])
+        except (PasskeyError, ValueError) as e:
+            raise Refused(400, "bad_assertion", str(e)) from None
+        with self.store.tx() as c:
+            c.execute("UPDATE passkey_windows SET state = 'tested' WHERE id = ? AND state = 'registered'", (wid,))
+        return {"code": w["code"]}
+
+    def window_state(self, m, wid):
+        """For the owner's terminal: the window's state, and once tested, what the owner signs."""
+        w = self._window(wid)
+        self._tenant_of(m, w["org"])
+        out = {"window": wid, "org": w["org"], "person": w["person"], "state": w["state"], "expires": _iso(w["expires"])}
+        if w["state"] in ("tested", "enrolled"):
+            out.update(code=w["code"], credential=w["credential_id"], public_key=w["public_key"], rp_id=self.rp_id,
+                       origin=self.origin)
+        return out
+
+    def enroll(self, m, record):
+        """Keep an enrollment record the owner signed with the grant key, for a tested window's credential."""
+        import of_grants
+        self._need_origin()
+        if not isinstance(record, dict) or record.get("kind") != "passkey_enrollment":
+            raise Refused(400, "bad_request", "record is a passkey_enrollment record")
+        self._tenant_of(m, str(record.get("org")))
+        with self.store.conn() as c:
+            row = c.execute("SELECT id FROM passkey_windows WHERE org = ? AND person = ? AND credential_id = ?"
+                            " AND state = 'tested' AND expires > ?", (record.get("org"), record.get("person"),
+                                                                       record.get("credential"), self.clock())).fetchone()
+        if not row:
+            raise Refused(409, "no_window", "no tested window holds this credential for this person")
+        w = self._window(row[0], "tested")
+        for k, want in (("public_key", w["public_key"]), ("rp_id", self.rp_id), ("origin", self.origin)):
+            if record.get(k) != want:
+                raise Refused(400, "bad_record", f"the record's {k} is not the window's")
+        if not of_grants.verify(record, self.grant_keys()):
+            raise Refused(403, "bad_signature", "the record does not verify against the tenant's pinned grant key")
+        with self.store.tx() as c:
+            c.execute("INSERT OR REPLACE INTO passkey_enrollments (credential_id, org, person, public_key, record,"
+                      " enrolled_at) VALUES (?, ?, ?, ?, ?, ?)", (w["credential_id"], w["org"], w["person"],
+                                                                 w["public_key"], json.dumps(record), self.clock()))
+            c.execute("UPDATE passkey_windows SET state = 'enrolled' WHERE id = ?", (w["id"],))
+        return {"enrolled": w["credential_id"], "person": w["person"], "org": w["org"]}
+
+    # -- approval ----------------------------------------------------------------------------------------------
+    def put_link(self, m, org, diff_id, diff, digest, ttl=900):
+        """`of diff link`: the diff itself, checked against its digest with the shared code, and a single-use link."""
+        import secrets
+        import of_diff
+        self._need_origin()
+        orgs = m.get("orgs")
+        orgs = json.loads(orgs) if isinstance(orgs, str) else (orgs or [])
+        if org not in orgs:
+            raise Refused(403, "forbidden", f"this machine has not joined {org}")
+        if not isinstance(diff, dict) or diff.get("id") != diff_id or diff.get("org") not in (None, org):
+            raise Refused(400, "bad_request", "diff is the proposed diff, with this id and organization")
+        if of_diff.digest(diff) != digest:
+            raise Refused(409, "digest_mismatch", "the digest is not the diff's (of_diff.digest over its canonical text)")
+        text = json.dumps(diff, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        now, nonce = self.clock(), secrets.token_urlsafe(24)
+        ttl = max(60, min(int(ttl or 900), LINK_TTL_MAX))
+        with self.store.tx() as c:
+            c.execute("INSERT INTO passkey_links (nonce, org, diff_id, digest, text, created, expires) VALUES"
+                      " (?, ?, ?, ?, ?, ?, ?)", (nonce, org, diff_id, digest, text, now, now + ttl))
+        from urllib.parse import quote
+        return {"url": f"{self.origin}/approve/diff?org={quote(org)}&id={quote(diff_id)}&digest={digest}&n={nonce}",
+                "nonce": nonce, "expires": _iso(now + ttl)}
+
+    def _link(self, nonce):
+        with self.store.conn() as c:
+            row = c.execute("SELECT nonce, org, diff_id, digest, text, expires, used FROM passkey_links WHERE nonce = ?",
+                            (str(nonce or ""),)).fetchone()
+        link = dict(zip(("nonce", "org", "diff_id", "digest", "text", "expires", "used"), row)) if row else None
+        if not link or link["used"] or link["expires"] < self.clock():
+            raise Refused(404, "not_found", "no such approval link (it expired or was used)")
+        return link
+
+    def approval_page(self, org, diff_id, digest, nonce):
+        """What the approval page shows and asks the phone to sign; nothing without a valid nonce."""
+        import of_passkey
+        self._need_origin()
+        link = self._link(nonce)
+        if (link["org"], link["diff_id"], link["digest"]) != (org, diff_id, digest):
+            raise Refused(404, "not_found", "no such approval link (it expired or was used)")
+        pre = of_passkey.preimage(org, diff_id, digest, nonce, _iso(link["expires"]))
+        with self.store.conn() as c:
+            creds = [r[0] for r in c.execute("SELECT credential_id FROM passkey_enrollments WHERE org = ? AND"
+                                             " revoked_at IS NULL", (org,))]
+        return {"org": org, "id": diff_id, "digest": digest, "text": link["text"], "preimage": pre,
+                "challenge": b64u(hashlib.sha256(pre.encode()).digest()), "credentials": creds,
+                "rp_id": self.rp_id, "expires": _iso(link["expires"])}
+
+    def approve(self, nonce, credential, authenticator_data, client_data_json, signature):
+        """Verify the assertion over the link's preimage with the enrolled key, use the nonce, and return the
+        of.diff_approved payload (of_passkey's record shape) for the organization's feed."""
+        import of_passkey
+        self._need_origin()
+        link = self._link(nonce)
+        with self.store.conn() as c:
+            row = c.execute("SELECT org, person, public_key, record, counter, revoked_at FROM passkey_enrollments"
+                            " WHERE credential_id = ?", (str(credential or ""),)).fetchone()
+        if not row or row[0] != link["org"]:
+            raise Refused(403, "not_enrolled", "this passkey is not enrolled for the organization")
+        if row[5] is not None:
+            raise Refused(403, "revoked", "this passkey was revoked")
+        pre = of_passkey.preimage(link["org"], link["diff_id"], link["digest"], nonce, _iso(link["expires"]))
+        try:
+            count = verify_assertion(unb64u(authenticator_data), unb64u(client_data_json), unb64u(signature),
+                                     hashlib.sha256(pre.encode()).digest(), self.rp_id, self.origin, row[2],
+                                     last_counter=row[4])
+        except (PasskeyError, ValueError) as e:
+            raise Refused(400, "bad_assertion", str(e)) from None
+        with self.store.tx() as c:
+            if c.execute("UPDATE passkey_links SET used = ? WHERE nonce = ? AND used IS NULL",
+                         (self.clock(), nonce)).rowcount != 1:
+                raise Refused(409, "used", "the approval link was used already")
+            if count:
+                c.execute("UPDATE passkey_enrollments SET counter = ? WHERE credential_id = ?", (count, credential))
+        return {"id": link["diff_id"], "digest": link["digest"], "by": "owner", "via": "passkey", "org": link["org"],
+                "credential": credential, "preimage": pre, "authenticator_data": authenticator_data,
+                "client_data_json": client_data_json, "signature": signature, "enrollment": json.loads(row[3])}
+
+    def revoke(self, m, record):
+        """An owner-signed passkey_revocation (docs/registry.md, Passkey revocations): of-server refuses the
+        credential at once. Machines learn it from the organization's grants file (of_grants.passkey_revoked)."""
+        import of_grants
+        if not isinstance(record, dict) or record.get("kind") != "passkey_revocation":
+            raise Refused(400, "bad_request", "record is a passkey_revocation record")
+        self._tenant_of(m, str(record.get("org")))
+        if not of_grants.verify(record, self.grant_keys()):
+            raise Refused(403, "bad_signature", "the record does not verify against the tenant's pinned grant key")
+        with self.store.tx() as c:
+            n = c.execute("UPDATE passkey_enrollments SET revoked_at = ? WHERE credential_id = ? AND org = ?",
+                          (self.clock(), record.get("credential"), record.get("org"))).rowcount
+        return {"revoked": record.get("credential"), "known": bool(n)}
