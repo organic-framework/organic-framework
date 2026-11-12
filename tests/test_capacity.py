@@ -408,7 +408,7 @@ class MovePieces(unittest.TestCase):
 
 class PlanAndWatch(unittest.TestCase):
     ROWS = [dict(_row("/g", 0, 100), account="g@x", status="rejected", positions=["acme_done", "acme_a", "acme_prod", "acme_parked"],
-                 by_org={"mt": ["acme_a", "acme_prod", "acme_parked"]}),
+                 by_org={"acme": ["acme_a", "acme_prod", "acme_parked"]}),
             dict(_row("/e", 5, 1), account="e@x", positions=["of_x"]),
             dict(_row("/d", 0, 0), account="d@x", positions=[]),
             dict(_row("/p", 0, 99), account="p@x", positions=[])]
@@ -2399,24 +2399,24 @@ class PositionMemory(unittest.TestCase):
         logs = []
         with mock.patch.object(of_spawn, "deny_rules", return_value=["Read(/k/**)"]) as dr, \
                 mock.patch("of_credentials.load", return_value={}):
-            self.assertEqual(["Read(/k/**)"], of_capacity.deny_for({"name": "net_keeper", "_org": "mt"}, logs.append))
-            dr.assert_called_once_with("net_keeper", "mt", {})
+            self.assertEqual(["Read(/k/**)"], of_capacity.deny_for({"name": "net_keeper", "_org": "acme"}, logs.append))
+            dr.assert_called_once_with("net_keeper", "acme", {})
         with mock.patch.object(of_spawn, "deny_rules", return_value=[]):
-            self.assertIsNone(of_capacity.deny_for({"name": "n", "_org": "mt"}, logs.append))
+            self.assertIsNone(of_capacity.deny_for({"name": "n", "_org": "acme"}, logs.append))
         with mock.patch("of_credentials.load", side_effect=ValueError("bad yaml")):
-            self.assertIsNone(of_capacity.deny_for({"name": "n", "_org": "mt"}, logs.append))
+            self.assertIsNone(of_capacity.deny_for({"name": "n", "_org": "acme"}, logs.append))
         self.assertIn("the guard still applies", logs[-1])
         self.assertIsNone(of_capacity.deny_for(None, logs.append))
 
     def test_owners_by_store_aliases_and_registry(self):
-        pos = [{"name": "wholesale_keeper", "_org": "mt", "aliases": ["wholesale_gitops"]},
-               {"name": "net_keeper", "_org": "mt", "holder": {"session": "H"}}]
-        rows = [("2026-11-08T01", "A", "mt", "wholesale_gitops"), ("2026-11-08T02", "B", None, "gone_position"),
-                ("2026-11-08T03", "H", "mt", "wholesale_keeper")]
+        pos = [{"name": "wholesale_keeper", "_org": "acme", "aliases": ["wholesale_gitops"]},
+               {"name": "net_keeper", "_org": "acme", "holder": {"session": "H"}}]
+        rows = [("2026-11-08T01", "A", "acme", "wholesale_gitops"), ("2026-11-08T02", "B", None, "gone_position"),
+                ("2026-11-08T03", "H", "acme", "wholesale_keeper")]
         own = of_capacity.session_owners(rows, pos)
-        self.assertEqual(own["A"], ("mt", "wholesale_keeper"))   # a renamed position answers by its canonical name
+        self.assertEqual(own["A"], ("acme", "wholesale_keeper"))   # a renamed position answers by its canonical name
         self.assertNotIn("B", own)                             # no registry knows it: its files stay in the folder
-        self.assertEqual(own["H"], ("mt", "net_keeper"))      # the registry's holder.session wins
+        self.assertEqual(own["H"], ("acme", "net_keeper"))      # the registry's holder.session wins
 
     def test_union_of_two_copies_keeps_every_line_once(self):
         a = self.doc("S", "one\ntwo\nthree\n", "2026-11-08T10:00:00Z").encode()
@@ -2442,25 +2442,25 @@ class PositionMemory(unittest.TestCase):
             d = self.mem(t, ".claude-b", "-w", "loose.md", "no frontmatter at all\n")
             with open(os.path.join(d, "MEMORY.md"), "w") as fh:
                 fh.write("- [Old lesson](old.md) — kept wording\n")
-            owners = {"S1": ("mt", "p"), "S2": ("mt", "p")}
+            owners = {"S1": ("acme", "p"), "S2": ("acme", "p")}
             by, loose = of_capacity.attribute_memory(accts, owners)
-            self.assertEqual(sorted(by[("mt", "p")]), ["new.md", "old.md"])
+            self.assertEqual(sorted(by[("acme", "p")]), ["new.md", "old.md"])
             self.assertEqual(sorted(os.path.basename(x) for x in loose), ["loose.md", "other.md"])
             root, base = os.path.join(t, "memory"), os.path.join(t, "base")
-            pdir = os.path.join(root, "mt", "p")
-            acts = of_capacity.seed_position_memory(pdir, by[("mt", "p")], accts, base_root=base)
+            pdir = os.path.join(root, "acme", "p")
+            acts = of_capacity.seed_position_memory(pdir, by[("acme", "p")], accts, base_root=base)
             self.assertEqual(dict(acts), {"new.md": "union", "old.md": "copy"})
             self.assertEqual(os.stat(pdir).st_mode & 0o777, 0o700)
-            self.assertEqual(os.stat(os.path.join(root, "mt")).st_mode & 0o777, 0o700)
+            self.assertEqual(os.stat(os.path.join(root, "acme")).st_mode & 0o777, 0o700)
             with open(os.path.join(pdir, "new.md")) as fh:
                 self.assertIn("and more", fh.read())
             with open(os.path.join(pdir, "MEMORY.md")) as fh:
                 idx = fh.read().splitlines()
             self.assertEqual(idx, ["- [new](new.md) — about new", "- [Old lesson](old.md) — kept wording"])
             # a second run with nothing new changes nothing; an edit on one account comes through as an update
-            self.assertEqual(of_capacity.seed_position_memory(pdir, by[("mt", "p")], accts, base_root=base), [])
+            self.assertEqual(of_capacity.seed_position_memory(pdir, by[("acme", "p")], accts, base_root=base), [])
             self.mem(t, ".claude-a", "-w", "old.md", self.doc("S1", "lesson old\nrevised\n", "2026-11-09T12:00:00Z", "old"))
-            acts = of_capacity.seed_position_memory(pdir, by[("mt", "p")], accts, base_root=base)
+            acts = of_capacity.seed_position_memory(pdir, by[("acme", "p")], accts, base_root=base)
             self.assertEqual(acts, [("old.md", "update")])
             with open(os.path.join(pdir, "MEMORY.md")) as fh:
                 self.assertTrue(fh.readline().startswith("- [Old lesson](old.md)"))   # now the newest
@@ -2471,15 +2471,15 @@ class PositionMemory(unittest.TestCase):
             self.mem(t, ".claude-a", "-w", "a.md", self.doc("S1", "from a\n", name="a"))
             self.mem(t, ".claude-a", "-w", "b.md", self.doc("S2", "from b\n", name="b"))
             units = {"bot": {"memory": "unit", "owner": "a"}}
-            pos = [{"name": "a", "_org": "mt", "_unit": "bot", "_units": units, "holder": {"session": "S1"}},
-                   {"name": "b", "_org": "mt", "_unit": "bot", "_units": units, "holder": {"session": "S2"}}]
+            pos = [{"name": "a", "_org": "acme", "_unit": "bot", "_units": units, "holder": {"session": "S1"}},
+                   {"name": "b", "_org": "acme", "_unit": "bot", "_units": units, "holder": {"session": "S2"}}]
             orig = of_capacity._session_rows
             of_capacity._session_rows = lambda: []
             try:
                 r = of_capacity.seed_memory(pos, dirs=accts, root=os.path.join(t, "m"))
             finally:
                 of_capacity._session_rows = orig
-            shared = os.path.join(t, "m", "mt", "unit-bot")
+            shared = os.path.join(t, "m", "acme", "unit-bot")
             self.assertEqual(list(r["positions"]), [shared])
             self.assertEqual(sorted(r["members"][shared]), ["a", "b"])
             self.assertEqual(sorted(os.listdir(shared)), ["MEMORY.md", "a.md", "b.md"])
@@ -2498,11 +2498,11 @@ class PositionMemory(unittest.TestCase):
                         {"type": "tool_use", "name": "Bash", "input": {"command": sid_cmd}}]}}) + "\n")
             writes = of_capacity.memory_writes([acct])
             self.assertEqual(list(writes), ["-w/memory/old.md"])     # a heredoc counts; a cp from it does not
-            by, loose = of_capacity.attribute_memory([acct], {"S1": ("mt", "p")}, writes)
-            self.assertEqual(list(by[("mt", "p")]), ["old.md"])
-            left = of_capacity.leftover_memory(loose, writes, {}, [acct], org_paths=[("-w", "mt")])
-            self.assertEqual([(r["file"], r["type"]) for r in left["mt"]], [("rule.md", "feedback"), ("orphan.md", "project")])
-            path = of_capacity.write_leftover_report("mt", left["mt"], root=os.path.join(t, "m"))
+            by, loose = of_capacity.attribute_memory([acct], {"S1": ("acme", "p")}, writes)
+            self.assertEqual(list(by[("acme", "p")]), ["old.md"])
+            left = of_capacity.leftover_memory(loose, writes, {}, [acct], org_paths=[("-w", "acme")])
+            self.assertEqual([(r["file"], r["type"]) for r in left["acme"]], [("rule.md", "feedback"), ("orphan.md", "project")])
+            path = of_capacity.write_leftover_report("acme", left["acme"], root=os.path.join(t, "m"))
             with open(path) as fh:
                 text = fh.read()
             self.assertLess(text.index("## feedback"), text.index("## project"))
@@ -2564,7 +2564,7 @@ class Reboot(unittest.TestCase):
             self.assertIsNone(of_capacity.flags_from_args(f"claude --settings {f}.gone hi")[3])
 
     def test_plan_puts_production_first_and_carries_place_and_flags(self):
-        positions = [{"name": "k8s_keeper", "_org": "mt", "holder": {"session": "s1"}},
+        positions = [{"name": "k8s_keeper", "_org": "acme", "holder": {"session": "s1"}},
                      {"name": "of_studio", "_org": "ofb", "holder": {"session": "s2"}}]
         sessions = {"/h/.claude-a": [{"session": "s2", "status": "idle", "cwd": "/w", "pid": 2},
                                      {"session": "s3", "status": "idle", "cwd": "/w", "pid": 3, "name": "loose"}],
