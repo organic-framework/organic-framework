@@ -67,7 +67,7 @@ class PasskeyApprovalTest(unittest.TestCase):
         saved = getattr(of_grants, "passkey_revoked", None)
         of_grants.passkey_revoked = lambda org, credential: (org, credential) in self.revoked
         self.addCleanup(lambda: setattr(of_grants, "passkey_revoked", saved) if saved else
-                        delattr(of_grants, "passkey_revoked"))
+                        vars(of_grants).pop("passkey_revoked", None))   # a test may have removed it already
 
     def enrollment(self, signer=None, **over):
         rec = {"kind": P.KIND, "org": ORG, "person": "founder", "credential": "cred-1", "public_key": self.phone.spki,
@@ -162,6 +162,11 @@ class PasskeyApprovalTest(unittest.TestCase):
         good, forged = self.approval(), self.approval(enrollment=self.enrollment(signer=self.intruder))
         e = {"id": DIFF, "passkey": [("2026-11-12T12:05:00Z", good)]}
         self.assertEqual(of._passkey_approval(e, d, DIGEST, positions=positions), (True, None))
+        # an earlier forged event with a huge counter does not block the phone: only verified counters count
+        chal = P.challenge(ORG, DIFF, DIGEST, NONCE, EXPIRES)
+        huge = dict(self.approval(assertion=self.phone.assertion(chal, count=0xFFFFFFFF)), signature=P.b64u(b"x"))
+        blocked = {"id": DIFF, "passkey": [("2026-11-12T12:04:00Z", huge), ("2026-11-12T12:05:00Z", good)]}
+        self.assertEqual(of._passkey_approval(blocked, d, DIGEST, positions=positions), (True, None))
         replay = {"id": DIFF, "passkey": [("2026-11-12T12:05:00Z", good), ("2026-11-12T12:06:00Z", good)]}
         self.assertEqual(of._passkey_approval(replay, d, DIGEST, positions=positions), (True, None))  # the first holds
         e2 = {"id": DIFF, "passkey": [("2026-11-12T12:04:00Z", self.approval(enrollment=self.enrollment(person="x"))),

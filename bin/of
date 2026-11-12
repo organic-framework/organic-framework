@@ -3617,7 +3617,7 @@ def _passkey_approval(e, d, dg, events=None, positions=None):
     seen = [(ts, p) for x in (events or {e.get("id"): e}).values() for ts, p in x.get("passkey") or []]
     newest = None
     for ts, p in reversed(e.get("passkey") or []):
-        last = max([of_passkey.counter(q) or 0 for t, q in seen
+        last = max([of_passkey.verified_counter(q, d["org"], of_grants.local_keys()) for t, q in seen
                     if t < ts and q.get("credential") == p.get("credential")] or [0])
         why = of_passkey.approval_problem(p, d["id"], d["org"], dg, of_grants.local_keys(), recorded_at=ts,
                                           approvers=approvers, server=_org_server(d["org"]), last_counter=last)

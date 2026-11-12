@@ -189,6 +189,19 @@ def approval_problem(approval, diff_id, org, digest, keys, recorded_at=None, app
     return assertion_problem(approval, record, hashlib.sha256(approval["preimage"].encode()).digest(), last_counter)
 
 
+def verified_counter(approval, org, keys):
+    """The signature counter of an earlier approval, counted only when that approval's enrollment and signature
+    verify: a forged event with a high counter must not block the phone (of_review on PR 64)."""
+    record = approval.get("enrollment")
+    if enrollment_problem(record, org, keys, at=0) is not None:
+        return 0
+    try:
+        pre = hashlib.sha256(str(approval.get("preimage") or "").encode()).digest()
+    except (TypeError, ValueError):
+        return 0
+    return (counter(approval) or 0) if assertion_problem(approval, record, pre) is None else 0
+
+
 def link(server, org, diff_id, digest):
     """The approval page's address on the organization's of-server, or (None, why). WebAuthn needs HTTPS at a stable
     name (docs/remote.md §6, item 4)."""
