@@ -289,7 +289,14 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         if org in BROKEN or not os.path.exists(path):
             continue
         with open(path) as fh:
-            works = (yaml.safe_load(fh) or {}).get("works")
+            doc = yaml.safe_load(fh) or {}
+        works = doc.get("works")
+        if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
+            import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
+            problems += [(f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}" if pr.startswith(WARN)
+                          else f"{org}:registry/positions.yaml: {pr}")
+                         for pr in of_goals.check(doc.get("goals"), doc.get("conditions"), works, WARN)
+                         if deep or not pr.startswith(WARN)]
         if works is not None:
             names = {p["name"] for p in positions if p.get("_org") == org}
             systems = next((p["_systems"] for p in positions if p.get("_org") == org), {})
