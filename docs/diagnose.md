@@ -461,7 +461,7 @@ The decision:
   - reads, since reading others' code is normal;
   - `Bash`, since a shell at a repository root is `unscoped`;
   - paths outside the organization;
-  - paths no system claims: those are the map's gap, §2.7's `cluster`, and appear here only as evidence.
+  - paths no system claims: those are the map's gap, §2.7's `cluster`, and appear here only as evidence. They are keyed by area as `cluster` keys them, so an edit in a linked worktree counts under its repository, never as `~/<org>/.worktrees` (2026-11-12, `of_studio`'s `area_of`; that label made a structure keeper read an issue as a worktree bug).
 - **Rule:** at least 10 such edits, and an `in_mandate` share under 0.5. One issue per position.
 - **Parts by remedy**, same issue id:
   - `no_own_paths`: none of its edits falls in its own system, so its mandate maps to no paths. The fix is in the registry: name its subsystem with paths (a system with `parent` and `paths`) and set the position's system to it.
