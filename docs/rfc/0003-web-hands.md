@@ -81,10 +81,10 @@ Rules:
   - the Launchpad report;
   - two posts in a Slack Connect channel;
   - deleting old GitHub app keys;
-  - disabling a former employee in Snowflake;
-  - deleting the old QuickNode token.
+  - disabling a former employee in the data warehouse;
+  - deleting an old provider token.
 
-  The rest create or show a secret (Grafana, R2, QuickNode and lab tokens, a GitHub app key), need his presence (AWS SSO, Snowflake SSO, Touch ID), or move money.
+  The rest create or show a secret (monitoring, object storage, provider and lab tokens, a GitHub app key), need his presence (cloud and warehouse single sign-on, Touch ID), or move money.
 - **Codex on this Mac.** Codex ships inside ChatGPT.app with its CLI (`codex-cli 0.167.0-alpha.3.2`).
   - Feature flags `browser_use`, `browser_use_external`, `computer_use`, `in_app_browser` and `hooks` are stable and on.
   - Plugins `browser` (the in-app browser, aimed at local targets), `computer-use` and `unified-computer-use` are enabled.
