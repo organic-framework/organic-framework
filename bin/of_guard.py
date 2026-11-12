@@ -238,18 +238,21 @@ def _py_strings(code):
         if not m or not s.endswith(m.group(2)) or len(s) < len(m.group(0)) + len(m.group(2)):
             continue
         bodies = [s[len(m.group(0)):len(s) - len(m.group(2))]]
-        if not set(m.group(1).lower()) & {"f", "t"}:
-            # its value too, escapes decoded: "\x7e/.ssh/…" or a backslash-newline inside the string hid a path
-            # (of_review on organic-framework PR 97)
-            try:
-                with warnings.catch_warnings():  # an invalid escape ("\$") warns on stderr, which a hook must not
-                    warnings.simplefilter("ignore")
-                    value = ast.literal_eval(s)
-            except (ValueError, SyntaxError, MemoryError, RecursionError):
-                value = None
-            value = value.decode("latin-1") if isinstance(value, bytes) else value
-            if isinstance(value, str) and value != bodies[0]:
-                bodies.append(value)
+        # its value too, escapes decoded: "\x7e/.ssh/…" or a backslash-newline inside the string hid a path (of_review
+        # on organic-framework PR 97); an f-string's or t-string's text parts the same way, each replacement field
+        # read as {} (of_review and of_secrets-review on PR 97: f-strings had kept their escapes)
+        try:
+            with warnings.catch_warnings():  # an invalid escape ("\$") warns on stderr, which a hook must not
+                warnings.simplefilter("ignore")
+                node = ast.parse(s.lstrip(), mode="eval").body
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            node = None
+        parts = getattr(node, "values", None) if not isinstance(node, ast.Constant) else [node]
+        value = "".join(p.value if isinstance(p, ast.Constant) and isinstance(p.value, str) else
+                        p.value.decode("latin-1") if isinstance(p, ast.Constant) and isinstance(p.value, bytes) else
+                        "{}" for p in parts) if isinstance(parts, list) else None
+        if value is not None and value != bodies[0]:
+            bodies.append(value)
         for body in bodies:
             if len(m.group(2)) == 3:
                 body = body.strip()

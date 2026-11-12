@@ -437,7 +437,8 @@ class GuardBashTest(unittest.TestCase):
         # a python string's value counts too: an escape or a backslash-newline inside it hid a path (of_review on
         # organic-framework PR 97)
         for hidden in ("'~/.ssh/id_\\x65d25519'", "'~/.ssh/id_\\\ned25519'", "b'~/.ssh/id_\\x65d25519'",
-                       "'''~/.ssh/id_\\x65d25519'''"):
+                       "'''~/.ssh/id_\\x65d25519'''", "f'~/.ssh/id_\\x65d25519'", "f'{h}/.ssh/id_\\x65d25519'",
+                       "f'''{h}/.ssh/id_\\x65d25519'''"):
             self.assertFalse(of_guard._secret_path(hidden.strip("b'")), hidden)  # the raw text names no key
             self.assertTrue(deny(py("print(open(" + hidden + ").read())")), hidden)
         import warnings
