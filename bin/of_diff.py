@@ -27,9 +27,11 @@ import re
 
 import yaml
 
-KINDS_V1 = ("spawn", "mandate_rewrite", "swap_holder", "delegate")  # v2 ops: amend_delegation, agents_md
+KINDS_V1 = ("spawn", "mandate_rewrite", "swap_holder", "delegate", "goal_change")  # v2 ops: amend_delegation, agents_md
 KINDS_ALL = ("split", "merge", "spawn", "close", "park", "swap_holder", "reassign_owner", "delegate",
-             "move_workplace", "handover_rule", "mandate_rewrite", "grant_change")
+             "move_workplace", "handover_rule", "mandate_rewrite", "grant_change", "goal_change")
+GOAL_OPS = ("add", "rewrite", "close")
+CLOSED = {"goals": ("achieved", "dropped"), "conditions": ("dropped",)}
 TIERS = ("low", "medium", "high")
 POSITION_FIELDS = ("name", "system", "unit", "role", "kind", "throughput", "owner", "summary", "status", "enrolled",
                    "mandate", "mandate_exit", "mandate_functions", "response_window", "serves", "note",
@@ -87,7 +89,12 @@ def check_format(d, catalogue=None):
     if d.get("tier") in ("medium", "high") and "owner" not in (d.get("approvals") or []):
         out.append("a medium or high tier diff needs approvals: [owner]")
     ch = d.get("changes")
-    if not isinstance(ch, dict) or not ch.get("registry"):
+    if kind == "goal_change":  # docs/handover.md §3: goals and conditions, medium tier at least
+        if not isinstance(ch, dict) or not (ch.get("goals") or ch.get("conditions")):
+            out.append("changes.goals or changes.conditions is required")
+        if d.get("tier") not in ("medium", "high"):
+            out.append("a goal_change is medium tier at least: the owner approves the exact text")
+    elif not isinstance(ch, dict) or not ch.get("registry"):
         out.append("changes.registry is required")
     return out
 
@@ -189,6 +196,32 @@ def _top_span(lines, key):
         return None
     end = next((i for i in range(start + 1, len(lines)) if re.match(r"^[A-Za-z_][\w-]*:", lines[i])), len(lines))
     return start, end
+
+
+def pending_decided(d):
+    """What a goal_change writes into `decided` until `of diff apply` puts the approval's id there."""
+    return f"pending approval of {d.get('id')}"
+
+
+def set_top_entry(text, block, key, value):
+    """Write the entry `key` of the top-level mapping `block` (goals:, conditions:) as `value`, replacing the entry
+    when it exists (its own comments go with it) and appending it, or the block, when not; the rest is untouched."""
+    lines = text.split("\n")
+    rendered = [f"  {key}:"] + [ln for k, v in value.items() for ln in _render_field(k, v)]
+    span = _top_span(lines, block)
+    if span is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines + ["", f"{block}:"] + rendered) + "\n"
+    start, end = span
+    at = next((i for i in range(start + 1, end) if re.match(rf"^  {re.escape(str(key))}:\s*(#.*)?$", lines[i])), None)
+    if at is None:
+        last = max([i for i in range(start + 1, end) if lines[i].strip()] or [start])
+        return "\n".join(lines[:last + 1] + rendered + lines[last + 1:])
+    stop = next((i for i in range(at + 1, end) if re.match(r"^  \S", lines[i]) or re.match(r"^\S", lines[i])), end)
+    while stop > at + 1 and not lines[stop - 1].strip():
+        stop -= 1
+    return "\n".join(lines[:at] + rendered + lines[stop:])
 
 
 def set_unit_owner(text, unit, owner):
@@ -686,10 +719,63 @@ def plan(d, doc):
             problems.append(f"changes.agents_md[{i}]: {{op: insert_line, after: <the start of one line>, text: ...}}")
             continue
         briefs.append(dict(a, path="AGENTS.md"))
+    if kind == "goal_change":
+        edits += _goal_edits(d, doc, problems)
+    elif ch.get("goals") or ch.get("conditions"):
+        problems.append("changes.goals and changes.conditions belong to a goal_change diff")
     for k in ("grants", "routing", "desk"):
         if ch.get(k):
             problems.append(f"changes.{k}: not applied by v1; split it into its own diff later")
     return edits, briefs, problems
+
+
+def _goal_edits(d, doc, problems):
+    """docs/handover.md §3, goal_change: {op: add | rewrite | close, id, value} on goals and conditions. add writes
+    the node, rewrite sets the given fields over the existing node, close sets its state (achieved or dropped for a
+    goal, dropped for a condition). Each node's `decided` becomes the approval's id at apply; until then it names
+    this diff. The goal checks (bin/of_goals.py) then run on the registry as it would be."""
+    ch, edits = d.get("changes") or {}, []
+    for block in ("goals", "conditions"):
+        have = doc.get(block) if isinstance(doc.get(block), dict) else {}
+        for i, c in enumerate(ch.get(block) or []):
+            tag = f"changes.{block}[{i}]"
+            if not isinstance(c, dict) or c.get("op") not in GOAL_OPS or not c.get("id"):
+                problems.append(f"{tag}: takes {{op: {' | '.join(GOAL_OPS)}, id, value: {{...}}}}")
+                continue
+            gid, op, v = str(c["id"]), c["op"], c.get("value") or {}
+            if not isinstance(v, dict):
+                problems.append(f"{tag}: value must be a mapping")
+                continue
+            if "decided" in v:
+                problems.append(f"{tag}: decided is written by `of diff apply` (the approval's id), not by the diff")
+                continue
+            if op == "add":
+                if gid in have:
+                    problems.append(f"{tag}: {gid} exists already; rewrite it")
+                    continue
+                node = dict(v)
+            elif gid not in have or not isinstance(have[gid], dict):
+                problems.append(f"{tag}: no {block[:-1]} {gid!r} to {op}")
+                continue
+            elif op == "rewrite":
+                if not v:
+                    problems.append(f"{tag}: rewrite needs the fields it sets")
+                    continue
+                node = dict(have[gid], **v)
+            else:
+                state = v.get("state")
+                if state not in CLOSED[block]:
+                    problems.append(f"{tag}: close sets state to {' or '.join(CLOSED[block])}")
+                    continue
+                node = dict(have[gid], state=state)
+            node["decided"] = pending_decided(d)
+            edits.append((lambda t, b=block, k=gid, n=node: set_top_entry(t, b, k, n), f"{op} {block[:-1]} {gid}"))
+    return edits
+
+
+def stamp_decided(text, d, approval_id):
+    """At apply: every `decided` this goal_change wrote names the approval's id instead of the diff."""
+    return text.replace(f"decided: {pending_decided(d)}", f"decided: {approval_id}")
 
 
 def preview(d, registry_text):

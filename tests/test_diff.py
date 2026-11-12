@@ -217,6 +217,108 @@ class EndToEndTest(unittest.TestCase):
             self.assertIn("applied", run("diff", "list").stdout)
 
 
+class GoalChangeTest(unittest.TestCase):
+    """docs/handover.md §3, goal_change: goals and conditions added, rewritten or closed in one diff."""
+    D = {"id": "sd-2026-11-12-goals", "kind": "goal_change", "tier": "medium", "author": "of_a", "org": "ofb",
+         "hypothesis": "h", "approvals": ["owner"], "predicted": [{"metric": "m", "to": 0}], "reversal": "back",
+         "changes": {"goals": [
+             {"op": "add", "id": "g-revenue", "value": {"title": "Revenue", "rank": 1, "measure": "m", "state": "active",
+                                                       "owner": "founder"}},
+             {"op": "add", "id": "g-orders", "value": {"parent": "g-revenue", "title": "Orders", "rank": 1,
+                                                      "measure": "orders a day", "target": "+10%", "state": "active"}}],
+             "conditions": [{"op": "add", "id": "c-uptime", "value": {"title": "Up", "measure": "m", "level": "99.9%",
+                                                                       "state": "active"}}]}}
+
+    def test_add_then_rewrite_and_close(self):
+        self.assertEqual(of_diff.check_format(self.D), [])
+        new, problems = of_diff.preview(self.D, REG)
+        self.assertEqual(problems, [])
+        doc = yaml.safe_load(new)
+        self.assertIn("# a kept comment", new)
+        self.assertEqual(doc["goals"]["g-orders"]["target"], "+10%")
+        self.assertEqual(doc["goals"]["g-revenue"]["decided"], "pending approval of sd-2026-11-12-goals")
+        self.assertEqual(doc["conditions"]["c-uptime"]["level"], "99.9%")
+        self.assertEqual(doc["positions"], yaml.safe_load(REG)["positions"])
+        stamped = yaml.safe_load(of_diff.stamp_decided(new, self.D, "ask-1234"))
+        self.assertEqual({g["decided"] for g in stamped["goals"].values()} | {stamped["conditions"]["c-uptime"]["decided"]},
+                         {"ask-1234"})
+        later = dict(self.D, id="sd-2026-11-12-goals-2", changes={"goals": [
+            {"op": "rewrite", "id": "g-orders", "value": {"target": "+15%"}},
+            {"op": "close", "id": "g-revenue", "value": {"state": "achieved"}}]})
+        text = of_diff.stamp_decided(new, self.D, "ask-1234").replace("goals:", "goals:  # the owner's tree", 1)
+        newer, problems = of_diff.preview(later, text)
+        self.assertEqual(problems, [])
+        doc = yaml.safe_load(newer)
+        self.assertEqual((doc["goals"]["g-orders"]["target"], doc["goals"]["g-orders"]["measure"]), ("+15%", "orders a day"))
+        self.assertEqual(doc["goals"]["g-revenue"]["state"], "achieved")
+        self.assertEqual(doc["goals"]["g-revenue"]["decided"], "pending approval of sd-2026-11-12-goals-2")
+        self.assertEqual(doc["conditions"]["c-uptime"]["decided"], "ask-1234")   # untouched nodes keep theirs
+        self.assertIn("goals:  # the owner's tree", newer)
+
+    def test_propose_approve_apply_stamps_the_ask(self):
+        import json
+        import subprocess
+        import tempfile
+        of = os.path.join(HERE, "..", "bin", "of")
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "org", "registry"))
+            os.makedirs(os.path.join(t, "state"))
+            with open(os.path.join(t, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write(REG)
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {t}/org\n    workspace: ofb\n")
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=os.path.join(t, "orgs.yaml"),
+                       OF_CONFIG_DIR=t, PATH="/usr/bin:/bin")
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True, timeout=60)
+            bad = os.path.join(t, "bad.yaml")  # a sub-goal without target: the goal checks run on the registry after
+            with open(bad, "w") as fh:
+                d = json.loads(json.dumps(self.D))
+                del d["changes"]["goals"][1]["value"]["target"]
+                yaml.safe_dump({"diff": dict(d, id="sd-2026-11-12-bad")}, fh)
+            r = run("diff", "check", bad)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("target is required on a sub-goal", r.stdout)
+            good = os.path.join(t, "sd.yaml")
+            with open(good, "w") as fh:
+                yaml.safe_dump({"diff": self.D}, fh)
+            r = run("diff", "propose", good, "--from", "of_a", "--ask", "Approve the goal tree: revenue, then orders?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            import sqlite3
+            c = sqlite3.connect(os.path.join(t, "state", "of.db"))
+            ask = c.execute("SELECT event_id FROM event WHERE name = 'of.agent_question'").fetchone()[0]
+            c.close()
+            code = ("import sys; sys.path.insert(0, %r); import of_asks_answer; "
+                    "of_asks_answer.record([%r], 'approve')" % (os.path.join(HERE, "..", "bin"), ask))
+            subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            r = run("diff", "apply", self.D["id"])
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            with open(os.path.join(t, "org", "registry", "positions.yaml")) as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual({g["decided"] for g in doc["goals"].values()}, {ask})
+            self.assertEqual(doc["conditions"]["c-uptime"]["decided"], ask)
+
+    def test_refusals(self):
+        self.assertIn("medium tier at least", "\n".join(of_diff.check_format(dict(self.D, tier="low"))))
+        self.assertIn("changes.goals or changes.conditions is required",
+                      "\n".join(of_diff.check_format(dict(self.D, changes={"registry": [{"op": "set"}]}))))
+        cases = {"decided is written by `of diff apply`": {"op": "add", "id": "g-x", "value": {"decided": "a"}},
+                 "no goal 'g-none' to rewrite": {"op": "rewrite", "id": "g-none", "value": {"rank": 2}},
+                 "takes {op: add | rewrite | close": {"op": "delete", "id": "g-x"}}
+        for want, c in cases.items():
+            self.assertIn(want, "\n".join(of_diff.preview(dict(self.D, changes={"goals": [c]}), REG)[1]), want)
+        added = of_diff.preview(self.D, REG)[0]
+        for want, c in {"g-revenue exists already": {"op": "add", "id": "g-revenue", "value": {"rank": 3}},
+                        "close sets state to dropped": {"op": "close", "id": "c-uptime", "value": {"state": "achieved"}}
+                        }.items():
+            block = "conditions" if c["id"].startswith("c-") else "goals"
+            self.assertIn(want, "\n".join(of_diff.preview(dict(self.D, changes={block: [c]}), added)[1]), want)
+        other = dict(self.D, kind="mandate_rewrite", changes={"registry": [{"op": "set", "name": "of_b",
+                                                                             "fields": {"summary": "x"}}],
+                                                               "goals": [{"op": "add", "id": "g-x", "value": {}}]})
+        self.assertIn("belong to a goal_change diff", "\n".join(of_diff.preview(other, REG)[1]))
+
+
 DEL = REG + """
 units:
   platform:
