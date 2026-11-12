@@ -17,8 +17,8 @@ class RouterTest(unittest.TestCase):
             systems = {"bot": {"keeper": "bot_operator", "paths": ["storefront/crates/bot/**"]},
                        "ci": {"keeper": "ci_keeper", "repos": ["devops"]},
                        "docs": {"paths": ["storefront/docs/**"]}}
-            positions = [{"name": "bot_operator", "_org": "mt", "_systems": systems}]
-            idx = of_router.build_index(positions, {"mt": [root]})
+            positions = [{"name": "bot_operator", "_org": "acme", "_systems": systems}]
+            idx = of_router.build_index(positions, {"acme": [root]})
             r = os.path.realpath(root)
             cases = {f"{r}/storefront/crates/bot/src/a.rs": ("bot", "bot_operator"),
                      f"{r}/devops/x.yaml": ("ci", "ci_keeper"),
@@ -58,7 +58,7 @@ class ReadsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             systems = {"bot": {"keeper": "bot_operator", "paths": ["storefront/crates/bot/**"]},
                        "liq": {"keeper": "liq_x", "paths": ["storefront/crates/liq/**"]}}
-            idx = of_router.build_index([{"name": "x", "_org": "mt", "_systems": systems}], {"mt": [root]})
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": systems}], {"acme": [root]})
             r = os.path.realpath(root)
             rec = {"type": "assistant", "cwd": r, "message": {"content": [
                 {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": f"{r}/storefront/crates/bot/a.rs"}},
@@ -79,7 +79,7 @@ class WorktreeTest(unittest.TestCase):
         self.assertEqual(of_router.verdict("p", "s", None, None, "Edit"), "unowned")
         with tempfile.TemporaryDirectory() as root:
             systems = {"bot": {"keeper": "bot_operator", "paths": ["storefront/crates/bot/**"]}}
-            idx = of_router.build_index([{"name": "x", "_org": "mt", "_systems": systems}], {"mt": [root]})
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": systems}], {"acme": [root]})
             r = os.path.realpath(root)
             self.assertEqual(of_router.resolve(f"{r}/storefront/.claude/worktrees/w1/crates/bot/a.rs", idx)[1], "bot")
 
@@ -92,7 +92,7 @@ class GitdirWorktreeTest(unittest.TestCase):
             r = os.path.realpath(root)
             systems = {"journals": {"keeper": "journals_keeper", "paths": ["storefront/crates/journals/**"]},
                        "k8s": {"keeper": "k8s_keeper", "repos": ["devops-k8s"]}}
-            idx = of_router.build_index([{"name": "x", "_org": "mt", "_systems": systems}], {"mt": [root]})
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": systems}], {"acme": [root]})
             for repo in ("storefront", "devops-k8s"):
                 os.makedirs(f"{r}/{repo}/.git/worktrees")
 
@@ -123,7 +123,7 @@ class LifecycleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             systems = {"old-bot": {"paths": ["storefront/crates/old/**"], "lifecycle": "retired"},
                        "docs": {"paths": ["storefront/docs/**"]}}
-            idx = of_router.build_index([{"name": "x", "_org": "mt", "_systems": systems}], {"mt": [root]})
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": systems}], {"acme": [root]})
             r = os.path.realpath(root)
             org, sid, keeper = of_router.resolve(f"{r}/storefront/crates/old/a.rs", idx)
             self.assertEqual(of_router.verdict("p", "s", sid, keeper, "Edit", lifecycle=of_router.lifecycle_of(idx, org, sid)),
@@ -131,14 +131,14 @@ class LifecycleTest(unittest.TestCase):
             org, sid, keeper = of_router.resolve(f"{r}/storefront/docs/a.md", idx)
             self.assertEqual(of_router.verdict("p", "s", sid, keeper, "Edit", lifecycle=of_router.lifecycle_of(idx, org, sid)),
                              "unowned")
-            self.assertEqual(of_router.lifecycle_of([["r", "mt", "a", None, []]], "mt", "a"), "live")  # an old cache
+            self.assertEqual(of_router.lifecycle_of([["r", "acme", "a", None, []]], "acme", "a"), "live")  # an old cache
 
 
 class OutsideTest(unittest.TestCase):
     def test_outside_every_org(self):
         with tempfile.TemporaryDirectory() as root:
-            idx = of_router.build_index([{"name": "x", "_org": "mt", "_systems": {"bot": {"keeper": "k", "paths": ["a/**"]}}}],
-                                        {"mt": [root]})
+            idx = of_router.build_index([{"name": "x", "_org": "acme", "_systems": {"bot": {"keeper": "k", "paths": ["a/**"]}}}],
+                                        {"acme": [root]})
             self.assertFalse(of_router.inside("/private/tmp/x/scratchpad/f.md", idx))
             self.assertTrue(of_router.inside(os.path.join(root, "b", "c.md"), idx))
         self.assertEqual(of_router.verdict("p", "s", None, None, "Write", outside=True), "outside")

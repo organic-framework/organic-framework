@@ -44,19 +44,19 @@ class RegistryTest(unittest.TestCase):
                   - {name: of_a, system: of, role: a, aliases: [old-a], status: active}
                   - {name: Bad.Name, system: of, role: b}
                 """)
-            self.write(root, "mt/org/registry/positions.yaml", """
+            self.write(root, "acme/org/registry/positions.yaml", """
                 positions:
-                  - {name: acme_x, system: mt, role: x, aliases: [old-a], summary: "%s", status: gone}
+                  - {name: acme_x, system: acme, role: x, aliases: [old-a], summary: "%s", status: gone}
                 """ % ("y" * 41))
             self.write(root, "conf/orgs.yaml", """
                 orgs:
                   - {name: build, path: ../of-build}
-                  - {name: mt, path: %s/mt/org}
+                  - {name: acme, path: %s/acme/org}
                   - {name: ghost, path: ../nowhere}
                 """ % root)
             positions, problems = of.load_positions(os.path.join(root, "conf/orgs.yaml"))
             self.assertEqual([p["name"] for p in positions], ["of_a", "acme_x"])
-            self.assertEqual(positions[1]["_org"], "mt")
+            self.assertEqual(positions[1]["_org"], "acme")
             text = "\n".join(problems)
             self.assertIn("invalid name 'Bad.Name'", text)
             self.assertIn("'old-a' is used by both of_a and acme_x", text)
@@ -69,7 +69,7 @@ class RegistryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             self.write(root, "org/registry/positions.yaml", """
                 positions:
-                  - {name: acme_x, system: mt, role: x, status: active}
+                  - {name: acme_x, system: acme, role: x, status: active}
                 works:
                   w-a:
                     title: A
@@ -94,9 +94,9 @@ class RegistryTest(unittest.TestCase):
             reg = "org/registry/positions.yaml"
             self.write(root, reg, """
                 positions:
-                  - {name: acme_x, system: mt, role: x, status: active}
+                  - {name: acme_x, system: acme, role: x, status: active}
                 """)
-            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: mt, path: %s/org}\n" % root)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/org}\n" % root)
             git = ["git", "-C", os.path.join(root, "org"), "-c", "commit.gpgsign=false", "-c", "user.name=t",
                    "-c", "user.email=t@example.com"]
             subprocess.run(git + ["init", "-q"], check=True)
@@ -104,7 +104,7 @@ class RegistryTest(unittest.TestCase):
             subprocess.run(git + ["commit", "-qm", "r"], check=True)
             with open(os.path.join(root, reg), "a") as fh:
                 fh.write("  - {name: acme_y, summary: 'it's broken'}\n")  # an unescaped apostrophe
-            of.BROKEN.discard("mt")
+            of.BROKEN.discard("acme")
             positions, problems = of.load_positions(os.path.join(root, "conf/orgs.yaml"))
             self.assertEqual([p["name"] for p in positions], ["acme_x"])
             self.assertIn("using its last committed version (HEAD)", "\n".join(problems))  # registry check still fails
@@ -362,7 +362,7 @@ class ApplyTest(unittest.TestCase):
 
 
     def test_workspace_is_the_organization_and_the_desk_is_left_alone(self):
-        a1 = pos("acme_org", "mt", "org", "s1", _workspace="acme")
+        a1 = pos("acme_org", "acme", "org", "s1", _workspace="acme")
         a2 = pos("ci_keeper", "ci", "keeper", "s2", _workspace="acme")
         a3 = pos("of_a", "of", "a", "s3", _workspace="organic-framework")
         ags = [agent("w4:p1", "s1", ws="w4", tab="w4:t1"), agent("w4:p2", "s2", ws="w4", tab="w4:t1")]
@@ -471,10 +471,10 @@ class UnitsTest(unittest.TestCase):
         self.assertIsNone(of.unit_of("other", units))
 
     def test_plan_layout(self):
-        of.ORG_SHORT["mt"] = "ac"
+        of.ORG_SHORT["acme"] = "ac"
 
         def up(name, system, sess, unit="shop", status="active"):
-            return pos(name, system=system, session=sess, _org="mt", _workspace="acme", _unit=unit, status=status)
+            return pos(name, system=system, session=sess, _org="acme", _workspace="acme", _unit=unit, status=status)
         names = [f"b{i}" for i in range(6)]
         positions = [up(n, "storefront", f"s{i}", status="parked" if i == 0 else "active") for i, n in enumerate(names)]
         positions += [up("h", "storefront-hosts", "sh"), up("d", "other", "sd", unit=None)]
@@ -491,11 +491,11 @@ class UnitsTest(unittest.TestCase):
         self.assertEqual(got, [("ac·shop", "storefront", ["b5", "b1", "b2", "b3"], False),  # working first
                                ("ac·shop", "storefront·2", ["b4", "b0"], False),            # parked last
                                ("ac·shop", "storefront-hosts", ["h"], True)])                   # already right
-        of.HELD.add("mt")
+        of.HELD.add("acme")
         try:
             self.assertEqual(of.plan_layout(positions, agents, tabs, workspaces), [])
         finally:
-            of.HELD.discard("mt")
+            of.HELD.discard("acme")
         desk = [{"workspace_id": "wD", "label": of.DESK}]
         self.assertEqual(of.plan_layout(positions, agents, tabs, desk), [])  # the desk is never touched
 
@@ -512,8 +512,8 @@ class UnitsTest(unittest.TestCase):
         self.assertEqual(of.tab_label("storefront", 2), "storefront·3")
 
     def test_sticky_layout(self):
-        of.ORG_SHORT["mt"] = "ac"
-        ps = [pos(f"b{i}", system="storefront", session=f"s{i}", _org="mt", _workspace="acme", _unit="u")
+        of.ORG_SHORT["acme"] = "ac"
+        ps = [pos(f"b{i}", system="storefront", session=f"s{i}", _org="acme", _workspace="acme", _unit="u")
               for i in range(5)]
         ags = [agent(f"wD:p{i}", f"s{i}", ws="wD", tab="wD:t2" if i == 0 else "wD:t1",
                      status="working" if i == 0 else "idle") for i in range(5)]
@@ -998,10 +998,10 @@ class InitNamesTest(unittest.TestCase):
 
 class KeeperPinTest(unittest.TestCase):
     def test_keeper_takes_the_first_slot(self):
-        of.ORG_SHORT["mt"] = "ac"
+        of.ORG_SHORT["acme"] = "ac"
         systems = {"storefront": {"keeper": "op"}}
         names = ["b1", "b2", "b3", "b4", "op"]
-        ps = [pos(n, system="storefront", session=f"s{n}", _org="mt", _workspace="acme", _unit="u",
+        ps = [pos(n, system="storefront", session=f"s{n}", _org="acme", _workspace="acme", _unit="u",
                   _systems=systems, status="parked" if n == "b2" else "active") for n in names]
         ags = [agent(f"wD:p{i}", f"s{n}", ws="wD", tab="wD:t2" if n == "op" else "wD:t1")
                for i, n in enumerate(names)]

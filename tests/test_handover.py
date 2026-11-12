@@ -91,7 +91,7 @@ class HandoverTest(unittest.TestCase):
         proj = lambda: of_pulse.project([{"name": "a"}, {"name": "b"}, {"name": "c"}], [], [], [], {}, now=0,
                                         bind=lambda p, a: ([], [], []), handovers=hs)
         self.assertEqual([(r["position"], r["kind"], r["on"]) for r in proj()], [("a", "waiting_owner", "founder")])
-        hs["H1"]["blocked_on"] = "mt:c"   # blocked on a third position: the wait is on it
+        hs["H1"]["blocked_on"] = "acme:c"   # blocked on a third position: the wait is on it
         self.assertEqual([(r["position"], r["kind"], r["on"]) for r in proj()], [("a", "waiting_peer", "c")])
 
     def test_find_and_ids(self):
@@ -166,7 +166,7 @@ class ProposeSpooledTest(unittest.TestCase):
         spec = importlib.util.spec_from_loader("of_cli_ho", loader)
         of = importlib.util.module_from_spec(spec)
         loader.exec_module(of)
-        positions = [{"name": "aws_keeper", "_org": "mt"}, {"name": "warehouse_keeper", "_org": "mt"}]
+        positions = [{"name": "aws_keeper", "_org": "acme"}, {"name": "warehouse_keeper", "_org": "acme"}]
         saved = (of._load_quiet, of._me, of_handover.load, of._handover_offer, of.of_hook_mask)
         appended = []
         of._load_quiet = lambda *a, **k: positions
