@@ -379,16 +379,24 @@ def _goal_tree_out(d, t, as_json):
         c["breached"] = of_studio.level_breached(c.get("level"), c["reading"])
     live = [w for w in t["loose"] if w.get("state") not in ("done", "parked")]
     roll = lambda r: dict(r, last_progress=of_model.iso(r["last_progress"]) if r["last_progress"] else None)
+    sp = of_studio.goal_spend(d)   # this month's spend per node, a reading with no budget (docs/registry.md, Goals)
+    spend = lambda kind, nid: None if sp is None else ((sp.get(kind) or {}).get(nid) or {"fresh": 0, "cost_usd": 0.0, "responses": 0})
+
+    def spent(kind, nid):
+        x = spend(kind, nid)
+        return "no sums yet" if x is None else f'${x["cost_usd"]:,.0f}, {of_studio.tokens(x["fresh"])} fresh tokens'
     if as_json:
         def node(n):
             return {k: n.get(k) for k in ("id", "title", "rank", "depth", "state", "measure", "metric", "target", "by", "owner",
                                           "owner_from", "decided", "drives", "notes")} | {
                 "reading": of_studio.metric_reading(d, n.get("metric")), "works": [w["id"] for w in n["works"]],
-                "rollup": roll(n["rollup"]), "children": [node(c) for c in n["children"]]}
+                "rollup": roll(n["rollup"]), "spend_month": spend("goals", n["id"]), "children": [node(c) for c in n["children"]]}
         print(json.dumps({"org": d.org, "goals": [node(n) for n in t["roots"]],
                           "conditions": [{k: c.get(k) for k in ("id", "title", "measure", "level", "metric", "reading", "breached",
                                                                  "under", "owner", "state", "decided")}
-                                         | {"works": [w["id"] for w in c["works"]], "rollup": roll(c["rollup"])} for c in t["conditions"]],
+                                         | {"works": [w["id"] for w in c["works"]], "rollup": roll(c["rollup"]),
+                                            "spend_month": spend("conditions", c["id"])} for c in t["conditions"]],
+                          "spend": {k: sp.get(k) for k in ("month", "computed_at", "complete")} if sp else None,
                           "no_goal": [w["id"] for w in live], "unknown": t["unknown"], "notes": t["notes"]},
                          indent=1, ensure_ascii=False, default=str))
         return 0
@@ -409,6 +417,7 @@ def _goal_tree_out(d, t, as_json):
         print(f'{pad}   measure: {n.get("measure") or "-"}' + (f'; target {n["target"]}' if n.get("target") else "")
               + (f'; by {n["by"]}' if n.get("by") else ""))
         print(f'{pad}   {line(n["rollup"])}')
+        print(f'{pad}   spend this month: {spent("goals", n["id"])}')
         if n["works"]:
             print(f'{pad}   works: {", ".join(w["id"] for w in n["works"][:8])}' + (f' +{len(n["works"]) - 8}' if len(n["works"]) > 8 else ""))
         for x in n["notes"]:
@@ -426,6 +435,7 @@ def _goal_tree_out(d, t, as_json):
                   f'{", for " + c["under"] if c.get("under") else ""})')
             print(f'     measure: {c.get("measure") or "-"}; level {c.get("level") or "-"}; now {now}{flag}')
             print(f'     {line(c["rollup"])}')
+            print(f'     spend this month: {spent("conditions", c["id"])}')
     for x in t["notes"]:
         print(f"! {x}")
     if t["unknown"]:

@@ -1914,8 +1914,24 @@ class GoalTreeTest(unittest.TestCase):
         d.a, d.b = now - 7 * 86400, now
         d.compute(of_model.build(self.doc(), [], at=now, org="acme", rev="x", window_h=168), None)
         d.owner = dict(d.owner, agent_hours_waited=2.5)                           # the condition's reading: above its level
-        with mock.patch.object(of_studio, "works_of", return_value=self.works()):
+        import of_spend
+        sums = {"month": "2026-11", "computed_at": now, "complete": True,
+                "orgs": {"acme": {"goals": {"g-rev": {"total": {"fresh": 2500000, "cost_usd": 1234.5, "responses": 9},
+                                                       "forecast": {"cost_usd": 99999.0}}},
+                                  "conditions": {"c-asks": {"total": {"fresh": 4000, "cost_usd": 7.2, "responses": 1}}}}}}
+        with mock.patch.object(of_studio, "works_of", return_value=[]):
+            with mock.patch.object(of_spend, "load", return_value=None):
+                self.assertIn("no sums for this month yet", of_studio.view_goals(d))
+            with mock.patch.object(of_spend, "load", return_value=dict(sums, month="2026-10")):   # another month: none
+                self.assertIsNone(of_studio.goal_spend(d))
+        with mock.patch.object(of_studio, "works_of", return_value=self.works()), mock.patch.object(of_spend, "load", return_value=sums):
             html = of_studio.view_goals(d)
+        # this month's spend per node, a reading: no budget, share or forecast (docs/registry.md, Goals, "Spend per goal")
+        for want in ("<th>Spend this month</th>", "$1,234<div class=\"src\">2.5M fresh tokens", "$7<div", "$0</td>",
+                     "Spend this month (2026-11"):
+            self.assertIn(want, html)
+        self.assertNotIn("99,999", html)
+        self.assertNotIn("budget</", html)
         self.assertLess(html.index("A condition is breached"), html.index('<section class="tiles">'))    # above progress
         for want in ("1. <b>Revenue</b>", "decided a1", "drives: revenue = orders x order value", "target 300",
                      "colleague <span class=\"sub\">from g-rev</span>", "3 works on this goal", "1 on an owner",
@@ -1935,11 +1951,14 @@ class GoalTreeTest(unittest.TestCase):
         t = of_works.goal_tree(d.full, self.works())
         for as_json in (False, True):
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(buf), mock.patch.object(of_spend, "load", return_value=sums):
                 of_studio_cli._goal_tree_out(d, t, as_json)
             out = buf.getvalue()
             if as_json:
                 j = json.loads(out)
+                self.assertEqual(j["goals"][0]["spend_month"], {"fresh": 2500000, "cost_usd": 1234.5, "responses": 9})
+                self.assertEqual(j["goals"][0]["children"][0]["spend_month"]["cost_usd"], 0.0)
+                self.assertEqual(j["spend"]["month"], "2026-11")
                 self.assertEqual([c["id"] for c in j["goals"][0]["children"]], ["g-aov", "g-orders"])
                 self.assertEqual((j["conditions"][0]["id"], j["conditions"][0]["breached"]), ("c-asks", True))
                 self.assertEqual(j["no_goal"], ["w-loose", "w-ghost"])
@@ -1948,7 +1967,8 @@ class GoalTreeTest(unittest.TestCase):
                 for want in ("  1. g-rev: Revenue  (owner colleague)", "    1. g-aov: Order value  (owner bot_operator)",
                              "measure: orders a day; target 300", "4 open of 5 works; doers bot_operator, bot_search, k8s_keeper, "
                              "1 open ask (1 on an owner); 4 progress marks in 7 d", "! active under a goal that is achieved or dropped",
-                             "Works with no goal: 2 open (w-loose, w-ghost)", "now no metric"):
+                             "Works with no goal: 2 open (w-loose, w-ghost)", "now no metric",
+                             "spend this month: $1,234, 2.5M fresh tokens", "spend this month: $7, 4k fresh tokens"):
                     self.assertIn(want, out)
         with mock.patch.object(of_studio, "works_of", return_value=[]):
             d.full = dict(d.full, goals={}, conditions={})

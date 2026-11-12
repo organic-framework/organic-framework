@@ -1963,6 +1963,39 @@ def _names(xs, n=6):
     return e(", ".join(xs[:n])) + (f' <span class="sub">+{len(xs) - n} more</span>' if len(xs) > n else "") if xs else '<span class="na">nobody</span>'
 
 
+def goal_spend(d):
+    """This month's spend per goal and condition of the page's organization, as a reading (docs/registry.md, Goals,
+    "Spend per goal"): {month, computed_at, complete, goals: {id: total}, conditions: {id: total}}, each total
+    {fresh, cost_usd, responses} from of_spend.load(), the sums the listener writes (of_capacity). No budget, no share
+    and no forecast. None when no sums are written, they are of another month than the page's, or of_spend is absent."""
+    try:
+        import of_spend
+    except ImportError:   # of-server's image carries no of_spend
+        return None
+    out = of_spend.load()
+    month = time.strftime("%Y-%m", time.gmtime(d.now))
+    if not out or out.get("month") != month:
+        return None
+    o = (out.get("orgs") or {}).get(d.org) or {}
+    pick = lambda m: {k: x.get("total") for k, x in (m or {}).items() if isinstance(x, dict) and x.get("total")}
+    return {"month": month, "computed_at": out.get("computed_at"), "complete": out.get("complete", True),
+            "goals": pick(o.get("goals")), "conditions": pick(o.get("conditions"))}
+
+
+def tokens(n):
+    n = n or 0
+    return f"{n / 1e9:.2f}B" if n >= 1e9 else f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n / 1e3:.0f}k" if n >= 1e3 else str(int(n))
+
+
+def _spend_cell(sp, kind, nid):
+    if sp is None:
+        return '<td class="num"><span class="na">–</span></td>'
+    t = (sp.get(kind) or {}).get(nid)
+    if not t or not t.get("responses"):
+        return '<td class="num">$0</td>'
+    return (f'<td class="num">${t["cost_usd"]:,.0f}<div class="src">{tokens(t["fresh"])} fresh tokens</div></td>')
+
+
 def _rollup_cells(r, now):
     import of_works
     asks = (f'{r["asks"]}' + (f' <span class="flag">{r["on_owner"]} on an owner</span>' if r["on_owner"] else "")) if r["asks"] else "–"
@@ -1993,10 +2026,11 @@ def _goal_rows(d, n, out):
             + "".join(f'<div><span class="flag">{e(x)}</span></div>' for x in n["notes"]))
     owner = e(n["owner"]) + ('' if n.get("owner_from") in (n["id"], None) else f' <span class="sub">from {e(n["owner_from"])}</span>')
     out.append(f'<tr class="goal d{min(n["depth"], 5)}{"" if n["state"] == "active" else " closed"}"><td class="g">{head}</td>'
-               f'<td class="why">{"<br>".join(measure)}</td><td>{owner}</td>{_rollup_cells(n["rollup"], d.now)}</tr>')
+               f'<td class="why">{"<br>".join(measure)}</td><td>{owner}</td>{_rollup_cells(n["rollup"], d.now)}'
+               f'{_spend_cell(getattr(d, "_goal_spend", None), "goals", n["id"])}</tr>')
     if n["works"]:
         k = len(n["works"])
-        out.append(f'<tr class="goal-works d{min(n["depth"], 5)}"><td colspan="7"><details{" open" if k <= 5 else ""}><summary>'
+        out.append(f'<tr class="goal-works d{min(n["depth"], 5)}"><td colspan="8"><details{" open" if k <= 5 else ""}><summary>'
                    f'{k} work{"s" if k != 1 else ""} on this goal</summary><div class="scroll"><table class="works">{WORKS_HEAD}<tbody>'
                    + "".join(_work_row(w, d) for w in n["works"]) + "</tbody></table></div></details></td></tr>")
     for c in n["children"]:
@@ -2027,12 +2061,25 @@ def _conditions_html(d, conds, compact=False):
                      + (f'<div class="src">{r["asks"]} open ask{"s" if r["asks"] != 1 else ""}</div>' if r["asks"] else "")
                      + (f'<div class="src">{r["progress_7d"]} progress marks in 7 d{" · last " + e(last) + " ago" if last else ""}</div>'
                         if r["works"] else "")) if r["works"] else '<span class="na">no work yet</span>'
-            rows.append(f'<tr class="{cls}"><td>{name}<div class="src">owner {e(c["owner"])}</div></td>{measure}<td>{works}</td></tr>')
+            rows.append(f'<tr class="{cls}"><td>{name}<div class="src">owner {e(c["owner"])}</div></td>{measure}<td>{works}</td>'
+                        f'{_spend_cell(getattr(d, "_goal_spend", None), "conditions", c["id"])}</tr>')
         else:
-            rows.append(f'<tr class="{cls}"><td>{name}</td>{measure}<td>{e(c["owner"])}</td>{_rollup_cells(c["rollup"], d.now)}</tr>')
-    head = ('<th>Condition</th><th>Measure · level · now</th><th>Works</th>' if compact else
-            '<th>Condition</th><th>Measure · level · now</th><th>Owner</th><th>Open works</th><th>Doers</th><th>Open asks</th><th>Progress</th>')
+            rows.append(f'<tr class="{cls}"><td>{name}</td>{measure}<td>{e(c["owner"])}</td>{_rollup_cells(c["rollup"], d.now)}'
+                        f'{_spend_cell(getattr(d, "_goal_spend", None), "conditions", c["id"])}</tr>')
+    head = ('<th>Condition</th><th>Measure · level · now</th><th>Works</th><th>Spend this month</th>' if compact else
+            '<th>Condition</th><th>Measure · level · now</th><th>Owner</th><th>Open works</th><th>Doers</th><th>Open asks</th><th>Progress</th>'
+            '<th>Spend this month</th>')
     return (f'<div class="scroll"><table class="conditions"><thead><tr>{head}</tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>")
+
+
+def _spend_note(sp):
+    if sp is None:
+        return ('<p class="note">Spend this month: no sums for this month yet (the listener writes them; '
+                '<code>of capacity spend --fresh</code> computes them now).</p>')
+    when = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(sp.get("computed_at") or 0))
+    return (f'<p class="note">Spend this month ({e(sp["month"])}, to {when}): the list cost of the responses of each goal\'s '
+            'branch and fresh tokens, a reading with no budget (docs/registry.md, Goals, "Spend per goal").'
+            + ("" if sp.get("complete", True) else " The month is still being read, so it is low.") + '</p>')
 
 
 def view_goals(d):
@@ -2044,6 +2091,7 @@ def view_goals(d):
         return '<p class="note">Choose an organization above: goals are kept per organization.</p>'
     keep = set(d.model["positions"]) if d.unit else None
     t = of_works.goal_tree(d.full, ws, keep)
+    d._goal_spend = sp = goal_spend(d)
     if not t["roots"] and not t["conditions"]:
         return (empty_note(d) + '<p class="note">No goals in this organization\'s registry yet. Goals are the owner\'s: the '
                 'structure keeper writes them, a tree of goals and sub-goals, each with its measure, and records the ask id of the '
@@ -2080,7 +2128,8 @@ def view_goals(d):
     tree_html = ('<h2 class="lead">Goals <span class="sub">in rank order; each goal adds up the works of its whole branch; '
                  'its doers are derived from its works, never written</span></h2><div class="scroll"><table class="goals"><thead><tr>'
                  '<th>Goal</th><th>Measure · target</th><th>Owner</th><th>Open works</th><th>Doers</th><th>Open asks</th>'
-                 '<th>Progress</th></tr></thead><tbody>' + "".join(tree) + '</tbody></table></div>') if tree else \
+                 '<th>Progress</th><th>Spend this month</th></tr></thead><tbody>' + "".join(tree) + '</tbody></table></div>'
+                 + _spend_note(sp)) if tree else \
         '<p class="note">No goals in the registry yet; the conditions stand alone.</p>'
     side = (f'<h2 class="lead">Conditions <span class="sub">held at their level while the goals are pursued; '
             f'never raised past it</span></h2>{cond_html}') if cond_html else ""
