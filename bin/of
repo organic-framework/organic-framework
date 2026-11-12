@@ -411,11 +411,19 @@ def _glob_tokens(p):
     return toks
 
 
+def _class_regex(body):
+    """A glob class as a regex class. `[!x]` and `[^x]` are negated and, like `*` and `?`, never match `/`;
+    a regex reading of `[!x]` would match `!` and `x` instead (a user organization, 2026-11-12)."""
+    if body.startswith(("!", "^")):
+        return "[^" + body[1:].replace("\\", "\\\\") + "/]"
+    return "[" + body.replace("\\", "\\\\") + "]"
+
+
 def glob_regex(p):
     out = []
     for t in _glob_tokens(p):
         out.append({"**": ".*", "*": "[^/]*", "?": "[^/]"}.get(t[0]) if t[0] in ("**", "*", "?")
-                   else (f"[{t[1]}]" if t[0] == "[" else re.escape(t[1])))
+                   else (_class_regex(t[1]) if t[0] == "[" else re.escape(t[1])))
     return re.compile("^" + "".join(out) + "$")
 
 
