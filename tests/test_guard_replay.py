@@ -43,5 +43,24 @@ class ReplayTest(unittest.TestCase):
                           ("admin", "a", "(all)", "get", "unparsed"): 1})
 
 
+    def test_org_replay_names_a_grant_that_would_be_refused(self):
+        # a proposed grant `of grant issue` would refuse (admin: true) is named, not replayed; the rest run
+        # (a user organization's draft, 2026-11-12)
+        import contextlib
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            rules = os.path.join(t, "rules.yaml")
+            with open(rules, "w") as fh:
+                fh.write('grants:\n  - {id: bad, subject: "*", effect: deny, scope: {kubectl: {admin: true}}}\n'
+                         '  - {id: ok, subject: "*", effect: deny, scope: {kubectl: {verbs: [exec]}}}\n')
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                of_guard_replay.main(["org", "--org", "x", "--rules", rules, "--db", os.path.join(t, "of.db")])
+        self.assertIn("grant bad not replayed: scope kubectl.admin takes lists of strings", out.getvalue())
+        self.assertIn("rule ok (warn): 0 calls", out.getvalue())
+        self.assertNotIn("rule bad", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
