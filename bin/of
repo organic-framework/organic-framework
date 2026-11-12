@@ -3796,9 +3796,9 @@ def cmd_diff(args):
                 approval = e.get("approved_by_event")
         repo = os.path.dirname(os.path.dirname(path))
         written = [path]
-        if d["kind"] == "goal_change":  # docs/handover.md §3: each node's decided is the approval's id, cited by
-            # its first two groups (AGENTS.md): the answered ask, else the of.diff_approved event
-            new = of_diff.stamp_decided(new, d, "-".join(str(approval).split("-")[:2]))
+        if d["kind"] == "goal_change":  # docs/handover.md §3: each node's decided is the approval's full id (a field
+            # a program writes keeps the whole id, PR 80): the answered ask, else the of.diff_approved event
+            new = of_diff.stamp_decided(new, d, str(approval))
         with open(path, "w") as fh:
             fh.write(new)
         for b in briefs:

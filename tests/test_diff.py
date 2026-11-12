@@ -302,7 +302,7 @@ class GoalChangeTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             with open(os.path.join(t, "org", "registry", "positions.yaml")) as fh:
                 doc = yaml.safe_load(fh)
-            cite = "-".join(ask.split("-")[:2])  # the answered ask, by its first two groups
+            cite = ask  # the answered ask, its full id
             self.assertEqual({g["decided"] for g in doc["goals"].values()}, {cite})
             self.assertEqual(doc["conditions"]["c-uptime"]["decided"], cite)
             # approved at the terminal (an of.diff_approved event, no answered ask): its event id is cited
@@ -325,7 +325,7 @@ class GoalChangeTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             with open(os.path.join(t, "org", "registry", "positions.yaml")) as fh:
                 doc = yaml.safe_load(fh)
-            self.assertEqual(doc["goals"]["g-orders"]["decided"], "-".join(eid.split("-")[:2]))
+            self.assertEqual(doc["goals"]["g-orders"]["decided"], eid)
             self.assertEqual(doc["goals"]["g-revenue"]["decided"], cite)
 
     def test_a_short_digest_proposal_is_proposed_again(self):
