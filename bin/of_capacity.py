@@ -1665,19 +1665,21 @@ def _herdr(*args, timeout=30):
         return out.stdout
 
 
-KILL_LINE = "\x15"  # Ctrl-U as a raw byte: send-keys "ctrl+u" arrives as a kitty sequence zsh types out ("7;5u")
+CLEAR_INPUT = "\x03"  # Ctrl-C as a raw byte: drops the whole input, continuation lines included; send-keys "ctrl+c"
+# would arrive as a kitty sequence zsh types out (its "ctrl+u" typed "7;5u")
 
 
 def _run_in_pane(pane, cmd, herdr=None):
-    """Run `cmd` at the pane's shell prompt, its input line emptied first (Ctrl-U).
+    """Run `cmd` at the pane's shell prompt, its input emptied first (Ctrl-C).
 
     2026-11-12: the shell left behind by a session the founder closed by accident held a recalled history line (an
     older resume of another position's session). `herdr pane run` appended the resume to it, so that other session
     started a second copy in this pane, on another account, and the intended resume was chained behind it with
-    `&&`. Nothing typed before the command may survive."""
+    `&&`. Nothing typed before the command may survive: Ctrl-C, not Ctrl-U, which empties only the current line and
+    leaves a multi-line entry or a continuation prompt (of_review on PR 101)."""
     herdr = herdr or _herdr
-    herdr("pane", "send-text", pane, KILL_LINE)
-    time.sleep(0.2)
+    herdr("pane", "send-text", pane, CLEAR_INPUT)
+    time.sleep(0.3)
     return herdr("pane", "run", pane, cmd)
 
 
@@ -2207,6 +2209,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     # 4. resume, the note declared right before (start_session)
     if runtime == "zellij" and not place:
         def run():
+            _zellij(zs, "write-chars", "--pane-id", zp, CLEAR_INPUT)  # as _run_in_pane: nothing typed before survives
+            time.sleep(0.3)
             _zellij(zs, "write-chars", "--pane-id", zp, cmd)
             time.sleep(0.3)
             _zellij(zs, "send-keys", "--pane-id", zp, "Enter")
