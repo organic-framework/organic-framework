@@ -373,6 +373,15 @@ class MovePieces(unittest.TestCase):
         self.assertEqual(of_capacity.launch_prompt("/n.md", model="claude-fable-5-2"),
                          "of_capacity restarted this session on claude-fable-5-2. Read /n.md and follow it.")
         self.assertIn("moved this session to another account", of_capacity.launch_prompt("/n.md"))
+        # a restart on the same account and model (move --restart, 2026-11-12: tools back after a partial profile)
+        rs = of_capacity.handover_note("p", "sid", "/Users/alex/.claude-a", "/Users/alex/.claude-a", "a@x", {}, "t",
+                                       why="Your tools are back.", restarted=True)
+        self.assertIn("# Restart: p", rs)
+        self.assertIn("on the same account", rs)
+        self.assertIn("Your tools are back.", rs)
+        self.assertNotIn("near its model limits", rs)
+        self.assertEqual(of_capacity.launch_prompt("/n.md", restarted=True),
+                         "of_capacity restarted this session on the same account. Read /n.md and follow it.")
         reg = ("positions:\n  - name: of_lab\n    holder:\n      runtime: claude-code\n"
                "      workplace: herdr local, workspace organic-framework, tab lab\n"
                "  - name: of_capacity\n    holder:\n"
@@ -1740,6 +1749,7 @@ class ToolProfiles(unittest.TestCase):
     its account-bound tools is not signed in is not a target; the founder gets one task per account."""
     SLACK = "https://mcp.slack.com/mcp"
     DOCS = {"acme": {
+        "tools_mode": "enforce",  # of_tools cc98403: only an enforced catalogue strips the account's own tools
         "tools": {
             "grafana-read": {"kind": "mcp-stdio", "command": ["/opt/mcp-grafana", "--disable-write"],
                              "acts_as": "viewer", "scope": "read", "keeper": "obs_keeper"},
