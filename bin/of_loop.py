@@ -108,8 +108,8 @@ def hypothesis_id(work, change, at=None):
 def register(rows, work):
     """{hypotheses: [...], runs: [...], decisions: [...]} for a work from its loop events (dicts: name, ts,
     payload). Each hypothesis: id, change, predict, cost, voi, status, runs, last, last_run ({rung, accepted, value,
-    metric, ts} of its latest run) and contradicted (still open or testing while its latest run did not meet the
-    rung's accept criterion); open and testing ones first,
+    metric, ts} of its latest run) and unmet_open (still open or testing while its latest run did not meet its rung's
+    accept criterion); open and testing ones first,
     by VOI per runner-hour (higher first), then oldest."""
     hyps, runs, decs = {}, [], []
     for r in sorted(rows, key=lambda x: x["ts"]):
@@ -141,9 +141,10 @@ def register(rows, work):
             if h and p.get("decision") in STATUS_OF:
                 h["status"], h["last"] = STATUS_OF[p["decision"]], r["ts"]
     live = {"open": 0, "testing": 0}
-    for h in hyps.values():  # a run that failed its accept criterion refutes the prediction until a decision says
-        # otherwise (of_conductor, 2026-11-12: an open hypothesis whose runs said "prediction wrong" was read as a finding)
-        h["contradicted"] = h["status"] in live and (h.get("last_run") or {}).get("accepted") is False
+    for h in hyps.values():  # accepted is the rung's accept criterion (docs/events.md), not the prediction: say only
+        # that the latest run missed it while no decision closed the hypothesis (of_conductor, 2026-11-12: an open
+        # hypothesis was read as a finding; of_review on PR 61)
+        h["unmet_open"] = h["status"] in live and (h.get("last_run") or {}).get("accepted") is False
 
     def key(h):
         per = VOI.get(h["voi"], 1) / max(h.get("cost_h") or 0.0, 0.05)
