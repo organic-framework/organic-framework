@@ -567,7 +567,7 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | Rule | Needs | Where it is planned |
 |---|---|---|
 | 2.1, 2.2 | `rq-v0` (is a request) on `agent_message_in`; **`paste_source`** on `relay_paste` prompts, the session whose output was pasted, found at derive by matching the pasted text against other sessions' full assistant texts of the previous 24 h | `rq-v0`: of_classify (asked 2026-11-06), of_measures applies it meanwhile; `paste_source`: new, derive |
-| 2.3, 2.4, 2.6, 2.9, 2.10 (pair, organization) | WR attributed to positions; systems per WR | Both exist. Systems by paths come from `of import github`. Positions come from transcript PR links joined onto the merged PR, and, since 2026-11-10, from the `Position:` line of a PR body (in the public history from its first commit, organic-framework 74cbd41). On 2026-11-10 only 90 of the first user organization's 820 merged PRs in the window were attributed, so these rules were blocked |
+| 2.3, 2.4, 2.6, 2.9, 2.10 (pair, organization) | WR attributed to positions; systems per WR | Both exist. Systems by paths come from `of import github`. Positions come from transcript PR links joined onto the merged PR, and, since 2026-11-10 (`of_platform`), from the `Position:` line of a PR body. On 2026-11-10 only 90 of the first user organization's 820 merged PRs in the window were attributed, so these rules were blocked |
 | 2.4, 2.8 | `blocked_on` with an end | backlog v1.1 item 7 |
 | 2.5 | `of.compaction` (v1); rereads; `of.correction` kind `fact` | v1; reread detection new; backlog item 9 |
 | 2.6 runtime | runtime writes as work records (deploys, host actions, settings) | `of.deployment` (backlog item 2); host actions: new |
