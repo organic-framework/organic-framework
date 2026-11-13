@@ -476,6 +476,11 @@ def current_asks(conn=None, tail=TAIL, now=None):
     own = conn is None
     conn = conn or reader()
     now = now or time.time()
+    # the fold mark, the asks and the tail from one snapshot: the listener commits the view and its mark together, and
+    # a mark read one write behind the asks folded the tail twice, an ask coming back twice (of_review on PR 133)
+    began = not conn.in_transaction
+    if began:
+        conn.execute("BEGIN")
     try:
         try:
             meta = json.loads((conn.execute("SELECT value FROM listener_meta WHERE key = ?", (FOLD_KEY,)).fetchone()
@@ -509,6 +514,8 @@ def current_asks(conn=None, tail=TAIL, now=None):
             asks, cursor = st["asks"], rows[-1]["rowid"]
         return {"asks": asks, "cursor": cursor, "age_s": age, "late": False}  # its tail folded: current
     finally:
+        if began and conn.in_transaction:
+            conn.execute("COMMIT")
         if own:
             conn.close()
 
