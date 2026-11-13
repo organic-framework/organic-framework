@@ -5713,8 +5713,8 @@ def main(argv=None):
     co.set_defaults(fn=cmd_consent)
     sp = sub.add_parser("shipped", help="what has left this machine, per server and organization")
     sp.set_defaults(fn=cmd_shipped)
-    sv = sub.add_parser("server", help="of-server: run, start, stop, install, enroll-machine, revoke, status "
-                                       "(docs/server.md)")
+    sv = sub.add_parser("server", help="of-server: run, start, stop, install, uninstall, watchdog, enroll-machine, "
+                                       "revoke, status (docs/server.md)")
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "revoke", "status", "export-secret-key"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
