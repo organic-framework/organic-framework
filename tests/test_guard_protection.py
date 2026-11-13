@@ -231,6 +231,7 @@ class PluginExcludedTest(unittest.TestCase):
             os.makedirs(os.path.join(r, org, "work"))
         with open(os.path.join(r, "acme", "registry", "positions.yaml"), "w") as fh:
             fh.write("organization: acme\ntools_excluded:\n  - plugin: slack@some-directory\n    basis: card e2bb5eef\n"
+                     "  - url: https://mcp.slack.com/*\n    basis: card e2bb5eef\n"
                      "positions:\n  - {name: acme_ops, system: acme, role: ops}\n")
         with open(os.path.join(r, "beta", "registry", "positions.yaml"), "w") as fh:
             fh.write("organization: beta\npositions:\n  - {name: beta_ops, system: beta, role: ops}\n")
@@ -247,7 +248,14 @@ class PluginExcludedTest(unittest.TestCase):
         self.assertEqual(of_guard.plugin_deny("mcp__plugin_slack_slack__slack_send_message", ex),
                          ("slack@some-directory", "card e2bb5eef"))
         self.assertTrue(of_guard.plugin_deny("mcp__plugin_Slack_slack__x", ex))       # case leans to the deny
-        self.assertIsNone(of_guard.plugin_deny("mcp__claude_ai_Slack__slack_send_message", ex))  # a known limit
+        self.assertIsNone(of_guard.plugin_deny("mcp__claude_ai_Slack__slack_send_message", ex))  # a connector's tool
+        urls = [{"url": "https://mcp.slack.com/*", "connector": "", "basis": "card e2bb5eef"}]
+        self.assertEqual(of_guard.connector_deny("mcp__claude_ai_Slack__slack_send_message", urls),
+                         ("https://mcp.slack.com/*", "card e2bb5eef"))
+        for tool in ("mcp__claude_ai_Claude_Docs__read", "mcp__claude_ai_Slackish__x", "mcp__plugin_slack_slack__x"):
+            self.assertIsNone(of_guard.connector_deny(tool, urls), tool)
+        named = [{"url": "https://docs.example.com/mcp", "connector": "Claude Docs", "basis": "b"}]
+        self.assertTrue(of_guard.connector_deny("mcp__claude_ai_Claude_Docs__read", named))
         for tool in ("mcp__plugin_slackbot_x__y", "mcp__plugin_linear_linear__list", "mcp__slack__send", "Bash"):
             self.assertIsNone(of_guard.plugin_deny(tool, ex), tool)
         self.assertIsNone(of_guard.plugin_deny("mcp__plugin_slack_slack__x", []))
@@ -283,8 +291,14 @@ class PluginExcludedTest(unittest.TestCase):
         self.assertIn("slack@some-directory", got["permissionDecisionReason"])
         self.assertIn("card e2bb5eef", got["permissionDecisionReason"])
         self.assertNotEqual(self.hook("mcp__plugin_linear_linear__list_issues", acme).get("permissionDecision"), "deny")
+        got = self.hook("mcp__claude_ai_Slack__slack_send_message", acme)      # the claude.ai connector, by its url
+        self.assertEqual(got.get("permissionDecision"), "deny")
+        self.assertIn("the connector https://mcp.slack.com/*", got["permissionDecisionReason"])
+        self.assertNotEqual(self.hook("mcp__claude_ai_Claude_Docs__read", acme).get("permissionDecision"), "deny")
         beta = os.path.join(self.tmp.name, "beta", "work")      # another organization keeps it
         self.assertNotEqual(self.hook("mcp__plugin_slack_slack__slack_send_message", beta).get("permissionDecision"),
+                            "deny")
+        self.assertNotEqual(self.hook("mcp__claude_ai_Slack__slack_send_message", beta).get("permissionDecision"),
                             "deny")
         self.assertEqual(of_credentials.plugins_excluded("acme", os.path.join(self.tmp.name, "state"), self.orgs),
                          [{"plugin": "slack@some-directory", "basis": "card e2bb5eef"}])
