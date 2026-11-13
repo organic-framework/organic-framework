@@ -86,6 +86,54 @@ class ListenTest(unittest.TestCase):
             stop.set()
             release.set()
 
+    def test_current_asks_reads_the_view_and_folds_its_tail_never_the_whole_log(self):
+        """of_platform's log-readers design (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2-3.3):
+        the asks view's read returns the asks with the cursor they reflect, their age and a late flag; it folds at most
+        `tail` events after the view with the view's own fold, and past that returns the view as it is, late."""
+        def states(asks):
+            return {a["event_id"]: (a["state"], a.get("claimed_at")) for a in asks}
+
+        def full():
+            return states(of_asks.project(of_asks.load(self.conn)))
+        self.assertEqual(of_asks.current_asks(self.conn), {"asks": [], "cursor": 0, "age_s": None, "late": True})
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+        a1 = self.ask("Merge PR 2349 now?", ts="2026-11-13T10:00:00.000Z")
+        a2 = self.ask("Rotate the etcd keys?", position="b", ts="2026-11-13T10:01:00.000Z")
+        of_listen.step(self.conn, procs, cur)
+        got = of_asks.current_asks(self.conn)
+        self.assertEqual((states(got["asks"]), got["late"]), (full(), False))
+        self.assertEqual(got["asks"][0]["to"], "founder")       # the whole ask, as the projection made it
+        # after the view's last write: an answer and a new ask, folded from the log
+        of_events.emit("agent_question_answered", {"ask_id": a1, "ask_ids": [a1], "by": "owner"})
+        a3 = self.ask("Pay the invoice?", position="c")
+        got = of_asks.current_asks(self.conn)
+        self.assertEqual((states(got["asks"]), got["late"]), (full(), False))
+        self.assertEqual(got["cursor"], self.conn.execute("SELECT max(rowid) FROM event").fetchone()[0])
+        self.assertIn(a3, states(got["asks"]))
+        late = of_asks.current_asks(self.conn, tail=1)           # more behind than it may fold: the view as it is
+        self.assertTrue(late["late"])
+        self.assertEqual(states(late["asks"])[a1][0], "open")
+        of_listen.step(self.conn, procs, cur)
+        of_events.emit("prompt_origin", {"event_id": "E-any", "origin": "scheduled"})
+        self.assertTrue(of_asks.current_asks(self.conn)["late"])  # a correction of an earlier prompt: never folded
+        of_listen.step(self.conn, procs, cur)
+        got = of_asks.current_asks(self.conn)
+        self.assertEqual((states(got["asks"]), got["late"]), (full(), False))
+        self.assertEqual(states(got["asks"])[a2][0], "open")
+
+    def test_a_view_from_before_whole_asks_is_rebuilt(self):
+        self.conn.executescript("CREATE TABLE view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, "
+                                "session_id TEXT, position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, "
+                                "closed_at TEXT, closed_by_kind TEXT, to_ TEXT, delegation TEXT, labels TEXT, "
+                                "view_version TEXT);")
+        procs = [of_listen.AsksProcessor()]
+        cur = of_listen.prepare(self.conn, procs)
+        self.ask("Merge PR 2349 now?")
+        of_listen.step(self.conn, procs, cur)
+        self.assertEqual(len(of_asks.current_asks(self.conn)["asks"]), 1)
+
     def test_a_flush_projects_only_the_new_rows_and_rebuilds_when_it_must(self):
         """2026-11-13: re-projecting every row took 179 s a flush at load ~50. The carried projection gives the same
         asks; a correction of a prompt's origin, an older row or an event again under its id projects all rows."""

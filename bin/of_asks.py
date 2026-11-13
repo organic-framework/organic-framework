@@ -421,6 +421,98 @@ def _text(r):
     return " ".join(q.split())
 
 
+FOLD_KEY = "asks_fold"  # listener_meta: what the asks view reflects and the projection's own indexes (fold_meta)
+TAIL = 500             # the most events current_asks folds on the view; past that the view as it is, late
+
+
+def fold_meta(state, rowid, fed):
+    """What a reader needs, beside the view's asks, to carry the listener's projection on exactly: the last event
+    the view reflects (rowid, and the latest ts fed) and the indexes that are not in the asks themselves."""
+    return {"rowid": rowid, "fed": fed, "at": time.time(),
+            "open_by_session": {s: a["event_id"] for s, a in state["open_by_session"].items()},
+            "declared_turn": state["declared_turn"], "waits_founder": state["waits_founder"]}
+
+
+def state_from(asks, meta):
+    """A projection state (new_state's shape) rebuilt from the view's asks, in their order, and fold_meta: project()
+    carries it on as the listener would."""
+    st = new_state()
+    st["asks"] = asks
+    for a in asks:
+        st["by_id"][a["event_id"]] = a
+        st["by_position"].setdefault(a.get("position"), []).append(a)
+        if "topic_key" in a:  # filed with of ask (the declared path sets it)
+            st["declared"].setdefault(a.get("position"), []).append(a)
+    st["open_by_session"].update({s: st["by_id"][e] for s, e in (meta.get("open_by_session") or {}).items()
+                                  if e in st["by_id"]})
+    st["declared_turn"].update(meta.get("declared_turn") or {})
+    st["waits_founder"].update(meta.get("waits_founder") or {})
+    return st
+
+
+def reader():
+    """A read-only connection to the event store: reads in WAL mode never wait on a writer and never write
+    (of_platform's log-readers design, 3.2)."""
+    import sqlite3
+    import urllib.parse
+    import of_store
+    try:
+        c = sqlite3.connect("file:" + urllib.parse.quote(of_store.db_path()) + "?mode=ro", uri=True, timeout=2.0,
+                            isolation_level=None)
+        c.execute("PRAGMA query_only = 1")
+        c.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        return c
+    except sqlite3.Error:
+        return of_store.connect()
+
+
+def current_asks(conn=None, tail=TAIL, now=None):
+    """The asks view's read (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2): every ask as the
+    listener's view holds it, carried on with the log's events after it, at most `tail` of them, by the view's own fold
+    (project() on the state the view and its fold_meta give back). Never a projection of the whole log: past `tail`,
+    an event older than what the view folded (imported history) or a correction of a prompt's origin, it returns the
+    view as it is, late. Returns {"asks": [...], "cursor": the last event reflected, "age_s": the view's age,
+    "late": bool}. conn: a reader() when None."""
+    own = conn is None
+    conn = conn or reader()
+    now = now or time.time()
+    try:
+        try:
+            meta = json.loads((conn.execute("SELECT value FROM listener_meta WHERE key = ?", (FOLD_KEY,)).fetchone()
+                               or ["{}"])[0])
+            asks = [json.loads(a) for (a,) in conn.execute(
+                "SELECT ask FROM view_asks WHERE ask IS NOT NULL ORDER BY ts, event_id")]
+        except Exception:  # noqa: BLE001 - no listener here yet, or one before the view kept whole asks
+            return {"asks": [], "cursor": 0, "age_s": None, "late": True}
+        if not meta.get("rowid") and not asks:
+            return {"asks": [], "cursor": 0, "age_s": None, "late": True}
+        cursor, age = int(meta.get("rowid") or 0), now - float(meta.get("at") or 0)
+        rows, fetched = [], 0
+        for rid, e, ts, n, sid, pos, pl, org, src in conn.execute(
+                "SELECT rowid, event_id, ts, name, session_id, position, payload, org, source FROM event "
+                f"WHERE rowid > ? AND name IN ({','.join('?' * len(READS))}) ORDER BY rowid LIMIT ?",
+                (cursor,) + READS + (tail + 1,)):
+            fetched += 1
+            try:
+                payload = json.loads(pl) if pl else {}
+            except ValueError:
+                payload = {}
+            if relevant(n, src, payload):
+                rows.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos,
+                             "payload": payload, "org": org, "rowid": rid})
+        if fetched > tail or any(r["name"] == "of.prompt_origin" or (r["ts"] or "") < (meta.get("fed") or "")
+                                   for r in rows):
+            return {"asks": asks, "cursor": cursor, "age_s": age, "late": True}
+        if rows:
+            st = state_from(asks, meta)
+            project(sorted(rows, key=lambda r: r["ts"]), st)
+            asks, cursor = st["asks"], rows[-1]["rowid"]
+        return {"asks": asks, "cursor": cursor, "age_s": age, "late": False}  # its tail folded: current
+    finally:
+        if own:
+            conn.close()
+
+
 def load(conn, since_iso=None):
     sql = (f"SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
            f"WHERE name IN ({','.join('?' * len(READS))}) " + ("AND ts >= ? " if since_iso else "") + "ORDER BY ts, rowid")

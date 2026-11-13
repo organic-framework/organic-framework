@@ -90,11 +90,11 @@ class AsksProcessor(Processor):
     """The asks view: every ask with its state (of_asks.project), and the owner's queue grouped as
     the popup shows it. Tables view_asks and view_ask_groups."""
     name = "asks"
-    version = "22"  # 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
+    version = "23"  # 23: each row keeps its whole ask (column ask) and the fold its readers carry on (of_asks.FOLD_KEY): of_asks.current_asks; 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
     DDL = """
     CREATE TABLE IF NOT EXISTS view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, session_id TEXT,
       position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, closed_at TEXT, closed_by_kind TEXT,
-      to_ TEXT, delegation TEXT, labels TEXT, view_version TEXT);
+      to_ TEXT, delegation TEXT, labels TEXT, view_version TEXT, ask TEXT);
     CREATE TABLE IF NOT EXISTS view_ask_groups (n INTEGER PRIMARY KEY, since TEXT, kind TEXT, text TEXT,
       who TEXT, ask_ids TEXT, first TEXT);
     """
@@ -106,6 +106,7 @@ class AsksProcessor(Processor):
         # next write projects all rows again
         self.state, self.fed, self.tail = None, "", []
         self.written = {}  # event_id -> the row last written to view_asks: a flush writes only what changed
+        self.max_rowid, self.fold = 0, None  # the last event handled; a shadow build's fold_meta, kept for settle()
 
     def _relevant(self, r):
         import of_asks
@@ -120,6 +121,9 @@ class AsksProcessor(Processor):
         """A new version or a rebuild: built into shadow tables while the old view keeps serving, and
         swapped in by settle() in one transaction (no stale or half-built window for the popup)."""
         conn.executescript(self.DDL)
+        if "ask" not in {r[1] for r in conn.execute("PRAGMA table_info(view_asks)")} and not conn.execute(
+                "SELECT count(*) FROM view_asks").fetchone()[0]:
+            conn.executescript("DROP TABLE view_asks; DROP TABLE view_ask_groups;" + self.DDL)  # an empty old table
         if conn.execute("SELECT count(*) FROM view_asks").fetchone()[0]:
             self.suffix = self.SHADOW
             conn.executescript(self.DDL.replace("view_asks (", f"view_asks{self.SHADOW} (")
@@ -127,7 +131,7 @@ class AsksProcessor(Processor):
         else:
             self.suffix = ""
         self.rows, self.defer, self.dirty = {}, True, True
-        self.state, self.tail, self.written = None, [], {}
+        self.state, self.tail, self.written, self.max_rowid = None, [], {}, 0
 
     def load_state(self, conn):
         """After a restart: the relevant rows up to the cursor, so the projection continues (a rebuild that
@@ -139,6 +143,8 @@ class AsksProcessor(Processor):
         self.rows = {r["event_id"]: r for r in of_asks.load(conn)}
         self.defer, self.dirty = True, False  # the stored view is current up to the cursor
         self.state, self.tail, self.written = None, [], {}
+        row = conn.execute("SELECT last_rowid FROM listener_cursor WHERE processor = ?", (self.name,)).fetchone()
+        self.max_rowid = int(row[0]) if row else 0
 
     def settle(self, conn):
         """After the first catch-up: one projection, then the shadow tables replace the view at once."""
@@ -153,6 +159,10 @@ class AsksProcessor(Processor):
                 for t in ("view_asks", "view_ask_groups"):
                     conn.execute(f"DROP TABLE {t}")
                     conn.execute(f"ALTER TABLE {t}{self.suffix} RENAME TO {t}")
+                if self.fold:
+                    import of_asks
+                    conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (of_asks.FOLD_KEY, self.fold))
+                    self.fold = None
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -161,6 +171,8 @@ class AsksProcessor(Processor):
         return True
 
     def handle(self, conn, rows):
+        if rows:
+            self.max_rowid = max(self.max_rowid, max(r.get("rowid") or 0 for r in rows))
         new = [r for r in rows if self._relevant(r)]
         if not new:
             return False
@@ -214,7 +226,8 @@ class AsksProcessor(Processor):
             labels.update({k: pl.get(k) for k in ("detected_by", "classifier_version") if pl.get(k)})
             rows.append((a["event_id"], a["ts"], ev.get("org"), a["session_id"], a["position"], a["kind"],
                          a["text"], a["state"], a["closed_by"], a["closed_at"], closer.get("name"), a.get("to"),
-                         pl.get("delegation"), json.dumps(labels, ensure_ascii=False), self.version))
+                         pl.get("delegation"), json.dumps(labels, ensure_ascii=False), self.version,
+                         json.dumps(a, ensure_ascii=False, default=str)))
         # every row on this run's first write and in a shadow build; after that only the rows that changed (a flush
         # rewrote all 5,700 rows in one transaction, 12 to 179 s behind the store's other writers on 2026-11-13)
         full = not self.written or bool(self.suffix)
@@ -223,14 +236,21 @@ class AsksProcessor(Processor):
         try:
             if full:
                 conn.execute(f"DELETE FROM view_asks{self.suffix}")
-                conn.executemany(f"INSERT INTO view_asks{self.suffix} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                conn.executemany(f"INSERT INTO view_asks{self.suffix} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
             elif changed:
-                conn.executemany("INSERT OR REPLACE INTO view_asks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", changed)
+                conn.executemany("INSERT OR REPLACE INTO view_asks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", changed)
             conn.execute(f"DELETE FROM view_ask_groups{self.suffix}")
             conn.executemany(f"INSERT INTO view_ask_groups{self.suffix} VALUES (?,?,?,?,?,?,?)", [
                 (i, g["since"], g["kind"], g["text"], json.dumps(g["who"], ensure_ascii=False),
                  json.dumps(g["ask_ids"]), json.dumps(g.get("first"), ensure_ascii=False))
                 for i, g in enumerate(groups)])
+            # what the view now reflects, for readers that carry it on (of_asks.current_asks); a shadow build's goes
+            # in when settle() swaps it in
+            fold = json.dumps(of_asks.fold_meta(self.state, self.max_rowid, self.fed), ensure_ascii=False)
+            if self.suffix:
+                self.fold = fold
+            else:
+                conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (of_asks.FOLD_KEY, fold))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
