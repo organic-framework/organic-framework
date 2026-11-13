@@ -5122,7 +5122,7 @@ def cmd_capacity(args):
             import of_store
             import of_tools
             conn = of_store.connect()
-            of_spend.ingest(conn, time.time(), budget_s=60)
+            of_spend.advance(conn, time.time(), budget_s=60)
             out = of_spend.compute(of_tools.registries(), conn, month=args.month)
             if not args.month:  # this month's: the file of works and Studio read
                 of_spend.write(out)
