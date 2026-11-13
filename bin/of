@@ -3674,24 +3674,36 @@ def _diff_events(conn):
     return out
 
 
+def _diff_answer(conn, ask_id):
+    """The owner's popup answer to a diff's ask: True (a yes), False (any other answer), None (not answered there)."""
+    if not ask_id:
+        return None
+    import of_locale
+    words = sorted({v.lower() for k in ("approve", "yes") for v in of_locale.variants(k)}, key=len, reverse=True)
+    yes = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
+    last = None
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' ORDER BY ts, rowid"):
+        p = json.loads(pl or "{}")
+        if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and p.get("via") == "asks-ui":
+            last = bool(yes.match(str(p.get("answer") or "")))
+    return last
+
+
+def _newest_answer(conn, asks):
+    """(ask id, True|False) of the newest of `asks` the owner answered in the popup, else (None, None)."""
+    for a in reversed([x for x in asks if x]):
+        v = _diff_answer(conn, a)
+        if v is not None:
+            return a, v
+    return None, None
+
+
 def _diff_approved_by_answer(conn, ask_id):
     """An owner's popup answer `approve…` to the diff's ask counts as the approval: only the popup's (`via:
     asks-ui`), which the owner clicks at the machine. An answer recorded through the conductor's chat (`via:
     conductor`) or any other path never does: it would apply any tier past the terminal approval and the remote hold
     (after-the-fact review of 2026-11-11, finding 1; organic-framework-build release/reviews)."""
-    if not ask_id:
-        return False
-    import of_locale
-    words = sorted({v.lower() for k in ("approve", "yes") for v in of_locale.variants(k)}, key=len, reverse=True)
-    # a whole word in any of OF's languages: an answer that only starts like one ("let me think" in Russian) is no yes
-    # (review 2026-11-11, PR 2 follow-up, of_server)
-    yes = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
-    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'"):
-        p = json.loads(pl or "{}")
-        if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and \
-                p.get("via") == "asks-ui" and yes.match(str(p.get("answer") or "")):
-            return True
-    return False
+    return _diff_answer(conn, ask_id) is True
 
 
 def _passkey_approval(e, d, dg, events=None, positions=None):
@@ -3880,8 +3892,10 @@ def cmd_diff(args):
                               "digest: propose it again (`of diff propose`)")
             if e.get("state") == "approved":  # the approval each goal_change node cites (of_review on PR 70)
                 approval = e.get("approval_event")
-            elif any(_diff_approved_by_answer(conn, a) for a in reversed(e.get("asks") or [e.get("ask")])):
-                approval = next(a for a in reversed(e.get("asks") or [e.get("ask")]) if _diff_approved_by_answer(conn, a))
+            elif _newest_answer(conn, e.get("asks") or [e.get("ask")])[1]:
+                # the owner's newest answer on this exact content decides: a later no stands over an earlier yes,
+                # and an unanswered re-proposal leaves the earlier answer standing (of_server on PR 126)
+                approval = _newest_answer(conn, e.get("asks") or [e.get("ask")])[0]
             else:
                 ok, why = _passkey_approval(e, d, dg, _diff_events(conn))  # any tier, the person's passkey (§6)
                 if why:

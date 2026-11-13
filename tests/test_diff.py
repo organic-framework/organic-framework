@@ -254,9 +254,9 @@ class ReproposeTest(unittest.TestCase):
                 c.close()
                 return ids
 
-            def answer(ask):
+            def answer(ask, words="да"):
                 code = ("import sys; sys.path.insert(0, %r); import of_asks_answer; "
-                        "of_asks_answer.record([%r], 'да')" % (os.path.join(HERE, "..", "bin"), ask))
+                        "of_asks_answer.record([%r], %r)" % (os.path.join(HERE, "..", "bin"), ask, words))
                 subprocess.run([sys.executable, "-c", code], env=env, check=True)
             write("new words")
             self.assertEqual(run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Утвердить?").returncode, 0)
@@ -275,6 +275,13 @@ class ReproposeTest(unittest.TestCase):
             answer(asks()[-1])
             r = run("diff", "propose", diff_file, "--from", "of_a", "--ask", "И ещё раз?")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            answer(asks()[-1], "нет")                              # his newest word on this content is no
+            r = run("diff", "apply", "sd-2026-11-14-again")        # (of_server on PR 126): the earlier yes is over
+            self.assertIn("waits for the owner's approval", r.stdout + r.stderr)
+            r = run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Последний раз?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            answer(asks()[-1])
+            r = run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Точно?")  # unanswered: the yes stands
             r = run("diff", "apply", "sd-2026-11-14-again")        # the yes to this exact digest still counts
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             doc = yaml.safe_load(open(os.path.join(t, "org", "registry", "positions.yaml")))
