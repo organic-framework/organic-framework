@@ -3,14 +3,18 @@
 # published only while the repository variable DOCS_SITE is `publish`, set on the founder's yes to the site (ask
 # 444bd026, 2026-11-13; publishing it is public). The deploy job waits in the github-pages environment, which
 # requires an approval: of_release runs the pre-publish gate over that run's built site (release/check.py --site, in
-# the OF team's own repository) and approves the deploy only when it passes. The site's address and the edit links
-# come from this repository (actions/configure-pages), so a fork publishes its own. Actions are pinned by commit;
-# the tag is in the comment. Owner: of_docs.
+# the OF team's own repository) and approves the deploy only when it passes. When it fails, of_release rejects the
+# deploy: a deploy left waiting holds the pages group (below), and every later push's run, its build and link check
+# included, waits behind it. The site's address and the edit links come from this repository
+# (actions/configure-pages), so a fork publishes its own. Actions are pinned by commit; the tag is in the comment.
+# Owner: of_docs.
 name: docs site
 
 on:
   # Every push to main that changes a page's source (the files site/scripts/sync.py reads), the site or this file;
-  # and by hand.
+  # and by hand. A page also links to files outside these paths (AGENTS.md, LICENSE, bench/onboarding/, bin/,
+  # deploy/RUNBOOK.md); a move of one of them fails the link check only at the next run. They are left out because
+  # a run on every change to them would ask of_release to approve a deploy for each such push.
   push:
     branches: [main]
     paths:
