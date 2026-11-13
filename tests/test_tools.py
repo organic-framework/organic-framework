@@ -109,6 +109,19 @@ class SessionConfigTest(unittest.TestCase):
         doc.pop("tools_mode")
         self.assertEqual(of_tools.session_config(p, doc, ofb="/of/bin/of", installed=[])["settings"], {})
 
+    def test_an_excluded_plugin_is_off_in_both_modes(self):
+        ex = [{"plugin": "slack@anthropic-plugin-directory", "basis": "card e2bb5eef"}]
+        installed = ["slack@anthropic-plugin-directory", "cloudflare@claude-plugins-official"]
+        for mode in ("add", "enforce"):
+            doc = dict(DOC, tools_mode=mode, tools_excluded=ex)
+            p = next(x for x in doc["positions"] if x["name"] == "acme_dispatcher")  # its profile names slack
+            c = of_tools.session_config(p, doc, ofb="/of/bin/of", installed=installed)
+            self.assertIs(c["settings"]["enabledPlugins"]["slack@anthropic-plugin-directory"], False, mode)
+            self.assertTrue(any("in tools_excluded" in n for n in c["notes"]), mode)
+        # add mode names only the excluded plugin, so the account's others stay as they are
+        self.assertNotIn("cloudflare@claude-plugins-official", of_tools.session_config(
+            p, dict(DOC, tools_mode="add", tools_excluded=ex), ofb="/of/bin/of", installed=installed)["settings"]["enabledPlugins"])
+
     def test_plugin_missing_on_the_account_is_noted(self):
         c = self.cfg("acme_dispatcher", [])
         self.assertTrue(any("slack@anthropic-plugin-directory is not installed" in n for n in c["notes"]))
@@ -140,11 +153,14 @@ class CheckTest(unittest.TestCase):
         bad["credentials"]["f"] = {"paths": ["~/.config/acme/f"]}
         bad["tools"]["z"] = {"kind": "mcp-stdio", "command": ["p"], "credential": {"id": "f"}, "acts_as": "s",
                              "scope": "read", "keeper": "a"}
+        bad["tools_excluded"] = [{"plugin": "slack@x"}, {"plugin": "slack@x", "basis": "ask 1"}]
+        bad["tools"]["s"] = {"kind": "plugin", "plugin": "slack@x", "acts_as": "s", "scope": "read", "keeper": "a"}
         probs = "\n".join(of_tools.check({"acme": bad}))
         for want in ("tool nope is not in the catalogue", "keeper ghost", "credential missing",
                      "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference",
                      "credential f is a file: the command or an env value names its path",
-                     "tools_mode is add or enforce"):
+                     "tools_mode is add or enforce", "tools_excluded[0] needs plugin and basis",
+                     "tools.s: plugin slack@x is in tools_excluded"):
             self.assertIn(want, probs)
 
 
