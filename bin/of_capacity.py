@@ -2026,10 +2026,16 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
                       "(from `ps` at the move). Re-create the ones you still need:\n" +
                       "\n".join(f"- `{c}`" for c in running) + ("\n\n" + extra_note if extra_note else ""))
     if runtime == "herdr" and _exit_dialog(lines) is not None and not dry_run:
-        # an exit dialog left open (by anyone): Esc means "Stay", always safe, then the move goes on
-        _herdr("pane", "send-keys", pane, "esc")
-        time.sleep(2)
-        lines = _pane_lines(pane)
+        # an exit dialog left open (by anyone): Esc means "Stay", always safe, then the move goes on. It can open
+        # again at once, and the input box takes a moment to come back: read until it shows, Esc again while the
+        # dialog does (2026-11-13: a keeper's came back and the move refused "no input box visible")
+        for _ in range(AFTER_ESC_READS):
+            if _exit_dialog(lines) is not None:
+                _herdr("pane", "send-keys", pane, "esc")
+            time.sleep(2)
+            lines = _pane_lines(pane)
+            if _exit_dialog(lines) is None and input_draft(lines) is not None:
+                break
     if any(LIMIT_DIALOG in ANSI.sub("", x) for x in lines) and not dry_run:
         # the old account's limit dialog: Enter only on "Stop and wait" (never usage credits, never "wait here")
         if not limit_cursor(lines):
@@ -4721,6 +4727,55 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     return moves
 
 
+LEFT_DIALOG_S = 2 * 3600  # how long after its /exit of_capacity still answers for an exit dialog in a session's pane
+
+
+def close_left_exit_dialogs(now=None, log=print, dry_run=False, conn=None, agent_of=None, read=None, key=None):
+    """Close with Esc ("Stay": the session stays as it was, its background work runs on) every exit dialog that
+    of_capacity's own /exit opened in the last LEFT_DIALOG_S and nobody answered. Returns the panes.
+
+    2026-11-13: a relief move typed /exit while the session was in a turn (a background shell's update); Claude Code
+    ran the queued /exit after the move had given up and reported the dialog closed. Two keepers' panes stood on
+    "Background work is running" from about 19:56Z and 20:22Z, holding their organization's gated runs, until its
+    throughput owner asked at 21:18Z. A dialog a person may have opened is left alone: a session
+    a person typed into after the /exit is skipped."""
+    now = now or time.time()
+    conn = conn or of_events._conn()
+    since = _iso(now - LEFT_DIALOG_S)
+    exits = {}
+    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.injected_prompt' AND ts >= ?", (since,)):
+        try:
+            j = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        sid = j.get("target_session")
+        if j.get("injector") == "of_capacity" and str(j.get("reason") or "").endswith(": exit") and sid:
+            exits[sid] = max(exits.get(sid) or "", ts)
+    closed = []
+    for sid, ts in sorted(exits.items()):
+        typed = False
+        for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.human_prompt' AND session_id = ? "
+                                  "AND ts > ?", (sid, ts)):
+            try:
+                typed = typed or json.loads(pl or "{}").get("origin") == "human"
+            except ValueError:
+                pass
+        if typed:
+            continue
+        a = (agent_of or _agent_by_session)(sid)
+        if not a or not a.get("pane_id"):
+            continue
+        pane = a["pane_id"]
+        if _exit_dialog((read or _pane_lines)(pane)) is None:
+            continue
+        log(f"balance: {pane} (session {sid[:8]}) still shows the exit dialog of_capacity's /exit of {ts} opened: "
+            f"{'would close' if dry_run else 'closed'} it with Esc (Stay; its background work runs on)")
+        if not dry_run:
+            (key or (lambda p, k: _herdr("pane", "send-keys", p, k)))(pane, "esc")
+        closed.append(pane)
+    return closed
+
+
 def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None):
     """One balancing run: read capacity (probing at most every 30 min), measure each session's spend over the
     last 30 minutes, plan, and move (between turns, in the same herdr pane). Returns the plan."""
@@ -4746,6 +4801,10 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         heal_permission_modes(log=log, dirs=dirs, dry_run=dry_run)
     except Exception as e:
         log(f"balance: permission modes not checked: {e}")
+    try:  # an exit dialog our own /exit opened after its move gave up (2026-11-13)
+        close_left_exit_dialogs(now=now, log=log, dry_run=dry_run)
+    except Exception as e:
+        log(f"balance: left exit dialogs not checked: {e}")
     sessions = {d: live_sessions(d) for d in dirs}
     try:
         prune_move_backups({x.get("name") for xs in sessions.values() for x in xs if x.get("name")}, now=now,
