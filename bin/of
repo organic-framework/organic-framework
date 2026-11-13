@@ -3482,7 +3482,6 @@ def view_apply(v, dry_run=False, quiet=False):
 
 # ------------------------------------------------------------------- the listener
 
-LISTEN_LABEL = "dev.organic-framework.listen"
 
 
 def cmd_listen(args):
@@ -3500,45 +3499,14 @@ def cmd_listen(args):
         return 0
     if args.action in ("run", "rebuild"):
         return of_listen.run(log=lambda m: print(m, flush=True), rebuild=args.action == "rebuild") or 0
+    if args.action == "watchdog":  # launchd, every minute: a stuck listener is restarted (hand-over 6d9a8305)
+        print(of_listen.watchdog())
+        return 0
     import platform
     if platform.system() != "Darwin":
         raise OfError("of listen install: launchd only for now (systemd: run `of listen run` under your init)")
-    plist = os.path.expanduser(f"~/Library/LaunchAgents/{LISTEN_LABEL}.plist")
-    target = f"gui/{os.getuid()}/{LISTEN_LABEL}"
-    subprocess.run(["launchctl", "bootout", target], capture_output=True)
-    if args.action == "uninstall":
-        if os.path.exists(plist):
-            os.remove(plist)
-        print("of listen: uninstalled")
-        return 0
-    import of_events
-    log = os.path.join(of_events.STATE_DIR, "listen.log")
-    with open(plist, "w") as fh:
-        fh.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>{LISTEN_LABEL}</string>
-  <key>ProgramArguments</key><array><string>{sys.executable}</string><string>{os.path.realpath(__file__)}</string>
-    <string>listen</string><string>run</string></array>
-  <key>EnvironmentVariables</key><dict><key>OF_AUTOMATION</key><string>1</string><key>SSH_AUTH_SOCK</key><string></string>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string></dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
-  <key>Nice</key><integer>5</integer>
-  <key>StandardOutPath</key><string>{log}</string>
-  <key>StandardErrorPath</key><string>{log}</string>
-</dict></plist>
-""")
-    import time as _t
-    for attempt in range(4):  # right after a bootout launchd may answer "Input/output error" for a moment
-        r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", plist], capture_output=True, text=True)
-        if r.returncode == 0:
-            break
-        _t.sleep(1.5)
-    else:
-        raise OfError(f"of listen install: launchctl bootstrap failed: {r.stderr.strip()[:200]}")
-    print(f"of listen: installed and started ({plist}); log {log}")
+    for line in of_listen.install_launchd(uninstall=args.action == "uninstall"):
+        print(f"of listen: {line}")
     return 0
 
 
@@ -5832,8 +5800,8 @@ def main(argv=None):
     vw.add_argument("--dry-run", action="store_true")
     vw.add_argument("--quiet", action="store_true")
     vw.set_defaults(fn=cmd_view)
-    ls = sub.add_parser("listen", help="the listener: of listen run|rebuild|status|install|uninstall")
-    ls.add_argument("action", choices=["run", "rebuild", "status", "install", "uninstall"])
+    ls = sub.add_parser("listen", help="the listener: of listen run|rebuild|status|install|uninstall|watchdog")
+    ls.add_argument("action", choices=["run", "rebuild", "status", "install", "uninstall", "watchdog"])
     ls.set_defaults(fn=cmd_listen)
     df = sub.add_parser("diff", help="structural diffs: of diff check|propose|apply <file|id>, approve <id>, list, "
                                      "link <id> (the passkey approval page, docs/remote.md §6)")
