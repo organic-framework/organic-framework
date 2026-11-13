@@ -125,6 +125,22 @@ class UnitTest(unittest.TestCase):
         self.assertEqual(relay["ProcessType"], "Standard")
         self.assertEqual(relay["EnvironmentVariables"]["OF_AUTOMATION"], "1")
 
+    def test_of_init_installs_the_relay_watchdog_with_the_relay(self):
+        relay = next(u for u in of_init.UNITS if u["name"] == "relay")
+        self.assertEqual(relay.get("watchdog"), "relay")
+        if sys.platform != "darwin":
+            self.skipTest("launchd")
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd[:2])
+            return mock.Mock(returncode=1 if cmd[1] == "print" else 0)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
+            msg = R.install_launchd(run=run, of_bin="/of", watchdog_only=True)
+            names = os.listdir(os.path.join(home, "Library", "LaunchAgents"))
+        self.assertEqual(names, [f"{R.RELAY_WATCHDOG_LABEL}.plist"])
+        self.assertIn(R.RELAY_WATCHDOG_LABEL, msg)
+
 
 if __name__ == "__main__":
     unittest.main()

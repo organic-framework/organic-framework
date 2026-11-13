@@ -1158,9 +1158,9 @@ def watchdog(now=None, restart=None, dump=None, log=None, installed=None):
                            event="relay_watchdog", silent="has not moved its loops")
 
 
-def install_launchd(uninstall=False, run=None, of_bin=None):
+def install_launchd(uninstall=False, run=None, of_bin=None, watchdog_only=False):
     """`of relay install|uninstall`: the relay's launchd agent at Standard priority (of_init.UNITS) and its watchdog,
-    one check a minute."""
+    one check a minute. `watchdog_only`: the watchdog alone, for `of init`, which installs the relay itself."""
     import subprocess
     import sys
     import of_init
@@ -1175,6 +1175,8 @@ def install_launchd(uninstall=False, run=None, of_bin=None):
                   RELAY_WATCHDOG_LABEL, [sys.executable, of_bin, "relay", "watchdog"],
                   os.path.join(of_events.STATE_DIR, "relay-watchdog.log"),
                   f"  <key>StartInterval</key><integer>{of_server.WATCHDOG['every']}</integer>\n")}
+    if watchdog_only:
+        plists.pop(RELAY_LABEL)
     return of_server.load_launchd(plists, uninstall=uninstall, run=run or subprocess.run)
 
 

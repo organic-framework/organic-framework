@@ -1248,7 +1248,7 @@ UNITS = (
      "what": "message delivery between agents (of relay)", "args": ["relay", "run"], "always": False,
      # agents wait on it: Standard, no Nice (docs/health.md §5; of_architect's hand-over 154a0cbf; of-server's hang
      # after a wake ran at Background with Nice 10)
-     "standard": True},
+     "standard": True, "watchdog": "relay"},
     {"name": "listen", "label": "dev.organic-framework.listen", "unit": "of-listen.service",
      "what": "the listener and its 5-minute pulse: hand-over offers, nudges, the asks (of listen)",
      "args": ["listen", "run"], "always": True},
@@ -1335,6 +1335,12 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
                 ok = unit_running(u, system, run)
                 break
             sleep(0.5)
+        if ok and u.get("watchdog") == "relay" and system == "Darwin":  # the stuck-relay restart, every minute
+            try:
+                import of_relay_client
+                out(f"  {of_relay_client.install_launchd(run=run, watchdog_only=True)}")
+            except Exception as e:  # noqa: BLE001 - the relay runs; its watchdog is named as missing
+                out(f"  the relay's watchdog is not installed ({type(e).__name__}: {e}); `of relay install` adds it")
         if ok:
             out(f"  {u['name']}: running ({u['what']}); log {log}")
         else:
