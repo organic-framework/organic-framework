@@ -4981,6 +4981,67 @@ def spawn_balance():
                          start_new_session=True, stdin=subprocess.DEVNULL)
 
 
+def _tick_lock():
+    """The capacity tick's lock file, taken without waiting; None when another tick holds it."""
+    import fcntl
+    lockf = os.path.join(STATE_DIR, "capacity", "tick.lock")
+    os.makedirs(os.path.dirname(lockf), mode=0o700, exist_ok=True)
+    lock = open(lockf, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        return None
+    return lock
+
+
+def run_tick(conn, now, log=print, spawn=None):
+    """The capacity tick's work, in `of capacity tick` (spawn_tick), never in the listener's loop: the spend view, the
+    loop costs, spend per goal, then a detached balance. One at a time (a lock); returns False when another runs.
+
+    of_asks, 2026-11-13 (msg 01a1d67e-9e48): run inside the listener, this tick once held its loop for 442 s (and
+    18 s, 46 s and 135 s around it) while the store was contended. No heartbeat was written meanwhile, so every
+    reader took the views as stale and projected the whole log, and the founder's questions screen stuttered."""
+    lock = _tick_lock()
+    if lock is None:
+        log("capacity tick: another tick is running")
+        return False
+    try:
+        t0 = time.time()
+        n = ingest_spend(conn, now)
+        try:
+            loop_costs(conn, now)  # RFC 0005 step 5: cost per cycle for of_studio's loop card
+        except Exception as e:
+            log(f"capacity tick: loop costs: {e}")
+        try:  # spend per goal (bin/of_spend.py; docs/registry.md, Goals, "Spend per goal"): its own view and cursor
+            import of_spend
+            of_spend.tick(conn, now)
+        except Exception as e:
+            log(f"capacity tick: spend per goal: {e}")
+        if load_policy().get("auto"):
+            (spawn or spawn_balance)()
+        if time.time() - t0 > 30:
+            log(f"capacity tick: {time.time() - t0:.0f} s ({n} transcript records read)")
+        return True
+    finally:
+        lock.close()
+
+
+def spawn_tick():
+    """A detached `of capacity tick`, unless one runs: the listener only starts it and goes on."""
+    lock = _tick_lock()
+    if lock is None:
+        return False
+    lock.close()
+    of_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+    logf = os.path.join(STATE_DIR, "capacity", "tick.log")
+    env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
+    with open(logf, "a") as fh:
+        subprocess.Popen([sys.executable, of_path, "capacity", "tick"], stdout=fh, stderr=fh, env=env,
+                         start_new_session=True, stdin=subprocess.DEVNULL)
+    return True
+
+
 class ListenerProcessor:
     """of_listen processor (duck-typed: name, version, tick_s, reset, handle, tick)."""
     name = "capacity"
@@ -4996,16 +5057,5 @@ class ListenerProcessor:
         return False  # its input is transcript_record, read in tick by its own cursor
 
     def tick(self, conn, now):
-        ingest_spend(conn, now)
-        try:
-            loop_costs(conn, now)  # RFC 0005 step 5: cost per cycle for of_studio's loop card
-        except Exception:
-            pass
-        try:  # spend per goal (bin/of_spend.py; docs/registry.md, Goals, "Spend per goal"): its own view and cursor
-            import of_spend
-            of_spend.tick(conn, now)
-        except Exception:
-            pass
-        if load_policy().get("auto"):
-            spawn_balance()
+        spawn_tick()  # the work runs in its own process (run_tick): the listener's loop never waits on it
         return False
