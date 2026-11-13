@@ -17,6 +17,7 @@ pane: `of.handover_offered`, where the response window starts) and expires.
 
 import calendar
 import json
+import os
 import re
 import time
 import uuid
@@ -236,6 +237,33 @@ def find(handovers, ref):
     """A hand-over by full id or a unique prefix/suffix."""
     hits = [h for hid, h in handovers.items() if hid and (hid == ref or hid.startswith(ref) or hid.endswith(ref))]
     return hits[0] if len(hits) == 1 else None
+
+
+def scopes_path():
+    import of_events
+    return os.path.join(of_events.STATE_DIR, "handover-scopes.json")
+
+
+def write_scopes(handovers, path=None):
+    """The accepted and blocked hand-overs with a scope, for the hook's mandate check (the listener keeps it): the hook
+    reads this small file instead of the store (the read path's 3.6: the recorder hook only appends)."""
+    path = path or scopes_path()
+    keep = {hid: {"id": h["id"], "to": h["to"], "state": h["state"], "scope": h.get("scope")}
+            for hid, h in handovers.items() if h.get("state") in ("accepted", "blocked") and h.get("scope")}
+    with open(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        json.dump(keep, fh)
+    os.replace(path + ".tmp", path)
+    return len(keep)
+
+
+def read_scopes(path=None):
+    """The listener's copy of the scoped hand-overs, or None when there is none (no listener here yet)."""
+    try:
+        with open(path or scopes_path()) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def covering(handovers, position, system, path):

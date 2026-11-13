@@ -57,6 +57,7 @@ ALLOWED = {
     ('of_github.py', 'last_local', "SELECT max(ts) FROM event WHERE name = 'of.work_record' AND "): GITHUB,
     ('of_handover.py', 'load', 'SELECT event_id, ts, name, position, payload FROM event WHER'): HANDOVER,
     ('of_hook.py', '_mandate_check', 'of_handover.load(of_events._conn())'): HANDOVER,
+    ('of_listen.py', 'flush', 'of_handover.load(conn)'): HANDOVER,  # on a hand-over event only: the hook's copy
     ('of_judge.py', 'judged', "SELECT payload FROM event WHERE name = 'of.agent_question_ju"): RARE,
     ('of_judge.py', 'noted', "SELECT count(*) FROM event WHERE name = 'of.nudge_sent' AND "): RARE,
     ('of_listen.py', 'open_asks', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): RARE,

@@ -896,10 +896,36 @@ class CorrectionsProcessor(Processor):
         log.close()
 
 
+class HandoverScopesProcessor(Processor):
+    """handover-scopes.json: the accepted and blocked hand-overs with a scope, rewritten when a hand-over event comes,
+    for the hook's mandate check, which reads it instead of the store (the read path's 3.6; of_handover.write_scopes)."""
+    name = "handover_scopes"
+    version = "1"
+
+    def __init__(self):
+        self.dirty = True  # written once at start
+
+    def reset(self, conn):
+        self.dirty = True
+
+    def handle(self, conn, rows):
+        if any(str(r.get("name") or "").startswith("of.handover_") for r in rows):
+            self.dirty = True
+        return False
+
+    def flush(self, conn):
+        if not self.dirty:
+            return False
+        import of_handover
+        of_handover.write_scopes(of_handover.project(of_handover.load(conn)))
+        self.dirty = False
+        return False
+
+
 PROCESSORS = [AsksProcessor, WaitsProcessor, PasteProcessor, BlockedProcessor, ViewsProcessor, PulseProcessor,
               DeliverProcessor, CaseProcessor, CorrectionsProcessor,
               PromptOriginProcessor,
-              GithubProcessor, StudioCacheProcessor]
+              GithubProcessor, StudioCacheProcessor, HandoverScopesProcessor]
 try:  # of_capacity's processor (bin/of_capacity.py, owned there): spend by message id, the balancer detached
     import of_capacity
     PROCESSORS.append(of_capacity.ListenerProcessor)
