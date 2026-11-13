@@ -2062,9 +2062,26 @@ class EscalationsFromCacheTest(unittest.TestCase):
             esc, age = of_studio.read_escalations("acme", time.time() + of_studio.ESCALATIONS_FRESH_S + 60)
             self.assertIsNone(esc)
             self.assertGreater(age, of_studio.ESCALATIONS_FRESH_S)
-            with mock.patch.object(of_studio, "read_escalations", return_value=(None, 3600.0)):
+            with mock.patch.object(of_studio, "read_escalations", return_value=(None, 3600.0)), \
+                    mock.patch("of_events.emit") as emit, mock.patch.object(of_studio_cli, "_tell") as tell:
                 of_studio_cli.cmd_escalations(args)
+                of_studio_cli.cmd_escalations(args)                               # the same episode: said once
         self.assertIn("the last is 60 min old); nothing done", out.getvalue())
+        self.assertEqual([c.args[0] for c in emit.call_args_list], ["escalations_stale"])
+        self.assertEqual(emit.call_args.args[1]["age_s"], 3600)
+        self.assertEqual(tell.call_count, 1)
+        self.assertEqual(tell.call_args.args[0], "of_studio")
+        self.assertIn("acme are 60 min old", tell.call_args.args[1])
+        self.assertIn("of model escalations --org acme --fresh --write", tell.call_args.args[1])
+        # a render wrote them again: the episode ends, and the next stale read is told again
+        with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
+                mock.patch.object(of_studio_cli, "_escalations_done", return_value=set()), \
+                mock.patch("of_events.emit"), contextlib.redirect_stdout(io.StringIO()):
+            of_studio_cli.cmd_escalations(args)
+            with mock.patch.object(of_studio, "read_escalations", return_value=(None, None)), \
+                    mock.patch.object(of_studio_cli, "_tell") as tell:
+                of_studio_cli.cmd_escalations(args)
+        self.assertIn("acme are missing", tell.call_args.args[1])
 
 
 class StructureInputTest(unittest.TestCase):
