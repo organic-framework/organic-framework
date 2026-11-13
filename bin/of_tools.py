@@ -332,11 +332,12 @@ def write_mcp_config(cfg, sid, state_dir=None):
 
 def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None):
     """For a launcher (of spawn, of capacity move/resume): (extra argv, settings keys to merge into the session's
-    one --settings file). A position whose organization has no `tools:` catalogue gets ([], {}): nothing changes
-    until its structure keeper declares one."""
+    one --settings file). A position whose organization has neither a `tools:` catalogue nor `tools_excluded`
+    gets ([], {}): nothing changes until its structure keeper declares one. `tools_excluded` alone applies (of_review,
+    organic-framework PR 121: an organization excluding a plugin before it has a catalogue)."""
     docs = registries(orgs_file)
     org, p, doc = find_position(position_name, docs)
-    if not doc.get("tools"):
+    if not doc.get("tools") and not excluded_plugins(doc):
         return [], {}
     cfg = session_config(p, doc, config_dir)
     path = write_mcp_config(cfg, sid, state_dir)
