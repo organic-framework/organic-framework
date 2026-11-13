@@ -1687,14 +1687,19 @@ def cmd_who(args):
     agents = live_agents_or_none()
     rows = who_rows(positions, agents)
     _merge_presence(rows, positions)
-    try:  # the one display projection, shared with Studio (of_pulse is the only herdr reader)
-        import of_studio
-        att = {r["position"]: r for r in of_studio.attention_all()}
-    except Exception:
-        try:
-            att = {r["position"]: r for r in _attention(positions, agents)}
+    import of_pulse
+    cached = of_pulse.load_attention()  # the last pulse's projection: a file read, not the whole log
+    if cached is not None:
+        att = {r["position"]: r for r in cached[1] if isinstance(r, dict) and r.get("position")}
+    else:
+        try:  # no listener running: the one display projection, shared with Studio (of_pulse is the only herdr reader)
+            import of_studio
+            att = {r["position"]: r for r in of_studio.attention_all()}
         except Exception:
-            att = {}
+            try:
+                att = {r["position"]: r for r in _attention(positions, agents)}
+            except Exception:
+                att = {}
     order = {"waiting_owner": 0, "waiting_peer": 1, "waiting_external": 1, "stalled": 2}
     for r in rows:
         a = att.get(r["position"] or "")
@@ -1720,6 +1725,9 @@ def cmd_who(args):
     widths = [max(len(row[i]) for row in table) for i in range(len(cols))]
     for row in table:
         print("  ".join(v.ljust(w) for v, w in zip(row, widths)).rstrip())
+    if cached is not None:
+        import time as _time
+        print(f"attention: as of the pulse at {_time.strftime('%H:%MZ', _time.gmtime(cached[0]))}")
     return 0
 
 
@@ -4427,6 +4435,9 @@ def cmd_status(args):
     return 0
 
 
+RECENT_ASK_S = 900  # the listener's view lags the log by a few seconds when it is live; 15 minutes is ample
+
+
 def _founder_wait_ask(me, ref=None, asks=None):
     """A wait on the founder needs a question he can see (founder, ask ddd6e3a3, 2026-11-07: three "declared waits"
     without an ask were all stale or someone else's). True when the position has an open ask or task to him; with
@@ -4438,11 +4449,22 @@ def _founder_wait_ask(me, ref=None, asks=None):
         return any(a["state"] == "open" and a.get("position") == me["name"] and a.get("to") in ("founder", "owner", None)
                    and (a.get("kind") or "").startswith(("question (declared", "task")) for a in asks) or None
 
-    found = check(_current_asks() if asks is None else asks)
-    if found is None and asks is None:  # an ask filed a moment ago may not be in the listener's view yet: the log
+    if asks is not None:
+        found = check(asks)
+    else:
+        import time as _time
         import of_asks
+        import of_listen
         import of_store
-        found = check(of_asks.project(of_asks.load(of_store.connect())))
+        conn = of_store.connect()
+        live = of_listen.fresh(conn)
+        found = check(of_listen.read_asks(conn) if live else of_asks.project(of_asks.load(conn)))
+        if found is None and live:
+            # an ask filed a moment ago may not be in the listener's view yet: the last minutes of the log, not all
+            # of it (2026-11-13, of_conductor msg 01a1d663-4530: a refused wait projected the whole log, 35 s and
+            # 216 MB, in ~70 agents' turn ends)
+            since = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime(_time.time() - RECENT_ASK_S))
+            found = check(of_asks.project(of_asks.load(conn, since)))
     if found is not None:
         return found
     if ref:
@@ -4972,13 +4994,43 @@ def _load_quiet():
     return positions
 
 
+def positions_when_changed(orgs_file=ORGS_FILE, load=None):
+    """A loader for a long-running process that parses the registries again only when one of them, or the list of
+    organizations, changed on disk (2026-11-13, of_conductor msg 01a1d663-4530: the desk router parsed every registry
+    on each herdr event, 0.6 s of CPU each time with ~70 agents, 10 to 30% of a core without pause)."""
+    load = load or (lambda: load_positions(orgs_file)[0])
+    memo = {"key": None, "positions": None}
+
+    def key():
+        paths = [orgs_file]
+        try:
+            paths += [path for _, path, _ in org_registries(orgs_file)]
+        except Exception:  # noqa: BLE001 - no list: load() says so
+            pass
+        out = []
+        for p in paths:
+            try:
+                st = os.stat(p)
+                out.append((p, st.st_mtime_ns, st.st_size))
+            except OSError:
+                out.append((p, None, None))
+        return tuple(out)
+
+    def loader():
+        k = key()
+        if k != memo["key"] or memo["positions"] is None:
+            memo["positions"], memo["key"] = load(), k
+        return memo["positions"]
+    return loader
+
+
 def cmd_desk(args):
     import time
     import of_desk
     action = args.action or "show"
     log = lambda m: print(m, flush=True)
     if action == "run":
-        of_desk.run(lambda: load_positions()[0], bind, lambda m: log(f"{time.strftime('%H:%M:%S')} {m}"))
+        of_desk.run(positions_when_changed(), bind, lambda m: log(f"{time.strftime('%H:%M:%S')} {m}"))
         return 0
     if action == "on":
         print(f"of desk: router running, pid {of_desk.start(os.path.realpath(__file__))}")

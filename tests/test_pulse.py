@@ -113,6 +113,21 @@ class RunTest(unittest.TestCase):
 
 
 
+class AttentionCopyTest(unittest.TestCase):
+    """of who reads the last pulse's projection instead of projecting the whole log (of_conductor msg 01a1d663-4530,
+    2026-11-13: 14 s of CPU and 941 MB a call)."""
+
+    def test_saved_read_and_too_old(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(of_events, "STATE_DIR", d):
+            self.assertIsNone(of_pulse.load_attention())
+            rows = [{"position": "k", "kind": "waiting_owner", "on": "founder", "since": "2026-11-13T19:00:00Z"}]
+            of_pulse.save_attention(rows, 1000.0)
+            self.assertEqual(of_pulse.load_attention(now=1000.0 + 600), (1000.0, rows))
+            self.assertIsNone(of_pulse.load_attention(now=1000.0 + of_pulse.ATTENTION_MAX_AGE_S + 1))
+            self.assertEqual(oct(os.stat(os.path.join(d, "attention.json")).st_mode & 0o777), "0o600")
+
+
 class DiskCheckTest(unittest.TestCase):
     def test_low_disk_warns_once_a_day_per_episode(self):
         sent, mem, now, GB = [], {}, 1_000_000.0, 10 ** 9
@@ -1432,6 +1447,29 @@ class FounderWaitTest(unittest.TestCase):
             of._founder_wait_ask(me, "cccccccc", asks=other)
         with self.assertRaises(of.OfError):  # a candidate (a guessed question) is no ask he can see
             of._founder_wait_ask(me, asks=[dict(mine[0], kind="question (heuristic)", state="candidate")])
+
+        # The listener's view is live: an ask newer than it is found in the last minutes of the log, and a refusal
+        # never projects the whole log (of_conductor msg 01a1d663-4530, 2026-11-13: 35 s and 216 MB a call).
+        from unittest import mock
+        import of_asks
+        import of_listen
+        import of_store
+        loads = []
+        def load(conn, since_iso=None):
+            loads.append(since_iso)
+            return ["recent"] if since_iso else ["all"]
+        project = lambda rows: mine if rows == ["recent"] else []  # noqa: E731
+        with mock.patch.object(of_store, "connect", lambda: None), mock.patch.object(of_listen, "fresh", lambda c: True), \
+                mock.patch.object(of_listen, "read_asks", lambda c: other), mock.patch.object(of_asks, "load", load), \
+                mock.patch.object(of_asks, "project", project):
+            self.assertIs(of._founder_wait_ask(me), True)                     # filed a moment ago, not in the view
+            self.assertEqual(len(loads), 1)
+            self.assertTrue(loads[0] and loads[0] > "2026")                    # only the recent part of the log
+            self.assertEqual(of._founder_wait_ask(me, "bbbbbbbb"), "02-bbbbbbbb")  # in the view: no log read
+            self.assertEqual(len(loads), 1)
+            with mock.patch.object(of_asks, "project", lambda rows: []), self.assertRaises(of.OfError):
+                of._founder_wait_ask(me)
+            self.assertNotIn(None, loads)                                      # the whole log was never loaded
 
 
 class ClipTailTest(unittest.TestCase):

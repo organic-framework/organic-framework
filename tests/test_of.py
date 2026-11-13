@@ -88,6 +88,21 @@ class RegistryTest(unittest.TestCase):
             self.assertIn("has no segment", deep)
             self.assertIn("nobody_here", quick)  # a problem still prints everywhere
 
+    def test_a_long_running_loader_parses_only_after_a_change(self):
+        """The desk router (of_conductor msg 01a1d663-4530, 2026-11-13): every registry parsed on each herdr event."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", "positions: []\n")
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: wk, path: %s/org}\n" % root)
+            calls = []
+            loader = of.positions_when_changed(os.path.join(root, "conf/orgs.yaml"), load=lambda: calls.append(1) or [])
+            loader(), loader(), loader()
+            self.assertEqual(len(calls), 1)
+            path = os.path.join(root, "org/registry/positions.yaml")
+            with open(path, "a") as fh:
+                fh.write("# edited\n")
+            loader()
+            self.assertEqual(len(calls), 2)  # a registry changed: parsed again
+
     def test_each_registry_is_parsed_once(self):
         """2026-11-13: of inbox died on a user organization's registry that its keeper was writing: load_positions
         read it again for its works and units, and the second read caught the write half done."""
