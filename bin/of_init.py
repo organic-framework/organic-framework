@@ -25,6 +25,13 @@ HOOK_EVENTS = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFa
                "Notification", "PermissionRequest", "PermissionDenied"]
 TOOL_HOOKS = {"PreToolUse": "AskUserQuestion", "PostToolUse": "*", "PostToolUseFailure": "*"}
 MARK = " hook "  # how an of hook command is recognized: "<of> hook <Event>"
+# Seconds Claude Code waits for a hook before it kills it. A PreToolUse hook decides (the guard's denies, the ask
+# dialog's), and a killed one decides nothing, so the tool runs unchecked: it gets 30 s. At a load average of 50 the
+# guard took over 5 s, the old value for every hook (the founder's yes to fix it, ask 5230329b, 2026-11-13). It takes
+# 0.3 s on a quiet machine, so the longer limit costs nothing there. The recording hooks keep 5 s: a lost record is
+# cheaper than a stalled turn.
+HOOK_TIMEOUT = 5
+DECIDING_TIMEOUT = 30
 
 
 class NoTTY(Exception):
@@ -182,11 +189,13 @@ def with_hooks(settings, of_path=OF, deny_secrets=False, guard=False):
         groups = hooks.setdefault(event, [])
         mine = [h for g in groups if g.get("matcher") == matcher for h in g.get("hooks") or []
                 if _is_of(h.get("command"), of_path)]
+        limit = DECIDING_TIMEOUT if event == "PreToolUse" else HOOK_TIMEOUT
         if mine:
-            for h in mine:  # an older install without the interpreter (or the flag) is upgraded in place
+            for h in mine:  # an older install without the interpreter, the flag or the limit is upgraded in place
                 h["command"] = hook_command(event, of_path, deny_secrets)
+                h["timeout"] = limit
             continue
-        g = {"hooks": [{"type": "command", "command": hook_command(event, of_path, deny_secrets), "timeout": 5}]}
+        g = {"hooks": [{"type": "command", "command": hook_command(event, of_path, deny_secrets), "timeout": limit}]}
         if matcher:
             g = {"matcher": matcher, **g}
         groups.append(g)
@@ -1404,14 +1413,19 @@ GUARD_PROBE = {"hook_event_name": "PreToolUse", "session_id": "of-guard-selftest
                "tool_input": {"command": "printenv"}, "cwd": "/tmp"}
 
 
-def guard_works(settings, timeout=5):  # Claude Code kills a hook at 5 s (of_server, 2026-11-10): flag what it would
+def guard_works(settings, timeout=None):
     """Run the installed guard command on a harmless probe (printenv) the way Claude Code would, with an
-    empty PATH-independent environment, and check it answers deny. (ok, detail)."""
+    empty PATH-independent environment, and check it answers deny. (ok, detail). It waits as long as Claude Code
+    would before killing it: the hook's own `timeout` (Claude Code's default is 60 s), unless `timeout` is given."""
     import tempfile
-    cmds = [h.get("command") for g in (settings.get("hooks") or {}).get("PreToolUse") or []
-            if g.get("matcher") == GUARD_MATCHER for h in g.get("hooks") or []]
-    if not cmds:
+    found = [h for g in (settings.get("hooks") or {}).get("PreToolUse") or []
+             if g.get("matcher") == GUARD_MATCHER for h in g.get("hooks") or []]
+    if not found:
         return None, "no guard installed"
+    cmds = [h.get("command") for h in found]
+    if timeout is None:
+        t = found[0].get("timeout")
+        timeout = t if isinstance(t, (int, float)) and not isinstance(t, bool) and t > 0 else 60
     with tempfile.TemporaryDirectory() as tmp:  # its own state dir: the probe leaves no event behind
         env = {"PATH": "/usr/bin:/bin", "HOME": os.path.expanduser("~"), "OF_STATE": tmp, "OF_AUTOMATION": "1"}
         try:
