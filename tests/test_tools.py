@@ -1,4 +1,5 @@
 """of tools (bin/of_tools.py): the profile, the generated session config and the catalogue check. Pure logic."""
+import json
 import os
 import sys
 import unittest
@@ -166,7 +167,7 @@ class SharedServerTest(unittest.TestCase):
         s = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme",
                                     up=lambda port: True)["mcp"]["mcpServers"]["grafana-read"]
         self.assertEqual(s["url"], "http://127.0.0.1:18310/mcp")
-        self.assertEqual(s["headersHelper"], "/of/bin/of tools header acme/grafana-read --position obs_keeper")
+        self.assertEqual(s["headersHelper"], "/of/bin/of tools header acme/grafana-read")
         self.assertNotIn("command", s)
         c = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme", up=lambda port: False)
         self.assertEqual(c["mcp"]["mcpServers"]["grafana-read"]["type"], "stdio")  # not running: its own, as before
@@ -183,14 +184,36 @@ class SharedServerTest(unittest.TestCase):
             self.assertEqual(env["OF_AUTOMATION"], "1")
             path = os.path.join(st, "tools", "shared", "acme.grafana-read.token")
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
-            self.assertEqual(of_tools.header("acme", "grafana-read", "obs_keeper", {"acme": d}, state_dir=st),
-                             {"Authorization": f"Bearer {tok}"})
-            with self.assertRaises(of_tools.ToolsError):
-                of_tools.header("acme", "grafana-read", "acme_org", {"acme": d}, state_dir=st)
+            mine = os.path.join(st, "tools", "s-1.mcp.json")
+            with open(mine, "w") as fh:
+                json.dump({"mcpServers": {"grafana-read": {"type": "http", "url": "http://127.0.0.1:18310/mcp"}}}, fh)
+            other = os.path.join(st, "tools", "s-2.mcp.json")
+            with open(other, "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+
+            def chain(path, sid="s-1"):
+                return [(11, "/bin/sh -c of tools header acme/grafana-read"),
+                        (10, f"claude --session-id {sid} -n x --settings y --mcp-config {path}")]
+            hdr = of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=chain(mine), state_dir=st)
+            self.assertEqual(hdr, {"Authorization": f"Bearer {tok}"})
+            refused = [chain(other, "s-2"),                              # a session whose profile lacks it
+                       chain(mine, "s-2"),                               # another session's file
+                       chain("/tmp/forged.mcp.json"),                    # a file OF did not write
+                       [(10, "claude --session-id s-1")],                # not launched by OF
+                       [(10, "/bin/zsh")]]                               # no Claude Code at all
+            for anc in refused:
+                with self.assertRaises(of_tools.ToolsError, msg=anc):
+                    of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=anc, state_dir=st)
 
     def test_check_shared(self):
         d = self.doc()
         self.assertEqual(of_tools.check({"acme": d}), [])
+        open_ = self.doc()
+        open_["tools"]["grafana-read"]["shared"] = {"port": 18311, "args": []}
+        self.assertTrue(any("without one is open" in x for x in of_tools.check({"acme": open_})))
+        p = next(x for x in open_["positions"] if x["name"] == "obs_keeper")  # never served without a token
+        self.assertEqual(of_tools.session_config(p, open_, ofb="o", installed=[], org="acme", up=lambda port: True)
+                         ["mcp"]["mcpServers"]["grafana-read"]["type"], "stdio")
         self.assertIn("acme: tools.grafana-read: shared.port 18310 is also other/grafana-read's",
                       of_tools.check({"other": self.doc(), "acme": d}))
 
