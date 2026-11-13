@@ -821,6 +821,30 @@ class GuardProbeTest(unittest.TestCase):
         self.assertTrue(ok, detail)
         self.assertEqual(of_init.guard_works({})[0], None)
 
+    def test_deciding_hooks_get_30_seconds_and_the_probe_waits_as_long(self):
+        """Ask 5230329b, 2026-11-13: at a load average of 50 the guard took over 5 s, the limit OF had set for every
+        hook, so Claude Code would kill it and run the tool unchecked."""
+        import subprocess
+        from unittest import mock
+        import of_init
+        old = {"hooks": {"PreToolUse": [{"matcher": of_init.GUARD_MATCHER, "hooks": [
+            {"type": "command", "command": f"{of_init.OF} hook PreToolUse", "timeout": 5}]}]}}
+        s = of_init.with_hooks(old, of_init.OF, guard=True)
+        limits = {(e, g.get("matcher")): h["timeout"] for e, gs in s["hooks"].items() for g in gs for h in g["hooks"]}
+        self.assertEqual(limits[("PreToolUse", of_init.GUARD_MATCHER)], 30)    # upgraded in place
+        self.assertEqual(limits[("PreToolUse", of_init.GUARD_MCP_MATCHER)], 30)
+        self.assertEqual(limits[("PreToolUse", "AskUserQuestion")], 30)
+        self.assertEqual(limits[("Stop", None)], 5)                             # a recording hook keeps 5 s
+        waited = []
+        def run(*a, **kw):
+            waited.append(kw["timeout"])
+            raise subprocess.TimeoutExpired(a[0], kw["timeout"])
+        with mock.patch.object(of_init.subprocess, "run", run):
+            self.assertFalse(of_init.guard_works(s)[0])
+            del s["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
+            of_init.guard_works(s)
+        self.assertEqual(waited, [30, 60])                                      # the hook's own limit, else 60 s
+
 
 class ColdIndexTest(unittest.TestCase):
     def test_hook_with_a_cold_index_records(self):
