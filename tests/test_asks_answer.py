@@ -387,6 +387,25 @@ class PopupUxTest(unittest.TestCase):
             finally:
                 of_events.STATE_DIR = saved_dir
 
+    def test_a_failed_outbox_send_is_marked_so_the_screen_shows_its_card(self):
+        """of_review on PR 119: a failed send in the detached sender kept its card hidden as 'on its way'."""
+        import tempfile as _tf
+        import of_asks_tui
+        import of_events
+        import of_asks_inbox
+        saved_dir = of_events.STATE_DIR
+        with _tf.TemporaryDirectory() as d:
+            of_events.STATE_DIR = d
+            try:
+                of_asks_tui.to_outbox([{"what": "answer", "text": "yes", "item": {"ids": ["X"], "who": ["a"]}}])
+                self.assertEqual(of_asks_inbox.on_their_way(), {"X"})
+                n = of_asks_tui.send_outbox(lambda it, text: (False, "store busy"), None, lambda ids: True)
+                self.assertEqual(n, 0)
+                self.assertEqual(of_asks_inbox.on_their_way(), set())  # failed: no longer on its way
+                self.assertEqual(len(of_asks_tui.outbox_waiting(older_than_s=0)), 1)  # still there for the next run
+            finally:
+                of_events.STATE_DIR = saved_dir
+
     def test_a_failed_send_comes_back_red(self):
         sent = self.run_popup([ord("a"), 0.3, -1, -1, ord("q")], act=lambda what, x: (False, "store busy"))
         self.assertEqual(sent, [])

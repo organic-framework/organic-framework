@@ -409,7 +409,8 @@ def char_of(ch):
 
 NEW_H = 6         # the log's tail read for asks the listener's view has not taken yet
 CLOSED_H = 48     # and for the closures it may not show yet
-SENDING_S = 600   # an answer in the outbox or on its way this long ago hides its card meanwhile
+SENDING_S = 180   # an answer in the outbox or being sent, unmarked, hides its card this long at most (a failure marks
+# its draft or outbox entry failed_at and shows the card at once; this bounds a sender that died before it could)
 
 
 def _iso(t):
@@ -520,7 +521,7 @@ def on_their_way(now=None):
                 try:
                     with open(os.path.join(d, f)) as fh:
                         b = json.load(fh)
-                    if now - float(b.get("queued_at") or 0) < SENDING_S:
+                    if not b.get("failed_at") and now - float(b.get("queued_at") or 0) < SENDING_S:
                         out |= set((b.get("item") or {}).get("ids") or [])
                 except (OSError, ValueError, TypeError):
                     continue
@@ -529,7 +530,7 @@ def on_their_way(now=None):
     try:
         import of_asks_answer
         for dr in of_asks_answer.unsent_drafts():
-            if now - float(dr.get("saved_at") or 0) < SENDING_S:
+            if not dr.get("failed_at") and now - float(dr.get("saved_at") or 0) < SENDING_S:
                 out |= set(dr.get("ask_ids") or [dr.get("ask_id")])
     except Exception:  # noqa: BLE001
         pass
@@ -622,7 +623,7 @@ def screen_list(conn, positions=(), failed=(), now=None):
     archived = [] if behind is not None else of_asks_answer.archive_drafts(open_ids)  # a current list only
     drafts = [d for d in of_asks_answer.unsent_drafts()
               if now - float(d.get("saved_at") or 0) >= SENDING_S  # on their way: not unsent
-              or set(d.get("ask_ids") or [d.get("ask_id")]) & failed]  # a failed one at once
+              or d.get("failed_at") or set(d.get("ask_ids") or [d.get("ask_id")]) & failed]  # a failed one at once
     return data, overlay(conn, now), {"behind": behind, "archived": archived, "drafts": drafts}
 
 
@@ -1808,6 +1809,15 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
               timing=timing, reply_store=store, writer=writer)
         boxes.append(box)
         box.run()
+    import signal
+
+    def bye(signum, frame):  # herdr closes its popup with a signal: the finally below still writes the drafts and the
+        raise SystemExit(0)  # open answer (of_review's note on PR 119); set before curses, which then keeps it
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        try:
+            signal.signal(sig, bye)
+        except (ValueError, OSError):
+            pass
     try:
         curses.wrapper(run)
     finally:

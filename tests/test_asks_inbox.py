@@ -218,6 +218,29 @@ class StoreTest(unittest.TestCase):
         self.assertIn(a, self.shown(data))                      # failed in this window: back, its draft for D at once
         self.assertEqual([d["ask_id"] for d in extra["drafts"]], [a])
 
+    def test_a_failed_send_shows_its_card_at_once_and_its_draft_for_d(self):
+        """of_review on PR 119: a failed answer's draft hid its card as 'on its way' for SENDING_S, uncounted."""
+        import of_asks_answer
+        import of_listen
+        now = time.time()
+        a = self.declared("Rename the channel?", I._iso(now - 600))
+        b = self.declared("Rotate the keys?", I._iso(now - 600))
+        self.view()
+        of_listen.heartbeat(self.conn)
+        item = {"ids": [a], "who": ["of_a"], "text": "Rename the channel?", "kind": "permission"}
+        ok, why = of_asks_answer.answer(self.conn, item, "yes", [], lambda name: None)  # cannot be answered here
+        self.assertFalse(ok)
+        data, _, extra = I.screen_list(self.conn, now=now)
+        self.assertIn(a, self.shown(data))                       # failed: shown again at once
+        self.assertEqual([d["ask_id"] for d in extra["drafts"]], [a])  # and counted, for D
+        os.makedirs(T.outbox_dir(), exist_ok=True)
+        with open(os.path.join(T.outbox_dir(), "x.json"), "w") as fh:
+            json.dump({"what": "answer", "text": "no", "item": {"ids": [b]}, "queued_at": now}, fh)
+        self.assertNotIn(b, self.shown(I.screen_list(self.conn, now=now)[0]))  # on its way
+        with open(os.path.join(T.outbox_dir(), "x.json"), "w") as fh:
+            json.dump({"what": "answer", "text": "no", "item": {"ids": [b]}, "queued_at": now, "failed_at": now}, fh)
+        self.assertIn(b, self.shown(I.screen_list(self.conn, now=now)[0]))     # its send failed: back
+
     def test_the_tail_hangs_from_the_listeners_last_sign_of_life(self):
         """of_herdr's review of PR 119: with the listener down past NEW_H, an ask filed after it stopped showed
         nowhere."""

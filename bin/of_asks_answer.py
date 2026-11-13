@@ -363,6 +363,23 @@ def save_draft(item, text):
     return path
 
 
+def mark_failed(item, why):
+    """The draft of an answer whose send failed says so (failed_at), so the screen shows its card again at once and
+    offers the draft to D instead of taking it for an answer on its way (of_review on PR 119)."""
+    import time
+    path = os.path.join(drafts_dir(), f"{(item.get('ids') or ['?'])[0]}.json")
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+        d.update(failed_at=time.time(), why=str(why)[:200])
+        tmp = path + f".{os.getpid()}"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(d, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass
+
+
 def drop_draft(item):
     try:
         os.remove(os.path.join(drafts_dir(), f"{(item.get('ids') or ['?'])[0]}.json"))
@@ -432,8 +449,20 @@ def recipients(conn, ids, first_position=None, first_session=None):
 def answer(conn, item, text, positions, pane_of):
     """Record and deliver one answer to every asker in the group. pane_of(position) -> pane id or None.
     Returns (ok, status line): ok once the answer is recorded; what is not typed now, the pulse types later.
-    `conn` must belong to the calling thread (SQLite objects stay in the thread that made them)."""
+    `conn` must belong to the calling thread (SQLite objects stay in the thread that made them).
+    A failure leaves the draft marked failed (mark_failed): the screen shows the card again and D can send it."""
     save_draft(item, text)
+    try:
+        ok, status = _answer(conn, item, text, positions, pane_of)
+    except Exception as e:  # noqa: BLE001 - marked, then raised as before
+        mark_failed(item, f"{type(e).__name__}: {e}")
+        raise
+    if not ok:
+        mark_failed(item, status)
+    return ok, status
+
+
+def _answer(conn, item, text, positions, pane_of):
     c = card(conn, item, positions)
     if not c["answerable"]:
         return False, "cannot answer this item here"

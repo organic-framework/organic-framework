@@ -921,6 +921,13 @@ def send_outbox(answer, act, still_open, reconcile=None, log=lambda m: None):
                     progressed = True
                 else:
                     log(f"outbox {f}: {status}")
+                    try:  # failed: the screen shows its card again at once instead of taking it for one on its way
+                        body.update(failed_at=time.time(), why=str(status)[:200])
+                        with open(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                            json.dump(body, fh, ensure_ascii=False, default=str)
+                        os.replace(path + ".tmp", path)
+                    except OSError:
+                        pass
             if not progressed:
                 break  # what is left failed this time; the next run tries again
     finally:
