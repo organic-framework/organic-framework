@@ -721,3 +721,168 @@ class AddUnitTest(unittest.TestCase):
         self.assertIn("add_unit takes", "\n".join(p))
         new = of_diff.add_unit("positions: []\n", "u1", "A unit", "a", ["s"])
         self.assertEqual(yaml.safe_load(new)["units"], {"u1": {"name": "A unit", "owner": "a", "systems": ["s"]}})
+
+
+REN_REG = """organization: acme
+positions:
+  - name: tp_owner
+    system: ops
+    role: owner
+    kind: manager
+    owner: founder
+    summary: "units owner"
+    status: active
+  - name: feed_keeper            # the feed's single writer
+    system: feed
+    role: keeper
+    kind: keeper
+    owner: tp_owner
+    summary: "feed_keeper keeps token prices"
+    status: active
+    mandate: 'registry/briefs/feed_keeper.md'
+    aliases: [old_feed]
+    credentials: [cred-feed]
+  - name: helper
+    system: feed
+    role: analyst
+    kind: analyst
+    owner: feed_keeper
+    summary: "helps"
+    status: active
+    waiting_on: feed_keeper
+
+units:
+  shop:
+    owner: feed_keeper
+    systems: [feed, ops]
+
+systems:
+  feed: {keeper: feed_keeper}
+  ops: {keeper: tp_owner}
+
+delegations:
+  - id: del-shop
+    unit: shop
+    positions: [feed_keeper, helper]
+    from_owner: tp_owner
+    to_owner: feed_keeper
+    envelope:
+      grants: [feed_keeper]      # signed by the delegator: never re-pointed
+
+works:
+  w-prices:
+    title: prices
+    kind: speed
+    owner: feed_keeper
+    doers:
+    - feed_keeper
+    - external:dana
+
+goals:
+  g-up:
+    title: up
+    owner: "feed_keeper"
+
+credentials:
+  cred-feed:
+    keeper: feed_keeper
+
+tools:
+  feed-api:
+    keeper: feed_keeper
+"""
+
+
+class RenamePositionTest(unittest.TestCase):
+    """docs/handover.md §3, rename_position (hand-over 0b7757f2 from of_architect; a user organization's structure
+    keeper, msg 01a1d67b-153a: no v1 diff kind renamed a position)."""
+
+    REN = {"op": "rename_position", "from": "feed_keeper", "to": "prices_keeper"}
+
+    def test_every_reference_follows_and_the_old_name_is_an_alias(self):
+        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), REN_REG)
+        self.assertEqual(problems, [])
+        doc = yaml.safe_load(new)
+        p = {x["name"]: x for x in doc["positions"]}
+        self.assertNotIn("feed_keeper", p)
+        self.assertEqual(p["prices_keeper"]["aliases"], ["old_feed", "feed_keeper"])
+        self.assertEqual(p["prices_keeper"]["mandate"], "registry/briefs/prices_keeper.md")
+        self.assertEqual((p["helper"]["owner"], p["helper"]["waiting_on"]), ("prices_keeper", "prices_keeper"))
+        self.assertEqual(doc["units"]["shop"]["owner"], "prices_keeper")
+        self.assertEqual(doc["systems"]["feed"], {"keeper": "prices_keeper"})
+        dl = doc["delegations"][0]
+        self.assertEqual((dl["positions"], dl["to_owner"]), (["prices_keeper", "helper"], "prices_keeper"))
+        self.assertEqual(dl["envelope"]["grants"], ["feed_keeper"])        # a grant never follows the alias
+        self.assertEqual(doc["works"]["w-prices"]["doers"], ["prices_keeper", "external:dana"])
+        self.assertEqual(doc["works"]["w-prices"]["owner"], "prices_keeper")
+        self.assertEqual(doc["goals"]["g-up"]["owner"], "prices_keeper")
+        self.assertEqual(doc["credentials"]["cred-feed"]["keeper"], "prices_keeper")
+        self.assertEqual(doc["tools"]["feed-api"]["keeper"], "prices_keeper")
+        self.assertIn("  - name: prices_keeper            # the feed's single writer", new)  # comments stay
+        self.assertIn("summary: \"feed_keeper keeps token prices\"", new)              # prose is not a reference
+        self.assertIn("owner: \"prices_keeper\"", new)                                  # the quoting style stays
+        changed = [(a, b) for a, b in zip(REN_REG.split("\n"), new.split("\n")) if a != b]
+        self.assertEqual(len(new.split("\n")), len(REN_REG.split("\n")))
+        self.assertTrue(all("feed_keeper" in a or "aliases" in a for a, _ in changed), changed)  # narrow edits
+        self.assertIn("    aliases: [old_feed, feed_keeper]\n", new)                  # in the list's own style
+        block = REN_REG.replace("    aliases: [old_feed]\n", "    aliases:\n    - old_feed\n")
+        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), block)
+        self.assertEqual(problems, [])
+        self.assertIn("    aliases:\n    - old_feed\n    - feed_keeper\n", new)
+        none = REN_REG.replace("    aliases: [old_feed]\n", "")
+        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), none)
+        self.assertEqual((problems, yaml.safe_load(new)["positions"][1]["aliases"]), ([], ["feed_keeper"]))
+
+    def test_refusals(self):
+        for to, expected in (("Prices.Keeper", "is not a position name"), ("helper", "is already a position"),
+                             ("old_feed", None)):
+            _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, to=to)), REN_REG)
+            if expected:
+                self.assertIn(expected, "\n".join(p))
+            else:  # its own old alias may become its name again: the alias list loses it
+                self.assertEqual(p, [])
+        _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, to="x_new", **{"from": "nobody"})), REN_REG)
+        self.assertIn("no position 'nobody'", "\n".join(p))
+        reg = REN_REG.replace("  - name: helper\n", "  - name: helper\n    aliases: [prices_keeper]\n")
+        _, p = of_diff.preview(diff("mandate_rewrite", self.REN), reg)
+        self.assertIn("'prices_keeper' is already helper's alias", "\n".join(p))
+        _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, extra=1)), REN_REG)
+        self.assertIn("rename_position takes", "\n".join(p))
+
+    def test_apply_moves_the_brief_and_the_memory_directory(self):
+        import subprocess
+        import tempfile
+        of = os.path.join(HERE, "..", "bin", "of")
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "org", "registry", "briefs"))
+            with open(os.path.join(t, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write(REN_REG)
+            with open(os.path.join(t, "org", "registry", "briefs", "feed_keeper.md"), "w") as fh:
+                fh.write("# Brief: feed_keeper\n")
+            mem = os.path.join(t, "state", "memory", "acme")
+            os.makedirs(os.path.join(mem, "feed_keeper"))
+            with open(os.path.join(mem, "feed_keeper", "MEMORY.md"), "w") as fh:
+                fh.write("- a fact\n")
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: acme\n    path: {t}/org\n    workspace: acme\n")
+            diff_file = os.path.join(t, "sd.yaml")
+            with open(diff_file, "w") as fh:
+                yaml.safe_dump({"diff": dict(diff("mandate_rewrite", self.REN), id="sd-2026-11-14-rename",
+                                             org="acme", tier="low")}, fh)
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=os.path.join(t, "orgs.yaml"),
+                       OF_CONFIG_DIR=t, PATH="/usr/bin:/bin")
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True,  # noqa: E731
+                                            timeout=60)
+            r = run("diff", "check", diff_file)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            before = run("registry", "check")  # the fixture is not a whole registry: the rename adds no problem
+            r = run("diff", "apply", diff_file)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            briefs = os.listdir(os.path.join(t, "org", "registry", "briefs"))
+            self.assertEqual(briefs, ["prices_keeper.md"])
+            self.assertEqual(os.listdir(mem), ["prices_keeper"])
+            self.assertIn("moved", r.stdout)
+            self.assertIn("A grant naming feed_keeper does not follow the alias", r.stdout)
+            after = run("registry", "check")
+            self.assertEqual(after.stdout.replace("prices_keeper", "feed_keeper"), before.stdout)
