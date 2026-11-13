@@ -137,6 +137,34 @@ def load_memory():
         return {"panes": {}, "notified_stalls": [], "last_remind": 0, "nudged": {}, "last_notify": 0, "blocked": {}}
 
 
+# The pulse's projection, kept for `of who` (2026-11-13, of_conductor msg 01a1d663-4530: of who projected the whole
+# event log for its attention column, 14 s of CPU and 941 MB a call, while ~70 agents run on the founder's laptop).
+ATTENTION_MAX_AGE_S = 900  # three pulses: an older copy means the listener is not running, and of who projects
+
+
+def _attention_path():
+    return os.path.join(of_events.STATE_DIR, "attention.json")
+
+
+def save_attention(rows, now):
+    tmp = f"{_attention_path()}.{os.getpid()}.tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        json.dump({"ts": now, "rows": rows}, fh, default=str)
+    os.replace(tmp, _attention_path())
+
+
+def load_attention(now=None, max_age=ATTENTION_MAX_AGE_S):
+    """(ts, rows) of the last pulse's projection when it is at most max_age old, else None."""
+    try:
+        with open(_attention_path()) as fh:
+            d = json.load(fh)
+        ts, rows = float(d["ts"]), d["rows"]
+    except Exception:  # noqa: BLE001
+        return None
+    age = (now or time.time()) - ts
+    return (ts, rows) if 0 <= age <= max_age and isinstance(rows, list) else None
+
+
 def save_memory(m):
     tmp = f"{_mem_path()}.{os.getpid()}.tmp"
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
@@ -221,6 +249,10 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
     mem = load_memory()
     idle = track_idle(mem, agents, now)
     rows_ = project(positions, agents, rows, asks, idle, now, bind, handovers)
+    try:
+        save_attention(rows_, now)
+    except Exception as e:  # noqa: BLE001
+        log(f"attention copy: {e}")
     try:
         handover_windows(positions, agents, bind, handovers or {}, now, mem, prompt, offer, log, elsewhere=elsewhere,
                          send=send)
