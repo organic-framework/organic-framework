@@ -1251,7 +1251,9 @@ UNITS = (
      "standard": True, "watchdog": "relay"},
     {"name": "listen", "label": "dev.organic-framework.listen", "unit": "of-listen.service",
      "what": "the listener and its 5-minute pulse: hand-over offers, nudges, the asks (of listen)",
-     "args": ["listen", "run"], "always": True},
+     "args": ["listen", "run"], "always": True,
+     # people and agents wait on its views: Standard, no Nice, with its watchdog (hand-over 6d9a8305, docs/health.md)
+     "standard": True, "watchdog": "listen"},
 )
 
 
@@ -1341,6 +1343,14 @@ def install_units(out=print, system=None, run=subprocess.run, wait_s=8, sleep=ti
                 out(f"  {of_relay_client.install_launchd(run=run, watchdog_only=True)}")
             except Exception as e:  # noqa: BLE001 - the relay runs; its watchdog is named as missing
                 out(f"  the relay's watchdog is not installed ({type(e).__name__}: {e}); `of relay install` adds it")
+        if ok and u.get("watchdog") == "listen" and system == "Darwin":  # the stuck-listener restart, every minute
+            try:
+                import of_listen
+                for line in of_listen.install_launchd(run=run, plists={
+                        of_listen.WATCHDOG_LABEL: of_listen.launchd_plists()[of_listen.WATCHDOG_LABEL]}):
+                    out(f"  {line}")
+            except Exception as e:  # noqa: BLE001 - the listener runs; its watchdog is named as missing
+                out(f"  the listener's watchdog is not installed ({type(e).__name__}: {e}); `of listen install` adds it")
         if ok:
             out(f"  {u['name']}: running ({u['what']}); log {log}")
         else:
