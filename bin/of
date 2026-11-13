@@ -3128,6 +3128,14 @@ def cmd_relay(args):
     import of_ship
     if args.action in ("on", "off"):
         return _relay_service(args.action)
+    if args.action in ("install", "uninstall"):  # the relay's agent at Standard priority and its watchdog
+        print(of_relay.install_launchd(uninstall=args.action == "uninstall"))
+        return 0
+    if args.action == "watchdog":  # one check; launchd runs it every minute (docs/health.md §5)
+        return 0 if of_relay.watchdog() != "not-under-launchd" else 1
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)  # the watchdog's stack dump
     cfg = of_ship.config()
     servers, default = of_ship.org_servers(cfg), cfg["server_url"].rstrip("/")
     clients = {}
@@ -5769,8 +5777,9 @@ def main(argv=None):
     ib.add_argument("--from", dest="sender", help="--mine: which position you are, when the registry cannot tell "
                                                   "(your session must hold it)")
     ib.set_defaults(fn=cmd_inbox)
-    rl = sub.add_parser("relay", help="presence and message delivery for this machine: run | on | off")
-    rl.add_argument("action", choices=["run", "on", "off"])
+    rl = sub.add_parser("relay", help="presence and message delivery for this machine: run | on | off | install | "
+                                      "uninstall | watchdog")
+    rl.add_argument("action", choices=["run", "on", "off", "install", "uninstall", "watchdog"])
     rl.set_defaults(fn=cmd_relay)
     ak2 = sub.add_parser("ask", help="ask the founder (or a peer) a question, visibly: of ask \"…\" [--options \"a|b\"] [--blocking]")
     ak2.add_argument("question", nargs="?", help="the question (with --task: a one-line title; default: the first step)")

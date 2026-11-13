@@ -1142,6 +1142,10 @@ def make_handler(app):
                 super().finish()
             finally:
                 app.store.close_thread()
+                try:
+                    self.server.accepted.pop(self.connection.fileno(), None)
+                except (AttributeError, OSError, ValueError):
+                    pass
 
         def _send(self, status, body, ctype="application/json"):
             data = json.dumps(body, ensure_ascii=False).encode()
@@ -1267,9 +1271,14 @@ def make_handler(app):
             u = urlparse(self.path)
             try:
                 if u.path == "/v1/health":
+                    try:
+                        t0 = self.server.accepted.get(self.connection.fileno()) or time.monotonic()
+                    except (AttributeError, OSError, ValueError):
+                        t0 = time.monotonic()
                     h = health(app.store, app.writer)
-                    return self._send(200, h if app.cfg.get("health_detail", True) else
-                                      {"ok": h["ok"], "version": VERSION})
+                    self._send(200, h if app.cfg.get("health_detail", True) else {"ok": h["ok"], "version": VERSION})
+                    app.health_checks.answered(time.monotonic() - t0)  # server.health, as answered
+                    return None
                 if u.path == "/v1/schema":
                     return self._send(200, {"schemas": list(SCHEMAS), "types": {k: list(v) for k, v in REQUIRED.items()}})
                 if u.path == "/studio" or u.path.startswith("/studio/"):
@@ -1315,6 +1324,8 @@ def make_handler(app):
                     return self._passkey(lambda: app.passkeys.window_state(m, u.path.split("/")[4]))
                 if u.path == "/v1/presence":
                     return self._relay(lambda: app.relay.get_presence(m, (parse_qs(u.query).get("org") or [""])[0]))
+                if u.path == "/v1/health/checks":  # the server's own checks, for `of health` (docs/health.md §3)
+                    return self._send(200, {"checks": app.health_checks.states()})
                 if u.path == "/v1/messages":
                     return self._relay(lambda: app.relay.poll(m, (parse_qs(u.query).get("wait") or ["0"])[0]))
                 if u.path.startswith("/v1/redactions/"):
@@ -1786,6 +1797,21 @@ class Server(ThreadingHTTPServer):
     block_on_close = True
     gone, gone_since, gone_said = 0, None, 0.0
 
+    def process_request(self, request, client_address):
+        """Note when each connection was accepted, so server.health measures the answer from the accept, queueing
+        included (docs/health.md §2)."""
+        try:
+            self.accepted[request.fileno()] = time.monotonic()
+        except (AttributeError, OSError):
+            pass
+        return super().process_request(request, client_address)
+
+    @property
+    def accepted(self):
+        if not hasattr(self, "_accepted"):
+            self._accepted = {}
+        return self._accepted
+
     def handle_error(self, request, client_address):
         """A reply to a client that had already gone (it timed out, slept, lost its network) is counted and said once
         a minute; any other error is logged with its time and traceback."""
@@ -1874,6 +1900,8 @@ class App:
         import of_server_passkey  # docs/remote.md §6: a diff approved with a passkey
         self.passkeys = of_server_passkey.Passkeys(self.store, self.cfg, self._grant_key)
         self.passkey_rate = BadCodes(limit=30, window=600)  # the unauthenticated passkey routes, per token
+        import of_server_health  # docs/health.md §2: server.health and relay.oldest, kept and served
+        self.health_checks = of_server_health.Health(self.store)
 
     def router(self):
         if self._router is None or time.time() - self._router_at > 30:  # pick up registry changes
@@ -1892,6 +1920,8 @@ class App:
         httpd = Server((host or self.cfg["host"], self.cfg["port"] if port is None else port), make_handler(self))
         self.writer.start()
         threading.Thread(target=self._housekeeping, daemon=True, name="of-server-housekeeping").start()
+        threading.Thread(target=self.health_checks.run, args=(self.writer.stop,), daemon=True,
+                         name="of-server-health").start()
         return httpd
 
     def _housekeeping(self, every=600):
@@ -2111,14 +2141,20 @@ def launchd_plists(cfg=None, python=None, of_bin=None):
 
 def install_launchd(cfg=None, uninstall=False, run=subprocess.run):
     """`of server install|uninstall`: write (or remove) the two launchd agents and load them. Installing restarts a
-    running server under the new unit."""
+    running server under the new unit; agents already as they should be are left running."""
     if sys.platform != "darwin":
         raise SystemExit("of server install: launchd only (a Linux host runs of-server under systemd or Kubernetes)")
     cfg = cfg or load_config()
     os.makedirs(cfg["state_dir"], exist_ok=True)
+    return load_launchd(launchd_plists(cfg), uninstall=uninstall, run=run)
+
+
+def load_launchd(plists, uninstall=False, run=subprocess.run):
+    """Write (or remove) the launchd agents {label: plist text} and load them; an agent whose file is unchanged and
+    that is loaded is left running. Shared by of-server's and the relay's install."""
     domain = f"gui/{os.getuid()}"
     out = []
-    for label, text in launchd_plists(cfg).items():
+    for label, text in plists.items():
         path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
         try:
             with open(path) as fh:
@@ -2145,19 +2181,31 @@ def install_launchd(cfg=None, uninstall=False, run=subprocess.run):
 
 
 def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path=None, log=None, settings=None):
-    """One check, run by launchd every minute (`of server watchdog`). A server process that is alive but has not
-    answered /v1/health through `failing_for` seconds of checks is restarted, at most once in `restart_gap`; first
-    `kill -USR1` writes its threads' stacks to server.log, so the next hang names its cause (of_conductor, msg
-    01a1d63f-d434: a hang after a wake needed a person). A server with no live process is left alone: `of server stop`
-    meant it, and launchd's KeepAlive restarts a crash. A gap between checks longer than twice `every` (a sleep, or the
-    watchdog not running) starts the count again. Returns ok, failing, waiting, stopped, restarted or not-under-launchd
-    (of_review on organic-framework PR 112)."""
-    import signal
+    """One check of of-server, run by launchd every minute (`of server watchdog`); see watch(). The probe is
+    /v1/health within `probe_timeout` (of_conductor, msg 01a1d63f-d434: a hang after a wake needed a person)."""
     cfg = cfg or load_config()
+    s = dict(WATCHDOG, **(settings or {}))
+    return watch("of-server", LAUNCHD_LABEL,
+                 probe or (lambda: _health(cfg, timeout=s["probe_timeout"]) is not None),
+                 lambda: _read_pid(os.path.join(cfg["state_dir"], "server.pid")),
+                 state_path or os.path.join(cfg["state_dir"], "watchdog.json"), now=now, restart=restart, dump=dump,
+                 log=log, settings=settings, installed=None if restart else launchd_job, event="server_watchdog",
+                 silent="has not answered /v1/health")
+
+
+def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=None, log=None, settings=None,
+          installed=None, event="server_watchdog", silent="has not answered"):
+    """One watchdog check of a launchd-run process NAME (label LABEL). A process that is alive but fails PROBE
+    through `failing_for` seconds of checks is restarted, at most once in `restart_gap`; first `kill -USR1` writes its
+    threads' stacks to its log, so the next hang names its cause. A process with no live pid is left alone: a stop
+    meant it, and launchd's KeepAlive restarts a crash. A gap between checks longer than twice `every` (a sleep, or
+    the watchdog not running) starts the count again; the restart's time is kept before launchctl is called (of_review
+    on organic-framework PR 112). Returns ok, failing, waiting, stopped, restarted, restart_failed or
+    not-under-launchd. `installed` tells whether the launchd job is there (None: assume it is)."""
+    import signal
     s = dict(WATCHDOG, **(settings or {}))
     now = time.time() if now is None else now
     log = log or (lambda m: log_line(m, sys.stdout))
-    state_path = state_path or os.path.join(cfg["state_dir"], "watchdog.json")
     try:
         with open(state_path) as fh:
             st = json.load(fh)
@@ -2173,14 +2221,14 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
         os.replace(state_path + ".tmp", state_path)
         return result
 
-    if (probe or (lambda: _health(cfg, timeout=s["probe_timeout"]) is not None))():
+    if probe():
         if st.get("failing_since") is not None:
-            log(f"of-server answers again after {int(now - st['failing_since'])} s"
+            log(f"{name} answers again after {int(now - st['failing_since'])} s"
                 + (" and a restart" if st.get("last_restart") is not None
                    and st["last_restart"] >= st["failing_since"] else ""))
         st = {"last_ok": now, "last_restart": st.get("last_restart"), "last_check": now}
         return save("ok")
-    pid = _read_pid(os.path.join(cfg["state_dir"], "server.pid"))
+    pid = pid_of()
     if not (pid and _alive(pid)):
         st.pop("failing_since", None)
         st.pop("fails", None)
@@ -2193,8 +2241,8 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
         return save("failing")
     if st.get("last_restart") is not None and now - st["last_restart"] < s["restart_gap"]:
         return save("waiting")
-    if restart is None and not launchd_job():
-        log(f"of-server has not answered for {int(failing)} s; it is not under launchd here, so nothing restarts it")
+    if installed is not None and not installed():
+        log(f"{name} {silent} for {int(failing)} s; it is not under launchd here, so nothing restarts it")
         return save("not-under-launchd")
     try:
         load = round(os.getloadavg()[0], 1)
@@ -2208,19 +2256,19 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
         pass
     st["last_restart"] = now  # saved before the call: a launchctl that hangs or fails still waits restart_gap
     save("restarting")
-    log(f"of-server (pid {pid}) has not answered /v1/health for {int(failing)} s ({st['fails']} checks; load {load})"
-        + ("; its threads' stacks are in server.log" if dumped else "") + "; restarting it")
+    log(f"{name} (pid {pid}) {silent} for {int(failing)} s ({st['fails']} checks; load {load})"
+        + ("; its threads' stacks are in its log" if dumped else "") + "; restarting it")
     error = None
     try:
-        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
                                             capture_output=True, timeout=30)))()
     except Exception as e:  # noqa: BLE001 - a timeout under the very load this is for; the next one waits restart_gap
         error = f"{type(e).__name__}: {e}"[:200]
         log(f"the restart did not complete ({error}); the next attempt waits {s['restart_gap']} s")
     try:
-        of_events.emit("server_watchdog", {"action": "restarted" if error is None else "restart_failed", "pid": pid,
-                                           "failing_s": int(failing), "checks": st["fails"], "load1": load,
-                                           **({"error": error} if error else {})})
+        of_events.emit(event, {"action": "restarted" if error is None else "restart_failed", "pid": pid,
+                               "failing_s": int(failing), "checks": st["fails"], "load1": load,
+                               **({"error": error} if error else {})})
     except Exception:  # noqa: BLE001 - the restart matters more than its record
         pass
     return save("restarted" if error is None else "restart_failed")
