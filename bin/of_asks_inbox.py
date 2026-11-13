@@ -314,6 +314,35 @@ class Editor:
         self.cl, self.cc, self.goal = li, c, goal
 
 
+class Writer:
+    """The drafts' disk writes off the UI thread, in their order (the founder, 2026-11-13: the screen stuttered; keys
+    and drawing never wait on a disk). Inbox takes one; without it, it writes at once (the tests)."""
+
+    def __init__(self):
+        import queue
+        self.q = queue.Queue()
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def _run(self):
+        while True:
+            fn = self.q.get()
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - one failed write never stops the others
+                pass
+            finally:
+                self.q.task_done()
+
+    def put(self, fn):
+        self.q.put(fn)
+
+    def flush(self, timeout=5.0):
+        done = threading.Event()
+        self.q.put(done.set)
+        done.wait(timeout)
+
+
 class ReplyDrafts:
     """The answers he put aside with Esc while writing one, kept across openings: one file per ask id under
     asks-reply-drafts in OF's state folder (mode 600). A draft whose ask closed goes to its archive folder, never lost.
@@ -376,6 +405,180 @@ def char_of(ch):
     if isinstance(ch, str):
         return ch
     return chr(ch) if isinstance(ch, int) and 0 <= ch < 0x110000 and ch not in (-1,) and ch < curses.KEY_MIN else ""
+
+
+NEW_H = 6         # the log's tail read for asks the listener's view has not taken yet
+CLOSED_H = 48     # and for the closures it may not show yet
+SENDING_S = 600   # an answer in the outbox or on its way this long ago hides its card meanwhile
+
+
+def _iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int((t % 1) * 1000):03d}Z"
+
+
+def _new_groups(conn, now):
+    """The asks filed within NEW_H that the view has not taken yet (view_asks holds every ask it projected, in any
+    state), projected alone: a declared ask or task is open from its own event."""
+    import of_asks
+    rows = conn.execute("SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
+                        "WHERE name = 'of.agent_question' AND ts >= ? ORDER BY ts, rowid",
+                        (_iso(now - NEW_H * 3600),)).fetchall()
+    if not rows:
+        return []
+    known = set()
+    ids = [r[0] for r in rows]
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        known |= {e for (e,) in conn.execute(f"SELECT event_id FROM view_asks WHERE event_id IN "
+                                             f"({','.join('?' * len(part))})", part)}
+    new = []
+    for e, ts, n, sid, pos, pl, org, src in rows:
+        if e in known:
+            continue
+        try:
+            payload = json.loads(pl) if pl else {}
+        except ValueError:
+            continue
+        if of_asks.relevant(n, src, payload):
+            new.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": payload,
+                        "org": org})
+    if not new:
+        return []
+    asks = [a for a in of_asks.project(new) if a["state"] == "open" and not (a.get("kind") or "").startswith(
+        "question (heuristic)")]
+    return of_asks.group(of_asks.for_owner(asks))
+
+
+def _closures(conn, now):
+    """{ask id: (what, ts)} from the log's last CLOSED_H: answered (by whom), withdrawn, a task done or reopened. The
+    view shows them once the listener has taken them; the screen applies them at once."""
+    out = {}
+    names = ("of.agent_question_answered", "of.ask_withdrawn")
+    for ts, name, pl in conn.execute("SELECT ts, name, payload FROM event WHERE name IN (?, ?) AND ts >= ? "
+                                     "ORDER BY ts, rowid", names + (_iso(now - CLOSED_H * 3600),)):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        what = "withdrawn" if name == "of.ask_withdrawn" else (
+            "claimed" if p.get("by") in ("owner", "founder") else "answered")
+        for i in p.get("ask_ids") or [p.get("ask_id")]:
+            if i:
+                out[i] = (what, ts)
+    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.state_declared' AND ts >= ? AND "
+                               "(payload LIKE '%done_task%' OR payload LIKE '%reopen_task%') ORDER BY ts, rowid",
+                               (_iso(now - CLOSED_H * 3600),)):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if p.get("done_task"):
+            out[("task", p["done_task"])] = ("done", ts)
+        elif p.get("reopen_task"):
+            out[("task", p["reopen_task"])] = ("reopened", ts)
+    return out
+
+
+def reader():
+    """A read-only connection to the event store for the screen and the side panel. Reads in WAL mode never wait on
+    the listener's writes; of_store.connect's first call in a process writes its migration mark, and behind a busy
+    listener it waited its 10 s busy timeout on every opening and every card (2026-11-13: the list after 10.5 s at
+    load ~40). Falls back to of_store.connect."""
+    import sqlite3
+    import urllib.parse
+    import of_store
+    try:
+        c = sqlite3.connect("file:" + urllib.parse.quote(of_store.db_path()) + "?mode=ro", uri=True, timeout=2.0,
+                            isolation_level=None)
+        c.execute("PRAGMA query_only = 1")
+        c.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        return c
+    except sqlite3.Error:
+        return of_store.connect()
+
+
+def on_their_way(now=None):
+    """The ask ids of answers handed on and not recorded yet: the outbox (the detached sender's) and the drafts an
+    answer writes before it is sent, from the last SENDING_S. Older ones failed and are shown again."""
+    now = now or time.time()
+    out = set()
+    try:
+        d = T.outbox_dir()
+        for f in os.listdir(d):
+            if f.endswith(".json"):
+                try:
+                    with open(os.path.join(d, f)) as fh:
+                        b = json.load(fh)
+                    if now - float(b.get("queued_at") or 0) < SENDING_S:
+                        out |= set((b.get("item") or {}).get("ids") or [])
+                except (OSError, ValueError, TypeError):
+                    continue
+    except OSError:
+        pass
+    try:
+        import of_asks_answer
+        for dr in of_asks_answer.unsent_drafts():
+            if now - float(dr.get("saved_at") or 0) < SENDING_S:
+                out |= set(dr.get("ask_ids") or [dr.get("ask_id")])
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def queue(conn, positions=(), now=None, sending=()):
+    """The founder's queue for the screen and the side panel, from one source: the listener's view, whatever its age,
+    never a projection of the whole log (2026-11-13: with the listener held minutes in a tick, the screen projected
+    the log, its list never came, and the cards he had answered showed again from the last opening's cache; the panel
+    differed). The log's tail is applied at once: an answer, a withdrawal or a done task hides its card, an answer on
+    its way too (sending), a new declared ask or task shows. Returns (data, behind): data [(label, items)] as
+    of_asks_tui.load; behind None, or the listener's last heartbeat (epoch) when it is not fresh."""
+    import of_listen
+    now = now or time.time()
+    try:
+        groups = of_listen.read_groups(conn)
+    except Exception:  # noqa: BLE001 - no listener has run here: the log, as the CLI computes it
+        return T.load(positions, conn, from_log=True), None
+    behind = None
+    if not of_listen.fresh(conn):
+        try:
+            row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
+            behind = float(row[0]) if row else 0.0
+        except Exception:  # noqa: BLE001
+            behind = 0.0
+    try:
+        groups = groups + _new_groups(conn, now)
+    except Exception:  # noqa: BLE001 - the view alone
+        pass
+    data = T.shape(groups, positions)
+    try:
+        closed = _closures(conn, now)
+    except Exception:  # noqa: BLE001
+        closed = {}
+    sending = set(sending)
+    tasks_done = {k[1]: v for k, v in closed.items() if isinstance(k, tuple)}
+    out = []
+    for label, items in data:
+        kept = []
+        for x in items:
+            ids = x.get("ids") or []
+            if ids and all(i in sending for i in ids):
+                continue
+            if x.get("task") and ids:
+                aid = ids[0]
+                done = [v for t, v in tasks_done.items() if aid == t or aid.endswith(t)]
+                last = max([closed.get(aid)] + done, key=lambda v: v[1] if v else "", default=None) if (
+                    closed.get(aid) or done) else None
+                if last and last[0] in ("done", "withdrawn"):
+                    continue
+                if last and last[0] == "claimed" and not x.get("claimed_at"):
+                    x = dict(x, claimed_at=last[1])
+                kept.append(x)
+                continue
+            if ids and all(i in closed and closed[i][0] in ("answered", "claimed", "withdrawn") for i in ids):
+                continue
+            kept.append(x)
+        out.append((label, kept))
+    return out, behind
 
 
 def needs_confirm(item, card=None):
@@ -617,7 +820,7 @@ def colors():
 class Inbox:
     def __init__(self, scr, loader, card_of, answer, act, positions=lambda: [], record=None, handoff=None,
                  studio=None, drafts=None, seq=None, initial=None, chat=None, archive=None, timing=None,
-                 reply_store=None):
+                 reply_store=None, writer=None):
         self.scr, self.loader, self.card_of, self.act = scr, loader, card_of, act
         self.positions, self.record, self.studio, self.drafts, self.seq = positions, record, studio, drafts, seq
         self.chat, self.archive = chat, archive
@@ -633,6 +836,10 @@ class Inbox:
         self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
         self.store = reply_store  # where Esc's drafts outlive the window (ReplyDrafts)
         self.confirm_reply = None  # the field a written answer's confirm came from: any key but yes goes back to it
+        self.writer = writer  # where the drafts' disk writes go (Writer); None: at once
+        self.behind = None  # the listener's last heartbeat when it is not fresh (queue's note)
+        self.pending_drafts = None  # unsent answers, as the last load found them (no disk read per frame)
+        self.started = time.time()
         if reply_store:
             try:
                 self.reply_drafts = dict(reply_store.load())
@@ -658,19 +865,27 @@ class Inbox:
     def take_data(self):
         if self.bg["data"] is None:
             return
-        data, over = self.bg["data"]
+        data, over = self.bg["data"][:2]
+        extra = self.bg["data"][2] if len(self.bg["data"]) > 2 else {}
         self.bg["data"] = None
         self.mark("list")
+        self.behind = extra.get("behind")
+        if "drafts" in extra:
+            self.pending_drafts = extra["drafts"]
         self.items = [x for _, g in data for x in g]
         self.over = over
         open_ids = {i for x in self.items for i in x.get("ids") or []}
-        gone = self.archive(open_ids) if self.archive else []
-        put_aside = [k for k in self.reply_drafts if k not in open_ids
-                     and not (self.reply and self.reply["key"] == k)]
+        gone = list(extra.get("archived") or []) or (self.archive(open_ids) if self.archive else [])
+        # a draft whose ask closed is put aside, only on a list the listener keeps current (a late one may lack it)
+        put_aside = [] if self.behind is not None else [k for k in self.reply_drafts if k not in open_ids
+                                                        and not (self.reply and self.reply["key"] == k)]
         for k in put_aside:
             self.reply_drafts.pop(k, None)
             if self.store:
-                self.store.archive(k)
+                if self.writer:
+                    self.writer.put(lambda k=k: self.store.archive(k))
+                else:
+                    self.store.archive(k)
         gone = list(gone or []) + put_aside
         if gone:
             self.msg = tr("{n} draft(s) archived: the question is closed already ({ids})", n=len(gone),
@@ -763,6 +978,12 @@ class Inbox:
             at = time.strftime("%H:%M", time.localtime(self.bg["good_at"])) if self.bg["good_at"] else "—"
             self.put(1, 0, tr("! {why}: the last good list, from {at}; retrying", why=self.bg["error"], at=at),
                      self.attr.get("red", 0) | curses.A_BOLD)
+        elif self.bg["good_at"] is None and time.time() - self.started > 3:
+            self.put(1, 0, tr("The list is the last opening's; the current one is loading…"), self.attr.get("amber", 0))
+        elif self.behind is not None:
+            at = time.strftime("%H:%M", time.localtime(self.behind)) if self.behind else "—"
+            self.put(1, 0, tr("The listener is behind (last seen {at}): answers hide their cards at once, a new card "
+                              "may come late.", at=at), curses.A_DIM)
         body_top, body_h = 2, max(3, h - 5)
         narrow = w < NARROW_W
         item = its[idx] if its else None
@@ -793,6 +1014,10 @@ class Inbox:
                 self.put(y, self.cx - 2, "│", curses.A_DIM)
         if item:
             self.draw_card(item, body_top, body_h, card_x, card_w, ctx)
+            if self.mode == "main" and key_of(item) in self.cards and len(self.loading) < 2:
+                for j in (idx + 1, idx - 1):  # the next and the previous card load while he reads this one
+                    if 0 <= j < len(its) and key_of(its[j]) not in self.cards:
+                        self.card(its[j])
         elif not self.bg["busy"] or self.items:
             self.put(body_top + 1, card_x, tr("Nothing here.") if self.cur != "search" else tr("No card matches."),
                      curses.A_DIM)
@@ -800,7 +1025,7 @@ class Inbox:
             self.put(body_top + 1, card_x, tr("loading…"), curses.A_DIM)
         # bottom: the status line, then the keys
         line = self.out.undo_line() or self.overlay_line() or self.msg
-        pend = self.drafts() if self.drafts else []
+        pend = self.pending_drafts if self.pending_drafts is not None else (self.drafts() if self.drafts else [])
         if not line and pend:
             line = tr("{n} unsent answer(s) kept as drafts: D sends them", n=len(pend))
         if line:
@@ -977,11 +1202,17 @@ class Inbox:
         else:
             self.reply_drafts.pop(key, None)
         if self.store:
-            try:
-                self.store.save(key, text)
-            except OSError as e:
-                self.msg = tr("not saved: {why}", why=f"{type(e).__name__}: {e}"[:80])
-                return False
+            def save():
+                try:
+                    self.store.save(key, text)
+                    return True
+                except OSError as e:
+                    self.msg = tr("not saved: {why}", why=f"{type(e).__name__}: {e}"[:80])
+                    return False
+            if self.writer:
+                self.writer.put(save)
+                return True
+            return save()
         return True
 
     def end_reply(self):
@@ -1269,6 +1500,9 @@ class Inbox:
                 self.mode = "snooze"
         elif ch == ord("d") and item and item.get("ids"):
             names = self.position_names()
+            if not names:
+                self.msg = tr("Positions are still loading: try again in a moment.")
+                return True
             to = self.line_input(tr("Hand over to (a position):"),
                                  lambda t: [n for n in names if t.casefold() in n.casefold()])
             if to:
@@ -1319,7 +1553,7 @@ class Inbox:
             self.studio(item, lambda m: self.studio_note.update(m=m))
             self.msg = tr("Studio: opening…")
         elif ch == ord("D") and self.drafts:
-            pend = self.drafts()
+            pend = self.pending_drafts if self.pending_drafts is not None else self.drafts()  # never one on its way
             if pend:
                 d = pend[0]
                 self.out.queue(dict(d["item"], first=None), "answer", d["text"])
@@ -1382,6 +1616,8 @@ class Inbox:
             if ch == curses.KEY_RESIZE:
                 continue
             if not self.handle(ch):
+                if self.writer:
+                    self.writer.flush()
                 return
             self.drain()
 
@@ -1458,10 +1694,9 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     def card_of(it):  # in a thread: its own store connection
         """The card; before the registry loaded (a second of YAML, several under load), the question and its options
         at once and the rest when it is there: the options he acts on never wait for it (2026-11-12)."""
-        import of_store
         if key_of(it) in quick:
             registry.wait()  # its quick card is on screen: the full one, once the registry is there
-        own = of_store.connect()
+        own = reader()
         try:
             ready = registry.is_set()
             if not ready:
@@ -1477,14 +1712,19 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     reconciled = []
 
     def loader():  # in a thread: the true list, written to the cache for the next first frame
-        import of_store
-        own = of_store.connect()
+        """The queue from its one source (queue: the view and the log's tail, never the whole log), the registry's
+        rows once it is there, and what the screen would otherwise read from disk on its own thread."""
+        own = reader()
         try:
-            pos = T._positions(positions)
-            data = T.checked(T.load(pos, own), T.read_cache(), lambda: T.load(pos, own, from_log=True))
+            pos = T._positions(positions) if registry.is_set() else []
+            data, behind = queue(own, pos, sending=on_their_way())
             over = overlay(own)
         finally:
             own.close()
+        open_ids = {i for _, g in data for x in g for i in x.get("ids") or []}
+        archived = [] if behind is not None else of_asks_answer.archive_drafts(open_ids)  # a current list only
+        drafts = [d for d in of_asks_answer.unsent_drafts()
+                  if time.time() - float(d.get("saved_at") or 0) >= SENDING_S]  # on their way: not unsent
         T.write_cache(data)
         if refresh and not reconciled:  # live sessions and the herdr counts, once, after the first true list
             reconciled.append(True)
@@ -1493,7 +1733,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
                 _quiet(refresh)
                 timing.setdefault("reconcile", time.time())
             threading.Thread(target=reconcile, daemon=True).start()
-        return data, over
+        return data, over, {"behind": behind, "archived": archived, "drafts": drafts}
 
     def record(kind, payload):
         import of_events
@@ -1505,8 +1745,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
 
     def studio(item, done):
         def work():
-            import of_store
-            own = of_store.connect()
+            own = reader()
             try:
                 org, path = T.studio_target(own, ((item or {}).get("ids") or [None])[0], T.works_of)
                 done(T.open_studio(org or T._first_org(T._positions(positions)), path))
@@ -1518,19 +1757,21 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
 
     answer = T.threaded_answer(positions, pane_of, T.debounced(after) if after else None)
     first = (T.read_cache(), {})
-    size, boxes, store = [], [], ReplyDrafts()
+    size, boxes, store, writer = [], [], ReplyDrafts(), Writer()
 
     def run(scr):
         size.extend(scr.getmaxyx())
-        box = Inbox(scr, loader, card_of, answer, T.act_cli(of_path), positions=lambda: T._positions(positions),
+        box = Inbox(scr, loader, card_of, answer, T.act_cli(of_path),
+                    positions=lambda: T._positions(positions) if registry.is_set() else [],
               record=record, handoff=handoff, studio=studio, drafts=of_asks_answer.unsent_drafts, seq=of_listen.seq,
               initial=([x for _, g in first[0] for x in g], first[1]), chat=T.chat_screen,
-              archive=of_asks_answer.archive_drafts, timing=timing, reply_store=store)
+              timing=timing, reply_store=store, writer=writer)
         boxes.append(box)
         box.run()
     try:
         curses.wrapper(run)
     finally:
+        writer.flush()
         if boxes and boxes[0].reply:  # closed while he wrote: what he wrote is a draft
             _quiet(lambda: store.save(boxes[0].reply["key"], boxes[0].reply["ed"].text()))
         log_open(timing, size)

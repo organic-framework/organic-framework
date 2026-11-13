@@ -237,5 +237,8 @@
  "Not sent: your answer is back in the field. Ctrl+D sends it, Esc keeps it as a draft.": "Не отправлено: ответ снова в поле. Ctrl+D — отправить, Esc — в черновик.",
  "Taken back: your answer is in the field again.": "Отозвано: ответ снова в поле.",
  "Ctrl+D send · Enter new line · ↑↓←→ Home End move · PgUp PgDn scroll the card · Esc keep as a draft": "Ctrl+D — отправить · Enter — новая строка · ↑↓←→ Home End — курсор · PgUp PgDn — листать карточку · Esc — в черновик",
- "write your own answer under the card: Ctrl+D sends, Esc keeps it as a draft": "написать свой ответ под карточкой: Ctrl+D — отправить, Esc — в черновик"
+ "write your own answer under the card: Ctrl+D sends, Esc keeps it as a draft": "написать свой ответ под карточкой: Ctrl+D — отправить, Esc — в черновик",
+ "The list is the last opening's; the current one is loading…": "Список с прошлого открытия; текущий загружается…",
+ "The listener is behind (last seen {at}): answers hide their cards at once, a new card may come late.": "Слушатель отстаёт (последний раз виден в {at}): отвеченные карточки скрываются сразу, новая может прийти с опозданием.",
+ "Positions are still loading: try again in a moment.": "Позиции ещё загружаются: попробуй через мгновение."
 }
