@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1042,6 +1043,31 @@ class ListenerProcessor(unittest.TestCase):
         add(10, "m7", "2026-11-06T09:58:00Z", sid="s-fork")  # the fork re-read later never takes it back
         of_capacity.ingest_spend(conn, now)
         self.assertEqual(conn.execute("SELECT session_id FROM view_capacity_spend WHERE message_id='m7'").fetchone()[0], "s1")
+
+    def test_the_listener_only_starts_the_tick_and_one_tick_runs_at_a_time(self):
+        """of_asks, 2026-11-13: the tick held the listener's loop for 442 s, and no heartbeat was written meanwhile."""
+        from unittest import mock
+        h = tempfile.mkdtemp()
+        try:
+            started, worked = [], []
+            with mock.patch.object(of_capacity, "STATE_DIR", h), \
+                    mock.patch.object(of_capacity.subprocess, "Popen", lambda argv, **k: started.append(argv)), \
+                    mock.patch.object(of_capacity, "ingest_spend", lambda *a, **k: worked.append("ingest") or 0):
+                self.assertFalse(of_capacity.ListenerProcessor().tick(None, 0))
+                self.assertEqual([a[-2:] for a in started], [["capacity", "tick"]])
+                self.assertEqual(worked, [])  # nothing of the work in the listener's own loop
+                held = of_capacity._tick_lock()
+                self.assertFalse(of_capacity.spawn_tick())  # a tick runs: no second one
+                self.assertFalse(of_capacity.run_tick(None, 0, log=lambda *_: None))
+                held.close()
+                with mock.patch.object(of_capacity, "loop_costs", lambda *a: None), \
+                        mock.patch.object(of_capacity, "load_policy", lambda: {"auto": True}):
+                    balanced = []
+                    self.assertTrue(of_capacity.run_tick(None, 0, log=lambda *_: None,
+                                                         spawn=lambda: balanced.append(1)))
+                self.assertEqual((worked, balanced), (["ingest"], [1]))
+        finally:
+            shutil.rmtree(h, ignore_errors=True)
 
     def test_reads_transcript_own_where_the_store_has_it(self):
         import sqlite3

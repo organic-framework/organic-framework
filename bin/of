@@ -5217,7 +5217,14 @@ def cmd_capacity(args):
         rows = of_capacity.creds()
         print(json.dumps(rows, indent=1) if args.json else of_capacity.format_creds(rows))
         return 0
+    if args.action == "tick":  # the listener's capacity tick, in its own process (of_capacity.spawn_tick)
+        import time
+        import of_store
+        conn = of_store.connect()
+        of_capacity.run_tick(conn, time.time())
+        return 0
     if args.action == "carry":  # sessions to another machine and back (bin/of_carry.py; agent host plan §3 B1)
+        import time
         import of_carry
         step = args.position
         only = {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
@@ -5836,7 +5843,7 @@ def main(argv=None):
     cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
                                                   "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",
-                                                  "carry"],
+                                                  "carry", "tick"],
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
