@@ -495,6 +495,106 @@ def insert_line(text, after, line):
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------ rename_position (docs/handover.md §3)
+
+NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")  # AGENTS.md, agent names (herdr's rule)
+RENAME_KEEP = ("aliases", "grants", "grant")   # the old names stay; a grant never follows an alias
+
+
+def brief_path(name):
+    return f"registry/briefs/{name}.md"
+
+
+def _rename_value(v, frm, to):
+    return to if v == frm else (brief_path(to) if v == brief_path(frm) else None)
+
+
+def _renamed(obj, frm, to):
+    """The parsed registry as rename_position(frm, to) leaves it: every key and string equal to the old name (or its
+    brief's path) follows, except under aliases and grants; the old name ends the position's aliases."""
+    def walk(x):
+        if isinstance(x, dict):
+            return {(_rename_value(k, frm, to) or k): (v if k in RENAME_KEEP else walk(v)) for k, v in x.items()}
+        if isinstance(x, list):
+            return [walk(y) for y in x]
+        return (_rename_value(x, frm, to) or x) if isinstance(x, str) else x
+    out = walk(obj)
+    for p in (out or {}).get("positions") or []:
+        if isinstance(p, dict) and p.get("name") == to:
+            p["aliases"] = [a for a in (p.get("aliases") or []) if a != to] + \
+                ([] if frm in (p.get("aliases") or []) else [frm])
+    return out
+
+
+def _named_spans(text, frm, to):
+    """[(start, end, replacement)] for each scalar, a key or a value, that rename_position changes."""
+    root = yaml.compose(text)
+    out = []
+
+    def walk(node):
+        if isinstance(node, yaml.ScalarNode):
+            new = _rename_value(node.value, frm, to) if node.tag.endswith(":str") else None
+            if new is not None:
+                s, e = node.start_mark.index, node.end_mark.index
+                q = text[s] if node.style in ("'", '"') else ""
+                out.append((s, e, f"{q}{new}{q}"))
+        elif isinstance(node, yaml.MappingNode):
+            for k, v in node.value:
+                walk(k)
+                if not (isinstance(k, yaml.ScalarNode) and k.value in RENAME_KEEP):
+                    walk(v)
+        elif isinstance(node, yaml.SequenceNode):
+            for x in node.value:
+                walk(x)
+    if root is not None:
+        walk(root)
+    return out
+
+
+def rename_position(text, frm, to):
+    """The position's new canonical name, as narrow text edits: every reference in the registry follows (the systems'
+    keeper, units' and delegations' positions and owners, works' doers and owners, goals' owner, credentials' and
+    tools' keeper, its brief's path), comments stay, and the old name goes to the end of its aliases."""
+    spans = _named_spans(text, frm, to)
+    for s, e, new in sorted(spans, reverse=True):
+        text = text[:s] + new + text[e:]
+    doc = yaml.safe_load(text) or {}
+    p = next((x for x in doc.get("positions") or [] if isinstance(x, dict) and x.get("name") == to), None)
+    if p is None:
+        raise ValueError(f"no position {frm!r} in the registry")
+    old = p.get("aliases") or []
+    aliases = [a for a in old if a != to] + ([] if frm in old else [frm])
+    if aliases == old:
+        return text
+    seq = _aliases_node(text, to)
+    if seq is not None and to not in old and seq.value:  # append in the list's own style, nothing else moves
+        if seq.flow_style:
+            at = seq.end_mark.index - 1  # the closing bracket
+            return text[:at] + f", {frm}" + text[at:]
+        last = seq.value[-1]
+        line_start = text.rfind("\n", 0, last.start_mark.index) + 1
+        indent = text[line_start:last.start_mark.index]
+        eol = text.find("\n", last.end_mark.index)
+        eol = len(text) if eol < 0 else eol
+        return text[:eol] + f"\n{indent}{frm}" + text[eol:]
+    return set_fields(text, to, {"aliases": aliases})
+
+
+def _aliases_node(text, name):
+    """The `aliases` sequence node of position `name`, or None."""
+    root = yaml.compose(text)
+    for k, v in (root.value if isinstance(root, yaml.MappingNode) else []):
+        if k.value == "positions" and isinstance(v, yaml.SequenceNode):
+            for entry in v.value:
+                if not isinstance(entry, yaml.MappingNode):
+                    continue
+                fields = {kk.value: vv for kk, vv in entry.value if isinstance(kk, yaml.ScalarNode)}
+                if getattr(fields.get("name"), "value", None) == name:
+                    a = fields.get("aliases")
+                    return a if isinstance(a, yaml.SequenceNode) else None
+    return None
+
+
 def _escalate_rx():
     import of_classify
     return of_classify.ESCALATE
@@ -596,6 +696,25 @@ def plan(d, doc):
                                 "high tier diff")
             edits.append((lambda t, a=sid, b=frm, e=to: move_system(t, a, b, e), f"move system {sid}: {frm} -> {to}"
                           + (f" (and delegation {', '.join(touched)})" if touched else "")))
+            continue
+        if op == "rename_position":  # docs/handover.md §3: tier low on its own
+            frm, to = c.get("from"), c.get("to")
+            if not frm or not to or set(c) - {"op", "from", "to"}:
+                problems.append(f"changes.registry[{i}]: rename_position takes {{op, from, to}}")
+                continue
+            if frm not in names:
+                problems.append(f"changes.registry[{i}]: no position {frm!r}")
+                continue
+            if not NAME.match(str(to)):
+                problems.append(f"changes.registry[{i}]: {to!r} is not a position name ({NAME.pattern})")
+            taken = {str(n): p.get("name") for p in doc.get("positions") or [] if isinstance(p, dict)
+                     and p.get("name") != frm for n in [p.get("name")] + list(p.get("aliases") or [])}
+            if to in taken:
+                problems.append(f"changes.registry[{i}]: {to!r} is already "
+                                + (f"{taken[to]}'s alias" if taken[to] != to else "a position"))
+            edits.append((lambda t, a=frm, b=to: rename_position(t, a, b),
+                          f"rename position {frm} -> {to} (the old name kept in its aliases)"))
+            briefs.append({"op": "rename", "from": frm, "to": to, "path": brief_path(to), "old": brief_path(frm)})
             continue
         if op == "move_position":  # docs/handover.md: one diff only when no authority changes hands
             units = doc.get("units") or {}
@@ -795,6 +914,8 @@ def preview(d, registry_text):
     """(new registry text, problems). The new text parses, and the edits did what they claim."""
     doc = yaml.safe_load(registry_text) or {}
     edits, _, problems = plan(d, doc)
+    renames = [(c.get("from"), c.get("to")) for c in (d.get("changes") or {}).get("registry") or []
+               if isinstance(c, dict) and c.get("op") == "rename_position" and c.get("from") and c.get("to")]
     text = registry_text
     for fn, what in edits:
         try:
@@ -805,6 +926,14 @@ def preview(d, registry_text):
         new = yaml.safe_load(text) or {}
     except yaml.YAMLError as e:
         return text, problems + [f"the edited registry does not parse: {e}"]
+    for frm, to in renames:  # compare with the registry as the rename leaves it: only a rename may differ
+        doc = _renamed(doc, frm, to)
+        left = _named_spans(text, frm, to)
+        if left:
+            problems.append(f"after the edit, {len(left)} reference(s) to {frm} remain")
+        for k in set(doc) | set(new):
+            if k not in ("positions", "units", "delegations", "goals", "conditions") and doc.get(k) != new.get(k):
+                problems.append(f"the edit changed {k} beyond the rename of {frm}")
     before = {p.get("name"): p for p in doc.get("positions") or []}
     after = {p.get("name"): p for p in new.get("positions") or []}
     for c in (d.get("changes") or {}).get("registry") or []:
