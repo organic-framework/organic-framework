@@ -1,5 +1,5 @@
-"""Carry an organization's sessions to another machine and back (docs/capacity.md, "Carrying sessions between
-machines"; organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §3 B1 and §9; owned by
+"""Carry an organization's sessions to another machine and back (docs/capacity.md, "Carrying sessions to another
+machine"; organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §3 B1 and §9; owned by
 of_capacity).
 
 On the agent host each organization runs as its own OS user, so a session moves both to another machine and into
@@ -25,6 +25,7 @@ and the resume note tells the session its home moved.
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -32,6 +33,7 @@ import subprocess
 import time
 
 import of_capacity
+import of_guard
 
 SKIP_LARGER = 64 * 1024 * 1024        # a scratch or task-output file larger than this stays behind (named in the plan)
 BWLIMIT_KBPS = 25000                  # the copy's default limit, KB/s: the laptop runs light work only
@@ -105,14 +107,26 @@ class Rewriter:
             except ValueError:
                 out.append(line)
                 continue
-            out.append(json.dumps(self.record(rec), ensure_ascii=False, separators=(",", ":")).encode())
+            new = self.record(rec)
+            try:
+                out.append(json.dumps(new, ensure_ascii=False, separators=(",", ":")).encode())
+            except UnicodeEncodeError:  # a string cut inside an emoji (a lone \ud83d): the same JSON, escaped
+                out.append(json.dumps(new, ensure_ascii=True, separators=(",", ":")).encode())
         return b"\n".join(out)
 
 
 # ------------------------------------------------------------------ prepare
 
 
+def _is_transcript(p):
+    return p.endswith(".jsonl") and "/projects/" in p
+
+
 def _files_under(root, skipped):
+    """The regular files under `root`. Left behind and named in `skipped` with the reason: a file at a path the guard
+    treats as secret (of_server on PR 116: 363 such files in this Mac's scratch and memory folders, kubeconfigs and
+    .env files among them; credentials reach another machine only through their own committed process), its contents
+    never read; and a scratch or task-output file over SKIP_LARGER. A transcript always goes: it is the session."""
     out = []
     for dirpath, dirs, files in os.walk(root):
         for f in files:
@@ -123,8 +137,11 @@ def _files_under(root, skipped):
                 continue
             if not stat.S_ISREG(st.st_mode):
                 continue
+            if not _is_transcript(p) and of_guard._secret_path(p):
+                skipped.append({"path": p, "reason": "secret path"})
+                continue
             if st.st_size > SKIP_LARGER and ("/private/tmp/" in p or "/tasks/" in p):
-                skipped.append({"path": p, "bytes": st.st_size})
+                skipped.append({"path": p, "bytes": st.st_size, "reason": "over the size limit"})
                 continue
             out.append(p)
     return out
@@ -136,7 +153,12 @@ def session_files(entry, tmp_root, memory_dir=None):
     files, skipped = [], []
     for rel in of_capacity.session_paths(d, sid):
         p = os.path.join(d, rel)
-        files += _files_under(p, skipped) if os.path.isdir(p) else [p]
+        if os.path.isdir(p):
+            files += _files_under(p, skipped)
+        elif _is_transcript(p) or not of_guard._secret_path(p):
+            files.append(p)
+        else:
+            skipped.append({"path": p, "reason": "secret path"})
     key = of_capacity.project_key(d, sid)
     if key and os.path.isdir(os.path.join(d, "projects", key, "memory")):
         files += _files_under(os.path.join(d, "projects", key, "memory"), skipped)
@@ -181,15 +203,23 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
             "home": os.path.expanduser("~"), "uid": os.getuid(), "tmp_root": tmp_root, "only": sorted(only),
             "entries": entries, "files": len(files), "bytes": size, "skipped": skipped}
     os.makedirs(out_dir, mode=0o700, exist_ok=True)
-    with open(os.path.join(out_dir, "plan.json"), "w") as fh:
-        json.dump(plan, fh, indent=1, ensure_ascii=False)
-    with open(os.path.join(out_dir, "files.txt"), "w") as fh:
-        fh.write("".join(f + "\n" for f in files))
+    _write_private(os.path.join(out_dir, "plan.json"), json.dumps(plan, indent=1, ensure_ascii=False))
+    _write_private(os.path.join(out_dir, "files.txt"), "".join(f + "\n" for f in files))
     for e in entries:
         log(f"{e['name']:28} {of_capacity.short(e['config_dir']):26} {e.get('account') or '?':30} {e['model'] or '?'}")
+    secret = sum(1 for x in skipped if x.get("reason") == "secret path")
     log(f"{len(entries)} session(s), {len(files)} file(s), {size / 1e6:.0f} MB in {out_dir}"
-        + (f"; {len(skipped)} file(s) over {SKIP_LARGER >> 20} MB left behind" if skipped else ""))
+        + (f"; left behind: {secret} at secret paths, {len(skipped) - secret} over {SKIP_LARGER >> 20} MB "
+           f"(named in plan.json)" if skipped else ""))
     return plan
+
+
+def _write_private(path, text):
+    """A file only its owner reads (0600), whatever the umask: the plan travels to a host of several users."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
 
 
 # ------------------------------------------------------------------ copy
@@ -213,8 +243,10 @@ def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS):
     each at background priority with the bandwidth limit, over ssh with only `key`."""
     if bool(to) == bool(frm):
         raise CarryError("carry copy needs exactly one of --to user@host:DIR (push) or --from user@host:DIR (pull)")
-    ssh = " ".join(["ssh", "-i", key] + SSH_OPTS)
-    base = ["taskpolicy", "-b", "rsync", "-a", "--partial", f"--bwlimit={int(bwlimit)}", "-e", ssh]
+    ssh = " ".join(["ssh", "-i", shlex.quote(key)] + SSH_OPTS)
+    # --chmod=go-rwx: on a host of one OS user per organization nothing arrives readable by another user; the
+    # owner's bits stay, so a script stays executable (of_server on PR 116)
+    base = ["taskpolicy", "-b", "rsync", "-a", "--chmod=go-rwx", "--partial", f"--bwlimit={int(bwlimit)}", "-e", ssh]
     b = bundle.rstrip("/")
     if to:
         dest = to.rstrip("/")
@@ -242,16 +274,60 @@ def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, lo
 
 # ------------------------------------------------------------------ restore
 
+_SID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_CONFIG_NAME = re.compile(r"\.claude(-[A-Za-z0-9._-]+)?")
 
-def install(bundle, rw, dry_run=False, log=print):
-    """Put every file of the bundle at its rewritten path. A file already there with other contents is kept aside
-    under the bundle's `kept/` first. Transcripts (.jsonl under projects/) are rewritten record by record."""
+
+def planned(plan, root, only=None):
+    """Pure but for listing the bundle: a test of a source path, true only for what the plan's entries account for
+    (of_review on PR 116: a bundle holding a shell profile, a LaunchAgent, Claude settings and the guard's cache, with
+    no entries, had all four installed; a rollback pulls bundles an organization's own OS user prepared). Per entry
+    of a well-formed session id: its state in its config dir (a direct child of the home named .claude or
+    .claude-*), the folder memory of the project its transcript is in, its memory directory under the home's OF
+    memory, and its scratch folder <tmp root>/<one folder>/<session>/. `only` narrows it to the named entries."""
+    home = os.path.normpath(plan["home"])
+    tmp = os.path.normpath(plan.get("tmp_root") or f"/private/tmp/claude-{plan.get('uid')}")
+    if tmp != f"/private/tmp/claude-{plan.get('uid')}" and not tmp.startswith(home + "/"):
+        tmp = None
+    exact, prefixes, sids = set(), [], set()
+    for e in plan.get("entries") or []:
+        if only and e.get("name") not in only and (e.get("position") or "") not in only:
+            continue
+        sid = e.get("session") or ""
+        if not _SID.fullmatch(sid):
+            continue
+        sids.add(sid)
+        cfg = os.path.normpath(e.get("config_dir") or "/")
+        if os.path.dirname(cfg) == home and _CONFIG_NAME.fullmatch(os.path.basename(cfg)):
+            pdir = os.path.join(root, cfg.lstrip("/"), "projects")
+            keys = [k for k in (os.listdir(pdir) if os.path.isdir(pdir) else [])
+                    if os.path.isfile(os.path.join(pdir, k, f"{sid}.jsonl"))]
+            for k in keys:
+                exact.add(f"{cfg}/projects/{k}/{sid}.jsonl")
+                prefixes += [f"{cfg}/projects/{k}/{sid}/", f"{cfg}/projects/{k}/memory/"]
+            for sub in ("file-history", "session-env", "tasks", "todos"):
+                exact.add(f"{cfg}/{sub}/{sid}")
+                prefixes.append(f"{cfg}/{sub}/{sid}/")
+        mem = os.path.normpath(e.get("memory_dir") or "/")
+        if mem.startswith(home + "/.local/state/of/memory/"):
+            prefixes.append(mem + "/")
+    scratch = re.compile(re.escape(tmp) + r"/[^/]+/(" + "|".join(sorted(sids)) + r")/") if tmp and sids else None
+    return lambda p: p in exact or any(p.startswith(x) for x in prefixes) or bool(scratch and scratch.match(p))
+
+
+def install(bundle, rw, dry_run=False, log=print, allowed=None):
+    """Put the bundle's files that `allowed` accounts for at their rewritten paths; refuse and name the rest. A file
+    already there with other contents is kept aside under the bundle's `kept/` first. Transcripts (.jsonl under
+    projects/) are rewritten record by record. A link in a bundle is never followed."""
     root = os.path.join(bundle, "files")
     done = {"installed": 0, "same": 0, "kept_aside": 0}
     for dirpath, dirs, files in os.walk(root):
         for f in files:
             src = os.path.join(dirpath, f)
             old = "/" + os.path.relpath(src, root)
+            if not stat.S_ISREG(os.lstat(src).st_mode) or (allowed is not None and not allowed(old)):
+                done.setdefault("refused", []).append(old)
+                continue
             new = rw.path(old)
             if not (new.startswith(rw.new_home + "/") or new.startswith(rw.new_tmp + "/")):
                 done.setdefault("refused", []).append(old)  # only into this user's home and tmp root
@@ -280,11 +356,14 @@ def install(bundle, rw, dry_run=False, log=print):
             with open(new, "wb") as fh:
                 fh.write(data)
             shutil.copystat(src, new)
+            os.chmod(new, stat.S_IMODE(os.lstat(src).st_mode) & 0o700)  # the owner's bits only
             done["installed"] += 1
     log(f"files: {done['installed']} put in place{' (dry run)' if dry_run else ''}, {done['same']} already there, "
         f"{done['kept_aside']} earlier copies kept aside in {os.path.join(bundle, 'kept')}"
-        + (f"; {len(done['refused'])} outside this user's home and tmp root NOT put in place" if done.get("refused")
-           else ""))
+        + (f"; {len(done['refused'])} NOT put in place (no entry of the plan accounts for them, a link, or outside "
+           f"this user's home and tmp root):" if done.get("refused") else ""))
+    for p in (done.get("refused") or [])[:20]:
+        log(f"  refused: {p}")
     return done
 
 
@@ -311,7 +390,7 @@ def restore(bundle, positions, only=None, dry_run=False, log=print, of_bin=None,
     rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid)
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
-    install(bundle, rw, dry_run=dry_run, log=log)
+    install(bundle, rw, dry_run=dry_run, log=log, allowed=planned(plan, os.path.join(bundle, "files"), only))
     lp = local_plan(plan, rw)
     account_of = account_of or of_capacity.account_of
     ok, wrong = set(), []
@@ -325,14 +404,8 @@ def restore(bundle, positions, only=None, dry_run=False, log=print, of_bin=None,
                 f"{here or 'signed in to no account'}, it ran on {e['account']}")
             continue
         ok.add(e["name"])
-    path = os.path.join(bundle, "plan.local.json")
-    if not dry_run:
-        with open(path, "w") as fh:
-            json.dump(lp, fh, indent=1, ensure_ascii=False)
-    else:
-        path = os.path.join(bundle, "plan.local.dry-run.json")
-        with open(path, "w") as fh:
-            json.dump(lp, fh, indent=1, ensure_ascii=False)
+    path = os.path.join(bundle, "plan.local.dry-run.json" if dry_run else "plan.local.json")
+    _write_private(path, json.dumps(lp, indent=1, ensure_ascii=False))
     if not ok:
         return [(n, "failed", "another account") for n in wrong]
     done = (restore_fn or of_capacity.reboot_restore)(positions, only=ok, dry_run=dry_run, log=log, of_bin=of_bin,
