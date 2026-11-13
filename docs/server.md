@@ -236,6 +236,7 @@ The local profile-1 server keeps routing records that arrive without `org_id`.
 | Key | Default | |
 |---|---|---|
 | `host`, `port` | `127.0.0.1`, `18200` | |
+| `request_timeout` | `60` | seconds a connection may sit idle in one read or write before the server closes it (2026-11-13) |
 | `state_dir` | `~/.local/state/of/server` | `server.db`, `queue/`, `dead/`, `storage/`, `blobs/` |
 | `plugins` | `storage: sqlite`, `buffer: disk`, `blobs: fs`, `identity: machine_keys` | see Profiles |
 | `tenant_key_file` | `~/.config/of/tenant.key` | the master key; the masking key is derived from it |
@@ -265,6 +266,14 @@ Built today: storage `sqlite` and `clickhouse`, buffer `disk`, blobs `fs`, ident
 - a launchd agent `dev.organic-framework.server` on `127.0.0.1:18200`, with its queue in `~/.local/state/of/server/`;
 - the server holds the ClickHouse `*_ingest` credentials and the tenant master key;
 - the shipper posts batches to it.
+
+**On a Mac it survives a sleep, a wake and a lost network** (`of_conductor`, msg `01a1d63f-d434`, 2026-11-13). After a day asleep with no network, the Mac woke swapping (load 180 to 266, 13.2 of 14 GB of swap), and the server answered `/v1/health` only after 25 s until a person restarted it. Its launchd agent had been written by hand as a `Background` job with `Nice 10` and low-priority I/O: that class gets the least CPU and the slowest page-ins, so every answer came after its client had given up (198 replies to gone clients in that run's log, no deadlock). A day later, still swapping, health took 13 s. Now:
+- `of server install` writes and loads two launchd agents: the server at `ProcessType Standard`, with no `Nice` and no low-priority I/O, since agents wait on its answers; and `dev.organic-framework.server-watchdog`, one check a minute (`of server watchdog`). The writer child lowers itself (`nice 10`): the drain to storage can wait. `of server uninstall` removes both.
+- The watchdog restarts a server that has not answered `/v1/health` (20 s timeout) for 3 minutes, at most once in 15 minutes. First it sends `SIGUSR1`, which writes every thread's stack to `server.log`, so the next hang names where it waited; it records `of.server_watchdog` and logs to `<state_dir>/watchdog.log`.
+- A connection idle in one read or write for `request_timeout` (60 s) is closed, so a client that went away in a sleep holds no thread.
+- `server.log` lines carry their UTC time; a reply to a client that had gone (broken pipe, reset, timeout) is counted once a minute instead of a traceback each.
+- The writer tells an unreachable storage (refused, reset, timed out, no route) from an error answer: the batch waits for the network, doubling the pause up to a minute, and spends no attempt. Before, a batch was dead after 8 failures one second apart, so a lost network killed every batch in about 8 seconds.
+- `tests/test_server_resilience.py` freezes a real server process as a sleep does while its clients time out, wakes it and expects an answer within 3 s; it takes the storage away and gives it back, and the batch drains.
 
 **A new user** gets profile 1 from `of init` in minutes, with SQLite storage and no other services ([`../README.md`](../README.md), quickstart).
 

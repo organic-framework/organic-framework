@@ -2426,8 +2426,13 @@ def cmd_server(args):
         print(msg)
         return 0 if ok else 1
     if args.action == "run":
-        of_server.run(log=lambda m: print(m, flush=True))
+        of_server.run()
         return 0
+    if args.action in ("install", "uninstall"):  # the launchd agents on this Mac: the server and its watchdog
+        print(of_server.install_launchd(uninstall=args.action == "uninstall"))
+        return 0
+    if args.action == "watchdog":  # one check; launchd runs it every minute (docs/server.md, "On this Mac")
+        return 0 if of_server.watchdog() in ("ok", "failing", "waiting", "restarted") else 1
     if args.action == "enroll-machine":
         import of_client
         import of_events
@@ -5708,8 +5713,10 @@ def main(argv=None):
     co.set_defaults(fn=cmd_consent)
     sp = sub.add_parser("shipped", help="what has left this machine, per server and organization")
     sp.set_defaults(fn=cmd_shipped)
-    sv = sub.add_parser("server", help="of-server: run, start, stop, enroll-machine, revoke, status (docs/server.md)")
-    sv.add_argument("action", choices=["run", "start", "stop", "enroll-machine", "revoke", "status", "export-secret-key"])
+    sv = sub.add_parser("server", help="of-server: run, start, stop, install, enroll-machine, revoke, status "
+                                       "(docs/server.md)")
+    sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
+                                       "revoke", "status", "export-secret-key"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key")
