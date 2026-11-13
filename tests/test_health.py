@@ -58,6 +58,17 @@ class ChecksTest(StateDir):
             self.assertEqual(json.load(fh)["checks"]["machine.disk"]["state"], "ok")
         self.assertIn("hooks.errors", of_health.table(state))
 
+    def test_swap_is_read_by_its_full_path(self):
+        seen = []
+        out = "total = 14336.00M  used = 13107.20M  free = 1228.80M  (encrypted)"
+        run = lambda argv, **k: seen.append(argv) or type("R", (), {"stdout": out})()  # noqa: E731
+        if sys.platform == "darwin":
+            self.assertEqual(of_health.swap_share(run), 0.914)
+            self.assertEqual(seen[0][0], "/usr/sbin/sysctl")  # launchd's PATH has no /usr/sbin
+        r = of_health.measure(now=1.0, server="none", lags={}, views={}, hooks=(0, 0, {}, 0), swap=None, disk=50,
+                              smoke={"head": "x", "ok": True})
+        self.assertIn("machine.memory", r) if sys.platform == "darwin" else None
+
     def test_hook_readings_take_the_last_ten_minutes_from_the_end(self):
         now = 1_800_000_000.0
         with open(os.path.join(self.tmp.name, "hook-timing.jsonl"), "w") as fh:
