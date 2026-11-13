@@ -699,6 +699,15 @@ def redaction_state(app, rid, machine=None):
 
 # -------------------------------------------------------------------- writer
 
+UNREACHABLE_ALERT_S = 1800  # the storage unreachable this long: one of.server_alert to the owner
+
+
+def alert_unreachable(since, error):
+    of_events.emit("server_alert", {"kind": "storage_unreachable", "since": of_events.now_iso() if since is None else
+                                    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since)),
+                                    "error": f"{type(error).__name__}: {error}"[:300]})
+
+
 def unreachable(e):
     """Is E a failure to reach the storage at all (refused, reset, timed out, no route, no name), rather than an answer?
     A storage's own error answer (ClickHouse's HTTP error is a RuntimeError) still counts as an attempt."""
@@ -718,6 +727,7 @@ class Writer(threading.Thread):
         self.last_error = None
         self.rate_bps = None  # drain throughput, bytes of queued batches per second (moving average)
         self.retry_at, self.unreachable = 0.0, 0  # the storage could not be reached: wait, doubling, up to a minute
+        self.unreachable_since, self.unreachable_said = None, False  # one owner alert per long outage
 
     def _measure(self, nbytes, seconds):
         if nbytes <= 0 or seconds <= 0:
@@ -800,6 +810,11 @@ class Writer(threading.Thread):
                     self.unreachable += 1
                     self.retry_at = time.time() + min(60, 2 ** min(self.unreachable, 6))
                     self.last_error = f"{bid}: storage unreachable ({type(e).__name__}: {e})"[:500]
+                    self.unreachable_since = self.unreachable_since or time.time()
+                    if not self.unreachable_said and time.time() - self.unreachable_since >= UNREACHABLE_ALERT_S:
+                        # a wrong host or a storage that never returns says so once (of_review on PR 112, note 5)
+                        self.unreachable_said = True
+                        alert_unreachable(self.unreachable_since, e)
                     break
                 attempts += 1
                 dead = attempts >= self.cfg["max_attempts"]
@@ -811,7 +826,7 @@ class Writer(threading.Thread):
                     alert_dead(bid, attempts, e)
                 self.last_error = f"{bid}: {e}"
                 break  # keep order: retry this batch first next time
-            self.unreachable, self.retry_at = 0, 0.0
+            self.unreachable, self.retry_at, self.unreachable_since, self.unreachable_said = 0, 0.0, None, False
             with self.store.conn() as c:
                 c.execute("UPDATE batches SET state = 'committed', committed_at = ?, error = NULL WHERE seq = ?",
                           (of_events.now_iso(), seq))
@@ -2079,6 +2094,7 @@ def launchd_plists(cfg=None, python=None, of_bin=None):
     """{label: plist text} for of-server and its watchdog on this Mac. Standard, not Background: agents wait on the
     server's answers, and a Background job with Nice 10 and low-priority I/O took 13 s for /v1/health and timed out
     after a wake, while the Mac swapped (of_conductor, msg 01a1d63f-d434). The writer child lowers itself instead."""
+    from xml.sax.saxutils import escape
     cfg = cfg or load_config()
     python = python or sys.executable
     of_bin = of_bin or os.path.join(os.path.dirname(os.path.abspath(__file__)), "of")
@@ -2087,7 +2103,7 @@ def launchd_plists(cfg=None, python=None, of_bin=None):
                     "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n"
                     "  <key>ThrottleInterval</key><integer>10</integer>\n"
                     "  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>4096</integer></dict>\n"
-                    f"  <key>WorkingDirectory</key><string>{cfg['state_dir']}</string>\n")
+                    f"  <key>WorkingDirectory</key><string>{escape(cfg['state_dir'])}</string>\n")
     watch = _plist(WATCHDOG_LABEL, [python, of_bin, "server", "watchdog"], os.path.join(cfg["state_dir"], "watchdog.log"),
                    f"  <key>StartInterval</key><integer>{WATCHDOG['every']}</integer>\n")
     return {LAUNCHD_LABEL: server, WATCHDOG_LABEL: watch}
@@ -2104,6 +2120,15 @@ def install_launchd(cfg=None, uninstall=False, run=subprocess.run):
     out = []
     for label, text in launchd_plists(cfg).items():
         path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        try:
+            with open(path) as fh:
+                same = fh.read() == text
+        except OSError:
+            same = False
+        if same and not uninstall and run(["launchctl", "print", f"{domain}/{label}"],
+                                          capture_output=True).returncode == 0:
+            out.append(f"{label}: unchanged")  # `of init` run again does not restart a server it already set up
+            continue
         run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
         if uninstall:
             if os.path.exists(path):
@@ -2120,10 +2145,13 @@ def install_launchd(cfg=None, uninstall=False, run=subprocess.run):
 
 
 def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path=None, log=None, settings=None):
-    """One check, run by launchd every minute (`of server watchdog`). A server that has not answered /v1/health for
-    `failing_for` seconds is restarted, at most once in `restart_gap`; first `kill -USR1` writes its threads' stacks to
-    server.log, so the next hang names its cause (of_conductor, msg 01a1d63f-d434: a hang after a wake needed a person).
-    Returns ok, failing, waiting, restarted or not-under-launchd."""
+    """One check, run by launchd every minute (`of server watchdog`). A server process that is alive but has not
+    answered /v1/health through `failing_for` seconds of checks is restarted, at most once in `restart_gap`; first
+    `kill -USR1` writes its threads' stacks to server.log, so the next hang names its cause (of_conductor, msg
+    01a1d63f-d434: a hang after a wake needed a person). A server with no live process is left alone: `of server stop`
+    meant it, and launchd's KeepAlive restarts a crash. A gap between checks longer than twice `every` (a sleep, or the
+    watchdog not running) starts the count again. Returns ok, failing, waiting, stopped, restarted or not-under-launchd
+    (of_review on organic-framework PR 112)."""
     import signal
     cfg = cfg or load_config()
     s = dict(WATCHDOG, **(settings or {}))
@@ -2135,6 +2163,8 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
             st = json.load(fh)
     except (OSError, ValueError):
         st = {}
+    gap = None if st.get("last_check") is None else now - st["last_check"]
+    st["last_check"] = now
 
     def save(result):
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
@@ -2148,10 +2178,15 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
             log(f"of-server answers again after {int(now - st['failing_since'])} s"
                 + (" and a restart" if st.get("last_restart") is not None
                    and st["last_restart"] >= st["failing_since"] else ""))
-        st = {"last_ok": now, "last_restart": st.get("last_restart")}
+        st = {"last_ok": now, "last_restart": st.get("last_restart"), "last_check": now}
         return save("ok")
-    if st.get("failing_since") is None:
-        st["failing_since"] = now
+    pid = _read_pid(os.path.join(cfg["state_dir"], "server.pid"))
+    if not (pid and _alive(pid)):
+        st.pop("failing_since", None)
+        st.pop("fails", None)
+        return save("stopped")  # stopped on purpose, or crashed and left to launchd's KeepAlive
+    if st.get("failing_since") is None or gap is None or gap > 2 * s["every"]:
+        st["failing_since"], st["fails"] = now, 0  # a sleep or a pause between checks is not silence seen
     st["fails"] = st.get("fails", 0) + 1
     failing = now - st["failing_since"]
     if failing < s["failing_for"]:
@@ -2161,27 +2196,34 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
     if restart is None and not launchd_job():
         log(f"of-server has not answered for {int(failing)} s; it is not under launchd here, so nothing restarts it")
         return save("not-under-launchd")
-    pid = _read_pid(os.path.join(cfg["state_dir"], "server.pid"))
     try:
         load = round(os.getloadavg()[0], 1)
     except OSError:
         load = None
-    if pid and _alive(pid):
-        try:
-            (dump or (lambda p: (os.kill(p, signal.SIGUSR1), time.sleep(2))))(pid)
-        except OSError:
-            pass
-    log(f"of-server (pid {pid}) has not answered /v1/health for {int(failing)} s ({st['fails']} checks; load {load}); "
-        "its threads' stacks are in server.log; restarting it")
-    (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
-                                        capture_output=True, timeout=30)))()
+    dumped = False
     try:
-        of_events.emit("server_watchdog", {"action": "restarted", "pid": pid, "failing_s": int(failing),
-                                           "checks": st["fails"], "load1": load})
+        (dump or (lambda p: (os.kill(p, signal.SIGUSR1), time.sleep(2))))(pid)
+        dumped = True
+    except OSError:
+        pass
+    st["last_restart"] = now  # saved before the call: a launchctl that hangs or fails still waits restart_gap
+    save("restarting")
+    log(f"of-server (pid {pid}) has not answered /v1/health for {int(failing)} s ({st['fails']} checks; load {load})"
+        + ("; its threads' stacks are in server.log" if dumped else "") + "; restarting it")
+    error = None
+    try:
+        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                                            capture_output=True, timeout=30)))()
+    except Exception as e:  # noqa: BLE001 - a timeout under the very load this is for; the next one waits restart_gap
+        error = f"{type(e).__name__}: {e}"[:200]
+        log(f"the restart did not complete ({error}); the next attempt waits {s['restart_gap']} s")
+    try:
+        of_events.emit("server_watchdog", {"action": "restarted" if error is None else "restart_failed", "pid": pid,
+                                           "failing_s": int(failing), "checks": st["fails"], "load1": load,
+                                           **({"error": error} if error else {})})
     except Exception:  # noqa: BLE001 - the restart matters more than its record
         pass
-    st["last_restart"] = now  # failing_since stays: the next restart waits restart_gap, recovery names the whole gap
-    return save("restarted")
+    return save("restarted" if error is None else "restart_failed")
 
 
 if __name__ == "__main__":  # the container entry point: python3 of_server.py --config /etc/of/server.yaml [run]

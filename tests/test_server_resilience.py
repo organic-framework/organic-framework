@@ -133,6 +133,21 @@ class NetworkLossTest(ServerBase):
         self.assertEqual((self.app.writer.retry_at, self.app.writer.unreachable), (0.0, 0))
         self.assertEqual(self.client.receipts()["receipts"][0]["state"], "committed")
 
+    def test_a_long_outage_alerts_the_owner_once(self):
+        # of_review on organic-framework PR 112, note 5: batches no longer die, so a storage that never returns says so
+        self.app.writer.ch.insert = lambda *a: (_ for _ in ()).throw(urllib.error.URLError("no route"))
+        self.client.send_batch([event("e1", "ofb")], batch_id="ba")
+        said = []
+        with mock.patch.object(of_server.of_events, "emit", lambda name, data, **k: said.append((name, data["kind"]))):
+            self.app.writer.retry_at = 0
+            self.app.writer.drain()                                  # the outage starts: no alert yet
+            self.assertEqual(said, [])
+            self.app.writer.unreachable_since -= of_server.UNREACHABLE_ALERT_S
+            for _ in range(3):
+                self.app.writer.retry_at = 0
+                self.app.writer.drain()
+        self.assertEqual(said, [("server_alert", "storage_unreachable")])
+
     def test_an_error_answer_still_spends_attempts(self):
         self.ch.fail = True                                          # ClickHouse answered with an error
         old = of_server.alert_dead
@@ -184,21 +199,51 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(self.check(240, False), "restarted")        # 180 s since the first failed check
         self.assertEqual((self.dumped, self.restarts), ([os.getpid()], [240]))
         self.assertIn("has not answered /v1/health for 180 s", self.said[-1])
-        self.assertEqual([self.check(t, False) for t in (300, 480, 600)], ["waiting"] * 3)
-        self.assertEqual(self.check(1200, False), "restarted")       # 15 minutes after the last restart
+        self.assertEqual({self.check(t, False) for t in range(300, 1140, 60)}, {"waiting"})
+        self.assertEqual(self.check(1140, False), "restarted")       # 15 minutes after the last restart
         self.assertEqual(len(self.restarts), 2)
-        self.assertEqual(self.check(1260, True), "ok")
-        self.assertIn("answers again after 1200 s and a restart", self.said[-1])
+        self.assertEqual(self.check(1200, True), "ok")
+        self.assertIn("answers again after 1140 s and a restart", self.said[-1])
 
     def test_a_short_gap_restarts_nothing(self):
         self.assertEqual([self.check(t, ok) for t, ok in ((0, False), (60, False), (120, True), (180, False))],
                          ["failing", "failing", "ok", "failing"])
         self.assertEqual(self.restarts, [])
 
+    def test_a_stopped_server_is_left_alone(self):
+        # of_review on organic-framework PR 112: `of server stop` meant it, and a crash is launchd's KeepAlive's
+        os.remove(os.path.join(self.tmp.name, "server.pid"))
+        self.assertEqual({self.check(t, False) for t in range(0, 900, 60)}, {"stopped"})
+        with open(os.path.join(self.tmp.name, "server.pid"), "w") as fh:
+            fh.write("999999\n")                                    # a pid that is not running
+        self.assertEqual({self.check(t, False) for t in range(900, 1500, 60)}, {"stopped"})
+        self.assertEqual((self.restarts, self.dumped), ([], []))
+
+    def test_a_sleep_between_checks_starts_the_count_again(self):
+        # one failed check before the lid closed and one after the wake are not 3 minutes of silence
+        self.assertEqual([self.check(t, False) for t in (0, 86400, 86460, 86520)], ["failing"] * 4)
+        self.assertEqual(self.check(86580, False), "restarted")      # 180 s of checks after the wake
+        self.assertEqual(self.restarts, [86580])
+
+    def test_a_restart_that_hangs_still_waits_the_gap(self):
+        import subprocess
+        tries = []
+
+        def hang():
+            tries.append(1)
+            raise subprocess.TimeoutExpired(["launchctl"], 30)
+        with mock.patch.object(of_server.of_events, "emit", lambda *a, **k: None):
+            got = [of_server.watchdog(self.cfg, now=t, probe=lambda: False, restart=hang, dump=self.dumped.append,
+                                      log=self.said.append) for t in range(0, 600, 60)]
+        self.assertEqual(got[:4], ["failing"] * 3 + ["restart_failed"])
+        self.assertEqual(set(got[4:]), {"waiting"})
+        self.assertEqual(len(tries), 1)
+        self.assertIn("did not complete (TimeoutExpired", self.said[-1])
+
     def test_without_launchd_it_only_says_so(self):
         with mock.patch.object(of_server, "launchd_job", lambda: None), \
                 mock.patch.object(of_server.of_events, "emit", lambda *a, **k: None):
-            for t in (0, 200):
+            for t in (0, 60, 120, 180):
                 r = of_server.watchdog(self.cfg, now=t, probe=lambda: False, dump=self.dumped.append,
                                        log=self.said.append)
         self.assertEqual((r, self.dumped), ("not-under-launchd", []))
@@ -235,8 +280,27 @@ class LaunchdTest(unittest.TestCase):
                                                                 (of_server.LAUNCHD_LABEL, of_server.WATCHDOG_LABEL)))
             self.assertEqual(msg.count("loaded"), 2)
             self.assertEqual(calls, [["launchctl", "bootout"], ["launchctl", "bootstrap"]] * 2)
+            calls.clear()                                   # again, unchanged and loaded: nothing restarts
+            self.assertEqual(of_server.install_launchd(cfg, run=run).count("unchanged"), 2)
+            self.assertEqual(calls, [["launchctl", "print"]] * 2)
             of_server.install_launchd(cfg, uninstall=True, run=run)
             self.assertEqual(os.listdir(agents), [])
+
+    def test_of_init_installs_the_same_agents_and_no_low_priority_unit(self):
+        # of_review on organic-framework PR 112: of init had written the Background, Nice 10 unit itself
+        import of_init
+        with mock.patch.object(of_init.platform, "system", lambda: "Darwin"), \
+                mock.patch.object(of_server, "install_launchd", lambda *a, **k: "both loaded"), \
+                mock.patch.object(of_init, "_started", lambda m: m):
+            self.assertEqual(of_init.install_service(), "service installed: both loaded")
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(of_init.platform, "system", lambda: "Linux"), \
+                mock.patch.object(of_init.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \
+                mock.patch.object(of_init, "_started", lambda m: m):
+            of_init.install_service()
+            unit = open(os.path.join(home, ".config", "systemd", "user", "of-server.service")).read()
+        self.assertNotIn("Nice", unit)
+        self.assertNotIn("IOSchedulingClass", unit)
 
 
 class ClientGoneTest(unittest.TestCase):

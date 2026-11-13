@@ -1206,37 +1206,21 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
 
 
 def install_service():
-    py, label = sys.executable, "dev.organic-framework.server"
+    py = sys.executable
     state = os.path.expanduser("~/.local/state/of/server")
     os.makedirs(state, mode=0o700, exist_ok=True)
     if platform.system() == "Darwin":
-        plist = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
-        if os.path.exists(plist):
-            return f"service already installed: {plist}"
-        with open(plist, "w") as fh:
-            fh.write(f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>{label}</string>
-  <key>ProgramArguments</key><array><string>{py}</string><string>{OF}</string><string>server</string><string>run</string></array>
-  <key>EnvironmentVariables</key><dict><key>OF_AUTOMATION</key><string>1</string><key>SSH_AUTH_SOCK</key><string></string></dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ProcessType</key><string>Background</string>
-  <key>LowPriorityIO</key><true/>
-  <key>Nice</key><integer>10</integer>
-  <key>StandardOutPath</key><string>{state}/server.log</string>
-  <key>StandardErrorPath</key><string>{state}/server.log</string>
-</dict></plist>
-""")
-        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", plist], check=False)
-        return _started(f"service installed: {plist}")
+        # of-server's own two agents, the server at standard priority and its watchdog (of_server.install_launchd):
+        # this template had been the Background, Nice 10, low-priority-I/O unit behind a hang after a wake (of_conductor,
+        # msg 01a1d63f-d434; of_review on organic-framework PR 112). Unchanged agents are left running.
+        import of_server
+        return _started("service installed: " + of_server.install_launchd())
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(unit_dir, exist_ok=True)
     unit = os.path.join(unit_dir, "of-server.service")
     with open(unit, "w") as fh:
         fh.write(f"[Unit]\nDescription=Organic Framework sync server\n\n[Service]\nExecStart={py} {OF} server run\n"
-                 "Environment=OF_AUTOMATION=1\nEnvironment=SSH_AUTH_SOCK=\nRestart=on-failure\nNice=10\nIOSchedulingClass=idle\n\n"
+                 "Environment=OF_AUTOMATION=1\nEnvironment=SSH_AUTH_SOCK=\nRestart=on-failure\n\n"
                  "[Install]\nWantedBy=default.target\n")
     r = subprocess.run(["systemctl", "--user", "enable", "--now", "of-server.service"], capture_output=True, text=True)
     if r.returncode != 0:  # e.g. no systemd user session on a VM: "Failed to connect to bus"
