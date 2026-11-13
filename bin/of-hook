@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""The Claude Code hooks' entry: `of-hook <HookEvent> [--deny-secrets] < hook.json` (of_hook.main).
+
+Python compiles a program it runs from its source every time and caches bytecode only for the modules it imports.
+bin/of is 6,000 lines: run as the hook it was compiled on every tool call, 80 ms of a hook's 200 ms of CPU
+(2026-11-14). This file is small, and of_hook comes from its cached bytecode. `of hook <Event>` still works.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import of_hook  # noqa: E402
+
+sys.exit(of_hook.main(sys.argv[1:]))

@@ -263,6 +263,9 @@ def deploy(src, ref, run=subprocess.run, log=print, root=OF_ROOT):
         raise SystemExit(f"deploy: the smoke check failed on {now[:12]}; "
                          f"{'back on ' + before[:12] if before else 'nothing was checked out before'}: "
                          f"{(r.stderr or r.stdout).strip()[-300:]}")
+    # the users cannot write a read-only checkout's bytecode cache: compile it here, or every hook and command compiles
+    # its modules again on each run (bin/of-hook's docstring)
+    run([PYTHON, "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True)
     run(["chown", "-R", "root:wheel", root], capture_output=True)
     run(["chmod", "-R", "u+rwX,go+rX,go-w", root], capture_output=True)
     log(f"deploy: {OF_ROOT} at {now[:12]} (smoke check ok)")
