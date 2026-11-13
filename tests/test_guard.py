@@ -478,8 +478,17 @@ class GuardBashTest(unittest.TestCase):
         # docs/guard.md G23 (of_server's trust review of organic-framework PR 132)
         for cmd in ("of tools header acme/grafana", "python3 bin/of tools header acme/grafana",
                     "~/organic-framework/bin/of tools header acme/grafana | jq .",
-                    "python3 ~/organic-framework/bin/of_tools.py header acme/grafana"):
+                    "python3 ~/organic-framework/bin/of_tools.py header acme/grafana",
+                    "python3 -I bin/of tools header acme/grafana", "python3 -u bin/of_tools.py header acme/grafana",
+                    "PYTHONPATH=bin python3 -m of_tools header acme/grafana",
+                    "python3 -W ignore bin/of tools header acme/grafana",
+                    "echo acme/grafana | xargs of tools header",
+                    "python3 -c \"import of_tools; print(of_tools.shared_token('acme', 'grafana'))\"",
+                    "python3 -c \"import of_tools; of_tools.main(['header', 'acme/grafana'])\""):
             self.assertTrue(deny(cmd), cmd)
+        # G13 reads through the interpreter's options the same way (of_review on PR 136)
+        self.assertTrue(deny("python3 -I bin/of grant issue --subject x"))
+        self.assertTrue(deny("python3 -X dev bin/of passkey enroll alex"))
         for cmd in ("of tools header --help", "of tools plan acme_ops", "of tools shared status",
                     "git commit -m 'of tools header now checks its caller'"):
             self.assertIsNone(deny(cmd), cmd)
