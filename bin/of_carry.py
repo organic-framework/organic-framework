@@ -1,0 +1,340 @@
+"""Carry an organization's sessions to another machine and back (docs/capacity.md, "Carrying sessions between
+machines"; organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §3 B1 and §9; owned by
+of_capacity).
+
+On the agent host each organization runs as its own OS user, so a session moves both to another machine and into
+another home: /Users/alex on the laptop, /Users/of or /Users/acme on the host, and back for a rollback.
+
+- `prepare` (the source, as the organization's user): a bundle directory with `plan.json`, the reboot plan's entries
+  for the organization's live sessions plus this machine's name, home, uid and each account's address, and
+  `files.txt`, every file those sessions need: their state in each config dir (transcript, subagents, file history,
+  session env, tasks, todos), the folder memory, the position's own memory directory, and their scratch folders under
+  the agent tmp root. Read-only for the sessions; freeze them afterwards (`of capacity close`) for a final copy.
+- `copy` (the laptop, at a moment the founder picks): rsync over SSH with an explicit key file, `SSH_AUTH_SOCK`
+  empty and the user's SSH agent refused, at background priority (`taskpolicy -b`) and a bandwidth limit. It pushes a
+  bundle to the other machine, or pulls one prepared there.
+- `restore` (the target, as the organization's user): every path rewritten from the source's home and uid to this
+  user's (`Rewriter`), the files put in place (whatever is there is kept aside in the bundle first), then each session
+  resumed as it ran by `of_capacity.reboot_restore`, on an account checked to be the same one.
+
+A transcript's conversation (`message`) is never rewritten: its thinking blocks are signed, and an edit there makes
+the API refuse the session. Everything around it is (the working folder, file-history paths, tool-result metadata),
+and the resume note tells the session its home moved.
+"""
+
+import json
+import os
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import time
+
+import of_capacity
+
+SKIP_LARGER = 64 * 1024 * 1024        # a scratch or task-output file larger than this stays behind (named in the plan)
+BWLIMIT_KBPS = 25000                  # the copy's default limit, KB/s: the laptop runs light work only
+SSH_OPTS = ["-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
+
+
+class CarryError(Exception):
+    pass
+
+
+# ------------------------------------------------------------------ paths
+
+
+def key_of(path):
+    """Claude Code's folder key for a path: every character other than a letter or digit becomes "-"
+    (/Users/alex/x/.claude/worktrees/y -> -Users-alex-x--claude-worktrees-y)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+class Rewriter:
+    """One machine's paths to another's: the home, the folder keys built from it, and the agent tmp root's uid."""
+
+    def __init__(self, old_home, new_home, old_uid, new_uid):
+        self.old_home, self.new_home = old_home.rstrip("/"), new_home.rstrip("/")
+        self.old_key, self.new_key = key_of(self.old_home), key_of(self.new_home)
+        self.old_tmp, self.new_tmp = f"/private/tmp/claude-{old_uid}", f"/private/tmp/claude-{new_uid}"
+        self.old_tmp_key, self.new_tmp_key = key_of(self.old_tmp), key_of(self.new_tmp)
+        # one pass, so a replacement is never rewritten again (a new home whose own path holds the old key, as a
+        # rehearsal home inside the tmp root does). A key starts a path component or follows the tmp root's own key
+        # (-private-tmp-claude-501--Users-alex-x).
+        self._all = re.compile("|".join([
+            "(?P<tmp>" + re.escape(self.old_tmp) + r")(?=/|$)",
+            r"(?<![A-Za-z0-9-])(?P<tmpkey>" + re.escape(self.old_tmp_key) + r")(?=-|$|/)",
+            "(?P<home>" + re.escape(self.old_home) + r")(?=/|$|[\"'\s:;,)\]])",
+            r"(?<![A-Za-z0-9])(?P<key>" + re.escape(self.old_key) + r")(?=-|$|/)"]))
+        self._to = {"tmp": self.new_tmp, "tmpkey": self.new_tmp_key, "home": self.new_home, "key": self.new_key}
+        self.identity = (self.old_home == self.new_home and old_uid == new_uid)
+        self._needles = [x.encode() for x in (self.old_home, self.old_key, self.old_tmp)]
+
+    def text(self, s):
+        """Every mention of the old home, its folder keys and the old tmp root in `s`, rewritten."""
+        if self.identity or not isinstance(s, str):
+            return s
+        return self._all.sub(lambda m: self._to[m.lastgroup], s)
+
+    def touches(self, data):
+        """Whether bytes mention anything this rewrites (a line that does not is kept byte for byte)."""
+        return not self.identity and any(n in data for n in self._needles)
+
+    def path(self, p):
+        return self.text(p)
+
+    def record(self, obj, _top=True):
+        """A transcript record with every string rewritten except its conversation (`message`): keys too, since
+        file-history snapshots key their backups by path."""
+        if isinstance(obj, dict):
+            return {self.text(k): (v if (k == "message" and _top) else self.record(v, False)) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self.record(v, False) for v in obj]
+        return self.text(obj)
+
+    def transcript(self, data):
+        """A .jsonl transcript's bytes, rewritten record by record; a line that is not JSON is kept as it is."""
+        out = []
+        for line in data.split(b"\n"):
+            if not line.strip() or not self.touches(line):
+                out.append(line)
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                out.append(line)
+                continue
+            out.append(json.dumps(self.record(rec), ensure_ascii=False, separators=(",", ":")).encode())
+        return b"\n".join(out)
+
+
+# ------------------------------------------------------------------ prepare
+
+
+def _files_under(root, skipped):
+    out = []
+    for dirpath, dirs, files in os.walk(root):
+        for f in files:
+            p = os.path.join(dirpath, f)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            if st.st_size > SKIP_LARGER and ("/private/tmp/" in p or "/tasks/" in p):
+                skipped.append({"path": p, "bytes": st.st_size})
+                continue
+            out.append(p)
+    return out
+
+
+def session_files(entry, tmp_root, memory_dir=None):
+    """Every file one plan entry needs on the other machine, and the large scratch files left behind."""
+    d, sid = entry["config_dir"], entry["session"]
+    files, skipped = [], []
+    for rel in of_capacity.session_paths(d, sid):
+        p = os.path.join(d, rel)
+        files += _files_under(p, skipped) if os.path.isdir(p) else [p]
+    key = of_capacity.project_key(d, sid)
+    if key and os.path.isdir(os.path.join(d, "projects", key, "memory")):
+        files += _files_under(os.path.join(d, "projects", key, "memory"), skipped)
+    mem = memory_dir or entry.get("memory_dir")
+    if mem and os.path.isdir(mem):
+        files += _files_under(mem, skipped)
+    if tmp_root and os.path.isdir(tmp_root):
+        for proj in os.listdir(tmp_root):
+            scratch = os.path.join(tmp_root, proj, sid)
+            if os.path.isdir(scratch):
+                files += _files_under(scratch, skipped)
+    return sorted(set(files)), skipped
+
+
+def selected(entries, only):
+    """The entries of the organizations or positions named in `only`."""
+    return [e for e in entries if e.get("org") in only or e["name"] in only or (e.get("position") or "") in only]
+
+
+def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
+    """Write the bundle for the live sessions of the organizations or positions in `only`."""
+    if not only:
+        raise CarryError("carry prepare needs --only <organization|position,…>: a machine carries one organization")
+    entries = selected(entries if entries is not None else of_capacity.live_entries(positions, log=log), only)
+    if not entries:
+        raise CarryError(f"no live session of {', '.join(sorted(only))} on this machine")
+    tmp_root = tmp_root or of_capacity.agent_tmp_root()
+    import of_memory
+    by_name = {p["name"]: p for p in positions}
+    files, skipped = [], []
+    for e in entries:
+        p = by_name.get(e.get("position") or "")
+        mem = e.get("memory_dir") or (of_memory.directory(p) if p else None)
+        e["memory_dir"] = mem if mem and os.path.isdir(mem) else e.get("memory_dir")
+        e["account"] = of_capacity.account_of(e["config_dir"])
+        f, s = session_files(e, tmp_root, e["memory_dir"])
+        files += f
+        skipped += s
+    files = sorted(set(files))
+    size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
+    plan = {"kind": "carry", "v": 1, "prepared_at": of_capacity._iso(time.time()), "machine": socket.gethostname(),
+            "home": os.path.expanduser("~"), "uid": os.getuid(), "tmp_root": tmp_root, "only": sorted(only),
+            "entries": entries, "files": len(files), "bytes": size, "skipped": skipped}
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+    with open(os.path.join(out_dir, "plan.json"), "w") as fh:
+        json.dump(plan, fh, indent=1, ensure_ascii=False)
+    with open(os.path.join(out_dir, "files.txt"), "w") as fh:
+        fh.write("".join(f + "\n" for f in files))
+    for e in entries:
+        log(f"{e['name']:28} {of_capacity.short(e['config_dir']):26} {e.get('account') or '?':30} {e['model'] or '?'}")
+    log(f"{len(entries)} session(s), {len(files)} file(s), {size / 1e6:.0f} MB in {out_dir}"
+        + (f"; {len(skipped)} file(s) over {SKIP_LARGER >> 20} MB left behind" if skipped else ""))
+    return plan
+
+
+# ------------------------------------------------------------------ copy
+
+
+def _key_ok(key):
+    if not key:
+        raise CarryError("carry copy needs --key <file>: an explicit key file, never the owner's SSH agent")
+    key = os.path.expanduser(key)
+    try:
+        st = os.stat(key)
+    except OSError:
+        raise CarryError(f"no key file {key}")
+    if st.st_mode & 0o077:
+        raise CarryError(f"{key} is readable by others (mode {oct(st.st_mode & 0o777)}); chmod 600 it")
+    return key
+
+
+def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS):
+    """Pure: the rsync commands of a copy, push (`to`, user@host:DIR) or pull (`frm`, user@host:DIR prepared there),
+    each at background priority with the bandwidth limit, over ssh with only `key`."""
+    if bool(to) == bool(frm):
+        raise CarryError("carry copy needs exactly one of --to user@host:DIR (push) or --from user@host:DIR (pull)")
+    ssh = " ".join(["ssh", "-i", key] + SSH_OPTS)
+    base = ["taskpolicy", "-b", "rsync", "-a", "--partial", f"--bwlimit={int(bwlimit)}", "-e", ssh]
+    b = bundle.rstrip("/")
+    if to:
+        dest = to.rstrip("/")
+        return [base + [f"{b}/plan.json", f"{b}/files.txt", f"{dest}/"],
+                base + ["-R", f"--files-from={b}/files.txt", "/", f"{dest}/files/"]]
+    src = frm.rstrip("/")
+    return [base + [f"{src}/plan.json", f"{b}/"], base + [f"{src}/files.txt", f"{b}/"],
+            base + ["-R", f"--files-from={b}/files.txt", f"{src.split(':', 1)[0]}:/", f"{b}/files/"]]
+
+
+def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, log=print, run=subprocess.run):
+    key = _key_ok(key)
+    cmds = copy_commands(bundle, key, to=to, frm=frm, bwlimit=bwlimit)
+    env = dict(os.environ, SSH_AUTH_SOCK="", OF_AUTOMATION="1")
+    os.makedirs(bundle, mode=0o700, exist_ok=True)
+    for c in cmds:
+        log("$ " + " ".join(c))
+        if dry_run:
+            continue
+        r = run(c, env=env)
+        if getattr(r, "returncode", 0) != 0:
+            raise CarryError(f"rsync exited {r.returncode}; run the same copy again to go on (--partial keeps what came)")
+    return cmds
+
+
+# ------------------------------------------------------------------ restore
+
+
+def install(bundle, rw, dry_run=False, log=print):
+    """Put every file of the bundle at its rewritten path. A file already there with other contents is kept aside
+    under the bundle's `kept/` first. Transcripts (.jsonl under projects/) are rewritten record by record."""
+    root = os.path.join(bundle, "files")
+    done = {"installed": 0, "same": 0, "kept_aside": 0}
+    for dirpath, dirs, files in os.walk(root):
+        for f in files:
+            src = os.path.join(dirpath, f)
+            old = "/" + os.path.relpath(src, root)
+            new = rw.path(old)
+            if not (new.startswith(rw.new_home + "/") or new.startswith(rw.new_tmp + "/")):
+                done.setdefault("refused", []).append(old)  # only into this user's home and tmp root
+                continue
+            with open(src, "rb") as fh:
+                data = fh.read()
+            if new.endswith(".jsonl") and "/projects/" in new:
+                data = rw.transcript(data)
+            try:
+                with open(new, "rb") as fh:
+                    there = fh.read()
+            except OSError:
+                there = None
+            if there == data:
+                done["same"] += 1
+                continue
+            if dry_run:
+                done["installed"] += 1
+                continue
+            if there is not None:
+                aside = os.path.join(bundle, "kept", new.lstrip("/"))
+                os.makedirs(os.path.dirname(aside), mode=0o700, exist_ok=True)
+                shutil.copy2(new, aside)
+                done["kept_aside"] += 1
+            os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
+            with open(new, "wb") as fh:
+                fh.write(data)
+            shutil.copystat(src, new)
+            done["installed"] += 1
+    log(f"files: {done['installed']} put in place{' (dry run)' if dry_run else ''}, {done['same']} already there, "
+        f"{done['kept_aside']} earlier copies kept aside in {os.path.join(bundle, 'kept')}"
+        + (f"; {len(done['refused'])} outside this user's home and tmp root NOT put in place" if done.get("refused")
+           else ""))
+    return done
+
+
+def local_plan(plan, rw):
+    """The plan with this machine's paths, and no pane ids: another machine's herdr numbers its panes its own way."""
+    out = dict(plan, home=plan.get("home"), target_home=rw.new_home, tmp_root=rw.path(plan.get("tmp_root") or ""))
+    out["entries"] = [dict(e, config_dir=rw.path(e["config_dir"]), cwd=rw.path(e.get("cwd") or "") or None,
+                           memory_dir=rw.path(e["memory_dir"]) if e.get("memory_dir") else None, pane=None)
+                      for e in plan["entries"]]
+    return out
+
+
+def restore(bundle, positions, only=None, dry_run=False, log=print, of_bin=None, place_of=None,
+            home=None, uid=None, account_of=None, restore_fn=None):
+    """Rewrite and install the bundle's files for this user, then resume its sessions (of_capacity.reboot_restore).
+    A session whose config dir here is signed in to another account than it ran on is not resumed."""
+    try:
+        with open(os.path.join(bundle, "plan.json")) as fh:
+            plan = json.load(fh)
+    except (OSError, ValueError) as err:
+        raise CarryError(f"no carry plan in {bundle}: {err}")
+    if plan.get("kind") != "carry":
+        raise CarryError(f"{bundle}/plan.json is not a carry plan")
+    rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid)
+    log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
+        f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
+    install(bundle, rw, dry_run=dry_run, log=log)
+    lp = local_plan(plan, rw)
+    account_of = account_of or of_capacity.account_of
+    ok, wrong = set(), []
+    for e in lp["entries"]:
+        if only and e["name"] not in only and (e.get("position") or "") not in only:
+            continue
+        here = account_of(e["config_dir"])
+        if e.get("account") and here != e["account"]:
+            wrong.append(e["name"])
+            log(f"{e['name']}: NOT resumed: {of_capacity.short(e['config_dir'])} here is "
+                f"{here or 'signed in to no account'}, it ran on {e['account']}")
+            continue
+        ok.add(e["name"])
+    path = os.path.join(bundle, "plan.local.json")
+    if not dry_run:
+        with open(path, "w") as fh:
+            json.dump(lp, fh, indent=1, ensure_ascii=False)
+    else:
+        path = os.path.join(bundle, "plan.local.dry-run.json")
+        with open(path, "w") as fh:
+            json.dump(lp, fh, indent=1, ensure_ascii=False)
+    if not ok:
+        return [(n, "failed", "another account") for n in wrong]
+    done = (restore_fn or of_capacity.reboot_restore)(positions, only=ok, dry_run=dry_run, log=log, of_bin=of_bin,
+                                                       plan_path=path, place_of=place_of)
+    return list(done) + [(n, "failed", "another account") for n in wrong]

@@ -2553,6 +2553,31 @@ def reboot_note(e, account, ts, prepared_at, tmp_kept):
     return "\n".join(lines) + "\n"
 
 
+def carry_note(e, account, ts, plan):
+    """The note for a session carried to another machine (of_carry; plan kind "carry")."""
+    lines = [f"# Carried to another machine: {e['name']}", "",
+             f"`of_capacity` carried this session (`{e['session']}`) from {plan.get('machine') or 'another machine'} "
+             f"(home `{plan.get('home')}`) to this one (home `{plan.get('target_home') or os.path.expanduser('~')}`), "
+             f"and resumed it on `{short(e['config_dir'])}` ({account}) at {ts}, under the same name, model and mode. "
+             "Your transcript, memory and scratch files came with it.", "",
+             f"Paths in your earlier messages name the old home, `{plan.get('home')}`: the same files are now under "
+             f"`{plan.get('target_home') or os.path.expanduser('~')}`. Use the new paths from here on.", ""]
+    crons, tasks, running = e.get("crons") or [], e.get("tasks") or [], e.get("running") or []
+    if crons or tasks or running:
+        lines.append("Crons, monitors and background tasks did not come with it. Your last record of them:")
+        lines += [f"- cron/wake-up: {json.dumps(c, ensure_ascii=False)[:2000]}" for c in crons]
+        lines += [f"- background {t.get('type')}: {t.get('description') or ''} ({(t.get('command') or '')[:160]!r})"
+                  for t in tasks]
+        lines += [f"- process (from `ps` before the carry): `{c}`" for c in running]
+        lines += ["Re-create the ones you still need, on this machine. A time that has passed meanwhile needs a fresh "
+                  "look, not a blind re-arm.", ""]
+    lines += ["Check that the carry kept your context: reply in at most three lines with",
+              "1. what you were working on before this message, and", "2. your next step.",
+              "Then declare your state with `of status` as usual and carry on (or stay idle if you were waiting). "
+              "Anything that arrived for you meanwhile is in `of inbox` and `of asks`.", "", HOLDER_LAG_NOTE]
+    return "\n".join(lines) + "\n"
+
+
 def _reboot_current():
     return os.path.join(REBOOT_DIR, "current")
 
@@ -2565,13 +2590,9 @@ def load_reboot_plan(path=None):
         return None
 
 
-def reboot_prepare(positions, hold=(), dry_run=False, log=print, tmp_root=None, out_dir=None):
-    """Record every live session and keep /private/tmp by hard links. Read-only for the sessions; run it again
-    right before the restart (a later run replaces the earlier one)."""
-    tmp_root = tmp_root or agent_tmp_root()
-    out_dir = out_dir or _reboot_current()
-    if os.path.realpath(out_dir).startswith(os.path.realpath(tmp_root) + os.sep):
-        raise MoveError(f"{out_dir} is inside {tmp_root}, which the restart clears")
+def live_entries(positions, hold=(), log=print):
+    """The reboot plan's entries for every live session on this machine: its account, pane, model and flags, and
+    what it had running (reboot_plan). Read-only for the sessions; `reboot prepare` and `carry prepare` use it."""
     sessions = {d: live_sessions(d) for d in config_dirs()}
     try:
         panes, workspaces, tabs = (_herdr("pane", "list")["panes"], _herdr("workspace", "list")["workspaces"],
@@ -2588,7 +2609,17 @@ def reboot_prepare(positions, hold=(), dry_run=False, log=print, tmp_root=None, 
                                   "running": background_processes(s["pid"]), "model": model,
                                   "effort": effort_of(d, model) if model else None,
                                   "bypass": ran_in_bypass(tr) if tr else False}
-    entries = reboot_plan(positions, sessions, panes, workspaces, tabs, info, hold)
+    return reboot_plan(positions, sessions, panes, workspaces, tabs, info, hold)
+
+
+def reboot_prepare(positions, hold=(), dry_run=False, log=print, tmp_root=None, out_dir=None):
+    """Record every live session and keep /private/tmp by hard links. Read-only for the sessions; run it again
+    right before the restart (a later run replaces the earlier one)."""
+    tmp_root = tmp_root or agent_tmp_root()
+    out_dir = out_dir or _reboot_current()
+    if os.path.realpath(out_dir).startswith(os.path.realpath(tmp_root) + os.sep):
+        raise MoveError(f"{out_dir} is inside {tmp_root}, which the restart clears")
+    entries = live_entries(positions, hold, log=log)
     plan = {"prepared_at": _iso(time.time()), "tmp_root": tmp_root, "entries": entries}
     for e in entries:
         extra = len(e["crons"]) + max(len(e["tasks"]), len(e["running"]))
@@ -2671,9 +2702,12 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     bypass = bool(e.get("bypass")) or ran_in_bypass(transcript)
     import of_memory
     mem = e.get("memory_dir") or (of_memory.directory(p) if p and load_policy().get("position_memory") else None)
-    work = os.path.join(STATE_DIR, "capacity", "moves", f"{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-reboot")
+    work = os.path.join(STATE_DIR, "capacity", "moves", f"{name}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-"
+                        f"{'carry' if plan.get('kind') == 'carry' else 'reboot'}")
     note_path = os.path.join(work, "note.md")
-    prompt = f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it."
+    carried = plan.get("kind") == "carry"
+    prompt = (f"of_capacity carried this session to another machine. Read {note_path} and follow it." if carried else
+              f"The Mac restarted, and of_capacity resumed this session. Read {note_path} and follow it.")
     cmd = launch_command(cwd, target, sid, name, note_path, model=model, effort=effort, bypass=bypass, resumed=True,
                          memory_dir=mem, prompt=prompt, deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
     if home:  # its own workspace; the tab it had there, if it was there (not on the desk)
@@ -2705,14 +2739,16 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
         seed_memory([p], only=(p.get("_org"), p["name"]), extra_sessions={sid: (p.get("_org"), p["name"])}, log=log)
     os.makedirs(work, mode=0o700, exist_ok=True)
     with open(note_path, "w") as fh:
-        fh.write(reboot_note(e, account_of(target), ts, plan.get("prepared_at"), bool(plan.get("tmp_kept"))))
+        fh.write(carry_note(e, account_of(target), ts, plan) if carried else
+                 reboot_note(e, account_of(target), ts, plan.get("prepared_at"), bool(plan.get("tmp_kept"))))
     new = start_session(sid, name, cwd, target, prompt, lambda: _run_in_pane(pane, cmd),
                         lambda: _pane_lines(pane), lambda k: _herdr("pane", "send-keys", pane, k.lower()),
-                        "reboot: resume note", log=log)
+                        "carry: resume note" if carried else "reboot: resume note", log=log)
     if bypass:
         check_bypass_after_start(pane, log)
     of_events.emit("holder_changed", {"position": e.get("position") or name, "previous_session": sid,
-                                      "new_session": new["session"], "evidence": "of capacity reboot restore",
+                                      "new_session": new["session"],
+                                      "evidence": "of capacity carry restore" if carried else "of capacity reboot restore",
                                       "workplace": {"config_dir": target, "account": account_of(target),
                                                     "runtime": "herdr", "pane": pane},
                                       "model": model, "effort": effort,
@@ -2760,6 +2796,11 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
     for e in plan["entries"]:
         if only and e["name"] not in only and (e.get("position") or "") not in only:
             continue
+        if e["session"] in live and plan.get("kind") == "carry":  # never stopped for a carry: the original may be
+            d, _ = live[e["session"]]                                # this one (a rehearsal's copy coming back)
+            log(f"{e['name']}: session {e['session'][:8]} already runs here on {short(d)}; left alone")
+            done.append((e["name"], "running", None))
+            continue
         if e["session"] in live:
             d, x = live[e["session"]]
             why = stray_holder(e, d, proc_args(x["pid"]), x.get("started"), prepared)
@@ -2794,9 +2835,9 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
         subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=180)
     failed = [n for n, s, _ in done if s == "failed"]
     if not dry_run:
-        of_events.emit("capacity_reboot_restored", {"resumed": sum(1 for _, s, _ in done if s == "resumed"),
-                                                    "failed": failed}, position=actor())
-        if not failed and not only:
+        of_events.emit("capacity_carry_restored" if plan.get("kind") == "carry" else "capacity_reboot_restored",
+                       {"resumed": sum(1 for _, s, _ in done if s == "resumed"), "failed": failed}, position=actor())
+        if not failed and not only and plan_path is None:  # a restart's own plan; a carry bundle stays as it is
             if plan.get("herdr_resume_before") is not False and "herdr_resume_before" in plan:
                 set_herdr_resume(True, log=log)
                 log("herdr: resume_agents_on_restore back on")
