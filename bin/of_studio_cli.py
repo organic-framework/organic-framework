@@ -592,6 +592,46 @@ def coupling_input(args):
     return org, of_model.structure_input(m, rows, a, b, works, hs.values(), of_measures.asks_routed(m, rows))
 
 
+ESCALATIONS_OWNER = "of_studio"   # who hears that Studio's escalations stopped (docs/studio.md §5.1a)
+
+
+def _escalations_stale(org, age, now, fresh=False):
+    """While the render's escalations are missing or old, Studio's escalate_when conditions reach no one (PR 128
+    review, of_review). Once per episode (from the first stale read until a fresh one): one of.escalations_stale record
+    and one --fyi to the owner, with the organization, the file's age and the command that computes them by hand.
+    fresh: a render wrote them again, which ends the episode. Returns True when it told."""
+    marker = os.path.join(os.path.dirname(of_studio.escalations_path(org)), ".escalations-stale")
+    if fresh:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        return False
+    if os.path.exists(marker):
+        return False   # this episode was told already
+    of_studio._write_page(marker, f"{now:.0f}\n")
+    import of_events
+    of_events.emit("escalations_stale", {"org": org, "age_s": None if age is None else round(age), "file": "escalations.json",
+                                          "owner": ESCALATIONS_OWNER}, org=org)
+    old = f"{age / 60:.0f} min old" if age is not None else "missing"
+    _tell(ESCALATIONS_OWNER, f"Studio's escalations for {org} are {old}: the page cache has not rendered within "
+                             f"{of_studio.ESCALATIONS_FRESH_S // 60} min, so the delegated units' escalate_when conditions "
+                             f"reach no one. By hand: of model escalations --org {org} --fresh --write. Said once until a "
+                             "render writes them again.")
+    return True
+
+
+def _tell(to, text):
+    """One --fyi from automation, as the owner's own note (the way of corrections sends its digest)."""
+    import subprocess
+    try:
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"), "send", to,
+                        "--from", to, "--fyi", text], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"of model escalations: could not tell {to}: {exc}", file=sys.stderr)
+
+
 def _escalations_done(org):
     """{(delegation, condition, evidence)} already recorded as of.escalation_due for the organization: one indexed read
     of that event name, not the window."""
@@ -767,10 +807,13 @@ def cmd_escalations(args):
     if not getattr(args, "fresh", False):
         esc, age = of_studio.read_escalations(org["name"], b)
         if esc is None:
+            what = f"the last is {age / 60:.0f} min old" if age is not None else "none written yet"
             print(f"of model escalations: {org['name']}: no escalations from the page cache within "
-                  f"{of_studio.ESCALATIONS_FRESH_S // 60} min (" + (f"the last is {age / 60:.0f} min old" if age is not None
-                                                                     else "none written yet") + "); nothing done")
+                  f"{of_studio.ESCALATIONS_FRESH_S // 60} min ({what}); nothing done")
+            if args.write:
+                _escalations_stale(org["name"], age, b)
             return 0
+        _escalations_stale(org["name"], age, b, fresh=True)   # the episode, if any, is over
         done = _escalations_done(org["name"])
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
