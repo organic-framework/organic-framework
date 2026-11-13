@@ -454,6 +454,20 @@ def _segments(text):
     return segs + ([cur] if cur else [])
 
 
+# The options of a wrapper that take a value as the next word: without them `nice -n 5 cat <key>`, `sudo -u root cat
+# <key>` and `exec -a x …` read the value as the command, and no rule saw what ran (G0.6; of_server, 2026-11-14,
+# probing G23).
+_WRAPPER_VALUE_OPTS = {
+    "sudo": {"-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user",
+             "--close-from", "--chdir", "--host", "--prompt", "--role", "--type", "--command-timeout"},
+    "doas": {"-u", "-C"}, "nice": {"-n", "--adjustment"}, "exec": {"-a"}, "time": {"-o", "-f", "--output", "--format"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"}, "stdbuf": {"-i", "-o", "-e"},
+    "xargs": {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
+              "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
+    "env": {"-u", "--unset", "-C", "--chdir"},
+}
+
+
 def _command_words(words):
     """Drop shell keywords, assignments, wrappers and `env VAR=x` prefixes: the words of the command that
     actually runs (`for h in a b; do ssh h 'cat x'; done` runs ssh)."""
@@ -468,12 +482,16 @@ def _command_words(words):
             i += 1
         elif w in _WRAPPERS or w == "timeout":
             i += 1
+            opts = _WRAPPER_VALUE_OPTS.get(w, ())
             while i < len(words) and (words[i].startswith("-") or (w == "timeout" and words[i][:1].isdigit())):
-                i += 1
+                if words[i] == "--":
+                    i += 1
+                    break
+                i += 2 if words[i] in opts else 1
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
             i += 1  # env [opts] [VAR=x] cmd ...: the command after it runs
             while i < len(words) and (words[i].startswith("-") or "=" in words[i]):
-                i += 1
+                i += 2 if words[i] in _WRAPPER_VALUE_OPTS["env"] else 1
         else:
             break
     return words[i:]
