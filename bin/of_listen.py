@@ -1146,7 +1146,8 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
 def _heartbeat_age(now):
     import sqlite3
     try:
-        conn = sqlite3.connect(f"file:{os.path.join(of_events.STATE_DIR, 'of.db')}?mode=ro", uri=True, timeout=5)
+        import of_store
+        conn = sqlite3.connect(f"file:{of_store.db_path()}?mode=ro", uri=True, timeout=5)
         try:
             row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
         finally:
