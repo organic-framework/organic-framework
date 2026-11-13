@@ -278,6 +278,22 @@ def _lang(word):
     return "python" if _PYTHON.match(word or "") else None
 
 
+def plugin_deny(tool, excluded):
+    """G22: (plugin id, basis) when TOOL is an MCP tool of a plugin in EXCLUDED ([{plugin, basis}], the session's
+    organization's `tools_excluded`), else None. Claude Code names a plugin's MCP tools
+    `mcp__plugin_<plugin>_<server>__<tool>`; the plugin id's part before `@` is the name."""
+    tool = str(tool or "")
+    if not tool.startswith("mcp__plugin_"):
+        return None
+    for e in excluded or []:
+        pid = str((e or {}).get("plugin") or "")
+        name = pid.split("@", 1)[0]
+        for n in {name, re.sub(r"[^A-Za-z0-9_-]", "_", name)}:
+            if n and tool.startswith(f"mcp__plugin_{n}_"):
+                return pid, (e or {}).get("basis") or ""
+    return None
+
+
 def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of

@@ -877,6 +877,8 @@ def _guard(hook, sess):
         return
     if not hit and _scratch_guard(hook, sess):
         return
+    if not hit and _plugin_guard(hook, sess):
+        return
     if not hit and _org_guard(hook, sess):
         return
     if not hit and _credential_guard(hook, sess):
@@ -1025,6 +1027,47 @@ def _release_guard(hook, sess):
     sys.stdout.flush()
     OUTPUT = None
     record("deny")
+    return True
+
+
+def _plugin_guard(hook, sess):
+    """G22 (docs/guard.md): an MCP tool of a plugin the session's organization lists under `tools_excluded` is denied
+    in a live session too; the list itself only keeps the plugin from a session's next start (of_tools, hand-over
+    da7b128e; a user organization's card e2bb5eef, the founder: nobody acts on his behalf). True when the call was denied. A
+    session of no known organization, or a broken cache, is let through, as for the organization's other rules."""
+    global OUTPUT
+    tool = str(hook.get("tool_name") or "")
+    if not tool.startswith("mcp__plugin_"):
+        return False
+    sid = hook.get("session_id")
+    try:
+        import of_credentials
+        index = _guard_index(sid)
+        name, org = (((index.get("sessions") or {}).get(sid) or []) + [None, None])[:2]
+        org = org or resolve_org(None, hook.get("cwd"))
+        if not org:
+            return False
+        hit = of_guard.plugin_deny(tool, of_credentials.plugins_excluded(
+            org, STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")))
+    except Exception:  # noqa: BLE001
+        return False
+    if not hit:
+        return False
+    pid, basis = hit
+    why = (f"Organic Framework rule of {org} (docs/guard.md G22): the plugin {pid} is excluded for this organization's "
+           f"positions ({basis or 'tools_excluded'}), so its tools are not used here. Ask its structure keeper.")
+    OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                     "permissionDecisionReason": why}}
+    sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
+    sys.stdout.flush()
+    OUTPUT = None
+    try:
+        write("mandate_check", {"verdict": "org_rule", "decision": "deny", "mode": "enforce",
+                                "router_version": __import__("of_router").VERSION, "tool_name": tool,
+                                "reason": f"G22: plugin {pid} excluded ({basis})", "subject": tool[:300]},
+              hook, sess, _guard_index())
+    except (SystemExit, Exception):
+        pass
     return True
 
 
