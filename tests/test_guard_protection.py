@@ -218,5 +218,74 @@ class CatalogueTest(unittest.TestCase):
             of_guard.use_protection()
 
 
+
+class PluginExcludedTest(unittest.TestCase):
+    """docs/guard.md G22 (of_tools, hand-over da7b128e; a user organization's card e2bb5eef, the founder: nobody acts on
+    his behalf): a plugin the organization lists under tools_excluded has its MCP tools denied in a live session."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        r = self.tmp.name
+        for org in ("acme", "beta"):
+            os.makedirs(os.path.join(r, org, "registry"))
+            os.makedirs(os.path.join(r, org, "work"))
+        with open(os.path.join(r, "acme", "registry", "positions.yaml"), "w") as fh:
+            fh.write("organization: acme\ntools_excluded:\n  - plugin: slack@some-directory\n    basis: card e2bb5eef\n"
+                     "positions:\n  - {name: acme_ops, system: acme, role: ops}\n")
+        with open(os.path.join(r, "beta", "registry", "positions.yaml"), "w") as fh:
+            fh.write("organization: beta\npositions:\n  - {name: beta_ops, system: beta, role: ops}\n")
+        self.orgs = os.path.join(r, "orgs.yaml")
+        with open(self.orgs, "w") as fh:
+            fh.write(f"orgs:\n  - {{name: acme, path: acme, paths: ['{r}/acme/work']}}\n"
+                     f"  - {{name: beta, path: beta, paths: ['{r}/beta/work']}}\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_matcher(self):
+        ex = [{"plugin": "slack@some-directory", "basis": "card e2bb5eef"}]
+        self.assertEqual(of_guard.plugin_deny("mcp__plugin_slack_slack__slack_send_message", ex),
+                         ("slack@some-directory", "card e2bb5eef"))
+        for tool in ("mcp__plugin_slackbot_x__y", "mcp__plugin_linear_linear__list", "mcp__slack__send", "Bash"):
+            self.assertIsNone(of_guard.plugin_deny(tool, ex), tool)
+        self.assertIsNone(of_guard.plugin_deny("mcp__plugin_slack_slack__x", []))
+
+    def hook(self, tool, cwd):
+        state = os.path.join(self.tmp.name, "state")
+        os.makedirs(state, exist_ok=True)
+        saved = (of_events.STATE_DIR, of_hook.STATE, os.environ.get("OF_ORGS"))
+        of_events.STATE_DIR = of_hook.STATE = state
+        os.environ["OF_ORGS"] = self.orgs
+        try:
+            of_hook.OUTPUT = None
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                of_hook.handle("PreToolUse", {"hook_event_name": "PreToolUse", "session_id": "S9", "cwd": cwd,
+                                              "tool_name": tool, "tool_input": {"channel": "c", "text": "t"}})
+            printed = out.getvalue()
+            return (json.loads(printed) if printed.strip() else (of_hook.OUTPUT or {})).get("hookSpecificOutput") or {}
+        finally:
+            of_events.STATE_DIR, of_hook.STATE = saved[0], saved[1]
+            if saved[2] is None:
+                os.environ.pop("OF_ORGS", None)
+            else:
+                os.environ["OF_ORGS"] = saved[2]
+            of_hook.OUTPUT = None
+            of_guard.use_protection()
+
+    def test_a_live_session_of_the_organization_is_denied_the_plugin(self):
+        acme = os.path.join(self.tmp.name, "acme", "work")
+        got = self.hook("mcp__plugin_slack_slack__slack_send_message", acme)
+        self.assertEqual(got.get("permissionDecision"), "deny")
+        self.assertIn("G22", got["permissionDecisionReason"])
+        self.assertIn("slack@some-directory", got["permissionDecisionReason"])
+        self.assertIn("card e2bb5eef", got["permissionDecisionReason"])
+        self.assertNotEqual(self.hook("mcp__plugin_linear_linear__list_issues", acme).get("permissionDecision"), "deny")
+        beta = os.path.join(self.tmp.name, "beta", "work")      # another organization keeps it
+        self.assertNotEqual(self.hook("mcp__plugin_slack_slack__slack_send_message", beta).get("permissionDecision"),
+                            "deny")
+        self.assertEqual(of_credentials.plugins_excluded("acme", os.path.join(self.tmp.name, "state"), self.orgs),
+                         [{"plugin": "slack@some-directory", "basis": "card e2bb5eef"}])
+
 if __name__ == "__main__":
     unittest.main()

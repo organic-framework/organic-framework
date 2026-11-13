@@ -27,7 +27,7 @@ sys.path.insert(0, HERE)
 
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CACHE = "guard-credentials.json"
-CACHE_VERSION = 2  # 2: keychain items and protected_code (docs/guard.md G20, G21)
+CACHE_VERSION = 3  # 2: keychain items and protected_code (docs/guard.md G20, G21); 3: tools_excluded plugins (G22)
 KEYCHAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}\*?$")  # a service name, or a prefix with a trailing *
 # warn: allowed, noted once per session and recorded; deny: denied. Two switches (a user organization's plan, msg
 # 01a1c89d, 2026-11-11): a file a credential names, read by a position that neither lists nor keeps it (MODE_NAMED;
@@ -93,7 +93,10 @@ def _org_entry(org, doc):
     contacts = sorted({str(c).strip().lower() for a in doc.get("authorities") or [] if isinstance(a, dict)
                        for c in a.get("contacts") or [] if isinstance(c, str) and c.strip()})
     code = doc.get("protected_code") if isinstance(doc.get("protected_code"), list) else []
-    return {"roots": [r for r in roots if r not in NOT_A_ROOT], "credentials": creds, "positions": positions,
+    excluded = doc.get("tools_excluded") if isinstance(doc.get("tools_excluded"), list) else []
+    return {"plugins_excluded": [{"plugin": str(x["plugin"]), "basis": str(x.get("basis") or "")}  # G22
+                                 for x in excluded if isinstance(x, dict) and x.get("plugin")],
+            "roots": [r for r in roots if r not in NOT_A_ROOT], "credentials": creds, "positions": positions,
             "authorities": contacts,  # docs/guard.md G16: the organization's own regulators, hosts and addresses
             "protected_code": [_abs(c) for c in code if _code_path_ok(c)]}  # G21
 
@@ -131,6 +134,20 @@ def cached_protection(state_dir):
     if c.get("version") != CACHE_VERSION or not isinstance(c.get("orgs"), dict):
         return None
     return protection(c["orgs"])
+
+
+def plugins_excluded(org, state_dir, orgs_file=None):
+    """[{plugin, basis}] that ORG's registry lists under `tools_excluded` (docs/guard.md G22), from the guard's cache:
+    no YAML in the common case; a missing or old cache is rebuilt first, as for G20 and G21."""
+    try:
+        with open(os.path.join(state_dir, CACHE)) as fh:
+            c = json.load(fh)
+        cat = c["orgs"] if c.get("version") == CACHE_VERSION and isinstance(c.get("orgs"), dict) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        cat = None
+    if cat is None:
+        cat = cached(state_dir, orgs_file)
+    return list(((cat or {}).get(org) or {}).get("plugins_excluded") or [])
 
 
 def guard_protection(state_dir, orgs_file=None):
