@@ -468,7 +468,11 @@ class GuardBashTest(unittest.TestCase):
         key = "~/.ssh/id_" + "rsa"
         for cmd in (f"nice -n 5 cat {key}", f"sudo -u root cat {key}", f"sudo -u root -g wheel cat {key}",
                     f"doas -u root cat {key}", f"exec -a x cat {key}", f"timeout -s KILL 5 cat {key}",
-                    f"env -u HOME cat {key}", "exec -a claude of tools header acme/grafana"):
+                    f"env -u HOME cat {key}", "exec -a claude of tools header acme/grafana", f"time -p cat {key}",
+                    f"ionice -c 3 cat {key}", f"taskset -c 0 cat {key}", f"chrt -f 1 cat {key}",
+                    f"caffeinate -t 5 cat {key}", f"python3 -Ic \"print(open('{key}').read())\"",
+                    f"taskpolicy -b cat {key}", f"caffeinate -i cat {key}", f"arch -arm64 cat {key}",
+                    f"script -q /dev/null cat {key}", f"env -S 'cat {key}'"):
             self.assertTrue(deny(cmd), cmd)
         for cmd in ("nice -n 19 python3 -m unittest tests.test_guard", "sudo -u postgres psql -c 'select 1'",
                     "xargs -n 1 echo < list.txt", "timeout -s INT 30 make test"):
@@ -488,6 +492,11 @@ class GuardBashTest(unittest.TestCase):
             self.assertTrue(deny(cmd), cmd)
         # G13 reads through the interpreter's options the same way (of_review on PR 136)
         self.assertTrue(deny("python3 -I bin/of grant issue --subject x"))
+        for cmd in ("python3 -mof_tools header acme/grafana", "python3 -Im of_tools header acme/grafana",
+                    "python3 -Imof_tools header acme/grafana", "python3 -IWignore bin/of tools header acme/grafana",
+                    "python3 -Ic \"import of_tools; print(of_tools.shared_token('acme', 'grafana'))\"",
+                    "python3 -c \"import of_tools; print(of_tools.header('acme', 'grafana', {}))\""):
+            self.assertTrue(deny(cmd), cmd)
         self.assertTrue(deny("python3 -X dev bin/of passkey enroll alex"))
         for cmd in ("of tools header --help", "of tools plan acme_ops", "of tools shared status",
                     "git commit -m 'of tools header now checks its caller'"):
