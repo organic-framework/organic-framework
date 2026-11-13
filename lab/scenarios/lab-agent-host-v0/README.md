@@ -24,6 +24,15 @@ Two lab machines stand in for the laptop and the host, each an organization's OS
   in a trusted folder under `alex`'s home.
 - No real organization data or credentials: the session, its account and its folders are synthetic.
 
+**Lab OS and fidelity.** The lab machines are Linux VMs (Lima), and the move's host is macOS; the founder's Mac
+cannot host a macOS VM (`AGENTS.md`: nothing heavy on it). So this rehearsal proves the OS-agnostic parts — B1's carry
+mechanism (the rewrite across homes and uids, and the resume, both directions) and B3's delta merge — while two
+macOS-specific parts are **out of lab scope** and are validated at the host's S2 instead: the host setup script
+`deploy/host/setup.py` (`of_server`, B2: `dscl`, `launchctl`/`/Library/LaunchDaemons`, Homebrew, `/Users` homes), and
+the `/private/tmp/claude-<uid>` scratch root and `/Users` paths that `of_carry` and `of_capacity.agent_tmp_root`
+assume (on Linux the home-and-key rewrite and the resume still run; the macOS scratch-root leg does not). The findings
+state what the Linux rehearsal covers and what only the host can.
+
 ## Checks
 
 B1's "done when" (plan §3) is that a non-production session resumes on the other machine, under its organization's
@@ -68,3 +77,6 @@ organic-framework-build `reports/framework/`.
   the ref and how it is invoked.
 - Blocked on a free VM pair only by the Mac's load (over the new-VM ceiling); B5 runs on the up VM with two
   organization users meanwhile, and a second VM when load permits.
+- **macOS host script (B2) is out of lab scope:** `deploy/host/setup.py` (`of_server`, 2026-11-14) is macOS-only and
+  gets its first real run at the host's S0/S2, not here (see "Lab OS and fidelity"). Offered `of_server` a static
+  review and a `plan` run.
