@@ -51,6 +51,9 @@ DEFAULTS = {
     "max_body": 64 * 1024 * 1024,
     "flush_every": 1.0,
     "max_attempts": 8,
+    # Seconds a connection may sit idle in one read or write before the server closes it: a client that went away
+    # in a sleep or a lost network no longer holds a thread (of_conductor, msg 01a1d63f-d434).
+    "request_timeout": 60,
     # The tenant master key; the masker's HMAC key is derived from it (label of/secret/v1).
     # Profile 1 creates it on first start; on Kubernetes it is mounted from a Secret and
     # tenant_key_create is false, so a missing mount stops the server instead of changing tags.
@@ -696,6 +699,13 @@ def redaction_state(app, rid, machine=None):
 
 # -------------------------------------------------------------------- writer
 
+def unreachable(e):
+    """Is E a failure to reach the storage at all (refused, reset, timed out, no route, no name), rather than an answer?
+    A storage's own error answer (ClickHouse's HTTP error is a RuntimeError) still counts as an attempt."""
+    import urllib.error
+    return isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError)) and not isinstance(e, urllib.error.HTTPError)
+
+
 class Writer(threading.Thread):
     """Drains the queue in order: fan out per table, insert per database, commit the receipt."""
 
@@ -707,6 +717,7 @@ class Writer(threading.Thread):
         self.stop = threading.Event()
         self.last_error = None
         self.rate_bps = None  # drain throughput, bytes of queued batches per second (moving average)
+        self.retry_at, self.unreachable = 0.0, 0  # the storage could not be reached: wait, doubling, up to a minute
 
     def _measure(self, nbytes, seconds):
         if nbytes <= 0 or seconds <= 0:
@@ -745,6 +756,8 @@ class Writer(threading.Thread):
 
 
     def drain(self, limit=50):
+        if time.time() < self.retry_at:
+            return 0
         with self.store.conn() as c:
             todo = c.execute("SELECT seq, batch_id, attempts FROM batches WHERE state = 'queued' ORDER BY seq LIMIT ?",
                              (limit,)).fetchall()
@@ -781,6 +794,13 @@ class Writer(threading.Thread):
                 if spec:
                     self._redacted(spec, counts, router)
             except Exception as e:
+                if unreachable(e):
+                    # No network (a sleep, a lost link, the storage restarting): the batch waits for it, and no
+                    # attempt counts against it (of_conductor, msg 01a1d63f-d434: batches died within seconds).
+                    self.unreachable += 1
+                    self.retry_at = time.time() + min(60, 2 ** min(self.unreachable, 6))
+                    self.last_error = f"{bid}: storage unreachable ({type(e).__name__}: {e})"[:500]
+                    break
                 attempts += 1
                 dead = attempts >= self.cfg["max_attempts"]
                 with self.store.conn() as c:  # never over a batch another writer committed
@@ -791,6 +811,7 @@ class Writer(threading.Thread):
                     alert_dead(bid, attempts, e)
                 self.last_error = f"{bid}: {e}"
                 break  # keep order: retry this batch first next time
+            self.unreachable, self.retry_at = 0, 0.0
             with self.store.conn() as c:
                 c.execute("UPDATE batches SET state = 'committed', committed_at = ?, error = NULL WHERE seq = ?",
                           (of_events.now_iso(), seq))
@@ -1096,6 +1117,7 @@ def health(store, writer):
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"of-server/{VERSION}"
+        timeout = app.cfg.get("request_timeout") or None  # StreamRequestHandler sets it on the connection
 
         def log_message(self, fmt, *args):
             pass
@@ -1729,12 +1751,40 @@ class StudioData:
                     yield json.loads(line)
 
 
+def stamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def log_line(msg, out=None):
+    """One line of server.log, with its UTC time (a hang could not be dated from the log, msg 01a1d63f-d434)."""
+    print(f"{stamp()} {msg}", file=out or sys.stderr, flush=True)
+
+
+CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)
+
+
 class Server(ThreadingHTTPServer):
     """A deeper accept queue than socketserver's 5, so a burst of shipper batches waits instead
     of being refused; daemon threads, but server_close() still waits for requests in flight."""
     request_queue_size = 128
     daemon_threads = True
     block_on_close = True
+    gone, gone_since, gone_said = 0, None, 0.0
+
+    def handle_error(self, request, client_address):
+        """A reply to a client that had already gone (it timed out, slept, lost its network) is counted and said once
+        a minute; any other error is logged with its time and traceback."""
+        e = sys.exc_info()[1]
+        if isinstance(e, CLIENT_GONE):
+            Server.gone += 1
+            Server.gone_since = Server.gone_since or stamp()
+            if time.time() - Server.gone_said >= 60:
+                log_line(f"{Server.gone} replies to clients that had gone (broken pipe, reset, timeout) since "
+                         f"{Server.gone_since}; the last: {type(e).__name__}")
+                Server.gone, Server.gone_since, Server.gone_said = 0, None, time.time()
+            return
+        log_line(f"error in a request from {client_address[0] if client_address else '?'}:")
+        traceback.print_exc()
 
 
 class BadCodes:
@@ -1841,8 +1891,13 @@ class App:
 WATCH_S = 2.0  # how often the server looks for a changed module under bin/
 
 
-def run(log=print, config=None):
+def run(log=None, config=None):
+    import faulthandler
     import signal
+    log = log or (lambda m: log_line(m, sys.stdout))
+    # `kill -USR1 <pid>` (the watchdog does it before a restart) writes every thread's stack to server.log, so a hang
+    # names where it waits (of_conductor, msg 01a1d63f-d434: a hang that left no trace).
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     app = App(load_config(config) if config else None, writer_process=True, config_path=config)
     httpd = app.serve()
     log(f"of-server {VERSION} listening on {httpd.server_address[0]}:{httpd.server_address[1]}, "
@@ -1996,6 +2051,139 @@ def stop_daemon(config=None, wait=30.0):
     return False, f"of-server (pid {pid}) still running after {int(wait)} s; it may be draining a request"
 
 
+# ---------------------------------------------------------------- launchd and the watchdog (this Mac)
+
+WATCHDOG_LABEL = "dev.organic-framework.server-watchdog"
+# One check a minute; a server that has not answered /v1/health for 3 minutes is restarted, at most once in 15.
+WATCHDOG = {"every": 60, "probe_timeout": 20, "failing_for": 180, "restart_gap": 900}
+
+
+def _plist(label, argv, log, extra=""):
+    from xml.sax.saxutils import escape
+    args = "".join(f"<string>{escape(a)}</string>" for a in argv)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key><array>{args}</array>
+  <key>EnvironmentVariables</key><dict><key>OF_AUTOMATION</key><string>1</string><key>SSH_AUTH_SOCK</key><string></string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <key>ProcessType</key><string>Standard</string>
+{extra}  <key>StandardOutPath</key><string>{escape(log)}</string>
+  <key>StandardErrorPath</key><string>{escape(log)}</string>
+</dict></plist>
+"""
+
+
+def launchd_plists(cfg=None, python=None, of_bin=None):
+    """{label: plist text} for of-server and its watchdog on this Mac. Standard, not Background: agents wait on the
+    server's answers, and a Background job with Nice 10 and low-priority I/O took 13 s for /v1/health and timed out
+    after a wake, while the Mac swapped (of_conductor, msg 01a1d63f-d434). The writer child lowers itself instead."""
+    cfg = cfg or load_config()
+    python = python or sys.executable
+    of_bin = of_bin or os.path.join(os.path.dirname(os.path.abspath(__file__)), "of")
+    log = os.path.join(cfg["state_dir"], "server.log")
+    server = _plist(LAUNCHD_LABEL, [python, of_bin, "server", "run"], log,
+                    "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n"
+                    "  <key>ThrottleInterval</key><integer>10</integer>\n"
+                    "  <key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>4096</integer></dict>\n"
+                    f"  <key>WorkingDirectory</key><string>{cfg['state_dir']}</string>\n")
+    watch = _plist(WATCHDOG_LABEL, [python, of_bin, "server", "watchdog"], os.path.join(cfg["state_dir"], "watchdog.log"),
+                   f"  <key>StartInterval</key><integer>{WATCHDOG['every']}</integer>\n")
+    return {LAUNCHD_LABEL: server, WATCHDOG_LABEL: watch}
+
+
+def install_launchd(cfg=None, uninstall=False, run=subprocess.run):
+    """`of server install|uninstall`: write (or remove) the two launchd agents and load them. Installing restarts a
+    running server under the new unit."""
+    if sys.platform != "darwin":
+        raise SystemExit("of server install: launchd only (a Linux host runs of-server under systemd or Kubernetes)")
+    cfg = cfg or load_config()
+    os.makedirs(cfg["state_dir"], exist_ok=True)
+    domain = f"gui/{os.getuid()}"
+    out = []
+    for label, text in launchd_plists(cfg).items():
+        path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        if uninstall:
+            if os.path.exists(path):
+                os.remove(path)
+            out.append(f"removed {label}")
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as fh:
+            fh.write(text)
+        os.replace(path + ".tmp", path)
+        r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
+        out.append(f"{label}: {'loaded' if r.returncode == 0 else 'not loaded (launchctl ' + str(r.returncode) + ')'}")
+    return "; ".join(out)
+
+
+def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path=None, log=None, settings=None):
+    """One check, run by launchd every minute (`of server watchdog`). A server that has not answered /v1/health for
+    `failing_for` seconds is restarted, at most once in `restart_gap`; first `kill -USR1` writes its threads' stacks to
+    server.log, so the next hang names its cause (of_conductor, msg 01a1d63f-d434: a hang after a wake needed a person).
+    Returns ok, failing, waiting, restarted or not-under-launchd."""
+    import signal
+    cfg = cfg or load_config()
+    s = dict(WATCHDOG, **(settings or {}))
+    now = time.time() if now is None else now
+    log = log or (lambda m: log_line(m, sys.stdout))
+    state_path = state_path or os.path.join(cfg["state_dir"], "watchdog.json")
+    try:
+        with open(state_path) as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        st = {}
+
+    def save(result):
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path + ".tmp", "w") as fh:
+            json.dump(st, fh)
+        os.replace(state_path + ".tmp", state_path)
+        return result
+
+    if (probe or (lambda: _health(cfg, timeout=s["probe_timeout"]) is not None))():
+        if st.get("failing_since") is not None:
+            log(f"of-server answers again after {int(now - st['failing_since'])} s"
+                + (" and a restart" if st.get("last_restart") is not None
+                   and st["last_restart"] >= st["failing_since"] else ""))
+        st = {"last_ok": now, "last_restart": st.get("last_restart")}
+        return save("ok")
+    if st.get("failing_since") is None:
+        st["failing_since"] = now
+    st["fails"] = st.get("fails", 0) + 1
+    failing = now - st["failing_since"]
+    if failing < s["failing_for"]:
+        return save("failing")
+    if st.get("last_restart") is not None and now - st["last_restart"] < s["restart_gap"]:
+        return save("waiting")
+    if restart is None and not launchd_job():
+        log(f"of-server has not answered for {int(failing)} s; it is not under launchd here, so nothing restarts it")
+        return save("not-under-launchd")
+    pid = _read_pid(os.path.join(cfg["state_dir"], "server.pid"))
+    try:
+        load = round(os.getloadavg()[0], 1)
+    except OSError:
+        load = None
+    if pid and _alive(pid):
+        try:
+            (dump or (lambda p: (os.kill(p, signal.SIGUSR1), time.sleep(2))))(pid)
+        except OSError:
+            pass
+    log(f"of-server (pid {pid}) has not answered /v1/health for {int(failing)} s ({st['fails']} checks; load {load}); "
+        "its threads' stacks are in server.log; restarting it")
+    (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                                        capture_output=True, timeout=30)))()
+    try:
+        of_events.emit("server_watchdog", {"action": "restarted", "pid": pid, "failing_s": int(failing),
+                                           "checks": st["fails"], "load1": load})
+    except Exception:  # noqa: BLE001 - the restart matters more than its record
+        pass
+    st["last_restart"] = now  # failing_since stays: the next restart waits restart_gap, recovery names the whole gap
+    return save("restarted")
+
+
 if __name__ == "__main__":  # the container entry point: python3 of_server.py --config /etc/of/server.yaml [run]
     import argparse
     ap = argparse.ArgumentParser(description="of-server")
@@ -2036,6 +2224,10 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
         import fcntl
         import signal
         parent = os.getppid()
+        try:
+            os.nice(10)  # the drain to storage can wait; the requests agents wait on cannot (msg 01a1d63f-d434)
+        except OSError:
+            pass
         wapp = App(load_config(a.config) if a.config else None)
         signal.signal(signal.SIGTERM, lambda *x: wapp.writer.stop.set())
         # One writer per queue: a writer left over from a killed server must finish (it exits once
