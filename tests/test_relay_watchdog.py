@@ -151,15 +151,16 @@ class WatchdogTest(StateDir):
 
 
 class UnitTest(unittest.TestCase):
-    def test_the_relay_runs_at_standard_priority_and_the_listener_keeps_its_class(self):
+    def test_the_relay_and_the_listener_run_at_standard_priority(self):
         relay = next(u for u in of_init.UNITS if u["name"] == "relay")
         listen = next(u for u in of_init.UNITS if u["name"] == "listen")
         unit = plistlib.loads(of_init.unit_text(relay, "Darwin", py="/py", of="/of", log="/l", path="/p").encode())
         self.assertEqual(unit["ProcessType"], "Standard")
         self.assertFalse({"Nice", "LowPriorityIO"} & set(unit))
         self.assertNotIn("Nice=", of_init.unit_text(relay, "Linux", py="/py", of="/of", path="/p"))
-        self.assertEqual(plistlib.loads(of_init.unit_text(listen, "Darwin", log="/l").encode())["ProcessType"],
-                         "Background")
+        listened = plistlib.loads(of_init.unit_text(listen, "Darwin", log="/l").encode())
+        self.assertEqual(listened["ProcessType"], "Standard")  # hand-over 6d9a8305 (of_platform, c16ec92)
+        self.assertFalse({"Nice", "LowPriorityIO"} & set(listened))
 
     def test_install_writes_the_relay_and_its_watchdog(self):
         if sys.platform != "darwin":
