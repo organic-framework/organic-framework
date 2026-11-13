@@ -1053,8 +1053,12 @@ class ListenerProcessor(unittest.TestCase):
             with mock.patch.object(of_capacity, "STATE_DIR", h), \
                     mock.patch.object(of_capacity.subprocess, "Popen", lambda argv, **k: started.append(argv)), \
                     mock.patch.object(of_capacity, "ingest_spend", lambda *a, **k: worked.append("ingest") or 0):
+                os.makedirs(os.path.join(h, "capacity"))
+                with open(os.path.join(h, "capacity", "tick.log"), "w") as fh:
+                    fh.write("x" * (of_capacity.TICK_LOG_MAX + 1))
                 self.assertFalse(of_capacity.ListenerProcessor().tick(None, 0))
                 self.assertEqual([a[-2:] for a in started], [["capacity", "tick"]])
+                self.assertTrue(os.path.exists(os.path.join(h, "capacity", "tick.log.1")))  # rotated, not grown
                 self.assertEqual(worked, [])  # nothing of the work in the listener's own loop
                 held = of_capacity._tick_lock()
                 self.assertFalse(of_capacity.spawn_tick())  # a tick runs: no second one

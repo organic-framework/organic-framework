@@ -5245,7 +5245,7 @@ def cmd_capacity(args):
                               dry_run=args.dry_run)
             elif step == "restore" and bundle:
                 import of_spawn
-                done = of_carry.restore(bundle, positions, only=only, dry_run=args.dry_run,
+                done = of_carry.restore(bundle, positions, args.org, only=only, dry_run=args.dry_run,
                                         home=os.path.expanduser(args.home) if args.home else None,
                                         of_bin=os.path.realpath(__file__),
                                         place_of=lambda p: of_spawn.place(p, want_workspace))
@@ -5253,7 +5253,7 @@ def cmd_capacity(args):
             else:
                 raise OfError("usage: of capacity carry prepare --only <org|positions> [--bundle DIR] | "
                               "copy --bundle DIR (--to|--from) user@host:DIR --key FILE [--bwlimit KBPS] [--dry-run] | "
-                              "restore --bundle DIR [--home DIR] [--only a,b] [--dry-run]")
+                              "restore --bundle DIR --org ORG [--home DIR] [--only a,b] [--dry-run]")
         except (of_carry.CarryError, of_capacity.MoveError) as e:
             raise OfError(f"capacity carry: {e}")
         return 0
@@ -5854,7 +5854,7 @@ def main(argv=None):
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
-    cp.add_argument("--org", help="spend: this organization only")
+    cp.add_argument("--org", help="spend: this organization only; carry restore: the organization the bundle carries")
     cp.add_argument("--until", help="babysit: until this date or time (default: now)")
     cp.add_argument("--op-account", dest="op_account", help="vault-setup: the 1Password account (default: the business one)")
     cp.add_argument("--all-due", dest="all_due", action="store_true",

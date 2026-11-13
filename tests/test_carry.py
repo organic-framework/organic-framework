@@ -13,6 +13,7 @@ import of_capacity  # noqa: E402
 import of_carry  # noqa: E402
 
 SID = "5e551011-0000-4000-8000-000000000001"
+POSITIONS = [{"name": "acme_a", "_org": "acme"}]  # the target's registry
 
 
 def read(p):
@@ -188,7 +189,7 @@ class Carry(unittest.TestCase):
                 return json.loads(read(os.path.join(d, ".claude.json")))["oauthAccount"]["emailAddress"]
             except OSError:
                 return None
-        done = of_carry.restore(bundle, [], only=only, log=lambda *_: None, home=home, uid=os.getuid(),
+        done = of_carry.restore(bundle, POSITIONS, "acme", only=only, log=lambda *_: None, home=home, uid=os.getuid(),
                                 account_of=account, restore_fn=restore_fn)
         return done, calls
 
@@ -201,12 +202,12 @@ class Carry(unittest.TestCase):
             self.assertIn(f, listed)
         self.assertTrue(any(p.endswith("scratchpad/notes.txt") for p in listed))
         self.assertTrue(any(p.endswith("subagents/agent-1.jsonl") for p in listed))
-        self.assertTrue(any(p.endswith("memory/MEMORY.md") and "projects" in p for p in listed))
+        self.assertFalse(any("/projects/" in p and "/memory/" in p for p in listed))  # a folder's memory stays
 
         there = os.path.join(self.root, "on-b")
         self.ship(os.path.join(self.root, "out"), there)
         newkey = of_carry.key_of(os.path.join(self.b, "org"))
-        clash = os.path.join(self.b, ".claude-x", "projects", newkey, "memory", "MEMORY.md")
+        clash = os.path.join(self.b, ".local", "state", "of", "memory", "acme", "acme_a", "MEMORY.md")
         os.makedirs(os.path.dirname(clash))
         with open(clash, "w") as fh:
             fh.write("- B's own\n")
@@ -277,7 +278,7 @@ class Carry(unittest.TestCase):
             with open(p, "w") as fh:
                 fh.write("stray\n")
         logged = []
-        of_carry.restore(there, [], log=logged.append, home=self.b, uid=os.getuid(),
+        of_carry.restore(there, POSITIONS, "acme", log=logged.append, home=self.b, uid=os.getuid(),
                          account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
         for rel in strays:
             self.assertFalse(os.path.exists(os.path.join(self.b, rel)), rel)
@@ -287,12 +288,49 @@ class Carry(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.b, ".local", "state", "of", "memory", "acme", "acme_a",
                                                     "MEMORY.md")))
 
+    def test_a_crafted_entry_writes_no_other_memory(self):
+        """of_review on PR 116 (comment 6864023728): one crafted entry wrote MEMORY.md into another organization's
+        position memory and into another project's folder memory."""
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
+            self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
+        there = os.path.join(self.root, "on-b")
+        self.ship(os.path.join(self.root, "out"), there)
+        plan = json.loads(read(os.path.join(there, "plan.json")))
+        sid2 = "5e551011-0000-4000-8000-000000000002"
+        other_mem = os.path.join(self.a, ".local", "state", "of", "memory", "theirs", "their_conductor")
+        other_key = of_carry.key_of(os.path.join(self.a, "their-checkout"))
+        plan["entries"].append(dict(self.entry, name="acme_a", session=sid2, memory_dir=other_mem))
+        with open(os.path.join(there, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        files = {os.path.join(other_mem, "MEMORY.md"): "- planted\n",
+                 os.path.join(self.cfg, "projects", other_key, f"{sid2}.jsonl"): line({"type": "user"}) + "\n",
+                 os.path.join(self.cfg, "projects", other_key, "memory", "MEMORY.md"): "- planted\n"}
+        for p, text in files.items():
+            t = os.path.join(there, "files", p.lstrip("/"))
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            with open(t, "w") as fh:
+                fh.write(text)
+        self.restore(there, self.b)
+        self.assertFalse(os.path.exists(os.path.join(self.b, ".local", "state", "of", "memory", "theirs")))
+        self.assertFalse(os.path.exists(os.path.join(self.b, ".claude-x", "projects",
+                                                     of_carry.key_of(os.path.join(self.b, "their-checkout")), "memory")))
+        with self.assertRaises(of_carry.CarryError):  # a bundle of another organization than the one named
+            of_carry.restore(there, POSITIONS, "theirs", log=lambda *_: None, home=self.b, uid=os.getuid(),
+                             account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
+
+    def test_one_organization_per_bundle(self):
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"), \
+                self.assertRaises(of_carry.CarryError):
+            of_carry.prepare([], {"acme_a", "acme_b"}, os.path.join(self.root, "out"), log=lambda *_: None,
+                             entries=[self.entry, self.other], tmp_root=self.tmp)
+
     def test_restore_only_puts_in_place_the_named_sessions(self):
         with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
             self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
         there = os.path.join(self.root, "on-b")
         self.ship(os.path.join(self.root, "out"), there)
-        of_carry.restore(there, [], only={"someone_else"}, log=lambda *_: None, home=self.b, uid=os.getuid(),
+        of_carry.restore(there, POSITIONS, "acme", only={"someone_else"}, log=lambda *_: None, home=self.b,
+                         uid=os.getuid(),
                          account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
         self.assertFalse(os.path.exists(os.path.join(self.b, ".claude-x", "projects")))
 

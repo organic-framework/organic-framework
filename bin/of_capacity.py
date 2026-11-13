@@ -4981,6 +4981,9 @@ def spawn_balance():
                          start_new_session=True, stdin=subprocess.DEVNULL)
 
 
+TICK_LOG_MAX = 1 << 20
+
+
 def _tick_lock():
     """The capacity tick's lock file, taken without waiting; None when another tick holds it."""
     import fcntl
@@ -5035,6 +5038,11 @@ def spawn_tick():
     lock.close()
     of_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
     logf = os.path.join(STATE_DIR, "capacity", "tick.log")
+    try:  # one older copy is kept; the log never grows past twice this (of_review on PR 116)
+        if os.path.getsize(logf) > TICK_LOG_MAX:
+            os.replace(logf, logf + ".1")
+    except OSError:
+        pass
     env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
     with open(logf, "a") as fh:
         subprocess.Popen([sys.executable, of_path, "capacity", "tick"], stdout=fh, stderr=fh, env=env,

@@ -159,9 +159,8 @@ def session_files(entry, tmp_root, memory_dir=None):
             files.append(p)
         else:
             skipped.append({"path": p, "reason": "secret path"})
-    key = of_capacity.project_key(d, sid)
-    if key and os.path.isdir(os.path.join(d, "projects", key, "memory")):
-        files += _files_under(os.path.join(d, "projects", key, "memory"), skipped)
+    # a project's folder memory stays: sessions run on their position's own memory (capacity.yaml position_memory),
+    # and a folder's index is loaded into every session that starts there, of any organization (of_review, PR 116)
     mem = memory_dir or entry.get("memory_dir")
     if mem and os.path.isdir(mem):
         files += _files_under(mem, skipped)
@@ -185,6 +184,11 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
     entries = selected(entries if entries is not None else of_capacity.live_entries(positions, log=log), only)
     if not entries:
         raise CarryError(f"no live session of {', '.join(sorted(only))} on this machine")
+    orgs = {e.get("org") for e in entries}
+    if len(orgs) != 1 or None in orgs:
+        raise CarryError(f"one organization per bundle, and only positions' sessions; these are of "
+                         f"{', '.join(sorted(str(o) for o in orgs))}")
+    org = orgs.pop()
     tmp_root = tmp_root or of_capacity.agent_tmp_root()
     import of_memory
     by_name = {p["name"]: p for p in positions}
@@ -199,7 +203,8 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
         skipped += s
     files = sorted(set(files))
     size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
-    plan = {"kind": "carry", "v": 1, "prepared_at": of_capacity._iso(time.time()), "machine": socket.gethostname(),
+    plan = {"kind": "carry", "v": 1, "org": org, "prepared_at": of_capacity._iso(time.time()),
+            "machine": socket.gethostname(),
             "home": os.path.expanduser("~"), "uid": os.getuid(), "tmp_root": tmp_root, "only": sorted(only),
             "entries": entries, "files": len(files), "bytes": size, "skipped": skipped}
     os.makedirs(out_dir, mode=0o700, exist_ok=True)
@@ -278,14 +283,18 @@ _SID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 _CONFIG_NAME = re.compile(r"\.claude(-[A-Za-z0-9._-]+)?")
 
 
-def planned(plan, root, only=None):
+def planned(plan, root, org, positions, only=None):
     """Pure but for listing the bundle: a test of a source path, true only for what the plan's entries account for
     (of_review on PR 116: a bundle holding a shell profile, a LaunchAgent, Claude settings and the guard's cache, with
     no entries, had all four installed; a rollback pulls bundles an organization's own OS user prepared). Per entry
-    of a well-formed session id: its state in its config dir (a direct child of the home named .claude or
-    .claude-*), the folder memory of the project its transcript is in, its memory directory under the home's OF
-    memory, and its scratch folder <tmp root>/<one folder>/<session>/. `only` narrows it to the named entries."""
+    of organization `org` (named by whoever restores) and of a well-formed session id, whose position this machine's
+    registry (`positions`) has in `org`: its state in its config dir (a direct child of the home named .claude or
+    .claude-*); its memory directory, only when it is exactly that position's (of_memory.directory), so a crafted
+    entry cannot write into another organization's or position's memory; and its scratch folder
+    <tmp root>/<one folder>/<session>/. A project's folder memory never. `only` narrows it to the named entries."""
+    import of_memory
     home = os.path.normpath(plan["home"])
+    by_name = {p["name"]: p for p in positions or []}
     tmp = os.path.normpath(plan.get("tmp_root") or f"/private/tmp/claude-{plan.get('uid')}")
     if tmp != f"/private/tmp/claude-{plan.get('uid')}" and not tmp.startswith(home + "/"):
         tmp = None
@@ -293,8 +302,8 @@ def planned(plan, root, only=None):
     for e in plan.get("entries") or []:
         if only and e.get("name") not in only and (e.get("position") or "") not in only:
             continue
-        sid = e.get("session") or ""
-        if not _SID.fullmatch(sid):
+        sid, p = e.get("session") or "", by_name.get(e.get("position") or "")
+        if not _SID.fullmatch(sid) or e.get("org") != org or not p or p.get("_org") != org:
             continue
         sids.add(sid)
         cfg = os.path.normpath(e.get("config_dir") or "/")
@@ -304,12 +313,12 @@ def planned(plan, root, only=None):
                     if os.path.isfile(os.path.join(pdir, k, f"{sid}.jsonl"))]
             for k in keys:
                 exact.add(f"{cfg}/projects/{k}/{sid}.jsonl")
-                prefixes += [f"{cfg}/projects/{k}/{sid}/", f"{cfg}/projects/{k}/memory/"]
+                prefixes.append(f"{cfg}/projects/{k}/{sid}/")
             for sub in ("file-history", "session-env", "tasks", "todos"):
                 exact.add(f"{cfg}/{sub}/{sid}")
                 prefixes.append(f"{cfg}/{sub}/{sid}/")
         mem = os.path.normpath(e.get("memory_dir") or "/")
-        if mem.startswith(home + "/.local/state/of/memory/"):
+        if mem == os.path.normpath(of_memory.directory(p, base=os.path.join(home, ".local", "state", "of", "memory"))):
             prefixes.append(mem + "/")
     scratch = re.compile(re.escape(tmp) + r"/[^/]+/(" + "|".join(sorted(sids)) + r")/") if tmp and sids else None
     return lambda p: p in exact or any(p.startswith(x) for x in prefixes) or bool(scratch and scratch.match(p))
@@ -376,10 +385,13 @@ def local_plan(plan, rw):
     return out
 
 
-def restore(bundle, positions, only=None, dry_run=False, log=print, of_bin=None, place_of=None,
+def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=None, place_of=None,
             home=None, uid=None, account_of=None, restore_fn=None):
     """Rewrite and install the bundle's files for this user, then resume its sessions (of_capacity.reboot_restore).
-    A session whose config dir here is signed in to another account than it ran on is not resumed."""
+    `org` is the organization the caller expects the bundle to carry; entries of any other are neither put in place
+    nor resumed. A session whose config dir here is signed in to another account than it ran on is not resumed."""
+    if not org:
+        raise CarryError("carry restore needs --org <organization>: the one the bundle is expected to carry")
     try:
         with open(os.path.join(bundle, "plan.json")) as fh:
             plan = json.load(fh)
@@ -387,15 +399,21 @@ def restore(bundle, positions, only=None, dry_run=False, log=print, of_bin=None,
         raise CarryError(f"no carry plan in {bundle}: {err}")
     if plan.get("kind") != "carry":
         raise CarryError(f"{bundle}/plan.json is not a carry plan")
+    if plan.get("org") != org:
+        raise CarryError(f"{bundle} carries {plan.get('org') or 'no organization'}, not {org}")
     rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid)
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
-    install(bundle, rw, dry_run=dry_run, log=log, allowed=planned(plan, os.path.join(bundle, "files"), only))
+    install(bundle, rw, dry_run=dry_run, log=log,
+            allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
     lp = local_plan(plan, rw)
     account_of = account_of or of_capacity.account_of
     ok, wrong = set(), []
     for e in lp["entries"]:
         if only and e["name"] not in only and (e.get("position") or "") not in only:
+            continue
+        if e.get("org") != org:
+            log(f"{e['name']}: NOT resumed: of {e.get('org')}, not {org}")
             continue
         here = account_of(e["config_dir"])
         if e.get("account") and here != e["account"]:
