@@ -76,6 +76,7 @@ PAGES = [
         ("docs/server.md", "server", "of-server"),
         ("docs/server-several-machines.md", "server-several-machines", "Several machines"),
         ("docs/storage.md", "storage", "Storage"),
+        ("docs/health.md", "health", "OF's own health"),
         ("docs/capacity.md", "capacity", "Capacity"),
         ("docs/accounts.md", "accounts", "Accounts and the capacity package"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
