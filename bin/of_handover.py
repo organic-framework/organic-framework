@@ -54,8 +54,10 @@ def event_id(hid, kind, n=0):
 
 
 def load(conn):
-    rows = conn.execute("SELECT event_id, ts, name, position, payload FROM event WHERE name LIKE 'of.handover_%' "
-                        "ORDER BY ts, rowid").fetchall()
+    # a range on the name, which the name index serves; LIKE scanned all 421,000 events for 769 (2.5 s of CPU on
+    # each of handover list, the pulse and the hook's mandate check, 2026-11-14). '`' sorts right after '_'.
+    rows = conn.execute("SELECT event_id, ts, name, position, payload FROM event WHERE name >= 'of.handover_' "
+                        "AND name < 'of.handover`' ORDER BY ts, rowid").fetchall()
     out = []
     for e, ts, n, pos, pl in rows:
         try:
