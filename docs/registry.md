@@ -354,6 +354,8 @@ A top-level `tools:` catalogue names the tools the organization's agents may use
 
 ```yaml
 tools_mode: add               # add (the default) | enforce
+tools_excluded:               # plugins no position starts with, in either mode
+  - {plugin: <plugin>, basis: <the owner's ask id or a source>}
 tools:
   <id>:                       # [a-z][a-z0-9_-]{0,47}
     kind: mcp-stdio           # mcp-stdio | mcp-remote | plugin | connector
@@ -378,6 +380,7 @@ positions:
 ```
 
 - **`tools_mode`** (2026-11-12, `of_tools`; organic-framework PR 38; tools.md §3) says whether the catalogue is complete. Under `add`, the default, a session gets its profile's portable servers on top of the account's own tools and nothing is filtered. Under `enforce`, `allowedMcpServers` and `enabledPlugins` hold the session to exactly its profile. Set `enforce` only once every position's tools are declared: one catalogue entry, applied strictly, left two keepers moved to another account without two tools their work needs.
+- **`tools_excluded`** (2026-11-14, `of_tools`; tools.md §3) names plugins that no position of the organization starts with, whatever its account enables, each with its basis. It works under both modes. `of registry check` validates it, and a catalogue entry for an excluded plugin is a problem.
 - A position's tools are the catalogue's `default: true` tools, then its unit's, then its own; `-<id>` removes one given earlier.
 - **A tool names its credential by id** from the Credentials catalogue (below), with how the server takes it: `env:` the value, `file:` the path of a temporary file. A credential with a `ref` reaches only the server's own process through `of secret run`; one still kept in a file is read by the server itself, and the command or an `env` value names its path (`~`, `${HOME}` and `$HOME` count as the home; a leading `~`, `${HOME}` or `$HOME` in `env` is expanded at launch). A tool never carries a vault reference or a value. The position must list the credential too.
 - **`scope: write`** names the mandate line that needs it, in a comment. **`act-as-person`** (a tool that sends, posts, pays or signs as a person) needs the owner's yes, cited by its ask id in a comment.
