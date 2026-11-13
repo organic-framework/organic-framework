@@ -463,6 +463,16 @@ class GuardBashTest(unittest.TestCase):
                              "open(p, 'w').write(open(p).read() + new)\nEOF"))
         self.assertTrue(of_guard.critical_deny("Read", {"file_path": pw.replace("$HOME", "/home/u")}))
 
+    def test_a_shared_tool_token_stays_with_claude_code(self):
+        # docs/guard.md G23 (of_server's trust review of organic-framework PR 132)
+        for cmd in ("of tools header acme/grafana", "python3 bin/of tools header acme/grafana",
+                    "~/organic-framework/bin/of tools header acme/grafana | jq .",
+                    "python3 ~/organic-framework/bin/of_tools.py header acme/grafana"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("of tools header --help", "of tools plan acme_ops", "of tools shared status",
+                    "git commit -m 'of tools header now checks its caller'"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_every_ssh_private_key_name(self):
         # of_server, 2026-11-07 (docs/guard.md G1.1): the native rules denied id_ecdsa, the guard let cat read it
         for name in ("id_rsa", "id_ed25519", "id_ed25519_sk", "id_ecdsa", "id_ecdsa_sk", "id_dsa"):
