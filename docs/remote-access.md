@@ -1,6 +1,6 @@
 # Remote access to the owner's view (phone, tablet)
 
-Status: **Guide**, 2026-11-06, by `of_architect`. It applies to profile 1 (one machine) and to a profile 2 server.
+Status: **Guide**, 2026-11-06, by `of_architect`; a separate agent host added 2026-11-14 by `of_platform` (hand-over 5de421ee). It applies to profile 1 (one machine), to a profile 2 server and to an agent host with one user per organization.
 
 The owner works with the organization from wherever he is. herdr is built for this: its TUI adapts to narrow screens, and an SSH client on a phone attaches to the same herdr server as the desktop. The agents, the desk, the asks popup (`prefix+a`) and the side chat all work there.
 
@@ -36,6 +36,27 @@ The owner works with the organization from wherever he is. herdr is built for th
    - `Ctrl+b, w`: the workspaces.
    - `Ctrl+b, q`: detach. The agents keep running.
 6. **Keep the Mac awake** while away: System Settings → Energy, prevent sleep on power, or `caffeinate -dims` in a pane.
+
+## A separate agent host (one user per organization)
+
+When the agents move to their own machine (organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §9), each organization's agents run as their own macOS user, for example `of` and `acme`, and the owner's admin user, `alex` here, holds no agent. Each organization user has **its own herdr server**, so no organization can type into another's panes, and its own OF plane: listener, pulse, asks popup and health, set up by `deploy/host/plane.py` (`of_platform`) beside the server side of `deploy/host/setup.py` (`of_server`). Each user's popup shows only its own organization's asks, and each organization has its own desk.
+
+1. **SSH for three users, keys only.** In the drop-in file of step 2 above: `AllowUsers alex of acme`. Each organization user's `~/.ssh/authorized_keys` holds the owner's device keys, one line per device, as in step 3.
+2. **From the laptop: two saved machines in one herdr window.**
+   ```
+   herdr machine add of@agents-host --label of
+   herdr machine add acme@agents-host --label acme
+   ```
+   Both servers then show in the laptop's herdr sidebar, each with its workspaces, agents and popup. `herdr machine status` checks them without asking for a password.
+3. **From the phone: one attach that shows both.** The phone attaches to `alex@agents-host` and runs `herdr`. Under `alex`, the two organizations are saved machines on the same host:
+   ```
+   herdr machine add of@localhost --label of
+   herdr machine add acme@localhost --label acme
+   ```
+   They log in with a key of `alex`'s on the host, made for this alone (`ssh-keygen -t ed25519 -f ~/.ssh/agents-host-local`), whose public half is in `of`'s and `acme`'s `authorized_keys` with the comment `alex on agents-host, for herdr saved machines`. Deleting those lines cuts the phone's path to the agents without touching the laptop's.
+4. **Mosh** for both paths: `brew install mosh` on the host, as for one machine.
+
+To check on the host before the first agents move (the plan's S2, `of_platform` with the owner): the asks popup (`Ctrl+b, a`), its notifications and the desk reach the owner through a saved machine, from the laptop and from the phone; an ask filed by an agent of `of` appears in `of`'s popup and not in `acme`'s; `sudo python3 deploy/host/plane.py check --org-user …` passes.
 
 ## Studio from the phone
 
