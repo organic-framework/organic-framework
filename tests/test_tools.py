@@ -122,6 +122,15 @@ class SessionConfigTest(unittest.TestCase):
         self.assertNotIn("cloudflare@claude-plugins-official", of_tools.session_config(
             p, dict(DOC, tools_mode="add", tools_excluded=ex), ofb="/of/bin/of", installed=installed)["settings"]["enabledPlugins"])
 
+    def test_an_excluded_url_is_denied_in_both_modes(self):
+        ex = [{"url": "https://mcp.slack.com/*", "basis": "card e2bb5eef"}]
+        for mode in ("add", "enforce"):
+            doc = dict(DOC, tools_mode=mode, tools_excluded=ex)
+            p = next(x for x in doc["positions"] if x["name"] == "obs_keeper")
+            c = of_tools.session_config(p, doc, ofb="/of/bin/of", installed=[])
+            self.assertEqual(c["settings"]["deniedMcpServers"], [{"serverUrl": "https://mcp.slack.com/*"}], mode)
+        self.assertEqual(of_tools.check({"acme": dict(DOC, tools_excluded=ex)}), [])
+
     def test_an_exclusion_applies_without_a_catalogue(self):
         doc = {"positions": [{"name": "a"}],
                "tools_excluded": [{"plugin": "slack@anthropic-plugin-directory", "basis": "ask 1"}]}
@@ -218,7 +227,7 @@ class CheckTest(unittest.TestCase):
         for want in ("tool nope is not in the catalogue", "keeper ghost", "credential missing",
                      "API_TOKEN looks like a secret", "mark it account_bound", "never a vault reference",
                      "credential f is a file: the command or an env value names its path",
-                     "tools_mode is add or enforce", "tools_excluded[0] needs plugin and basis",
+                     "tools_mode is add or enforce", "tools_excluded[0] needs plugin or url, and basis",
                      "tools.s: plugin slack@x is in tools_excluded"):
             self.assertIn(want, probs)
 

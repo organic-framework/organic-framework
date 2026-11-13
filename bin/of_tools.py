@@ -149,8 +149,8 @@ def check(docs):
             out.append(f"{org}: tools_excluded is a list of {{plugin, basis}}")
             ex = []
         for i, x in enumerate(ex or []):
-            if not isinstance(x, dict) or not x.get("plugin") or not x.get("basis"):
-                out.append(f"{org}: tools_excluded[{i}] needs plugin and basis (the owner's ask id or a source)")
+            if not isinstance(x, dict) or not (x.get("plugin") or x.get("url")) or not x.get("basis"):
+                out.append(f"{org}: tools_excluded[{i}] needs plugin or url, and basis (the owner's ask id or a source)")
         banned = excluded_plugins(doc)
         for tid, e in cat.items():
             if isinstance(e, dict) and e.get("kind") == "plugin" and e.get("plugin") in banned:
@@ -374,6 +374,13 @@ def excluded_plugins(doc):
     return {str(x["plugin"]) for x in ex if isinstance(x, dict) and x.get("plugin")} if isinstance(ex, list) else set()
 
 
+def excluded_urls(doc):
+    """MCP server URLs (a trailing * matches any path) no position's session may load: a claude.ai connector or a
+    plugin's server, whatever the account has connected (`tools_excluded` entries with url)."""
+    ex = doc.get("tools_excluded")
+    return sorted({str(x["url"]) for x in ex if isinstance(x, dict) and x.get("url")}) if isinstance(ex, list) else []
+
+
 def session_config(position, doc, config_dir=None, ofb=None, installed=None, org=None, up=port_up):
     """{"mcp": the --mcp-config JSON or None, "settings": the --settings keys, "account_bound": [ids],
     "mode": add|enforce, "notes": [str]} for this position on this account.
@@ -448,6 +455,10 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None, org
                      "the keeper sets tools_mode: enforce once the catalogue is complete")
     elif banned:
         settings["enabledPlugins"] = dict(plugins, **{p: False for p in banned})
+    if excluded_urls(doc):
+        # deniedMcpServers in a session's --settings hides a claude.ai connector and a plugin's server by URL
+        # (probed 2026-11-14, Claude Code 2.1.325: a connected claude.ai Slack connector was gone from the session)
+        settings["deniedMcpServers"] = [{"serverUrl": u} for u in excluded_urls(doc)]
     return {"position": position.get("name"), "tools": ids, "mcp": {"mcpServers": servers} if servers else None,
             "settings": settings, "account_bound": bound, "mode": mode, "notes": notes}
 
@@ -473,7 +484,7 @@ def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None)
     organic-framework PR 121: an organization excluding a plugin before it has a catalogue)."""
     docs = registries(orgs_file)
     org, p, doc = find_position(position_name, docs)
-    if not doc.get("tools") and not excluded_plugins(doc):
+    if not doc.get("tools") and not excluded_plugins(doc) and not excluded_urls(doc):
         return [], {}
     cfg = session_config(p, doc, config_dir, org=org)
     path = write_mcp_config(cfg, sid, state_dir)
