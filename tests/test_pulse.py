@@ -1458,12 +1458,14 @@ class FounderWaitTest(unittest.TestCase):
                 mock.patch.object(of_asks, "load", lambda *a, **k: loads.append(1) or []):
             self.assertIs(of._founder_wait_ask(me), True)
             self.assertEqual(of._founder_wait_ask(me, "bbbbbbbb"), "02-bbbbbbbb")
-        with mock.patch.object(of_asks, "current_asks", lambda *a, **k: {"asks": other, "cursor": 9, "age_s": 400.0,
-                                                                         "late": True}), \
-                mock.patch.object(of_asks, "load", lambda *a, **k: loads.append(1) or []), \
-                self.assertRaises(of.OfError):
-            of._founder_wait_ask(me)                                           # late: the view as it is
-        self.assertEqual(loads, [])                                            # the whole log was never loaded
+        self.assertEqual(loads, [])                                            # current: no log read at all
+        late = lambda *a, **k: {"asks": other, "cursor": 9, "age_s": 400.0, "late": True}  # noqa: E731
+        with mock.patch.object(of_asks, "current_asks", late), \
+                mock.patch.object(of_asks, "load", lambda c, since=None: loads.append(since) or ["recent"]), \
+                mock.patch.object(of_asks, "project", lambda rows: mine if rows == ["recent"] else []):
+            self.assertIs(of._founder_wait_ask(me), True)                      # late: filed a moment ago, still found
+            self.assertEqual(of._founder_wait_ask(me, "bbbbbbbb"), "02-bbbbbbbb")  # the view's asks stay
+        self.assertTrue(loads and all(s and s > "2026" for s in loads))        # only the last minutes of the log
 
 
 class ClipTailTest(unittest.TestCase):
