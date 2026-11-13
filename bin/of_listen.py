@@ -101,6 +101,11 @@ class AsksProcessor(Processor):
 
     def __init__(self):
         self.rows = {}  # event_id -> row: a re-derived event (same id, new rowid) replaces its old copy
+        # the projection carried between flushes (of_asks.new_state), the latest ts fed to it, the rows since: a flush
+        # projects only what came (2026-11-13: re-projecting every row took 179 s a flush at load ~50); None: the
+        # next write projects all rows again
+        self.state, self.fed, self.tail = None, "", []
+        self.written = {}  # event_id -> the row last written to view_asks: a flush writes only what changed
 
     def _relevant(self, r):
         import of_asks
@@ -122,6 +127,7 @@ class AsksProcessor(Processor):
         else:
             self.suffix = ""
         self.rows, self.defer, self.dirty = {}, True, True
+        self.state, self.tail, self.written = None, [], {}
 
     def load_state(self, conn):
         """After a restart: the relevant rows up to the cursor, so the projection continues (a rebuild that
@@ -132,6 +138,7 @@ class AsksProcessor(Processor):
             conn.execute(f"DROP TABLE IF EXISTS {t}{self.SHADOW}")
         self.rows = {r["event_id"]: r for r in of_asks.load(conn)}
         self.defer, self.dirty = True, False  # the stored view is current up to the cursor
+        self.state, self.tail, self.written = None, [], {}
 
     def settle(self, conn):
         """After the first catch-up: one projection, then the shadow tables replace the view at once."""
@@ -158,8 +165,14 @@ class AsksProcessor(Processor):
         if not new:
             return False
         for r in new:
-            self.rows[r["event_id"]] = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position",
-                                                              "payload", "org")}
+            row = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position", "payload", "org")}
+            if r["event_id"] in self.rows or r["name"] == "of.prompt_origin" or (row["ts"] or "") < self.fed:
+                # an event again under its id, a correction of an earlier prompt's origin, or a row older than
+                # what was projected (imported history): the carried projection no longer holds; all rows again
+                self.state, self.tail = None, []
+            self.rows[r["event_id"]] = row
+            if self.state is not None:
+                self.tail.append(row)
         self.dirty = True  # projected once, at the end of the step (flush) or of the first catch-up (settle)
         return False
 
@@ -178,24 +191,41 @@ class AsksProcessor(Processor):
 
     def write(self, conn):
         import of_asks
-        ordered = sorted(self.rows.values(), key=lambda r: r["ts"])  # imported history can arrive late
-        asks = of_asks.project(ordered)
+        if self.state is None:
+            ordered = sorted(self.rows.values(), key=lambda r: r["ts"])  # imported history can arrive late
+            self.state = of_asks.new_state()
+            of_asks.project(ordered, self.state)
+            self.fed = ordered[-1]["ts"] if ordered else ""
+        else:  # only the rows since the last write, on the carried projection: the same asks (of_asks.project)
+            tail = sorted(self.tail, key=lambda r: r["ts"])
+            of_asks.project(tail, self.state)
+            if tail:
+                self.fed = max(self.fed, tail[-1]["ts"])
+        self.tail = []
+        asks = self.state["asks"]
         groups = of_asks.group(of_asks.for_owner(asks))
         by_id = self.rows
+        rows = []  # built before the write lock is taken
+        for a in asks:
+            ev = by_id.get(a["event_id"]) or {}
+            pl = ev.get("payload") or {}
+            closer = by_id.get(a["closed_by"]) or {}
+            labels = {k: v for k, v in (pl.get("classifications") or {}).items() if isinstance(v, (bool, str))}
+            labels.update({k: pl.get(k) for k in ("detected_by", "classifier_version") if pl.get(k)})
+            rows.append((a["event_id"], a["ts"], ev.get("org"), a["session_id"], a["position"], a["kind"],
+                         a["text"], a["state"], a["closed_by"], a["closed_at"], closer.get("name"), a.get("to"),
+                         pl.get("delegation"), json.dumps(labels, ensure_ascii=False), self.version))
+        # every row on this run's first write and in a shadow build; after that only the rows that changed (a flush
+        # rewrote all 5,700 rows in one transaction, 12 to 179 s behind the store's other writers on 2026-11-13)
+        full = not self.written or bool(self.suffix)
+        changed = rows if full else [r for r in rows if self.written.get(r[0]) != r]
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute(f"DELETE FROM view_asks{self.suffix}")
-            rows = []
-            for a in asks:
-                ev = by_id.get(a["event_id"]) or {}
-                pl = ev.get("payload") or {}
-                closer = by_id.get(a["closed_by"]) or {}
-                labels = {k: v for k, v in (pl.get("classifications") or {}).items() if isinstance(v, (bool, str))}
-                labels.update({k: pl.get(k) for k in ("detected_by", "classifier_version") if pl.get(k)})
-                rows.append((a["event_id"], a["ts"], ev.get("org"), a["session_id"], a["position"], a["kind"],
-                             a["text"], a["state"], a["closed_by"], a["closed_at"], closer.get("name"), a.get("to"),
-                             pl.get("delegation"), json.dumps(labels, ensure_ascii=False), self.version))
-            conn.executemany(f"INSERT INTO view_asks{self.suffix} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            if full:
+                conn.execute(f"DELETE FROM view_asks{self.suffix}")
+                conn.executemany(f"INSERT INTO view_asks{self.suffix} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            elif changed:
+                conn.executemany("INSERT OR REPLACE INTO view_asks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", changed)
             conn.execute(f"DELETE FROM view_ask_groups{self.suffix}")
             conn.executemany(f"INSERT INTO view_ask_groups{self.suffix} VALUES (?,?,?,?,?,?,?)", [
                 (i, g["since"], g["kind"], g["text"], json.dumps(g["who"], ensure_ascii=False),
@@ -204,7 +234,9 @@ class AsksProcessor(Processor):
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
+            self.written = {}  # unknown what the table holds now: the next write writes every row
             raise
+        self.written = {r[0]: r for r in rows}
 
 
 def read_groups(conn):

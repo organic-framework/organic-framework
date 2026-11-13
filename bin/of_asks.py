@@ -112,13 +112,24 @@ def apply_prompt_origins(rows):
     return out
 
 
-def project(rows):
+def new_state():
+    """Where project() keeps what it has seen, so a caller can feed it more rows later (the listener's asks view)."""
+    return {"asks": [], "open_by_session": {}, "by_id": {}, "declared": {}, "by_position": {}, "declared_turn": {},
+            "waits_founder": {}}
+
+
+def project(rows, state=None):
     """rows: dicts with event_id, ts, name, session_id, position, payload (dict), ordered by ts.
-    Returns a list of asks with their state and closing event."""
-    asks, open_by_session, by_id, declared = [], {}, {}, {}
-    by_position = {}  # position -> its asks in order: a declared status looks back only DECLARE_AFTER_S (of_platform,
-    # 2026-11-11: a scan of every ask per status took 17 of 18 s of one projection)
-    declared_turn, waits_founder = {}, {}
+    Returns a list of asks with their state and closing event.
+    state: a new_state() to carry on from: rows fed later continue where the earlier ones stopped, and the asks
+    returned are the same as one projection of all of them, as long as no later row is older than an earlier one, no
+    event comes again under its id, and no of.prompt_origin correction comes for a prompt already fed (the listener
+    rebuilds then). One pass of the whole log took 16 s of CPU, and 179 s at load ~50 (2026-11-13)."""
+    st = state if state is not None else new_state()
+    asks, open_by_session, by_id, declared = st["asks"], st["open_by_session"], st["by_id"], st["declared"]
+    by_position = st["by_position"]  # position -> its asks in order: a declared status looks back only
+    # DECLARE_AFTER_S (of_platform, 2026-11-11: a scan of every ask per status took 17 of 18 s of one projection)
+    declared_turn, waits_founder = st["declared_turn"], st["waits_founder"]
     for r in apply_prompt_origins(rows):
         sid, name = r["session_id"], r["name"]
         if name == "of.state_declared":
