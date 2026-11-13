@@ -1,20 +1,34 @@
 # The docs site (site/, Starlight), built from the repository's own Markdown and published to this repository's
 # GitHub Pages; built here and never on the founder's Mac. Each run builds it and checks its pages and links; it is
-# published only while the repository variable DOCS_SITE is `publish`, set once the founder said yes to the site on
-# his card (publishing it is public). The site's address and the edit links come from this repository
-# (actions/configure-pages), so a fork publishes its own. Actions are pinned by commit; the tag is in the comment.
-# Owner: of_docs.
+# published only while the repository variable DOCS_SITE is `publish`, set on the founder's yes to the site (ask
+# 444bd026, 2026-11-13; publishing it is public). The deploy job waits in the github-pages environment, which
+# requires an approval: of_release runs the pre-publish gate over that run's built site (release/check.py --site, in
+# the OF team's own repository) and approves the deploy only when it passes. The site's address and the edit links
+# come from this repository (actions/configure-pages), so a fork publishes its own. Actions are pinned by commit;
+# the tag is in the comment. Owner: of_docs.
 name: docs site
 
 on:
-  # By hand only until the first build passes; then also on every push to main that touches
-  # README.md, FEATURES.md, CHANGELOG.md, docs/**, site/** or this file.
+  # Every push to main that changes a page's source (the files site/scripts/sync.py reads), the site or this file;
+  # and by hand.
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - INSTALL.md
+      - FEATURES.md
+      - CHANGELOG.md
+      - docs/**
+      - site/**
+      - .github/workflows/docs.yml
   workflow_dispatch:
 
 # Least privilege per job: the build, which runs npm, can only read; only the deploy job can write to Pages.
 permissions:
   contents: read
 
+# One run at a time, never cancelled: a run whose deploy waits for its approval holds the group, and of the runs
+# pushes start meanwhile only the newest waits (GitHub cancels an older one still pending).
 concurrency:
   group: pages
   cancel-in-progress: false
