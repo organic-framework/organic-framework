@@ -108,7 +108,7 @@ The agent host plan (organic-framework-build, `reports/agent-server-migration-pl
 
 Not yet in it:
 - the repositories' copy (the plan's §2: a first rsync while the agents work, then a delta at each cutover);
-- signing in on the host: setup-tokens per OS user (§9.2), and the founder's choice of one pool or one account per organization (ask `a08b0980`). Until an account's config dir there is signed in, its sessions are not resumed;
+- signing in on the host: setup-tokens per OS user (§9.2). **The five accounts stay one pool for both organizations** (the founder, ask `a08b0980`, 2026-11-13: "shared pool", over one account per organization, which at the OF team's 11% share of the spend would have left the other organization short of an account). So each account gets a setup-token under each organization's user, and the balancer is to count headroom per account, not per config dir, with the other user's load read through the server. Until an account's config dir there is signed in, its sessions are not resumed;
 - folder trust: a rewritten folder must be trusted in the target config dir, which is the owner's decision. Restore refuses an untrusted one and names it.
 - one ambiguity of Claude Code's folder keys: a folder beside the home whose name starts with the home's name and a hyphen, such as `/Users/alex-shared` beside `/Users/alex`, keeps its path, but its key `-Users-alex-shared` reads the same as the key of the folder `shared` in that home, and is rewritten. Such folders are not expected under one OS user per organization.
 
