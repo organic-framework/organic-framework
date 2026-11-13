@@ -1253,6 +1253,24 @@ def _write_targets(stext):
             not w.endswith("&") and toks[k + 1] not in _DEV_STREAMS and not toks[k + 1].isdigit()]
 
 
+TOOL_TOKEN_DENY = ("a shared tool server's access token, which only Claude Code reads, through the helper it runs "
+                   "itself when it connects (docs/guard.md G23; docs/tools.md §4a)")
+
+
+def _tool_token_deny(head, args):
+    """G23: `of tools header` from an agent's command line would print a shared tool server's token into its
+    transcript. Claude Code runs that helper as its own child, which no Bash call is (of_server's trust review of
+    organic-framework PR 132)."""
+    words = args
+    if head in _INTERPRETERS and args and os.path.basename(args[0]) in ("of", "of_tools.py"):
+        head, words = os.path.basename(args[0]), args[1:]
+    if any(w in ("-h", "--help") for w in words):
+        return None
+    if (head == "of" and words[:2] == ["tools", "header"]) or (head == "of_tools.py" and words[:1] == ["header"]):
+        return TOOL_TOKEN_DENY, "of tools header"
+    return None
+
+
 def _grant_deny(head, args, stext):
     """(reason, token) for G13 on one simple command, else None."""
     words = args
@@ -1997,7 +2015,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if hit:
                     return hit
             hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
-                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) \
+                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
                                                            **({"__lab_link": "1"} if lab_link else {})}) \
