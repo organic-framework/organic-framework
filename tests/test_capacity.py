@@ -1441,6 +1441,40 @@ class ExitAWorktreeSession(_ExitScreen):
         self.assertFalse(e.exception.stuck)
 
 
+class LeftExitDialog(unittest.TestCase):
+    """2026-11-13: a relief move's /exit ran after the move gave up; two panes stood on the exit dialog for an hour."""
+    def setUp(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE event (ts TEXT, name TEXT, session_id TEXT, payload TEXT)")
+        self.now = of_capacity._ts("2026-11-13T21:00:00Z")
+
+    def ev(self, ts, name, sid=None, **payload):
+        self.conn.execute("INSERT INTO event VALUES (?,?,?,?)", (ts, name, sid, json.dumps(payload)))
+
+    def run_sweep(self, screens):
+        keys = []
+        closed = of_capacity.close_left_exit_dialogs(
+            now=self.now, log=lambda *_: None, conn=self.conn,
+            agent_of=lambda sid: {"pane_id": "p-" + sid}, read=lambda pane: screens.get(pane, INPUT_BOX),
+            key=lambda pane, k: keys.append((pane, k)))
+        return closed, keys
+
+    def test_only_a_dialog_its_own_exit_opened_and_nobody_answered(self):
+        self.ev("2026-11-13T19:52:00Z", "of.injected_prompt", injector="of_capacity", target_session="s1",
+                reason="account move: exit")
+        self.ev("2026-11-13T20:21:00Z", "of.injected_prompt", injector="of_capacity", target_session="s2",
+                reason="account move: exit")
+        self.ev("2026-11-13T20:30:00Z", "of.human_prompt", "s2", origin="human")  # a person typed since: theirs
+        self.ev("2026-11-13T16:00:00Z", "of.injected_prompt", injector="of_capacity", target_session="s3",
+                reason="account move: exit")  # too long ago
+        self.ev("2026-11-13T20:40:00Z", "of.injected_prompt", injector="of-relay:x", target_session="s4",
+                reason="relayed message")      # not an exit of of_capacity's
+        closed, keys = self.run_sweep({p: exit_dialog() for p in ("p-s1", "p-s2", "p-s3", "p-s4")})
+        self.assertEqual((closed, keys), (["p-s1"], [("p-s1", "esc")]))
+        self.assertEqual(self.run_sweep({}), ([], []))  # no dialog on screen: nothing pressed
+
+
 class StuckPane(unittest.TestCase):
     def test_the_owner_gets_a_task_naming_the_pane_and_the_safe_key(self):
         e = of_capacity.MoveError("aws_keeper: pid 7: the exit dialog ignored Enter twice; the exit dialog is still "
