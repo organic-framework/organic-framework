@@ -458,7 +458,7 @@ def from_kind(sender):
 TAGS = ("prod_change", "money", "security_incident", "irreversible", "window_go")
 RISK = ("low", "medium", "high")  # risk_appetite, ordered; attenuation compares by this order
 ESCALATE = re.compile(
-    r"^(?:ask\.blocking|ask_unanswered\s*>\s*\d+\s*[mh]|budget_used\s*>\s*\d+%|"
+    r"^(?:ask\.blocking|ask_unanswered\s*>\s*\d+\s*[mh]|ask_due\s*<\s*\d+\s*[dh]|budget_used\s*>\s*\d+%|"
     r"issue\.severity\s*>=\s*(?:low|medium|high|critical)|envelope[ _]breach|"
     r"(?:prod_change|window_go)(?:\{\s*(?:affects|systems)\s*:\s*\[[\w ,.-]*\]\s*\})?|"
     r"money|security_incident|irreversible)$")
