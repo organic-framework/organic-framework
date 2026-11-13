@@ -1448,28 +1448,22 @@ class FounderWaitTest(unittest.TestCase):
         with self.assertRaises(of.OfError):  # a candidate (a guessed question) is no ask he can see
             of._founder_wait_ask(me, asks=[dict(mine[0], kind="question (heuristic)", state="candidate")])
 
-        # The listener's view is live: an ask newer than it is found in the last minutes of the log, and a refusal
-        # never projects the whole log (of_conductor msg 01a1d663-4530, 2026-11-13: 35 s and 216 MB a call).
+        # The asks come from the listener's view and the log's tail (of_asks.current_asks): an ask filed a moment ago
+        # is found, and a refusal never projects the whole log (of_conductor msg 01a1d663-4530: 35 s and 216 MB a call).
         from unittest import mock
         import of_asks
-        import of_listen
-        import of_store
         loads = []
-        def load(conn, since_iso=None):
-            loads.append(since_iso)
-            return ["recent"] if since_iso else ["all"]
-        project = lambda rows: mine if rows == ["recent"] else []  # noqa: E731
-        with mock.patch.object(of_store, "connect", lambda: None), mock.patch.object(of_listen, "fresh", lambda c: True), \
-                mock.patch.object(of_listen, "read_asks", lambda c: other), mock.patch.object(of_asks, "load", load), \
-                mock.patch.object(of_asks, "project", project):
-            self.assertIs(of._founder_wait_ask(me), True)                     # filed a moment ago, not in the view
-            self.assertEqual(len(loads), 1)
-            self.assertTrue(loads[0] and loads[0] > "2026")                    # only the recent part of the log
-            self.assertEqual(of._founder_wait_ask(me, "bbbbbbbb"), "02-bbbbbbbb")  # in the view: no log read
-            self.assertEqual(len(loads), 1)
-            with mock.patch.object(of_asks, "project", lambda rows: []), self.assertRaises(of.OfError):
-                of._founder_wait_ask(me)
-            self.assertNotIn(None, loads)                                      # the whole log was never loaded
+        with mock.patch.object(of_asks, "current_asks", lambda *a, **k: {"asks": mine + other, "cursor": 9,
+                                                                         "age_s": 1.0, "late": False}), \
+                mock.patch.object(of_asks, "load", lambda *a, **k: loads.append(1) or []):
+            self.assertIs(of._founder_wait_ask(me), True)
+            self.assertEqual(of._founder_wait_ask(me, "bbbbbbbb"), "02-bbbbbbbb")
+        with mock.patch.object(of_asks, "current_asks", lambda *a, **k: {"asks": other, "cursor": 9, "age_s": 400.0,
+                                                                         "late": True}), \
+                mock.patch.object(of_asks, "load", lambda *a, **k: loads.append(1) or []), \
+                self.assertRaises(of.OfError):
+            of._founder_wait_ask(me)                                           # late: the view as it is
+        self.assertEqual(loads, [])                                            # the whole log was never loaded
 
 
 class ClipTailTest(unittest.TestCase):

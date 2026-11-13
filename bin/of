@@ -2259,18 +2259,7 @@ def _asks_deliver(position=None):
     import of_listen
     import of_store
     conn = of_store.connect()
-    if of_listen.fresh(conn):
-        asks = of_listen.read_asks(conn)
-        since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - of_asks_answer.REDELIVER_MAX_AGE_H * 3600))
-        extra = {e: (src, srcv) for e, src, srcv in conn.execute(
-            "SELECT event_id, json_extract(payload, '$.escalated_from'), json_extract(payload, '$.source') FROM event "
-            "WHERE name = 'of.agent_question' AND ts >= ? AND json_extract(payload, '$.escalated_from') IS NOT NULL",
-            (since,))}
-        for a in asks:  # the view keeps no escalated_from: pending needs it to tell a rewrite from OF's copy
-            if a["event_id"] in extra:
-                a["escalated_from"], a["source"] = extra[a["event_id"]]
-    else:
-        asks = of_asks.project(of_asks.load(conn))
+    asks = _asks_now(conn)  # whole asks, escalated_from included: the view and the log's tail (of_asks.current_asks)
     soon = bool(position)
     n = of_asks_answer.redeliver_pass(
         conn, asks, _load_quiet(), live_agents(), bind, only=position,
@@ -2329,7 +2318,7 @@ def cmd_asks(args):
     import of_asks
     import of_store
     conn = of_store.connect()
-    asks = of_asks.project(of_asks.load(conn))
+    asks = _asks_now(conn)
     if args.action == "answer":  # the person's answer given in their conductor's chat (bin/of_asks_chat.py)
         import of_asks_chat
         positions = _load_quiet()
@@ -2382,7 +2371,7 @@ def cmd_asks(args):
         hits = [a for a in asks if (a["event_id"].startswith(args.id) or a["event_id"].endswith(args.id))
                 and a["state"] == "open"]
         if not hits and _drain_spool_now(conn):  # filed while the store was busy: still in the spool
-            asks = of_asks.project(of_asks.load(conn))
+            asks = _asks_now(conn, quiet=True)
             hits = [a for a in asks if (a["event_id"].startswith(args.id) or a["event_id"].endswith(args.id))
                     and a["state"] == "open"]
         if len(hits) != 1:
@@ -4211,7 +4200,7 @@ def _escalates(me, ident):
     """`of ask --escalates <id>`: the projected ask routed to this unit owner that it rewrites for the founder."""
     import of_asks
     import of_store
-    asks = of_asks.project(of_asks.load(of_store.connect()))
+    asks = _asks_now()
     hits = [a for a in asks if (a["event_id"].endswith(ident) or a["event_id"].startswith(ident))
             and a.get("to") == me["name"] and a["state"] in ("open", "escalated")]
     if len(hits) != 1:
@@ -4391,7 +4380,7 @@ def cmd_status(args):
     if getattr(args, "answered", None):  # the asker got its answer elsewhere (relay, a unit owner): it closes them
         import of_asks
         import of_store
-        mine = [a for a in of_asks.project(of_asks.load(of_store.connect()))
+        mine = [a for a in _asks_now()
                 if a["state"] == "open" and a.get("position") == me["name"] and a["kind"].startswith("question (declared")]
         ids = [a["event_id"] for a in mine] if args.answered == "all" else \
             [a["event_id"] for a in mine if a["event_id"].endswith(args.answered) or a["event_id"].startswith(args.answered)]
@@ -4435,9 +4424,6 @@ def cmd_status(args):
     return 0
 
 
-RECENT_ASK_S = 900  # the listener's view lags the log by a few seconds when it is live; 15 minutes is ample
-
-
 def _founder_wait_ask(me, ref=None, asks=None):
     """A wait on the founder needs a question he can see (founder, ask ddd6e3a3, 2026-11-07: three "declared waits"
     without an ask were all stale or someone else's). True when the position has an open ask or task to him; with
@@ -4449,22 +4435,8 @@ def _founder_wait_ask(me, ref=None, asks=None):
         return any(a["state"] == "open" and a.get("position") == me["name"] and a.get("to") in ("founder", "owner", None)
                    and (a.get("kind") or "").startswith(("question (declared", "task")) for a in asks) or None
 
-    if asks is not None:
-        found = check(asks)
-    else:
-        import time as _time
-        import of_asks
-        import of_listen
-        import of_store
-        conn = of_store.connect()
-        live = of_listen.fresh(conn)
-        found = check(of_listen.read_asks(conn) if live else of_asks.project(of_asks.load(conn)))
-        if found is None and live:
-            # an ask filed a moment ago may not be in the listener's view yet: the last minutes of the log, not all
-            # of it (2026-11-13, of_conductor msg 01a1d663-4530: a refused wait projected the whole log, 35 s and
-            # 216 MB, in ~70 agents' turn ends)
-            since = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime(_time.time() - RECENT_ASK_S))
-            found = check(of_asks.project(of_asks.load(conn, since)))
+    found = check(asks if asks is not None else _asks_now())  # the view and the log's tail: an ask filed a moment
+    # ago is in it (of_asks.current_asks); never the whole log (of_conductor msg 01a1d663-4530: 35 s, 216 MB a call)
     if found is not None:
         return found
     if ref:
@@ -4488,15 +4460,32 @@ def _reconcile_ask_tokens(positions):
 
 
 def _current_asks(conn=None, fallback=True):
-    """The asks as the listener's view holds them (a few ms), or projected from the log when the
-    listener is not fresh (20 s and more on today's log); fallback=False returns None then."""
+    """The asks: the listener's view carried on with the log's tail (of_asks.current_asks, a read-only read).
+    fallback=False returns None when this machine has no listener view; with fallback, the log is projected then,
+    the one case left (a machine before `of listen install`)."""
     import of_asks
-    import of_listen
-    import of_store
-    conn = conn or of_store.connect()
-    if of_listen.fresh(conn):
-        return of_listen.read_asks(conn)
-    return of_asks.project(of_asks.load(conn)) if fallback else None
+    r = of_asks.current_asks()
+    if r["age_s"] is None and not r["asks"]:
+        return _asks_now(conn) if fallback else None
+    return r["asks"]
+
+
+def _asks_now(conn=None, quiet=False):
+    """Every ask, as of_asks.current_asks gives it: the view and at most its tail of the log, never the whole log
+    (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2 and 3.3). A machine with no listener view yet
+    projects the log, and says why; a late view is used as it is, with its age said once."""
+    import of_asks
+    r = of_asks.current_asks()
+    if r["age_s"] is None and not r["asks"]:
+        import of_store
+        if not quiet:
+            print("of: no listener view of the asks on this machine (`of listen install`); reading the whole log",
+                  file=sys.stderr)
+        return of_asks.project(of_asks.load(conn or of_store.connect()))
+    if r["late"] and not quiet:
+        print(f"of: the asks as the listener's view held them {int(r['age_s'] or 0)} s ago; it is behind",
+              file=sys.stderr)
+    return r["asks"]
 
 
 def _attention(positions, agents=None):
