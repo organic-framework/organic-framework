@@ -148,6 +148,48 @@ class StoreTest(unittest.TestCase):
         of_store.add_event(self.conn, rec)
         return rec["of.event.id"]
 
+    def declared(self, q, ts, task=None):
+        pl = {"detected_by": "declared", "to": "founder", "questions": [{"question": q}]}
+        if task:
+            pl.update(task=True, steps=task)
+        return self.add("agent_question", pl, ts)
+
+    def test_one_queue_for_the_screen_and_the_panel_the_view_and_the_logs_tail(self):
+        """The founder, 2026-11-13: cards he answered came back, and the popup and the panel disagreed, while the
+        listener stood minutes in a tick. queue reads the view and applies the log's tail at once."""
+        import of_listen
+        now = T._ts("2026-11-11T12:00:00Z")
+        a = self.declared("Rename the channel?", "2026-11-11T11:00:00Z")
+        b = self.declared("Rotate the keys?", "2026-11-11T11:01:00Z")
+        t = self.declared("Log in to the console", "2026-11-11T11:02:00Z", task="1. Open the page.")
+        procs = [of_listen.AsksProcessor()]
+        cur = of_listen.prepare(self.conn, procs)
+        of_listen.step(self.conn, procs, cur)  # the view as the listener last wrote it
+        of_listen.heartbeat(self.conn)
+
+        def ids():
+            data, behind = I.queue(self.conn, [], now=now)
+            return {x["ids"][0]: x for _, g in data for x in g if x["ids"]}, behind
+        self.assertEqual(set(ids()[0]), {a, b, t})
+        # after the view's last write: an answer, a new ask, a task he says is done
+        self.add("agent_question_answered", {"ask_id": a, "ask_ids": [a], "by": "owner", "via": "asks-ui"},
+                 "2026-11-11T11:30:00Z")
+        c = self.declared("Pay the invoice?", "2026-11-11T11:31:00Z")
+        self.add("agent_question_answered", {"ask_id": t, "ask_ids": [t], "by": "owner", "via": "asks-ui"},
+                 "2026-11-11T11:32:00Z")
+        got, behind = ids()
+        self.assertEqual(set(got), {b, t, c})            # the answered card gone, the new one there
+        self.assertTrue(got[t].get("claimed_at"))         # a task he answered: his claim, it waits for the check
+        self.assertIsNone(behind)
+        data, _ = I.queue(self.conn, [], now=now, sending={b})
+        self.assertNotIn(b, {x["ids"][0] for _, g in data for x in g if x["ids"]})  # an answer on its way
+        self.add("state_declared", {"state": "working", "done_task": t[-8:]}, "2026-11-11T11:40:00Z")
+        self.assertNotIn(t, ids()[0])                     # checked and done
+        self.add("state_declared", {"state": "working", "reopen_task": t[-8:]}, "2026-11-11T11:45:00Z")
+        self.assertIn(t, ids()[0])                        # reopened after: back
+        self.conn.execute("UPDATE listener_meta SET value = '1' WHERE key = 'heartbeat'")
+        self.assertEqual(ids()[1], 1.0)                   # the listener's last beat, said when it is behind
+
     def test_overlay_reads_the_latest_record_per_ask(self):
         now = T._ts("2026-11-11T12:00:00Z")
         self.add("ask_snoozed", {"ask_ids": ["A"], "until": "2026-11-11T13:00:00Z"}, "2026-11-11T11:00:00Z")
@@ -624,6 +666,24 @@ class ScreenTest(unittest.TestCase):
 
 class PanelTest(ScreenTest):
     """The small panel (bin/of_asks_panel.py; the founder ~20:45Z 2026-11-12 via of_conductor, msg 01a1cc5b)."""
+
+    def test_a_resting_panel_reloads_on_the_listener_s_signal_and_draws_only_on_a_change(self):
+        """of_conductor, 2026-11-13: the pinned panel ran at 13 to 18% of a core without a pause."""
+        import of_asks_panel as P
+        data = [item("A", "First plain question?")]
+        loads, ticks = [], {"n": 0}
+
+        def loader():
+            loads.append(1)
+            return ([("Waiting on you", data)], {}, [], None)
+
+        def seq():
+            ticks["n"] += 1
+            return 1 if ticks["n"] > 12 else 0
+        box = P.Panel(self.scr([0.05] * 10 + [0.1] * 6), loader, seq=seq, initial=(list(data), {}), safety_s=600)
+        box.run()
+        self.assertEqual(len(loads), 2)          # the first load, then the signal; no reload on a timer
+        self.assertLessEqual(len(self.frames), 4)  # the first frame, the loaded list, the signal's; none while idle
 
     def test_the_key_comes_from_herdr_s_config(self):
         import of_asks_panel as P

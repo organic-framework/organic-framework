@@ -88,6 +88,11 @@ def load(positions, conn, from_log=False):
         groups = of_listen.read_groups(conn)
     else:
         groups = of_asks.group(of_asks.for_owner(of_asks.project(of_asks.load(conn))))
+    return shape(groups, positions)
+
+
+def shape(groups, positions):
+    """The screen's [(group label, [item])] from the queue's groups (of_asks.group's shape) and the registry."""
     import of_judge
     shown_after = time.time() - of_judge.LIST_AFTER_MIN * 60  # the agent had its correction first
     groups = [g for g in groups if not (g.get("kind") or "").startswith("question (heuristic)")

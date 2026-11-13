@@ -11,8 +11,8 @@ open it with the mouse". It shows, read-only:
   through OF's herdr plugin (of_herdr_plugin.open_questions, with this bin/of, so a trial build opens itself), or
   through `popup_open` in ~/.config/of/asks.yaml when the machine sets another opener; while herdr shows another
   popup, Settings or Copy mode the button's line says so.
-It refreshes as the popup does (views.seq, a full reload every REFRESH_S) and adapts to the room it gets (the founder,
-~21:08Z: "lots of room, more information; less room, less information"):
+It reloads when the listener's views.seq moves (a safety reload every SAFETY_S), draws only on a change, and adapts
+to the room it gets (the founder, ~21:08Z: "lots of room, more information; less room, less information"):
 - under TALL_H rows: the counts, the longest wait, the first card and the button (one stream per line when narrow);
 - from TALL_H rows: every stream that holds anything with its first cards (how long, who, what), as many as fit,
   shared out with the most urgent first; the button at the foot;
@@ -86,6 +86,9 @@ BURST_S = 0.12  # Enter or o this close to another key is typed text, not a pres
 SETTLE_S = 10   # a new build is taken only after its files stood still this long
 WIDE_W = 110    # from this many columns (and TALL_H rows): who waits on him and what he answered lately
 RECENT_H = 24   # the answers listed are this many hours old at most
+SAFETY_S = 60   # a reload without a views.seq signal: the safety net (the founder, 2026-11-13: the panel never rested)
+REDRAW_S = 20   # a frame without a change: the ages move
+REGISTRY_S = 300  # the registry is read again this often, in the background (it was parsed on every reload)
 
 
 def recent_answers(conn, hours=RECENT_H, limit=12, now=None):
@@ -175,7 +178,7 @@ def summary(items, overlay=None, now=None):
 
 class Panel:
     def __init__(self, scr, loader, seq=None, initial=None, keys=None, open_cmd=None, run_cmd=None, popup=None,
-                 stale=None, keys_of=None):
+                 stale=None, keys_of=None, safety_s=SAFETY_S):
         self.scr, self.loader, self.seq = scr, loader, seq
         self.items, self.over = initial or ([], {})
         self.keys, self.open_cmd, self.popup, self.stale, self.keys_of = keys, open_cmd, popup, stale, keys_of
@@ -186,6 +189,8 @@ class Panel:
         self.recent, self.cards = [], {}  # the latest answers; screen row -> (x0, x1) of a card row
         self.last_key = 0.0
         self.last_seq, self.last_full = (seq() if seq else None), 0.0
+        self.safety_s, self.behind = safety_s, None
+        self.drawn, self.drawn_at, self.checked_at, self.keys_at = None, 0.0, 0.0, 0.0
 
     def refresh(self):
         if self.bg["busy"]:
@@ -412,11 +417,15 @@ class Panel:
             pass
         self.scr.timeout(T.SEQ_POLL_MS)
         self.refresh()
+        force = True
         while True:
+            now = time.time()
             if self.bg["data"] is not None:
                 data, self.over = self.bg["data"][:2]
                 if len(self.bg["data"]) > 2:
                     self.recent = self.bg["data"][2]
+                if len(self.bg["data"]) > 3:
+                    self.behind = self.bg["data"][3]
                 self.bg["data"] = None
                 self.items = [x for _, grp in data for x in grp]
             if self.seq:
@@ -424,15 +433,25 @@ class Panel:
                 if s_ != self.last_seq:
                     self.last_seq = s_
                     self.refresh()
-            if time.time() - self.last_full >= T.REFRESH_S:
+            if now - self.checked_at >= T.REFRESH_S:
+                self.checked_at = now
                 if self.stale and self.stale():  # its code changed (a new build): start again on it
                     return "restart"
-                if self.keys_of:  # herdr's bindings may change while the panel lives (of_herdr, 2026-11-12)
-                    self.keys = self.keys_of()
+            if self.keys_of and now - self.keys_at >= 30:  # herdr's bindings may change while the panel lives
+                self.keys_at, self.keys = now, self.keys_of()
+            if now - self.last_full >= self.safety_s:
                 self.refresh()
-            self.draw()
+            # a frame only when something it shows changed, or the ages moved (a pinned panel lives for days)
+            sig = (id(self.items), id(self.over), len(self.recent), self.scr.getmaxyx(), self.msg, self.keys,
+                   self.behind)
+            if force or sig != self.drawn or now - self.drawn_at >= REDRAW_S:
+                self.draw()
+                self.drawn, self.drawn_at, force = sig, now, False
             ch = self.scr.getch()
-            if ch in (-1, curses.KEY_RESIZE):
+            if ch == -1:
+                continue
+            force = True
+            if ch == curses.KEY_RESIZE:
                 continue
             if not self.handle(ch):
                 return
@@ -445,11 +464,24 @@ def main(of_path, positions=None):
     import of_listen
     os.environ.setdefault("ESCDELAY", "25")
 
+    reg = {"p": [], "at": 0.0}
+
+    def registry():  # read in the loader's thread, again after REGISTRY_S: never on every reload
+        if time.time() - reg["at"] >= REGISTRY_S:
+            try:
+                reg["p"] = T._positions(positions or [])
+            except Exception:  # noqa: BLE001 - the last one stands
+                pass
+            reg["at"] = time.time()
+        return reg["p"]
+
     def loader():
-        import of_store
-        own = of_store.connect()
+        """The same queue as the popup (of_asks_inbox.queue: the listener's view and the log's tail), so the two show
+        one list (the founder, 2026-11-13: the popup and the panel disagreed)."""
+        own = I.reader()  # never waits on the listener's writes
         try:
-            return T.load(T._positions(positions or []), own), I.overlay(own), recent_answers(own)
+            data, behind = I.queue(own, registry(), sending=I.on_their_way())
+            return data, I.overlay(own), recent_answers(own), behind
         finally:
             own.close()
 
