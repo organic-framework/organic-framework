@@ -123,6 +123,33 @@ class ListenTest(unittest.TestCase):
         self.assertEqual((states(got["asks"]), got["late"]), (full(), False))
         self.assertEqual(states(got["asks"])[a2][0], "open")
 
+    def test_current_asks_reads_one_snapshot_even_when_the_listener_writes_between_its_reads(self):
+        """of_review on PR 133: the fold mark and the asks were read in two transactions; a listener write between
+        them left the mark one write behind and the tail was folded twice, an ask coming back twice."""
+        import sqlite3
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+        self.ask("Merge PR 2349 now?", ts="2026-11-13T10:00:00.000Z")
+        of_listen.step(self.conn, procs, cur)
+        self.ask("Rotate the etcd keys?", position="b", ts="2026-11-13T10:01:00.000Z")
+        rd = sqlite3.connect(os.path.join(self.tmp.name, "of.db"), isolation_level=None)
+        fired = []
+
+        def between(sql):  # the listener writes as the reader starts on the asks, after the mark
+            if sql.lstrip().startswith("SELECT ask FROM view_asks") and not fired:
+                fired.append(True)
+                of_listen.step(self.conn, procs, cur)
+        rd.set_trace_callback(between)
+        try:
+            got = of_asks.current_asks(rd)
+        finally:
+            rd.close()
+        self.assertTrue(fired)
+        ids = [a["event_id"] for a in got["asks"]]
+        self.assertEqual(len(ids), len(set(ids)))  # each ask once
+        self.assertEqual(len(ids), 2)
+
     def test_a_view_from_before_whole_asks_is_rebuilt(self):
         self.conn.executescript("CREATE TABLE view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, "
                                 "session_id TEXT, position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, "
