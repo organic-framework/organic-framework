@@ -24,6 +24,11 @@ except ImportError:  # Python < 3.14: store uncompressed, flagged
 SCHEMA_VERSION = 3  # 3: session_fork, transcript_own; 2: message_id and cache writes by TTL (of_capacity)
 CHUNK = 150  # lines per write transaction: short locks, so a hook (0.15 s wait) rarely has to spool
 CHUNK_BYTES = 1024 * 1024  # content per ingest transaction (the lock is held only for the inserts)
+# A time cap per ingest transaction, and a pause after it, so a hook waiting on the lock gets in: on a 10 GB store and a
+# swapping Mac, 150 inserts took up to 29 s in one transaction, and 24 to 27% of hook calls spooled (of health,
+# 2026-11-14; of_architect's point 4 on the read-path design). A transaction ends after the record that passes the cap.
+TX_CAP_S = 0.25
+TX_YIELD_S = 0.02
 ZLEVEL = 3  # fast enough for hooks; `of compact` may recompress later
 
 DDL = """
@@ -668,41 +673,60 @@ def ingest_file(conn, path, harness="claude-code", max_bytes=None, on_record=Non
             base = (path, line_offset, sha, sid, f.get("record_uuid") or sha, f.get("parent_uuid"), f.get("type"),
                     f.get("timestamp"), f.get("model"), f.get("tool_names"), f.get("input_tokens"),
                     f.get("output_tokens"), f.get("cache_read_tokens"), f.get("cache_write_tokens"), harness)
-            batch.append((sha, len(line), codec, z, base, f))
+            batch.append((sha, len(line), codec, z, base, f, pos))
             size += len(line)
-        _guard(conn)
-        conn.execute("BEGIN IMMEDIATE")
-        prev, _TX.conn = getattr(_TX, "conn", None), conn
-        t0 = time.monotonic()
-        try:
-            for sha, n, codec, z, base, f in batch:
-                conn.execute("INSERT OR IGNORE INTO blob VALUES (?, ?, ?, ?)", (sha, n, codec, z))
-                if usage_cols:
-                    cur = conn.execute(
-                        "INSERT OR IGNORE INTO transcript_record (source_path, line_offset, blob_sha256, session_id,"
-                        " record_uuid, parent_uuid, type, timestamp, model, tool_names, input_tokens, output_tokens,"
-                        " cache_read_tokens, cache_write_tokens, harness, message_id, cache_write_5m_tokens,"
-                        " cache_write_1h_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        base + (f.get("message_id"), f.get("cache_write_5m_tokens"), f.get("cache_write_1h_tokens")))
-                else:  # the columns are not there yet (a busy store at migration time): the backfill fills them
-                    cur = conn.execute(
-                        "INSERT OR IGNORE INTO transcript_record (source_path, line_offset, blob_sha256, session_id,"
-                        " record_uuid, parent_uuid, type, timestamp, model, tool_names, input_tokens, output_tokens,"
-                        " cache_read_tokens, cache_write_tokens, harness) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", base)
-                added += cur.rowcount
-            mark_fork()
-            conn.execute("INSERT OR REPLACE INTO ingest_cursor VALUES (?,?,?,?)",
-                         (path, st.st_ino, pos if i < len(lines) else offset + len(data), of_events.now_iso()))
-            conn.execute("COMMIT")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
-        finally:
-            _TX.conn = prev
-            warn_long(t0, "ingest chunk")
+        j = 0
+        while True:
+            _guard(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            prev, _TX.conn = getattr(_TX, "conn", None), conn
+            t0 = time.monotonic()
+            try:
+                j, n_added = _insert_capped(conn, batch, j, usage_cols, t0)
+                added += n_added
+                mark_fork()
+                done = j >= len(batch)
+                at = (pos if i < len(lines) else offset + len(data)) if done else batch[j - 1][6]
+                conn.execute("INSERT OR REPLACE INTO ingest_cursor VALUES (?,?,?,?)",
+                             (path, st.st_ino, at, of_events.now_iso()))
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                _TX.conn = prev
+                warn_long(t0, "ingest chunk")
+            time.sleep(TX_YIELD_S)  # a hook waiting on the lock takes it now
+            if done:
+                break
     return added
 
+
+def _insert_capped(conn, batch, j, usage_cols, t0, cap=None):
+    """Insert batch[j:] until the time cap passes (at least one record). Returns (the next index, records added)."""
+    cap = TX_CAP_S if cap is None else cap
+    added = 0
+    while j < len(batch):
+        sha, n, codec, z, base, f, _ = batch[j]
+        conn.execute("INSERT OR IGNORE INTO blob VALUES (?, ?, ?, ?)", (sha, n, codec, z))
+        if usage_cols:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO transcript_record (source_path, line_offset, blob_sha256, session_id,"
+                " record_uuid, parent_uuid, type, timestamp, model, tool_names, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_write_tokens, harness, message_id, cache_write_5m_tokens,"
+                " cache_write_1h_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                base + (f.get("message_id"), f.get("cache_write_5m_tokens"), f.get("cache_write_1h_tokens")))
+        else:  # the columns are not there yet (a busy store at migration time): the backfill fills them
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO transcript_record (source_path, line_offset, blob_sha256, session_id,"
+                " record_uuid, parent_uuid, type, timestamp, model, tool_names, input_tokens, output_tokens,"
+                " cache_read_tokens, cache_write_tokens, harness) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", base)
+        added += cur.rowcount
+        j += 1
+        if time.monotonic() - t0 > cap:
+            break
+    return j, added
 
 def stats(conn):
     q = lambda sql: conn.execute(sql).fetchone()[0]

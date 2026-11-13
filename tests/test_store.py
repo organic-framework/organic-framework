@@ -30,5 +30,43 @@ class ConnectBehindAWriterTest(unittest.TestCase):
                 writer.close()
 
 
+class IngestCapTest(unittest.TestCase):
+    """of health, 2026-11-14: 24 to 27% of hook calls spooled while one ingest transaction held the write lock up to
+    29 s. A transaction ends after the record that passes TX_CAP_S, its cursor at that record."""
+
+    def test_every_record_once_and_the_cursor_where_a_stop_left_it(self):
+        import json
+        import tempfile
+        from unittest import mock
+        import of_store as s
+        with tempfile.TemporaryDirectory() as d:
+            conn = s.connect(os.path.join(d, "of.db"))
+            path = os.path.join(d, "abc.jsonl")
+            with open(path, "w") as fh:
+                for i in range(12):
+                    fh.write(json.dumps({"type": "user", "uuid": f"u{i}", "sessionId": "S", "n": i}) + "\n")
+            commits = []
+            real = s._insert_capped
+
+            def capped(conn_, batch, j, usage_cols, t0, cap=None):
+                commits.append(j)
+                if len(commits) == 4:
+                    raise KeyboardInterrupt  # the worker stopped in the 4th transaction
+                return real(conn_, batch, j, usage_cols, t0, cap=0)  # one record per transaction
+            with mock.patch.object(s, "_insert_capped", capped), mock.patch.object(s, "TX_YIELD_S", 0):
+                with self.assertRaises(KeyboardInterrupt):
+                    s.ingest_file(conn, path, "claude-code")
+            self.assertEqual(commits, [0, 1, 2, 3])
+            self.assertEqual(conn.execute("SELECT count(*) FROM transcript_record").fetchone()[0], 3)
+            with open(path, "rb") as fh:
+                third_end = len(b"".join(fh.readlines()[:3]))
+            self.assertEqual(conn.execute("SELECT offset FROM ingest_cursor").fetchone()[0], third_end)
+            with mock.patch.object(s, "TX_YIELD_S", 0):
+                s.ingest_file(conn, path, "claude-code")  # the rest, from the cursor
+            self.assertEqual(conn.execute("SELECT count(*) FROM transcript_record").fetchone()[0], 12)
+            self.assertEqual(conn.execute("SELECT offset FROM ingest_cursor").fetchone()[0], os.path.getsize(path))
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
