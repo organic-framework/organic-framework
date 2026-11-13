@@ -26,12 +26,14 @@ HOOK_EVENTS = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "StopFa
 TOOL_HOOKS = {"PreToolUse": "AskUserQuestion", "PostToolUse": "*", "PostToolUseFailure": "*"}
 MARK = " hook "  # how an of hook command is recognized: "<of> hook <Event>"
 # Seconds Claude Code waits for a hook before it kills it. A PreToolUse hook decides (the guard's denies, the ask
-# dialog's), and a killed one decides nothing, so the tool runs unchecked: it gets 30 s. At a load average of 50 the
+# dialog's), and so does UserPromptSubmit (the mention guard, rule M, blocks a prompt that names a secret file); a
+# killed one decides nothing, so the tool or the prompt goes through unchecked: they get 30 s (of_review on PR 114). At a load average of 50 the
 # guard took over 5 s, the old value for every hook (the founder's yes to fix it, ask 5230329b, 2026-11-13). It takes
 # 0.3 s on a quiet machine, so the longer limit costs nothing there. The recording hooks keep 5 s: a lost record is
 # cheaper than a stalled turn.
 HOOK_TIMEOUT = 5
 DECIDING_TIMEOUT = 30
+DECIDING_EVENTS = ("PreToolUse", "UserPromptSubmit")
 
 
 class NoTTY(Exception):
@@ -189,7 +191,7 @@ def with_hooks(settings, of_path=OF, deny_secrets=False, guard=False):
         groups = hooks.setdefault(event, [])
         mine = [h for g in groups if g.get("matcher") == matcher for h in g.get("hooks") or []
                 if _is_of(h.get("command"), of_path)]
-        limit = DECIDING_TIMEOUT if event == "PreToolUse" else HOOK_TIMEOUT
+        limit = DECIDING_TIMEOUT if event in DECIDING_EVENTS else HOOK_TIMEOUT
         if mine:
             for h in mine:  # an older install without the interpreter, the flag or the limit is upgraded in place
                 h["command"] = hook_command(event, of_path, deny_secrets)
