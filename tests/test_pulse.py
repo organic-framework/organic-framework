@@ -114,7 +114,7 @@ class RunTest(unittest.TestCase):
 
 
 class PulseRowsTest(unittest.TestCase):
-    def test_a_week_of_the_log_and_each_latest_declaration_never_the_whole_log(self):
+    def test_its_window_of_the_log_and_each_latest_declaration_never_the_whole_log(self):
         """The founder's goal of 2026-11-14 (prompt 01a1d68e-1d3e): the pulse read and projected the whole log, 7 to
         10 s of CPU every 5 minutes."""
         import of_store
