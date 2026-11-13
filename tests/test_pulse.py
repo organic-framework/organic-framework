@@ -342,6 +342,21 @@ class DelegationAskTest(unittest.TestCase):
                  "tags": [], "tags_declared": False}
         self.assertEqual([r for _, r, _ in of_pulse.escalations(positions, [filed], T0)], ["ask.blocking"])
         self.assertEqual(of_pulse.escalations(positions, [dict(filed, kind="question (declared)")], T0), [])
+        # ask_due < 7d (hand-over 2b2289a8; a user organization's compliance duties): its own --due, at filing and later
+        due_pos = [dict(positions[0], _delegation=dict(deleg, reporting={"escalate_when": ["ask_due < 7d"]}))]
+        duty = dict(filed, kind="question (declared)", due=of_pulse._iso(T0 + 10 * 86400))
+        self.assertEqual(of_pulse.escalations(due_pos, [duty], T0), [])                       # 10 days away
+        self.assertEqual([r for _, r, _ in of_pulse.escalations(due_pos, [duty], T0 + 4 * 86400)], ["ask_due < 7d"])
+        self.assertEqual(of_pulse.escalations(due_pos, [duty], T0 + 4 * 86400, already={"e9"}), [])  # once
+        near = dict(duty, due=of_pulse._iso(T0 + 2 * 86400))
+        self.assertEqual([r for _, r, _ in of_pulse.escalations(due_pos, [near], T0)], ["ask_due < 7d"])  # at filing
+        self.assertEqual(of_pulse.escalations(due_pos, [dict(duty, due=None)], T0 + 30 * 86400), [])   # no due
+        rec = {"id": "del-x", "unit": "platform", "from_owner": "founder", "to_owner": "acme_platform-owner",
+               "envelope": {"critical_denies": "inherited"}, "way_back": "a reverse diff",
+               "reporting": {"escalate_when": ["ask_due < 7d", "ask_due < 7 weeks"]}}
+        found = of.check_delegations([rec], {"acme_platform-owner"}, {"platform": {"owner": "founder"}})
+        self.assertIn("escalate_when 'ask_due < 7 weeks' is not understood", "\n".join(found))  # of registry check
+        self.assertNotIn("'ask_due < 7d'", "\n".join(found))
         sent = []
         saved = of_pulse.of_events.emit
         of_pulse.of_events.emit = lambda name, payload, **k: sent.append((name, payload)) or f"id-{len(sent)}"
@@ -436,6 +451,10 @@ class TagEscalationTest(unittest.TestCase):
                      "security_incident", "irreversible"):
             self.assertTrue(of_classify.ESCALATE.match(rule), rule)
         self.assertFalse(of_classify.ESCALATE.match("low-medium"))
+        for rule in ("ask_due < 7d", "ask_due<12h"):  # hand-over 2b2289a8
+            self.assertTrue(of_classify.ESCALATE.match(rule), rule)
+        for rule in ("ask_due < 7w", "ask_due > 7d", "ask_due < d", "dated_duty.due <= 7d"):
+            self.assertFalse(of_classify.ESCALATE.match(rule), rule)
         self.assertTrue(of_pulse.tag_match("prod_change{affects:[storefront]}", [{"tag": "prod_change", "systems": ["storefront"]}]))
         self.assertFalse(of_pulse.tag_match("prod_change{affects:[k8s]}", [{"tag": "prod_change", "systems": ["storefront"]}]))
         self.assertTrue(of_pulse.tag_match("money", [{"tag": "money"}]))

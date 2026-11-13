@@ -834,9 +834,19 @@ def effective_tags(ask):
     return tags
 
 
+def due_soon(rule, due, now):
+    """`ask_due < N d|h`: the ask's own --due is less than N away (docs/registry.md, Delegations; hand-over 2b2289a8,
+    a user organization's compliance duties falling due). False for any other rule or an ask with no due."""
+    import re
+    m = re.match(r"^ask_due\s*<\s*(\d+)\s*([dh])$", rule)
+    at = _ts(due) if m and due else None
+    return at is not None and at - now < int(m.group(1)) * (86400 if m.group(2) == "d" else 3600)
+
+
 def escalations(positions, asks, now, already=()):
     """Asks routed to a delegated unit's owner that go up to the founder now, per the delegation's
-    reporting.escalate_when: `ask.blocking` (at once), `ask_unanswered > 2h` (after that long).
+    reporting.escalate_when: `ask.blocking` (at once), `ask_unanswered > 2h` (after that long), `ask_due < 7d` (its own
+    --due less than that away, at filing or later as the date nears).
     Returns [(ask, rule, delegation id)]; `already` = ask ids escalated before."""
     import re
     by_name = {p["name"]: p for p in positions}
@@ -850,7 +860,8 @@ def escalations(positions, asks, now, already=()):
         for rule in rules:
             m = re.match(r"^ask_unanswered\s*>\s*(\d+)\s*([mh])$", rule)
             if (rule == "ask.blocking" and "blocking" in (a.get("kind") or "")) or \
-                    (m and age >= int(m.group(1)) * (3600 if m.group(2) == "h" else 60)) or tag_match(rule, effective_tags(a)):
+                    (m and age >= int(m.group(1)) * (3600 if m.group(2) == "h" else 60)) or \
+                    due_soon(rule, a.get("due"), now) or tag_match(rule, effective_tags(a)):
                 out.append((a, rule, d.get("id")))
                 break
     return out

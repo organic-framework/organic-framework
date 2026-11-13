@@ -3326,7 +3326,7 @@ def cmd_ask(args):
     if to != "founder" and eid:  # a rule that fires at filing escalates now, so the unit owner is told in the frame
         a = {"event_id": eid, "ts": _now_iso(), "state": "open", "to": to, "position": me["name"], "text": text,
              "kind": "question (declared)" + (" blocking" if args.blocking else ""), "tags": tags,
-             "tags_declared": tags_declared}
+             "tags_declared": tags_declared, "due": _due(args.due) if args.due else None}
         hit = of_pulse.escalations(positions, [a], __import__("time").time())
         if hit:
             esc_now = hit[0][1]
