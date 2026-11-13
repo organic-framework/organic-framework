@@ -3654,7 +3654,14 @@ def _diff_events(conn):
         p = json.loads(pl or "{}")
         e = out.setdefault(p.get("id"), {"id": p.get("id"), "state": None, "digest": None, "diff": None})
         if name == "of.diff_proposed":
-            e.update(state="proposed", digest=p.get("digest"), diff=p.get("diff"), proposed_at=ts, ask=p.get("ask_id"))
+            # proposed again with the same digest: the owner's yes to that exact content still holds (a user
+            # organization, msg 01a1d68f-7bcc, 2026-11-14: a re-proposal of an approved diff asked the founder again)
+            same = e.get("digest") is not None and e.get("digest") == p.get("digest") and e["state"] in (
+                "proposed", "approved")
+            asks = (e.get("asks") or []) if same else []
+            e.update(state="approved" if same and e["state"] == "approved" else "proposed", digest=p.get("digest"),
+                     diff=p.get("diff"), proposed_at=ts, ask=p.get("ask_id"),
+                     asks=asks + ([p["ask_id"]] if p.get("ask_id") else []))
         elif name == "of.diff_approved" and p.get("via") == "passkey":
             # a passkey approval is checked on its signatures where it counts, at `of diff apply` (docs/remote.md §6)
             e.setdefault("passkey", []).append((ts, dict(p, _event_id=eid)))
@@ -3873,8 +3880,8 @@ def cmd_diff(args):
                               "digest: propose it again (`of diff propose`)")
             if e.get("state") == "approved":  # the approval each goal_change node cites (of_review on PR 70)
                 approval = e.get("approval_event")
-            elif _diff_approved_by_answer(conn, e.get("ask")):
-                approval = e.get("ask")
+            elif any(_diff_approved_by_answer(conn, a) for a in reversed(e.get("asks") or [e.get("ask")])):
+                approval = next(a for a in reversed(e.get("asks") or [e.get("ask")]) if _diff_approved_by_answer(conn, a))
             else:
                 ok, why = _passkey_approval(e, d, dg, _diff_events(conn))  # any tier, the person's passkey (§6)
                 if why:

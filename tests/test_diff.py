@@ -217,6 +217,70 @@ class EndToEndTest(unittest.TestCase):
             self.assertIn("applied", run("diff", "list").stdout)
 
 
+class ReproposeTest(unittest.TestCase):
+    def test_a_yes_holds_across_a_reproposal_of_the_same_digest(self):
+        """A user organization's keeper, msg 01a1d68f-7bcc, 2026-11-14: the founder approved a diff, it was proposed
+        again with the same digest, and apply read only the newest proposal's ask, so he was asked a third time."""
+        import sqlite3
+        import subprocess
+        import tempfile
+        of = os.path.join(HERE, "..", "bin", "of")
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "org", "registry"))
+            os.makedirs(os.path.join(t, "state"))
+            with open(os.path.join(t, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write(REG)
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {t}/org\n    workspace: ofb\n")
+            diff_file = os.path.join(t, "sd.yaml")
+
+            def write(summary):
+                with open(diff_file, "w") as fh:
+                    fh.write("diff:\n  id: sd-2026-11-14-again\n  kind: mandate_rewrite\n  tier: medium\n"
+                             "  author: of_a\n  org: ofb\n  hypothesis: h\n  approvals: [owner]\n"
+                             "  predicted: [{metric: m, to: 0}]\n  reversal: back\n"
+                             "  changes:\n    registry:\n      - op: set\n        name: of_b\n        fields:\n"
+                             f"          summary: {summary}\n")
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=os.path.join(t, "orgs.yaml"),
+                       OF_CONFIG_DIR=t, PATH="/usr/bin:/bin")
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True,  # noqa: E731
+                                            timeout=60)
+
+            def asks():
+                c = sqlite3.connect(os.path.join(t, "state", "of.db"))
+                ids = [r[0] for r in c.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' "
+                                               "ORDER BY rowid")]
+                c.close()
+                return ids
+
+            def answer(ask):
+                code = ("import sys; sys.path.insert(0, %r); import of_asks_answer; "
+                        "of_asks_answer.record([%r], 'да')" % (os.path.join(HERE, "..", "bin"), ask))
+                subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            write("new words")
+            self.assertEqual(run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Утвердить?").returncode, 0)
+            answer(asks()[0])
+            r = run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Утвердить ещё раз?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(len(asks()), 2)                       # a second card, never answered
+            write("other words")                                   # changed content: the old yes does not cover it
+            self.assertEqual(run("diff", "propose", diff_file, "--from", "of_a", "--ask", "А так?").returncode, 0)
+            r = run("diff", "apply", "sd-2026-11-14-again")
+            self.assertIn("waits for the owner's approval", r.stdout + r.stderr)
+            write("new words")                                     # back to the approved digest: proposed afresh
+            self.assertEqual(run("diff", "propose", diff_file, "--from", "of_a", "--ask", "Снова?").returncode, 0)
+            self.assertIn("waits for the owner's approval", (lambda r: r.stdout + r.stderr)(
+                run("diff", "apply", "sd-2026-11-14-again")))      # a changed proposal in between ends the old yes
+            answer(asks()[-1])
+            r = run("diff", "propose", diff_file, "--from", "of_a", "--ask", "И ещё раз?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r = run("diff", "apply", "sd-2026-11-14-again")        # the yes to this exact digest still counts
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            doc = yaml.safe_load(open(os.path.join(t, "org", "registry", "positions.yaml")))
+            self.assertEqual(doc["positions"][1]["summary"], "new words")
+
+
 class GoalChangeTest(unittest.TestCase):
     """docs/handover.md §3, goal_change: goals and conditions added, rewritten or closed in one diff."""
     D = {"id": "sd-2026-11-12-goals", "kind": "goal_change", "tier": "medium", "author": "of_a", "org": "ofb",
