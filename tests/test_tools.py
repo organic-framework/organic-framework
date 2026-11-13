@@ -122,6 +122,22 @@ class SessionConfigTest(unittest.TestCase):
         self.assertNotIn("cloudflare@claude-plugins-official", of_tools.session_config(
             p, dict(DOC, tools_mode="add", tools_excluded=ex), ofb="/of/bin/of", installed=installed)["settings"]["enabledPlugins"])
 
+    def test_an_exclusion_applies_without_a_catalogue(self):
+        doc = {"positions": [{"name": "a"}],
+               "tools_excluded": [{"plugin": "slack@anthropic-plugin-directory", "basis": "ask 1"}]}
+        real = of_tools.registries
+        try:
+            for tools in (None, {}):
+                d = dict(doc, tools=tools) if tools is not None else doc
+                of_tools.registries = lambda orgs_file=None, d=d: {"acme": d}
+                argv, settings = of_tools.launch_parts("a", "s-1", None)
+                self.assertEqual(argv, [])
+                self.assertEqual(settings, {"enabledPlugins": {"slack@anthropic-plugin-directory": False}})
+            of_tools.registries = lambda orgs_file=None: {"acme": {"positions": [{"name": "a"}]}}
+            self.assertEqual(of_tools.launch_parts("a", "s-1", None), ([], {}))
+        finally:
+            of_tools.registries = real
+
     def test_plugin_missing_on_the_account_is_noted(self):
         c = self.cfg("acme_dispatcher", [])
         self.assertTrue(any("slack@anthropic-plugin-directory is not installed" in n for n in c["notes"]))
