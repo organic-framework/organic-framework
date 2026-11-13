@@ -146,16 +146,24 @@ def config_dir(explicit=None):
     return os.path.expanduser(explicit or os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
 
 
+def hook_entry(of_path=OF):
+    """bin/of-hook beside bin/of: the hooks' small entry (its docstring says why)."""
+    return os.path.join(os.path.dirname(of_path), "of-hook")
+
+
 def _is_of(cmd, of_path):
-    """An of hook command, with or without the interpreter in front."""
-    return isinstance(cmd, str) and (cmd.startswith(of_path + MARK) or f" {of_path}{MARK}" in cmd)
+    """An of hook command, with or without the interpreter in front: `<of> hook <Event>`, or `<of-hook> <Event>`."""
+    if not isinstance(cmd, str):
+        return False
+    entry = hook_entry(of_path) + " "
+    return cmd.startswith(of_path + MARK) or f" {of_path}{MARK}" in cmd or cmd.startswith(entry) or f" {entry}" in cmd
 
 
 def hook_command(event, of_path=OF, deny_secrets=False):
     """The interpreter of runs under, by absolute path: a PATH whose python3 lacks PyYAML (or anything else)
     can never silently switch the recorder or the guard off. UserPromptSubmit carries --deny-secrets so the
     @mention prompt block (the whole secrets policy) rides the one flag, not an always-on default."""
-    cmd = f"{sys.executable} {of_path}{MARK}{event}"
+    cmd = f"{sys.executable} {hook_entry(of_path)} {event}"
     if deny_secrets and event == "UserPromptSubmit":
         cmd += " --deny-secrets"
     return cmd

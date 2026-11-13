@@ -78,6 +78,7 @@ class DeployTest(unittest.TestCase):
         self.git(self.src, "init", "-q", "-b", "main")
         self.commit("v1")
         self.root = os.path.join(self.tmp.name, "opt")
+        self.ran = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -97,6 +98,9 @@ class DeployTest(unittest.TestCase):
         def run(argv, **kw):
             if argv[0] == plane.PYTHON and "smoke" in argv:
                 return subprocess.CompletedProcess(argv, 0 if smoke_ok else 1, "smoke: ok", "smoke: FAILED: imports")
+            if argv[0] == plane.PYTHON:  # compileall: no Homebrew Python needed where the test runs
+                self.ran.append(argv)
+                return subprocess.CompletedProcess(argv, 0, "", "")
             if argv[0] in ("chown", "chmod"):
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.run(argv, **kw)
@@ -110,6 +114,7 @@ class DeployTest(unittest.TestCase):
             plane.deploy(self.src, v2, run=self.run_with(False), log=lambda m: None, root=self.root)
         self.assertIn("back on", str(e.exception))
         self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), v1)  # the commit before, still serving
+        self.assertIn("compileall", self.ran[0])  # the users cannot write the read-only checkout's bytecode cache
         v3 = self.commit("v3")
         self.assertEqual(plane.deploy(self.src, v3, run=self.run_with(True), log=lambda m: None, root=self.root), v3)
 
