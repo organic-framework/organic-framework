@@ -1154,11 +1154,12 @@ def launchd_pid(label, domain=None, run=subprocess.run):
     return int(m.group(1)) if m else None
 
 
-def relay_healthy(now=None, stale=STALE_S):
-    """(ok, pid, detail): the relay's heartbeat is fresh and every loop ran within `stale` seconds."""
+def relay_healthy(now=None, stale=STALE_S, path=None):
+    """(ok, pid, detail): the relay's heartbeat (this user's, or the one at `path`) is fresh and every loop ran within
+    `stale` seconds."""
     now = time.time() if now is None else now
     try:
-        with open(heartbeat_path()) as fh:
+        with open(path or heartbeat_path()) as fh:
             hb = json.load(fh)
     except (OSError, ValueError):
         return False, None, "no heartbeat"

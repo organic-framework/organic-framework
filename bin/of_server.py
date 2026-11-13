@@ -2195,8 +2195,27 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
                  silent="has not answered /v1/health")
 
 
+def host_watchdog(cfg, relays, now=None, restart=None, dump=None, log=None, domain="system"):
+    """The agent host's one root watchdog (deploy/host/setup.py): of-server, and each organization user's relay, each
+    a LaunchDaemon in `domain`. RELAYS: [(user, label, that user's OF state folder)]. Returns {name: result}."""
+    import of_relay_client
+    out = {"of-server": watch("of-server", LAUNCHD_LABEL,
+                              lambda: _health(cfg, timeout=WATCHDOG["probe_timeout"]) is not None,
+                              lambda: _read_pid(os.path.join(cfg["state_dir"], "server.pid")),
+                              os.path.join(cfg["state_dir"], "watchdog.json"), now=now, restart=restart, dump=dump,
+                              log=log, event="server_watchdog", silent="has not answered /v1/health", domain=domain)}
+    for user, label, state in relays:
+        hb = os.path.join(state, of_relay_client.HEARTBEAT)
+        out[f"relay {user}"] = watch(
+            f"{user}'s relay", label, lambda hb=hb: of_relay_client.relay_healthy(now, path=hb)[0],
+            lambda label=label: of_relay_client.launchd_pid(label, domain),  # launchd's pid, never the heartbeat's
+            os.path.join(cfg["state_dir"], f"watchdog-relay-{user}.json"), now=now, restart=restart, dump=dump,
+            log=log, event="relay_watchdog", silent="has not moved its loops", domain=domain)
+    return out
+
+
 def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=None, log=None, settings=None,
-          installed=None, event="server_watchdog", silent="has not answered"):
+          installed=None, event="server_watchdog", silent="has not answered", domain=None):
     """One watchdog check of a launchd-run process NAME (label LABEL). A process that is alive but fails PROBE
     through `failing_for` seconds of checks is restarted, at most once in `restart_gap`; first `kill -USR1` writes its
     threads' stacks to its log, so the next hang names its cause. A process with no live pid is left alone: a stop
@@ -2262,8 +2281,9 @@ def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=N
         + ("; its threads' stacks are in its log" if dumped else "") + "; restarting it")
     error = None
     try:
-        r = (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
-                                                capture_output=True, timeout=30)))()
+        target = f"{domain or 'gui/' + str(os.getuid())}/{label}"  # system/<label> for a LaunchDaemon (the host)
+        r = (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", target], capture_output=True,
+                                                timeout=30)))()
         if getattr(r, "returncode", 0) not in (0, None):  # `Could not find service` (113) after a bootout
             error = f"launchctl exit {r.returncode}"
     except Exception as e:  # noqa: BLE001 - a timeout under the very load this is for; the next one waits restart_gap
@@ -2304,6 +2324,9 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     rd = sub.add_parser("relay-drop", help="drop queued relay messages nobody can take (expired, reason dropped)")
     rd.add_argument("--msg-id", action="append", required=True)
     rd.add_argument("--reason", required=True)
+    hw = sub.add_parser("host-watchdog", help="one check of the agent host's server and relays (root, every minute)")
+    hw.add_argument("--domain", default="system")
+    hw.add_argument("--relay", action="append", default=[], help="USER:LABEL:STATE_DIR (repeat)")
     rp = sub.add_parser("replay-dead", help="queue dead batches again (after fixing the cause)")
     rp.add_argument("--batch-id", action="append", help="only these batches (default: all dead)")
     iv = sub.add_parser("invite", help="a one-time enrollment code (printed once)")
@@ -2315,6 +2338,8 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     a = ap.parse_args()
     if a.cmd in (None, "run"):
         run(config=a.config)
+    elif a.cmd == "host-watchdog":
+        host_watchdog(load_config(a.config), [tuple(r.split(":", 2)) for r in a.relay], domain=a.domain)
     elif a.cmd == "writer":
         import fcntl
         import signal
