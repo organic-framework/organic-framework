@@ -3512,6 +3512,102 @@ def cmd_listen(args):
 
 # ------------------------------------------------------------------- structural diffs
 
+def cmd_health(args):
+    """docs/health.md (hand-over 6d9a8305): `of health` prints the table, `of health run` is the minute's job."""
+    import of_health
+    if args.action == "run":
+        of_health.run()
+        return 0
+    if args.action in ("install", "uninstall"):
+        for line in of_health.install(uninstall=args.action == "uninstall"):
+            print(f"of health: {line}")
+        return 0
+    state = of_health.load_state()
+    if not state:
+        state = of_health.run()
+    print(json.dumps(state, indent=1) if args.json else of_health.table(state))
+    return 1 if any(r.get("state") == "failed" for r in (state.get("checks") or {}).values()) else 0
+
+
+def cmd_smoke(args):
+    import of_health
+    repo = args.repo or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    ok, detail = of_health.smoke(repo, ref=args.ref, index=args.index)
+    print(f"smoke: {'ok' if ok else 'FAILED'}: {detail}", file=sys.stdout if ok else sys.stderr)
+    return 0 if ok else 1
+
+
+def rollback(repo, commit, by, run=subprocess.run, log=print):
+    """docs/health.md §4: revert exactly one commit's own paths, committed from a temporary worktree (so the hooks
+    run), never from the shared index; main moves only if it did not move meanwhile, and the shared working copy's
+    files and index follow for those paths alone. Refused when a path has uncommitted changes (someone is editing it)
+    or the revert conflicts with a later commit. Returns the new commit."""
+    import tempfile
+
+    def git(*a, cwd=repo, check=True, **kw):
+        r = run(["git", "-C", cwd, *a], capture_output=True, text=True, **kw)
+        if check and r.returncode != 0:
+            raise OfError(f"of rollback: git {' '.join(a[:3])}: {(r.stderr or r.stdout).strip()[:300]}")
+        return r.stdout
+    full = git("rev-parse", "--verify", f"{commit}^{{commit}}").strip()
+    head = git("rev-parse", "HEAD").strip()
+    branch = git("symbolic-ref", "-q", "HEAD", check=False).strip()
+    if not branch:
+        raise OfError("of rollback: the working copy is not on a branch")
+    if run(["git", "-C", repo, "merge-base", "--is-ancestor", full, head], capture_output=True).returncode != 0:
+        raise OfError(f"of rollback: {full[:12]} is not in {branch.rsplit('/', 1)[-1]}")
+    paths = [p for p in git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", full).splitlines() if p]
+    busy = [p for p in paths if git("diff", "HEAD", "--name-only", "--", p).strip()]
+    if busy:
+        raise OfError("of rollback: uncommitted changes in " + ", ".join(busy[:5]) + ": someone is editing them; "
+                      "ask them to commit or set them aside first")
+    subject = git("log", "-1", "--format=%s", full).strip()
+    body = git("log", "-1", "--format=%B", full)
+    author = (re.findall(r"(?m)^Position:\s*(\S+)", body) or ["unknown"])[-1]
+    with tempfile.TemporaryDirectory(prefix="of-rollback-") as tmp:
+        wt = os.path.join(tmp, "wt")
+        git("worktree", "add", "-q", "--detach", wt, head)
+        try:
+            r = run(["git", "-C", wt, "revert", "--no-commit", full], capture_output=True, text=True)
+            if r.returncode != 0:
+                raise OfError(f"of rollback: {full[:12]} does not revert cleanly on {head[:12]} (a later commit "
+                              f"changed the same lines): {(r.stderr or r.stdout).strip()[:300]}")
+            msg = (f"Revert \"{subject}\"\n\nThis reverts commit {full} by {author}, its own paths only "
+                   f"(of rollback, docs/health.md §4), run by {by}.\n\nReverts-Position: {author}\n"
+                   f"Position: {by}\n")
+            r = run(["git", "-C", wt, "-c", "commit.gpgsign=false", "commit", "-q", "-F", "-"], input=msg,
+                    capture_output=True, text=True, env=dict(os.environ, SSH_AUTH_SOCK=""))
+            if r.returncode != 0:
+                raise OfError(f"of rollback: the commit was refused: {(r.stderr or r.stdout).strip()[:400]}")
+            new = git("rev-parse", "HEAD", cwd=wt).strip()
+        finally:
+            run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
+    git("update-ref", branch, new, head)  # only if main is still where the revert was made
+    there = set(git("ls-tree", "-r", "--name-only", new, "--", *paths).splitlines())
+    if there:
+        git("checkout", new, "--", *sorted(there))
+    for p in sorted(set(paths) - there):  # added by the reverted commit: gone now
+        try:
+            os.remove(os.path.join(repo, p))
+        except FileNotFoundError:
+            pass
+        git("rm", "-q", "--cached", "--ignore-unmatch", "--", p)
+    log(f"rolled back {full[:12]} ({subject}): {new[:12]} on {branch.rsplit('/', 1)[-1]}, {len(paths)} path(s)")
+    return new
+
+
+def cmd_rollback(args):
+    repo = args.repo or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    try:
+        by = _me(_load_quiet(), args.sender)["name"]
+    except Exception:
+        if not args.sender:
+            raise OfError("of rollback: name the position running it with --from <position>")
+        by = args.sender
+    rollback(repo, args.commit, by)
+    return 0
+
+
 def _drain_spool_now(conn, wait_s=2.0):
     """Move events spooled while the store was busy into it, now, when the ingest worker is not running; the count.
     A lookup by id that finds nothing calls it once: a hand-over or an ask written during a busy minute sat in the
@@ -5800,6 +5896,20 @@ def main(argv=None):
     vw.add_argument("--dry-run", action="store_true")
     vw.add_argument("--quiet", action="store_true")
     vw.set_defaults(fn=cmd_view)
+    hl = sub.add_parser("health", help="OF's own health on this machine (docs/health.md): of health [run|install|uninstall]")
+    hl.add_argument("action", nargs="?", default="show", choices=["show", "run", "install", "uninstall"])
+    hl.add_argument("--json", action="store_true")
+    hl.set_defaults(fn=cmd_health)
+    sm = sub.add_parser("smoke", help="the smoke check of a commit (docs/health.md §4): imports, hooks, status, asks, who")
+    sm.add_argument("--index", action="store_true", help="check the content being committed (the pre-commit gate)")
+    sm.add_argument("--ref", help="a commit to check (default HEAD)")
+    sm.add_argument("--repo", help="the repository (default the one this bin/ is in)")
+    sm.set_defaults(fn=cmd_smoke)
+    rb = sub.add_parser("rollback", help="revert one commit's own paths, in a temporary worktree (docs/health.md §4)")
+    rb.add_argument("commit")
+    rb.add_argument("--from", dest="sender", help="the position running it (default: this session's)")
+    rb.add_argument("--repo", help="the repository (default the one this bin/ is in)")
+    rb.set_defaults(fn=cmd_rollback)
     ls = sub.add_parser("listen", help="the listener: of listen run|rebuild|status|install|uninstall|watchdog")
     ls.add_argument("action", choices=["run", "rebuild", "status", "install", "uninstall", "watchdog"])
     ls.set_defaults(fn=cmd_listen)

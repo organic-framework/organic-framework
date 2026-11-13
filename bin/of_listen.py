@@ -984,6 +984,15 @@ def step(conn, processors, cursors, beat=None, locks=None):
     changed = False
     top = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
     for p in processors:
+        if not reads_events(p):  # a timer only (views, pulse, ...): nothing to fold, its cursor follows the log
+            if cursors[p.name] < top:
+                cursors[p.name] = top
+                try:
+                    conn.execute("UPDATE listener_cursor SET last_rowid = ?, updated_at = ? WHERE processor = ?",
+                                 (top, of_events.now_iso(), p.name))
+                except __import__("sqlite3").OperationalError:
+                    pass
+            continue
         lock = (locks or {}).get(p.name)
         if lock is not None and not lock.acquire(blocking=False):
             continue  # its tick runs in the tick thread: it catches up from its cursor on a later pass
@@ -993,6 +1002,13 @@ def step(conn, processors, cursors, beat=None, locks=None):
             if lock is not None:
                 lock.release()
     return changed
+
+
+def reads_events(p):
+    """Does the processor fold events, or only run a timer? A timer's cursor need not wait for its tick: its tick held
+    its lock most of each minute, so `of health` saw it a day behind (2026-11-14)."""
+    cls = type(p)
+    return cls.handle is not Processor.handle or hasattr(p, "flush") or hasattr(p, "settle")
 
 
 def _catch_up(conn, p, cursors, top, beat):
@@ -1248,6 +1264,19 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
 
 
 SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
+LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
+
+
+def _save_ticks(ticks, processors):
+    """listen-ticks.json {processor: {at, every}}: when each timer last ran, for `of health`'s listener.lag."""
+    try:
+        path = os.path.join(of_events.STATE_DIR, "listen-ticks.json")
+        data = {p.name: {"at": ticks[p.name], "every": p.tick_s} for p in processors if p.tick_s}
+        with open(path + ".tmp", "w") as fh:
+            json.dump(data, fh)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
 
 
 def tick_thread(processors, ticks, locks, changed, stop=None, log=print, connect=None):
@@ -1272,6 +1301,8 @@ def tick_thread(processors, ticks, locks, changed, stop=None, log=print, connect
                         slow(p.name, "tick", t0)
                     except Exception as e:  # noqa: BLE001 - one timer failing never stops the others
                         log(f"of listen: {p.name} tick: {type(e).__name__}: {e}")
+            if due:
+                _save_ticks(ticks, processors)
             _touch(ticks_path())  # the watchdog's sign that the timers still turn
             time.sleep(POLL_S)
     t = threading.Thread(target=loop, name="of-listen-ticks", daemon=True)
