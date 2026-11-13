@@ -416,24 +416,35 @@ def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int((t % 1) * 1000):03d}Z"
 
 
-def _new_groups(conn, now):
-    """The asks filed within NEW_H that the view has not taken yet (view_asks holds every ask it projected, in any
-    state), projected alone: a declared ask or task is open from its own event."""
+def _new_groups(conn, anchor, reopened=()):
+    """The asks filed from NEW_H before `anchor` (the listener's last sign of life) that the view has not taken yet
+    (view_asks holds every ask it projected, in any state), and the tasks reopened in the tail that the view holds
+    closed; each projected alone: a declared ask or task is open from its own event."""
     import of_asks
-    rows = conn.execute("SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
-                        "WHERE name = 'of.agent_question' AND ts >= ? ORDER BY ts, rowid",
-                        (_iso(now - NEW_H * 3600),)).fetchall()
+    cols = "SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
+    rows = conn.execute(cols + "WHERE name = 'of.agent_question' AND ts >= ? ORDER BY ts, rowid",
+                        (_iso(anchor - NEW_H * 3600),)).fetchall()
+    for tid in reopened:  # a task the view holds done, reopened since (of_herdr's note on PR 119)
+        st = conn.execute("SELECT state FROM view_asks WHERE event_id LIKE ?", ("%" + tid,)).fetchone()
+        if st and st[0] != "open":
+            rows += conn.execute(cols + "WHERE name = 'of.agent_question' AND event_id LIKE ?", ("%" + tid,)).fetchall()
     if not rows:
         return []
     known = set()
     ids = [r[0] for r in rows]
     for i in range(0, len(ids), 500):
         part = ids[i:i + 500]
-        known |= {e for (e,) in conn.execute(f"SELECT event_id FROM view_asks WHERE event_id IN "
+        known |= {e for (e,) in conn.execute(f"SELECT event_id FROM view_asks WHERE state = 'open' AND event_id IN "
                                              f"({','.join('?' * len(part))})", part)}
     new = []
+    seen_closed = set()
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        seen_closed |= {e for (e,) in conn.execute(f"SELECT event_id FROM view_asks WHERE state != 'open' AND event_id "
+                                                   f"IN ({','.join('?' * len(part))})", part)}
+    again = {e for e in ids if any(e.endswith(t) for t in reopened)}
     for e, ts, n, sid, pos, pl, org, src in rows:
-        if e in known:
+        if e in known or (e in seen_closed and e not in again):
             continue
         try:
             payload = json.loads(pl) if pl else {}
@@ -449,13 +460,13 @@ def _new_groups(conn, now):
     return of_asks.group(of_asks.for_owner(asks))
 
 
-def _closures(conn, now):
+def _closures(conn, anchor):
     """{ask id: (what, ts)} from the log's last CLOSED_H: answered (by whom), withdrawn, a task done or reopened. The
     view shows them once the listener has taken them; the screen applies them at once."""
     out = {}
     names = ("of.agent_question_answered", "of.ask_withdrawn")
     for ts, name, pl in conn.execute("SELECT ts, name, payload FROM event WHERE name IN (?, ?) AND ts >= ? "
-                                     "ORDER BY ts, rowid", names + (_iso(now - CLOSED_H * 3600),)):
+                                     "ORDER BY ts, rowid", names + (_iso(anchor - CLOSED_H * 3600),)):
         try:
             p = json.loads(pl or "{}")
         except ValueError:
@@ -467,7 +478,7 @@ def _closures(conn, now):
                 out[i] = (what, ts)
     for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.state_declared' AND ts >= ? AND "
                                "(payload LIKE '%done_task%' OR payload LIKE '%reopen_task%') ORDER BY ts, rowid",
-                               (_iso(now - CLOSED_H * 3600),)):
+                               (_iso(anchor - CLOSED_H * 3600),)):
         try:
             p = json.loads(pl or "{}")
         except ValueError:
@@ -525,6 +536,21 @@ def on_their_way(now=None):
     return out
 
 
+def _last_seen(conn):
+    """When the listener last showed life (epoch): its heartbeat, or, once a clean stop removed that, the asks
+    cursor's last move, a step behind the view's last flush. None when there is neither."""
+    try:
+        row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
+        if row:
+            return float(row[0])
+        row = conn.execute("SELECT updated_at FROM listener_cursor WHERE processor = 'asks'").fetchone()
+        if row and row[0]:
+            return T._ts(row[0]) - 600  # the cursor moves before the flush: ten minutes of margin
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def queue(conn, positions=(), now=None, sending=()):
     """The founder's queue for the screen and the side panel, from one source: the listener's view, whatever its age,
     never a projection of the whole log (2026-11-13: with the listener held minutes in a tick, the screen projected
@@ -538,22 +564,23 @@ def queue(conn, positions=(), now=None, sending=()):
         groups = of_listen.read_groups(conn)
     except Exception:  # noqa: BLE001 - no listener has run here: the log, as the CLI computes it
         return T.load(positions, conn, from_log=True), None
-    behind = None
+    behind, last = None, _last_seen(conn)
+    if last is None:  # a view but no sign of when the listener last wrote it: the log, as the CLI computes it
+        return T.load(positions, conn, from_log=True), 0.0
     if not of_listen.fresh(conn):
-        try:
-            row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
-            behind = float(row[0]) if row else 0.0
-        except Exception:  # noqa: BLE001
-            behind = 0.0
+        behind = last
+    anchor = min(now, last)  # the tail starts NEW_H and CLOSED_H before the listener's last sign of life (of_herdr on
+    # PR 119: anchored at now, an ask filed between the view's last flush and now - NEW_H showed nowhere)
     try:
-        groups = groups + _new_groups(conn, now)
+        closed = _closures(conn, anchor)
+    except Exception:  # noqa: BLE001
+        closed = {}
+    reopened = [k[1] for k, v in closed.items() if isinstance(k, tuple) and v[0] == "reopened"]
+    try:
+        groups = groups + _new_groups(conn, anchor, reopened)
     except Exception:  # noqa: BLE001 - the view alone
         pass
     data = T.shape(groups, positions)
-    try:
-        closed = _closures(conn, now)
-    except Exception:  # noqa: BLE001
-        closed = {}
     sending = set(sending)
     tasks_done = {k[1]: v for k, v in closed.items() if isinstance(k, tuple)}
     out = []
@@ -579,6 +606,24 @@ def queue(conn, positions=(), now=None, sending=()):
             kept.append(x)
         out.append((label, kept))
     return out, behind
+
+
+def screen_list(conn, positions=(), failed=(), now=None):
+    """What the screen's loader hands to its thread: (data, overlay, extra), extra with behind, the drafts archived
+    and the unsent ones for D; everything read from disk here, never on the screen's thread."""
+    import of_asks_answer
+    now = now or time.time()
+    failed = set(failed)  # a send that failed in this window is not on its way: its card shows, its draft goes to D
+    way = on_their_way(now) - failed
+    data, behind = queue(conn, positions, now=now, sending=way)
+    # the asks still open, those whose answer is on its way among them: their drafts are never archived (of_herdr on
+    # PR 119: a draft on its way went to the archive, and D had nothing to send when the send failed)
+    open_ids = {i for _, g in data for x in g for i in x.get("ids") or []} | way
+    archived = [] if behind is not None else of_asks_answer.archive_drafts(open_ids)  # a current list only
+    drafts = [d for d in of_asks_answer.unsent_drafts()
+              if now - float(d.get("saved_at") or 0) >= SENDING_S  # on their way: not unsent
+              or set(d.get("ask_ids") or [d.get("ask_id")]) & failed]  # a failed one at once
+    return data, overlay(conn, now), {"behind": behind, "archived": archived, "drafts": drafts}
 
 
 def needs_confirm(item, card=None):
@@ -1716,15 +1761,10 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         rows once it is there, and what the screen would otherwise read from disk on its own thread."""
         own = reader()
         try:
-            pos = T._positions(positions) if registry.is_set() else []
-            data, behind = queue(own, pos, sending=on_their_way())
-            over = overlay(own)
+            data, over, extra = screen_list(own, T._positions(positions) if registry.is_set() else [],
+                                            failed=set(boxes[0].out.errors) if boxes else ())
         finally:
             own.close()
-        open_ids = {i for _, g in data for x in g for i in x.get("ids") or []}
-        archived = [] if behind is not None else of_asks_answer.archive_drafts(open_ids)  # a current list only
-        drafts = [d for d in of_asks_answer.unsent_drafts()
-                  if time.time() - float(d.get("saved_at") or 0) >= SENDING_S]  # on their way: not unsent
         T.write_cache(data)
         if refresh and not reconciled:  # live sessions and the herdr counts, once, after the first true list
             reconciled.append(True)
@@ -1733,7 +1773,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
                 _quiet(refresh)
                 timing.setdefault("reconcile", time.time())
             threading.Thread(target=reconcile, daemon=True).start()
-        return data, over, {"behind": behind, "archived": archived, "drafts": drafts}
+        return data, over, extra
 
     def record(kind, payload):
         import of_events

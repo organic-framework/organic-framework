@@ -190,6 +190,63 @@ class StoreTest(unittest.TestCase):
         self.conn.execute("UPDATE listener_meta SET value = '1' WHERE key = 'heartbeat'")
         self.assertEqual(ids()[1], 1.0)                   # the listener's last beat, said when it is behind
 
+    def view(self):
+        import of_listen
+        procs = [of_listen.AsksProcessor()]
+        cur = of_listen.prepare(self.conn, procs)
+        of_listen.step(self.conn, procs, cur)
+
+    def shown(self, data):
+        return {x["ids"][0] for _, g in data for x in g if x["ids"]}
+
+    def test_an_answer_on_its_way_keeps_its_draft_and_a_failed_one_shows_again(self):
+        """of_herdr's review of PR 119: the draft of an answer still being sent was archived, so D had nothing to
+        send when the send failed."""
+        import of_asks_answer
+        import of_listen
+        now = time.time()
+        a = self.declared("Rename the channel?", I._iso(now - 600))
+        self.view()
+        of_listen.heartbeat(self.conn)
+        it = {"ids": [a], "who": ["of_a"], "text": "Rename the channel?"}
+        of_asks_answer.save_draft(it, "yes, today")              # the answer path, before it sends
+        data, _, extra = I.screen_list(self.conn, now=now)
+        self.assertNotIn(a, self.shown(data))                   # on its way: hidden
+        self.assertEqual(extra["archived"], [])                 # and its draft kept
+        self.assertEqual([d["ask_id"] for d in of_asks_answer.unsent_drafts()], [a])
+        data, _, extra = I.screen_list(self.conn, failed={a}, now=now)
+        self.assertIn(a, self.shown(data))                      # failed in this window: back, its draft for D at once
+        self.assertEqual([d["ask_id"] for d in extra["drafts"]], [a])
+
+    def test_the_tail_hangs_from_the_listeners_last_sign_of_life(self):
+        """of_herdr's review of PR 119: with the listener down past NEW_H, an ask filed after it stopped showed
+        nowhere."""
+        import of_listen
+        now = time.time()
+        a = self.declared("Rename the channel?", I._iso(now - 9 * 3600))
+        self.view()
+        of_listen.heartbeat(self.conn)
+        self.conn.execute("UPDATE listener_meta SET value = ? WHERE key = 'heartbeat'", (str(now - 8 * 3600),))
+        self.conn.execute("UPDATE listener_cursor SET updated_at = ? WHERE processor = 'asks'",
+                          (I._iso(now - 8 * 3600),))
+        b = self.declared("Rotate the keys?", I._iso(now - 7 * 3600))
+        data, behind = I.queue(self.conn, [], now=now)
+        self.assertEqual(self.shown(data), {a, b})
+        self.assertAlmostEqual(behind, now - 8 * 3600, delta=1)
+        self.conn.execute("DELETE FROM listener_meta WHERE key = 'heartbeat'")  # a clean stop: the cursor's last move
+        self.assertEqual(self.shown(I.queue(self.conn, [], now=now)[0]), {a, b})
+
+    def test_a_task_reopened_in_the_tail_comes_back(self):
+        import of_listen
+        now = time.time()
+        t = self.declared("Log in to the console", I._iso(now - 3600), task="1. Open the page.")
+        self.add("state_declared", {"state": "working", "done_task": t[-8:]}, I._iso(now - 1800))
+        self.view()                                               # the view holds it done
+        of_listen.heartbeat(self.conn)
+        self.assertNotIn(t, self.shown(I.queue(self.conn, [], now=now)[0]))
+        self.add("state_declared", {"state": "working", "reopen_task": t[-8:]}, I._iso(now - 60))
+        self.assertIn(t, self.shown(I.queue(self.conn, [], now=now)[0]))
+
     def test_overlay_reads_the_latest_record_per_ask(self):
         now = T._ts("2026-11-11T12:00:00Z")
         self.add("ask_snoozed", {"ask_ids": ["A"], "until": "2026-11-11T13:00:00Z"}, "2026-11-11T11:00:00Z")
