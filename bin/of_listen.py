@@ -1023,6 +1023,229 @@ def _catch_up(conn, p, cursors, top, beat):
     return changed
 
 
+# ---------------------------------------------------------------------- the service and its watchdog
+
+LAUNCHD_LABEL = "dev.organic-framework.listen"
+WATCHDOG_LABEL = "dev.organic-framework.listen-watchdog"
+# One check a minute. A live listener whose heartbeat is older than STALE_S, or whose timers have not turned for
+# ticks_stale (a tick may run long, never this long), is restarted after failing_for, at most once in restart_gap.
+WATCHDOG = {"every": 60, "failing_for": 180, "restart_gap": 900, "ticks_stale": 900}
+
+
+def pid_path():
+    return os.path.join(of_events.STATE_DIR, "listen.pid")
+
+
+def ticks_path():
+    return os.path.join(of_events.STATE_DIR, "listen.ticks")
+
+
+def _touch(path):
+    try:
+        os.utime(path, None)
+    except FileNotFoundError:
+        try:
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), "w"):
+                pass
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _write_pid():
+    try:
+        with open(os.open(pid_path(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            fh.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _plist(label, argv, log, extra=""):
+    from xml.sax.saxutils import escape
+    args = "".join(f"<string>{escape(a)}</string>" for a in argv)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key><array>{args}</array>
+  <key>EnvironmentVariables</key><dict><key>OF_AUTOMATION</key><string>1</string><key>SSH_AUTH_SOCK</key><string></string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <key>ProcessType</key><string>Standard</string>
+{extra}  <key>StandardOutPath</key><string>{escape(log)}</string>
+  <key>StandardErrorPath</key><string>{escape(log)}</string>
+</dict></plist>
+"""
+
+
+def launchd_plists(python=None, of_bin=None):
+    """{label: plist text}: the listener at ProcessType Standard, with no Nice and no low-priority I/O, and its
+    watchdog every minute (hand-over 6d9a8305, docs/health.md). Its readers are people and agents waiting: as a
+    Background job with Nice 5 it lost the CPU to the very load it was meant to keep up with, as of-server did at Nice
+    10 (of_server's 3981069). Its children lower themselves where they are batch work."""
+    python = python or sys.executable
+    of_bin = of_bin or os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+    log = os.path.join(of_events.STATE_DIR, "listen.log")
+    listener = _plist(LAUNCHD_LABEL, [python, of_bin, "listen", "run"], log,
+                      "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n"
+                      "  <key>ThrottleInterval</key><integer>10</integer>\n")
+    watch = _plist(WATCHDOG_LABEL, [python, of_bin, "listen", "watchdog"],
+                   os.path.join(of_events.STATE_DIR, "listen-watchdog.log"),
+                   f"  <key>StartInterval</key><integer>{WATCHDOG['every']}</integer>\n")
+    return {LAUNCHD_LABEL: listener, WATCHDOG_LABEL: watch}
+
+
+def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
+    """`of listen install|uninstall`: write (or remove) the two launchd agents and load them; a unit already as
+    written and loaded is left running. Returns one line per agent."""
+    import subprocess
+    run = run or subprocess.run
+    domain = f"gui/{os.getuid()}"
+    agents_dir = agents_dir or os.path.expanduser("~/Library/LaunchAgents")
+    out = []
+    for label, text in (plists or launchd_plists()).items():
+        path = os.path.join(agents_dir, f"{label}.plist")
+        try:
+            with open(path) as fh:
+                same = fh.read() == text
+        except OSError:
+            same = False
+        if same and not uninstall and run(["launchctl", "print", f"{domain}/{label}"],
+                                          capture_output=True).returncode == 0:
+            out.append(f"{label}: unchanged")
+            continue
+        run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        if uninstall:
+            if os.path.exists(path):
+                os.remove(path)
+            out.append(f"removed {label}")
+            continue
+        os.makedirs(agents_dir, exist_ok=True)
+        with open(path + ".tmp", "w") as fh:
+            fh.write(text)
+        os.replace(path + ".tmp", path)
+        for _ in range(4):  # right after a bootout launchd may answer "Input/output error" for a moment
+            r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
+            if r.returncode == 0:
+                break
+            time.sleep(1.5)
+        out.append(f"{label}: {'loaded' if r.returncode == 0 else 'not loaded (launchctl ' + str(r.returncode) + ')'}")
+    return out
+
+
+def _heartbeat_age(now):
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{os.path.join(of_events.STATE_DIR, 'of.db')}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
+        finally:
+            conn.close()
+        return None if not row else now - float(row[0])
+    except Exception:  # noqa: BLE001 - no store, no table: no heartbeat
+        return None
+
+
+def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log=print, settings=None, pid=None):
+    """One check, run by launchd every minute (`of listen watchdog`). A listener process that is alive, but whose
+    heartbeat is older than STALE_S or whose timers have not turned for `ticks_stale`, through `failing_for` seconds
+    of checks, is restarted, at most once in `restart_gap`; first `kill -USR1` writes its threads' stacks to
+    listen.log. A gap between checks longer than twice `every` (a sleep) starts the count again. A listener with no
+    live process is left to launchd's KeepAlive. Returns ok, failing, waiting, stopped, restarted or restart_failed.
+    As of-server's watchdog (of_server's 3981069), for the listener (hand-over 6d9a8305)."""
+    import signal
+    import subprocess
+    s = dict(WATCHDOG, **(settings or {}))
+    now = time.time() if now is None else now
+    state_path = state_path or os.path.join(of_events.STATE_DIR, "listen-watchdog.json")
+    try:
+        with open(state_path) as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        st = {}
+    gap = None if st.get("last_check") is None else now - st["last_check"]
+    st["last_check"] = now
+
+    def save(result):
+        st["result"] = result
+        with open(state_path + ".tmp", "w") as fh:
+            json.dump(st, fh)
+        os.replace(state_path + ".tmp", state_path)
+        return result
+
+    def stamp(m):
+        log(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {m}")
+
+    if probe is None:
+        def probe():
+            hb = _heartbeat_age(now)
+            try:
+                ticks = now - os.path.getmtime(ticks_path())
+            except OSError:
+                ticks = None
+            return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"])
+    if probe():
+        if st.get("failing_since") is not None:
+            stamp(f"the listener is live again after {int(now - st['failing_since'])} s")
+        st = {"last_ok": now, "last_restart": st.get("last_restart"), "last_check": now}
+        return save("ok")
+    if pid is None:
+        try:
+            with open(pid_path()) as fh:
+                pid = int(fh.read().strip() or 0)
+        except (OSError, ValueError):
+            pid = 0
+    if not (pid and _alive(pid)):
+        st.pop("failing_since", None)
+        return save("stopped")
+    if st.get("failing_since") is None or gap is None or gap > 2 * s["every"]:
+        st["failing_since"], st["fails"] = now, 0
+    st["fails"] = st.get("fails", 0) + 1
+    failing = now - st["failing_since"]
+    if failing < s["failing_for"]:
+        return save("failing")
+    if st.get("last_restart") is not None and now - st["last_restart"] < s["restart_gap"]:
+        return save("waiting")
+    try:
+        load = round(os.getloadavg()[0], 1)
+    except OSError:
+        load = None
+    dumped = False
+    try:
+        (dump or (lambda p: (os.kill(p, signal.SIGUSR1), time.sleep(2))))(pid)
+        dumped = True
+    except OSError:
+        pass
+    st["last_restart"] = now  # saved first: a launchctl that hangs still waits restart_gap
+    save("restarting")
+    stamp(f"the listener (pid {pid}) is stuck for {int(failing)} s ({st['fails']} checks; load {load})"
+          + ("; its threads' stacks are in listen.log" if dumped else "") + "; restarting it")
+    error = None
+    try:
+        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                                            capture_output=True, timeout=30)))()
+    except Exception as e:  # noqa: BLE001 - under the very load this is for
+        error = f"{type(e).__name__}: {e}"[:200]
+        stamp(f"the restart did not complete ({error})")
+    try:
+        of_events.emit("listener_watchdog", {"action": "restarted" if error is None else "restart_failed", "pid": pid,
+                                             "failing_s": int(failing), "checks": st["fails"], "load1": load,
+                                             **({"error": error} if error else {})}, position="of_platform")
+    except Exception:  # noqa: BLE001 - the restart matters more than its record
+        pass
+    return save("restarted" if error is None else "restart_failed")
+
+
 SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
 
 
@@ -1048,6 +1271,7 @@ def tick_thread(processors, ticks, locks, changed, stop=None, log=print, connect
                         slow(p.name, "tick", t0)
                     except Exception as e:  # noqa: BLE001 - one timer failing never stops the others
                         log(f"of listen: {p.name} tick: {type(e).__name__}: {e}")
+            _touch(ticks_path())  # the watchdog's sign that the timers still turn
             time.sleep(POLL_S)
     t = threading.Thread(target=loop, name="of-listen-ticks", daemon=True)
     t.start()
@@ -1082,6 +1306,11 @@ def heartbeat(conn):
 
 def run(stop=None, log=print, rebuild=False):
     import of_store
+    if stop is None:  # the service: the watchdog asks for every thread's stack before it restarts a stuck one
+        import faulthandler
+        import signal
+        faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+        _write_pid()
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
     # Readers trust the views only while the heartbeat is fresh. A view rebuilt in place is half-built until

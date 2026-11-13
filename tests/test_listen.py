@@ -489,3 +489,64 @@ class WaitsTimerTest(ListenTest):
         argv, k = calls[0]
         self.assertEqual(argv[2], of_listen._WAITS_RUNNER)
         self.assertEqual((k["env"]["OF_AUTOMATION"], k["start_new_session"]), ("1", True))
+
+
+class WatchdogTest(unittest.TestCase):
+    """Hand-over 6d9a8305 (docs/health.md): the listener at Standard priority, and a watchdog that restarts a stuck
+    one, its stacks first, as of-server's (of_server's 3981069)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = of_events.STATE_DIR
+        of_events.STATE_DIR = self.tmp.name
+        self.calls = []
+
+    def tearDown(self):
+        of_events.STATE_DIR = self.saved
+        self.tmp.cleanup()
+
+    def check(self, now, ok):
+        return of_listen.watchdog(now=now, probe=lambda: ok, pid=os.getpid(), log=lambda m: self.calls.append(m),
+                                  restart=lambda: self.calls.append("restart"),
+                                  dump=lambda p: self.calls.append(("dump", p)))
+
+    def test_restart_after_three_minutes_stuck_once_in_fifteen(self):
+        from unittest import mock
+        with mock.patch.object(of_events, "emit", lambda *a, **k: None):
+            self.assertEqual(self.check(0, True), "ok")
+            self.assertEqual([self.check(t, False) for t in (60, 120, 180)], ["failing"] * 3)
+            self.assertEqual(self.check(240, False), "restarted")
+            self.assertEqual(self.calls[0], ("dump", os.getpid()))           # the stacks before the restart
+            self.assertIn("restart", self.calls)
+            self.assertEqual(self.check(300, False), "waiting")              # at most once in restart_gap
+            self.assertEqual(self.check(400, True), "ok")
+            self.assertEqual(self.check(10_000, False), "failing")            # a sleep between checks starts over
+
+    def test_no_process_is_launchds_and_the_probe_reads_heartbeat_and_ticks(self):
+        self.assertEqual(of_listen.watchdog(now=0, probe=lambda: False, pid=2 ** 22 + 7, log=lambda m: None),
+                         "stopped")
+        conn = of_store.connect(os.path.join(self.tmp.name, "of.db"))
+        conn.executescript(of_listen.DDL)
+        import time as _t
+        conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', ?)", (str(_t.time()),))
+        conn.close()
+        of_listen._touch(of_listen.ticks_path())
+        self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "ok")
+        old = _t.time() - of_listen.WATCHDOG["ticks_stale"] - 60
+        os.utime(of_listen.ticks_path(), (old, old))                        # the timers stopped turning
+        self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "failing")
+
+    def test_the_units_run_at_standard_priority_with_a_watchdog(self):
+        units = of_listen.launchd_plists(python="/py", of_bin="/of")
+        listener = units[of_listen.LAUNCHD_LABEL]
+        self.assertIn("<key>ProcessType</key><string>Standard</string>", listener)
+        self.assertNotIn("Nice", listener)
+        self.assertNotIn("LowPriorityIO", listener)
+        self.assertIn("<string>/py</string><string>/of</string><string>listen</string><string>run</string>", listener)
+        self.assertIn("<key>StartInterval</key><integer>60</integer>", units[of_listen.WATCHDOG_LABEL])
+        ran = []
+        run = lambda argv, **k: ran.append(argv) or type("R", (), {"returncode": 0})()  # noqa: E731
+        out = of_listen.install_launchd(run=run, plists=units, agents_dir=self.tmp.name)
+        self.assertEqual(out, [f"{of_listen.LAUNCHD_LABEL}: loaded", f"{of_listen.WATCHDOG_LABEL}: loaded"])
+        self.assertEqual(of_listen.install_launchd(run=run, plists=units, agents_dir=self.tmp.name),
+                         [f"{of_listen.LAUNCHD_LABEL}: unchanged", f"{of_listen.WATCHDOG_LABEL}: unchanged"])
