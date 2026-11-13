@@ -22,6 +22,7 @@ import of_events
 HERE = os.path.dirname(os.path.realpath(__file__))
 LABEL = "dev.organic-framework.health"
 WINDOW_S = 600          # hooks.errors and hooks.latency look at the last 10 minutes
+TELL_AFTER_S = 300      # a check's owner hears of a failure that lasted 5 minutes, not of each flap around a limit
 FYI_FROM = "organic-framework-build:of_platform"
 TEAM_ORG = "organic-framework-build"
 
@@ -309,8 +310,14 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print):
                                         "was": prev.get("state")}, position="of_platform")
             except Exception as e:  # noqa: BLE001 - the state file still says it
                 log(f"of health: {check}: not recorded ({type(e).__name__})")
-            if r["state"] == "failed" or prev.get("state") == "failed":
-                fyi(r["owner"], _fyi_text(check, r, prev))
+        # the owner is told once a failure has lasted TELL_AFTER_S, and once when a told failure is over (2026-11-14:
+        # swap around 95% failed and recovered every few minutes, one --fyi each time)
+        r["told"] = prev.get("told") if r["state"] == "failed" else None
+        if r["state"] == "failed" and not r["told"] and now - _epoch(r["since"]) >= TELL_AFTER_S:
+            fyi(r["owner"], _fyi_text(check, r, prev))
+            r["told"] = iso(now)
+        elif r["state"] != "failed" and prev.get("told"):
+            fyi(r["owner"], _fyi_text(check, r, prev))
     for check in set(old) - set(new):  # a check that stopped applying (a processor gone) leaves quietly
         pass
     state = {"at": iso(now), "checks": new}
@@ -324,8 +331,8 @@ def _fyi_text(check, r, prev):
     if r["state"] == "failed":
         return (f"Health: {check} failed on this machine at {r['since']}: value {r['value']}, limit {r['limit']} "
                 f"{('(' + r['detail'] + ')') if r.get('detail') else ''} (docs/health.md §2; `of health`).")
-    return f"Health: {check} is {r['state']} again since {r['since']} (value {r['value']}; it failed from " \
-           f"{prev.get('since')})."
+    return f"Health: {check} is {r['state']} since {r['since']} (value {r['value']}); the failure you were told of " \
+           f"is over."
 
 
 def _fyi(owner, text):

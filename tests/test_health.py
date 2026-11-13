@@ -49,11 +49,19 @@ class ChecksTest(StateDir):
         run(self.readings(errors=0.2), 1060.0)
         run(self.readings(errors=0.3), 1120.0)
         self.assertEqual([(e["check"], e["state"]) for e in events], [("hooks.errors", "failed")])  # once
-        state = run(self.readings(), 1180.0)
-        self.assertEqual([(e["check"], e["state"], e["was"]) for e in events][1], ("hooks.errors", "ok", "failed"))
-        self.assertEqual([o for o, _ in told], ["of_platform", "of_platform"])
+        self.assertEqual(told, [])                                         # not yet 5 minutes
+        run(self.readings(), 1180.0)                                       # a flap: back before anyone was told
+        run(self.readings(errors=0.2), 1240.0)
+        self.assertEqual(told, [])
+        run(self.readings(errors=0.2), 1240.0 + of_health.TELL_AFTER_S)    # failed for 5 minutes: told once
+        run(self.readings(errors=0.2), 1300.0 + of_health.TELL_AFTER_S)
+        self.assertEqual(len(told), 1)
         self.assertIn("failed on this machine", told[0][1])
-        self.assertEqual(state["checks"]["hooks.errors"]["since"], of_health.iso(1180.0))
+        state = run(self.readings(), 1400.0 + of_health.TELL_AFTER_S)
+        self.assertEqual([o for o, _ in told], ["of_platform", "of_platform"])  # and once when it is over
+        self.assertIn("is over", told[1][1])
+        self.assertEqual([(e["check"], e["state"], e["was"]) for e in events][1], ("hooks.errors", "ok", "failed"))
+        self.assertEqual(state["checks"]["hooks.errors"]["since"], of_health.iso(1400.0 + of_health.TELL_AFTER_S))
         with open(of_health.state_path()) as fh:
             self.assertEqual(json.load(fh)["checks"]["machine.disk"]["state"], "ok")
         self.assertIn("hooks.errors", of_health.table(state))
