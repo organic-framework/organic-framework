@@ -2373,6 +2373,10 @@ def cmd_asks(args):
             raise OfError("usage: of asks withdraw <ask id or prefix> [reason]")
         hits = [a for a in asks if (a["event_id"].startswith(args.id) or a["event_id"].endswith(args.id))
                 and a["state"] == "open"]
+        if not hits and _drain_spool_now(conn):  # filed while the store was busy: still in the spool
+            asks = of_asks.project(of_asks.load(conn))
+            hits = [a for a in asks if (a["event_id"].startswith(args.id) or a["event_id"].endswith(args.id))
+                    and a["state"] == "open"]
         if len(hits) != 1:
             raise OfError(f"{len(hits)} open asks match {args.id!r}")
         a = hits[0]
@@ -3531,6 +3535,37 @@ def cmd_listen(args):
 
 # ------------------------------------------------------------------- structural diffs
 
+def _drain_spool_now(conn, wait_s=2.0):
+    """Move events spooled while the store was busy into it, now, when the ingest worker is not running; the count.
+    A lookup by id that finds nothing calls it once: a hand-over or an ask written during a busy minute sat in the
+    spool, and `of handover accept <id>` and `of asks withdraw <id>` said nothing matched (of_architect msg
+    01a1d682-297d, 2026-11-13; hand-over 6d9a8305 the next day)."""
+    import fcntl
+    import time as _time
+    import of_events
+    import of_store
+    try:
+        lock = open(os.open(os.path.join(of_events.STATE_DIR, "ingest.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    except OSError:
+        return 0
+    try:
+        end = _time.time() + wait_s
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if _time.time() >= end:
+                    return 0  # the worker holds it and drains the spool itself
+                _time.sleep(0.2)
+        try:
+            return of_store.drain_spool(conn)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        lock.close()
+
+
 def _diff_registry(org):
     regs = {o: (p, w) for o, p, w in org_registries()}
     if org not in regs:
@@ -4044,6 +4079,9 @@ def cmd_handover(args):
     if not args.ref:
         raise OfError(f"usage: of handover {args.action} <id>")
     h = of_handover.find(hos, args.ref)
+    if not h and _drain_spool_now(conn):  # proposed while the store was busy: still in the spool
+        hos = of_handover.project(of_handover.load(conn))
+        h = of_handover.find(hos, args.ref)
     if not h:
         raise OfError(f"no single hand-over matches {args.ref!r}")
     kind = {"accept": "accepted", "decline": "declined", "block": "blocked", "deliver": "delivered",
