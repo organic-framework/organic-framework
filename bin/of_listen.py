@@ -895,7 +895,7 @@ def prepare(conn, processors, rebuild=False):
     return cursors
 
 
-def step(conn, processors, cursors, beat=None):
+def step(conn, processors, cursors, beat=None, locks=None):
     """One pass: every processor catches up from its cursor. Returns True if any view changed.
     beat(): called between batches, so a long catch-up keeps the heartbeat while the views it serves
     stay whole (the asks view rebuilds in shadow tables; without the beat, readers fell back to the
@@ -906,30 +906,74 @@ def step(conn, processors, cursors, beat=None):
     changed = False
     top = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
     for p in processors:
-        while True:
-            if beat:
-                beat()
-            rows = fetch(conn, cursors[p.name], top=top)
-            if not rows:
-                break
-            t0 = time.time()
-            changed |= bool(p.handle(conn, rows))  # a busy store raises here: the batch is handled again next pass
-            slow(p.name, "handle", t0, len(rows))
-            cursors[p.name] = rows[-1]["rowid"]
-            try:  # the stored cursor may lag one pass behind on a busy store; the run keeps its own
-                conn.execute("UPDATE listener_cursor SET last_rowid = ?, updated_at = ? WHERE processor = ?",
-                             (cursors[p.name], of_events.now_iso(), p.name))
-            except __import__("sqlite3").OperationalError:
-                pass
-        if getattr(p, "defer", False):  # caught up after a reset or a restart: project once, swap the shadow in
-            t0 = time.time()
-            changed |= bool(p.settle(conn))
-            slow(p.name, "settle", t0)
-        elif hasattr(p, "flush"):
-            t0 = time.time()
-            changed |= bool(p.flush(conn))
-            slow(p.name, "flush", t0)
+        lock = (locks or {}).get(p.name)
+        if lock is not None and not lock.acquire(blocking=False):
+            continue  # its tick runs in the tick thread: it catches up from its cursor on a later pass
+        try:
+            changed |= _catch_up(conn, p, cursors, top, beat)
+        finally:
+            if lock is not None:
+                lock.release()
     return changed
+
+
+def _catch_up(conn, p, cursors, top, beat):
+    changed = False
+    while True:
+        if beat:
+            beat()
+        rows = fetch(conn, cursors[p.name], top=top)
+        if not rows:
+            break
+        t0 = time.time()
+        changed |= bool(p.handle(conn, rows))  # a busy store raises here: the batch is handled again next pass
+        slow(p.name, "handle", t0, len(rows))
+        cursors[p.name] = rows[-1]["rowid"]
+        try:  # the stored cursor may lag one pass behind on a busy store; the run keeps its own
+            conn.execute("UPDATE listener_cursor SET last_rowid = ?, updated_at = ? WHERE processor = ?",
+                         (cursors[p.name], of_events.now_iso(), p.name))
+        except __import__("sqlite3").OperationalError:
+            pass
+    if getattr(p, "defer", False):  # caught up after a reset or a restart: project once, swap the shadow in
+        t0 = time.time()
+        changed |= bool(p.settle(conn))
+        slow(p.name, "settle", t0)
+    elif hasattr(p, "flush"):
+        t0 = time.time()
+        changed |= bool(p.flush(conn))
+        slow(p.name, "flush", t0)
+    return changed
+
+
+SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
+
+
+def tick_thread(processors, ticks, locks, changed, stop=None, log=print, connect=None):
+    """Run the processors' timers in their own thread, on their own connection (of_asks msg 01a1d67e-8752,
+    2026-11-13: ticks of 442 s, 132 s and 71 s held the loop, the heartbeat went past STALE_S, and every reader fell
+    back to projecting the whole log). A processor's tick and its catch-up never run at once: each holds its lock."""
+    import threading
+    conn = [None]
+
+    def loop():
+        while not (stop and stop.is_set()):
+            due = [p for p in processors if p.tick_s and time.time() - ticks[p.name] >= p.tick_s]
+            for p in due:
+                ticks[p.name] = time.time()
+                with locks[p.name]:
+                    try:
+                        if conn[0] is None:
+                            conn[0] = (connect or __import__("of_store").connect)()
+                        t0 = time.time()
+                        if p.tick(conn[0], t0):
+                            changed.set()
+                        slow(p.name, "tick", t0)
+                    except Exception as e:  # noqa: BLE001 - one timer failing never stops the others
+                        log(f"of listen: {p.name} tick: {type(e).__name__}: {e}")
+            time.sleep(POLL_S)
+    t = threading.Thread(target=loop, name="of-listen-ticks", daemon=True)
+    t.start()
+    return t
 
 
 SLOW_S = 5
@@ -995,19 +1039,17 @@ def run(stop=None, log=print, rebuild=False):
     heartbeat(conn)
     last_beat = last_outbox = time.time()
     ticks = {p.name: time.time() - (p.tick_s or 0) + 20 for p in processors}  # first tick after 20 s
+    import threading
+    locks = {p.name: threading.Lock() for p in processors}
+    ticked = threading.Event()
+    tick_thread(processors, ticks, locks, ticked, stop=stop, log=log)
     while not (stop and stop.is_set()):
         now = time.time()
         try:
-            changed = step(conn, processors, cursors)
-            for p in processors:
-                if p.tick_s and now - ticks[p.name] >= p.tick_s:
-                    ticks[p.name] = now
-                    try:
-                        t0 = time.time()
-                        changed |= bool(p.tick(conn, now))
-                        slow(p.name, "tick", t0)
-                    except Exception as e:  # noqa: BLE001 - one timer failing never stops the others
-                        log(f"of listen: {p.name} tick: {type(e).__name__}: {e}")
+            changed = step(conn, processors, cursors, locks=locks)
+            if ticked.is_set():
+                ticked.clear()
+                changed = True
             if changed:
                 bump()
             if now - last_outbox >= 30:  # answers a popup handed over whose sender died: send them
@@ -1024,7 +1066,8 @@ def run(stop=None, log=print, rebuild=False):
                         of_asks_tui.spawn_sender(os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"))
                 except Exception as e:  # noqa: BLE001
                     log(f"of listen: outbox: {type(e).__name__}: {e}")
-            if now - last_beat >= HEARTBEAT_S:
+            if now - last_beat >= HEARTBEAT_S and not any(
+                    locks[n].locked() for n in SERVES_READERS if n in locks):
                 heartbeat(conn)
                 last_beat = now
         except Exception as e:  # noqa: BLE001 - the listener keeps running; the log says why

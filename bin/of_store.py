@@ -119,11 +119,16 @@ def _migrate(conn):
     if {"message_id", "cache_write_5m_tokens", "cache_write_1h_tokens"} - {r[1] for r in conn.execute(
             "PRAGMA table_info(transcript_record)")}:
         return  # the store was busy: try again on the next connect; inserts use the old columns meanwhile
+    # Each step writes only when something is missing: a write waits out the busy timeout behind the listener's
+    # write transaction, 10 s with no CPU, on every process's first connect (of_asks msg 01a1d67e-8752, 2026-11-13).
     try:
-        conn.execute("CREATE INDEX IF NOT EXISTS transcript_message ON transcript_record (session_id, message_id)")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'transcript_message'").fetchone() is None:
+            conn.execute("CREATE INDEX IF NOT EXISTS transcript_message ON transcript_record (session_id, message_id)")
         if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'transcript_own'").fetchone() is None:
             conn.executescript(FORK_DDL)  # DDL only: no scan, no index build on connect
-        conn.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        if row is None or row[0] != str(SCHEMA_VERSION):
+            conn.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     except sqlite3.OperationalError:
         return
     _MIGRATED.add(key)

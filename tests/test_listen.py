@@ -34,6 +34,58 @@ class ListenTest(unittest.TestCase):
         of_store.add_event(self.conn, rec)
         return rec["of.event.id"]
 
+    def test_a_long_tick_holds_neither_the_views_nor_the_heartbeat(self):
+        """of_asks msg 01a1d67e-8752, 2026-11-13: ticks of 442 s, 132 s and 71 s held the loop, the heartbeat went
+        stale, and every reader projected the whole log. Ticks run in their own thread; the ticking processor alone
+        waits, and catches up after."""
+        import threading
+        import time as _t
+        release, started = threading.Event(), threading.Event()
+
+        class Slow(of_listen.Processor):
+            name, version, tick_s = "slow", "1", 0.01
+
+            def __init__(self):
+                self.seen = 0
+
+            def handle(self, conn, rows):
+                self.seen += len(rows)
+                return False
+
+            def tick(self, conn, now):
+                started.set()
+                release.wait(10)
+                return True
+        asks, slow_p = of_listen.AsksProcessor(), Slow()
+        procs = [asks, slow_p]
+        cur = of_listen.prepare(self.conn, procs)
+        locks = {p.name: threading.Lock() for p in procs}
+        ticks = {p.name: 0.0 for p in procs}
+        changed, stop = threading.Event(), threading.Event()
+        path = os.path.join(self.tmp.name, "of.db")
+        of_listen.tick_thread(procs, ticks, locks, changed, stop=stop, log=lambda m: None,
+                              connect=lambda: of_store.connect(path))
+        try:
+            self.assertTrue(started.wait(5))
+            a1 = self.ask("Ship it?")
+            t0 = _t.monotonic()
+            self.assertTrue(of_listen.step(self.conn, procs, cur, locks=locks))  # the asks view moves on
+            self.assertLess(_t.monotonic() - t0, 2)
+            self.assertIn(a1, {a["event_id"] for a in of_listen.read_asks(self.conn)})
+            self.assertEqual(slow_p.seen, 0)                                     # its tick holds it: skipped
+            release.set()
+            for _ in range(50):
+                if changed.is_set():
+                    break
+                _t.sleep(0.1)
+            self.assertTrue(changed.is_set())
+            with locks["slow"]:
+                of_listen.step(self.conn, [slow_p], cur)
+            self.assertEqual(slow_p.seen, 1)                                     # caught up from its cursor
+        finally:
+            stop.set()
+            release.set()
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)
