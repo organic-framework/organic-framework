@@ -113,6 +113,35 @@ class RunTest(unittest.TestCase):
 
 
 
+class PulseRowsTest(unittest.TestCase):
+    def test_a_week_of_the_log_and_each_latest_declaration_never_the_whole_log(self):
+        """The founder's goal of 2026-11-14 (prompt 01a1d68e-1d3e): the pulse read and projected the whole log, 7 to
+        10 s of CPU every 5 minutes."""
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            now = time.time()
+
+            def add(name, position, age_days, payload=None):
+                rec = of_events.record(name, payload or {}, position=position, session=f"S-{position}", source="hook")
+                rec["timestamp"] = of_pulse._iso(now - age_days * 86400)
+                of_store.add_event(conn, rec)
+                return rec["of.event.id"]
+            old_turn = add("turn_end", "a", 30)
+            old_decl = add("state_declared", "a", 30, {"state": "waiting", "waiting_on": "b"})  # a's latest, old
+            add("state_declared", "b", 20, {"state": "working"})
+            new_decl = add("state_declared", "b", 1, {"state": "idle"})
+            recent = add("turn_end", "b", 1)
+            ids = [r["event_id"] for r in of_pulse.load_rows(conn, now)]
+            self.assertIn(recent, ids)
+            self.assertIn(old_decl, ids)                          # the latest declaration, however old
+            self.assertNotIn(old_turn, ids)                       # anything else past the window stays out
+            self.assertEqual(ids.count(new_decl), 1)
+            st = of_pulse.latest_status(of_pulse.load_rows(conn, now))
+            self.assertEqual((st["a"]["state"], st["b"]["state"]), ("waiting", "idle"))
+            conn.close()
+
+
 class AttentionCopyTest(unittest.TestCase):
     """of who reads the last pulse's projection instead of projecting the whole log (of_conductor msg 01a1d663-4530,
     2026-11-13: 14 s of CPU and 941 MB a call)."""

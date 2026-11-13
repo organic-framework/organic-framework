@@ -284,14 +284,14 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
         n = run_escalations(positions, asks, now, of_store.connect(), log, elsewhere=elsewhere)
         n += studio_escalations(positions, of_store.connect(), log)
         if n:
-            asks = of_asks.project(of_asks.load(of_store.connect()))
+            asks = current_asks()
     except Exception as e:
         log(f"escalations: {e}")
     try:  # asks whose sessions no longer wait close here (claude agents --json, herdr blocked)
         import of_asks_live
         import of_store
         if of_asks_live.run(of_store.connect(), positions, agents, bind, log):
-            asks = of_asks.project(of_asks.load(of_store.connect()))
+            asks = current_asks()
     except Exception as e:
         log(f"asks reconcile: {e}")
     try:  # forced every run, not only on a change: the display can never drift for long
@@ -730,6 +730,53 @@ def replied(rows, waiter, peer, since):
 
 
 MESSAGE_DAYS = 2
+PULSE_DAYS = 3  # the pulse's window of the log: waits, replies, turns and nudges are recent facts
+# the names its own rules read (the asks come from the view): declarations, turns, prompts, messages, answers
+PULSE_NAMES = ("of.state_declared", "of.turn_end", "of.human_prompt", "of.agent_message_out", "of.agent_message_in",
+               "of.agent_question", "of.agent_question_answered", "of.ask_withdrawn")
+
+
+def load_rows(conn, now=None):
+    """The events the pulse reads: the asks projection's kinds of the last PULSE_DAYS days, and each position's latest
+    declared state however old (latest_status). Never the whole log (the founder's goal of 2026-11-14, prompt
+    01a1d68e-1d3e; organic-framework-build reports/of-log-readers-2026-11-14.md: 7 to 10 s of CPU a pulse)."""
+    import json as _j
+    import of_asks
+    rows = []
+    for e, ts, n, sid, pos, pl, org, src in conn.execute(
+            "SELECT event_id, ts, name, session_id, position, payload, org, source FROM event WHERE name IN "
+            f"({','.join('?' * len(PULSE_NAMES))}) AND ts >= ? ORDER BY ts, rowid",
+            PULSE_NAMES + (_iso((now or time.time()) - PULSE_DAYS * 86400),)):
+        try:
+            payload = _j.loads(pl) if pl else {}
+        except ValueError:
+            payload = {}
+        if of_asks.relevant(n, src, payload):  # as the asks projection takes them (sources, subagents, pulls)
+            rows.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": payload,
+                         "org": org})
+    have = {r["event_id"] for r in rows}
+    for e, ts, n, sid, pos, pl, org in conn.execute(
+            "SELECT event_id, ts, name, session_id, position, payload, org FROM event WHERE rowid IN "
+            "(SELECT max(rowid) FROM event WHERE name = 'of.state_declared' AND position IS NOT NULL GROUP BY position)"):
+        if e in have:
+            continue
+        try:
+            payload = _j.loads(pl) if pl else {}
+        except ValueError:
+            payload = {}
+        rows.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": payload,
+                     "org": org})
+    return sorted(rows, key=lambda r: r["ts"] or "")
+
+
+def current_asks(conn=None):
+    """The asks from the listener's view and the log's tail (of_asks.current_asks); the log only where no view is."""
+    import of_asks
+    r = of_asks.current_asks()
+    if r["age_s"] is None and not r["asks"]:
+        import of_store
+        return of_asks.project(of_asks.load(conn or of_store.connect()))
+    return r["asks"]
 
 
 def with_messages(conn, rows, now=None):
