@@ -185,7 +185,8 @@ def swap_share(run=subprocess.run):
     """Swap used out of swap (0 when there is none)."""
     try:
         if sys.platform == "darwin":
-            out = run(["sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=10).stdout
+            # by its path: launchd's PATH for the job has no /usr/sbin (a None reading, 2026-11-14)
+            out = run(["/usr/sbin/sysctl", "-n", "vm.swapusage"], capture_output=True, text=True, timeout=10).stdout
             m = re.search(r"total = ([\d.]+)M\s+used = ([\d.]+)M", out)
             total, used = (float(m.group(1)), float(m.group(2))) if m else (0.0, 0.0)
         else:
@@ -225,7 +226,9 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
     put("hooks.errors", share, *LIMITS["hooks.errors"], detail=f"{calls} calls in 10 min")
     put("hooks.latency", worst, *LIMITS["hooks.latency"],
         detail=", ".join(f"{k} {v:.2f}s" for k, v in sorted(p99.items(), key=lambda x: -x[1])[:4]))
-    put("machine.memory", swap_share() if swap is None else swap, *LIMITS["machine.memory"])
+    sw = swap_share() if swap is None else swap
+    if sw is not None:  # no reading is no finding: the machine's own tools failed, not its memory
+        put("machine.memory", sw, *LIMITS["machine.memory"])
     put("machine.disk", free_disk_gib() if disk is None else disk, *LIMITS["machine.disk"])
     sm = _smoke_reading() if smoke is None else smoke
     if sm is not None:
