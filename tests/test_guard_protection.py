@@ -246,6 +246,8 @@ class PluginExcludedTest(unittest.TestCase):
         ex = [{"plugin": "slack@some-directory", "basis": "card e2bb5eef"}]
         self.assertEqual(of_guard.plugin_deny("mcp__plugin_slack_slack__slack_send_message", ex),
                          ("slack@some-directory", "card e2bb5eef"))
+        self.assertTrue(of_guard.plugin_deny("mcp__plugin_Slack_slack__x", ex))       # case leans to the deny
+        self.assertIsNone(of_guard.plugin_deny("mcp__claude_ai_Slack__slack_send_message", ex))  # a known limit
         for tool in ("mcp__plugin_slackbot_x__y", "mcp__plugin_linear_linear__list", "mcp__slack__send", "Bash"):
             self.assertIsNone(of_guard.plugin_deny(tool, ex), tool)
         self.assertIsNone(of_guard.plugin_deny("mcp__plugin_slack_slack__x", []))
