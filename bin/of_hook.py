@@ -1037,7 +1037,8 @@ def _plugin_guard(hook, sess):
     session of no known organization, or a broken cache, is let through, as for the organization's other rules."""
     global OUTPUT
     tool = str(hook.get("tool_name") or "")
-    if not tool.startswith("mcp__plugin_"):
+    connector = tool.lower().startswith("mcp__claude_ai_")  # a claude.ai connector, by its url entry (msg 01a1d6c3-fe78)
+    if not (tool.lower().startswith("mcp__plugin_") or connector):
         return False
     sid = hook.get("session_id")
     try:
@@ -1047,14 +1048,17 @@ def _plugin_guard(hook, sess):
         org = org or resolve_org(None, hook.get("cwd"))
         if not org:
             return False
-        hit = of_guard.plugin_deny(tool, of_credentials.plugins_excluded(
-            org, STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")))
+        orgs_file = os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")
+        hit = (of_guard.connector_deny(tool, of_credentials.plugins_excluded(org, STATE, orgs_file,
+                                                                             key="connectors_excluded"))
+               if connector else of_guard.plugin_deny(tool, of_credentials.plugins_excluded(org, STATE, orgs_file)))
     except Exception:  # noqa: BLE001
         return False
     if not hit:
         return False
     pid, basis = hit
-    why = (f"Organic Framework rule of {org} (docs/guard.md G22): the plugin {pid} is excluded for this organization's "
+    what = f"the connector {pid}" if connector else f"the plugin {pid}"
+    why = (f"Organic Framework rule of {org} (docs/guard.md G22): {what} is excluded for this organization's "
            f"positions ({basis or 'tools_excluded'}), so its tools are not used here. Ask its structure keeper.")
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                      "permissionDecisionReason": why}}
@@ -1064,7 +1068,7 @@ def _plugin_guard(hook, sess):
     try:
         write("mandate_check", {"verdict": "org_rule", "decision": "deny", "mode": "enforce",
                                 "router_version": __import__("of_router").VERSION, "tool_name": tool,
-                                "reason": f"G22: plugin {pid} excluded ({basis})", "subject": tool[:300]},
+                                "reason": f"G22: {what} excluded ({basis})", "subject": tool[:300]},
               hook, sess, _guard_index())
     except (SystemExit, Exception):
         pass

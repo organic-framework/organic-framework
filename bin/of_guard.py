@@ -294,6 +294,31 @@ def plugin_deny(tool, excluded):
     return None
 
 
+def _service_label(url):
+    """The service's name in an MCP server URL: the label left of the top-level domain (mcp.slack.com -> slack)."""
+    from urllib.parse import urlparse
+    host = (urlparse(str(url or "").replace("*", "")).hostname or "").lower()
+    labels = [x for x in host.split(".") if x]
+    return labels[-2] if len(labels) >= 2 else (labels[0] if labels else "")
+
+
+def connector_deny(tool, excluded):
+    """G22: (url, basis) when TOOL is a tool of a claude.ai connector excluded by the organization, else None. Claude
+    Code names a connector's tools `mcp__claude_ai_<Name>__<tool>` (the account's "claude.ai <Name>"). An entry is
+    matched by its `connector` name when it gives one, else by the service in its url (https://mcp.slack.com/* ->
+    Slack); case is ignored (a user organization's card e2bb5eef, through its structure keeper, msg 01a1d6c3-fe78)."""
+    tool = str(tool or "").lower()
+    if not tool.startswith("mcp__claude_ai_") or "__" not in tool[len("mcp__claude_ai_"):]:
+        return None
+    name = tool[len("mcp__claude_ai_"):].split("__", 1)[0]
+    for e in excluded or []:
+        e = e or {}
+        want = re.sub(r"[^a-z0-9]+", "_", (e.get("connector") or "").lower()).strip("_") or _service_label(e.get("url"))
+        if want and (name == want or name.startswith(want + "_")):
+            return str(e.get("url") or e.get("connector")), e.get("basis") or ""
+    return None
+
+
 def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
