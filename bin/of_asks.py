@@ -441,7 +441,8 @@ def state_from(asks, meta):
     for a in asks:
         st["by_id"][a["event_id"]] = a
         st["by_position"].setdefault(a.get("position"), []).append(a)
-        if "topic_key" in a:  # filed with of ask (the declared path sets it)
+        if "topic_key" in a:  # filed with of ask: project()'s declared path is the one that sets the key, even to
+            # None (tests.test_listen checks that every declared ask carries it)
             st["declared"].setdefault(a.get("position"), []).append(a)
     st["open_by_session"].update({s: st["by_id"][e] for s, e in (meta.get("open_by_session") or {}).items()
                                   if e in st["by_id"]})
@@ -452,7 +453,8 @@ def state_from(asks, meta):
 
 def reader():
     """A read-only connection to the event store: reads in WAL mode never wait on a writer and never write
-    (of_platform's log-readers design, 3.2)."""
+    (of_platform's log-readers design, 3.2). None when the store cannot be opened read-only: never a writing
+    connection in its place (of_platform's note on PR 133)."""
     import sqlite3
     import urllib.parse
     import of_store
@@ -463,7 +465,7 @@ def reader():
         c.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return c
     except sqlite3.Error:
-        return of_store.connect()
+        return None
 
 
 def current_asks(conn=None, tail=TAIL, now=None):
@@ -476,6 +478,8 @@ def current_asks(conn=None, tail=TAIL, now=None):
     own = conn is None
     conn = conn or reader()
     now = now or time.time()
+    if conn is None:  # no read-only store: the empty answer, late
+        return {"asks": [], "cursor": 0, "age_s": None, "late": True}
     # the fold mark, the asks and the tail from one snapshot: the listener commits the view and its mark together, and
     # a mark read one write behind the asks folded the tail twice, an ask coming back twice (of_review on PR 133)
     began = not conn.in_transaction
@@ -491,7 +495,7 @@ def current_asks(conn=None, tail=TAIL, now=None):
             return {"asks": [], "cursor": 0, "age_s": None, "late": True}
         if not meta.get("rowid") and not asks:
             return {"asks": [], "cursor": 0, "age_s": None, "late": True}
-        cursor, age = int(meta.get("rowid") or 0), now - float(meta.get("at") or 0)
+        cursor = int(meta.get("rowid") or 0)
         rows, fetched = [], 0
         for rid, e, ts, n, sid, pos, pl, org, src in conn.execute(
                 "SELECT rowid, event_id, ts, name, session_id, position, payload, org, source FROM event "
@@ -505,6 +509,9 @@ def current_asks(conn=None, tail=TAIL, now=None):
             if relevant(n, src, payload):
                 rows.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos,
                              "payload": payload, "org": org, "rowid": rid})
+        # its age: 0 with nothing unapplied, else from the oldest event it has not applied (of_architect's point 1 on
+        # the design, by of_platform's note on PR 133): a quiet view is current
+        age = (seconds_since(rows[0]["ts"], now) or 0.0) if rows else 0.0
         if fetched > tail or any(r["name"] == "of.prompt_origin" or (r["ts"] or "") < (meta.get("fed") or "")
                                    for r in rows):
             return {"asks": asks, "cursor": cursor, "age_s": age, "late": True}

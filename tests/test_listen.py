@@ -150,6 +150,33 @@ class ListenTest(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))  # each ask once
         self.assertEqual(len(ids), 2)
 
+    def test_current_asks_age_a_declared_asks_key_and_no_writer_in_place_of_a_reader(self):
+        """of_platform's notes on PR 133: a quiet view is current (age 0) and a late one ages from its oldest unapplied
+        event; state_from finds declared asks by topic_key; a store that will not open read-only gives the empty,
+        late answer, never a writing connection."""
+        import of_store
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+        self.ask("Merge PR 2349 now?", ts="2026-11-13T10:00:00.000Z")
+        rec = of_events.record("agent_question", {"detected_by": "declared", "to": "founder", "task": True,
+                                                  "steps": "1. Open the page.", "questions": [{"question": "Log in"}]},
+                               position="t", session="S-t", org="ofb")
+        of_store.add_event(self.conn, rec)
+        of_listen.step(self.conn, procs, cur)
+        self.assertEqual(of_asks.current_asks(self.conn)["age_s"], 0.0)
+        self.assertTrue(all("topic_key" in a for a in of_asks.current_asks(self.conn)["asks"]))  # declared and task
+        self.ask("Rotate the etcd keys?", position="b", ts="2026-11-13T10:01:00.000Z")
+        now = of_asks.seconds_since("2026-11-13T10:01:00.000Z", 0) * -1 + 600  # ten minutes after it
+        self.assertAlmostEqual(of_asks.current_asks(self.conn, now=now)["age_s"], 600, delta=1)
+        saved = of_store.db_path
+        of_store.db_path = lambda: os.path.join(self.tmp.name, "no", "such", "of.db")
+        try:
+            self.assertIsNone(of_asks.reader())
+            self.assertEqual(of_asks.current_asks(), {"asks": [], "cursor": 0, "age_s": None, "late": True})
+        finally:
+            of_store.db_path = saved
+
     def test_a_view_from_before_whole_asks_is_rebuilt(self):
         self.conn.executescript("CREATE TABLE view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, "
                                 "session_id TEXT, position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, "
