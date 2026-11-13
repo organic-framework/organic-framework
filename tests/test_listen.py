@@ -86,6 +86,35 @@ class ListenTest(unittest.TestCase):
             stop.set()
             release.set()
 
+    def test_a_flush_projects_only_the_new_rows_and_rebuilds_when_it_must(self):
+        """2026-11-13: re-projecting every row took 179 s a flush at load ~50. The carried projection gives the same
+        asks; a correction of a prompt's origin, an older row or an event again under its id projects all rows."""
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+
+        def same():
+            want = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
+            self.assertEqual({a["event_id"]: a["state"] for a in of_listen.read_asks(self.conn)}, want)
+        a1 = self.ask("Merge PR 2349 now?", ts="2026-11-13T10:00:00.000Z")
+        self.assertTrue(of_listen.step(self.conn, procs, cur))
+        carried = procs[0].state
+        a2 = self.ask("Rotate the etcd keys?", position="b", ts="2026-11-13T10:05:00.000Z")
+        of_events.emit("agent_question_answered", {"ask_id": a1, "ask_ids": [a1], "by": "owner"})
+        self.assertTrue(of_listen.step(self.conn, procs, cur))
+        self.assertIs(procs[0].state, carried)               # only the new rows, on the same projection
+        same()
+        self.ask("An old one from imported history?", position="c", ts="2026-11-01T09:00:00.000Z")
+        of_listen.step(self.conn, procs, cur)
+        self.assertIsNot(procs[0].state, carried)            # older than what was fed: all rows again
+        same()
+        carried = procs[0].state
+        of_events.emit("prompt_origin", {"event_id": "E-any", "origin": "scheduled"})
+        of_events.emit("agent_question_answered", {"ask_id": a2, "ask_ids": [a2], "by": "owner"})
+        of_listen.step(self.conn, procs, cur)
+        self.assertIsNot(procs[0].state, carried)            # a correction: all rows again
+        same()
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)
