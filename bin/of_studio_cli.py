@@ -29,7 +29,6 @@ def _org(name):
     raise SystemExit(f"of model: no organization {name!r} in orgs.yaml ({', '.join(o['name'] for o in orgs)})")
 
 
-ESCALATIONS_BUDGET_S = 45   # `of model escalations` in the pulse: done well inside its 60 s
 
 
 def _rows(since=None, names=None):
@@ -593,6 +592,25 @@ def coupling_input(args):
     return org, of_model.structure_input(m, rows, a, b, works, hs.values(), of_measures.asks_routed(m, rows))
 
 
+def _escalations_done(org):
+    """{(delegation, condition, evidence)} already recorded as of.escalation_due for the organization: one indexed read
+    of that event name, not the window."""
+    try:
+        import of_store
+        rows = of_store.connect().execute("SELECT payload, org FROM event WHERE name = 'of.escalation_due'").fetchall()
+    except Exception:  # noqa: BLE001 — no store: nothing recorded
+        return set()
+    out = set()
+    for pl, o in rows:
+        try:
+            p = json.loads(pl) if pl else {}
+        except ValueError:
+            continue
+        if o in (None, "", org):
+            out.add((p.get("delegation"), p.get("condition"), tuple(p.get("evidence") or ())))
+    return out
+
+
 def cmd_coupling(args):
     """Who works with whom over --days (default 14), for a structure review (docs/studio.md §2.5): the units' DSM, the
     strongest cross-unit pairs, the works that couple units, each position's load, the positions most depended on,
@@ -738,18 +756,29 @@ def cmd_polls(args):
 
 def cmd_escalations(args):
     """The escalate_when conditions of delegated units that Studio evaluates (docs/handover.md §4); --write records
-    each newly fired one as of.escalation_due, once per (delegation, condition, evidence). of pulse may run it."""
+    each newly fired one as of.escalation_due, once per (delegation, condition, evidence). of pulse runs it every 5
+    minutes: it reads what the page cache's render computed (of_studio.write_escalations), never the log itself
+    (2026-11-14: over the whole 9-day log it was killed at the pulse's 60 s for a user organization every time). --fresh
+    computes from the log instead, by hand."""
     import of_diagnose
     b = time.time()
     args.at = of_model.iso(b)
-    org, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
-    diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
-                                context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)})
-    # the pulse kills its copy at 60 s (of_platform, 88132a8): the usage refresh reads incrementally in what is left
-    left = max(5.0, ESCALATIONS_BUDGET_S - (time.time() - b))
-    esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True, refresh_budget_s=left))
-    done = {((r.get("payload") or {}).get("delegation"), (r.get("payload") or {}).get("condition"),
-             tuple((r.get("payload") or {}).get("evidence") or ())) for r in rows if r["name"] == "of.escalation_due"}
+    org = _org(args.org)
+    if not getattr(args, "fresh", False):
+        esc, age = of_studio.read_escalations(org["name"], b)
+        if esc is None:
+            print(f"of model escalations: {org['name']}: no escalations from the page cache within "
+                  f"{of_studio.ESCALATIONS_FRESH_S // 60} min (" + (f"the last is {age / 60:.0f} min old" if age is not None
+                                                                     else "none written yet") + "); nothing done")
+            return 0
+        done = _escalations_done(org["name"])
+    else:
+        _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
+        diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
+                                    context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)})
+        esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True))
+        done = {((r.get("payload") or {}).get("delegation"), (r.get("payload") or {}).get("condition"),
+                 tuple((r.get("payload") or {}).get("evidence") or ())) for r in rows if r["name"] == "of.escalation_due"}
     written = 0
     for x in esc:
         key = (x["delegation"], x["condition"], tuple(x["evidence"]))
@@ -934,6 +963,7 @@ def main(argv=None):
                     help=f"usage: read new transcript lines first (for at most {of_studio.USAGE_BUDGET_S} s; the pulse does it too)")
     mo.add_argument("--exclude-unit", help="polls: leave out this unit's positions (a unit judged apart)")
     mo.add_argument("--write", action="store_true", help="escalations: record newly fired ones as of.escalation_due")
+    mo.add_argument("--fresh", action="store_true", help="escalations: compute from the log instead of the page cache's result")
     mo.add_argument("--weeks", type=int, default=of_studio.CORRECTION_WEEKS, help="corrections: ISO weeks up to --at")
     mo.add_argument("--days", type=int, help=f"activity, evidence: days of code up to --at (default {of_model.CODE_DAYS}); "
                                               "coupling: days of records (default 14)")
