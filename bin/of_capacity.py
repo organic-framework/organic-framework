@@ -607,8 +607,8 @@ def _session_rows():
     """(ts, session, org, position) from the event store: hook events carry both, of.holder_changed names both
     ends of every move."""
     db = of_events._conn()
-    rows = list(db.execute("SELECT max(ts), session_id, org, position FROM event WHERE session_id IS NOT NULL "
-                           "AND position IS NOT NULL AND position != '' GROUP BY session_id, org, position"))
+    import of_spend  # its view of the (session, position) pairs, kept by a cursor; the log itself only before it
+    rows = [(last, sid, org, pos) for sid, org, pos, _, _, last in of_spend.owner_groups(db) if sid and pos]
     for ts, pl in db.execute("SELECT ts, payload FROM event WHERE name = 'of.holder_changed'"):
         try:
             j = json.loads(pl or "{}")

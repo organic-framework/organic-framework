@@ -3,6 +3,7 @@ goal, and the month's sums."""
 import calendar
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -177,6 +178,54 @@ class Store(unittest.TestCase):
         self.assertTrue(of_spend.tick(self.conn, now, docs_fn=lambda: DOCS))
         self.assertEqual(of_spend.load()["orgs"]["acme"]["works"]["w-retry"]["fresh"], 200)
         self.assertFalse(of_spend.tick(self.conn, now + 60, docs_fn=lambda: DOCS))  # within 30 minutes: kept
+
+    def test_the_event_views_match_the_log_and_follow_it_by_a_cursor(self):
+        """The founder, 2026-11-14 (of_conductor msg 01a1d68e-8ef9): no reader projects the whole log. The groups
+        the attribution reads come from views kept by a cursor, and the sums are the same as from the log."""
+        now = T0 + 2 * 86400
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + 5 * H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + 2 * H, "of.hook", "S2", "acme_b", org=None)
+        self.ev(T0 + 3 * H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        self.ev(T0 + 3.2 * H, "of.holder_changed", None, "acme_b", {"position": "acme_b", "new_session": "S4"})
+        self.rec("S1", "m1", T0 + 2 * H, inp=100, out=0)
+        self.rec("S1", "m2", T0 + 4 * H, inp=200, out=0)
+        self.rec("S4", "m4", T0 + 4 * H, inp=50, out=0)
+        of_spend.ingest(self.conn, now)
+        from_log = of_spend.compute(DOCS, self.conn, now=now)
+        log_groups = sorted(of_spend.owner_groups(self.conn))
+        n, done = of_spend.advance_events(self.conn, batch=2)
+        self.assertEqual((n, done), (5, True))
+        self.assertEqual(sorted(of_spend.owner_groups(self.conn)), log_groups)
+        from_views = of_spend.compute(DOCS, self.conn, now=now)
+        for k in ("orgs", "unowned", "total"):
+            self.assertEqual(from_views[k], from_log[k])
+        self.ev(T0 + 6 * H, "of.hook", "S1", "acme_a")  # only what came since is read
+        self.assertEqual(of_spend.advance_events(self.conn)[0], 1)
+        self.assertEqual([g for g in of_spend.owner_groups(self.conn) if g[0] == "S1"][0][3], 4)  # two hooks, the declaration, the new one
+
+
+class Locked(unittest.TestCase):
+    def test_a_locked_store_ends_the_tick_without_an_error_and_keeps_the_cursor(self):
+        """2026-11-14: a catch-up run stopped on 'database is locked' after the 10 s busy wait."""
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, "s.db")
+            a = sqlite3.connect(path, isolation_level=None, timeout=0.1)
+            a.executescript("""CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, session_id TEXT, position TEXT,
+                source TEXT, org TEXT, payload TEXT);""")
+            a.execute("INSERT INTO event VALUES ('e1', ?, 'of.hook', 'S1', 'acme_a', 'hook', 'acme', '{}')", (iso(T0),))
+            of_spend.advance_events(a, budget_s=1)  # the views exist
+            a.execute("INSERT INTO event VALUES ('e2', ?, 'of.hook', 'S1', 'acme_a', 'hook', 'acme', '{}')", (iso(T0),))
+            b = sqlite3.connect(path, isolation_level=None, timeout=0.1)
+            b.execute("BEGIN IMMEDIATE")  # another writer holds the store
+            self.assertEqual(of_spend.advance_events(a, budget_s=0.6), (0, False))
+            b.execute("COMMIT")
+            self.assertEqual(of_spend.advance_events(a, budget_s=1), (1, True))  # from where it stopped
+            a.close()
+            b.close()
+        finally:
+            shutil.rmtree(d)
 
 
 if __name__ == "__main__":

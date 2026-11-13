@@ -23,6 +23,7 @@ import calendar
 import datetime as dt
 import json
 import os
+import sqlite3
 import time
 
 import of_events
@@ -38,6 +39,18 @@ CREATE TABLE IF NOT EXISTS view_spend_month (message_id TEXT PRIMARY KEY, sessio
   fresh INTEGER, cost REAL);
 CREATE INDEX IF NOT EXISTS view_spend_month_session ON view_spend_month (session_id, epoch);
 """
+# What the attribution reads of the event log, kept by a cursor over its rowid (the founder, 2026-11-14, through
+# of_conductor msg 01a1d68e-8ef9: no reader projects the whole log). view_spend_owner: each (session, organization,
+# position) the events name, with their count and first and last time; org '' for none. view_spend_event: the
+# holder changes and the declarations of a work, the only payloads the attribution reads.
+EVENTS_VERSION = "1"
+EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS view_spend_owner (session_id TEXT NOT NULL, org TEXT NOT NULL, position TEXT NOT NULL,
+  n INTEGER NOT NULL, first_ts TEXT, last_ts TEXT, PRIMARY KEY (session_id, org, position));
+CREATE TABLE IF NOT EXISTS view_spend_event (event_rowid INTEGER PRIMARY KEY, ts TEXT, name TEXT, org TEXT,
+  position TEXT, payload TEXT);
+"""
+EVENTS_BATCH = 20000
 
 
 def cache_path():
@@ -124,15 +137,20 @@ def ingest(conn, now, budget_s=TICK_BUDGET_S, batch=5000):
         # one short write per batch, its cursor with it: the store's other writers (hooks, the listener's views)
         # wait milliseconds, never the whole slice, and a stop loses nothing
         own_tx = not conn.in_transaction
-        if own_tx:
-            conn.execute("BEGIN IMMEDIATE")
+        if own_tx and not _begin(conn, t0 + budget_s):
+            return n, False  # the store stayed locked: this batch again at the next tick, from the cursor
         conn.executemany("INSERT OR REPLACE INTO view_spend_month VALUES (?,?,?,?,?)", keep)
         _meta(conn, "spend_month_cursor", cur)
         if own_tx:
             conn.execute("COMMIT")
+    began = not conn.in_transaction
+    if began and not _begin(conn, time.monotonic() + 5):
+        return n, caught_up  # the prune waits for a tick when the store is free
     if caught_up:
         _meta(conn, "spend_month_caught_up", 1)
     conn.execute("DELETE FROM view_spend_month WHERE epoch < ?", (keep_from,))
+    if began:
+        conn.execute("COMMIT")
     return n, caught_up
 
 
@@ -338,14 +356,96 @@ def summarize(seg_sums, docs, start, end, now, totals=None):
 # ------------------------------------------------------------------ the run
 
 
+def _begin(conn, deadline):
+    """BEGIN IMMEDIATE, tried again while the store is locked by another writer until `deadline` (a monotonic time);
+    False when it never came, so the caller stops this tick and goes on from its cursor at the next."""
+    while True:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            return True
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or time.monotonic() >= deadline:
+                if "locked" in str(e):
+                    return False
+                raise
+            time.sleep(0.5)
+
+
+def advance_events(conn, budget_s=TICK_BUDGET_S, batch=EVENTS_BATCH):
+    """Advance view_spend_owner and view_spend_event over the events after the cursor, within `budget_s` seconds,
+    one short write per batch. Returns (events read, caught up)."""
+    conn.executescript(EVENTS_DDL)
+    if _meta(conn, "spend_events_version") != EVENTS_VERSION:
+        conn.execute("DELETE FROM view_spend_owner")
+        conn.execute("DELETE FROM view_spend_event")
+        _meta(conn, "spend_events_cursor", 0)
+        _meta(conn, "spend_events_caught_up", 0)
+        _meta(conn, "spend_events_version", EVENTS_VERSION)
+    names = ("of.holder_changed",) + DECLARING
+    ph = ",".join("?" * len(names))
+    cur, n, t0, caught_up = int(_meta(conn, "spend_events_cursor") or 0), 0, time.monotonic(), False
+    while time.monotonic() - t0 < budget_s:
+        rows = conn.execute(f"SELECT rowid, ts, name, session_id, org, position, CASE WHEN name IN ({ph}) THEN payload "
+                            "END FROM event WHERE rowid > ? ORDER BY rowid LIMIT ?", names + (cur, batch)).fetchall()
+        if not rows:
+            caught_up = True
+            break
+        groups, keep = {}, []
+        for rid, ts, name, sid, org, pos, pl in rows:
+            if sid and pos:
+                g = groups.setdefault((sid, org or "", pos), [0, ts, ts])
+                g[0] += 1
+                g[1], g[2] = min(g[1] or ts, ts or g[1]), max(g[2] or ts, ts or g[2])
+            if pl is not None and (name == "of.holder_changed" or '"work"' in pl):
+                keep.append((rid, ts, name, org, pos, pl))
+        own_tx = not conn.in_transaction
+        if own_tx and not _begin(conn, t0 + budget_s):
+            return n, False  # the store stayed locked: this batch again at the next tick, from the cursor
+        cur, n = rows[-1][0], n + len(rows)
+        conn.executemany("INSERT INTO view_spend_owner VALUES (?,?,?,?,?,?) ON CONFLICT (session_id, org, position) "
+                         "DO UPDATE SET n = n + excluded.n, first_ts = min(first_ts, excluded.first_ts), "
+                         "last_ts = max(last_ts, excluded.last_ts)",
+                         [(k[0], k[1], k[2], v[0], v[1], v[2]) for k, v in groups.items()])
+        conn.executemany("INSERT OR REPLACE INTO view_spend_event VALUES (?,?,?,?,?,?)", keep)
+        _meta(conn, "spend_events_cursor", cur)
+        if own_tx:
+            conn.execute("COMMIT")
+    if caught_up and _meta(conn, "spend_events_caught_up") != "1":
+        began = not conn.in_transaction
+        if not began or _begin(conn, time.monotonic() + 5):
+            _meta(conn, "spend_events_caught_up", 1)
+            if began:
+                conn.execute("COMMIT")
+    return n, caught_up
+
+
+def _events_ready(conn):
+    try:
+        return _meta(conn, "spend_events_caught_up") == "1" and _meta(conn, "spend_events_version") == EVENTS_VERSION
+    except Exception:  # noqa: BLE001 — a store without the views: the log itself
+        return False
+
+
+def owner_groups(conn):
+    """(session, org, position, count, first ts, last ts) of every pair the events name: from view_spend_owner once
+    it has caught up, else (a store the view never read) from the log itself."""
+    if _events_ready(conn):
+        return conn.execute("SELECT session_id, NULLIF(org, ''), position, n, first_ts, last_ts FROM view_spend_owner"
+                            ).fetchall()
+    return conn.execute("SELECT session_id, org, position, count(*), min(ts), max(ts) FROM event "
+                        "WHERE session_id IS NOT NULL AND position IS NOT NULL AND position != '' "
+                        "GROUP BY session_id, org, position").fetchall()
+
+
 def _store_inputs(docs, conn):
     """The event store's groups, holder changes and declarations, and the registry's holder.session."""
-    groups = conn.execute("SELECT session_id, org, position, count(*), min(ts), max(ts) FROM event "
-                          "WHERE session_id IS NOT NULL AND position IS NOT NULL AND position != '' "
-                          "GROUP BY session_id, org, position").fetchall()
+    groups = [g for g in owner_groups(conn) if g[0] and g[2]]
+    ready = _events_ready(conn)
     canon = canon_map(docs)
     fallback = {}
-    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.holder_changed' ORDER BY ts"):
+    holder_sql = ("SELECT ts, payload FROM view_spend_event WHERE name = 'of.holder_changed' ORDER BY ts" if ready
+                  else "SELECT ts, payload FROM event WHERE name = 'of.holder_changed' ORDER BY ts")
+    for ts, pl in conn.execute(holder_sql):
         try:
             j = json.loads(pl or "{}")
         except ValueError:
@@ -361,9 +461,16 @@ def _store_inputs(docs, conn):
             if sid:
                 fallback[sid] = (org, p["name"])
     ph = ",".join("?" * len(DECLARING))
-    decl_rows = conn.execute(f"SELECT ts, org, position, payload FROM event WHERE name IN ({ph}) "
-                             "AND payload LIKE '%\"work\"%'", DECLARING).fetchall()
+    decl_rows = conn.execute(f"SELECT ts, org, position, payload FROM {'view_spend_event' if ready else 'event'} "
+                             f"WHERE name IN ({ph}) AND payload LIKE '%\"work\"%'", DECLARING).fetchall()
     return owner_spans(groups, canon, fallback), declarations(decl_rows, canon)
+
+
+def advance(conn, now, budget_s=TICK_BUDGET_S):
+    """Both cursors: the month's responses and the events the attribution reads. Returns whether both caught up."""
+    _, a = ingest(conn, now, budget_s=budget_s)
+    _, b = advance_events(conn, budget_s=budget_s)
+    return a and b
 
 
 def compute(docs, conn, month=None, now=None):
@@ -409,8 +516,8 @@ def load(path=None):
 
 
 def tick(conn, now, docs_fn=None):
-    """of_capacity's listener tick: advance the view; recompute the sums at most every REFRESH_S."""
-    _, caught_up = ingest(conn, now)
+    """of_capacity's listener tick: advance the views; recompute the sums at most every REFRESH_S."""
+    caught_up = advance(conn, now)
     last = load()
     if not caught_up or (last and now - (last.get("computed_at") or 0) < REFRESH_S
                          and last.get("month") == _month_name(month_bounds(now=now)[0])):
