@@ -4508,8 +4508,8 @@ def _attention(positions, agents=None):
     import of_pulse
     import of_store
     conn = of_store.connect()
-    rows = of_asks.load(conn)
-    asks = of_asks.project(rows)
+    rows = of_pulse.load_rows(conn)  # as the pulse reads: 7 days and each position's latest declaration
+    asks = of_pulse.current_asks(conn)
     agents = agents if agents is not None else live_agents()
     mem = of_pulse.load_memory()
     idle = {p: v[1] for p, v in (mem.get("panes") or {}).items() if v[0] in ("idle", "done")}
@@ -4526,8 +4526,8 @@ def cmd_pulse(args):
     conn = of_store.connect()
     import time as _t0
     observed = _t0.time()  # what the projection saw: a nudge re-checks declarations after this (of_pulse.still_waits)
-    rows = of_asks.load(conn)
-    asks = of_asks.project(rows)
+    rows = of_pulse.load_rows(conn)  # 7 days and each position's latest declaration, never the whole log
+    asks = of_pulse.current_asks(conn)
     # herdr's agents and those in tmux or screen (of_herdr, 2026-11-11): every pulse path types through
     # of_relay_client.herdr_deliver, which takes tmux: and screen: panes; without herdr the pulse still runs
     agents = live_agents_or_none(warn=False)
