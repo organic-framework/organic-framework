@@ -143,6 +143,49 @@ class SessionConfigTest(unittest.TestCase):
         self.assertTrue(any("slack@anthropic-plugin-directory is not installed" in n for n in c["notes"]))
 
 
+class SharedServerTest(unittest.TestCase):
+    def doc(self):
+        d = dict(DOC, tools=dict(DOC["tools"]))
+        d["tools"]["grafana-read"] = dict(DOC["tools"]["grafana-read"], shared={
+            "port": 18310, "args": ["--transport", "streamable-http", "--address", "127.0.0.1:{port}"],
+            "token_env": "MCP_GRAFANA_SERVER_TOKEN"})
+        return d
+
+    def test_a_running_shared_server_replaces_the_sessions_own(self):
+        d = self.doc()
+        p = next(x for x in d["positions"] if x["name"] == "obs_keeper")
+        s = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme",
+                                    up=lambda port: True)["mcp"]["mcpServers"]["grafana-read"]
+        self.assertEqual(s["url"], "http://127.0.0.1:18310/mcp")
+        self.assertEqual(s["headersHelper"], "/of/bin/of tools header acme/grafana-read --position obs_keeper")
+        self.assertNotIn("command", s)
+        c = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme", up=lambda port: False)
+        self.assertEqual(c["mcp"]["mcpServers"]["grafana-read"]["type"], "stdio")  # not running: its own, as before
+        self.assertTrue(any("is not running" in n for n in c["notes"]))
+
+    def test_serve_command_and_the_header_only_for_the_profile(self):
+        import tempfile
+        d = self.doc()
+        with tempfile.TemporaryDirectory() as st:
+            argv, env = of_tools.serve_command("acme", "grafana-read", d, ofb="/of/bin/of", state_dir=st)
+            self.assertEqual(argv[-4:], ["--transport", "streamable-http", "--address", "127.0.0.1:18310"])
+            self.assertEqual(argv[:3], ["/of/bin/of", "secret", "run"])  # the vault credential still via the broker
+            tok = env["MCP_GRAFANA_SERVER_TOKEN"]
+            self.assertEqual(env["OF_AUTOMATION"], "1")
+            path = os.path.join(st, "tools", "shared", "acme.grafana-read.token")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(of_tools.header("acme", "grafana-read", "obs_keeper", {"acme": d}, state_dir=st),
+                             {"Authorization": f"Bearer {tok}"})
+            with self.assertRaises(of_tools.ToolsError):
+                of_tools.header("acme", "grafana-read", "acme_org", {"acme": d}, state_dir=st)
+
+    def test_check_shared(self):
+        d = self.doc()
+        self.assertEqual(of_tools.check({"acme": d}), [])
+        self.assertIn("acme: tools.grafana-read: shared.port 18310 is also other/grafana-read's",
+                      of_tools.check({"other": self.doc(), "acme": d}))
+
+
 class CheckTest(unittest.TestCase):
     def test_the_example_is_clean(self):
         self.assertEqual(of_tools.check({"acme": DOC}), [])

@@ -103,6 +103,31 @@ So OF does **not** use `--strict-mcp-config`: it would hide the account-bound to
 
 **A session started outside OF** (a bare `claude` in a pane) gets the account's own servers until the accounts are emptied (§6, step 5). The guard then flags its MCP calls (§6, step 4).
 
+### 4a. One shared server per tool on a machine
+
+A local tool server started per session costs one process per session. On 2026-11-14 the founder's laptop ran 83 Grafana tool servers for about 80 sessions, about 25 MB each (`footprint`), while its swap was full (of_architect's hand-over 75265244, organic-framework-build 4f8eb4e, R1). A tool whose server speaks MCP over HTTP runs instead as **one server for the machine**, and each session connects to it.
+
+```yaml
+tools:
+  grafana:
+    kind: mcp-stdio
+    command: [~/tools/mcp-grafana, --disable-write]
+    env: {GRAFANA_URL: "https://grafana.example", GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE: "~/.config/acme/grafana.token"}
+    credential: {id: grafana-viewer}
+    shared:
+      port: 18310                        # unique on the machine; of tools check reports a clash
+      args: [--transport, streamable-http, --address, "127.0.0.1:{port}", --session-idle-timeout-minutes, "0"]
+      path: /mcp                         # the default
+      token_env: MCP_GRAFANA_SERVER_TOKEN  # where the server takes its access token
+```
+
+- **The server.** `of tools shared install` writes one launchd unit per shared tool (`dev.organic-framework.tool.<org>.<tool>`, `OF_AUTOMATION=1`, kept alive), which runs `of tools serve <org>/<tool>`: the entry's command, its credential given as for a session's own server, its `env`, and `shared.args`. It listens on 127.0.0.1 only. `of tools shared status` says whether each port answers.
+- **The access token** is OF's own random value, made at the server's first start, in a mode-600 file under `~/.local/state/of/tools/shared/`. It is never an outside credential, and it is never written into a session's MCP config.
+- **The session.** When the port answers at launch, the session's `--mcp-config` names the tool as `{type: http, url: http://127.0.0.1:<port>/mcp, headersHelper: "of tools header <org>/<tool> --position <name>"}`. Claude Code runs the helper when it connects. The helper prints the `Authorization` header only when the tool is in that position's profile, so the profile still decides. Without the token the server answers 401 (probed, mcp-grafana 1.6.1). Claude Code runs a `headersHelper` only in a trusted folder, and `of spawn` starts sessions only in trusted folders.
+- **Fallback.** When the port does not answer at launch, the session starts its own server, as before, and `of tools plan` notes it.
+- **Limits.** The server acts for one identity, the tool's credential, for every session that uses it; Grafana's audit shows the service account, not the position. One session's heavy query slows the others. A server that restarts drops its sessions' MCP sessions; whether Claude Code reconnects at the next call is checked in the rollout (§4a is being rolled out with Grafana first). `--session-idle-timeout-minutes 0` keeps an idle session's MCP session from being reaped.
+- **The account's own copy.** A user-scope server of the same tool in an account's `.claude.json` still starts in every session on that account. Remove it from each account when the shared server runs (`claude mcp remove <name> -s user` with the account's config folder), or nothing is saved.
+
 ## 5. Account-bound tools and moves
 
 An OAuth tool's sign-in, and a claude.ai connector, exist only on the accounts where someone signed in.

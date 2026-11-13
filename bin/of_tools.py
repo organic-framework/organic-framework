@@ -27,6 +27,9 @@ import argparse
 import json
 import os
 import re
+import secrets
+import shlex
+import socket
 import sqlite3
 import sys
 
@@ -130,6 +133,7 @@ MODES = ("add", "enforce")
 def check(docs):
     """Problems in every registry's `tools:` catalogue and the positions' lists, as strings."""
     out = []
+    ports = {}
     for org, doc in docs.items():
         cat = doc.get("tools")
         names = {p.get("name") for p in doc.get("positions") or [] if isinstance(p, dict)}
@@ -171,6 +175,18 @@ def check(docs):
                     out.append(f"{where}: scope {s} is one of {', '.join(SCOPES)}")
             if kind == "mcp-stdio" and not (isinstance(e.get("command"), list) and e["command"]):
                 out.append(f"{where}: an mcp-stdio tool needs command: [program, args…]")
+            if e.get("shared") is not None:
+                sh = e["shared"]
+                if kind != "mcp-stdio" or not isinstance(sh, dict):
+                    out.append(f"{where}: shared is {{port, args, path, token_env}} on an mcp-stdio tool")
+                elif not isinstance(sh.get("port"), int) or not 1024 < sh["port"] < 65536:
+                    out.append(f"{where}: shared.port is a free TCP port above 1024")
+                else:
+                    if sh["port"] in ports:
+                        out.append(f"{where}: shared.port {sh['port']} is also {ports[sh['port']]}'s")
+                    ports.setdefault(sh["port"], f"{org}/{tid}")
+                    if not isinstance(sh.get("args") or [], list):
+                        out.append(f"{where}: shared.args is a list; {{port}} in it is replaced by the port")
             if kind in ("mcp-remote", "connector") and not e.get("url"):
                 out.append(f"{where}: a {kind} tool needs url")
             if kind == "plugin" and not e.get("plugin"):
@@ -236,6 +252,121 @@ def installed_plugins(config_dir):
         return []
 
 
+# ---------- shared servers (docs/tools.md §4a) ----------
+
+def _shared(e):
+    """The entry's `shared:` settings, or None: one server for every session on the machine (2026-11-14, of_architect's
+    hand-over 75265244: 79 Grafana servers for 78 sessions while the laptop's swap was full)."""
+    sh = e.get("shared") if isinstance(e, dict) and e.get("kind") == "mcp-stdio" else None
+    return sh if isinstance(sh, dict) and isinstance(sh.get("port"), int) else None
+
+
+def shared_label(org, tid):
+    return f"dev.organic-framework.tool.{org}.{tid}"
+
+
+def shared_token(org, tid, create=False, state_dir=None):
+    """The shared server's access token: OF's own random value, never an outside credential, in a mode-600 file."""
+    d = os.path.join(state_dir or STATE_DIR, "tools", "shared")
+    path = os.path.join(d, f"{org}.{tid}.token")
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except FileNotFoundError:
+        if not create:
+            raise ToolsError(f"no access token for the shared server {org}/{tid}: it was never started")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    tok = secrets.token_urlsafe(32)
+    try:
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+            fh.write(tok)
+    except FileExistsError:
+        return shared_token(org, tid, state_dir=state_dir)
+    return tok
+
+
+def port_up(port, timeout=0.3):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def stdio_command(e, doc, ofb):
+    """The server's command line: a credential kept in the vault is given by the broker to the server's process
+    alone; one still kept in a file is read by the server itself."""
+    cmd = [os.path.expanduser(str(x)) for x in e["command"]]
+    c = e.get("credential") if isinstance(e.get("credential"), dict) else None
+    creds = doc.get("credentials") if isinstance(doc.get("credentials"), dict) else {}
+    if c and c.get("id") and (creds.get(c["id"]) or {}).get("ref"):
+        how = ["--file", c["file"]] if c.get("file") else ["--env", c.get("env") or c["id"].upper()]
+        cmd = [ofb, "secret", "run", c["id"], *how, "--", *cmd]
+    return cmd
+
+
+def serve_command(org, tid, doc, ofb=None, state_dir=None):
+    """(argv, env) of the one shared server of tool `tid`, for its launchd unit (`of tools serve org/tid`)."""
+    e = (doc.get("tools") or {}).get(tid)
+    sh = _shared(e)
+    if not sh:
+        raise ToolsError(f"{org}/{tid} is not a shared tool (shared: {{port: …}} on an mcp-stdio entry)")
+    argv = stdio_command(e, doc, ofb or of_bin()) + [str(a).replace("{port}", str(sh["port"]))
+                                                      for a in sh.get("args") or []]
+    env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
+    env.update({str(k): _expand_home(v) for k, v in (e.get("env") or {}).items()})
+    if sh.get("token_env"):
+        env[str(sh["token_env"])] = shared_token(org, tid, create=True, state_dir=state_dir)
+    return argv, env
+
+
+def header(org, tid, position_name, docs, state_dir=None):
+    """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper). Given only to a
+    position whose profile has the tool."""
+    o, p, doc = find_position(position_name, {org: docs[org]} if org in docs else {})
+    if tid not in profile(p, doc):
+        raise ToolsError(f"{tid} is not in {position_name}'s tool profile")
+    sh = _shared((doc.get("tools") or {}).get(tid)) or {}
+    return {"Authorization": f"Bearer {shared_token(org, tid, state_dir=state_dir)}"} if sh.get("token_env") else {}
+
+
+def shared_units(docs, python=None, ofb=None, state_dir=None):
+    """{label: plist text} for every shared tool of every listed organization."""
+    import of_server
+    python, ofb = python or sys.executable, ofb or of_bin()
+    out = {}
+    for org, doc in docs.items():
+        for tid, e in (doc.get("tools") or {}).items() if isinstance(doc.get("tools"), dict) else []:
+            if _shared(e):
+                log = os.path.join(state_dir or STATE_DIR, "tools", "shared", f"{org}.{tid}.log")
+                out[shared_label(org, tid)] = of_server._plist(
+                    shared_label(org, tid), [python, ofb, "tools", "serve", f"{org}/{tid}"], log,
+                    "  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n"
+                    "  <key>ThrottleInterval</key><integer>10</integer>\n")
+    return out
+
+
+def install_shared(docs, uninstall=False, run=None):
+    import subprocess
+    run = run or subprocess.run
+    domain, out = f"gui/{os.getuid()}", []
+    os.makedirs(os.path.join(STATE_DIR, "tools", "shared"), mode=0o700, exist_ok=True)
+    for label, text in shared_units(docs).items():
+        path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+        run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        if uninstall:
+            if os.path.exists(path):
+                os.remove(path)
+            out.append(f"removed {label}")
+            continue
+        with open(path + ".tmp", "w") as fh:
+            fh.write(text)
+        os.replace(path + ".tmp", path)
+        r = run(["launchctl", "bootstrap", domain, path], capture_output=True)
+        out.append(f"{label}: {'loaded' if r.returncode == 0 else 'not loaded (launchctl ' + str(r.returncode) + ')'}")
+    return out
+
+
 def excluded_plugins(doc):
     """Plugin ids the organization never lets a position start with, whatever its account enables
     (`tools_excluded`, each with its basis)."""
@@ -243,7 +374,7 @@ def excluded_plugins(doc):
     return {str(x["plugin"]) for x in ex if isinstance(x, dict) and x.get("plugin")} if isinstance(ex, list) else set()
 
 
-def session_config(position, doc, config_dir=None, ofb=None, installed=None):
+def session_config(position, doc, config_dir=None, ofb=None, installed=None, org=None, up=port_up):
     """{"mcp": the --mcp-config JSON or None, "settings": the --settings keys, "account_bound": [ids],
     "mode": add|enforce, "notes": [str]} for this position on this account.
 
@@ -263,14 +394,19 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
             notes.append(f"{tid}: not in the catalogue; skipped")
             continue
         kind = e.get("kind")
-        if kind == "mcp-stdio":
-            cmd = [os.path.expanduser(str(x)) for x in e["command"]]
-            c = e.get("credential") if isinstance(e.get("credential"), dict) else None
-            creds = doc.get("credentials") if isinstance(doc.get("credentials"), dict) else {}
-            if c and c.get("id") and (creds.get(c["id"]) or {}).get("ref"):  # in the vault: the broker gives it
-                # to the server's process alone; a credential still kept in a file is read by the server itself
-                how = ["--file", c["file"]] if c.get("file") else ["--env", c.get("env") or c["id"].upper()]
-                cmd = [ofb, "secret", "run", c["id"], *how, "--", *cmd]
+        sh = _shared(e) if org else None
+        if sh and up(sh["port"]):  # the machine's one server; the helper gives the token to this profile only
+            s = {"type": "http", "url": f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}"}
+            if sh.get("token_env"):
+                s["headersHelper"] = " ".join(shlex.quote(x) for x in (ofb, "tools", "header", f"{org}/{tid}",
+                                                                       "--position", str(position.get("name"))))
+            servers[tid] = s
+            allowed.append({"serverName": tid})
+        elif kind == "mcp-stdio":
+            if sh:
+                notes.append(f"{tid}: the shared server on port {sh['port']} is not running; this session starts "
+                             f"its own (of tools shared install)")
+            cmd = stdio_command(e, doc, ofb)
             s = {"type": "stdio", "command": cmd[0], "args": cmd[1:]}
             if e.get("env"):
                 # a leading ~, ${HOME} or $HOME expanded here, as in the command: Claude Code expands only the braced
@@ -339,7 +475,7 @@ def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None)
     org, p, doc = find_position(position_name, docs)
     if not doc.get("tools") and not excluded_plugins(doc):
         return [], {}
-    cfg = session_config(p, doc, config_dir)
+    cfg = session_config(p, doc, config_dir, org=org)
     path = write_mcp_config(cfg, sid, state_dir)
     return (["--mcp-config", path] if path else []), cfg["settings"]
 
@@ -557,8 +693,37 @@ def main(argv=None):
     ad.add_argument("server")
     ad.add_argument("--to", required=True)
     ad.add_argument("--force", action="store_true")
+    sv = sub.add_parser("serve", help="run a shared tool's one server for the machine (its launchd unit runs this)")
+    sv.add_argument("tool", help="<org>/<tool id>")
+    hd = sub.add_parser("header", help="the headers a session sends to a shared server (Claude Code's headersHelper)")
+    hd.add_argument("tool", help="<org>/<tool id>")
+    hd.add_argument("--position", required=True)
+    sd = sub.add_parser("shared", help="the shared servers' launchd units: install, uninstall or status")
+    sd.add_argument("action", choices=("install", "uninstall", "status"))
     a = ap.parse_args(argv)
     try:
+        if a.cmd in ("serve", "header"):
+            org, _, tid = a.tool.partition("/")
+            docs = registries()
+            if org not in docs:
+                raise ToolsError(f"no organization {org} in the listed registries")
+            if a.cmd == "header":
+                print(json.dumps(header(org, tid, a.position, docs)))
+                return 0
+            argv_, env = serve_command(org, tid, docs[org])
+            os.execvpe(argv_[0], argv_, env)
+        if a.cmd == "shared":
+            docs = registries()
+            if a.action == "status":
+                for org, doc in docs.items():
+                    for tid, e in (doc.get("tools") or {}).items() if isinstance(doc.get("tools"), dict) else []:
+                        if _shared(e):
+                            port = _shared(e)["port"]
+                            print(f"{org}/{tid}: port {port} {'answers' if port_up(port) else 'does not answer'}")
+                return 0
+            for line in install_shared(docs, uninstall=a.action == "uninstall"):
+                print(line)
+            return 0
         if a.cmd == "inventory":
             inv = inventory(a.days)
             if a.json:
@@ -579,7 +744,7 @@ def main(argv=None):
         if a.cmd == "plan":
             docs = registries()
             org, p, doc = find_position(a.position, docs)
-            cfg = session_config(p, doc, a.config_dir)
+            cfg = session_config(p, doc, a.config_dir, org=org)
             if a.json:
                 print(json.dumps(cfg, indent=1))
                 return 0
