@@ -3549,6 +3549,8 @@ def _diff_check(d):
     _, briefs, _ = of_diff.plan(d, yaml.safe_load(text) or {})
     repo = os.path.dirname(os.path.dirname(path))
     for b in briefs:  # v2: a rule line in the organization's AGENTS.md needs its anchor there, exactly once
+        if b.get("op") == "rename" and os.path.exists(os.path.join(repo, b["path"])):
+            problems.append(f"rename_position: {b['path']} exists already; the brief of {b['from']} cannot move there")
         if b.get("op") == "insert_line":
             try:
                 with open(os.path.join(repo, b["path"])) as fh:
@@ -3574,6 +3576,25 @@ def _diff_check(d):
         shutil.rmtree(root, ignore_errors=True)
     problems += [f"registry after the change: {x}" for x in after if x not in before]
     return problems, notes, new, path, briefs
+
+
+def _move_memory(org, frm, to, positions=None):
+    """rename_position: move the position's memory directory to its new name. Returns what happened, in a line."""
+    import of_memory
+    p = next((x for x in (positions if positions is not None else load_positions()[0])
+              if x.get("name") == to and org in (x.get("_org"), x.get("_orgid"))), None)
+    if p is None:
+        return f"memory: {to} is not in {org}'s registry; nothing moved"
+    if of_memory.scope(p) != "position":
+        return f"memory: {to} keeps its {of_memory.scope(p)} memory ({of_memory.directory(p)}); nothing moved"
+    dst = of_memory.directory(p)
+    src = os.path.join(os.path.dirname(dst), frm)
+    if not os.path.isdir(src):
+        return f"memory: no directory for {frm}; nothing moved"
+    if os.path.exists(dst):
+        return f"memory: {dst} exists already; {src} is left for the structure keeper to merge"
+    os.rename(src, dst)
+    return f"memory: moved {src} -> {dst}"
 
 
 def _diff_events(conn):
@@ -3819,8 +3840,16 @@ def cmd_diff(args):
             new = of_diff.stamp_decided(new, d, str(approval))
         with open(path, "w") as fh:
             fh.write(new)
+        renamed = []
         for b in briefs:
             target = os.path.join(repo, b["path"])
+            if b.get("op") == "rename":  # rename_position: the brief file moves with the name
+                renamed.append(b)
+                old = os.path.join(repo, b["old"])
+                if os.path.exists(old) and not os.path.exists(target):
+                    os.rename(old, target)
+                    written += [old, target]
+                continue
             if b.get("op") == "insert_line":  # v2: one line into AGENTS.md after its anchor, the rest untouched
                 with open(target) as fh:
                     before = fh.read()
@@ -3838,6 +3867,10 @@ def cmd_diff(args):
             with open(target, "w") as fh:
                 fh.write(body if body.endswith("\n") else body + "\n")
             written.append(target)
+        for b in renamed:  # the position's own memory directory follows its name (a unit's or the org's stays)
+            print(_move_memory(d["org"], b["from"], b["to"]))
+            print(f"{b['from']} -> {b['to']}: run of apply to rename the live holder's herdr agent and pane. A grant "
+                  f"naming {b['from']} does not follow the alias: the new name needs a new grant from its issuer.")
         due = of_diff.review_due(d)
         of_events.emit("diff_applied", {"id": d["id"], "kind": d["kind"], "tier": d["tier"], "org": d["org"],
                                         "digest": dg, "files": [os.path.relpath(w, repo) for w in written],
