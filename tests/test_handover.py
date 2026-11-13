@@ -106,6 +106,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class LoadTest(unittest.TestCase):
+    def test_load_reads_by_the_name_index_and_only_hand_overs(self):
+        """2026-11-14: LIKE 'of.handover_%' scanned all 421,000 events for 769 (2.5 s a call)."""
+        import json
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, position TEXT, payload TEXT)")
+        conn.execute("CREATE INDEX event_name_ts ON event (name, ts)")
+        for i, n in enumerate(("of.handover_proposed", "of.handover_accepted", "of.handoverx", "of.handovers",
+                               "of.turn_end", "of.handover_delivered")):
+            conn.execute("INSERT INTO event VALUES (?, ?, ?, 'p', ?)", (f"e{i}", f"2026-11-14T00:0{i}:00Z", n,
+                                                                       json.dumps({"id": "h"})))
+        self.assertEqual([r["name"] for r in of_handover.load(conn)],
+                         ["of.handover_proposed", "of.handover_accepted", "of.handover_delivered"])
+        traced = []
+        conn.set_trace_callback(traced.append)
+        of_handover.load(conn)
+        plan = conn.execute("EXPLAIN QUERY PLAN " + traced[0]).fetchall()
+        self.assertIn("USING INDEX event_name_ts", " ".join(str(r[3]) for r in plan))
+
+
 class BasisTest(unittest.TestCase):
     """docs/handover.md §1.1 (the founder's incident of 2026-11-11 16:58Z: an unconfirmed inference travelled as a
     must and merged as a "compliance requirement")."""
