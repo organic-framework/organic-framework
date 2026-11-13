@@ -127,6 +127,38 @@ class LoadTest(unittest.TestCase):
         self.assertIn("USING INDEX event_name_ts", " ".join(str(r[3]) for r in plan))
 
 
+class ScopesTest(unittest.TestCase):
+    def test_the_listener_keeps_the_scoped_hand_overs_for_the_hook(self):
+        """The read path's 3.6: the hook's mandate check read and projected every hand-over event on each tool call."""
+        import tempfile
+        import of_events
+        import of_listen
+        import of_store
+        with tempfile.TemporaryDirectory() as t:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, t
+            of_events._CONN.clear()
+            try:
+                conn = of_store.connect(os.path.join(t, "of.db"))
+                procs = [of_listen.HandoverScopesProcessor()]
+                cur = of_listen.prepare(conn, procs)
+                of_listen.step(conn, procs, cur)
+                self.assertEqual(of_handover.read_scopes(), {})                 # written at start, empty
+                hid = "01a1d6a6-0000-7000-8000-00000000aaaa"
+                for kind, pl in (("proposed", {"to": "of_b", "title": "t", "done_when": "d", "basis": "inference",
+                                               "scope": {"systems": ["feed"]}}), ("accepted", {})):
+                    rec = of_events.record(f"handover_{kind}", dict(pl, id=hid), position="of_a")
+                    of_store.add_event(conn, rec)
+                of_listen.step(conn, procs, cur)
+                scoped = of_handover.read_scopes()
+                self.assertEqual(list(scoped), [hid])
+                self.assertEqual(of_handover.covering(scoped, "of_b", "feed", None), hid)
+                self.assertIsNone(of_handover.covering(scoped, "of_b", "other", None))
+                conn.close()
+            finally:
+                of_events.STATE_DIR = saved
+                of_events._CONN.clear()
+
+
 class SpooledTest(unittest.TestCase):
     def test_a_hand_over_still_in_the_spool_is_found_by_its_short_id(self):
         """Hand-over 6d9a8305, 2026-11-14: proposed while the store was busy, it sat in the spool, and `of handover

@@ -1281,7 +1281,10 @@ def _mandate_check(hook, sess):
     if v.startswith("owned_by:"):  # work inside an accepted hand-over's scope (docs/handover.md §1.3)
         try:
             import of_handover
-            hid = of_handover.covering(of_handover.project(of_handover.load(of_events._conn())), name, system, path)
+            # the listener's copy (handover-scopes.json); the store only where no listener keeps one
+            scoped = of_handover.read_scopes()
+            hid = of_handover.covering(scoped if scoped is not None else
+                                       of_handover.project(of_handover.load(of_events._conn())), name, system, path)
             if hid:
                 v = f"in_handover:{hid}"
         except Exception:
