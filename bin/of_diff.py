@@ -697,7 +697,7 @@ def plan(d, doc):
             edits.append((lambda t, a=sid, b=frm, e=to: move_system(t, a, b, e), f"move system {sid}: {frm} -> {to}"
                           + (f" (and delegation {', '.join(touched)})" if touched else "")))
             continue
-        if op == "rename_position":  # docs/handover.md §3: tier low on its own
+        if op == "rename_position":  # docs/handover.md §3: medium tier at least (the owner's yes renames a session)
             frm, to = c.get("from"), c.get("to")
             if not frm or not to or set(c) - {"op", "from", "to"}:
                 problems.append(f"changes.registry[{i}]: rename_position takes {{op, from, to}}")
@@ -705,6 +705,9 @@ def plan(d, doc):
             if frm not in names:
                 problems.append(f"changes.registry[{i}]: no position {frm!r}")
                 continue
+            if d.get("tier") not in ("medium", "high"):
+                problems.append(f"changes.registry[{i}]: rename_position is medium tier at least: the owner approves "
+                                f"its exact text, the yes that renaming {frm}'s live session needs")
             if not NAME.match(str(to)):
                 problems.append(f"changes.registry[{i}]: {to!r} is not a position name ({NAME.pattern})")
             taken = {str(n): p.get("name") for p in doc.get("positions") or [] if isinstance(p, dict)
