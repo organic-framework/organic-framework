@@ -127,6 +127,40 @@ class LoadTest(unittest.TestCase):
         self.assertIn("USING INDEX event_name_ts", " ".join(str(r[3]) for r in plan))
 
 
+class SpooledTest(unittest.TestCase):
+    def test_a_hand_over_still_in_the_spool_is_found_by_its_short_id(self):
+        """Hand-over 6d9a8305, 2026-11-14: proposed while the store was busy, it sat in the spool, and `of handover
+        accept 6d9a8305` said no hand-over matched; the full id worked a minute later."""
+        import json
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            state = os.path.join(t, "state")
+            os.makedirs(os.path.join(state, "spool"))
+            os.makedirs(os.path.join(t, "org", "registry"))
+            with open(os.path.join(t, "org", "registry", "positions.yaml"), "w") as fh:
+                fh.write("positions:\n  - {name: of_a, system: of, role: a, kind: project, owner: founder, "
+                         "summary: a, status: active}\n  - {name: of_b, system: of, role: b, kind: project, "
+                         "owner: founder, summary: b, status: active}\n")
+            with open(os.path.join(t, "orgs.yaml"), "w") as fh:
+                fh.write(f"orgs:\n  - name: ofb\n    path: {t}/org\n    workspace: ofb\n")
+            env = dict(os.environ, OF_STATE=state, OF_ORGS=os.path.join(t, "orgs.yaml"), OF_CONFIG_DIR=t,
+                       PATH="/usr/bin:/bin", OF_POSITION="of_b")
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            hid = "01a1d6a6-755b-764a-8366-260c6d9a8305"
+            code = ("import sys, json; sys.path.insert(0, %r); import of_events, of_store; "
+                    "rec = of_events.record('handover_proposed', {'id': %r, 'from': 'of_a', 'to': 'of_b', "
+                    "'title': 't', 'done_when': 'd', 'basis': 'inference'}, position='of_a'); "
+                    "of_store.connect().close(); of_store.spool_append('events.jsonl', rec)"
+                    % (os.path.join(HERE, "..", "bin"), hid))
+            subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            self.assertTrue(os.path.getsize(os.path.join(state, "spool", "events.jsonl")) > 0)
+            r = subprocess.run([sys.executable, os.path.join(HERE, "..", "bin", "of"), "handover", "accept",
+                                hid[-8:], "--from", "of_b"], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("6d9a8305: accepted", r.stdout)
+
+
 class BasisTest(unittest.TestCase):
     """docs/handover.md §1.1 (the founder's incident of 2026-11-11 16:58Z: an unconfirmed inference travelled as a
     must and merged as a "compliance requirement")."""
