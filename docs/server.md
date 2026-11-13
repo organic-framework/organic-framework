@@ -179,6 +179,8 @@ Built 2026-11-05 by `of_server`; the invite flow replaces the tenant-only `POST 
 
 ### Health
 
+**Its own checks** (docs/health.md §2, §5; `of_architect`'s hand-over `154a0cbf`): `server.health`, the longest time in the last three minutes from accepting a `/v1/health` connection to its reply written, degraded over 2 s and failed over 20 s; and `relay.oldest`, the age of the oldest message, other than an fyi, queued for an agent that is live and idle (or done), degraded over 10 minutes and failed over 60. The server judges them every minute, keeps one state each with since when, writes `of.health_changed` only on a change, and serves them to its machines at **`GET /v1/health/checks`** (machine token) for `of health`.
+
 **`GET /v1/health`**: liveness, no authentication. Locally it also reports the queue: `queued`, `queue_bytes`, `drain_rate_bps` (the writer's moving average) and `drain_eta_s`, so a backlog that drains after a large import reads apart from a stall (`writer_error`, or batches waiting with no rate); on a public ingress only `{ok, version}`. **`GET /v1/metrics`**: queue depth and age, writer lag per database, rejects by reason, receipts not yet committed. Tenant only.
 
 ## Processing on the server
@@ -273,6 +275,7 @@ Built today: storage `sqlite` and `clickhouse`, buffer `disk`, blobs `fs`, ident
 - A connection idle in one read or write for `request_timeout` (60 s) is closed, so a client that went away in a sleep holds no thread.
 - `server.log` lines carry their UTC time; replies to clients that had gone (broken pipe, reset, timeout) are counted instead of a traceback each, the count written with the next such reply a minute or more after the last line.
 - The writer tells an unreachable storage (refused, reset, timed out, no route) from an error answer: the batch waits for the network, doubling the pause up to a minute, and spends no attempt. Before, a batch was dead after 8 failures one second apart, so a lost network killed every batch in about 8 seconds. A storage unreachable for 30 minutes raises one `of.server_alert` (`storage_unreachable`) to the owner.
+- The relay is watched the same way (`of relay install|uninstall|watchdog`): its launchd agent runs at `Standard`, every loop (presence, each server's poll and coordination feed) stamps a heartbeat file, and a watchdog restarts a relay process whose loops have not moved for 5 minutes, through 3 minutes of checks, after a stack dump to `relay.log`.
 - `tests/test_server_resilience.py` freezes a real server process as a sleep does while its clients time out, wakes it and expects an answer within 3 s; it takes the storage away and gives it back, and the batch drains.
 
 **A new user** gets profile 1 from `of init` in minutes, with SQLite storage and no other services ([`../README.md`](../README.md), quickstart).

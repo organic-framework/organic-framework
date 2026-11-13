@@ -1109,6 +1109,75 @@ def pull_coord(client, url, org, conn, cursor, me):
     return n
 
 
+# ------------------------------------------------------------ the watchdog (docs/health.md §5)
+
+RELAY_LABEL = "dev.organic-framework.relay"
+RELAY_WATCHDOG_LABEL = "dev.organic-framework.relay-watchdog"
+HEARTBEAT = "relay-heartbeat.json"
+STALE_S = 300   # a loop not seen moving this long: a poll waits at most 30 s, a failed one 5 s, presence 10 s
+
+
+def heartbeat_path():
+    return os.path.join(of_events.STATE_DIR, HEARTBEAT)
+
+
+def write_heartbeat(ticks, now=None):
+    """{ts, pid, loops: {loop: last time it ran}}, written by the presence loop every PRESENCE_CHECK seconds."""
+    path = heartbeat_path()
+    try:
+        with open(path + ".tmp", "w") as fh:
+            json.dump({"ts": time.time() if now is None else now, "pid": os.getpid(), "loops": dict(ticks)}, fh)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
+def relay_healthy(now=None, stale=STALE_S):
+    """(ok, pid, detail): the relay's heartbeat is fresh and every loop ran within `stale` seconds."""
+    now = time.time() if now is None else now
+    try:
+        with open(heartbeat_path()) as fh:
+            hb = json.load(fh)
+    except (OSError, ValueError):
+        return False, None, "no heartbeat"
+    late = sorted(k for k, t in (hb.get("loops") or {}).items() if now - t > stale)
+    if now - hb.get("ts", 0) > stale:
+        return False, hb.get("pid"), f"heartbeat {int(now - hb.get('ts', 0))} s old"
+    return (not late), hb.get("pid"), ("loops behind: " + ", ".join(late)) if late else "ok"
+
+
+def watchdog(now=None, restart=None, dump=None, log=None, installed=None):
+    """One check, run by launchd every minute (`of relay watchdog`): a relay process alive whose loops stopped moving
+    for 3 minutes of checks gets its threads' stacks written to relay.log (SIGUSR1), then a restart, at most once in 15
+    minutes (of_server.watch; docs/health.md §5; of_architect's hand-over 154a0cbf)."""
+    import of_server
+    plist = os.path.expanduser(f"~/Library/LaunchAgents/{RELAY_LABEL}.plist")
+    return of_server.watch("the relay", RELAY_LABEL, lambda: relay_healthy(now)[0], lambda: relay_healthy(now)[1],
+                           os.path.join(of_events.STATE_DIR, "relay-watchdog.json"), now=now, restart=restart,
+                           dump=dump, log=log, installed=installed or (lambda: os.path.exists(plist)),
+                           event="relay_watchdog", silent="has not moved its loops")
+
+
+def install_launchd(uninstall=False, run=None, of_bin=None):
+    """`of relay install|uninstall`: the relay's launchd agent at Standard priority (of_init.UNITS) and its watchdog,
+    one check a minute."""
+    import subprocess
+    import sys
+    import of_init
+    import of_server
+    if sys.platform != "darwin":
+        raise SystemExit("of relay install: launchd only (a Linux host runs the relay under systemd)")
+    unit = next(u for u in of_init.UNITS if u["name"] == "relay")
+    log = os.path.join(of_events.STATE_DIR, "relay.log")
+    of_bin = of_bin or of_init.OF
+    plists = {RELAY_LABEL: of_init.unit_text(unit, "Darwin", of=of_bin, log=log),
+              RELAY_WATCHDOG_LABEL: of_server._plist(
+                  RELAY_WATCHDOG_LABEL, [sys.executable, of_bin, "relay", "watchdog"],
+                  os.path.join(of_events.STATE_DIR, "relay-watchdog.log"),
+                  f"  <key>StartInterval</key><integer>{of_server.WATCHDOG['every']}</integer>\n")}
+    return of_server.load_launchd(plists, uninstall=uninstall, run=run or subprocess.run)
+
+
 def run(load, client_for, servers, default, log=print, stop=None, deliverer=herdr_deliver):
     """load() -> local holders; client_for(url) -> Client. Runs until `stop` is set."""
     stop = stop or threading.Event()
@@ -1120,9 +1189,13 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
         log(f"presence: no holders yet: {type(e).__name__}: {str(e)[:200]}")
         state = {"local": {}}
 
+    ticks = {}
+
     def presence_loop():
         sent_key, sent_at = None, 0.0
         while not stop.is_set():
+            ticks["presence"] = time.time()
+            write_heartbeat(ticks)  # the watchdog's probe: every loop seen moving (docs/health.md §5)
             try:
                 state["local"] = load()
             except Exception as e:  # a registry mid-edit (YAML error): keep the last good holders
@@ -1151,6 +1224,7 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
         c = client_for(url)
         own = of_store.connect()
         while not stop.is_set():
+            ticks[f"poll {url}"] = time.time()
             try:
                 msgs = c.poll_messages(30).get("messages") or []
                 for action, ms, retry in plan_batch(msgs, state["local"]):
@@ -1179,6 +1253,7 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
         me = of_events.machine_id()
         logged = {}
         while not stop.is_set():
+            ticks[f"coord {url}"] = time.time()
             cursor, got = read_coord_cursor(), 0
             before = dict(cursor)
             for org in orgs:

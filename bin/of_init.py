@@ -1245,7 +1245,10 @@ def install_service():
 # units `of relay on|off` and `of listen status|install` work with.
 UNITS = (
     {"name": "relay", "label": "dev.organic-framework.relay", "unit": "of-relay.service",
-     "what": "message delivery between agents (of relay)", "args": ["relay", "run"], "always": False},
+     "what": "message delivery between agents (of relay)", "args": ["relay", "run"], "always": False,
+     # agents wait on it: Standard, no Nice (docs/health.md §5; of_architect's hand-over 154a0cbf; of-server's hang
+     # after a wake ran at Background with Nice 10)
+     "standard": True},
     {"name": "listen", "label": "dev.organic-framework.listen", "unit": "of-listen.service",
      "what": "the listener and its 5-minute pulse: hand-over offers, nudges, the asks (of listen)",
      "args": ["listen", "run"], "always": True},
@@ -1270,6 +1273,8 @@ def unit_text(u, system, py=None, of=None, log=None, path=None):
     if system == "Darwin":
         args = "".join(f"<string>{a}</string>" for a in [py, of] + u["args"])
         keep = "<true/>" if u["always"] else "<dict><key>SuccessfulExit</key><false/></dict>"
+        prio = ("  <key>ProcessType</key><string>Standard</string>\n" if u.get("standard") else
+                "  <key>ProcessType</key><string>Background</string>\n  <key>Nice</key><integer>5</integer>\n")
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -1280,15 +1285,14 @@ def unit_text(u, system, py=None, of=None, log=None, path=None):
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>{keep}
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>ProcessType</key><string>Background</string>
-  <key>Nice</key><integer>5</integer>
-  <key>StandardOutPath</key><string>{log}</string>
+{prio}  <key>StandardOutPath</key><string>{log}</string>
   <key>StandardErrorPath</key><string>{log}</string>
 </dict></plist>
 """
     return (f"[Unit]\nDescription=Organic Framework: {u['what']}\nAfter=of-server.service\n\n[Service]\n"
             f"ExecStart={py} {of} {' '.join(u['args'])}\nEnvironment=OF_AUTOMATION=1\nEnvironment=SSH_AUTH_SOCK=\n"
-            f"Environment=PATH={path}\nRestart={'always' if u['always'] else 'on-failure'}\nRestartSec=10\nNice=5\n\n"
+            f"Environment=PATH={path}\nRestart={'always' if u['always'] else 'on-failure'}\nRestartSec=10\n"
+            f"{'' if u.get('standard') else 'Nice=5' + chr(10)}\n"
             "[Install]\nWantedBy=default.target\n")
 
 
