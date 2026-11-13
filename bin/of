@@ -4470,6 +4470,9 @@ def _current_asks(conn=None, fallback=True):
     return r["asks"]
 
 
+RECENT_ASK_S = 900  # a late view is read with this much of the log on top (of_review on PR 137)
+
+
 def _asks_now(conn=None, quiet=False):
     """Every ask, as of_asks.current_asks gives it: the view and at most its tail of the log, never the whole log
     (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2 and 3.3). A machine with no listener view yet
@@ -4482,10 +4485,21 @@ def _asks_now(conn=None, quiet=False):
             print("of: no listener view of the asks on this machine (`of listen install`); reading the whole log",
                   file=sys.stderr)
         return of_asks.project(of_asks.load(conn or of_store.connect()))
-    if r["late"] and not quiet:
-        print(f"of: the asks as the listener's view held them {int(r['age_s'] or 0)} s ago; it is behind",
-              file=sys.stderr)
-    return r["asks"]
+    if not r["late"]:
+        return r["asks"]
+    # late (more than its tail behind, or a correction in it): the view, with the last RECENT_ASK_S of the log
+    # projected on top, so an ask filed a moment ago is found by its id and a wait on it is accepted (of_review on PR
+    # 137); an ask filed inside that window is whole in it and replaces the view's copy
+    import time as _time
+    import of_store
+    since = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime(_time.time() - RECENT_ASK_S))
+    by_id = {a["event_id"]: a for a in r["asks"]}
+    for a in of_asks.project(of_asks.load(conn or of_store.connect(), since)):
+        by_id[a["event_id"]] = a
+    if not quiet:
+        print(f"of: the listener is behind; the asks are its view of {int(r['age_s'] or 0)} s ago and the log's last "
+              f"{RECENT_ASK_S // 60} minutes", file=sys.stderr)
+    return sorted(by_id.values(), key=lambda a: a.get("ts") or "")
 
 
 def _attention(positions, agents=None):
