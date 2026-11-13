@@ -3607,7 +3607,8 @@ def _move_memory(org, frm, to, positions=None):
     if os.path.exists(dst):
         return f"memory: {dst} exists already; {src} is left for the structure keeper to merge"
     os.rename(src, dst)
-    return f"memory: moved {src} -> {dst}"
+    os.symlink(dst, src)  # the live session keeps the old path until its next start (docs/handover.md §3)
+    return f"memory: moved {src} -> {dst}, with a link at the old path for the live session"
 
 
 def _diff_events(conn):

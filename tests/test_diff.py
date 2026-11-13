@@ -799,8 +799,11 @@ class RenamePositionTest(unittest.TestCase):
 
     REN = {"op": "rename_position", "from": "feed_keeper", "to": "prices_keeper"}
 
+    def ren(self, change=None):
+        return dict(diff("mandate_rewrite", change or self.REN), tier="medium", approvals=["owner"])
+
     def test_every_reference_follows_and_the_old_name_is_an_alias(self):
-        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), REN_REG)
+        new, problems = of_diff.preview(self.ren(), REN_REG)
         self.assertEqual(problems, [])
         doc = yaml.safe_load(new)
         p = {x["name"]: x for x in doc["positions"]}
@@ -826,28 +829,30 @@ class RenamePositionTest(unittest.TestCase):
         self.assertTrue(all("feed_keeper" in a or "aliases" in a for a, _ in changed), changed)  # narrow edits
         self.assertIn("    aliases: [old_feed, feed_keeper]\n", new)                  # in the list's own style
         block = REN_REG.replace("    aliases: [old_feed]\n", "    aliases:\n    - old_feed\n")
-        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), block)
+        new, problems = of_diff.preview(self.ren(), block)
         self.assertEqual(problems, [])
         self.assertIn("    aliases:\n    - old_feed\n    - feed_keeper\n", new)
         none = REN_REG.replace("    aliases: [old_feed]\n", "")
-        new, problems = of_diff.preview(diff("mandate_rewrite", self.REN), none)
+        new, problems = of_diff.preview(self.ren(), none)
         self.assertEqual((problems, yaml.safe_load(new)["positions"][1]["aliases"]), ([], ["feed_keeper"]))
 
     def test_refusals(self):
         for to, expected in (("Prices.Keeper", "is not a position name"), ("helper", "is already a position"),
                              ("old_feed", None)):
-            _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, to=to)), REN_REG)
+            _, p = of_diff.preview(self.ren(dict(self.REN, to=to)), REN_REG)
             if expected:
                 self.assertIn(expected, "\n".join(p))
             else:  # its own old alias may become its name again: the alias list loses it
                 self.assertEqual(p, [])
-        _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, to="x_new", **{"from": "nobody"})), REN_REG)
+        _, p = of_diff.preview(self.ren(dict(self.REN, to="x_new", **{"from": "nobody"})), REN_REG)
         self.assertIn("no position 'nobody'", "\n".join(p))
         reg = REN_REG.replace("  - name: helper\n", "  - name: helper\n    aliases: [prices_keeper]\n")
-        _, p = of_diff.preview(diff("mandate_rewrite", self.REN), reg)
+        _, p = of_diff.preview(self.ren(), reg)
         self.assertIn("'prices_keeper' is already helper's alias", "\n".join(p))
-        _, p = of_diff.preview(diff("mandate_rewrite", dict(self.REN, extra=1)), REN_REG)
+        _, p = of_diff.preview(self.ren(dict(self.REN, extra=1)), REN_REG)
         self.assertIn("rename_position takes", "\n".join(p))
+        _, p = of_diff.preview(diff("mandate_rewrite", self.REN), REN_REG)  # tier low
+        self.assertIn("rename_position is medium tier at least", "\n".join(p))
 
     def test_apply_moves_the_brief_and_the_memory_directory(self):
         import subprocess
@@ -867,8 +872,7 @@ class RenamePositionTest(unittest.TestCase):
                 fh.write(f"orgs:\n  - name: acme\n    path: {t}/org\n    workspace: acme\n")
             diff_file = os.path.join(t, "sd.yaml")
             with open(diff_file, "w") as fh:
-                yaml.safe_dump({"diff": dict(diff("mandate_rewrite", self.REN), id="sd-2026-11-14-rename",
-                                             org="acme", tier="low")}, fh)
+                yaml.safe_dump({"diff": dict(self.ren(), id="sd-2026-11-14-rename", org="acme")}, fh)
             env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=os.path.join(t, "orgs.yaml"),
                        OF_CONFIG_DIR=t, PATH="/usr/bin:/bin")
             env.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -878,10 +882,24 @@ class RenamePositionTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             before = run("registry", "check")  # the fixture is not a whole registry: the rename adds no problem
             r = run("diff", "apply", diff_file)
+            self.assertIn("not proposed in this exact form", r.stdout + r.stderr)  # medium tier: proposed, approved
+            r = run("diff", "propose", diff_file, "--from", "tp_owner", "--ask", "Переименовать feed_keeper?")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            import sqlite3
+            c = sqlite3.connect(os.path.join(t, "state", "of.db"))
+            ask = c.execute("SELECT event_id FROM event WHERE name = 'of.agent_question'").fetchone()[0]
+            c.close()
+            code = ("import sys; sys.path.insert(0, %r); import of_asks_answer; "
+                    "of_asks_answer.record([%r], 'да')" % (os.path.join(HERE, "..", "bin"), ask))
+            subprocess.run([sys.executable, "-c", code], env=env, check=True)
+            r = run("diff", "apply", "sd-2026-11-14-rename")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             briefs = os.listdir(os.path.join(t, "org", "registry", "briefs"))
             self.assertEqual(briefs, ["prices_keeper.md"])
-            self.assertEqual(os.listdir(mem), ["prices_keeper"])
+            self.assertEqual(sorted(os.listdir(mem)), ["feed_keeper", "prices_keeper"])
+            self.assertTrue(os.path.islink(os.path.join(mem, "feed_keeper")))       # the live session's old path
+            with open(os.path.join(mem, "feed_keeper", "MEMORY.md")) as fh:
+                self.assertEqual(fh.read(), "- a fact\n")
             self.assertIn("moved", r.stdout)
             self.assertIn("A grant naming feed_keeper does not follow the alias", r.stdout)
             after = run("registry", "check")
