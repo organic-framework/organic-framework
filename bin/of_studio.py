@@ -2641,6 +2641,7 @@ def _queues_table(qs):
 
 PAGE_STALE_S = 300
 PERIODIC_RENDER_S = 1800   # the listener's tick (every 10 min) renders at most this often; a viewer's stale page at once
+PAGE_CACHE_LAG_OK_S = 2700   # the cache's declared lag (docs/health.md, view.age): a periodic render's spacing and its time
 REFRESH_LOCK_S = 600   # at most one start per this many seconds; the render's flock keeps a second one out
 REFRESH_MAX_S = 1200   # a render still running after this is stopped (SIGALRM): its lock goes with it
 REFRESH_NICE = 10      # renders run below the founder's own work (Ghostty lagged at load ~50, 2026-11-10)
@@ -2776,24 +2777,58 @@ def read_escalations(org, now=None):
     return (doc.get("escalations") if age <= ESCALATIONS_FRESH_S else None), age
 
 
-def last_render(path=None):
-    """When the last render finished (epoch), or None."""
+def last_render(path=None, started=False):
+    """When the last render finished (epoch), or, with `started`, when it began reading; None when none is recorded."""
     try:
         with open(path or os.path.join(_pages_dir(), ".rendered")) as fh:
-            return float(fh.read().split()[0])
+            end, wall = (float(x) for x in fh.read().split()[:2])
+        return end - wall if started else end
     except (OSError, ValueError, IndexError):
         return None
+
+
+REGISTRY_FILE = "registry/positions.yaml"
+
+
+def registry_moved_since(t, orgs_file=None):
+    """The organizations whose registry got a commit (the model reads the committed registry, of_model.registry_at) or
+    whose working file changed after epoch t: one `git log -1` per organization."""
+    import subprocess
+    out = []
+    for o in orgs(orgs_file):
+        repo = os.path.expanduser(o["repo"])
+        try:
+            ct = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%ct", "--", REGISTRY_FILE],
+                                capture_output=True, text=True, timeout=10).stdout.strip()
+            moved = max(float(ct or 0), os.path.getmtime(os.path.join(repo, REGISTRY_FILE)))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if moved > t:
+            out.append(o["name"])
+    return out
+
+
+def page_cache_age(now=None):
+    """The page cache as a view for the health page (docs/health.md, view.age): {name, owner, age_s, lag_ok_s}.
+    Its age is the time since the last render ended (None: never rendered); it is late past lag_ok_s, a periodic
+    render's spacing and the time one takes."""
+    last = last_render()
+    return {"name": "studio.pages", "owner": "of_studio", "lag_ok_s": PAGE_CACHE_LAG_OK_S,
+            "age_s": None if last is None else round((now or time.time()) - last, 1)}
 
 
 def _refresh_in_background(viewer=False):
     """Start `of studio --render-cache` once: a lock file names the running refresh and when it started.
     The listener calls this name every 10 minutes (bin/of_listen.py, of_platform): renaming it needs a note to them.
-    From the listener (viewer False) it renders at most every PERIODIC_RENDER_S; a viewer who meets a stale page
-    starts one at once (2026-11-14: a render every 10 minutes took 262 to 841 s on the founder's Mac, and the last ones
-    hit their 1200 s limit, while nobody looked at most of them)."""
-    if not viewer:
+    From the listener (viewer False) it renders every PERIODIC_RENDER_S, and at once when an organization's registry
+    moved after the last render began, so a page follows the registry and the log, not its viewer (of_architect,
+    2026-11-14: the founder's first open showed a day-old goal tree); a viewer who meets a stale page starts one at once.
+    2026-11-14: a render every 10 minutes took 262 to 841 s on the founder's Mac, and the last ones hit their 1200 s
+    limit, so a page could stay a day old."""
+    if not viewer:   # the log: every PERIODIC_RENDER_S; the registry: as soon as it moved (of_architect, 2026-11-14)
         last = last_render()
-        if last is not None and time.time() - last < PERIODIC_RENDER_S:
+        if last is not None and time.time() - last < PERIODIC_RENDER_S and \
+                not registry_moved_since(last_render(started=True)):
             return False
     lock = os.path.join(_pages_dir(), ".refresh")
     try:

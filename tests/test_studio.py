@@ -1595,6 +1595,35 @@ class PageCacheTest(unittest.TestCase):
                               f"{time.time() - of_studio.PERIODIC_RENDER_S - 1:.0f} 300.0 60.0\n")
         with mock.patch("subprocess.Popen") as popen:
             self.assertTrue(of_studio._refresh_in_background())              # due
+        # the registry moved after the last render began: at once, whatever the spacing
+        os.remove(os.path.join(of_studio._pages_dir(), ".refresh"))
+        of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"), f"{time.time() - 600:.0f} 300.0 60.0\n")
+        self.assertEqual(of_studio.last_render(started=True), of_studio.last_render() - 300.0)
+        with mock.patch.object(of_studio, "registry_moved_since", return_value=["acme"]) as moved, \
+                mock.patch("subprocess.Popen") as popen:
+            self.assertTrue(of_studio._refresh_in_background())
+            popen.assert_called_once()
+        self.assertAlmostEqual(moved.call_args.args[0], of_studio.last_render(started=True))
+        age = of_studio.page_cache_age()
+        self.assertEqual((age["name"], age["owner"], age["lag_ok_s"]), ("studio.pages", "of_studio", of_studio.PAGE_CACHE_LAG_OK_S))
+        self.assertGreaterEqual(age["age_s"], 590)
+
+    def test_a_registry_commit_or_edit_moves_it(self):
+        import subprocess
+        import tempfile
+        repo = tempfile.mkdtemp()
+        git = ["git", "-C", repo, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(git[:3] + ["init", "-q"], check=True)
+        os.makedirs(os.path.join(repo, "registry"))
+        with open(os.path.join(repo, of_studio.REGISTRY_FILE), "w") as fh:
+            fh.write("positions: []\n")
+        subprocess.run(git + ["add", "."], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "r"], check=True)
+        orgs_file = os.path.join(repo, "orgs.yaml")
+        with open(orgs_file, "w") as fh:
+            fh.write(f"orgs:\n  - name: acme\n    path: {repo}\n    paths: [{repo}]\n")
+        self.assertEqual(of_studio.registry_moved_since(time.time() - 3600, orgs_file), ["acme"])
+        self.assertEqual(of_studio.registry_moved_since(time.time() + 5, orgs_file), [])
 
     def test_one_render_at_a_time(self):
         held = of_studio._render_lock()
