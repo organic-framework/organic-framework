@@ -53,13 +53,19 @@ class ReplayTest(unittest.TestCase):
             rules = os.path.join(t, "rules.yaml")
             with open(rules, "w") as fh:
                 fh.write('grants:\n  - {id: bad, subject: "*", effect: deny, scope: {kubectl: {admin: true}}}\n'
-                         '  - {id: ok, subject: "*", effect: deny, scope: {kubectl: {verbs: [exec]}}}\n')
+                         '  - {id: ok, subject: "*", effect: deny, scope: {kubectl: {verbs: [exec]}}}\n'
+                         '  - {id: ok, subject: "*", effect: deny, scope: {kubectl: {pods: true}}}\n'  # a shared id
+                         '  - {subject: "*", effect: deny, scope: {kubectl: {verbs: [cp]}}}\n')         # no id
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 of_guard_replay.main(["org", "--org", "x", "--rules", rules, "--db", os.path.join(t, "of.db")])
         self.assertIn("grant bad not replayed: scope kubectl.admin takes lists of strings", out.getvalue())
         self.assertIn("rule ok (warn): 0 calls", out.getvalue())
         self.assertNotIn("rule bad", out.getvalue())
+        # each grant its own verdict: the second "ok" is refused, the first replayed; a grant with no id replays
+        self.assertIn("grant ok not replayed: scope kubectl.pods is a list of strings", out.getvalue())
+        self.assertEqual(out.getvalue().count("rule ok (warn)"), 1)
+        self.assertIn("rule None (warn): 0 calls", out.getvalue())
 
 
 if __name__ == "__main__":

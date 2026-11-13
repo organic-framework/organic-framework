@@ -209,11 +209,13 @@ def main(argv=None):
         grants = [g for g in doc.get("grants") or []  # proposed or issued
                   if g.get("effect") == "deny" and isinstance((g.get("scope") or {}).get("kubectl"), dict)
                   and not g.get("revoked")]
-        bad = {g.get("id"): of_grants.shape_problems(dict(g, issuer=g.get("issuer") or "tenant")) for g in grants}
-        for gid, problems in bad.items():  # `of grant issue` would refuse these: name them, replay the rest
+        # by position in the file, so grants with no id or a shared id each get their own verdict (of_review and
+        # of_secrets-review on organic-framework PR 107)
+        bad = [of_grants.shape_problems(dict(g, issuer=g.get("issuer") or "tenant")) for g in grants]
+        for g, problems in zip(grants, bad):  # `of grant issue` would refuse these: name them, replay the rest
             if problems:
-                print(f"grant {gid} not replayed: {'; '.join(problems)}")
-        rules = doc.get("rules") or [of_grants.org_rule(g) for g in grants if not bad[g.get("id")]]
+                print(f"grant {g.get('id') or '(no id)'} not replayed: {'; '.join(problems)}")
+        rules = doc.get("rules") or [of_grants.org_rule(g) for g, problems in zip(grants, bad) if not problems]
         rows = session_commands(a.days, a.db, a.org, a.since)
         res = org_replay(rules, rows)
         print(f"{len(rows)} Bash calls in {a.org} sessions since {a.since or str(a.days) + ' days ago'}")
