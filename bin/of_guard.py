@@ -32,7 +32,9 @@ _COPY_VALUE_OPTS = {"-i", "-F", "-o", "-c", "-l", "-P", "-S", "-e", "--rsh", "-T
                     "--chmod", "-f", "--filter", "--files-from", "--out-format"}
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "eval"}
 _INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "osascript"}
-_WRAPPERS = {"sudo", "command", "exec", "nohup", "time", "nice", "stdbuf", "xargs", "builtin", "doas"}
+_WRAPPERS = {"sudo", "command", "exec", "nohup", "time", "nice", "stdbuf", "xargs", "builtin", "doas", "ionice",
+             "caffeinate", "taskset", "chrt", "taskpolicy", "arch", "script"}
+_WRAPPER_POSITIONAL = {"taskset": 1, "chrt": 1, "script": 1}  # a mask, a priority, a typescript file, then the command
 _HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
 _SEPS, _REDIR = set(";&|()\n"), set("<>&")
 
@@ -468,6 +470,9 @@ _WRAPPER_VALUE_OPTS = {
     "xargs": {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
               "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
     "env": {"-u", "--unset", "-C", "--chdir"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
+    "caffeinate": {"-t", "-w"}, "chrt": set(), "taskset": set(),
+    "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p"}, "arch": {"-arch", "-e", "-d"}, "script": {"-F", "-t", "-T"},
 }
 
 
@@ -479,7 +484,8 @@ def _command_words(words):
     i = 0
     while i < len(words):
         w = os.path.basename(words[i])
-        if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "time", "coproc"):
+        # `time` is a wrapper, with its options (G0.6), not a bare keyword: `time -p cat <key>` (of_secrets-review, PR 136)
+        if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc"):
             i += 1
         elif re.match(r"^[A-Za-z_]\w*=", words[i]):
             i += 1
@@ -491,9 +497,17 @@ def _command_words(words):
                     i += 1
                     break
                 i += 2 if words[i] in opts else 1
+            if w in _WRAPPER_POSITIONAL and i < len(words):
+                i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
             i += 1  # env [opts] [VAR=x] cmd ...: the command after it runs
             while i < len(words) and (words[i].startswith("-") or "=" in words[i]):
+                if words[i] in ("-S", "--split-string") and i + 1 < len(words):
+                    try:  # env -S 'cmd args': the string is the command line (of_review on PR 136)
+                        words = words[:i] + shlex.split(words[i + 1]) + words[i + 2:]
+                    except ValueError:
+                        i += 2
+                    continue
                 i += 2 if words[i] in _WRAPPER_VALUE_OPTS["env"] else 1
         else:
             break
@@ -1251,7 +1265,7 @@ _GRANT_KEY_NAME = re.compile(r"(?:^|/)grant_(?:ed25519|ed25519\.pub|1password\.p
 _OWNER_AGENT = re.compile(r"2BUA8C4S2C\.com\.1password|com\.1password/t/agent\.sock", re.I)
 _GRANT_SIGN_CODE = re.compile(r"\b(?:sign_ed25519|cmd_grant)\s*\(")
 # G23 in code: of_tools' token reader or its CLI asked for the header (a tripwire; docs/guard.md G23 Known limits)
-_TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|main\s*\(\s*\[\s*['\"]header)")
+_TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|header\s*\(|main\s*\(\s*\[\s*['\"]header)")
 _REMOVERS = {"rm", "unlink", "shred", "truncate", "mv"}
 _COPIERS = {"cp", "install", "rsync", "ln", "ditto"}
 _IN_PLACE = {"sed", "gsed", "perl", "ruby"}
@@ -1279,6 +1293,38 @@ def _write_targets(stext):
 _PY_VALUE_OPTS = {"-W", "-X", "--check-hash-based-pycs"}   # python options that take the next word as a value
 
 
+_PY_VALUE_LETTERS = "cmWX"   # python's short options that take a value: the rest of the word, else the next word
+
+
+def _py_walk(args):
+    """How python reads ARGS, the getopt way (`-Im of_tools`, `-mof_tools`, `-Ic "…"`): ("module"|"code"|"script",
+    the value, the words after it), or (None, None, []) (of_secrets-review on organic-framework PR 136)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not a.startswith("-") or a == "-":
+            break
+        if a.startswith("--"):
+            i += 2 if a in _PY_VALUE_OPTS else 1
+            continue
+        for j in range(1, len(a)):
+            if a[j] in _PY_VALUE_LETTERS:
+                rest = a[j + 1:]
+                val, used = (rest, 1) if rest else ((args[i + 1] if i + 1 < len(args) else ""), 2)
+                if a[j] == "m":
+                    return "module", val, args[i + used:]
+                if a[j] == "c":
+                    return "code", val, args[i + used:]
+                i += used
+                break
+        else:
+            i += 1
+    return ("script", args[i], args[i + 1:]) if i < len(args) else (None, None, [])
+
+
 def _script_of(head, args):
     """(the script's or module's name, the words after it) when an interpreter runs one, past its own options:
     `python3 -I bin/of grant issue` -> ("of", ["grant", "issue"]), `python3 -m of_tools header` -> ("of_tools.py",
@@ -1286,6 +1332,13 @@ def _script_of(head, args):
     one flag before the script had moved it out of the rule's place)."""
     if head not in _INTERPRETERS:
         return head, args
+    if head.startswith("python"):
+        kind, val, rest = _py_walk(args)
+        if kind == "module":
+            return f"{val}.py", rest
+        if kind == "script":
+            return os.path.basename(val), rest
+        return head, args  # code (_code_deny reads it) or nothing to run
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "-":
         if args[i] == "-m" and i + 1 < len(args):
@@ -2111,6 +2164,11 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                         hit = _code_deny(args[args.index(flag) + 1], _lang(head))
                         if hit:
                             return hit
+                kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
+                if kind == "code":  # `-Ic "…"`, `-c"…"`: python's own reading (of_secrets-review on PR 136)
+                    hit = _code_deny(code, "python")
+                    if hit:
+                        return hit
             if head == "curl":
                 hit = _curl_deny(args)
                 if hit:
