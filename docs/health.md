@@ -3,9 +3,9 @@
 Status: **design**, 2026-11-14, `of_architect`.
 
 **Basis.**
-- The founder asked for a top-level look at where OF's tools fail next (2026-11-13, through `of_conductor`).
-- The review that followed found that the team learns of failures from his screenshots. It was the OF team's private review of 2026-11-14 (S4 and R9).
-- On that review he chose to keep his machine on the working copy, where the team tests. The checks below therefore also catch a broken commit quickly (R3).
+- The founder, 2026-11-13 20:12Z (prompt `01a1d68a-5ab4`, in `of_conductor`'s session): "Let's look once more at the top-level architecture of Organic Framework's tools: where else something may fire, because we keep having an unstable problem."
+- The OF team's review that followed (private, 2026-11-14, S4 and R9) found that the team learns of failures from his screenshots.
+- The founder, 2026-11-13 20:32Z, on that review's question whether his machine should run only released versions (prompt `01a1d69c-a002`): "No, we test right on my machine." His machine stays on the working copy's `main`, so the checks below also catch a broken commit quickly (R3).
 
 ## 1. What it is
 
