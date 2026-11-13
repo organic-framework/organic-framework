@@ -22,6 +22,8 @@ Two lab machines stand in for the laptop and the host, each an organization's OS
 - A non-production session is created under user `alex` (a scripted Claude Code session, as in `lab-quickstart-v0`,
   with the folder-trust and bypass stub so `of capacity carry restore` can resume it), on a signed-in account (stub),
   in a trusted folder under `alex`'s home.
+- The target user `of` has a registry that lists the carried position in its organization, so the restore (which needs
+  `--org` and restores only positions the target registry has in that organization) has an entry to resume.
 - No real organization data or credentials: the session, its account and its folders are synthetic.
 
 **Lab OS and fidelity.** The lab machines are Linux VMs (Lima), and the move's host is macOS; the founder's Mac
@@ -44,7 +46,8 @@ rewrite and install into a scratch home with no resume (docs/capacity.md, "Carry
 |---|-----|-----------------------|-------------------|
 | A1 | prepare | `of capacity carry prepare --only <org> --bundle DIR` as `alex` | `plan.json` names `alex`'s machine, home, uid and the session's account; `files.txt` lists the session's state, memory and scratch; a scratch or task file over 64 MB is left behind and named in the plan. |
 | A2 | copy | `of capacity carry copy --bundle DIR --to of@host:DIR --key FILE` | the bundle reaches the target by rsync over SSH with that key only (`SSH_AUTH_SOCK` empty, `IdentityAgent=none`, background priority, bandwidth limit); the owner's SSH agent is never used; `--from` pulls the same way. |
-| A3 | restore rewrite | `of capacity carry restore --bundle DIR --home <of-home>` as `of` | every path moves from `alex`'s home and uid to `of`'s (home, folder keys `-Users-alex-…` to `-Users-of-…`, tmp root uid), one pass; each record's `message` stays byte for byte; files land only under `of`'s home and tmp root; a different file already there is kept aside in `kept/`. |
+| A3 | restore rewrite | `of capacity carry restore --bundle DIR --org <org> --home <of-home>` as `of` | the restore refuses a bundle for another organization than `--org`; it restores only the positions the target registry has in that organization; a project's folder memory is not carried (the position's own memory directory is). Every path moves from `alex`'s home and uid to `of`'s (home, folder keys `-Users-alex-…` to `-Users-of-…`, tmp root uid), one pass; each record's `message` stays byte for byte; files land only under `of`'s home and tmp root; a different file already there is kept aside in `kept/`. |
+| A3b | org guard | restore the bundle with the wrong `--org`, and restore when the target registry lacks the carried position | the mismatched `--org` is refused; a position the target registry does not have in the organization is not restored. |
 | A4 | **resume (forward)** | the restore resumes the session as `of` | the session resumes under `of`'s user with its context, memory, account, model and mode, in a pane placed by its workspace and tab (never by another machine's pane id); `of.capacity_carry_restored` and `of.holder_changed` (`evidence: of capacity carry restore`) are written. |
 | A5 | **resume (reverse)** | carry the session back to `alex` and resume | the rollback direction resumes under `alex` the same way; the copy that stayed running on the source is never stopped by the carry. |
 | A6 | account guard | restore a session whose target config dir is signed in to another account | the session is **not** resumed and the restore names it (the owner signs in or chooses the account first). |
@@ -69,7 +72,9 @@ organic-framework-build `reports/framework/`.
 ## Status
 
 - Harness: `setup.sh` and `check.py` to build; this README is the spec.
-- **B1 ready:** `of capacity carry prepare|copy|restore` is in (`of_capacity`, 2026-11-13). `of_capacity` verified
+- **B1 ready:** `of capacity carry prepare|copy|restore` is in (`of_capacity`, 2026-11-13; `restore` gained a required
+  `--org <organization>` and restores only positions the target registry has in that organization, folder memory not
+  carried, `of_capacity` 2026-11-14). `of_capacity` verified
   the rewrite and install into a scratch home (539 of 540 conversations byte for byte, 226 working folders moved, no
   resume). The resume across machines in both directions (A4, A5) and the account guard (A6) are this rehearsal's
   part.
