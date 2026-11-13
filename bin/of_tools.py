@@ -185,6 +185,9 @@ def check(docs):
                     if sh["port"] in ports:
                         out.append(f"{where}: shared.port {sh['port']} is also {ports[sh['port']]}'s")
                     ports.setdefault(sh["port"], f"{org}/{tid}")
+                    if not sh.get("token_env"):
+                        out.append(f"{where}: shared.token_env names the variable the server takes its access token "
+                                   f"from; a shared server without one is open to every process on the machine")
                     if not isinstance(sh.get("args") or [], list):
                         out.append(f"{where}: shared.args is a list; {{port}} in it is replaced by the port")
             if kind in ("mcp-remote", "connector") and not e.get("url"):
@@ -258,7 +261,8 @@ def _shared(e):
     """The entry's `shared:` settings, or None: one server for every session on the machine (2026-11-14, of_architect's
     hand-over 75265244: 79 Grafana servers for 78 sessions while the laptop's swap was full)."""
     sh = e.get("shared") if isinstance(e, dict) and e.get("kind") == "mcp-stdio" else None
-    return sh if isinstance(sh, dict) and isinstance(sh.get("port"), int) else None
+    # a shared server without an access token would be open to every process on the machine (of_review, PR 132)
+    return sh if isinstance(sh, dict) and isinstance(sh.get("port"), int) and sh.get("token_env") else None
 
 
 def shared_label(org, tid):
@@ -320,14 +324,54 @@ def serve_command(org, tid, doc, ofb=None, state_dir=None):
     return argv, env
 
 
-def header(org, tid, position_name, docs, state_dir=None):
-    """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper). Given only to a
-    position whose profile has the tool."""
-    o, p, doc = find_position(position_name, {org: docs[org]} if org in docs else {})
-    if tid not in profile(p, doc):
-        raise ToolsError(f"{tid} is not in {position_name}'s tool profile")
-    sh = _shared((doc.get("tools") or {}).get(tid)) or {}
-    return {"Authorization": f"Bearer {shared_token(org, tid, state_dir=state_dir)}"} if sh.get("token_env") else {}
+def _ancestors(pid=None):
+    """[(pid, argv string)] of this process's parents, nearest first (ps; names and arguments only)."""
+    import subprocess
+    out, pid = [], pid or os.getppid()
+    for _ in range(8):
+        r = subprocess.run(["ps", "-o", "ppid=", "-o", "args=", "-p", str(pid)], capture_output=True, text=True)
+        line = r.stdout.strip()
+        if r.returncode or not line:
+            break
+        ppid, _, args = line.partition(" ")
+        out.append((pid, args.strip()))
+        if not ppid.strip().isdigit() or int(ppid) <= 1:
+            break
+        pid = int(ppid)
+    return out
+
+
+def header(org, tid, docs, ancestors=None, state_dir=None):
+    """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper).
+
+    The token goes only to a Claude Code process that OF launched with this tool: the nearest parent started with
+    `--mcp-config <state>/tools/<session>.mcp.json` and `--session-id <session>`, whose file names this tool's shared
+    URL. A position is never taken from the caller's word (of_review, PR 132: a named position handed the token to
+    any caller). An agent's own shell command reaches its own session's file, so it gets the token only when its
+    profile has the tool."""
+    doc = docs.get(org) or {}
+    sh = _shared((doc.get("tools") or {}).get(tid))
+    if not sh:
+        raise ToolsError(f"{org}/{tid} is not a shared tool")
+    want = f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}"
+    tools_dir = os.path.realpath(os.path.join(state_dir or STATE_DIR, "tools"))
+    for _pid, args in (ancestors if ancestors is not None else _ancestors()):
+        argv = args.split()
+        if "--mcp-config" not in argv:
+            continue
+        path = argv[argv.index("--mcp-config") + 1] if argv.index("--mcp-config") + 1 < len(argv) else ""
+        sid = argv[argv.index("--session-id") + 1] if "--session-id" in argv[:-1] else None
+        if not sid or os.path.realpath(path) != os.path.join(tools_dir, f"{sid}.mcp.json"):
+            raise ToolsError("the calling Claude Code session was not launched by OF with its tool profile")
+        try:
+            with open(path) as fh:
+                entry = (json.load(fh).get("mcpServers") or {}).get(tid) or {}
+        except (OSError, ValueError):
+            entry = {}
+        if entry.get("url") != want:
+            raise ToolsError(f"{tid} is not in the calling session's tool profile")
+        return {"Authorization": f"Bearer {shared_token(org, tid, state_dir=state_dir)}"}
+    raise ToolsError("no calling Claude Code session launched by OF")
 
 
 def shared_units(docs, python=None, ofb=None, state_dir=None):
@@ -405,8 +449,7 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None, org
         if sh and up(sh["port"]):  # the machine's one server; the helper gives the token to this profile only
             s = {"type": "http", "url": f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}"}
             if sh.get("token_env"):
-                s["headersHelper"] = " ".join(shlex.quote(x) for x in (ofb, "tools", "header", f"{org}/{tid}",
-                                                                       "--position", str(position.get("name"))))
+                s["headersHelper"] = " ".join(shlex.quote(x) for x in (ofb, "tools", "header", f"{org}/{tid}"))
             servers[tid] = s
             allowed.append({"serverName": tid})
         elif kind == "mcp-stdio":
@@ -708,7 +751,7 @@ def main(argv=None):
     sv.add_argument("tool", help="<org>/<tool id>")
     hd = sub.add_parser("header", help="the headers a session sends to a shared server (Claude Code's headersHelper)")
     hd.add_argument("tool", help="<org>/<tool id>")
-    hd.add_argument("--position", required=True)
+    hd.add_argument("--position", help=argparse.SUPPRESS)  # ignored: configs written before cbc5273 still pass it
     sd = sub.add_parser("shared", help="the shared servers' launchd units: install, uninstall or status")
     sd.add_argument("action", choices=("install", "uninstall", "status"))
     a = ap.parse_args(argv)
@@ -719,7 +762,7 @@ def main(argv=None):
             if org not in docs:
                 raise ToolsError(f"no organization {org} in the listed registries")
             if a.cmd == "header":
-                print(json.dumps(header(org, tid, a.position, docs)))
+                print(json.dumps(header(org, tid, docs)))
                 return 0
             argv_, env = serve_command(org, tid, docs[org])
             os.execvpe(argv_[0], argv_, env)
