@@ -130,10 +130,43 @@ def asks_of(model, rows, who=of_model.HUMAN, effective=None):
     return [k for k, acc in asks_routed(model, rows, effective) if acc == who]
 
 
+def rows_key(rows):
+    """A cheap key for a list of store rows in time order: its length and five event ids spread over it (a page's callers
+    pass the same rows filtered anew, so the list's identity says nothing). None when a sampled row has no id."""
+    n = len(rows)
+    ids = tuple(rows[i].get("event_id") for i in sorted({0, n // 4, n // 2, 3 * n // 4, n - 1}) if 0 <= i < n)
+    return None if None in ids else (n, ids)
+
+
+_ROUTED = collections.OrderedDict()   # the last few projections: one page asks for the same one up to 16 times
+ROUTED_KEEP = 4
+
+
 def asks_routed(model, rows, effective=None):
     """[(ask, recipient)]: every ask of bin/of_asks.py's lifecycle with whom it waits on: the position's accountable
     owner at the ask's time (a delegated unit's owner once its delegation took effect), an escalated copy whom it names,
-    the human owner for a session without a position. Asks the judge called no question are left out."""
+    the human owner for a session without a position. Asks the judge called no question are left out.
+    The same model and rows give the same projection, kept for the next caller (2026-11-14: one user organization's page
+    projected it 16 times, 40 s of its 154); each caller gets its own copies of the ask dicts."""
+    ids = rows_key(rows)
+    if ids is None:   # rows without ids (hand-made): nothing to key on
+        return _asks_routed(model, rows, effective)
+    effective = of_model.delegation_effective(rows) if effective is None else effective   # as _asks_routed would
+    key = (model.get("org"), model.get("at"), ids,
+           hash(tuple(sorted((n, p.get("accountable"), p.get("accountable_before"), p.get("delegation_diff"), p.get("session"))
+                             for n, p in model["positions"].items()))),
+           None if effective is None else tuple(sorted(effective.items(), key=str)))
+    hit = _ROUTED.get(key)
+    if hit is None:
+        hit = _ROUTED[key] = _asks_routed(model, rows, effective)
+        while len(_ROUTED) > ROUTED_KEEP:
+            _ROUTED.popitem(last=False)
+    else:
+        _ROUTED.move_to_end(key)
+    return [(dict(k), acc) for k, acc in hit]
+
+
+def _asks_routed(model, rows, effective=None):
     positions = model["positions"]
     sessions = of_model.session_index(positions)
     named = []
@@ -204,6 +237,28 @@ def little(asks, a, b):
             "open_at_end": sum(1 for k in asks if epoch(k["ts"]) < b and (not k.get("closed_at") or epoch(k["closed_at"]) > b))}
 
 
+_WINDOW_ASKS = collections.OrderedDict()
+
+
+def _window_asks(model, rows, a, b):
+    """Every ask raised in [a, b) by the lifecycle over the window's rows alone (the owner's inbound concentration).
+    The same for every owner of one page: projected once and kept like asks_routed's."""
+    positions = model["positions"]
+    sessions = of_model.session_index(positions)
+    win = [r for r in rows if in_window(r, a, b)]
+    ids = rows_key(win)
+    key = None if ids is None else (model.get("org"), ids, hash(tuple(sorted(sessions.items()))))
+    hit = _WINDOW_ASKS.get(key) if key else None
+    if hit is None:
+        hit = [k for k in of_asks.project(sorted([dict(r, position=of_model.position_of(r, positions, sessions)) for r in win],
+                                                 key=lambda r: epoch(r["ts"]))) if k["state"] != "not_a_question"]
+        if key:
+            _WINDOW_ASKS[key] = hit
+            while len(_WINDOW_ASKS) > ROUTED_KEEP:
+                _WINDOW_ASKS.popitem(last=False)
+    return [dict(k) for k in hit]
+
+
 def owner(model, rows, a, b, who=of_model.HUMAN, version=FA, dead_end_hours=24):
     """All measures of §3.1–3.2 for one owner over [a, b). a, b: ISO strings or epoch seconds."""
     a, b = epoch(a), epoch(b)
@@ -223,9 +278,7 @@ def owner(model, rows, a, b, who=of_model.HUMAN, version=FA, dead_end_hours=24):
          and b - epoch(k["ts"]) >= dead_end_hours * 3600]
         + [k["event_id"] for k in asks if k["state"] == "expired" and a <= epoch(k["closed_at"]) < b])
     # inbound concentration: this owner's share of all asks in the organization
-    all_asks = [k for k in of_asks.project(sorted(
-        [dict(r, position=of_model.position_of(r, positions, sessions)) for r in rows if in_window(r, a, b)],
-        key=lambda r: epoch(r["ts"]))) if k["state"] != "not_a_question"]
+    all_asks = _window_asks(model, rows, a, b)
     mine = [k for k in asks if a <= epoch(k["ts"]) < b]
     non_t = [k for k in mine if positions.get(k.get("position"), {}).get("throughput") not in THROUGHPUT_WORK]
     # in-degree share: requests reaching the owner against all requests between positions (asks to the owner plus peer

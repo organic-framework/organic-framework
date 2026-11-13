@@ -1546,7 +1546,7 @@ class PageCacheTest(unittest.TestCase):
         self.orig = (of_studio._pages_dir, of_studio._refresh_in_background, of_studio.Data)
         of_studio._pages_dir = lambda: self.dir
         self.refreshes = []
-        of_studio._refresh_in_background = lambda: self.refreshes.append(1) or True
+        of_studio._refresh_in_background = lambda **kw: self.refreshes.append(kw.get("viewer")) or True
 
     def tearDown(self):
         of_studio._pages_dir, of_studio._refresh_in_background, of_studio.Data = self.orig
@@ -1579,7 +1579,22 @@ class PageCacheTest(unittest.TestCase):
         body, age = of_studio.cached_page("owner", {"org": "acme"})
         self.assertGreater(age, of_studio.PAGE_STALE_S)
         self.assertIn(b"computed 3 h ago, a newer one is being computed", body)
-        self.assertEqual(self.refreshes, [1])
+        self.assertEqual(self.refreshes, [True])                 # a viewer's: at once
+
+    def test_the_listener_renders_at_most_every_30_minutes(self):
+        from unittest import mock
+        of_studio._refresh_in_background = self.orig[1]
+        of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"), f"{time.time() - 600:.0f} 300.0 60.0\n")
+        with mock.patch("subprocess.Popen") as popen:
+            self.assertFalse(of_studio._refresh_in_background())             # the listener's tick: rendered 10 min ago
+            popen.assert_not_called()
+            self.assertTrue(of_studio._refresh_in_background(viewer=True))    # a viewer met a stale page
+            popen.assert_called_once()
+        os.remove(os.path.join(of_studio._pages_dir(), ".refresh"))
+        of_studio._write_page(os.path.join(of_studio._pages_dir(), ".rendered"),
+                              f"{time.time() - of_studio.PERIODIC_RENDER_S - 1:.0f} 300.0 60.0\n")
+        with mock.patch("subprocess.Popen") as popen:
+            self.assertTrue(of_studio._refresh_in_background())              # due
 
     def test_one_render_at_a_time(self):
         held = of_studio._render_lock()
@@ -1978,6 +1993,49 @@ class GoalTreeTest(unittest.TestCase):
         with mock.patch.object(of_studio, "works_of", return_value=[]):
             d.full = dict(d.full, goals={}, conditions={})
             self.assertIn("No goals in this organization", of_studio.view_goals(d))
+
+
+class EscalationsFromCacheTest(unittest.TestCase):
+    """`of model escalations` (the pulse, every 5 minutes) reads what the page cache's render computed instead of the
+    9-day log, which a user organization's copy could not read within the pulse's 60 s (2026-11-14)."""
+
+    def test_the_render_writes_and_the_command_reads(self):
+        import contextlib
+        import io
+        import types
+        from unittest import mock
+        import of_studio_cli
+        fired = {"delegation": "del-1", "unit": "platform", "to_owner": "plat_owner", "from_owner": "founder",
+                 "condition": "issue.severity >= high", "status": "fired", "evidence": ["i-1"]}
+        quiet = dict(fired, condition="budget_used > 80%", status="quiet", evidence=[])
+        old = dict(fired, evidence=["i-0"])
+        d = types.SimpleNamespace(org="acme", now=time.time(), rows=[], diagnosis={"issues": []},
+                                  full={"org_units": {"platform": {"delegation": {"id": "del-1"}}}})
+        with mock.patch.object(of_studio, "budget_used", return_value={}) as bu, \
+                mock.patch.object(of_studio.of_diagnose, "escalations", return_value=[fired, quiet, old]):
+            self.assertEqual(of_studio.write_escalations(d), 1)
+        self.assertTrue(bu.call_args.kwargs["refresh_usage"])                     # the usage is read incrementally here
+        self.assertEqual(of_studio.write_escalations(types.SimpleNamespace(org="x", full={"org_units": {}})), 0)
+        emitted = []
+        args = types.SimpleNamespace(org="acme", write=True, json=False, fresh=False, at=None)
+        with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
+                mock.patch.object(of_studio_cli, "_escalations_done", return_value={("del-1", "issue.severity >= high", ("i-0",))}), \
+                mock.patch.object(of_studio_cli, "_rows", side_effect=AssertionError("the log is not read")), \
+                mock.patch("of_events.emit", side_effect=lambda *a, **k: emitted.append((a, k))), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            of_studio_cli.cmd_escalations(args)
+        self.assertEqual([(a[1]["condition"], a[1]["evidence"]) for a, _ in emitted], [("issue.severity >= high", ["i-1"])])
+        self.assertIn("written: 1", out.getvalue())
+        # an old file: nothing is done, and the log is still not read
+        with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
+                mock.patch.object(of_studio_cli, "_rows", side_effect=AssertionError("the log is not read")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            esc, age = of_studio.read_escalations("acme", time.time() + of_studio.ESCALATIONS_FRESH_S + 60)
+            self.assertIsNone(esc)
+            self.assertGreater(age, of_studio.ESCALATIONS_FRESH_S)
+            with mock.patch.object(of_studio, "read_escalations", return_value=(None, 3600.0)):
+                of_studio_cli.cmd_escalations(args)
+        self.assertIn("the last is 60 min old); nothing done", out.getvalue())
 
 
 class StructureInputTest(unittest.TestCase):

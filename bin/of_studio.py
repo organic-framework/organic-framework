@@ -638,7 +638,10 @@ class AllData:
 class Data:
     """Everything one page needs, computed once per request from the registry and the local store."""
 
-    def __init__(self, org_name=None, now=None, days=7, orgs_file=None, conn=None, rows=None, source=None, unit=None):
+    def __init__(self, org_name=None, now=None, days=7, orgs_file=None, conn=None, rows=None, source=None, unit=None,
+                 all_rows=None):
+        """all_rows: every organization's rows of kinds() from `now - days - 2` on, read once by a caller computing several
+        organizations (the page cache); the page filters its own from them as if it had read them itself."""
         all_orgs = orgs(orgs_file)
         if not all_orgs:
             raise FileNotFoundError("no organizations listed in orgs.yaml")
@@ -656,7 +659,9 @@ class Data:
             rows = of_asks.apply_prompt_origins([_normalize(r) for r in source.events(self.org, since_iso=since, names=kinds())])
             self.rows = rows
         else:
-            if rows is None:
+            if rows is None and all_rows is not None:
+                rows = all_rows
+            elif rows is None:
                 try:
                     import of_store
                     conn = conn or of_store.connect()
@@ -1695,11 +1700,18 @@ STATE_CLASS = {"waiting": "off", "active": "ok", "quiet": "na", "proposed": "na"
 
 
 def works_of(d):
-    """The works rows for the page's organization (of_works v0, derived), restricted for a unit viewer."""
-    import of_works
+    """The works rows for the page's organization (of_works v0, derived), restricted for a unit viewer. Computed once
+    per page data: the Works and Goals views both read them (2026-11-14: twice, 3 s of CPU each for a user organization)."""
     org = getattr(d, "_org_cfg", None)
     if org is None or getattr(d, "full", None) is None:
         return None
+    if getattr(d, "_works_rows", None) is None:
+        d._works_rows = _works_rows(d, org)
+    return d._works_rows
+
+
+def _works_rows(d, org):
+    import of_works
     have = {r.get("event_id") for r in d.rows if r.get("name") == "of.pr_state"}
     rows = d.rows + [r for r in d.pr_state_rows() if r.get("event_id") not in have]  # an open PR quiet for weeks still shows
     ws = of_works.rows_for(d.full, rows, org, d.now, d.attention if not d.unit else
@@ -2628,6 +2640,7 @@ def _queues_table(qs):
 # computed as before.
 
 PAGE_STALE_S = 300
+PERIODIC_RENDER_S = 1800   # the listener's tick (every 10 min) renders at most this often; a viewer's stale page at once
 REFRESH_LOCK_S = 600   # at most one start per this many seconds; the render's flock keeps a second one out
 REFRESH_MAX_S = 1200   # a render still running after this is stopped (SIGALRM): its lock goes with it
 REFRESH_NICE = 10      # renders run below the founder's own work (Ghostty lagged at load ~50, 2026-11-10)
@@ -2692,16 +2705,27 @@ def render_cache(orgs_file=None, log=None):
 
 
 def _render_cache(orgs_file=None, log=None):
-    t0 = time.time()
+    t0, c0 = time.time(), time.process_time()
     parts, written = [], 0
+    now = time.time()
+    try:   # the window is read once for every organization (2026-11-14: each read every organization's rows)
+        import of_store
+        shared = of_model.load_events(of_store.connect(), since=of_model.iso(now - 9 * DAY), names=kinds())
+    except Exception:  # noqa: BLE001 — each page reads for itself then
+        shared = None
     for o in orgs(orgs_file):
         try:
-            d = Data(o["name"], orgs_file=orgs_file)
+            d = Data(o["name"], now=now, orgs_file=orgs_file, all_rows=shared)
         except (KeyError, OSError) as exc:
             if log:
                 log(f"{o['name']}: not computed: {exc}")
             continue
         parts.append(d)
+        try:
+            written += write_escalations(d)
+        except Exception as exc:  # noqa: BLE001 — the pages still go out
+            if log:
+                log(f"{d.org}: escalations not written: {exc}")
         for view, _ in VIEWS:
             _write_page(_page_path(d.org, view), render(view, d, {"org": d.org}))
             written += 1
@@ -2711,12 +2735,66 @@ def _render_cache(orgs_file=None, log=None):
         whole = AllData(parts) if len(parts) > 1 else parts[0]
         _write_page(_page_path(ALL, "inbox"), render("inbox", whole, {}))
         written += 1
-    return f"{written} pages for {len(parts)} organizations in {time.time() - t0:.1f} s"
+    cpu = time.process_time() - c0
+    _write_page(os.path.join(_pages_dir(), ".rendered"), f"{time.time():.0f} {time.time() - t0:.1f} {cpu:.1f}\n")
+    return f"{written} pages for {len(parts)} organizations in {time.time() - t0:.1f} s ({cpu:.1f} s of CPU)"
 
 
-def _refresh_in_background():
+ESCALATIONS_FRESH_S = 3600   # `of model escalations` (the pulse) reads the render's file while it is this recent:
+# a periodic render every PERIODIC_RENDER_S, plus the render's own time
+
+
+def escalations_path(org):
+    return os.path.join(_pages_dir(), org, "escalations.json")
+
+
+def write_escalations(d):
+    """The escalate_when conditions Studio evaluates (of_diagnose.escalations), from the page data the render has just
+    computed, for `of model escalations` to read: the pulse ran that command every 5 minutes over the whole 9-day log,
+    and for a user organization it was killed at its 60 s limit every time (2026-11-14). The usage of delegated units is read
+    incrementally here first (only new transcript bytes, within USAGE_BUDGET_S). Returns 1 when written."""
+    if not any(u.get("delegation") for u in (d.full.get("org_units") or {}).values()):
+        return 0
+    import json
+    budget = budget_used(d.full, d.rows, d.now, refresh_usage=True, refresh_budget_s=USAGE_BUDGET_S)
+    esc = of_diagnose.escalations(d.full, d.diagnosis, budget)
+    _write_page(escalations_path(d.org), json.dumps({"org": d.org, "computed_at": d.now, "escalations": esc},
+                                                    ensure_ascii=False, default=str))
+    return 1
+
+
+def read_escalations(org, now=None):
+    """(escalations, age in seconds) from the render's file, or (None, age or None) when it is missing or older than
+    ESCALATIONS_FRESH_S."""
+    import json
+    try:
+        with open(escalations_path(org)) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None, None
+    age = (now or time.time()) - float(doc.get("computed_at") or 0)
+    return (doc.get("escalations") if age <= ESCALATIONS_FRESH_S else None), age
+
+
+def last_render(path=None):
+    """When the last render finished (epoch), or None."""
+    try:
+        with open(path or os.path.join(_pages_dir(), ".rendered")) as fh:
+            return float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _refresh_in_background(viewer=False):
     """Start `of studio --render-cache` once: a lock file names the running refresh and when it started.
-    The listener calls this name every 10 minutes (bin/of_listen.py, of_platform): renaming it needs a note to them."""
+    The listener calls this name every 10 minutes (bin/of_listen.py, of_platform): renaming it needs a note to them.
+    From the listener (viewer False) it renders at most every PERIODIC_RENDER_S; a viewer who meets a stale page
+    starts one at once (2026-11-14: a render every 10 minutes took 262 to 841 s on the founder's Mac, and the last ones
+    hit their 1200 s limit, while nobody looked at most of them)."""
+    if not viewer:
+        last = last_render()
+        if last is not None and time.time() - last < PERIODIC_RENDER_S:
+            return False
     lock = os.path.join(_pages_dir(), ".refresh")
     try:
         if time.time() - os.path.getmtime(lock) < REFRESH_LOCK_S:
@@ -2768,7 +2846,7 @@ def cached_page(view, q, now=None):
         return None
     note = ""
     if age > PAGE_STALE_S:
-        _refresh_in_background()
+        _refresh_in_background(viewer=True)
         note = f" · computed {_age(age)} ago, a newer one is being computed: reload in a minute"
     return body.replace("<!--of:age-->", e(note), 1).encode(), age
 
@@ -2892,7 +2970,7 @@ def handle(method, path, query=None, viewer=None, source=None, page=None):
     if page is None and source is None and not unit and d.org and not (set(q) - {"org", "all"}):
         try:   # a cold cache: keep this page, and compute the others in the background
             _write_page(_page_path(d.org, view, bool(q.get("all")) and view == "coverage"), body)
-            _refresh_in_background()
+            _refresh_in_background(viewer=True)
         except OSError:
             pass
     return 200, "text/html; charset=utf-8", body.encode()
