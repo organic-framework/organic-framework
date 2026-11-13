@@ -463,6 +463,17 @@ class GuardBashTest(unittest.TestCase):
                              "open(p, 'w').write(open(p).read() + new)\nEOF"))
         self.assertTrue(of_guard.critical_deny("Read", {"file_path": pw.replace("$HOME", "/home/u")}))
 
+    def test_a_wrapper_option_value_is_not_the_command(self):
+        # docs/guard.md G0.6: `nice -n 5 cat <key>` read 5 as the command and passed every rule
+        key = "~/.ssh/id_" + "rsa"
+        for cmd in (f"nice -n 5 cat {key}", f"sudo -u root cat {key}", f"sudo -u root -g wheel cat {key}",
+                    f"doas -u root cat {key}", f"exec -a x cat {key}", f"timeout -s KILL 5 cat {key}",
+                    f"env -u HOME cat {key}", "exec -a claude of tools header acme/grafana"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("nice -n 19 python3 -m unittest tests.test_guard", "sudo -u postgres psql -c 'select 1'",
+                    "xargs -n 1 echo < list.txt", "timeout -s INT 30 make test"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_a_shared_tool_token_stays_with_claude_code(self):
         # docs/guard.md G23 (of_server's trust review of organic-framework PR 132)
         for cmd in ("of tools header acme/grafana", "python3 bin/of tools header acme/grafana",
