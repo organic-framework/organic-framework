@@ -212,9 +212,9 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
     _write_private(os.path.join(out_dir, "files.txt"), "".join(f + "\n" for f in files))
     for e in entries:
         log(f"{e['name']:28} {of_capacity.short(e['config_dir']):26} {e.get('account') or '?':30} {e['model'] or '?'}")
-    secret = sum(1 for x in skipped if x.get("reason") == "secret path")
+    withheld = sum(1 for x in skipped if x.get("reason") == "secret path")  # a count; no path or value is printed
     log(f"{len(entries)} session(s), {len(files)} file(s), {size / 1e6:.0f} MB in {out_dir}"
-        + (f"; left behind: {secret} at secret paths, {len(skipped) - secret} over {SKIP_LARGER >> 20} MB "
+        + (f"; left behind: {withheld} at secret paths, {len(skipped) - withheld} over {SKIP_LARGER >> 20} MB "
            f"(named in plan.json)" if skipped else ""))
     return plan
 
