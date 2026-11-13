@@ -155,6 +155,10 @@ def org_registries(orgs_file=ORGS_FILE):
 def load_positions(orgs_file=ORGS_FILE, deep=False):
     """Return (positions, problems). A position is a dict with an added `_file` and `_org`."""
     positions, problems, seen = [], [], {}
+    # Each registry is parsed once here, and the later passes use that parse. A second read could catch a structure
+    # keeper's write half done: of inbox died on a user organization's registry that parsed a moment later
+    # (2026-11-13).
+    docs = {}
     for org, path, workspace in org_registries(orgs_file):
         rel = f"{org}:registry/positions.yaml"
         if not os.path.exists(path):
@@ -179,6 +183,12 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             if org not in _WARNED_HEAD:
                 _WARNED_HEAD.add(org)
                 print(f"of: warning: {msg}", file=sys.stderr)
+        # the positions below are tagged in place (_file, _org, ...): the deep checks read them as written
+        if deep:
+            import copy
+            docs[org] = copy.deepcopy(doc)
+        else:
+            docs[org] = {k: v for k, v in doc.items() if k != "positions"}
         for p in doc.get("positions") or []:
             name = p.get("name", "")
             if not isinstance(p, dict):
@@ -235,7 +245,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                                 "quote the value" if cut else
                                 f"{WARN}{rel}: ' {com[:30]}' after the value: if it is text, quote the value; "
                                 "if it is a comment, put two spaces before the hash")
-            doc = yaml.safe_load(text) or {}
+            doc = docs.get(org) or {}
             names = {p["name"] for p in positions if p.get("_org") == org}
             roots = _org_paths(orgs_file).get(org, [])
             problems += [f"{org}:registry/positions.yaml: systems: {pr}"
@@ -265,9 +275,8 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                 doc, [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")])]
     for org, path, _ in org_registries(orgs_file):
         units = next((p["_units"] for p in positions if p.get("_org") == org), None)
-        if units is None and os.path.exists(path) and org not in BROKEN:
-            with open(path) as fh:
-                units = (yaml.safe_load(fh) or {}).get("units")
+        if units is None and org not in BROKEN:
+            units = (docs.get(org) or {}).get("units")
         if units is not None:
             names = {p["name"] for p in positions if p.get("_org") == org}
             systems = next((p["_systems"] for p in positions if p.get("_org") == org), {})
@@ -286,10 +295,9 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             if isinstance(u, dict) and u.get("memory") is not None and u["memory"] not in MEMORY_SCOPES:
                 problems.append(f"{rel}: units: {uid}: memory {u['memory']!r} is not one of {', '.join(MEMORY_SCOPES)}")
     for org, path, _ in org_registries(orgs_file):  # works: (docs/works.md, step 1)
-        if org in BROKEN or not os.path.exists(path):
+        if org in BROKEN or org not in docs:
             continue
-        with open(path) as fh:
-            doc = yaml.safe_load(fh) or {}
+        doc = docs[org]
         works = doc.get("works")
         if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
             import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
@@ -5214,6 +5222,34 @@ def cmd_capacity(args):
         rows = of_capacity.creds()
         print(json.dumps(rows, indent=1) if args.json else of_capacity.format_creds(rows))
         return 0
+    if args.action == "carry":  # sessions to another machine and back (bin/of_carry.py; agent host plan §3 B1)
+        import of_carry
+        step = args.position
+        only = {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
+        bundle = os.path.expanduser(args.bundle) if args.bundle else None
+        try:
+            if step == "prepare":
+                bundle = bundle or os.path.join(of_capacity.STATE_DIR, "capacity", "carry",
+                                                time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+                of_carry.prepare(positions, only, bundle)
+                print(f"bundle: {bundle}")
+            elif step == "copy" and bundle:
+                of_carry.copy(bundle, args.key, to=args.to, frm=args.src, bwlimit=args.bwlimit or of_carry.BWLIMIT_KBPS,
+                              dry_run=args.dry_run)
+            elif step == "restore" and bundle:
+                import of_spawn
+                done = of_carry.restore(bundle, positions, only=only, dry_run=args.dry_run,
+                                        home=os.path.expanduser(args.home) if args.home else None,
+                                        of_bin=os.path.realpath(__file__),
+                                        place_of=lambda p: of_spawn.place(p, want_workspace))
+                return 1 if any(s == "failed" for _, s, _ in done) else 0
+            else:
+                raise OfError("usage: of capacity carry prepare --only <org|positions> [--bundle DIR] | "
+                              "copy --bundle DIR (--to|--from) user@host:DIR --key FILE [--bwlimit KBPS] [--dry-run] | "
+                              "restore --bundle DIR [--home DIR] [--only a,b] [--dry-run]")
+        except (of_carry.CarryError, of_capacity.MoveError) as e:
+            raise OfError(f"capacity carry: {e}")
+        return 0
     if args.action == "reboot":  # the Mac restarts (founder, 2026-11-10): prepare before, restore after
         step = args.position or "status"
         try:
@@ -5806,7 +5842,8 @@ def main(argv=None):
     co.set_defaults(fn=cmd_corrections)
     cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
-                                                  "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend"],
+                                                  "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",
+                                                  "carry"],
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
@@ -5838,7 +5875,13 @@ def main(argv=None):
     cp.add_argument("--dry-run", "-n", action="store_true", help="move: checks and the plan only")
     cp.add_argument("--allow-shells", action="store_true", help="move: stop the session's background shells")
     cp.add_argument("--pane", help="resume: the herdr pane to start the session in")
-    cp.add_argument("--only", help="reboot restore: these positions only, comma-separated")
+    cp.add_argument("--only", help="reboot restore, carry restore: these positions only, comma-separated; carry "
+                                   "prepare: the organization or positions to carry")
+    cp.add_argument("--bundle", help="carry: the bundle directory (prepare: default under the capacity state)")
+    cp.add_argument("--from", dest="src", help="carry copy: pull a bundle prepared on user@host:DIR")
+    cp.add_argument("--key", help="carry copy: the SSH key file (never the owner's SSH agent)")
+    cp.add_argument("--bwlimit", type=int, help="carry copy: KB/s (default 25000)")
+    cp.add_argument("--home", help="carry restore: the home the paths are rewritten to (default: this user's)")
     cp.add_argument("--into", help="move from Zellij: the herdr WORKSPACE/TAB to resume in (default: the unit's "
                                    "workspace and the system's tab)")
     cp.add_argument("--assume-empty-input", dest="assume_empty_input", action="store_true",

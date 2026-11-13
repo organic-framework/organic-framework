@@ -88,6 +88,35 @@ class RegistryTest(unittest.TestCase):
             self.assertIn("has no segment", deep)
             self.assertIn("nobody_here", quick)  # a problem still prints everywhere
 
+    def test_each_registry_is_parsed_once(self):
+        """2026-11-13: of inbox died on a user organization's registry that its keeper was writing: load_positions
+        read it again for its works and units, and the second read caught the write half done."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_x, system: acme, role: x, status: active}
+                units: {}
+                works:
+                  w-b: {title: B, kind: speed, owner: nobody_here}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: wk, path: %s/org}\n" % root)
+            of.BROKEN.discard("wk")
+            real, calls = of.yaml.safe_load, []
+            def once(stream, *a, **k):  # the registry parses once, then reads as half written
+                if not str(getattr(stream, "name", "")).endswith("positions.yaml"):
+                    return real(stream, *a, **k)
+                calls.append(1)
+                if len(calls) > 1:
+                    raise of.yaml.YAMLError("mapping values are not allowed here")
+                return real(stream, *a, **k)
+            for deep in (False, True):
+                calls.clear()
+                with mock.patch.object(of.yaml, "safe_load", once):
+                    positions, problems = of.load_positions(os.path.join(root, "conf/orgs.yaml"), deep=deep)
+                self.assertEqual([p["name"] for p in positions], ["acme_x"])
+                self.assertIn("nobody_here", "\n".join(problems))   # the works were still checked
+
     def test_a_broken_working_copy_falls_back_to_the_last_commit(self):
         """A user organization, 2026-11-11: one minute of invalid YAML mid-edit failed every session's of send and of inbox."""
         with tempfile.TemporaryDirectory() as root:
