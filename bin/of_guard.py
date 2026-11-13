@@ -340,6 +340,9 @@ def _code_deny(code, lang=None):
         lits = _block_words(code) + [m.group(2).strip() for m in _LITERAL.finditer(carried)]
     if _ENV_DUMP_CODE.search(bare):
         return _prints("the whole environment")
+    if _TOOL_TOKEN_CODE.search(re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)):  # G23 in code;
+        # a triple-quoted block is text an edit carries (G8), not a call (of_secrets-review on organic-framework PR 136)
+        return TOOL_TOKEN_DENY, "of_tools in code"
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
     for lit in lits:
@@ -1247,6 +1250,8 @@ _GRANT_KEY_NAME = re.compile(r"(?:^|/)grant_(?:ed25519|ed25519\.pub|1password\.p
 # socket could put a Touch ID prompt in front of him for a signature he did not start.
 _OWNER_AGENT = re.compile(r"2BUA8C4S2C\.com\.1password|com\.1password/t/agent\.sock", re.I)
 _GRANT_SIGN_CODE = re.compile(r"\b(?:sign_ed25519|cmd_grant)\s*\(")
+# G23 in code: of_tools' token reader or its CLI asked for the header (a tripwire; docs/guard.md G23 Known limits)
+_TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|main\s*\(\s*\[\s*['\"]header)")
 _REMOVERS = {"rm", "unlink", "shred", "truncate", "mv"}
 _COPIERS = {"cp", "install", "rsync", "ln", "ditto"}
 _IN_PLACE = {"sed", "gsed", "perl", "ruby"}
@@ -1271,6 +1276,28 @@ def _write_targets(stext):
             not w.endswith("&") and toks[k + 1] not in _DEV_STREAMS and not toks[k + 1].isdigit()]
 
 
+_PY_VALUE_OPTS = {"-W", "-X", "--check-hash-based-pycs"}   # python options that take the next word as a value
+
+
+def _script_of(head, args):
+    """(the script's or module's name, the words after it) when an interpreter runs one, past its own options:
+    `python3 -I bin/of grant issue` -> ("of", ["grant", "issue"]), `python3 -m of_tools header` -> ("of_tools.py",
+    ["header"]); else (head, args). Shared by G13 and G23 (of_review and of_secrets-review on organic-framework PR 136:
+    one flag before the script had moved it out of the rule's place)."""
+    if head not in _INTERPRETERS:
+        return head, args
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "-m" and i + 1 < len(args):
+            return f"{args[i + 1]}.py", args[i + 2:]
+        if args[i] in ("-c", "-e"):
+            return head, args  # code: _code_deny reads it
+        i += 2 if args[i] in _PY_VALUE_OPTS else 1
+    if i < len(args):
+        return os.path.basename(args[i]), args[i + 1:]
+    return head, args
+
+
 TOOL_TOKEN_DENY = ("a shared tool server's access token, which only Claude Code reads, through the helper it runs "
                    "itself when it connects (docs/guard.md G23; docs/tools.md §4a)")
 
@@ -1279,9 +1306,7 @@ def _tool_token_deny(head, args):
     """G23: `of tools header` from an agent's command line would print a shared tool server's token into its
     transcript. Claude Code runs that helper as its own child, which no Bash call is (of_server's trust review of
     organic-framework PR 132)."""
-    words = args
-    if head in _INTERPRETERS and args and os.path.basename(args[0]) in ("of", "of_tools.py"):
-        head, words = os.path.basename(args[0]), args[1:]
+    head, words = _script_of(head, args)
     if any(w in ("-h", "--help") for w in words):
         return None
     if (head == "of" and words[:2] == ["tools", "header"]) or (head == "of_tools.py" and words[:1] == ["header"]):
@@ -1291,9 +1316,7 @@ def _tool_token_deny(head, args):
 
 def _grant_deny(head, args, stext):
     """(reason, token) for G13 on one simple command, else None."""
-    words = args
-    if head in _INTERPRETERS and args and os.path.basename(args[0]) == "of":  # python3 bin/of grant issue
-        head, words = "of", args[1:]
+    head, words = _script_of(head, args)  # python3 [-I …] bin/of grant issue
     if _OWNER_AGENT.search(stext):
         return GRANT_DENY, "the owner's 1Password SSH agent"
     if head == "of" and words[:1] == ["grant"] and len(words) > 1 and words[1] in ("issue", "revoke", "rekey") and \
