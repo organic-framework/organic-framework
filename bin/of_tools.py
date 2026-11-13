@@ -140,6 +140,17 @@ def check(docs):
         cat = cat or {}
         if doc.get("tools_mode", "add") not in MODES:
             out.append(f"{org}: tools_mode is add or enforce")
+        ex = doc.get("tools_excluded")
+        if ex is not None and not isinstance(ex, list):
+            out.append(f"{org}: tools_excluded is a list of {{plugin, basis}}")
+            ex = []
+        for i, x in enumerate(ex or []):
+            if not isinstance(x, dict) or not x.get("plugin") or not x.get("basis"):
+                out.append(f"{org}: tools_excluded[{i}] needs plugin and basis (the owner's ask id or a source)")
+        banned = excluded_plugins(doc)
+        for tid, e in cat.items():
+            if isinstance(e, dict) and e.get("kind") == "plugin" and e.get("plugin") in banned:
+                out.append(f"{org}: tools.{tid}: plugin {e['plugin']} is in tools_excluded")
         for tid, e in cat.items():
             where = f"{org}: tools.{tid}"
             if not ID_RE.match(str(tid)):
@@ -225,6 +236,13 @@ def installed_plugins(config_dir):
         return []
 
 
+def excluded_plugins(doc):
+    """Plugin ids the organization never lets a position start with, whatever its account enables
+    (`tools_excluded`, each with its basis)."""
+    ex = doc.get("tools_excluded")
+    return {str(x["plugin"]) for x in ex if isinstance(x, dict) and x.get("plugin")} if isinstance(ex, list) else set()
+
+
 def session_config(position, doc, config_dir=None, ofb=None, installed=None):
     """{"mcp": the --mcp-config JSON or None, "settings": the --settings keys, "account_bound": [ids],
     "mode": add|enforce, "notes": [str]} for this position on this account.
@@ -238,6 +256,7 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
     ids = profile(position, doc)
     ofb = ofb or of_bin()
     servers, allowed, plugins_on, bound, notes = {}, [], set(), [], []
+    banned = excluded_plugins(doc)
     for tid in ids:
         e = cat.get(tid)
         if not isinstance(e, dict):
@@ -269,6 +288,9 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
             allowed.append({"serverUrl": e["url"]})
             bound.append(tid)
         elif kind == "plugin":
+            if e["plugin"] in banned:
+                notes.append(f"{tid}: plugin {e['plugin']} is in tools_excluded; skipped")
+                continue
             plugins_on.add(e["plugin"])
             if e.get("url"):
                 allowed.append({"serverUrl": e["url"]})
@@ -282,9 +304,14 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None):
     if plugins:
         settings["enabledPlugins"] = plugins
     if mode == "add":
-        settings = {}
+        # enabledPlugins in --settings merges per entry (docs/tools.md §4), so naming only the excluded plugins
+        # turns them off and leaves the account's other plugins as they are (2026-11-14, a user organization:
+        # no agent acts as its owner in Slack, while one account still enables the Slack plugin)
+        settings = {"enabledPlugins": {p: False for p in sorted(banned)}} if banned else {}
         notes.append("tools_mode add: the profile's portable servers are added and the account's own tools stay; "
                      "the keeper sets tools_mode: enforce once the catalogue is complete")
+    elif banned:
+        settings["enabledPlugins"] = dict(plugins, **{p: False for p in banned})
     return {"position": position.get("name"), "tools": ids, "mcp": {"mcpServers": servers} if servers else None,
             "settings": settings, "account_bound": bound, "mode": mode, "notes": notes}
 
