@@ -59,6 +59,13 @@ class Paths(unittest.TestCase):
         untouched = line({"type": "user", "cwd": "/srv/x", "message": {"content": "hi"}}).encode()
         self.assertEqual(rw.transcript(untouched), untouched)  # a line it does not touch stays byte for byte
 
+    def test_a_string_cut_inside_an_emoji_is_written_escaped(self):
+        """of_review on PR 116: JSON.stringify writes a lone surrogate as \\ud83d; written back it raised."""
+        rw = of_carry.Rewriter("/Users/alex", "/Users/lab", 501, 501)
+        raw = b'{"cwd":"/Users/alex/org","toolUseResult":{"stdout":"cut \\ud83d"},"message":{"content":"x"}}'
+        out = json.loads(rw.transcript(raw))
+        self.assertEqual((out["cwd"], out["toolUseResult"]["stdout"]), ("/Users/lab/org", "cut \ud83d"))
+
 
 class CopyCommands(unittest.TestCase):
     def setUp(self):
@@ -77,6 +84,11 @@ class CopyCommands(unittest.TestCase):
         ssh = push[0][push[0].index("-e") + 1]
         for opt in ("-i " + self.key, "IdentityAgent=none", "IdentitiesOnly=yes", "BatchMode=yes"):
             self.assertIn(opt, ssh)
+        self.assertTrue(all("--chmod=go-rwx" in c for c in push))  # nothing readable by another user on the host
+        spaced = os.path.join(self.d, "a key")
+        shutil.copy2(self.key, spaced)
+        c = of_carry.copy_commands("/b", spaced, to="h:/c")[0]
+        self.assertIn("-i '" + spaced + "'", c[c.index("-e") + 1])  # a path with a space stays one word
         self.assertIn("--bwlimit=1000", push[1])
         self.assertEqual(push[1][-3:], ["--files-from=/b/files.txt", "/", "of@host:/c/b/files/"])
         pull = of_carry.copy_commands("/b", self.key, frm="of@host:/c/b")
@@ -223,6 +235,67 @@ class Carry(unittest.TestCase):
         self.restore(back, self.a)
         self.assertEqual(read(self.transcript).split("\n")[:3], self.lines)
 
+    def test_secret_paths_stay_behind_unread_and_the_bundle_is_private(self):
+        """of_server on PR 116: a kubeconfig or an .env in a scratch folder never travels as a side effect."""
+        scratch = os.path.join(self.tmp, of_carry.key_of(self.proj), SID, "scratchpad")
+        planted = [os.path.join(scratch, "kubeconfig"), os.path.join(scratch, "app", ".env")]
+        for p in planted:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write("planted\n")
+        out = os.path.join(self.root, "out")
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
+            plan = self.prepare(self.a, [self.entry], out)
+        listed = read(os.path.join(out, "files.txt")).split()
+        for p in planted:
+            self.assertNotIn(p, listed)
+            self.assertIn({"path": p, "reason": "secret path"}, plan["skipped"])
+        self.assertIn(self.transcript, listed)
+        for f in ("plan.json", "files.txt"):
+            self.assertEqual(os.stat(os.path.join(out, f)).st_mode & 0o777, 0o600)
+        there = os.path.join(self.root, "on-b")
+        self.ship(out, there)
+        link = os.path.join(there, "files", self.b.lstrip("/"), "org", "linked")
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        os.symlink("/etc/hosts", link)
+        self.restore(there, self.b)
+        self.assertFalse(os.path.lexists(os.path.join(self.b, "org", "linked")))  # a link in a bundle is not followed
+        moved = os.path.join(self.b, ".claude-x", "projects", of_carry.key_of(os.path.join(self.b, "org")), f"{SID}.jsonl")
+        self.assertEqual(os.stat(moved).st_mode & 0o077, 0)
+
+    def test_only_what_the_plan_accounts_for_is_put_in_place(self):
+        """of_review on PR 116: a bundle's shell profile, LaunchAgent, Claude settings and guard cache all landed."""
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
+            self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
+        there = os.path.join(self.root, "on-b")
+        self.ship(os.path.join(self.root, "out"), there)
+        strays = [".zshrc", "Library/LaunchAgents/x.plist", ".claude-x/settings.json",
+                  ".local/state/of/guard-credentials.json", ".claude-x/projects/-k/other.jsonl"]
+        for rel in strays:
+            p = os.path.join(there, "files", self.a.lstrip("/"), rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write("stray\n")
+        logged = []
+        of_carry.restore(there, [], log=logged.append, home=self.b, uid=os.getuid(),
+                         account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
+        for rel in strays:
+            self.assertFalse(os.path.exists(os.path.join(self.b, rel)), rel)
+        self.assertTrue(any("NOT put in place" in x for x in logged))
+        newkey = of_carry.key_of(os.path.join(self.b, "org"))
+        self.assertTrue(os.path.exists(os.path.join(self.b, ".claude-x", "projects", newkey, f"{SID}.jsonl")))
+        self.assertTrue(os.path.exists(os.path.join(self.b, ".local", "state", "of", "memory", "acme", "acme_a",
+                                                    "MEMORY.md")))
+
+    def test_restore_only_puts_in_place_the_named_sessions(self):
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
+            self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
+        there = os.path.join(self.root, "on-b")
+        self.ship(os.path.join(self.root, "out"), there)
+        of_carry.restore(there, [], only={"someone_else"}, log=lambda *_: None, home=self.b, uid=os.getuid(),
+                         account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
+        self.assertFalse(os.path.exists(os.path.join(self.b, ".claude-x", "projects")))
+
     def test_another_account_is_not_resumed_and_nothing_lands_outside_the_home(self):
         with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
             self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
@@ -260,6 +333,15 @@ class CarryNeverStopsALiveSession(unittest.TestCase):
             self.assertTrue(os.path.exists(path))  # a carry bundle is not the restart's own plan: never moved
         finally:
             shutil.rmtree(d)
+
+
+class CLI(unittest.TestCase):
+    def test_carry_with_no_step_prints_its_usage(self):
+        import subprocess
+        of = os.path.join(os.path.dirname(__file__), "..", "bin", "of")
+        r = subprocess.run([sys.executable, of, "capacity", "carry"], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("usage: of capacity carry prepare --only", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
