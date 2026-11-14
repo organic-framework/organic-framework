@@ -93,7 +93,7 @@ class ScratchTest(unittest.TestCase):
         self.assertEqual(len(cards), 1)
         q = cards[0]["questions"][0]["question"]                           # English unless owner.yaml says otherwise
         self.assertIn("What takes the space: swap 14.0 GiB (it grows when memory runs short: fewer live sessions "
-                      "shrink it); OF's event store 11.0 GiB; the agents' temporary folders 4.1 GiB, most in "
+                      "shrink it); OF's event store 11.0 GiB; the live sessions' temporary folders 4.1 GiB, most in "
                       "Users-x-repo 2.1 GiB, Users-x-other 2.0 GiB.", q)                       # 2026-11-14: name what takes the space
         self.run_check(mem, 3, 22 * GiB)  # between the marks: same episode, still open
         self.assertEqual(self.events("of.agent_question_answered"), [])
@@ -141,7 +141,8 @@ class ScratchTest(unittest.TestCase):
             self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
         notes = [t for p, t in typed if p == "p-keeper"]
         self.assertEqual(len(notes), 1)                                          # once per episode
-        self.assertIn("The live sessions in the project folder Users-x-repo together hold 12.1 GiB", notes[0])
+        self.assertIn("Your organization's live sessions in the project folder Users-x-repo together hold 12.1 GiB",
+                      notes[0])
         self.assertIn("small 7.0 GiB; big 5.0 GiB; keeper 0.1 GiB", notes[0])
         u = self.events("of.disk_usage")[-1]
         self.assertEqual((u["swap_bytes"], u["store_bytes"], u["projects"][0]),
@@ -154,11 +155,33 @@ class ScratchTest(unittest.TestCase):
             self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
         self.assertEqual(len([t for p, t in typed if p == "p-keeper"]), 2)
 
+    def test_a_keeper_is_told_only_of_its_own_organizations_sessions(self):
+        """of_review on PR 172: organization t holds 13 GiB in a folder, organization u 3 GiB there."""
+        positions = [{"name": "big", "_org": "t"}, {"name": "small", "_org": "u"}, {"name": "tk", "_org": "t"},
+                     {"name": "uk", "_org": "u"}]
+        for sid in ("S-tk", "S-uk"):
+            os.makedirs(os.path.join(self.base, "-Users-x-other", sid))
+        self.sizes.update({"S-big": 13 * GiB, "S-small": 3 * GiB, "S-tk": 0, "S-uk": 0})
+        agents = [agent("big", "S-big", "busy"), agent("small", "S-small", "busy"), agent("tk", "S-tk"),
+                  agent("uk", "S-uk")]
+        typed = []
+        self.run_check({}, 1, 100 * GiB, agents, typed, positions, lambda ps, org: {"t": "tk", "u": "uk"}[org])
+        notes = {p: t for p, t in typed if p in ("p-tk", "p-uk")}
+        self.assertEqual(sorted(notes), ["p-tk"])                               # u's 3 GiB tell u's keeper nothing
+        self.assertIn("together hold 13.0 GiB", notes["p-tk"])
+        self.assertIn("big 13.0 GiB", notes["p-tk"])
+        self.assertNotIn("small", notes["p-tk"])                                # never another organization's positions
+
     def test_a_project_is_named_without_the_home_folder(self):
         from unittest import mock
-        with mock.patch.dict(os.environ, {"HOME": "/Users/alex"}):
-            self.assertEqual(of_scratch.project_of("/private/tmp/claude-501/-Users-alex-acme-repo/S"), "acme-repo")
-            self.assertEqual(of_scratch.project_of("/private/tmp/claude-501/-srv-acme/S"), "srv-acme")
+        for home, folder, name in (("/Users/alex", "-Users-alex-acme-repo", "acme-repo"),
+                                   ("/Users/alex", "-srv-acme", "srv-acme"),
+                                   ("/Users/alex", "-Users-alex", "~"),          # a session started in the home folder
+                                   ("/Users/alex.doe", "-Users-alex-doe-acme-repo", "acme-repo"),  # every non-alnum
+                                   ("/home/lab_user", "-home-lab-user-acme-repo", "acme-repo")):  # is a dash
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                self.assertEqual(of_scratch.project_of(f"/private/tmp/claude-501/{folder}/S"), name, (home, folder))
+        self.assertIsNone(of_scratch.swap_bytes(os.path.join(self.tmp.name, "no-vm")))  # not macOS: not measured
 
     def test_folders_never_leave_the_base(self):
         self.assertEqual(of_scratch.folders("../x", self.base), [])

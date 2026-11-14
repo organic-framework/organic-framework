@@ -13,11 +13,11 @@ What the pulse does with this module:
 - past SCRATCH_QUOTA (Acme's platform_owner through acme_org, 2026-11-11: "a quota, not only a warning"), lists
   the session in `scratch-quota.json` in the state folder, which the guard reads to refuse new writes into that
   folder (reads and deletions stay allowed) until the folder is back under SCRATCH_CAP, and tells the position;
-- tells an organization's structure keeper once, in its pane when it is idle, when a project folder's live sessions
-  together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
+- tells an organization's structure keeper once, in its pane when it is idle, when its own organization's live
+  sessions in one project folder together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
   session's position and size; again only after the project fell under it;
 - files one card to the founder when free disk falls under CARD_BELOW, naming what takes the space (swap, OF's
-  event store, the temporary folders by project; 2026-11-14: swap swung free disk by about 9 GiB), and closes it
+  event store, the live sessions' temporary folders by project; 2026-11-14: swap swung free disk by about 9 GiB), and closes it
   itself once free disk is back above CARD_CLEAR.
 It never deletes anything: a scratch folder is its session's own work.
 """
@@ -74,16 +74,26 @@ def du(path, timeout=DU_TIMEOUT_S):
         return None
 
 
+def _encode(path):
+    """Claude Code's project folder name for a working directory: every character not a letter or a digit as a dash
+    (bin/of_route.py Router._encode)."""
+    return "".join(c if c.isalnum() else "-" for c in path)
+
+
 def project_of(path):
-    """The project folder a scratch folder sits in (Claude Code names it after the working directory, slashes as
-    dashes), without the home folder's part: '-<home>-acme-repo' -> 'acme-repo'."""
+    """The project folder a scratch folder sits in, without the home folder's part, so no person's login name is
+    shown or shipped: '-<home>-acme-repo' -> 'acme-repo', the home folder itself -> '~' (of_review on PR 172)."""
     name = os.path.basename(os.path.dirname(path))
-    home = os.path.expanduser("~").replace("/", "-") + "-"
-    return name[len(home):] if name.startswith(home) else name.lstrip("-")
+    home = _encode(os.path.expanduser("~"))
+    if name == home:
+        return "~"
+    return name[len(home) + 1:] if name.startswith(home + "-") else name.lstrip("-")
 
 
 def swap_bytes(vm_dir=VM_DIR):
     """The size of macOS's swap files (a stat of each; they are root's, their folder is readable), or None."""
+    if not os.path.isdir(vm_dir):
+        return None  # not macOS: not measured, rather than none
     try:
         return sum(os.path.getsize(f) for f in glob.glob(os.path.join(vm_dir, "swapfile*")))
     except OSError:
@@ -158,13 +168,15 @@ def quota_note(name, paths, size):
 
 
 def project_note(keeper, project, total, sessions):
+    """KEEPER's note: only its own organization's SESSIONS in PROJECT, which hold TOTAL together."""
     lines = "; ".join(f"{pos or '?'} {gib(b)} GiB" for pos, _, b in sorted(sessions, key=lambda x: -x[2])[:8])
     return (f"Message from of_pulse (via of pulse, authority: none; scratch by project)\n"
-            f"The live sessions in the project folder {project} together hold {gib(total)} GiB of scratch, over the "
-            f"{gib(PROJECT_CAP)} GiB a project may take, though each may be under its own {gib(SCRATCH_QUOTA)} GiB "
-            f"quota: {lines}. As the structure keeper, ask the positions there to remove what no open task uses "
-            f"(finished worktrees, copies of data, build output), and close sessions that are done. OF deletes "
-            f"nothing.\n[to {keeper}, once while the project stays over {gib(PROJECT_CAP)} GiB]")
+            f"Your organization's live sessions in the project folder {project} together hold {gib(total)} GiB of "
+            f"scratch, over the {gib(PROJECT_CAP)} GiB an organization's sessions may take in one project, though "
+            f"each may be under its own {gib(SCRATCH_QUOTA)} GiB quota: {lines}. As the structure keeper, ask these "
+            f"positions to remove what no open task uses (finished worktrees, copies of data, build output), and close "
+            f"sessions that are done. OF deletes nothing.\n"
+            f"[to {keeper}, once while they stay over {gib(PROJECT_CAP)} GiB]")
 
 
 def consumers(top_projects, swap=None, store=None):
@@ -179,7 +191,7 @@ def consumers(top_projects, swap=None, store=None):
     total = sum(b for _, b in top_projects)
     if total:
         lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_projects[:4])
-        parts.append((total, tr("the agents' temporary folders {gib} GiB, most in {lines}", gib=gib(total),
+        parts.append((total, tr("the live sessions' temporary folders {gib} GiB, most in {lines}", gib=gib(total),
                                 lines=lines)))
     return "; ".join(t for _, t in sorted(parts, key=lambda x: -x[0])) or tr("sizes not measured yet")
 
@@ -275,32 +287,42 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
 
 
 def _tell_keepers(positions, pairs, mem, by_project, prompt, log, keeper=None):
-    """Tell each organization's structure keeper once per episode of a project folder over PROJECT_CAP."""
+    """Tell an organization's structure keeper once per episode in which its own organization's live sessions in one
+    project folder pass PROJECT_CAP, listing only those: a keeper acts on its own organization's positions, never on
+    another's sharing the folder (of_review on PR 172; AGENTS.md, "The OF team organizes; each organization
+    operates")."""
     if keeper is None:
         import of_pulse
         keeper = of_pulse.structure_keeper
-    state = mem.setdefault("scratch_projects", {})
-    for name in [n for n in state if (by_project.get(n) or {}).get("bytes", 0) < PROJECT_CAP]:
-        state.pop(name)  # back under the cap: a new episode tells again
+    state = mem.setdefault("scratch_projects", {})  # "<project>|<org>": told
+    totals = {}
+    for name, pr in by_project.items():
+        for pos, org, b in pr["sessions"]:
+            if org:
+                t = totals.setdefault((name, org), {"bytes": 0, "sessions": []})
+                t["bytes"] += b
+                t["sessions"].append((pos, org, b))
+    for key in [k for k in state if tuple(k.split("|", 1)) not in totals
+                or totals[tuple(k.split("|", 1))]["bytes"] < PROJECT_CAP]:
+        state.pop(key)  # back under the cap: a new episode tells again
     panes = {p["name"]: a for p, a in pairs}
     told = []
-    for name, pr in by_project.items():
-        if pr["bytes"] < PROJECT_CAP or not prompt:
+    for (name, org), t in sorted(totals.items()):
+        key = f"{name}|{org}"
+        if t["bytes"] < PROJECT_CAP or not prompt or state.get(key):
             continue
-        done = state.setdefault(name, {"told": []})
-        for org in sorted({o for _, o, _ in pr["sessions"] if o}):
-            k = keeper(positions, org)
-            a = panes.get(k)
-            if not k or org in done["told"] or not a or a.get("agent_status") not in ("idle", "done"):
-                continue
-            prompt(a["pane_id"], project_note(k, name, pr["bytes"], pr["sessions"]), "of_pulse")
-            of_events.emit("nudge_sent", {"position": k, "from_position": "of_pulse", "to_position": k,
-                                          "about": f"project scratch {name} {gib(pr['bytes'])} GiB",
-                                          "pane": a["pane_id"], "kind": "scratch_project_over_cap"},
-                           position=k, org=org)
-            done["told"].append(org)
-            told.append(k)
-            log(f"told {k}: project {name} scratch {gib(pr['bytes'])} GiB")
+        k = keeper(positions, org)
+        a = panes.get(k)
+        if not k or not a or a.get("agent_status") not in ("idle", "done"):
+            continue
+        prompt(a["pane_id"], project_note(k, name, t["bytes"], t["sessions"]), "of_pulse")
+        of_events.emit("nudge_sent", {"position": k, "from_position": "of_pulse", "to_position": k,
+                                      "about": f"project scratch {name} {gib(t['bytes'])} GiB",
+                                      "pane": a["pane_id"], "kind": "scratch_project_over_cap"},
+                       position=k, org=org)
+        state[key] = True
+        told.append(k)
+        log(f"told {k}: project {name} scratch {gib(t['bytes'])} GiB of {org}")
     return told
 
 
