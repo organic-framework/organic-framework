@@ -72,13 +72,15 @@ def _option_text(o):
 def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, kinds=("ask", "prompt")):
     """Yes(kind, event id, words) of the person's yes that DID names in the log, or None (docs/registry.md, Works,
     "Where it is read, and how it is checked"; of_review on organic-framework PR 168):
-    - 'ask': DID is `<ask id>#<option number>`, the option the ask was filed with as its yes (`of ask --yes <n>`,
-      `yes_option`; of_review on PR 168: a refusal cited by its own number had counted). The ask was filed for WORK
-      (`of ask --work`), or it is the yes GOAL_YES (the decided of the goal the work serves) records; the owner's latest answer through their own channel (`by:
-      owner` with `via` asks-ui or conductor, PERSON_CHANNELS; never an agent's closure or `of asks answered`) chose
-      exactly that option: its number (`option`, through the conductor's chat) or its text (the popup).
-      A free-text answer, another option, a refusal or an ask of another work is no yes. Its words are the question
-      and the chosen option;
+    - 'ask': DID is `<ask id>#<option number>`, the option the ask was filed with as its yes (`of ask --work W --yes
+      <n>`, `yes_option`); an ask filed without it resolves for no option. The ask was filed for WORK. The owner's
+      latest answer through their own channel (`by: owner` with `via` asks-ui or conductor, PERSON_CHANNELS; never an
+      agent's closure or `of asks answered`) chose exactly that option: its number (`option`, through the conductor's
+      chat) or its text (the popup). A free-text answer, another option, a refusal or an ask of another work is no
+      yes. This proves who chose which option, never that it is a yes on the measure: the structure keeper who cites
+      it in the registry checks the words (docs/registry.md, Works, "What the check proves"). GOAL_YES is accepted
+      and no longer read: a goal's own yes is not cited for a loop's target. Its words are the question and the chosen
+      option;
     - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
       where only the person types: TYPED_BY_PERSON(position, host id) says so (bin/of: the session holding a
       conductor); without it, any such prompt. No code can tell whether its words are a yes; its first words are shown.
@@ -113,15 +115,13 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
         return Yes("prompt", eid, _short(p.get("text"))) if origin == "human" and where else None
     if name != "of.agent_question" or "ask" not in kinds or option is None:
         return None
-    goal_ask = re.sub(r"#.*$", "", str(goal_yes or "").strip().lower())
-    by_goal = bool(goal_ask) and (eid.startswith(goal_ask) or eid.endswith(goal_ask))
-    if not (by_goal or (work is not None and p.get("work") == work)):
+    if work is None or p.get("work") != work:
         return None
     qs = p.get("questions") if isinstance(p.get("questions"), list) else []
     q = qs[0] if qs and isinstance(qs[0], dict) else {}
     opts = q.get("options") if isinstance(q.get("options"), list) else []
     if not 1 <= option <= len(opts) or p.get("yes_option") != option:  # only the option filed as the yes (of ask
-        return None                                                   # --yes): a refusal is never one, whoever cites it
+        return None                                                   # --yes): a refusal never is, nor an unmarked ask
     last = None
     for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
                               "ORDER BY ts, rowid", (ts,)):

@@ -54,11 +54,9 @@ def owner_measures(loops, resolve=None):
     the yes in the log) tells a real one from an unresolved one, which is named as such (of_review on PR 168)."""
     import of_loop
     out, real = [], False
-    for item in loops or []:
-        wid, role, loop = item[:3]
-        gy = item[3] if len(item) > 3 else None
+    for wid, role, loop in loops or []:
         if of_loop.decided(loop):
-            mine = (lambda did, w=wid, g=gy: resolve(did, w, g)) if resolve else None  # an ask counts for its work only
+            mine = (lambda did, w=wid: resolve(did, w)) if resolve else None  # an ask counts for its own work only
             out.append(f"- `{wid}` (you are its {role}): {of_loop.target_line(loop, mine)}.")
             real = real or bool(of_loop.owners_yes(loop, mine))
     if not out:
@@ -71,7 +69,7 @@ def owner_measures(loops, resolve=None):
 
 
 def build(position, positions, loops=None, resolve=None):
-    """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop, its goal's decided)] of the works it owns
+    """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver)."""
     p = next((x for x in positions if x["name"] == position), None)
     if not p or not p.get("enrolled"):
