@@ -526,6 +526,35 @@ class GuardBashTest(unittest.TestCase):
                     "git commit -m 'of tools header now checks its caller'"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_code_never_writes_a_persons_act(self):
+        # docs/guard.md G24 (of_server's trust review of organic-framework PR 168): a tripwire, warning first
+        q, tq = '"', "'" * 3
+        writes = ["python3 -c " + q + "import of_asks_answer; of_asks_answer.record(['01a1'], 'yes')" + q,
+                  "python3 -c " + q + "import of_events; of_events.emit('agent_question_answered', {})" + q,
+                  "python3 - <<EOF\nimport of_events\nof_events.record('prompt_origin', {'origin': 'human'})\nEOF",
+                  "python3 -c " + q + "import of_relay_client as r; r.herdr_deliver('p', 'yes', None, 'owner')" + q,
+                  "python3 -c " + q + "import of_asks_chat; of_asks_chat.answer(c, a, p, 'x', 'y', {})" + q,
+                  "python3 -c " + q + "import of_events; of_events.emit('of.human_prompt', {})" + q,
+                  "python3 -c " + q + "import of_events; of_events.emit('diff_approved', {})" + q]
+        allowed = ["python3 -c " + q + "import of_asks_answer; print(of_asks_answer.options({}))" + q,
+                   "python3 -c " + q + "import of_events; of_events.emit('agent_question', {})" + q,
+                   "git commit -m 'guard: of_asks_answer.record( from code is denied'",
+                   "grep -n 'emit(.agent_question_answered' bin/of_hook.py",
+                   "python3 - <<EOF\nprint(" + tq + "of_events.emit('human_prompt', {})" + tq + ")\nEOF"]
+        mode = of_guard.PERSON_ACT_MODE
+        try:
+            of_guard.PERSON_ACT_MODE = "deny"
+            for cmd in writes:
+                self.assertTrue(deny(cmd), cmd)
+            for cmd in allowed:
+                self.assertIsNone(deny(cmd), cmd)
+            of_guard.PERSON_ACT_MODE = "warn"
+            for cmd in writes:
+                self.assertIsNone(deny(cmd), cmd)
+                self.assertEqual([w[0] for w in of_guard._WARNINGS], ["code that writes what only a person does"], cmd)
+        finally:
+            of_guard.PERSON_ACT_MODE = mode
+
     def test_every_ssh_private_key_name(self):
         # of_server, 2026-11-07 (docs/guard.md G1.1): the native rules denied id_ecdsa, the guard let cat read it
         for name in ("id_rsa", "id_ed25519", "id_ed25519_sk", "id_ecdsa", "id_ecdsa_sk", "id_dsa"):
