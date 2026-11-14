@@ -722,6 +722,132 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
     return out
 
 
+# ------------------------------------------------------------------ the owner's corrections (diagnose.md 2.5, 2.9)
+# Both read of.founder_correction (docs/events.md; of_platform's judge, RFC 0006 §2.4): one row per prompt in which the
+# owner corrects a position, with `kind` (output, method, scope, fact, process, other) and `repeat_of` (the position's
+# earlier correction of the same rule). of.correction, an agent's correction of itself (docs/events.md, backlog item 9),
+# was never recorded; from 2026-11-14 both rules read the owner's corrections instead.
+
+def owner_corrections(model, rows, a, b):
+    """{position: [row]}: of.founder_correction in [a, b) by the position it corrects, oldest first."""
+    positions, sp, out = model["positions"], None, collections.defaultdict(list)
+    for r in rows:
+        if r["name"] != "of.founder_correction" or not of_model.in_window(r, a, b):
+            continue
+        pos = (r.get("payload") or {}).get("position") or r.get("position")
+        if pos not in positions:
+            sp = sp if sp is not None else of_model.session_positions(model, rows)
+            pos = sp.get(r.get("session_id"))
+        if pos:
+            out[pos].append(r)
+    for v in out.values():
+        v.sort(key=lambda r: epoch(r["ts"]) or 0)
+    return out
+
+
+def _correction(r, **extra):
+    pl = r.get("payload") or {}
+    return dict({"event": r.get("event_id"), "ts": r["ts"], "kind": pl.get("kind"), "rule": pl.get("rule"),
+                 "repeat_of": pl.get("repeat_of")}, **extra)
+
+
+def rule_context_overload(model, rows, a, b, cat, spec):
+    """v0, built 2026-11-14 on of.founder_correction. A position compacts far more often than the organization does, and
+    within hours after a compaction the owner corrects a fact or repeats a rule he gave it before: what it held was lost.
+    Rereads of one artifact (diagnose.md 2.5) are not read yet."""
+    t = spec.get("thresholds") or {}
+    positions = model["positions"]
+    sp = of_model.session_positions(model, rows)
+    comp, days = collections.defaultdict(list), collections.defaultdict(set)
+    for r in rows:
+        if not of_model.in_window(r, a, b):
+            continue
+        pos = r.get("position") if r.get("position") in positions else sp.get(r.get("session_id"))
+        if not pos:
+            continue
+        if r["name"] == "of.compaction":
+            comp[pos].append(epoch(r["ts"]))
+            days[pos].add(str(r["ts"])[:10])
+        elif r.get("source") in ("hook", "import"):
+            days[pos].add(str(r["ts"])[:10])
+    if not comp:
+        return []
+    rate = {p: len(comp[p]) / len(d) for p, d in days.items()}
+    rates = sorted(rate.values())
+    med = rates[len(rates) // 2] if len(rates) % 2 else (rates[len(rates) // 2 - 1] + rates[len(rates) // 2]) / 2
+    floor = max(t.get("compactions_per_active_day_gte", 4), t.get("median_multiple_gte", 3) * med)
+    after = t.get("after_compaction_hours", 2) * 3600
+    mpp = (cat.get("defaults") or {}).get("minutes_per_prompt", 1.5)
+    corr = owner_corrections(model, rows, a, b)
+    out = []
+    for pos in sorted(comp):
+        if rate[pos] < floor:
+            continue
+        lost = []
+        for c in corr.get(pos, ()):
+            pl, ts = c.get("payload") or {}, epoch(c["ts"]) or 0
+            since = [ts - x for x in comp[pos] if 0 <= ts - x <= after]
+            if since and (pl.get("kind") == "fact" or pl.get("repeat_of")):
+                lost.append(_correction(c, after_compaction_min=round(min(since) / 60)))
+        if len(lost) < t.get("forgotten_fact_errors_gte", 2):
+            continue
+        ev = {"compactions": len(comp[pos]), "active_days": len(days[pos]), "per_active_day": round(rate[pos], 2),
+              "org_median": round(med, 2), "floor": round(floor, 2), "after_compaction": lost[-10:],
+              "since": of_model.iso(min(comp[pos]))}
+        out.append(issue(cat, "context-overload", [pos], ev,
+                         f"{pos}: {len(comp[pos])} compactions on {len(days[pos])} active days ({rate[pos]:.1f} a day; "
+                         f"the organization's median {med:.1f}), and {len(lost)} of the owner's corrections within "
+                         f"{after // 3600:g} hours after one fix a fact or repeat a rule he gave it before",
+                         delta_m=len(lost) * mpp))
+    return out
+
+
+def rule_missing_verifier(model, rows, a, b, cat, spec):
+    """v0, built 2026-11-14 on of.founder_correction. The owner keeps correcting a position's results (corrections of
+    kind output or fact) against its merged work, and none of that work was reviewed: its wrong results reach him first.
+    Reverts and fixes between work records (docs/events.md, backlog item 10) are not recorded yet, so they add nothing.
+    A position with no merged work, or whose merged work does not say whether it was reviewed, gets a note, not an issue."""
+    t = spec.get("thresholds") or {}
+    kinds = set(t.get("correction_kinds") or ("output", "fact"))
+    mpp = (cat.get("defaults") or {}).get("minutes_per_prompt", 1.5)
+    positions = model["positions"]
+    merged, _ = work_by_position(model, rows, a, b)
+    attrib = of_model.pr_attribution(rows, positions, of_model.session_index(positions))
+    known, reviewed = collections.Counter(), collections.Counter()
+    for r in rows:
+        pl = r.get("payload") or {}
+        if r["name"] != "of.work_record" or pl.get("source") == "pr-link" or not of_model.in_window(r, a, b):
+            continue
+        who = r.get("position") if r.get("position") in positions else attrib.get(of_model.pr_key(pl))
+        if who and isinstance(pl.get("reviews"), int) and not of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
+            known[who] += 1
+            reviewed[who] += pl["reviews"] > 0
+    out, notes = [], []
+    for pos, cs in sorted(owner_corrections(model, rows, a, b).items()):
+        mine = [c for c in cs if (c.get("payload") or {}).get("kind") in kinds]
+        n, w = len(mine), merged.get(pos, 0)
+        if n < t.get("corrections_gte", 3) or reviewed[pos]:
+            continue
+        if not w:
+            notes.append(f"{pos}: {n} of the owner's corrections of its results, and no merged work to weigh them against")
+            continue
+        if n / w < t.get("rework_per_wr_gte", 0.2):
+            continue
+        if not known[pos]:
+            notes.append(f"{pos}: {n} of the owner's corrections of its results against {w} merged changes, none of "
+                         f"which says whether it was reviewed")
+            continue
+        ev = {"corrections": [_correction(c) for c in mine][-10:], "corrections_n": n, "merged": w,
+              "reviews_known": known[pos], "reviewed": 0, "rework_per_merged": round(n / w, 2),
+              "reverts": "not recorded", "since": mine[0]["ts"]}
+        out.append(issue(cat, "missing-verifier", [pos], ev,
+                         f"{pos}: {n} of the owner's corrections of its results against {w} merged changes "
+                         f"({round(100 * n / w)}%), and none of them was reviewed"
+                         + ("" if known[pos] == w else f" (of the {known[pos]} that say whether they were)"),
+                         delta_m=n * mpp))
+    return out, [], notes
+
+
 # ------------------------------------------------------------------ development loops (RFC 0005 §6; diagnose.md 2.16-2.22, 2.28)
 # Each reads the loop projection of diagnose.md §4.1, of_model.loops(model) (of_studio), per work; affected [<work>],
 # evidence.work routes the issue to the doer or the work's owner (the run). Times in the projection are epoch seconds.
@@ -1407,5 +1533,6 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "loop-observed-elsewhere": rule_loop_observed_elsewhere,
          "unkept-system": rule_unkept_system, "off-map-work": rule_off_map_work,
          "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
-         "unsourced-requirement": rule_unsourced_requirement}
+         "unsourced-requirement": rule_unsourced_requirement,
+         "context-overload": rule_context_overload, "missing-verifier": rule_missing_verifier}
 # a rule in parts (needs keyed by part) takes the tuple of runnable parts as its last argument

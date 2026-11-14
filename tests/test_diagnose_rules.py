@@ -506,6 +506,105 @@ class RulesTest(unittest.TestCase):
         self.assertFalse(R.is_scratch("~/acme/storefront"))
 
 
+class CorrectionRulesTest(unittest.TestCase):
+    """context-overload (2.5) and missing-verifier (2.9) on the owner's corrections, of.founder_correction (built
+    2026-11-14; of.correction, which they read before, was never recorded)."""
+    A, B = "2026-10-29T00:00Z", "2026-11-05T00:00Z"
+    DOC = {"systems": {"bot": {"keeper": "bot_operator"}, "k8s": {"keeper": "k8s_keeper"}, "acme": {"keeper": "acme_org"}},
+           "positions": [{"name": n, "system": s, "holder": {"session": f"s-{n}"}}
+                         for n, s in (("bot_operator", "bot"), ("k8s_keeper", "k8s"), ("acme_org", "acme"),
+                                      ("bot_search", "bot"), ("bot_nonce", "bot"))]}
+
+    def diag(self, rows):
+        m = of_model.build(self.DOC, rows, at=self.B)
+        d = of_diagnose.diagnose(m, rows, self.A, self.B)
+        return d, {r["rule"][3:]: r for r in d["rules"]}
+
+    def found(self, rule, rows):
+        d, st = self.diag(rows)
+        return [i for i in d["issues"] if i["rule"] == "ap." + rule], st[rule]
+
+    def fix(self, i, ts, pos, kind, repeat_of=None):
+        return ev(f"fc{i}", ts, "of.founder_correction", None, {"position": pos, "kind": kind, "repeat_of": repeat_of,
+                                                                "rule": f"rule {i}", "prompt_id": f"p{i}"}, source="of")
+
+    def compactions(self, pos, days=("2026-11-01", "2026-11-02"), hours=range(6, 12)):
+        return [ev(f"cx-{pos}-{d}-{h}", f"{d}T{h:02d}:00Z", "of.compaction", f"s-{pos}", {"trigger": "auto"}, position=pos)
+                for d in days for h in hours]
+
+    def calm(self):
+        """The other four positions: active on two days, one compaction each (0.5 a day)."""
+        out = []
+        for p in ("bot_operator", "k8s_keeper", "acme_org", "bot_nonce"):
+            out += [ev(f"t-{p}-{d}", f"{d}T09:00Z", "of.turn_end", f"s-{p}", {}, position=p) for d in ("2026-11-01", "2026-11-02")]
+            out += self.compactions(p, days=("2026-11-01",), hours=(8,))
+        return out
+
+    def test_context_overload(self):
+        lost = [self.fix(1, "2026-11-01T11:30Z", "bot_search", "fact"),
+                self.fix(2, "2026-11-02T12:00Z", "bot_search", "method", repeat_of="e-earlier"),
+                self.fix(3, "2026-11-01T11:45Z", "bot_search", "output"),            # neither a fact nor a repeat
+                self.fix(4, "2026-11-02T15:00Z", "bot_search", "fact")]              # four hours after the last one
+        got, st = self.found("context-overload", self.calm() + self.compactions("bot_search") + lost)
+        self.assertEqual([(i["affected"], i["rule_version"], i["decider"]) for i in got],
+                         [(["bot_search"], "ap.context-overload@0", "structure_keeper")])
+        e = got[0]["evidence"]
+        self.assertEqual((e["compactions"], e["active_days"], e["per_active_day"], e["org_median"], e["floor"]),
+                         (12, 2, 6.0, 0.5, 4))
+        self.assertEqual([(c["event"], c["after_compaction_min"]) for c in e["after_compaction"]], [("efc1", 30), ("efc2", 60)])
+        self.assertEqual(got[0]["summary"], "bot_search: 12 compactions on 2 active days (6.0 a day; the organization's "
+                         "median 0.5), and 2 of the owner's corrections within 2 hours after one fix a fact or repeat a "
+                         "rule he gave it before")
+        self.assertEqual(st["status"], "fired")
+        # quiet: one such correction; three compactions a day (under 4); everyone compacting as often (3 x the median)
+        for quiet in (self.calm() + self.compactions("bot_search") + lost[1:],
+                      self.calm() + self.compactions("bot_search", hours=(6, 8, 10)) + lost,
+                      sum((self.compactions(p) for p in ("bot_operator", "k8s_keeper", "acme_org", "bot_nonce")), [])
+                      + self.compactions("bot_search") + lost):
+            q, st = self.found("context-overload", quiet)
+            self.assertEqual((q, st["status"]), ([], "quiet"))
+        # blocked until the owner's corrections are recorded
+        _, st = self.found("context-overload", self.calm() + self.compactions("bot_search"))
+        self.assertEqual((st["status"], st["missing"]), ("blocked", ["of.founder_correction"]))
+
+    def pr(self, i, pos, reviews=0, ts="2026-11-02T10:00Z"):
+        pl = {"source": "gh", "repo": "acme/bot", "number": 100 + i, "author": "dev", "systems": ["bot"]}
+        if reviews is not None:
+            pl["reviews"] = reviews
+        return ev(f"pr{pos}{i}", ts, "of.work_record", f"s-{pos}", pl, position=pos)
+
+    def test_missing_verifier(self):
+        fixes = [self.fix(1, "2026-11-01T10:00Z", "bot_search", "output"), self.fix(2, "2026-11-02T10:00Z", "bot_search", "fact"),
+                 self.fix(3, "2026-11-03T10:00Z", "bot_search", "output"), self.fix(4, "2026-11-03T11:00Z", "bot_search", "method"),
+                 self.fix(5, "2026-11-03T12:00Z", "bot_search", "scope")]
+        prs = [self.pr(i, "bot_search") for i in range(5)]
+        got, st = self.found("missing-verifier", prs + fixes)
+        self.assertEqual([(i["affected"], i["rule_version"], i["decider"]) for i in got],
+                         [(["bot_search"], "ap.missing-verifier@0", "structure_keeper")])
+        e = got[0]["evidence"]
+        self.assertEqual((e["corrections_n"], e["merged"], e["reviews_known"], e["rework_per_merged"]), (3, 5, 5, 0.6))
+        self.assertEqual([c["kind"] for c in e["corrections"]], ["output", "fact", "output"])
+        self.assertEqual(got[0]["summary"], "bot_search: 3 of the owner's corrections of its results against 5 merged "
+                         "changes (60%), and none of them was reviewed")
+        # some changes do not say whether they were reviewed: the issue says how many did
+        part, _ = self.found("missing-verifier", prs[:3] + [self.pr(7, "bot_search", None), self.pr(8, "bot_search", None)] + fixes)
+        self.assertTrue(part[0]["summary"].endswith("none of them was reviewed (of the 3 that say whether they were)"))
+        # quiet: one reviewed change; two corrections of results; 20 changes (15%); a note when nothing says or nothing merged
+        for quiet in (prs[:4] + [self.pr(4, "bot_search", 1)] + fixes, prs + fixes[1:],
+                      [self.pr(i, "bot_search") for i in range(20)] + fixes):
+            q, st = self.found("missing-verifier", quiet)
+            self.assertEqual((q, st["status"]), ([], "quiet"))
+        q, st = self.found("missing-verifier", [self.pr(i, "bot_search", None) for i in range(5)] + fixes)
+        self.assertEqual((q, st["notes"]), ([], ["bot_search: 3 of the owner's corrections of its results against 5 "
+                                                  "merged changes, none of which says whether it was reviewed"]))
+        q, st = self.found("missing-verifier", [self.pr(i, "bot_operator") for i in range(5)] + fixes)
+        self.assertEqual((q, st["notes"]), ([], ["bot_search: 3 of the owner's corrections of its results, and no merged "
+                                                  "work to weigh them against"]))
+        # blocked until the owner's corrections are recorded
+        _, st = self.found("missing-verifier", prs)
+        self.assertEqual((st["status"], st["missing"]), ("blocked", ["of.founder_correction"]))
+
+
 class ChattyInjectedTest(unittest.TestCase):
     """ap.chatty's receiver side (the founder, 2026-11-07): turns started by typed-in messages and pulse nudges."""
 
