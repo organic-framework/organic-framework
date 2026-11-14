@@ -46,11 +46,12 @@ class ScratchTest(unittest.TestCase):
         self.calls.append(path)
         return self.sizes[os.path.basename(path)]
 
-    def run_check(self, mem, now, free, agents=None, typed=None):
+    def run_check(self, mem, now, free, agents=None, typed=None, positions=POS, keeper=None):
         agents = agents or [agent("big", "S-big"), agent("small", "S-small"), agent("away", "S-none")]
-        return of_scratch.check(POS, agents, bind, mem, now=now, free=free, size=self.size, base=self.base,
+        return of_scratch.check(positions, agents, bind, mem, now=now, free=free, size=self.size, base=self.base,
                                 prompt=lambda pane, text, who: (typed if typed is not None else []).append((pane, text)),
-                                log=lambda m: None)
+                                log=lambda m: None, swap=lambda: 14 * GiB, store=lambda: 11 * GiB,
+                                keeper=keeper or (lambda ps, org: None))
 
     def events(self, name):
         c = of_store.connect()
@@ -90,7 +91,10 @@ class ScratchTest(unittest.TestCase):
         self.run_check(mem, 2, 18 * GiB)
         cards = [e for e in self.events("of.agent_question") if e.get("source") == "disk_check"]
         self.assertEqual(len(cards), 1)
-        self.assertIn("big 4.0 GiB", cards[0]["questions"][0]["question"])  # English unless owner.yaml says otherwise
+        q = cards[0]["questions"][0]["question"]                           # English unless owner.yaml says otherwise
+        self.assertIn("What takes the space: swap 14.0 GiB (it grows when memory runs short: fewer live sessions "
+                      "shrink it); OF's event store 11.0 GiB; the agents' temporary folders 4.1 GiB, most in "
+                      "Users-x-repo 2.1 GiB, Users-x-other 2.0 GiB.", q)                       # 2026-11-14: name what takes the space
         self.run_check(mem, 3, 22 * GiB)  # between the marks: same episode, still open
         self.assertEqual(self.events("of.agent_question_answered"), [])
         self.run_check(mem, 4, 26 * GiB)
@@ -116,6 +120,45 @@ class ScratchTest(unittest.TestCase):
         self.run_check(mem, t + 2 * of_scratch.OVER_EVERY_S, 60 * GiB, typed=typed)
         self.assertEqual(of_scratch.read_quota(), {})
         self.assertEqual(len(typed), 1)  # told once
+
+    def test_a_project_over_its_cap_tells_its_structure_keeper_once(self):
+        """2026-11-14, a user organization's structure keeper: 24 GiB in one project folder, every session under its own quota."""
+        positions = POS + [{"name": "keeper", "_org": "t"}]
+        os.makedirs(os.path.join(self.base, "-Users-x-repo", "S-k"))
+        self.sizes.update({"S-big": 5 * GiB, "S-small": 5 * GiB, "S-k": GiB // 10})
+        agents = [agent("big", "S-big", "busy"), agent("small", "S-small", "busy"), agent("keeper", "S-k", "busy")]
+        typed, mem = [], {}
+        keeper = lambda ps, org: "keeper" if org == "t" else None  # noqa: E731
+        self.run_check(mem, 1, 100 * GiB, agents, typed, positions, keeper)
+        self.assertEqual([p for p, _ in typed if p == "p-keeper"], [])          # 10.1 GiB in x-repo: under the cap
+        self.sizes["S-small"] = 7 * GiB                                         # a quota's folder, and 12.1 GiB together
+        agents[2] = agent("keeper", "S-k", "busy")
+        for now in (2000, 4000):                                                # busy: told once it is idle
+            self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
+        self.assertEqual([p for p, _ in typed if p == "p-keeper"], [])
+        agents[2] = agent("keeper", "S-k")
+        for now in (6000, 8000):
+            self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
+        notes = [t for p, t in typed if p == "p-keeper"]
+        self.assertEqual(len(notes), 1)                                          # once per episode
+        self.assertIn("The live sessions in the project folder Users-x-repo together hold 12.1 GiB", notes[0])
+        self.assertIn("small 7.0 GiB; big 5.0 GiB; keeper 0.1 GiB", notes[0])
+        u = self.events("of.disk_usage")[-1]
+        self.assertEqual((u["swap_bytes"], u["store_bytes"], u["projects"][0]),
+                         (14 * GiB, 11 * GiB, {"project": "Users-x-repo", "bytes": 12 * GiB + GiB // 10}))
+        self.sizes["S-small"] = GiB                                              # back under: a new episode tells again
+        for now in (10000, 12000):
+            self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
+        self.sizes["S-small"] = 7 * GiB
+        for now in (14000, 16000):
+            self.run_check(mem, now, 100 * GiB, agents, typed, positions, keeper)
+        self.assertEqual(len([t for p, t in typed if p == "p-keeper"]), 2)
+
+    def test_a_project_is_named_without_the_home_folder(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"HOME": "/Users/alex"}):
+            self.assertEqual(of_scratch.project_of("/private/tmp/claude-501/-Users-alex-acme-repo/S"), "acme-repo")
+            self.assertEqual(of_scratch.project_of("/private/tmp/claude-501/-srv-acme/S"), "srv-acme")
 
     def test_folders_never_leave_the_base(self):
         self.assertEqual(of_scratch.folders("../x", self.base), [])
