@@ -143,6 +143,42 @@ class ListenTest(unittest.TestCase):
         self.assertEqual((got["late"], [a["event_id"] for a in got["asks"]]), (False, [a1]))
         self.assertEqual(got["cursor"], top)                                     # nothing left for a reader to fold
 
+    def test_an_in_place_replay_beats_the_watchdogs_file_and_not_the_readers_heartbeat(self):
+        """of_review on PR 149: while a view is rebuilt in place, listen.heartbeat (which the watchdog reads) must keep
+        beating so a long replay is never restarted, and listener_meta's heartbeat (which readers trust) must not."""
+        class InPlace(of_listen.Processor):
+            name, version = "in_place_view", "1"
+
+            def handle(self, conn, rows):
+                return False
+
+            def reset(self, conn):
+                pass
+        self.conn.executescript(of_listen.DDL)
+        self.conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', '1')")
+        p = InPlace()
+        of_listen.prepare(self.conn, [p])
+        self.assertTrue(p.in_place)
+        meta = lambda: self.conn.execute("SELECT 1 FROM listener_meta WHERE key = 'heartbeat'").fetchone()  # noqa: E731
+        self.assertIsNone(meta())                                               # prepare() dropped it
+        path = of_listen.heartbeat_path()
+        t = [1000.0]
+        beat = of_listen.make_beat(self.conn, [p], clock=lambda: t[0])
+        beat()
+        self.assertTrue(os.path.exists(path))                                   # the watchdog's file beats
+        self.assertIsNone(meta())                                               # readers' heartbeat stays down
+        os.utime(path, (1, 1))
+        t[0] += of_listen.HEARTBEAT_S - 1
+        beat()
+        self.assertEqual(os.path.getmtime(path), 1)                             # at most every HEARTBEAT_S
+        t[0] += 1
+        beat()
+        self.assertGreater(os.path.getmtime(path), 1)
+        self.assertIsNone(meta())
+        whole = of_listen.make_beat(self.conn, [of_listen.AsksProcessor()], clock=lambda: t[0])
+        whole()                                                                  # every view whole: the full beat
+        self.assertIsNotNone(meta())
+
     def test_current_asks_reads_one_snapshot_even_when_the_listener_writes_between_its_reads(self):
         """of_review on PR 133: the fold mark and the asks were read in two transactions; a listener write between
         them left the mark one write behind and the tail was folded twice, an ask coming back twice."""
