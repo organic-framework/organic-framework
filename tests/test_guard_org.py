@@ -140,6 +140,65 @@ class KindsRuleTest(unittest.TestCase):
         self.assertEqual(self.hit("kubectl get all -n signer"), [])                           # all holds no Secrets
 
 
+SSH = {"id": "shared-key", "mode": "deny", "reason": "the shared agent key", "except": ["hosts_keeper"],
+       "ssh": {"hosts": ["us", "192.0.2.5", "gw*", "fra.example.net"]}}
+
+
+class SshRuleTest(unittest.TestCase):
+    """O3: an ssh destination scope (a user organization's shared agent key, msg 01a1d7b4-ac9f; of_architect's five
+    conditions, msg 01a1d7bd-cd8c): a false positive over a miss, aliases folded from the ssh config."""
+
+    ALIASES = {"us-alias": "192.0.2.5", "fra": "fra.example.net"}
+
+    def hit(self, cmd, position="returns_keeper", resolver=None):
+        return [m for _, m in of_guard.org_rule_hits(
+            "Bash", {"command": cmd}, [SSH], position,
+            resolver=resolver or (lambda cfg: lambda n: self.ALIASES.get(n)))]
+
+    def test_what_reaches_a_denied_host(self):
+        for cmd in ("ssh US", "ssh -J gw2 other", "ssh -J other,gw7 x", "ssh -o HostName=192.0.2.5 anything",
+                    "ssh -oProxyJump=gw1,x y", "ssh -o 'ProxyCommand ssh -W %h:%p gw3' inner", "ssh -W us:22 other",
+                    "scp f us:/tmp/", "scp -r ./a [192.0.2.5]:/x", "scp ./a scp://u@us:2222/x",
+                    "rsync -av -e 'ssh -J gw2' ./d other:/d", "rsync -av ./d us::mod", "rsync rsync://us/mod ./x",
+                    "sftp sftp://u@US:2222/home", "mosh --ssh='ssh -J gw2' other", "sshfs us:/data /mnt/x",
+                    "autossh -M 0 -N us", "/usr/bin/ssh -p 22 us", "timeout 5 ssh -tt us", "bash -c 'ssh us'"):
+            self.assertTrue(self.hit(cmd), cmd)
+
+    def test_an_alias_is_folded_to_its_hostname(self):
+        self.assertEqual(self.hit("ssh us-alias"), ["ssh to us-alias (HostName 192.0.2.5)"])
+        self.assertEqual(self.hit("ssh fra uptime"), ["ssh to fra (HostName fra.example.net)"])
+
+    def test_a_variable_counts_as_a_match(self):
+        self.assertEqual(self.hit("ssh $HOST uptime"), ["ssh to a destination held in a variable"])
+        self.assertTrue(self.hit("scp f \"$H\":/tmp/"))
+        self.assertTrue(self.hit("ssh $(cat h) uptime"))
+
+    def test_what_does_not(self):
+        for cmd in ("ssh other", "ssh other 'ssh us'", "scp ./a:b ./c", "git push origin main", "echo ssh us",
+                    "of send x 'ssh us later'", "cat ~/.ssh/config"):
+            self.assertEqual(self.hit(cmd), [], cmd)
+        self.assertEqual(self.hit("ssh us", position="hosts_keeper"), [])                  # excepted
+
+    def test_the_config_in_effect_is_read_never_run(self):
+        """Host and HostName, Include followed, Match skipped (its exec runs a command; ssh -G would run it)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            inc = os.path.join(t, "agents.conf")
+            with open(inc, "w") as fh:
+                fh.write("Host US us-east\n  HostName 192.0.2.5\n  IdentityFile ~/.ssh/shared\n")
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write(f"Include {inc}\nMatch exec \"touch {t}/ran\"\n  HostName 192.0.2.5\n"
+                         "Host !secret *.corp\n  HostName %h.example.net\nHost *\n  ServerAliveInterval 30\n")
+            resolve = of_guard.ssh_resolver(cfg)
+            self.assertEqual(resolve("us-east"), "192.0.2.5")
+            self.assertEqual(resolve("fra.corp"), "fra.corp.example.net")
+            self.assertIsNone(resolve("secret"))
+            self.assertFalse(os.path.exists(os.path.join(t, "ran")))                        # nothing was run
+            self.assertEqual(self.hit(f"ssh -F {cfg} us-east", resolver=of_guard.ssh_resolver),
+                             ["ssh to us-east (HostName 192.0.2.5)"])
+
+
 class OrgRuleTest(unittest.TestCase):
     def test_exec_into_a_runner_pod(self):
         self.assertEqual(hits("kubectl --kubeconfig /k/own.yaml exec -it runner-7 -- sh"),

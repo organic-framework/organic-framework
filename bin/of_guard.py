@@ -2583,26 +2583,293 @@ def kubectl_rule_match(match, call):
     return "; ".join(said) or (f"kubectl {call['verb']}" if verbs is not None else None)
 
 
-def org_rule_hits(tool, tool_input, rules, position=None, env=None):
+# ------------------------------------------------- organization rules: ssh destinations (O3)
+# A user organization's interim control for a shared agent SSH key until per-position identities exist (msg
+# 01a1d7b4-ac9f); of_architect's five conditions (msg 01a1d7b2-a99a's sibling, 01a1d7bd-cd8c): a false positive over a
+# miss, aliases folded by reading the ssh config (never `ssh -G`, which runs Match exec), and the limits named.
+_SSH_HEADS = {"ssh", "scp", "sftp", "rsync", "mosh", "sshfs", "autossh"}
+_SSH_WORDS = re.compile(r"\b(?:ssh|scp|sftp|rsync|mosh|sshfs|autossh)\b")
+_SSH_VALUE = {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q",
+              "-R", "-S", "-W", "-w"}
+_SSH_OPT_VALUE = {
+    "ssh": _SSH_VALUE, "autossh": _SSH_VALUE | {"-M"},
+    "scp": {"-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-X"},
+    "sftp": {"-B", "-b", "-c", "-D", "-F", "-i", "-J", "-l", "-o", "-P", "-R", "-S", "-s", "-X"},
+    "rsync": {"-e", "--rsh", "-T", "--temp-dir", "-f", "--filter", "--exclude", "--include", "--exclude-from",
+              "--include-from", "--files-from", "--log-file", "--password-file", "--port", "--partial-dir",
+              "--compare-dest", "--copy-dest", "--link-dest", "-B", "--block-size", "--bwlimit", "--max-size",
+              "--min-size", "--timeout", "--contimeout", "--chmod", "--chown", "--usermap", "--groupmap", "--suffix",
+              "--backup-dir", "-@", "--modify-window", "--out-format", "--info", "--debug", "--rsync-path",
+              "--sockopts", "--outbuf", "--iconv", "--checksum-choice", "--compress-choice", "--compress-level",
+              "--skip-compress", "--max-delete", "--stop-after", "--stop-at", "-M", "--remote-option"},
+    "mosh": {"-p", "--port", "--ssh", "--server", "--client", "--predict", "--family", "--bind-server",
+             "--experimental-remote-ip"},
+    "sshfs": {"-o", "-p", "-F"},
+}
+_SSH_CONFIG_MAX = 1 << 20
+
+
+def _ssh_host(word):
+    """The host of `[user@]host[:port]`, `ssh://[user@]host[:port]/…`, `[v6]:path` or `host:path`, lowercased; None for
+    a variable or a substitution (counted as a match by the caller)."""
+    w = str(word)
+    if "$" in w or "__OFSUB__" in w or "`" in w:
+        return None
+    m = re.match(r"^(?:ssh|sftp|scp|rsync)://(?:[^@/]*@)?(\[[^\]]+\]|[^:/?#]+)", w, re.I)
+    if m:
+        return m.group(1).strip("[]").lower()
+    w = w.rsplit("@", 1)[-1] if "@" in w.split(":", 1)[0] or "@" in w.split("/", 1)[0] else w
+    if w.startswith("["):
+        return w[1:w.index("]")].lower() if "]" in w else w[1:].lower()
+    return w.split(":", 1)[0].lower()
+
+
+def _ssh_remote(word):
+    """Is a scp/rsync/sshfs argument remote (`host:path`, `host::module`, `[v6]:path`, a URL)? A local path that
+    holds a colon after a slash is not."""
+    w = str(word)
+    if re.match(r"^(?:ssh|sftp|scp|rsync)://", w, re.I):
+        return True
+    if w.startswith("[") and "]:" in w:
+        return True
+    head = w.split(":", 1)[0]
+    return ":" in w and head != "" and "/" not in head and not w.startswith((".", "~"))
+
+
+def _ssh_opts(value):
+    """(key, value) of an ssh `-o` value: `Key=Value` or `Key Value`, key lowercased."""
+    m = re.match(r"^\s*(\w+)\s*(?:=\s*|\s+)(.*)$", str(value))
+    return (m.group(1).lower(), m.group(2).strip().strip("\"'")) if m else (str(value).lower(), "")
+
+
+def _ssh_argv(head, args):
+    """The destinations one ssh-family call reaches, as [(word as typed, how)]: its destination, every -J or
+    ProxyJump hop, -o HostName, each word of -o ProxyCommand, -W's host, and for scp, rsync and sshfs every remote
+    argument; an rsync -e, a mosh --ssh or an sshfs ssh_command is read as the ssh command it is. `config`: -F."""
+    vals = _SSH_OPT_VALUE.get(head, set())
+    out, config, i, positional = [], None, 0, []
+
+    def from_option(flag, v):
+        nonlocal config
+        if flag == "-J" or flag == "ProxyJump":
+            for hop in str(v).split(","):
+                if hop.strip() and hop.strip().lower() != "none":
+                    out.append((hop.strip(), "via the jump host"))
+        elif flag == "-F":
+            config = v
+        elif flag == "-W":
+            out.append((str(v).rsplit(":", 1)[0], "forwarding to"))
+        elif flag == "-o" or (head == "sshfs" and flag == "-o"):
+            for part in (str(v).split(",") if head == "sshfs" else [v]):
+                key, val = _ssh_opts(part)
+                if key == "hostname":
+                    out.append((val, "with -o HostName"))
+                elif key == "proxyjump":
+                    from_option("ProxyJump", val)
+                elif key == "proxycommand":
+                    out.extend((w, "in its -o ProxyCommand") for w in val.split() if not w.startswith("-")
+                               and w not in ("%h", "%p", "%r") and w.lower() != "none")
+                elif key == "ssh_command":
+                    out.extend(_ssh_argv("ssh", val.split()[1:])[0])
+        elif flag in ("-e", "--rsh") or flag == "--ssh":
+            words = str(v).split()
+            if words and os.path.basename(words[0]) in ("ssh", "autossh"):
+                sub, _ = _ssh_argv("ssh", words[1:] + ["__RSYNC_PLACEHOLDER__"])
+                out.extend(d for d in sub if d[0] != "__RSYNC_PLACEHOLDER__")
+
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            positional += args[i + 1:]
+            break
+        if a.startswith("--") and "=" in a:
+            flag, v = a.split("=", 1)
+            from_option(flag, v)
+            i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            flag = a[:2] if not a.startswith("--") else a
+            if flag in vals and a == flag and i + 1 < len(args):
+                from_option(flag, args[i + 1])
+                i += 2
+                continue
+            if not a.startswith("--") and flag in vals and len(a) > 2:  # -Jhost, -oKey=Value, -p22
+                from_option(flag, a[2:])
+            i += 1
+            continue
+        positional.append(a)
+        if head in ("ssh", "autossh", "sftp", "mosh"):  # the destination; what follows is the remote command
+            break
+        i += 1
+    if head in ("ssh", "autossh", "sftp", "mosh"):
+        if positional:
+            out.append((positional[0], "to"))
+    else:
+        out.extend((p, "to") for p in positional if _ssh_remote(p) or "$" in p or "__OFSUB__" in p)
+    return out, config
+
+
+def ssh_calls(cmd, depth=0):
+    """Every ssh-family call (ssh, scp, sftp, rsync, mosh, sshfs, autossh) the local shell runs for a command line, as
+    {head, destinations: [(word, how)], config: the -F file or None}. Followed as kubectl_calls follows: wrappers,
+    $( ), subshells, sh -c, eval, a heredoc read by a shell. Prose a command only carries is not a call."""
+    if depth > 4:
+        return []
+    text, subs, docs, _ = _scan(cmd)
+    out = []
+    for sub in subs:
+        out += ssh_calls(sub, depth + 1)
+    for _quoted, body, opener in docs:
+        if _head(opener) in _SHELLS:
+            out += ssh_calls(body, depth + 1)
+    try:
+        pipes = _split(text)
+    except ValueError:
+        return out
+    for pipe in pipes:
+        for kind, stext in pipe:
+            if kind == "sub":
+                out += ssh_calls(stext, depth + 1)
+                continue
+            s = _simple(stext)
+            if not s or s[0] == "<read":
+                continue
+            head, args = s[0], s[1]
+            if head in _SSH_HEADS:
+                dests, config = _ssh_argv(head, args)
+                out.append({"head": head, "destinations": dests, "config": config})
+            elif head in _SHELLS - {"eval"} and "-c" in args[:-1]:
+                out += ssh_calls(args[args.index("-c") + 1], depth + 1)
+            elif head == "eval":
+                out += ssh_calls(" ".join(args), depth + 1)
+    return out
+
+
+def _ssh_config_blocks(path, depth=0, seen=None):
+    """[(host patterns, HostName or None)] of an ssh config's Host blocks, in order, Include followed (globs; a
+    relative path is under ~/.ssh). Match blocks are skipped: their conditions run commands, and the guard never
+    does (`ssh -G` would). Read as text; never printed."""
+    import glob
+    seen = seen if seen is not None else set()
+    path = os.path.expanduser(path)
+    if depth > 8 or path in seen:
+        return []
+    seen.add(path)
+    try:
+        with open(path, errors="replace") as fh:
+            text = fh.read(_SSH_CONFIG_MAX)
+    except OSError:
+        return []
+    out, block = [], None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, val = _ssh_opts(line)
+        if key == "host":
+            block = val.split()
+            out.append([block, None])
+        elif key == "match":
+            block = "match"
+        elif key == "include":
+            for pat in val.split():
+                pat = os.path.expanduser(pat)
+                if not os.path.isabs(pat):
+                    pat = os.path.join(os.path.expanduser("~/.ssh"), pat)
+                for p in sorted(glob.glob(pat)):
+                    out += _ssh_config_blocks(p, depth + 1, seen)
+        elif key == "hostname" and block != "match":
+            if block is None:
+                out.append([["*"], val])
+            elif out and out[-1][1] is None:
+                out[-1][1] = val
+    return out
+
+
+def _ssh_pattern_match(patterns, name):
+    import fnmatch
+    hit = False
+    for p in patterns:
+        neg = p.startswith("!")
+        if fnmatch.fnmatchcase(name, (p[1:] if neg else p).lower()):
+            if neg:
+                return False
+            hit = True
+    return hit
+
+
+def ssh_resolver(config=None):
+    """name -> the HostName the ssh config in effect gives it (the first matching Host block that sets one, `%h` the
+    name), or None. The config: -F when given, else the user's own and the system's (aliases are folded: an alias is
+    the common miss, of_architect)."""
+    blocks = (_ssh_config_blocks(config) if config else
+              _ssh_config_blocks("~/.ssh/config") + _ssh_config_blocks("/etc/ssh/ssh_config"))
+
+    def resolve(name):
+        for patterns, hostname in blocks:
+            if hostname and _ssh_pattern_match(patterns, name):
+                return hostname.replace("%h", name).replace("%%", "%").lower()
+        return None
+    return resolve
+
+
+def ssh_rule_match(match, call, resolve=None):
+    """What an ssh matcher matched in one call, as a short phrase, or None. `match`: {hosts: [globs]}, compared
+    case-insensitively with each destination the call reaches (`_ssh_argv`) as typed and as the ssh config's HostName
+    for it. A destination held in a variable or a substitution matches: a false positive over a miss."""
+    import fnmatch
+    globs = [str(h).lower() for h in match.get("hosts") or []]
+    for word, how in call["destinations"]:
+        host = _ssh_host(word)
+        if host is None:
+            return f"{call['head']} {how} a destination held in a variable"
+        whole = str(word).rsplit("@", 1)[-1].lower()  # a bare IPv6 destination (`ssh fe80::1`)
+        names = [host] + [n for n in [whole, resolve(host) if resolve else None] if n and n != host]
+        for n in names:
+            if any(fnmatch.fnmatchcase(n, g) for g in globs):
+                return f"{call['head']} {how} {host}" + (f" (HostName {n})" if n != host else "")
+    return None
+
+
+def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=None):
     """[(rule, matched phrase)] for the rules of the caller's organization that apply to this tool call. A rule is
-    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher}} (of_grants.org_rule makes one
-    from a deny grant); a position in `except` is out of it, and a rule whose subject names one position applies to
-    that position only. Only Bash and the kubectl matcher so far."""
+    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher} or ssh: {hosts}} (of_grants.org_rule
+    makes one from a deny grant); a position in `except` is out of it, and a rule whose subject names one position
+    applies to that position only. Only Bash; the kubectl (O1) and ssh (O3) matchers. RESOLVER (tests): config ->
+    the alias resolver, ssh_resolver by default."""
     if tool != "Bash" or not rules:
         return []
     cmd = (tool_input or {}).get("command") or ""
-    calls, hits = None, []
+    calls, scalls, resolvers, hits = None, None, {}, []
     for r in rules:
         sub = r.get("subject")
-        if not isinstance(r.get("kubectl"), dict) or (position and position in (r.get("except") or [])) or \
-                (sub not in (None, "*") and sub != position):
+        if (position and position in (r.get("except") or [])) or (sub not in (None, "*") and sub != position):
             continue
-        if calls is None:
-            try:
-                calls = kubectl_calls(cmd, env)
-            except Exception:  # noqa: BLE001 - a parser slip never denies on an organization's rule
-                calls = []
-        m = next(filter(None, (kubectl_rule_match(r["kubectl"], c) for c in calls)), None)
+        if isinstance(r.get("kubectl"), dict):
+            if calls is None:
+                try:
+                    calls = kubectl_calls(cmd, env)
+                except Exception:  # noqa: BLE001 - a parser slip never denies on an organization's rule
+                    calls = []
+            m = next(filter(None, (kubectl_rule_match(r["kubectl"], c) for c in calls)), None)
+        elif isinstance(r.get("ssh"), dict):
+            if scalls is None:
+                try:
+                    scalls = ssh_calls(cmd) if _SSH_WORDS.search(cmd) else []
+                except Exception:  # noqa: BLE001
+                    scalls = []
+            m = None
+            for c in scalls:
+                if c["config"] not in resolvers:
+                    try:
+                        resolvers[c["config"]] = (resolver or ssh_resolver)(c["config"])
+                    except Exception:  # noqa: BLE001 - an unreadable config folds nothing
+                        resolvers[c["config"]] = None
+                m = ssh_rule_match(r["ssh"], c, resolvers[c["config"]])
+                if m:
+                    break
+        else:
+            continue
         if m:
             hits.append((r, m))
     return hits

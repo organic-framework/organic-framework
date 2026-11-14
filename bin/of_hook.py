@@ -1081,8 +1081,9 @@ def _org_guard(hook, sess):
     note is shown once per session and every call is recorded as of.mandate_check. True when the call was denied.
     A broken store or registry fails open here (an organization's rule); the critical rules above never do."""
     global OUTPUT
-    if hook.get("tool_name") != "Bash" or "kubectl" not in str((hook.get("tool_input") or {}).get("command") or ""):
-        return False  # kubectl is the only matcher so far: every other call skips the registry and the grants
+    cmd = str((hook.get("tool_input") or {}).get("command") or "")
+    if hook.get("tool_name") != "Bash" or not ("kubectl" in cmd or of_guard._SSH_WORDS.search(cmd)):
+        return False  # kubectl (O1) and the ssh family (O3) are the matchers: every other call skips the grants
     sid = hook.get("session_id")
     try:
         import of_grants

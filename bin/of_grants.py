@@ -443,8 +443,8 @@ def shape_problems(grant):
             out.append('subject "*" is only for a deny')
         if grant.get("issuer") != "tenant":
             out.append('subject "*" is issued by the tenant only')
-        if not isinstance(scope.get("kubectl"), dict):
-            out.append('a subject "*" deny needs a scope the guard applies (kubectl)')
+        if not isinstance(scope.get("kubectl"), dict) and not isinstance(scope.get("ssh"), dict):
+            out.append('a subject "*" deny needs a scope the guard applies (kubectl or ssh)')
     if exc is not None and sub != "*":
         out.append('except is only for subject "*"')
     if exc is not None and not (isinstance(exc, list) and all(isinstance(x, str) and x for x in exc)):
@@ -455,6 +455,14 @@ def shape_problems(grant):
             out.append("scope contacts names exactly one contact: an e-mail address or a host")
         if grant.get("effect", "allow") != "allow" or sub == "*" or grant.get("issuer") != "tenant":
             out.append("scope contacts is only on an allow the tenant issues to one position")
+    sh = scope.get("ssh")
+    if sh is not None:  # O3 (docs/registry.md, Scope ssh): errs toward a match, so a deny only
+        if grant.get("effect") != "deny":
+            out.append("scope ssh is only for a deny")
+        if not isinstance(sh, dict) or set(sh) != {"hosts"} or not _str_list(sh.get("hosts")):
+            out.append("scope ssh takes only hosts, a list of host names or globs")
+        if scope.get("kubectl") is not None:
+            out.append("a grant scopes kubectl or ssh, not both")
     k = scope.get("kubectl")
     if k is not None:
         if grant.get("effect") != "deny":
@@ -483,12 +491,13 @@ def org_rule(grant):
     return {"id": grant.get("id"), "mode": "deny" if grant.get("critical") else "warn",
             "reason": grant.get("note") or "", "subject": grant.get("subject"),
             "except": list(grant.get("except") or []), "expires": grant.get("expires"),
-            "kubectl": (grant.get("scope") or {}).get("kubectl")}
+            "kubectl": (grant.get("scope") or {}).get("kubectl"), "ssh": (grant.get("scope") or {}).get("ssh")}
 
 
 def _is_rule(grant):
-    return grant.get("effect") == "deny" and isinstance((grant.get("scope") or {}).get("kubectl"), dict) \
-        and not shape_problems(grant)
+    scope = grant.get("scope") or {}
+    return grant.get("effect") == "deny" and (isinstance(scope.get("kubectl"), dict) or isinstance(
+        scope.get("ssh"), dict)) and not shape_problems(grant)
 
 
 def fold_kept(kept, grants, keys, now_iso):

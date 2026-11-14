@@ -88,6 +88,16 @@ class ShapeTest(unittest.TestCase):
                   ("of.grant_issued", "t", {"grant_id": "g-3"}), ("of.grant_revoked", "t", {"grant_id": "g-3"})]
         self.assertEqual(of_grants.missing_issued({"t": [{"id": "g-1"}]}, events), [("t", "g-2")])
 
+    def test_an_ssh_scope_is_a_rule_on_a_deny_only(self):
+        g = rule_grant(scope={"ssh": {"hosts": ["us", "gw*"]}})
+        self.assertEqual(of_grants.shape_problems(g), [])
+        self.assertTrue(of_grants._is_rule(g))
+        self.assertEqual(of_grants.org_rule(g)["ssh"], {"hosts": ["us", "gw*"]})
+        self.assertTrue(of_grants.shape_problems(dict(g, effect="allow")))
+        self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": []}})))
+        self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": ["us"], "users": ["x"]}})))
+        self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": ["us"]}, "kubectl": RUNNER})))
+
     def test_a_kind_o1_cannot_fold_is_a_warning(self):
         g = rule_grant(scope={"kubectl": dict(RUNNER, kinds=["Secret", "secertss",
                                                               "externalsecrets.external-secrets.io"])})
