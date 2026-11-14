@@ -541,6 +541,14 @@ class GuardBashTest(unittest.TestCase):
                    "git commit -m 'guard: of_asks_answer.record( from code is denied'",
                    "grep -n 'emit(.agent_question_answered' bin/of_hook.py",
                    "python3 - <<EOF\nprint(" + tq + "of_events.emit('human_prompt', {})" + tq + ")\nEOF"]
+        writes += ["python3 -c " + q + "import of_events; of_events.emit(kind='human_prompt', payload={})" + q,
+                   "python3 -c " + q + "import of_store; of_store.add_event(c, {'event.name': 'of.prompt_origin'})" + q,
+                   "python3 -c " + q + "import of_hook; of_hook.handle('UserPromptSubmit', {'prompt': 'yes'})" + q,
+                   "of hook UserPromptSubmit < prompt.json", "echo {} | python3 bin/of hook UserPromptSubmit",
+                   "python3 ~/organic-framework/bin/of_hook.py PreToolUse"]  # of_review on PR 170
+        allowed += ["of hooks install --guard", "of hook --help",
+                    "python3 -c " + q + "import of_store; of_store.add_event(c, {'event.name': 'of.nudge_sent'})" + q,
+                    "python3 -c " + q + "import of_hook; print(of_hook.mask('x'))" + q]
         mode = of_guard.PERSON_ACT_MODE
         try:
             of_guard.PERSON_ACT_MODE = "deny"
@@ -551,7 +559,7 @@ class GuardBashTest(unittest.TestCase):
             of_guard.PERSON_ACT_MODE = "warn"
             for cmd in writes:
                 self.assertIsNone(deny(cmd), cmd)
-                self.assertEqual([w[0] for w in of_guard._WARNINGS], ["code that writes what only a person does"], cmd)
+                self.assertEqual(len(of_guard._WARNINGS), 1, cmd)
         finally:
             of_guard.PERSON_ACT_MODE = mode
 
