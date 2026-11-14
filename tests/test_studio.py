@@ -1845,7 +1845,10 @@ class LoopTest(unittest.TestCase):
                           "rows_differing": (None, "0 rows: no lost candidate")})
         self.assertEqual(c["drift"], [])                                        # runs on a to_target measure are tied
         self.assertEqual([(x["kind"], x["metric"], x["decided"], x["to_money"]) for x in c["decisions_all"]],
-                         [("keep", None, None, None)] * 2 + [("drop", None, None, None), ("change_objective", "p99_ms", "0e9f8a7b", None)])
+                         [("keep", None, None, None)] * 2 + [("drop", None, None, None), ("change_objective", "p99_ms", None, None)])
+        # only the registry cites the owner's yes: a decision's own decided never counts (docs/registry.md, Works)
+        self.assertEqual({k: c["decisions_all"][-1][k] for k in ("decided_unresolved", "decided_unresolved_why")},
+                         {"decided_unresolved": "0e9f8a7b", "decided_unresolved_why": "decision"})
         # without decided, to_target ties nothing and the loop behaves as before
         plain = dict(self.OWN, target=dict(self.OWN["target"], decided=None, money="USD per day"))
         self.assertEqual(self.card(spec=plain, resolve=self.YES)["drift"], ["latency_p50_ms"])
@@ -1861,19 +1864,19 @@ class LoopTest(unittest.TestCase):
         lp = of_model.loops(of_model.build(doc, self.rows() + [self.change(decided="0e9f8a7b")], at=self.NOW,
                                            resolve=self.YES))["w1"]
         self.assertEqual((lp["target"]["decided"], lp["measures"][0]["to_target"], lp["decisions_all"][-1]["decided"]),
-                         ("0a1b2c3d", "a faster answer wins more day passes", "0e9f8a7b"))
+                         ("0a1b2c3d", "a faster answer wins more day passes", None))
         self.assertEqual(lp["target"]["decided_words"], 'asked "p99 as the target?", chose option 1 "yes"')
-        # by default the model looks each id up in this machine's log, bound to the work and its goal's decided
+        # by default the model looks each id up in this machine's log, bound to the work
         import of_loops
         from unittest import mock
         seen = []
         doc2 = dict(doc, goals={"g-speed": {"title": "Speed", "rank": 1, "measure": "p99", "decided": "01a1d957-aaaa#1"}},
                     works={"w1": dict(doc["works"]["w1"], goal="g-speed")})
-        with mock.patch.object(of_loops, "log_resolver", return_value=lambda did, work=None, goal_yes=None: seen.append(
-                (did, work, goal_yes)) or self.YES(did)):
+        with mock.patch.object(of_loops, "log_resolver", return_value=lambda did, work=None: seen.append(
+                (did, work)) or self.YES(did)):
             lp = of_model.loops(of_model.build(doc2, self.rows() + [self.change(decided="0e9f8a7b")], at=self.NOW))["w1"]
         self.assertEqual(lp["target"]["decided"], "0a1b2c3d")
-        self.assertEqual(sorted(seen), [("0a1b2c3d", "w1", "01a1d957-aaaa#1"), ("0e9f8a7b", "w1", "01a1d957-aaaa#1")])
+        self.assertEqual(seen, [("0a1b2c3d", "w1")])                            # the target's id only, for its work
 
     def test_a_decided_that_does_not_resolve_counts_as_none(self):
         # docs/registry.md, Works, "Where it is read, and how it is checked": an id the log does not hold as a person's
@@ -1886,7 +1889,7 @@ class LoopTest(unittest.TestCase):
             self.assertEqual((t["decided"], t["decided_unresolved"], t["decided_unresolved_why"]), (None, "0a1b2c3d", why))
             self.assertEqual(c["drift"], ["latency_p50_ms"])                    # to_target ties nothing then
             last = c["decisions_all"][-1]
-            self.assertEqual((last["decided"], last["decided_unresolved"]), (None, "0f0f0f0f"))
+            self.assertEqual((last["decided"], last["decided_unresolved"], last["decided_unresolved_why"]), (None, "0f0f0f0f", "decision"))
         self.assertNotIn("decided_unresolved", c["decisions_all"][0])           # a decision naming no yes has none
         card, table = self.html(self.card(rows, spec=dict(self.OWN, target=dict(self.OWN["target"], money="USD per day")),
                                           resolve=lambda did: None))
@@ -1894,13 +1897,12 @@ class LoopTest(unittest.TestCase):
         self.assertIn("<tr><th>Money</th><td>USD per day</td></tr>", card)    # shown as a loop priced in money
         self.assertIn("<h3>Cost this week</h3>", card)
         self.assertIn("give it no price in money", card)
-        self.assertIn("p99_ms · names 0f0f0f0f as the owner's yes, which does not count: this machine&#x27;s log holds no such yes", card)
-        # a change of objective takes an answered ask, never a prompt (docs/registry.md, Works)
+        self.assertIn("p99_ms · names 0f0f0f0f as the owner's yes, which does not count: a loop decision never cites the owner&#x27;s yes", card)
+        # the registry's target may cite a prompt; a decision citing one, or a resolving ask, still does not count
         import of_loop
         c = self.card(rows, spec=self.OWN, resolve=lambda did: of_loop.Yes("prompt", did, "p99 it is"))
-        self.assertEqual(c["target"]["decided"], "0a1b2c3d")                    # the registry's target may cite a prompt
-        last = c["decisions_all"][-1]
-        self.assertEqual((last["decided"], last["decided_unresolved"], last["decided_unresolved_why"]), (None, "0f0f0f0f", "prompt"))
+        self.assertEqual((c["target"]["decided"], c["target"]["decided_words"]), ("0a1b2c3d", "p99 it is"))
+        self.assertEqual(c["decisions_all"][-1]["decided_unresolved_why"], "decision")
         self.assertIn("decided 0a1b2c3d does not resolve as the owner&#x27;s yes: priced in money", table)
 
     def test_the_log_resolver(self):
@@ -1919,7 +1921,7 @@ class LoopTest(unittest.TestCase):
             self.assertIsNone(r(y.ask))                                        # an ask without its option
             self.assertIsNone(of_loops.for_work(r, "w-speed")(y.refused + "#1"))   # the owner chose another option
             self.assertIsNone(of_loops.for_work(r, "w-speed")(y.other + "#1"))     # another work's ask
-            self.assertEqual(of_loops.for_work(r, "w-ops", y.ask + "#1")(y.ask + "#1"), ("ask", y.ask))   # the goal's yes
+            self.assertIsNone(of_loops.for_work(r, "w-speed")(y.unmarked + "#1"))  # filed without its yes option
             self.assertEqual(r(y.prompt), ("prompt", y.prompt))                # typed in a conductor's session
             self.assertIsNone(r(y.elsewhere))                                  # typed in a doer's pane
             self.assertIsNone(r(y.injected))
@@ -1965,7 +1967,7 @@ class LoopTest(unittest.TestCase):
         self.assertIn("No money line given.", card)                             # its absence is no mark
         self.assertNotIn('class="crit"', card)
         self.assertNotIn("not the target", card + table)                        # tied by to_target: no drift mark
-        self.assertIn("change_objective</b>: p99_ms · the owner's yes 0e9f8a7b (asked &quot;p99 as the target?&quot;, chose option 1", card)
+        self.assertIn("change_objective</b>: p99_ms · names 0e9f8a7b as the owner's yes, which does not count", card)
         self.assertIn("the owner&#x27;s measure, decided 0a1b2c3d", table)
         # a money line and the goal's spend are readings beside the cost
         own = dict(self.OWN, target=dict(self.OWN["target"], money="USD per day"))

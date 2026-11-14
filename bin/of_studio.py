@@ -773,9 +773,8 @@ class Data:
         import of_loops
         cache = self.__dict__.setdefault("_loop_cards", {})
         if w["id"] not in cache:
-            goal = (((getattr(self, "full", None) or {}).get("goals") or {}).get(w.get("goal")) or {}) if w.get("goal") else {}
-            cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w, resolve=of_loops.for_work(
-                of_loops.log_resolver(), w["id"], goal.get("decided")))
+            cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w,
+                                              resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]))
         return cache[w["id"]]
 
     def history(self, names, since=None):
@@ -1820,7 +1819,6 @@ def view_works(d, wid=None):
 
 
 OWNER_MEASURE = "the owner's measure, decided "   # docs/registry.md, Works, "The owner's measure"
-OWNER_YES = " · the owner's yes "
 UNRESOLVED = "decided %s does not resolve as the owner's yes: priced in money"
 NAMED_YES = " · names %s as the owner's yes, which does not count: %s"
 
@@ -1916,8 +1914,6 @@ def _loop_card(d, w):
     decisions = "".join(f'<li>{e(st(x.get("ts")))} <b>{e(x.get("decision") or "?")}</b>'
                         f'{" " + e(x["hypothesis"]) if x.get("hypothesis") else ""}{" → " + e(x["rung"]) if x.get("rung") else ""}'
                         f'{": " + e(x["metric"]) if x.get("metric") else ""}'
-                        f'{OWNER_YES + e(str(x["decided"])) if x.get("decided") else ""}'
-                        f'{" (" + e(str(x["decided_words"])) + ")" if x.get("decided") and x.get("decided_words") else ""}'
                         f'{NAMED_YES % (e(str(x["decided_unresolved"])), e(of_loops.UNRESOLVED_WHY.get(x.get("decided_unresolved_why"), "it does not resolve"))) if x.get("decided_unresolved") else ""}'
                         f'{" · to money: " + e(str(x.get("to_money") or x.get("money"))) if x.get("to_money") or x.get("money") else ""}'
                         f'{" · " + e(str(x["note"])[:200]) if x.get("note") else ""}</li>'
