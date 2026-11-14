@@ -193,6 +193,7 @@ From RFC 0002 §4.1. They are written up, not closed:
 - OF's own holder detection runs `ps eww -o command=` in a subprocess, not as a tool call, so the guard never sees it and needs no exemption;
 - G1.8 matches by the path's `.config/<dir>/` part: after `cd ~/.config/acme/x`, `cat clickhouse-password` names the file alone and passes (the G1.7 suffix classes are matched anywhere);
 - G14 follows a variable only when it is set on the same command line, and walks at most 5,000 files of a directory read recursively; a path built at run time (`$(…)`, a loop variable) is not seen;
+- code a git hook runs is not seen: the guard reads the command (`git commit`), not what the repository's pre-commit hook then runs, which includes the staged code itself once `of smoke --index` is in the gate (organic-framework PR 145; it runs in a scratch HOME, so a `~` path in that code points there, but an absolute path does not);
 - G16 sees a command line and a tool call: a script kept in a file that mails or posts (`python3 send.py`), a connector that sends a draft by its id, an address held in an environment variable, or an authority missing from the lists is not seen;
 - every agent runs as the same user, so a file's mode keeps no position from another's credentials; the guard stops a command line, not a process that wants the file. Per-position separation: G14 now; the session's own deny rules from `of spawn` (`of_platform`); a separate OS user on the agent server (`of_agent-server`).
 
