@@ -5,10 +5,12 @@ checkpoint_days, wip_arms). The register and the log are events (§4.1, of_platf
 
   of.loop_hypothesis  {work, id, change, predict, cost: {rung, runner_h}, voi: low|med|high, status}
                       a later event with the same id updates the hypothesis (its status above all)
-  of.loop_run         {work, hypothesis, rung, result, value, metric, queued_at, started_at, ended_at, runner_h, tokens,
-                      evidence}; ended_at defaults to the event's ts, metric to the target's
+  of.loop_run         {work, hypothesis, rung, result, value, metric, accepted, observed_at, proxy: {for, valid_when,
+                      held}, queued_at, started_at, ended_at, runner_h, tokens, evidence}; ended_at defaults to the
+                      event's ts, metric to the target's, observed_at and proxy to its measure's
   of.loop_decision    {work, hypothesis, decision: keep|drop|park|reopen|step_up|step_back|change_objective, rung, metric,
-                      to_money (also as money), decided (a change of objective on the owner's measure), note}
+                      to_money (also as money), note}; a decided it carries never counts: only the registry cites
+                      the owner's yes
   (of_platform's names, docs/events.md: a run's id is `run`; a hypothesis update carries `status` and `status_at`)
   of.loop_cost        {work, run, session, from, to, usd, fresh_tokens, responses, by_model}: of_capacity, about an hour
                       after a run ends, the recording session's spend in the run's window; usd null = unknown
@@ -23,6 +25,13 @@ and how it is checked"): project() takes a resolver for that, and without one, o
 target is one without `decided`, and `decided_unresolved` names the id with `decided_unresolved_why`. A resolved
 id carries `decided_words`, what the person said, for the reader to check that it names the measure.
   checkpoint_trend(curve, ...)      the target per checkpoint_days period: a standing work's progress (docs/registry.md)
+
+Where a reading is taken (docs/registry.md, Works; RFC 0005 §4.3, 2026-11-14): a run carries `observed_at`, the point
+where its value was read, and `proxy` when that reading stands for an event that happens elsewhere, with `held`, whether
+the condition that makes it equal to the reading there held in the data the run used. A run the event does not mark
+takes both from its metric's measure (`observed_at`, `proxy_for`), its `held` then unknown. A run whose proxy did not
+hold, or is not known to hold, is not observed: it stays out of the curve of the target (and so out of the gains, the
+plateau and the checkpoints) and shows as "not observed at <at>", its reading labelled as a proxy (not_observed_text).
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
 """
@@ -40,6 +49,8 @@ STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "ope
 # parked, dropped or kept hypothesis back to open (RFC 0005 §4.1; of_platform's change of 2026-11-14, hand-over 7b804b09)
 PLATEAU_CYCLES, PLATEAU_GAIN = 3, 0.01     # RFC 0005 §6: 3 cycles in a row gain under 1% of the target
 DRIFT_RUNS = 3                             # the latest runs that decide whether the loop measures its target
+HELD = ("held", "not_held", "unknown")     # of_loop.PROXY_HELD: whether a proxy's condition held in the run's data
+HELD_TEXT = {"not_held": "did not hold", "unknown": "is not known to hold"}
 
 
 def _num(x):
@@ -168,7 +179,7 @@ def spec_of(raw, resolve=None):
     prod = {str(r["rung"]) for r in ladder if r.get("production")}
     if not prod and "shadow" in names:   # RFC 0005 §4: a production rung is shadow or higher
         prod = set(names[names.index("shadow"):])
-    t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class")}
+    t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class", "observed_at")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
     t["segment"] = _segment(target.get("segment"))
     t["decided"], why, words = owners_yes(decided_of(target), resolve)
@@ -182,6 +193,37 @@ def spec_of(raw, resolve=None):
             "ladder": ladder, "rungs": names, "production": prod,
             "checkpoint_days": _num(raw.get("checkpoint_days")) or 3, "wip_arms": int(_num(raw.get("wip_arms")) or 2),
             "babysit_model": raw.get("babysit_model") or "sonnet"}
+
+
+def proxy_of(raw, decl=None):
+    """A run's proxy (docs/registry.md, Works, "Where a reading is taken"): {for, valid_when, held} from the event,
+    each missing part from DECL, its measure's proxy_for {at, valid_when}; held unknown when not given. None when
+    neither names one: the reading is taken where its event happens."""
+    raw = raw if isinstance(raw, dict) else {}
+    decl = decl if isinstance(decl, dict) and decl.get("at") else {}
+    if not raw and not decl:
+        return None
+    held = str(raw.get("held") or "unknown").strip().lower()
+    return {"for": raw.get("for") or raw.get("at") or decl.get("at"),
+            "valid_when": raw.get("valid_when") or decl.get("valid_when"),
+            "held": held if held in HELD else "unknown"}
+
+
+def observed(run):
+    """Whether RUN's reading counts as taken where its event happens: no proxy, or one whose condition held."""
+    p = (run or {}).get("proxy")
+    return not p or p.get("held") == "held"
+
+
+def not_observed_text(run):
+    """How a run that is not observed reads, as `of loop show` reads it: 'not observed at <at>', then its reading at
+    observed_at labelled as a proxy, never the number alone."""
+    p = run.get("proxy") or {}
+    val = run.get("value")
+    reading = f'{run.get("metric") or "?"} {val:g}' if isinstance(val, (int, float)) else f'{run.get("metric") or "?"}'
+    return (f'not observed at {p.get("for") or "the point where its event happens (not named)"}; its reading at '
+            f'{run.get("observed_at") or "a point not named"} is a proxy ({reading}), valid only when '
+            f'{p.get("valid_when") or "a condition not named"}, which {HELD_TEXT.get(p.get("held"), HELD_TEXT["unknown"])}')
 
 
 def events(rows, work_id):
@@ -225,6 +267,7 @@ def _runs(evs, spec, hyp):
     out, last_end = [], {}
     costs = {str((r.get("payload") or {}).get("run")): r.get("payload") or {} for r in evs if r["name"] == "of.loop_cost"}
     target = (spec["target"].get("metric") or "").strip()
+    measures = {str(m["name"]): m for m in spec["measures"]}
     for r in evs:
         if r["name"] != "of.loop_run":
             continue
@@ -235,7 +278,10 @@ def _runs(evs, spec, hyp):
         # entering the rung: queued_at, else the end of this hypothesis' previous run, else when it was recorded
         entered = epoch(pl.get("queued_at")) or last_end.get(hid) or (hyp.get(hid) or {}).get("recorded_at") or start or end
         metric = str(pl.get("metric") or target)
-        out.append({"rung": str(pl.get("rung") or "?"), "hypothesis": hid or None, "result": pl.get("result"),
+        decl = {"observed_at": spec["target"].get("observed_at")} if metric == target else measures.get(metric) or {}
+        out.append({"observed_at": pl.get("observed_at") or decl.get("observed_at"),
+                    "proxy": proxy_of(pl.get("proxy"), decl.get("proxy_for")),
+                    "rung": str(pl.get("rung") or "?"), "hypothesis": hid or None, "result": pl.get("result"),
                     "value": _num(pl.get("value")), "metric": metric, "on_target": metric == target,
                     "entered": min(entered, end), "started": start, "ended": end, "runner_h": _num(pl.get("runner_h")) or 0.0,
                     "tokens": _num(pl.get("tokens")), "evidence": pl.get("evidence"), "event_id": pl.get("run") or r.get("event_id"),
@@ -325,7 +371,8 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
                        "cycles_per_day": round(len(wk) / days, 2),
                        "cycle_time_h": round(statistics.median(cyc), 2) if cyc else None,
                        "wait_share": round(sum(w for w, _ in waited) / sum(t for _, t in waited), 3) if waited else None,
-                       "last_result": rr[-1]["result"] if rr else None, "last_at": rr[-1]["ended"] if rr else None})
+                       "last_result": rr[-1]["result"] if rr else None, "last_at": rr[-1]["ended"] if rr else None,
+                       "last_run": {k: rr[-1][k] for k in ("metric", "value", "observed_at", "proxy")} if rr else None})
     rank = {n: i for i, n in enumerate(spec["rungs"])}   # only the ladder orders rungs: one it does not name ranks lowest
     reached = max(runs, key=lambda r: (rank.get(r["rung"], -1), -r["ended"])) if runs else None
     highest = None
@@ -344,8 +391,8 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
 
     decided = [h for h in hyp.values() if h.get("status") in ("kept", "dropped")]
     kept = [h for h in decided if h["status"] == "kept"]
-    curve = sorted(([r["ended"], r["value"], r["rung"], r["hypothesis"]] for r in runs if r["on_target"] and r["value"] is not None),
-                   key=lambda p: p[0])
+    curve = sorted(([r["ended"], r["value"], r["rung"], r["hypothesis"]] for r in runs  # a run not observed decides nothing
+                    if r["on_target"] and r["value"] is not None and observed(r)), key=lambda p: p[0])
     sign = -1 if spec["target"].get("better") == "lower" else 1   # a gain is a step towards better
     gains = [sign * (curve[i][1] - curve[i - 1][1]) for i in range(1, len(curve))]
     kept_ids = {h["id"] for h in kept}
@@ -388,7 +435,9 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
         "hypotheses": [{"id": h["id"], "ts": h["recorded_at"], "status": h.get("status"), "status_at": h.get("status_at"),
                         "change": h.get("change"), "predict": h.get("predict")} for h in hyp.values()],
         "runs": [{"id": r["event_id"], "rung": r["rung"], "hypothesis": r["hypothesis"], "metric": r["metric"], "value": r["value"],
-                  "accepted": r["accepted"], "queued_at": r["queued_at"], "started_at": r["started"], "ended_at": r["ended"],
+                  "accepted": r["accepted"], "on_target": r["on_target"], "observed_at": r["observed_at"], "proxy": r["proxy"],
+                  "result": r["result"],
+                  "queued_at": r["queued_at"], "started_at": r["started"], "ended_at": r["ended"],
                   "position": r["position"], "session": r["session"], "model": r["model"], "usd": r["usd"],
                   "fresh_tokens": r["fresh_tokens"]} for r in runs],
         "decisions_all": [{"ts": x["ts"], "kind": x.get("decision"), "hypothesis": x.get("hypothesis"), "metric": x.get("metric"),
