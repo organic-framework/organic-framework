@@ -99,6 +99,19 @@ class MatchTest(unittest.TestCase):
                     "watch -n 5 kubectl get pods", "echo hello | sh", "python3 -m pytest -q"):
             self.assertIsNone(hit(cmd), cmd)
 
+    def test_review_two(self):
+        """of_review on organic-framework PR 178, second round."""
+        for cmd in ("python3 -c 'if 1: import boto3'", "python3 -c 'try: import boto3\nexcept Exception: pass'",
+                    "python3 -c 'exec(\"import boto3\")'", "parallel -j 4 aws s3 ls ::: a", "parallel --jobs 4 aws s3 ls ::: a",
+                    "python3 -X utf8 -m awscli s3 ls", "python3 -W ignore -m awscli s3 ls", "uv run aws s3 ls",
+                    "uv run --with awscli aws s3 ls", "poetry run aws s3 ls", "direnv exec . aws s3 ls", "mise exec -- aws s3 ls",
+                    "nix shell nixpkgs#awscli2 -c aws s3 ls", "nix-shell -p awscli2 --run 'aws s3 ls'",
+                    "conda run -n tools aws s3 ls", "bundle exec terraform plan"):
+            self.assertEqual(hit(cmd), "deny", cmd)
+        for cmd in ("uv run pytest -q", "poetry run python x.py", "python3 -c 'import json, os'", "python3 -X utf8 -m pytest",
+                    "parallel -j 4 echo ::: a", "mise exec -- node x.js"):
+            self.assertIsNone(hit(cmd), cmd)
+
     def test_what_is_not_a_call(self):
         for cmd in ("ssh gw aws s3 ls", "git commit -m 'aws: drop the profile'", "grep -rn terraform .",
                     "echo terraform plan", "kubectl get pods", "unset AWS_PROFILE", "env -u AWS_PROFILE ls",
@@ -201,6 +214,18 @@ class HookTest(KeyCase):
         self.assertEqual(self.fire("aws s3 ls"), ("", None))
 
 
+class CommentTest(unittest.TestCase):
+    """G0.7: a `#` inside a word is no comment, as in bash."""
+
+    def test_a_hash_inside_a_word(self):
+        key = "~/.ssh/" + "id_" + "rsa"
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a#b " + key}))
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + key + " # a note"}))
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo ok # cat " + key}))
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo '# cat' ok"}))
+        self.assertEqual(of_guard._tokens("echo a#b c # d"), ["echo", "a#b", "c"])
+
+
 class CloudCacheTest(unittest.TestCase):
     """G1.12 (of_architect's condition 5)."""
 
@@ -217,7 +242,8 @@ class CloudCacheTest(unittest.TestCase):
         for cmd in ("sqlite3 ~/.config/gcloud/access_tokens.db 'select * from access_tokens'",
                     "sqlite3 ~/.config/gcloud/credentials.db .dump", "aws configure export-credentials --profile p",
                     "gcloud auth print-access-token", "gcloud auth application-default print-access-token",
-                    "az account get-access-token"):
+                    "az account get-access-token", "gcloud config config-helper --format=json",
+                    "python3 -m awscli configure export-credentials"):
             self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
 
 
