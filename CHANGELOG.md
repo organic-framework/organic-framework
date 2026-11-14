@@ -29,6 +29,8 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ### Changed
 
+- of-server's chart and ClickHouse manifest isolate both inside the cluster (`deploy/RUNBOOK.md` §4.1). On upgrade: `networkPolicy.ingressFrom` must name the connector's pods by labels (the default `app: cloudflared` may not match a running connector, and an entry with a namespace alone, an empty selector or an empty namespace selector fails the render); DNS egress goes only to `networkPolicy.dnsTo`, the `kube-dns` pods by default, so a cluster with a node-local cache adds its address; git-sync reaches only `networkPolicy.gitSyncTo`; `deploy/clickhouse/clickhouse.yaml` adds a default-deny to the ClickHouse namespace and admits only of-server's pods, from the namespace `of-server`. `deploy/netcheck.py` proves the result in a cluster.
+
 - Grants signed with the old HMAC signature are no longer trusted.
 - The guard takes `executors*.txt` and file names with the misspelling `secrtets` for secret files.
 - The conductor's and the onboarding lead's briefs: do everything they can themselves, and say at each step in plain words what they do and why.
