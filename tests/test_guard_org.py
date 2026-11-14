@@ -333,6 +333,24 @@ class AllowJumpTest(unittest.TestCase):
             self.assertEqual(self.hit(f"ssh -F {cfg} target", resolver=of_guard.ssh_resolver), [])
             self.assertTrue(self.hit(f"ssh -F {cfg} elsewhere", resolver=of_guard.ssh_resolver))
 
+    def test_via_is_the_name_ssh_connects_to(self):
+        """of_review on PR 157, the twin of `to`: with Host agent-gateway / HostName elsewhere, -J agent-gateway was an
+        allowed jump though ssh connects to the other host; under a ProxyCommand's own -F config too."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host agent-gateway\n  HostName gw9.example.net\n")
+            hit = lambda cmd: self.hit(cmd, resolver=of_guard.ssh_resolver)  # noqa: E731
+            self.assertTrue(hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70"))
+            self.assertTrue(hit(f"ssh -o 'ProxyCommand ssh -F {cfg} -W 192.0.2.70:22 agent-gateway' target"))
+            real = dict(GATE, ssh=dict(GATE["ssh"], allow_jump=[dict(GATE["ssh"]["allow_jump"][0],
+                                                                     via=["gw9.example.net"])]))
+            said = of_guard.org_rule_hits(
+                "Bash", {"command": f"ssh -o 'ProxyCommand ssh -F {cfg} -W 192.0.2.70:22 agent-gateway' target"},
+                [real], "funding_keeper", resolver=of_guard.ssh_resolver)
+            self.assertEqual(said, [])                                                # via named by its HostName
+
     def test_to_is_the_name_ssh_connects_to_and_a_forward_stays_in(self):
         """of_secrets-review on PR 157: `to` matched the typed alias, so `Host 192.0.2.70` with another HostName was an
         allowed jump to another target; a forward rides the allowed jump past it."""

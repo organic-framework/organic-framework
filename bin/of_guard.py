@@ -2958,11 +2958,13 @@ def _ssh_chain_of(head, args):
     if head not in ("ssh", "autossh", "scp", "sftp", "rsync"):
         raise _Doubt(head)
     vals = _SSH_OPT_VALUE.get(head, set())
-    out = {"dests": [], "jumps": None, "proxycommand": None, "port": None, "forwards": False}
+    out = {"dests": [], "jumps": None, "proxycommand": None, "port": None, "forwards": False, "config": None}
 
     def option(flag, v):
         if flag in ("-L", "-R", "-D", "-W", "-O") and head in ("ssh", "autossh"):
             out["forwards"] = True  # through an allowed jump it reaches past it (of_secrets-review on PR 157)
+        if flag == "-F":
+            out["config"] = str(v)
         if flag == "-J":
             out["jumps"] = (out["jumps"] or []) + [h for h in str(v).split(",") if h.strip()]
         elif flag == _SSH_PORT_FLAG.get(head):
@@ -3027,31 +3029,41 @@ def _ssh_chain_of(head, args):
     return out
 
 
-def _ssh_contacts(call, resolve):
-    """[(host, (next host, next port) for a jump, else None for a contact)] of every host one call reaches, read
-    strictly (raises _Doubt): the jumps of -J, -o ProxyJump or the folded config's ProxyJump, each to the hop right
-    after it, the last to the destination; a ProxyCommand only in its `ssh … -W <to> <via>` form (%h and %p the
-    destination); the destination itself a contact. A port is the hop's own `:port`, else the folded config's Port;
-    only the destination takes -p; else 22 (of_architect's conditions 1 and 2)."""
-    chain = _ssh_chain_of(call["head"], call.get("args") or [])
-    first = (lambda n, k: next((b[k] for b in getattr(resolve, "blocks", []) or []
-                                if b.get(k) and _ssh_pattern_match(b["patterns"], n)), None)) if resolve else \
-        (lambda n, k: None)
-    def real(host):  # the name ssh connects to: the folded config's HostName, else the name as typed
+def _ssh_tools(resolve):
+    """(first, real, plain) over one folded config: the first value a matching block sets; the name ssh connects to
+    (its HostName, else the name typed); a hop checked for a jump or a forward of its own (a doubt)."""
+    def first(n, k):
+        return next((b[k] for b in getattr(resolve, "blocks", []) or []
+                     if b.get(k) and _ssh_pattern_match(b["patterns"], n)), None) if resolve else None
+
+    def real(host):
         hostname = resolve(host) if resolve else None
         return (hostname or host).rstrip(".").lower()
-
-    def plain(hop):  # a jump hop reached by its own jump (its config's ProxyJump or ProxyCommand) is a doubt: ssh
-        # connects to that one first, which this reading does not follow (of_review on PR 157)
-        if any(str(first(hop, k) or "none").lower() != "none" for k in ("proxyjump", "proxycommand")):
-            raise _Doubt(f"{hop} has its own jump")
-        return unforwarded(hop)
 
     def unforwarded(host):  # a forward or a local command its config sets rides the connection past the jump
         if any(first(host, k) for k in _SSH_FWD[:3]) or \
                 str(first(host, "permitlocalcommand") or "no").lower() in ("yes", "true"):
             raise _Doubt(f"{host} forwards")
         return host
+
+    def plain(hop):  # a jump hop reached by its own jump (its config's ProxyJump or ProxyCommand) is a doubt: ssh
+        # connects to that one first, which this reading does not follow (of_review on PR 157)
+        if any(str(first(hop, k) or "none").lower() != "none" for k in ("proxyjump", "proxycommand")):
+            raise _Doubt(f"{hop} has its own jump")
+        return unforwarded(hop)
+    return first, real, plain, unforwarded
+
+
+def _ssh_contacts(call, resolve):
+    """[(host as typed, the name ssh connects to, (next host, next port) for a jump, else None for a contact)] of
+    every host one call reaches, read strictly (raises _Doubt): the jumps of -J, -o ProxyJump or the folded config's
+    ProxyJump, each to the hop right after it, the last to the destination; a ProxyCommand only in its
+    `ssh … -W <to> <via>` form (%h and %p the destination), its hops named under its own -F config when it has one;
+    the destination itself a contact. A port is the hop's own `:port`, else the folded config's Port; only the
+    destination takes -p; else 22 (of_architect's conditions 1 and 2; of_review on PR 157: `via` and `to` are both
+    the names ssh connects to, never an alias a config points elsewhere)."""
+    chain = _ssh_chain_of(call["head"], call.get("args") or [])
+    first, real, plain, unforwarded = _ssh_tools(resolve)
     out = []
     for dword in chain["dests"]:
         dest = unforwarded(_ssh_hop(dword)[0])
@@ -3065,7 +3077,8 @@ def _ssh_contacts(call, resolve):
         if jumps:
             hops = [_ssh_hop(h) for h in jumps]
             hops = [(plain(h), p or first(h, "port") or "22") for h, p in hops] + [(dest, dport)]
-            out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
+            out += [(hops[k][0], real(hops[k][0]), (real(hops[k + 1][0]), hops[k + 1][1]))
+                    for k in range(len(hops) - 1)]
         elif command and command.lower() != "none":
             words = command.split()
             if not words or os.path.basename(words[0]) != "ssh":
@@ -3076,14 +3089,16 @@ def _ssh_contacts(call, resolve):
             if not w or not sub["dests"]:
                 raise _Doubt("a ProxyCommand without -W")
             to_host, _, to_port = w.replace("%h", real(dest)).replace("%p", dport).rpartition(":")
-            via = sub["dests"][0]
+            sfirst, sreal, splain, _ = _ssh_tools(ssh_resolver(sub["config"]) if sub.get("config") else resolve)
+            via_host = splain(_ssh_hop(sub["dests"][0])[0])
             inner = [_ssh_hop(h) for h in sub["jumps"] or []]
-            via_host = plain(_ssh_hop(via)[0])
-            hops = [(plain(h), p or first(h, "port") or "22") for h, p in inner] + [
-                (via_host, sub["port"] or first(via_host, "port") or "22")]
-            out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
-            out.append((hops[-1][0], (to_host.strip("[]").lower(), to_port)))  # the gateway resolves a -W target
-        out.append((dest, None))
+            hops = [(splain(h), p or sfirst(h, "port") or "22") for h, p in inner] + [
+                (via_host, sub["port"] or sfirst(via_host, "port") or "22")]
+            out += [(hops[k][0], sreal(hops[k][0]), (sreal(hops[k + 1][0]), hops[k + 1][1]))
+                    for k in range(len(hops) - 1)]
+            out.append((hops[-1][0], sreal(hops[-1][0]), (to_host.strip("[]").lower(), to_port)))  # the gateway
+            # resolves a -W target itself
+        out.append((dest, real(dest), None))
     return out
 
 
@@ -3108,12 +3123,12 @@ def _ssh_allowed(match, call, resolve, position):
         contacts = _ssh_contacts(call, resolve)
     except _Doubt:
         return False
-    for host, to in contacts:
-        if not listed(host):
+    for host, real_host, to in contacts:
+        if not (listed(host) or any(fnmatch.fnmatchcase(real_host, g) for g in globs)):
             continue
         if to is None:
             return False
-        if not any(any(fnmatch.fnmatchcase(n, str(v).lower()) for n in names(host) for v in e.get("via") or [])
+        if not any(any(fnmatch.fnmatchcase(real_host, str(v).lower()) for v in e.get("via") or [])
                    and any(_ssh_to_matches(t, to) for t in e.get("to") or []) for e in entries):
             return False
     return True
