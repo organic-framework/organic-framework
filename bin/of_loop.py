@@ -9,8 +9,10 @@ and the hypothesis register and decision log as events.
 - register(rows, work): the hypotheses with their derived status (open, testing, kept, dropped, parked), the next one
   first by value of information per runner-hour (an absent voi counts as med). No agent reports progress: status
   comes from runs and decisions.
-- decided(loop): the owner's yes on the target's measure (docs/registry.md, Works, "The owner's measure"): then money
-  is a reading, measures chain to the target or to money, and no position asks the owner for a money proof.
+- decided(loop): the id a target names as the owner's yes on its measure (docs/registry.md, Works, "The owner's
+  measure"). It counts only once resolve_decided finds that yes in the log (of_review on PR 168: any text had lifted
+  the money requirement); then money is a reading, measures chain to the target or to money, and no position asks the
+  owner for a money proof.
 """
 
 import hashlib
@@ -36,20 +38,82 @@ def decided(loop):
     return d.strip() if isinstance(d, str) and d.strip() else None
 
 
-def check_loop(loop, wid, warn="warning: "):
+UNREAD = ("unread", None)  # a resolver's answer when this machine's log cannot be read: no exception, only a warning
+HUMAN_ANSWER = "owner"  # `by` of an answer a person gave: the popup, the owner's terminal, their conductor's chat
+_ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,35}$")
+
+
+def resolve_decided(conn, did):
+    """(kind, event id) of the owner's yes that DID names in the log, or None:
+    - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin;
+    - 'ask': an ask (of.agent_question) with an answer by the owner (`by: owner`), not an agent's closure.
+    DID is an event id or its prefix of at least its first two groups, or an ask's short id (its last 8 characters, as
+    `of asks` prints it); one that names no event, or several, is None. Reads by the primary key, and by one indexed
+    name from the event's time (docs/registry.md, Works, "The owner's measure"; of_review on PR 168)."""
+    import json
+    did = str(did or "").strip().lower()
+    if not _ID.match(did) or (len(did) < 13 and not re.fullmatch(r"[0-9a-f]{8}", did)):
+        return None
+    cols = "event_id, name, ts, payload"
+    found = {r[0]: r for r in conn.execute(f"SELECT {cols} FROM event WHERE event_id >= ? AND event_id < ? LIMIT 2",
+                                           (did, did + "~"))}
+    if re.fullmatch(r"[0-9a-f]{8}", did):
+        found.update({r[0]: r for r in conn.execute(
+            f"SELECT {cols} FROM event WHERE name = 'of.agent_question' AND event_id LIKE ? LIMIT 2", ("%-%" + did,))
+            if r[0].endswith(did)})
+    if len(found) != 1:
+        return None
+    eid, name, ts, pl = next(iter(found.values()))
+    p = json.loads(pl or "{}")
+    if name == "of.human_prompt":
+        origin = p.get("origin")
+        for (cp,) in conn.execute("SELECT payload FROM event WHERE name = 'of.prompt_origin' AND ts >= ? ORDER BY ts, "
+                                  "rowid", (ts,)):
+            c = json.loads(cp or "{}")
+            if c.get("event_id") == eid:
+                origin = c.get("origin")
+        return ("prompt", eid) if origin == "human" else None
+    if name == "of.agent_question":
+        for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ?",
+                                  (ts,)):
+            a = json.loads(ap or "{}")
+            if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER:
+                return ("ask", eid)
+    return None
+
+
+def owners_yes(loop, resolve):
+    """The target's decided id when RESOLVE (an id -> truthy) finds it in the log as the owner's yes, else None."""
+    d = decided(loop)
+    found = resolve(d) if d and resolve else None
+    return d if found and found != UNREAD else None
+
+
+def check_loop(loop, wid, warn="warning: ", resolve=None):
     """Problems with a work's loop (RFC 0005 §4); warnings start with `warn`. On a target the owner decided, money is
     optional and a measure chains to the target (to_target) or to money (docs/registry.md, Works, "The owner's
-    measure")."""
+    measure"). With RESOLVE (`of registry check`: resolve_decided over this machine's log), a decided id the log does
+    not hold as the owner's yes is a problem and counts as no decision; without it (every other `of` call, which reads
+    no log), the id is taken as written."""
     tag = f"{wid}: loop"
     if not isinstance(loop, dict):
         return [f"{tag} must be a mapping"]
     out = [f"{warn}{tag}: unknown key {k!r}" for k in sorted(set(loop) - LOOP_KEYS)]
     t = loop.get("target")
     owners = decided(loop)
+    found = resolve(owners) if owners and resolve is not None else True
+    if found == UNREAD:
+        out.append(f"{warn}{tag}: target.decided {owners!r} could not be looked up: this machine's event log does not "
+                   "open, so the target gets no exception here")
+        owners = None
+    elif not found:
+        out.append(f"{tag}: target.decided {owners!r} is not the owner's yes in this machine's log (an ask the owner "
+                   "answered, or a prompt a person typed): it lifts nothing until it is")
+        owners = None
     if not isinstance(t, dict):
         out.append(f"{tag}: target is required (metric, and money unless the owner decided the measure)")
     else:
-        if t.get("decided") is not None and not owners:
+        if t.get("decided") is not None and not decided(loop):
             out.append(f"{tag}: target.decided is the owner's yes on the measure: their ask id, or the event id of "
                        "their own prompt that names it")
         for k in ("metric",) if owners else ("metric", "money"):
@@ -198,15 +262,20 @@ def context_matches(field, part, prose=False):
     return bool(words) and words <= content_words(field)
 
 
-def target_line(loop):
+def target_line(loop, resolve):
     """How `of loop show` and the session's start context name a target: its metric, and on a target the owner
-    decided, that yes's id and that its money is reported, never asked for as a proof."""
+    decided (its id found by RESOLVE), that yes's id and that its money is reported, never asked for as a proof. A
+    decided id RESOLVE does not find is named as unresolved, never as the owner's decision."""
     t = (loop or {}).get("target") if isinstance(loop, dict) else None
     t = t if isinstance(t, dict) else {}
     line = f"target {t.get('metric')}" + (f" ({t['better']} is better)" if t.get("better") in ("higher", "lower") else "")
     d = decided(loop)
     if not d:
         return line
+    if not owners_yes(loop, resolve):
+        return (line + f"; it names {d} as the owner's yes, but this machine's log holds no such yes (an ask the owner "
+                       "answered, or a prompt a person typed): unresolved, so it is not the owner's decision and the loop "
+                       "needs its chain to money")
     line += (f"; the owner decided this measure ({d}): its money is reported beside it"
              + (f" as a reading ({' '.join(str(t['money']).split())})" if isinstance(t.get("money"), str) and t["money"].strip() else "")
              + ", never asked of the owner as a proof")

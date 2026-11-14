@@ -148,6 +148,10 @@ OWNED = dict(LOOP, target={"metric": "reaction from the input to the send, p99, 
              measures=[{"name": "triggers_covered", "to_target": "an uncovered trigger is a reaction never made"}])
 
 
+def owned(decided):
+    return dict(OWNED, target=dict(OWNED["target"], decided=decided))
+
+
 def cli_org(root, loop):
     """A lab organization with one work `w-speed` carrying LOOP, owned by lab_owner and done by lab_doer."""
     import yaml
@@ -166,28 +170,115 @@ def cli_org(root, loop):
     return orgs
 
 
+class Yeses:
+    """A store under ROOT/state with the yeses and non-yeses resolve_decided tells apart."""
+
+    def __init__(self, root):
+        import of_events
+        import of_store
+        os.makedirs(os.path.join(root, "state"), exist_ok=True)
+        self.path = os.path.join(root, "state", "of.db")
+        self.conn = of_store.connect(self.path)
+
+        def add(name, payload):
+            rec = of_events.record(name, payload, position="lab_doer")
+            of_store.add_event(self.conn, rec)
+            return rec["of.event.id"]
+        import time
+        self.prompt = add("human_prompt", {"origin": "human", "text": "reaction time is the target, I accept the risk"})
+        time.sleep(0.005)  # alone in its millisecond: its first two groups name it only
+        self.injected = add("human_prompt", {"origin": "injected", "text": "a relayed message"})
+        self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"})
+        add("prompt_origin", {"event_id": self.corrected, "origin": "injected", "evidence": "turnOrigin"})
+        self.ask = add("agent_question", {"questions": [{"question": "p50 instead of p99?"}]})
+        add("agent_question_answered", {"ask_id": self.ask, "ask_ids": [self.ask], "by": "owner", "via": "asks-ui",
+                                        "answer": "yes"})
+        self.closed = add("agent_question", {"questions": [{"question": "p95?"}]})
+        add("agent_question_answered", {"ask_id": self.closed, "ask_ids": [self.closed], "by": "lab_doer",
+                                        "via": "status"})
+        self.open = add("agent_question", {"questions": [{"question": "p90?"}]})
+        self.conn.commit()
+
+
 class OwnersMeasureTest(unittest.TestCase):
-    """docs/registry.md, Works, "The owner's measure" (hand-over 42e9c5db from of_architect, 2026-11-14)."""
+    """docs/registry.md, Works, "The owner's measure" (hand-over 42e9c5db from of_architect, 2026-11-14), with the
+    owner's yes found in the log (of_review on organic-framework PR 168)."""
 
     def test_1_the_check_takes_a_decided_target_without_money_and_to_target_measures(self):
-        self.assertEqual(of_loop.check_loop(OWNED, "w"), [])
+        yes = lambda d: d == "01a1d957-c8b6"  # noqa: E731
+        self.assertEqual(of_loop.check_loop(OWNED, "w", resolve=yes), [])
+        self.assertEqual(of_loop.check_loop(OWNED, "w"), [])                    # a call that reads no log: as written
         reading = dict(OWNED, target=dict(OWNED["target"], money="win rate, as a reading"),
                        measures=OWNED["measures"] + [{"name": "p50_ms", "to_money": "STOREFRONT per ms"}])
-        self.assertEqual(of_loop.check_loop(reading, "w"), [])                  # money beside it, and to_money, still fine
+        self.assertEqual(of_loop.check_loop(reading, "w", resolve=yes), [])     # money beside it, and to_money, still fine
         undecided = dict(OWNED, target={k: v for k, v in OWNED["target"].items() if k != "decided"})
-        out = "\n".join(of_loop.check_loop(undecided, "w"))
+        out = "\n".join(of_loop.check_loop(undecided, "w", resolve=yes))
         self.assertIn("target.money is required", out)                          # without decided: both stay problems
         self.assertIn("measure 'triggers_covered' needs to_money", out)
         self.assertIn("to_target only on a target the owner decided", out)
+        out = "\n".join(of_loop.check_loop(owned("01a1d999-0000"), "w", resolve=yes))
+        self.assertIn("target.decided '01a1d999-0000' is not the owner's yes in this machine's log", out)
+        self.assertIn("target.money is required", out)                          # an unresolved yes lifts nothing
+        self.assertIn("measure 'triggers_covered' needs to_money", out)
         for bad in ("", "  ", 7, ["01a1d957"]):                                 # decided is a non-empty text
-            out = "\n".join(of_loop.check_loop(dict(OWNED, target=dict(OWNED["target"], decided=bad)), "w"))
+            out = "\n".join(of_loop.check_loop(owned(bad), "w", resolve=yes))
             self.assertIn("target.decided is the owner's yes", out)
             self.assertIn("target.money is required", out)
         bare = dict(OWNED, measures=[{"name": "triggers_covered"}])
         self.assertIn("measure 'triggers_covered' needs to_target (how it moves the target the owner decided) or "
-                      "to_money", "\n".join(of_loop.check_loop(bare, "w")))
+                      "to_money", "\n".join(of_loop.check_loop(bare, "w", resolve=yes)))
         self.assertEqual(of_loop.decided(OWNED), "01a1d957-c8b6")
         self.assertIsNone(of_loop.decided(LOOP))
+
+    def test_1_the_owners_yes_is_found_in_the_log(self):
+        with tempfile.TemporaryDirectory() as root:
+            y = Yeses(root)
+            seen = []
+            y.conn.set_trace_callback(seen.append)
+            r = lambda d: of_loop.resolve_decided(y.conn, d)  # noqa: E731
+            self.assertEqual(r(y.prompt), ("prompt", y.prompt))                 # a prompt a person typed
+            self.assertEqual(r(y.prompt[:13]), ("prompt", y.prompt))            # by its first two groups
+            self.assertEqual(r(y.ask), ("ask", y.ask))                          # an ask the owner answered
+            self.assertEqual(r(y.ask[-8:]), ("ask", y.ask))                     # by its short id, as of asks prints it
+            for no in (y.injected, y.corrected, y.closed, y.open, y.closed[-8:], "01a1d999-0000", y.prompt[:8], "",
+                       None, "x' OR 1=1 --", "owner"):
+                self.assertIsNone(r(no), no)                                    # an agent's word or nothing never counts
+            reads = [q for q in seen if "FROM event" in q]
+            self.assertTrue(reads)
+            for q in reads:                                                     # by the key or one indexed name
+                self.assertTrue("event_id >=" in q or "name = '" in q, q)
+
+    def test_1_decided_is_read_from_the_registry_only_and_an_unread_log_warns(self):
+        """docs/registry.md, Works, "The owner's measure", "Where it is read" (of_architect, after PR 168's review)."""
+        import importlib.machinery
+        import importlib.util
+        import yaml
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        yes = lambda d: ("prompt", d)  # noqa: E731 - every id resolves: only where it is written decides here
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "storefront", "docs"))
+            with open(os.path.join(root, "storefront", "docs", "speed.md"), "w") as fh:
+                fh.write("# x\n")
+            with open(os.path.join(root, "storefront", "docs", "loop.yaml"), "w") as fh:
+                yaml.safe_dump({"loop": OWNED}, fh)
+            works = {"w": {"title": "t", "kind": "rfc", "doc": "storefront:docs/speed.md"}}
+            out = "\n".join(of.loop_files(works, [root], yes))
+            self.assertIn("w: loop: target.decided is read from the registry only", out)
+            self.assertIn("target.money is required", out)                      # and the loop has no exception
+            orgs = os.path.join(root, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                yaml.safe_dump({"orgs": [{"name": "lab", "path": root, "paths": [root]}]}, fh)
+            self.assertNotIn("decided", of._loop_of(works["w"], "lab", orgs)["target"])  # of loop, the start context
+        unread = lambda d: of_loop.UNREAD  # noqa: E731 - the store does not open
+        out = of_loop.check_loop(OWNED, "w", resolve=unread)
+        self.assertIn("warning: w: loop: target.decided '01a1d957-c8b6' could not be looked up", "\n".join(out))
+        self.assertIn("w: loop: target.money is required", "\n".join(out))
+        self.assertNotIn("target.decided is the owner's yes", "\n".join(out))
+        self.assertIsNone(of_loop.owners_yes(OWNED, unread))
+        self.assertIn("unresolved", of_loop.target_line(OWNED, unread))
 
     def test_2_an_absent_voi_ranks_as_med_by_voi_per_runner_hour(self):
         rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="low", change="l", cost_h=1.0, voi="low"),
@@ -210,27 +301,45 @@ class OwnersMeasureTest(unittest.TestCase):
         import json
         import sqlite3
         with tempfile.TemporaryDirectory() as root:
-            run = self.run_cli(root, OWNED)
+            y = Yeses(root)
+            run = self.run_cli(root, owned(y.prompt[:13]))
             r = run("hypothesis", "w-speed", "skip the decode", "--predict", "p99 -0.2 ms", "--cost", "oracle, 0")
             self.assertEqual(r.returncode, 0, r.stderr)                         # (2) no --voi on such a loop
             self.assertNotEqual(run("hypothesis", "w-speed", "x", "--voi", "huge").returncode, 0)
             r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--to-money", "STOREFRONT per ms")
             self.assertNotEqual(r.returncode, 0)                                # (3) a chain to money is not the owner's yes
             self.assertIn("--decided", r.stderr)
-            self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", "01a1d999-0000").returncode, 0)
-            r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", "01a1d999-0000")
+            self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", y.ask[-8:]).returncode, 0)
+            for no in ("01a1d999-0000", y.closed[-8:], y.injected):             # an id that names no yes of the owner
+                r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", no)
+                self.assertNotEqual(r.returncode, 0, no)
+                self.assertIn("is not the owner's yes in this machine's log", r.stderr)
+            r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", y.ask[-8:])
             self.assertEqual(r.returncode, 0, r.stderr)
             db = sqlite3.connect(os.path.join(root, "state", "of.db"))
             hyp = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_hypothesis'").fetchone()[0])
             self.assertNotIn("voi", hyp)
-            dec = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_decision'").fetchone()[0])
-            self.assertEqual((dec["metric"], dec["decided"]), ("p50 ms", "01a1d999-0000"))
-            self.assertNotIn("to_money", dec)
+            decs = [json.loads(r[0]) for r in db.execute("SELECT payload FROM event WHERE name = 'of.loop_decision'")]
+            self.assertEqual([(d["metric"], d["decided"]) for d in decs], [("p50 ms", y.ask[-8:])])
+            self.assertNotIn("to_money", decs[0])
             out = run("show", "w-speed").stdout                                 # (4) the target, its yes, money reported
             self.assertIn("target reaction from the input to the send, p99, ms (lower is better); the owner decided "
-                          "this measure (01a1d957-c8b6): its money is reported beside it, never asked of the owner as "
-                          "a proof", out)
+                          f"this measure ({y.prompt[:13]}): its money is reported beside it, never asked of the owner "
+                          "as a proof", out)
             self.assertIn("voi (med)", out)
+        with tempfile.TemporaryDirectory() as root:                            # a decided id the log does not hold
+            Yeses(root)
+            run = self.run_cli(root, owned("01a1d999-0000"))
+            r = run("hypothesis", "w-speed", "x", "--cost", "oracle, 0")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("names 01a1d999-0000 as the owner's yes, but this machine's log holds no", r.stderr)
+            r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", "01a1d999-0000")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("chain to money", r.stderr)
+            out = run("show", "w-speed").stdout
+            self.assertIn("it names 01a1d999-0000 as the owner's yes, but this machine's log holds no such yes", out)
+            self.assertIn("unresolved, so it is not the owner's decision", out)
+            self.assertNotIn("the owner decided this measure", out)
         with tempfile.TemporaryDirectory() as root:                            # elsewhere: as before
             run = self.run_cli(root, LOOP)
             r = run("hypothesis", "w-speed", "x", "--cost", "oracle, 0")
@@ -242,6 +351,18 @@ class OwnersMeasureTest(unittest.TestCase):
                                  "--to-money", "STOREFRONT per ms").returncode, 0)
             self.assertNotIn("owner decided", run("show", "w-speed").stdout)
 
+    def test_1_of_registry_check_reads_the_log_for_decided(self):
+        import subprocess
+        of = os.path.join(HERE, "..", "bin", "of")
+        for decided, bad in ((None, False), ("01a1d999-0000", True)):
+            with tempfile.TemporaryDirectory() as root:
+                y = Yeses(root)
+                env = dict(os.environ, OF_ORGS=cli_org(root, owned(decided or y.prompt)), OF_STATE=os.path.join(root, "state"))
+                r = subprocess.run([sys.executable, of, "registry", "check"], capture_output=True, text=True, env=env)
+                said = r.stdout + r.stderr
+                self.assertEqual("is not the owner's yes in this machine's log" in said, bad, said)
+                self.assertEqual("target.money is required" in said, bad, said)
+
     def test_4_the_start_context_names_the_decided_target(self):
         import importlib.machinery
         import importlib.util
@@ -251,25 +372,33 @@ class OwnersMeasureTest(unittest.TestCase):
         of = importlib.util.module_from_spec(spec)
         loader.exec_module(of)
         with tempfile.TemporaryDirectory() as root:
-            orgs = cli_org(root, OWNED)
+            y = Yeses(root)
+            resolve = of._decided_resolver(y.conn)
+            orgs = cli_org(root, owned(y.prompt))
             positions, _ = of.load_positions(orgs)
             by = {p["name"]: p for p in positions}
             self.assertEqual([(w, r) for w, r, _ in of.position_loops(by["lab_owner"], orgs)], [("w-speed", "owner")])
             for name, role in (("lab_owner", "owner"), ("lab_doer", "doer")):
-                ctx = of_context.build(name, positions, of.position_loops(by[name], orgs))
-                self.assertIn("## Loops whose measure the owner decided", ctx)
+                ctx = of_context.build(name, positions, of.position_loops(by[name], orgs), resolve)
+                self.assertIn("## Loops whose target names the owner's yes", ctx)
                 self.assertIn(f"- `w-speed` (you are its {role}): target reaction from the input to the send, p99, ms "
-                              "(lower is better); the owner decided this measure (01a1d957-c8b6): its money is "
+                              f"(lower is better); the owner decided this measure ({y.prompt}): its money is "
                               "reported beside it, never asked of the owner as a proof.", ctx)
                 self.assertIn("never ask the owner, or relay an ask, to price, justify or prove it in money", ctx)
             self.assertEqual(of.position_loops(by["lab_other"], orgs), [])
-            self.assertNotIn("owner decided", of_context.build("lab_other", positions, []))
+            self.assertNotIn("owner's yes", of_context.build("lab_other", positions, [], resolve))
+            orgs = cli_org(root, owned("01a1d999-0000"))                       # unresolved: named so, no guidance
+            positions, _ = of.load_positions(orgs)
+            me = next(p for p in positions if p["name"] == "lab_doer")
+            ctx = of_context.build("lab_doer", positions, of.position_loops(me, orgs), resolve)
+            self.assertIn("unresolved, so it is not the owner's decision", ctx)
+            self.assertNotIn("the owner decided this measure", ctx)
+            self.assertNotIn("never ask the owner", ctx)
         with tempfile.TemporaryDirectory() as root:                            # a loop priced in money: nothing added
             orgs = cli_org(root, LOOP)
             positions, _ = of.load_positions(orgs)
             me = next(p for p in positions if p["name"] == "lab_owner")
-            self.assertNotIn("owner decided", of_context.build("lab_owner", positions, of.position_loops(me, orgs)))
-
+            self.assertNotIn("owner's yes", of_context.build("lab_owner", positions, of.position_loops(me, orgs)))
 
 if __name__ == "__main__":
     unittest.main()
