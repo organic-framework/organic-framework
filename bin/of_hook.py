@@ -1187,8 +1187,11 @@ def _org_guard(hook, sess):
     A broken store or registry fails open here (an organization's rule); the critical rules above never do."""
     global OUTPUT
     cmd = str((hook.get("tool_input") or {}).get("command") or "")
-    if hook.get("tool_name") != "Bash" or not ("kubectl" in cmd or of_guard._SSH_WORDS.search(cmd)):
-        return False  # kubectl (O1) and the ssh family (O3) are the matchers: every other call skips the grants
+    if hook.get("tool_name") != "Bash":
+        return False
+    # kubectl (O1) and the ssh family (O3) match only inside their own commands; a cli scope (O4) reads every
+    # Bash call, so a line without them still goes on when the organization has one (its rules come from one JSON file)
+    quick = "kubectl" in cmd or bool(of_guard._SSH_WORDS.search(cmd))
     sid = hook.get("session_id")
     try:
         import of_grants
@@ -1198,6 +1201,8 @@ def _org_guard(hook, sess):
         if not org:
             return False
         rules, notes = of_grants.guard_rules(org, STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
+        if not quick and not any(isinstance(r.get("cli"), dict) for r in rules):
+            return False
         hits = of_guard.org_rule_hits("Bash", hook.get("tool_input"), rules, name,
                                       {"KUBECONFIG": os.environ.get("KUBECONFIG")})
     except Exception:
@@ -1228,7 +1233,8 @@ def _org_guard(hook, sess):
         record(r, said, "org_rule", "deny")
         return True
     warned = sess.setdefault("org_warned", [])
-    new = [(r, m) for r, m in hits if r["id"] not in warned]
+    # a `record` hit (O4: a command word held in a variable) is logged and never shown (of_architect, msg 01a1db6d-f7e4)
+    new = [(r, m) for r, m in hits if r["id"] not in warned and r["mode"] != "record"]
     if new:
         _add_context(" ".join(f"Organic Framework rule of {org} (grant {r['id']}; a warning now, a deny later): "
                               f"{r['reason']} Matched: {m}." for r, m in new))
@@ -1239,7 +1245,7 @@ def _org_guard(hook, sess):
             except OSError:
                 pass
     for r, said in hits:
-        record(r, said, "warn", "admit")
+        record(r, said, "noted" if r["mode"] == "record" else "warn", "admit")
     return False
 
 

@@ -22,11 +22,12 @@ CRITICAL_DENY_BASH = re.compile(
     r"echo\s+[^|;&]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)\w*|"
     r"security\s+find-(?:generic|internet)-password\b[^|;&]*-w)", re.I)
 READERS = re.compile(r"(?:^|[;&|(\s])(?:cat|less|more|head|tail|bat|strings|xxd|od|base64|jq|yq|sed|awk|grep|rg|"
-                     r"cp|scp|curl|python3?|node)\b", re.I)
+                     r"cp|scp|curl|python3?|node|sqlite3?)\b", re.I)
 
 
 _READER_WORDS = {"cat", "less", "more", "head", "tail", "bat", "strings", "xxd", "od", "base64", "jq", "yq", "sed",
-                 "awk", "grep", "rg", "python", "python3", "node", "tar", "zip", "gzip", "gunzip", "gpg", "openssl"}
+                 "awk", "grep", "rg", "python", "python3", "node", "tar", "zip", "gzip", "gunzip", "gpg", "openssl",
+                 "sqlite3", "sqlite"}  # gcloud's token stores are SQLite (of_review on organic-framework PR 178)
 _COPY = {"cp", "scp", "rsync"}
 _FILE_READERS = _READER_WORDS | _COPY
 _COPY_VALUE_OPTS = {"-i", "-F", "-o", "-c", "-l", "-P", "-S", "-e", "--rsh", "-T", "--exclude", "--include",
@@ -126,8 +127,9 @@ def _secret_path(p):
     if not p:
         return False
     q = p.strip().strip("'\"")
+    n = os.path.normpath(q) if q and q != os.path.normpath(q) else None  # `~/.aws//sso`, `sso/../sso` (PR 178)
     return (of_classify.secret_path(p) or bool(_EXTRA_SECRET.search(q)) or _org_config_secret(q)
-            or _env_file(q))
+            or _env_file(q) or (n is not None and _secret_path(n)))
 
 
 def _reads(p):
@@ -947,6 +949,14 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         return _prints("aws secretsmanager get-secret-value")
     if head == "gcloud" and args[:3] == ["secrets", "versions", "access"]:
         return _prints("gcloud secrets versions access")
+    # the cloud CLIs' cached sign-ins printed as tokens (G1.12 keeps their files; of_secrets-review and of_review on
+    # organic-framework PR 178)
+    if head == "aws" and "configure" in args and "export-credentials" in args:
+        return _prints("aws configure export-credentials")
+    if head == "gcloud" and "auth" in args and any(a in ("print-access-token", "print-identity-token") for a in args):
+        return _prints("gcloud auth print-access-token")
+    if head == "az" and "account" in args and "get-access-token" in args:
+        return _prints("az account get-access-token")
     if head == "op" and (args[:1] == ["read"] or args[:2] == ["item", "get"]):
         return _prints("op read")
     if head == "kubeseal" and "--raw" in args:
@@ -3269,23 +3279,32 @@ def _ssh_rule_hit(match, call, resolve=None):
 
 def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=None):
     """[(rule, matched phrase)] for the rules of the caller's organization that apply to this tool call. A rule is
-    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher} or ssh: {hosts}} (of_grants.org_rule
-    makes one from a deny grant); a position in `except` is out of it, and a rule whose subject names one position
-    applies to that position only. Only Bash; the kubectl (O1) and ssh (O3) matchers. RESOLVER (tests): config ->
-    the alias resolver, ssh_resolver by default."""
+    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher}, ssh: {hosts} or cli:
+    {names, env, code, allow}} (of_grants.org_rule makes one from a deny grant); a position in `except` is out of it,
+    and a rule whose subject names one position applies to that position only. Only Bash; the kubectl (O1), ssh (O3)
+    and cli (O4) matchers. An O4 match that only warns (a command word held in a variable) comes back with the
+    rule in warn mode, whatever the grant says. RESOLVER (tests): config -> the alias resolver, ssh_resolver by
+    default."""
     if tool != "Bash" or not rules:
         return []
     cmd = (tool_input or {}).get("command") or ""
-    calls, scalls, resolvers, hits = None, None, {}, []
+    calls, scalls, findings, resolvers, hits = None, None, None, {}, []
     for r in rules:
         sub = r.get("subject")
         if (position and position in (r.get("except") or [])) or (sub not in (None, "*") and sub != position):
             continue
-        if not isinstance(r.get("kubectl"), dict) and not isinstance(r.get("ssh"), dict):
+        if not any(isinstance(r.get(k), dict) for k in ("kubectl", "ssh", "cli")):
             continue
         try:  # each rule alone: an error while one matches counts as its match, and never loses the others
             # (of_review and of_secrets-review on organic-framework PR 152: a RecursionError lost them all)
-            if isinstance(r.get("kubectl"), dict):
+            if isinstance(r.get("cli"), dict):
+                if findings is None:
+                    findings = command_findings(cmd)
+                got = commands_rule_match(r["cli"], findings, position, cmd)
+                if got and got[1]:  # a variable word never denies (condition 1), and its note is not shown:
+                    r = dict(r, mode="record")  # none of 2,044 in the replay was an AWS call (msg 01a1db6d-f7e4)
+                m = got[0] if got else None
+            elif isinstance(r.get("kubectl"), dict):
                 if calls is None:  # a line the parser cannot read counts as a match, as a matching error does
                     try:            # (PR 152's notes: 25 of 31,216 kubectl lines and 4 of 12,185 ssh lines in 21 days)
                         calls = kubectl_calls(cmd, env) if "kubectl" in cmd else []
@@ -3317,6 +3336,320 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         if m:
             hits.append((r, m if len(m) <= 300 else m[:297] + "..."))  # a long word never fills the record
     return hits
+
+
+# ------------------------------------------------- O4: an organization's command-line deny (scope cli)
+# docs/registry.md, Scope cli (2026-11-14; a user organization's request, msg 01a1db4f-f9f0; of_architect's
+# conditions, msg 01a1db57-17f9). Unlike kubectl and ssh it reads every Bash call of the organization's positions, so a
+# command word held in a variable warns and never denies (condition 1), and a line the parser cannot read is a match
+# only when it names a listed command.
+_PKG_RUNNERS = {"npx": (), "bunx": (), "uvx": (), "pnpx": (), "pnpm": ("dlx", "exec"), "yarn": ("dlx", "exec"),
+                "pipx": ("run",), "npm": ("exec",)}
+_ENV_SETTERS = {"export", "env", "declare", "typeset", "local", "readonly"}
+# a package a runner fetches, by the command it installs (npx aws-cdk, pipx run awscli, uvx --from awscli aws)
+_PKG_BINS = {"aws-cdk": "cdk", "awscli": "aws", "aws-sam-cli": "sam", "cdktf-cli": "cdktf"}
+
+
+_LOCAL_RUNNERS = {"watch", "find", "parallel", "su"}
+
+
+def _local_runner_command(head, args):
+    """The command line one of _LOCAL_RUNNERS runs on this machine, or None."""
+    if head == "watch":
+        k = 0
+        while k < len(args) and args[k].startswith("-"):
+            k += 2 if args[k] in ("-n", "--interval", "-q", "--equexit") else 1
+        return " ".join(shlex.quote(a) for a in args[k:]) or None
+    if head == "find":
+        cmds = []
+        for k, a in enumerate(args):
+            if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                end = next((j for j in range(k + 1, len(args)) if args[j] in (";", "+")), len(args))
+                cmds.append(" ".join(shlex.quote(x if x != "{}" else "x") for x in args[k + 1:end]))
+        return "; ".join(cmds) or None
+    if head == "parallel":
+        k = 0
+        while k < len(args) and args[k].startswith("-"):
+            k += 1
+        end = next((j for j in range(k, len(args)) if args[j] in (":::", "::::", ":::+")), len(args))
+        return " ".join(args[k:end]) or None
+    if head == "su":
+        for k, a in enumerate(args):
+            if a in ("-c", "--command") and k + 1 < len(args):
+                return args[k + 1]
+            if a.startswith("--command="):
+                return a.split("=", 1)[1]
+    return None
+
+
+def _py_module(args):
+    """The module of `python -m MODULE` (also `-Im MODULE`, `-mMODULE`), or None."""
+    for k, a in enumerate(args):
+        if not a.startswith("-") or a in ("-c", "-"):
+            return None
+        m = re.match(r"^-[A-Za-z]*m(\S*)$", a)
+        if m:
+            return m.group(1) or (args[k + 1] if k + 1 < len(args) else None)
+    return None
+
+
+def _code_modules(code):
+    """The modules interpreter code imports: Python's `import a, b.c as d`, `from x import`, `__import__('x')`,
+    `import_module('x')`; Node's `require('x')`, `import … from 'x'`, `import('x')`."""
+    t = str(code or "")
+    out = set()
+    for m in re.finditer(r"(?:^|[;\n])\s*import\s+([^;\n#]+)", t):
+        for part in m.group(1).split(","):
+            w = part.strip().split()[0] if part.strip() else ""
+            if w and not w.startswith(("'", '"', "{", "*")):
+                out.add(w)
+    for rx in (r"(?:^|[;\n])\s*from\s+([\w.]+)\s+import\b", r"__import__\s*\(\s*['\"]([^'\"]+)",
+               r"import_module\s*\(\s*['\"]([^'\"]+)", r"\brequire\s*\(\s*['\"]([^'\"]+)",
+               r"\bfrom\s+['\"]([^'\"]+)['\"]", r"\bimport\s*\(\s*['\"]([^'\"]+)", r"\bimport\s+['\"]([^'\"]+)"):
+        out |= {m.group(1) for m in re.finditer(rx, t)}
+    return out
+
+
+def _cmd_var(word):
+    return "$" in word or "__OFSUB__" in word or "`" in word
+
+
+def command_findings(cmd, depth=0):
+    """[(kind, a, b)] of one Bash line, for O4: ('word', command word as typed, args) for every simple command run on
+    this machine (through wrappers, sh -c, eval, substitutions, heredocs fed to a shell, and package runners); ('env',
+    NAME, None) for a variable assigned or exported on the line; ('code', text, language) for interpreter code
+    (-c, -e, a here-string or a heredoc); ('unparsed', line, None) when the line cannot be read. A remote command (ssh,
+    docker exec, kubectl exec) runs elsewhere and is not read."""
+    if depth > 4:
+        return []
+    out = []
+    try:
+        text, subs, docs, _ = _scan(cmd)
+        pipes = _split(text)
+    except (ValueError, IndexError, RecursionError):
+        return [("unparsed", str(cmd), None)]
+    for sub in subs:
+        out += command_findings(sub, depth + 1)
+    for _, body, opener in docs:
+        head = _head(opener)
+        if head in _SHELLS:
+            out += command_findings(body, depth + 1)
+        elif head in _INTERPRETERS:
+            out.append(("code", body, _lang(head) or head))
+    for pipe in pipes:
+        for kind, raw in pipe:
+            if kind == "sub":
+                out += command_findings(raw, depth + 1)
+                continue
+            try:
+                toks = _tokens(_ansi_c(raw))
+            except (ValueError, IndexError):
+                out.append(("unparsed", raw, None))
+                continue
+            k = 0
+            while k < len(toks) and re.match(r"^[A-Za-z_]\w*=", toks[k] or ""):  # NAME=… before the command
+                out.append(("env", toks[k].split("=", 1)[0], None))
+                k += 1
+            try:
+                s = _simple(raw)
+            except (ValueError, IndexError):
+                s = None
+            if not s or not isinstance(s[1], list):
+                continue
+            head, args, words = s[0], list(s[1]), s[2] or []
+            first = words[0] if words else head
+            if head in _ENV_SETTERS:
+                opts = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+                exported = head == "export" or "x" in opts
+                if not (head == "export" and "n" in opts):  # `export -n NAME` unexports (of_review on PR 178)
+                    out += [("env", a.split("=", 1)[0], None) for a in args if not a.startswith("-")
+                            and (re.match(r"^[A-Za-z_]\w*=", a) or (exported and re.match(r"^[A-Za-z_]\w*$", a)))]
+                if head == "env":  # `env NAME=v cmd …`: the command after the assignments runs too
+                    rest = [a for a in args if not re.match(r"^[A-Za-z_]\w*=", a) and not a.startswith("-")]
+                    if rest:
+                        out += command_findings(" ".join(shlex.quote(a) for a in rest), depth + 1)
+                continue
+            if head in _SHELLS:
+                if head == "eval":
+                    out += command_findings(" ".join(args), depth + 1)
+                else:
+                    flags = [i for i, a in enumerate(args) if re.match(r"^-[a-zA-Z]*c[a-zA-Z]*$", a)]
+                    if flags and flags[0] + 1 < len(args):
+                        out += command_findings(args[flags[0] + 1], depth + 1)
+                    elif s[4] is not None:  # `bash <<< 'aws s3 ls'`
+                        out += command_findings(s[4], depth + 1)
+                    elif not [a for a in args if not a.startswith("-")]:  # a shell reading its script from stdin
+                        at = pipe.index((kind, raw))
+                        try:
+                            prev = _simple(pipe[at - 1][1]) if at > 0 and pipe[at - 1][0] == "cmd" else None
+                        except (ValueError, IndexError):
+                            prev = None
+                        if prev and prev[0] in ("echo", "printf") and isinstance(prev[1], list):
+                            out += command_findings(" ".join(prev[1]).replace("\\n", "\n"), depth + 1)
+                        elif at > 0:
+                            out.append(("unparsed", str(cmd), None))  # `curl … | sh`: read only for a listed name
+                continue
+            if head in _LOCAL_RUNNERS:  # watch, find -exec, parallel, su -c: they run their command here
+                body = _local_runner_command(head, args)
+                if body:
+                    out += command_findings(body, depth + 1)
+                out.append(("word", first, args))
+                continue
+            if head in _PKG_RUNNERS:
+                subs_ok = _PKG_RUNNERS[head]
+                rest = list(args)
+                if subs_ok:
+                    if not rest or rest[0] not in subs_ok:
+                        out.append(("word", first, args))
+                        continue
+                    rest = rest[1:]
+                rest = [a for a in rest if not a.startswith("-")]
+                if rest:
+                    pkg = re.sub(r"(?<=.)@[^/]*$", "", rest[0])  # a version (`aws-cdk@2`), never a scope's @
+                    bin_ = "cdk" if pkg.startswith("@aws-cdk/") else _PKG_BINS.get(pkg, pkg.rsplit("/", 1)[-1])
+                    out.append(("word", bin_, rest[1:]))
+                continue
+            mod = _py_module(args) if _lang(head) else None
+            if mod:  # `python3 -m awscli …` is the AWS CLI (of_review on PR 178)
+                out.append(("word", _PKG_BINS.get(mod, mod), args[args.index(mod) + 1:] if mod in args else []))
+            out.append(("word", first, args))
+            if s[4] is not None and head in _INTERPRETERS:
+                out.append(("code", s[4], _lang(head) or head))
+            if head in _INTERPRETERS:
+                for flag in ("-c", "-e"):
+                    if flag in args[:-1]:
+                        out.append(("code", args[args.index(flag) + 1], _lang(head) or head))
+                if head.startswith("python"):
+                    kind_, code, _ = _py_walk(args)
+                    if kind_ == "code":
+                        out.append(("code", code, "python"))
+    return out
+
+
+def _cmd_option_values(args, name):
+    """The value of every occurrence of option NAME or an abbreviation of it (`--prof` for `--profile`): argparse takes
+    any unambiguous prefix and keeps the last occurrence (of_secrets-review and of_review on organic-framework PR 178).
+    None for an occurrence without a value."""
+    out = []
+    for k, a in enumerate(args):
+        if not a.startswith("--") or a == "--":
+            continue
+        key, eq, val = a.partition("=")
+        if len(key) > 2 and name.startswith(key):
+            out.append(val if eq else (args[k + 1] if k + 1 < len(args) else None))
+    return out
+
+
+def _cmd_value_fits(value, pattern):
+    """A glob against a value; a URL glob is compared by scheme and host, so `*` cannot run into the path."""
+    import fnmatch
+    from urllib.parse import urlsplit
+    if "://" in pattern:
+        try:
+            v, p = urlsplit(value), urlsplit(pattern)
+            return bool(v.hostname) and v.scheme == p.scheme and fnmatch.fnmatchcase(v.hostname, (p.hostname or ""))
+        except ValueError:
+            return False
+    return fnmatch.fnmatchcase(value, pattern)
+
+
+def _cmd_allowed(scope, name, args, position):
+    """Does an allow entry of the scope let POSITION run NAME with ARGS? Every option it lists must be present with
+    a listed value (globs), anywhere on the call; argv, when given, must be the call's first words. A value held in a
+    variable is a doubt: no."""
+    for e in scope.get("allow") or []:
+        if not position or position not in (e.get("positions") or []):
+            continue
+        if e.get("tool") and str(e["tool"]).casefold() != name.casefold():
+            continue
+        if e.get("argv") and [str(x) for x in e["argv"]] != args[:len(e["argv"])]:
+            continue
+        ok = True
+        for opt_, values in (e.get("options") or {}).items():
+            vs = _cmd_option_values(args, opt_)
+            if not vs or any(v is None or _cmd_var(v) or not any(_cmd_value_fits(v, str(p)) for p in values or [])
+                             for v in vs):
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
+_LOOKUP = re.compile(r"^\s*(?:which|command\s+-v|type\s+-[pP]|realpath|readlink\s+-f)\s+['\"]?([^\s'\"]+)['\"]?\s*$")
+
+
+def _resolve_word(word, line):
+    """(command name, known) for a command word that holds a variable: the literal file name after the last `/`
+    (`$HOME/bin/aws`); the literal value a same-line assignment gives the variable (`T=aws; $T`); the name a
+    lookup substitution names (`$(which aws)`). (None, False) when the line does not say."""
+    base = word.rsplit("/", 1)[-1]
+    if base and not _cmd_var(base) and "/" in word:
+        return base, True
+    m = re.match(r"^\$\{?(\w+)\}?$", word)
+    if m:
+        sets = re.findall(r"(?:^|[\s;&|(])" + re.escape(m.group(1)) + r"=(\$\([^)]*\)|`[^`]*`|'[^']*'|\"[^\"]*\"|[^\s;&|]*)", line)
+        if sets:
+            v = sets[-1].strip("'\"")
+            sub = re.match(r"^(?:\$\(|`)(.*?)(?:\)|`)$", v)
+            if sub:
+                look = _LOOKUP.match(sub.group(1))
+                return (os.path.basename(look.group(1)), True) if look else (None, False)
+            if v and not _cmd_var(v):
+                return os.path.basename(v), True
+        return None, False
+    if "__OFSUB__" in word or "`" in word:
+        try:
+            subs = _scan(line)[1]
+        except (ValueError, IndexError, RecursionError):
+            return None, False
+        looks = [_LOOKUP.match(x) for x in subs]
+        if subs and all(looks):
+            got = [os.path.basename(x.group(1)) for x in looks]
+            return got[0], True
+    return None, False
+
+
+def commands_rule_match(scope, findings, position, line=""):
+    """(what matched, soft) for O4, or None. soft: a command word held in a variable, which only warns (of_architect's
+    condition 1), unless its value is set to a listed name on the same line or its literal parts end in one."""
+    names = {str(n).casefold() for n in scope.get("names") or []}  # a case-insensitive disk finds `AWS` as aws
+    env = {str(n) for n in scope.get("env") or []}
+    mods = [str(m) for m in scope.get("code") or []]
+    soft = None
+    for kind, a, b in findings:
+        if kind == "unparsed":
+            if any(re.search(r"(?<![\w-])" + re.escape(n) + r"(?![\w-])", str(a)) for n in names):
+                return "a line the guard could not read that names a listed command, counted as a match", False
+            continue
+        if kind == "env" and a in env:
+            return f"{a} set on the command line", False
+        if kind == "code":
+            got = _code_modules(a)
+            for m in mods:
+                if any(x == m or x.startswith(m + ".") or x.startswith(m + "/") for x in got):
+                    return f"code importing {m}", False
+            for n in env:
+                if re.search(r"(?:environ|putenv|process\.env|ENV)\W{0,4}" + re.escape(n) + r"\b", str(a)):
+                    return f"code setting {n}", False
+            continue
+        if kind != "word":
+            continue
+        word, args = str(a), [str(x) for x in (b or [])]
+        if _cmd_var(word):
+            target, known = _resolve_word(word, line)
+            target = target.casefold() if target else target
+            if target in names:
+                if not _cmd_allowed(scope, target, args, position):
+                    return f"{target} {' '.join(args)}".strip()[:200], False
+                continue
+            if not known:  # the line does not say what runs: a warning, never a deny (condition 1)
+                soft = soft or (f"a command word held in a variable ({word[:60]})", True)
+            continue
+        name = os.path.basename(word).casefold()
+        if name in names and not _cmd_allowed(scope, name, args, position):
+            return f"{name} {' '.join(args)}".strip()[:200], False
+    return soft
 
 
 # ------------------------------------------------- the public repository's writes on GitHub (G18)
