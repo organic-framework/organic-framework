@@ -46,6 +46,7 @@ import threading
 import time
 
 import of_asks_tui as T
+from of_asks_answer import AMENDED  # the start of a refusal because the asker amended the card (of ask --amend)
 from of_locale import tr
 
 PARTIAL_RETRY_S = 0.5  # a card built before the registry loaded asks again after this
@@ -461,6 +462,35 @@ def _new_groups(conn, anchor, reopened=()):
     return of_asks.group(of_asks.for_owner(asks))
 
 
+def _amends(conn, anchor):
+    """{ask id: [(ts, payload)]} of the of.ask_amended in the log's last CLOSED_H, oldest first: the view shows a new
+    version once the listener has taken it; the screen applies it at once (of ask --amend)."""
+    out = {}
+    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.ask_amended' AND ts >= ? "
+                               "ORDER BY ts, rowid", (_iso(anchor - CLOSED_H * 3600),)):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if p.get("ask_id"):
+            out.setdefault(p["ask_id"], []).append((ts, p))
+    return out
+
+
+def amended_group(g, rows):
+    """The group with its first ask at its newest version (of_asks.amend on a copy; an older or foreign amend is
+    ignored there)."""
+    import of_asks
+    first = dict(g.get("first") or {})
+    if not first:
+        return g
+    for ts, p in rows:
+        of_asks.amend(first, {"payload": p, "ts": ts, "position": p.get("by")})
+    if first.get("version") == (g.get("first") or {}).get("version"):
+        return g
+    return dict(g, first=first, text=first.get("text") or g.get("text"), kind=first.get("kind") or g.get("kind"))
+
+
 def _closures(conn, anchor):
     """{ask id: (what, ts)} from the log's last CLOSED_H: answered (by whom), withdrawn, a task done or reopened. The
     view shows them once the listener has taken them; the screen applies them at once."""
@@ -581,6 +611,13 @@ def queue(conn, positions=(), now=None, sending=()):
         groups = groups + _new_groups(conn, anchor, reopened)
     except Exception:  # noqa: BLE001 - the view alone
         pass
+    try:
+        amends = _amends(conn, anchor)
+    except Exception:  # noqa: BLE001 - the view's versions
+        amends = {}
+    if amends:
+        groups = [amended_group(g, amends[(g.get("first") or {}).get("event_id")])
+                  if (g.get("first") or {}).get("event_id") in amends else g for g in groups]
     data = T.shape(groups, positions)
     sending = set(sending)
     tasks_done = {k[1]: v for k, v in closed.items() if isinstance(k, tuple)}
@@ -625,6 +662,11 @@ def screen_list(conn, positions=(), failed=(), now=None):
               if now - float(d.get("saved_at") or 0) >= SENDING_S  # on their way: not unsent
               or d.get("failed_at") or set(d.get("ask_ids") or [d.get("ask_id")]) & failed]  # a failed one at once
     return data, overlay(conn, now), {"behind": behind, "archived": archived, "drafts": drafts}
+
+
+def version_of(item):
+    """The version of the card's first ask as the list has it (of ask --amend): 1 when never amended."""
+    return ((item or {}).get("first") or {}).get("version") or 1
 
 
 def needs_confirm(item, card=None):
@@ -723,6 +765,9 @@ def card_rows(c, item, width, overlay_note=None, context=True):
         why.append(overlay_note)
     if why:
         rows += [(ln, "why") for ln in wrap(tr("Why now: ") + "; ".join(why), width)]
+    amended = T.amended_line(c, item)
+    if amended:
+        rows += [(ln, "why") for ln in wrap(amended, width)]
     if rest.strip():
         rows.append(("", None))
         rows += [(ln, "text") for ln in wrap(rest.strip(), width)]
@@ -763,6 +808,7 @@ class Outgoing:
     def __init__(self, answer, act, handoff=None):
         self.answer, self.act, self.handoff = answer, act, handoff
         self.pending, self.hidden, self.errors, self.undone = [], set(), {}, None
+        self.amended = []  # answers refused because the asker changed the options meanwhile: the screen takes them
 
     def queue(self, item, what, text=None, written=False):
         k = key_of(item)
@@ -799,6 +845,8 @@ class Outgoing:
                 self.pending.remove(p)
                 if p["ok"]:
                     self.hidden.add(p["key"])
+                elif str(p["status"] or "").startswith(AMENDED):
+                    self.amended.append(p)  # not an error: the card shows its new version, his text goes to r
                 else:
                     self.errors[p["key"]] = str(p["status"] or "not sent")[:100]
                     failed.append(tr("not sent: {why}", why=self.errors[p["key"]]))
@@ -918,6 +966,7 @@ class Inbox:
         self.behind = extra.get("behind")
         if "drafts" in extra:
             self.pending_drafts = extra["drafts"]
+            self.take_amended([d for d in extra["drafts"] if str(d.get("why") or "").startswith(AMENDED)])
         self.items = [x for _, g in data for x in g]
         self.over = over
         open_ids = {i for x in self.items for i in x.get("ids") or []}
@@ -976,6 +1025,9 @@ class Inbox:
         """The full card, loaded in the background; meanwhile a placeholder from the list item."""
         k = key_of(item)
         c = self.cards.get(k)
+        if c is not None and not c.get("loading") and (c.get("version") or 1) < version_of(item):
+            self.cards.pop(k, None)  # the asker amended it: the new version, never the old options (of ask --amend);
+            c = None  # a card newer than the list (read from the log while the view lags) stays
         partial = c is not None and c.get("partial") and time.time() - c.get("at", 0) > PARTIAL_RETRY_S
         if c is not None and not partial:
             return c
@@ -1241,6 +1293,33 @@ class Inbox:
         self.reply = {"key": k, "item": item, "ed": Editor(self.reply_drafts.get(k) or ""), "top": 0}
         curses.curs_set(1)
 
+    def take_amended(self, drafts=()):
+        """Answers refused because the asker changed the card's options or yes after he saw it (of ask --amend): the
+        card loads its new version, and what he wrote waits in r for it (the founder, 2026-11-12: no path loses typed
+        text); a pick of an option is not kept. DRAFTS: the detached sender's refusals, as the loader found them."""
+        import of_asks_answer
+        refused = [(p["key"], p["item"], p.get("text"), p.get("written")) for p in self.out.amended]
+        self.out.amended = []
+        refused += [(key_of(d.get("item") or {"ids": d.get("ask_ids")}), d.get("item") or {"ids": d.get("ask_ids")},
+                     d.get("text"), (d.get("item") or {}).get("written")) for d in drafts
+                    if str(d.get("why") or "").startswith(AMENDED)]
+        for k, item, text, written in refused:
+            self.cards.pop(k, None)
+            if written and (text or "").strip():
+                old = self.reply_drafts.get(k) or ""
+                if text.strip() not in old:
+                    self.keep_draft(k, (old.rstrip() + "\n\n" if old.strip() else "") + text)
+            try:
+                of_asks_answer.drop_draft(item)  # D never sends it to the old version again
+            except OSError:
+                pass
+            who = ", ".join(item.get("who") or []) or tr("the asker")
+            self.msg = tr("{who} changed this card's options after you saw it: look at the new version", who=who) + (
+                tr("; your text waits in r") if written and (text or "").strip() else "")
+        if refused and self.pending_drafts is not None:
+            gone = {(item.get("ids") or [None])[0] for _, item, _, _ in refused}
+            self.pending_drafts = [d for d in self.pending_drafts if (d.get("ask_id") not in gone)]
+
     def keep_draft(self, key, text):
         """Esc's draft, on disk too; None or blank removes it. False when the disk refused it (said on screen)."""
         if (text or "").strip():
@@ -1384,7 +1463,7 @@ class Inbox:
             what, text = "answered", tr("done")
         else:
             c = self.cards.get(k)
-            if c is None or c.get("loading"):
+            if c is None or c.get("loading") or (c.get("version") or 1) < version_of(item):
                 self.msg = tr("loading…")
                 return
             if not c.get("answerable"):
@@ -1400,6 +1479,9 @@ class Inbox:
         self.send(item, what, text)
 
     def send(self, item, what, text, written=False):
+        if what == "answer":  # the version he saw goes with it: a later change of the options refuses it
+            item = dict(item, version=(self.cards.get(key_of(item)) or {}).get("version") or version_of(item),
+                        written=bool(written))
         self.out.queue(item, what, text if what == "answer" else None, written=written)
         self.msg = ""
         curses.flushinp()  # keys typed meanwhile never reach the next card
@@ -1652,6 +1734,7 @@ class Inbox:
             present = {key_of(x) for x in self.items}
             for line in self.out.settle(present):
                 self.msg = line
+            self.take_amended()
             if self.studio_note.get("m"):
                 self.msg = self.studio_note.pop("m")
             self.autosave()

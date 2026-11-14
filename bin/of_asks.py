@@ -13,6 +13,9 @@ opens it when the agent waits on its owner, or closes it as not_a_question (foun
               owner files its rewrite (`of ask --escalates <id>`, `escalated_from` on both);
 - expired:    `of.session_end` while open;
 - withdrawn:  `of.ask_withdrawn` written by the owner (`of asks withdraw <id>`).
+- amended:    not a closure: `of.ask_amended` (`of ask --amend <id>`), by the position that filed the ask, while it is
+              open with no answer, gives it a new version (text, options, yes, tags, due, blocking, steps); the ask
+              keeps its id and filing time (docs/events.md, of.ask_amended).
 A pane question the judge confirms is filed by OF as the agent's ask (`source: pane`, bin/of_judge.py): it lives like
 a declared ask, and closes also by the owner's words in that session, the agent's own ask from it, or a later pane
 card from it; never because the session went on.
@@ -75,10 +78,15 @@ READS = ("of.agent_message_in", "of.agent_message_out", "of.agent_question", "of
          "of.ask_escalated", "of.ask_withdrawn", "of.human_prompt", "of.mandate_check", "of.permission_denied",
          "of.permission_request", "of.permission_resolved", "of.session_end", "of.session_start",
          "of.state_declared", "of.turn_end", "of.turn_error", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-         "of.agent_question_judged")
+         "of.agent_question_judged", "of.ask_amended")
 ANY_SOURCE = ("of.ask_withdrawn", "of.agent_question_answered", "of.agent_question", "of.state_declared",
               "of.ask_escalated", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-              "of.agent_question_judged")  # written by tools (of ask, of status, the popup, reconcile), not only by hooks
+              "of.agent_question_judged", "of.ask_amended")  # written by tools (of ask, of status, the popup,
+# reconcile), not only by hooks
+
+# What `of ask --amend` may change (docs/events.md, of.ask_amended): the payload carries the new value under each name
+AMENDABLE = ("text", "options", "yes_option", "tags", "due", "blocking", "task")
+CHOICE = ("options", "yes_option")  # a change of these refuses an answer given to an earlier version; text alone not
 
 
 def relevant(name, source, payload=None):
@@ -208,6 +216,9 @@ def project(rows, state=None):
                 ask.update(state="withdrawn", closed_by=r["event_id"], closed_at=r["ts"])
                 if open_by_session.get(ask["session_id"]) is ask:
                     open_by_session.pop(ask["session_id"], None)
+            continue
+        if name == "of.ask_amended":  # the asker corrects its open ask in place: a new version, never a closure
+            amend(by_id.get((r["payload"] or {}).get("ask_id")), r)
             continue
         if name == "of.agent_question_judged":  # the judge's verdict on a heuristic candidate (bin/of_judge.py)
             p_ = r["payload"] or {}
@@ -354,6 +365,95 @@ def project(rows, state=None):
         cur.update(state=state, closed_by=r["event_id"], closed_at=r["ts"])
         open_by_session.pop(sid, None)
     return asks
+
+
+def amend(ask, r):
+    """One of.ask_amended applied to its projected ask: its newest version, marked amended with what changed. Only by
+    the position that filed it, only while it is open with no answer (a task with no claim), and only a newer version;
+    its id and filing time (ts) stay, so its age, order and reminders do too."""
+    p = r["payload"] or {}
+    if not ask or ask["state"] != "open" or ask.get("claimed_at") or not ask.get("position") \
+            or (p.get("by") or r.get("position")) != ask["position"]:
+        return
+    v = p.get("version")
+    if not isinstance(v, int) or isinstance(v, bool) or v <= (ask.get("version") or 1):
+        return
+    ch = [c for c in p.get("changed") or [] if c in AMENDABLE]
+    if "text" in ch:
+        ask["text"] = " ".join(str(p.get("text") or "").split()) or ask["text"]
+        if "topic_key" in p:
+            ask["topic_key"] = p["topic_key"]
+    if "options" in ch:
+        ask["n_options"] = len(p.get("options") or [])
+    if "tags" in ch:
+        ask.update(tags=list(p.get("tags") or []), tags_declared=True)
+    if "due" in ch:
+        ask["due"] = p.get("due")
+    if "blocking" in ch and not ask.get("task"):
+        ask["kind"] = "question (declared)" + (" blocking" if p.get("blocking") else "")
+    if "task" in ch and ask.get("task"):
+        ask["steps"] = str(p.get("task") or "")[:4000]
+    before = (ask.get("amended") or {}).get("all") or []
+    ask["version"] = v
+    ask["amended"] = {"version": v, "at": r["ts"], "changed": ch, "all": [c for c in AMENDABLE if c in ch or c in before]}
+    if set(ch) & set(CHOICE):
+        ask["choice_version"] = v
+
+
+def amendments(conn, ask_id, ts, position):
+    """[(ts, payload)] of the of.ask_amended events for one ask, by the position that filed it, oldest first. Reads one
+    name from the ask's filing time (the name index)."""
+    out = []
+    for ets, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.ask_amended' AND ts >= ? AND "
+                                "json_extract(payload, '$.ask_id') = ? ORDER BY ts, rowid", (ts or "", ask_id)):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if position and p.get("by") == position:
+            out.append((ets, p))
+    return out
+
+
+def at_version(conn, ask_id, payload, ts, position, version=None):
+    """The ask's payload (its of.agent_question's) as of `version`, the newest when None: its question, options,
+    yes_option, tags, due, blocking and steps after each amend up to it, with `version` (1 when never amended),
+    `amended` ({version, at, changed, all}) and `choice_version` (the last version that changed the options or the yes;
+    1 when none did). A loop's decided <ask id>#<n> resolves on the answered version's options (docs/events.md)."""
+    out = dict(payload or {})
+    qs = out.get("questions") if isinstance(out.get("questions"), list) else []
+    q = dict(qs[0]) if qs and isinstance(qs[0], dict) else {}
+    out.update(version=1, choice_version=1, amended=None)
+    last = 1
+    for ets, p in amendments(conn, ask_id, ts, position) if conn is not None and ask_id else ():
+        v = p.get("version")
+        if not isinstance(v, int) or isinstance(v, bool) or v <= last or (version is not None and v > version):
+            continue
+        ch = [c for c in p.get("changed") or [] if c in AMENDABLE]
+        if "text" in ch:
+            q["question"] = p.get("text") or q.get("question")
+        if "options" in ch:
+            q["options"] = list(p.get("options") or [])
+        for k in ("yes_option", "tags", "due", "blocking"):
+            if k in ch:
+                out[k] = p.get(k)
+        if "task" in ch and out.get("task"):
+            out["steps"] = p.get("task")
+        before = (out.get("amended") or {}).get("all") or []
+        out.update(version=v, amended={"version": v, "at": ets, "changed": ch,
+                                       "all": [c for c in AMENDABLE if c in ch or c in before]})
+        if set(ch) & set(CHOICE):
+            out["choice_version"] = v
+        last = v
+    if q:
+        out["questions"] = [q] + list(qs[1:])
+    return out
+
+
+def stale_choice(shown, choice_version):
+    """True when an answer given to version `shown` (1 when the card carried none) must be refused: a later version
+    changed the options or the yes (docs/events.md, of.ask_amended)."""
+    return (choice_version or 1) > (shown if isinstance(shown, int) and not isinstance(shown, bool) else 1)
 
 
 # Texts OF's own tools type into a pane (bin/of _deliver_ask, the relay); before 2026-11-06 a routed question was

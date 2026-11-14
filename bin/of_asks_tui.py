@@ -282,6 +282,20 @@ def copy_target(c, item):
     return rec or (opts[0] if opts else c.get("question") or "")
 
 
+AMEND_WORDS = {"text": "the question", "options": "the options", "yes_option": "the yes option", "tags": "the tags",
+               "due": "the due time", "blocking": "blocking", "task": "the steps"}
+
+
+def amended_line(c, item):
+    """'Amended (version n): what changed', from the card (ask_details) or else the list's first ask; '' if never."""
+    a = (c or {}).get("amended") or ((item or {}).get("first") or {}).get("amended")
+    if not a:
+        return ""
+    what = ", ".join(tr(AMEND_WORDS[k]) for k in a.get("changed") or [] if k in AMEND_WORDS) or tr("the question")
+    return tr("Amended (version {v}, at {at}): {what}", v=a.get("version") or 2, at=str(a.get("at") or "")[11:16] + "Z",
+              what=what)
+
+
 def card_lines(c, width):
     """The whole card as (text, attr kind) lines, wrapped by words: nothing is cut; the card scrolls."""
     out = []
@@ -298,6 +312,8 @@ def card_lines(c, width):
             out += [(ln, "dim") for ln in _wrap(f"· {t}", width)]
         out.append(("", None))
     out += [(ln, "question") for ln in _wrap(c["question"], width)]
+    if c.get("amended"):
+        out += [(ln, "dim") for ln in _wrap(amended_line(c, None), width)]
     if c["options"]:
         out.append(("", None))
         for i, o in enumerate(c["options"][:9], 1):
@@ -539,6 +555,9 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
         k = key_of(x)
         hidden.add(k)
         errors.pop(k, None)
+        if what == "answer":  # the version on screen goes with it (of ask --amend: a later change of options refuses it)
+            shown = c.get("version") if c is not None and it is not None and key_of(it) == k else None
+            x = dict(x, version=shown or ((x.get("first") or {}).get("version") or 1))
         pending.append({"key": k, "item": x, "what": what, "text": text, "at": time.time(), "started": False,
                         "done": False, "ok": None, "status": None})
 
@@ -859,7 +878,7 @@ def to_outbox(pendings):
     for p in pendings:
         path = os.path.join(d, f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}.json")
         body = {"what": p["what"], "text": p.get("text"), "item": {k: p["item"].get(k) for k in
-                ("who", "text", "since", "ids", "kind", "first")}, "queued_at": time.time()}
+                ("who", "text", "since", "ids", "kind", "first", "version", "written")}, "queued_at": time.time()}
         tmp = path + ".tmp"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
             json.dump(body, fh, ensure_ascii=False, default=str)
@@ -918,6 +937,10 @@ def send_outbox(answer, act, still_open, reconcile=None, log=lambda m: None):
                 if ok:
                     os.remove(path)
                     sent += 1
+                    progressed = True
+                elif str(status or "").startswith("amended"):  # of_asks_answer.AMENDED: final, never tried again;
+                    log(f"outbox {f}: {status}")  # its draft, marked failed, brings the card's new version back
+                    os.remove(path)
                     progressed = True
                 else:
                     log(f"outbox {f}: {status}")

@@ -917,5 +917,90 @@ def curses_right():
     return curses.KEY_RIGHT
 
 
+
+class AmendScreenTest(unittest.TestCase):
+    """An ask amended in place (of ask --amend; hand-over 54de6cd9): the card loads its new version, a key answers only
+    the version on screen and the answer carries it; one refused because the options changed shows the new version,
+    and what he wrote waits in r (no path loses typed text)."""
+
+    scr = ScreenTest.scr  # the fake screen, without running ScreenTest's own tests again
+
+    def setUp(self):
+        ScreenTest.setUp(self)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved_state, of_events.STATE_DIR = of_events.STATE_DIR, self.tmp.name
+
+    def tearDown(self):
+        of_events.STATE_DIR = self.saved_state
+        self.tmp.cleanup()
+        ScreenTest.tearDown(self)
+
+    def box(self, data, card_of=None):
+        return I.Inbox(self.scr([]), lambda: ([("Waiting on you", data)], {}), card_of, lambda it, t: (True, "ok"),
+                       lambda what, it: (True, what), initial=(list(data), {}),
+                       reply_store=I.ReplyDrafts(os.path.join(self.tmp.name, "replies")))
+
+    def wait_card(self, box, it):
+        for _ in range(100):
+            c = box.card(it)
+            if not c.get("loading"):
+                return c
+            time.sleep(0.01)
+        self.fail("the card never loaded")
+
+    def test_a_new_version_reloads_the_card_and_the_answer_carries_it(self):
+        opts = {1: ["yes", "no"], 2: ["yes, tonight", "no"]}
+        v1 = item("A", "Lift the hold?")
+        v2 = dict(v1, first=dict(v1["first"], version=2, amended={"version": 2, "changed": ["options"]}))
+        box = self.box([v1], card_of=lambda it: {"question": it["text"], "who": it["who"], "answerable": True,
+                                                 "options": opts[I.version_of(it)], "version": I.version_of(it)})
+        self.assertEqual(self.wait_card(box, v1)["options"], ["yes", "no"])
+        box.items = [v2]
+        box.answer(v2, 1)  # the card on screen is the old version: no answer from it
+        self.assertEqual((box.out.pending, box.msg), ([], "loading…"))
+        self.assertEqual(self.wait_card(box, v2)["options"], ["yes, tonight", "no"])
+        box.answer(v2, 1)
+        (p,) = box.out.pending
+        self.assertEqual((p["text"], p["item"]["version"], p["item"]["written"]), ("yes, tonight", 2, False))
+        box.out.pending = []
+        c = box.card(v1)  # the list lags behind a card read from the log: the card stays, never reloaded each frame
+        self.assertEqual((c["version"], box.loading), (2, set()))
+        box.answer(v1, 2)
+        self.assertEqual([(p["text"], p["item"]["version"]) for p in box.out.pending], [("no", 2)])
+
+    def test_a_refusal_for_an_amend_keeps_what_he_wrote_for_r(self):
+        it = item("A", "Lift the hold?")
+        box = self.box([it])
+        box.cards["A"] = {"question": "Lift the hold?", "options": ["yes", "no"], "version": 1}
+        box.out.amended = [{"key": "A", "item": dict(it, version=1, written=True), "text": "Yes, but after 18:00 UTC",
+                            "written": True}]
+        box.take_amended()
+        self.assertEqual(box.reply_drafts["A"], "Yes, but after 18:00 UTC")
+        self.assertNotIn("A", box.cards)  # its new version loads
+        self.assertIn("changed this card's options after you saw it", box.msg)
+        self.assertIn("your text waits in r", box.msg)
+        b = item("B", "Pay the invoice?")  # a pick of an option is not kept; the detached sender's refusal too
+        box.take_amended([{"ask_id": "B", "ask_ids": ["B"], "text": "yes", "why": "amended: …",
+                           "item": dict(b, version=1, written=False)}])
+        self.assertNotIn("B", box.reply_drafts)
+        self.assertNotIn("your text waits in r", box.msg)
+
+    def test_the_list_takes_an_amend_from_the_logs_tail(self):
+        first = {"event_id": "A", "ts": "2026-11-15T10:00:00Z", "state": "open", "position": "of_a",
+                 "text": "Lift the hold?", "kind": "question (declared)", "n_options": 2}
+        g = {"first": first, "text": "Lift the hold?", "kind": "question (declared)", "ask_ids": ["A"], "who": ["of_a"]}
+        row = ("2026-11-15T10:10:00Z", {"ask_id": "A", "version": 2, "changed": ["text", "blocking"],
+                                        "text": "Lift the hold now?", "blocking": True, "by": "of_a"})
+        new = I.amended_group(g, [row])
+        self.assertEqual((new["text"], new["kind"], new["first"]["version"], I.version_of({"first": new["first"]})),
+                         ("Lift the hold now?", "question (declared) blocking", 2, 2))
+        self.assertEqual(first.get("version"), None)  # the view's own copy is not touched
+        self.assertIs(I.amended_group(g, [(row[0], dict(row[1], by="of_b"))]), g)  # only its asker amends it
+        rows = I.card_rows({"question": "Lift the hold now?", "options": ["yes", "no"],
+                            "amended": {"version": 2, "at": "2026-11-15T10:10:00Z", "changed": ["text", "blocking"]}},
+                           new, 120)
+        self.assertIn("Amended (version 2, at 10:10Z): the question, blocking", "\n".join(t for t, _ in rows))
+
+
 if __name__ == "__main__":
     unittest.main()
