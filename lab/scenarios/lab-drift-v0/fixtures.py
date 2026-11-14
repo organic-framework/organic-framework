@@ -177,19 +177,33 @@ SCENARIOS.append({
 })
 
 
-# ---- ap.over-coupled@1, affected [two positions sorted] ----
-# Positive: 12 reciprocal messages for 2 merged PRs (ratio 6 >= 3, reciprocity 1.0 >= 0.5); both observed >= 3 days;
-# no declared waits -> reciprocity_without_waits (1.0 >= 0.8) is the third signal. wr attributed 100% (not blocked).
+# ---- ap.over-coupled, affected [two positions sorted] ----
+# Positive: 18 reciprocal messages for 3 merged PRs (ratio 6 >= 3, reciprocity 1.0 >= 0.5, v4's floor of 3 PRs);
+# both observed >= 3 days; no declared waits -> reciprocity_without_waits (1.0 >= 0.8) is the third signal. wr
+# attributed 100% (not blocked).
+def _oc_msgs(i0, n):
+    return [mout(i0 + i, "2026-11-03T10:00Z", "s-bot_search" if i % 2 else "s-bot_nonce", "bot_nonce" if i % 2 else "bot_search",
+                 position="bot_search" if i % 2 else "bot_nonce") for i in range(n)]
+
+
 SCENARIOS.append({
     "name": "over-coupled/positive",
     "doc": _org_doc(),
-    "events": turns(["bot_search", "bot_nonce"]) +
-              [mout(300 + i, "2026-11-03T10:00Z", "s-bot_search" if i % 2 else "s-bot_nonce",
-                    "bot_nonce" if i % 2 else "bot_search",
-                    position="bot_search" if i % 2 else "bot_nonce") for i in range(12)] +
+    "events": turns(["bot_search", "bot_nonce"]) + _oc_msgs(300, 18) +
               [wrec(320, "2026-11-03T12:00Z", ["bot"], "bot_search"),
-               wrec(321, "2026-11-03T12:00Z", ["bot"], "bot_nonce")],
+               wrec(321, "2026-11-03T12:00Z", ["bot"], "bot_nonce"),
+               wrec(322, "2026-11-04T12:00Z", ["bot"], "bot_search")],
     "labels": [{"rule": "ap.over-coupled", "affected": ["bot_nonce", "bot_search"], "label": "positive"}],
+})
+
+# Negative (v4, 2026-11-15): 12 reciprocal messages over 2 merged PRs, ratio 6, below the floor of 3 merged PRs
+SCENARIOS.append({
+    "name": "over-coupled/negative-few-prs",
+    "doc": _org_doc(),
+    "events": turns(["bot_search", "bot_nonce"]) + _oc_msgs(360, 12) +
+              [wrec(380, "2026-11-03T12:00Z", ["bot"], "bot_search"),
+               wrec(381, "2026-11-03T12:00Z", ["bot"], "bot_nonce")],
+    "labels": [{"rule": "ap.over-coupled", "affected": ["bot_nonce", "bot_search"], "label": "negative"}],
 })
 
 # Negative: one-directional traffic (12 bot_search -> bot_nonce, 0 back) -> reciprocity 0 < 0.5. Observed, attributed.

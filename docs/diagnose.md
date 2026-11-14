@@ -115,18 +115,19 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** An announce rule on the interface: the writer of a change to *s* that touches *t*'s interface notifies *t*'s keeper. Or move the seam so that one position owns both sides.
 - **ΔT basis:** expected integration failures avoided. The incident rate per unmet edge is taken from the organization's history; until then use 0.05 per edge per week × the mean T loss of an incident. *p* = 0.5. *m_decide* = 3 min.
 
-### 2.4 Over-coupled split — `ap.over-coupled@3`
+### 2.4 Over-coupled split — `ap.over-coupled@4`
 
 *v1 (2026-11-06): waits count as recorded per pair, not organization-wide. Under v0, one day of declared states, from the first `of status` declarations on 2026-11-05, switched every pair to the mutual-wait branch. The rule then fell silent on the operator–hosts pair (207 messages, ratio 4.7, reciprocity 0.97).*
 *v2 (2026-11-10): no pair with a unit owner (kind `owner`) or the structure keeper. When of import github began reading the `Position:` line (74% of the first user organization's PRs attributed, up from 26%), the rule ran there for the first time and fired on 26 pairs, 20 of them a unit owner with a position of its unit: the delegation working, not a split to merge, as §2.2 and §2.8 already treat them. v2 fires on 6, among them two positions of the main bot (253 messages, ratio 4.3) and the pair of the bot's operator and its hosts' keeper. Labels carry over: v2 only narrows what fires.*
 *v3 (2026-11-10): decided by the structure keeper, as §2.10 and the structure-coverage family (§2.23–2.26), through `of_platform`'s daily keeper digest (`of_architect`'s decision; its remedies, a merge or a published interface, are structure diffs the owner approves). Labels carry over: only the decider changed.*
+*v4 (2026-11-15), the relay-era recalibration (this position's mandate 5). From 2026-11-06 the relay records every `of send`, about six times the messages the transcripts showed, and the interface ratio of 3 had been set on transcript-era counts. In the first user organization, in the week to 2026-11-15, 8 pairs fire at 3, at ratios 3.1 to 5.3, and every one merged at least 29 PRs. The keeper's labels are too few to move the value: one, `true_but_not_now` on a project and the keeper of its own system at 4.1 (2026-11-12: "coupling with the keeper is the project's nature"). It bounds the ratio from above at 4.1, and no false-positive label bounds it from below. So the ratio stays 3. New is the floor that chatty@3 gave its pair part: a pair is measured only when it merged ≥ 3 PRs in the window (`pair_merged_prs_gte`), since below that its messages per merged PR measure something else. That is an inference from the chatty labels on the same measure (§2.10). It silences no pair that fires today; with mutual waits it would have raised pairs with no merged PR at ratios up to 16. In the OF team the rule raises one pair, `of_release` with `of_secrets-review` at 3.5, for its structure keeper to label.*
 
 - **Signals:**
   - the **interface ratio**: msgs between *p* and *q* ÷ WR of *p* and *q*;
   - reciprocity: the smaller direction ÷ the larger;
   - mutual waits: `blocked_on: peer:q` on *p* and `peer:p` on *q* in the same window.
 - **Rule.** All three hold:
-  - interface ratio ≥ 3;
+  - interface ratio ≥ 3, over ≥ 3 merged PRs of the pair (v4);
   - reciprocity ≥ 0.5;
   - at least one mutual wait, or a reciprocity ≥ 0.8 if waits are not recorded for the pair.
     - Waits are **recorded for a pair** when both positions declared a state (`of.state_declared`) on ≥ `observed_days_gte` distinct days of the window.
@@ -673,7 +674,7 @@ The columns:
 | owner-router@0 | fired 1 | fired 1 | P/R 1.0 | 1 tp, fires | — |
 | owner-relay@1 | fired 3 | quiet | P/R 1.0, both halves; negatives: a busy pair (6 of 80), a unit owner's own unit | 3 tp, fire | — |
 | coordination-gap@1 | fired 4 | blocked (no work records, no `depends_on`) | P/R 1.0; reports blocked when a keeper is unobserved | 3 tp, fire | — |
-| over-coupled@3 | blocked (`wr.position`); 2026-11-10 with PRs attributed: 26 under v1, 6 under v2 | blocked | P/R 1.0; negatives: one-directional, a unit owner | — | — |
+| over-coupled@4 | blocked (`wr.position`); 2026-11-10 with PRs attributed: 26 under v1, 6 under v2; 2026-11-15: 8 (ratios 3.1–5.3, each ≥ 29 PRs) | 2026-11-15: 1 (`of_release` and `of_secrets-review`, 3.5) | P/R 1.0; negatives: one-directional, a unit owner, a pair with no merged PR | 1 true_but_not_now (2026-11-12, at 4.1, snoozed): too few to move the ratio | the 8 unlabelled issues (7 in U1, 1 in OF) to label with their structure keepers |
 | context-overload@0 | 2026-11-14: quiet | 2026-11-14: quiet | P/R 1.0; negatives: every position compacting as often, an outlier corrected only on output and scope or long after a compaction; reports blocked without the owner's corrections | — | a real case; rereads |
 | fragmented-ownership@1 | blocked (`of.deployment`, `wr.position`) | blocked | code P/R 1.0; negatives: keeper named inside the windows, one window only | — | runtime part not built (no `of.deployment`) |
 | orphan-work@3 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
