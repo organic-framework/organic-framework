@@ -567,8 +567,8 @@ class LoopRulesTest(unittest.TestCase):
             pl["predict"] = predict
         return ev(f"h{i}", ts, "of.loop_hypothesis", "s-search", pl, position="bot_search")
 
-    def decide(self, i, ts, hid, kind="drop"):
-        return ev(f"d{i}", ts, "of.loop_decision", "s-search", {"work": self.W, "hypothesis": hid, "decision": kind},
+    def decide(self, i, ts, hid, kind="drop", **extra):
+        return ev(f"d{i}", ts, "of.loop_decision", "s-search", dict({"work": self.W, "hypothesis": hid, "decision": kind}, **extra),
                   position="bot_search")
 
     def found(self, rule, rows, doc=None):
@@ -650,6 +650,59 @@ class LoopRulesTest(unittest.TestCase):
         priced = self.doc(measures=[{"name": "latency_ms", "to_money": "USD per ms from the checkout arithmetic"}])
         self.assertEqual(self.found("loop-objective-drift", runs, priced)[0], [])
 
+    # hand-over 95bf514e (docs/registry.md Works, "The owner's measure"): the owner decided the target, money is a reading
+    DECIDED = {"metric": "reaction_p99_ms", "better": "lower", "decided": "01a1d957-c8b6"}
+
+    def test_objective_drift_on_the_owners_measure(self):
+        on_target = [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 0.9)]
+        spread = [self.run_(i, f"2026-11-0{4 + i // 2}T1{i}:00Z", "offline", "h2", 18 - i, metric="trigger_coverage")
+                  for i in range(2, 6)]
+        # (1) a measure with to_target is tied to the target: no price is asked, and the target needs no money
+        tied = self.doc(target=self.DECIDED, measures=[{"name": "trigger_coverage", "to_target": "every trigger seen is one more reaction timed"}])
+        self.assertEqual(self.found("loop-objective-drift", on_target + spread, tied)[0], [])
+        self.assertEqual(self.found("loop-objective-drift", on_target, self.doc(target=self.DECIDED, measures=[]))[0], [])
+        # (3) a metric tied to nothing fires as untied: the nudge asks for a tie or the owner's yes, never for a price
+        got, _ = self.found("loop-objective-drift", on_target + spread, self.doc(target=self.DECIDED))
+        self.assertEqual([(i["part"], i["rule_version"]) for i in got], [("untied", "ap.loop-objective-drift@2")])
+        self.assertEqual(got[0]["evidence"]["untied"], {"trigger_coverage": 4})
+        self.assertEqual(got[0]["evidence"]["decided"], "01a1d957-c8b6")
+        self.assertIn("4 of 5 runs measure trigger_coverage, which is not tied to the target reaction_p99_ms: tie the metric "
+                      "to the target, or get the owner's yes on a new measure", got[0]["summary"])
+        said = " ".join([got[0]["summary"]] + got[0]["remedies"]).lower()
+        for word in ("price", "money", "usd", "revenue"):
+            self.assertNotIn(word, said)
+        self.assertEqual(got[0]["decider"], "work_owner")
+        # the issue keeps its id across parts: the same work priced, before the owner decided, is the same issue
+        before, _ = self.found("loop-objective-drift", on_target + spread)
+        self.assertEqual([i["issue_id"] for i in before], [got[0]["issue_id"]])
+        self.assertEqual(before[0]["part"], "unpriced")
+        # (2) a change of objective with its metric and the owner's yes has its basis; without the yes it fires at once,
+        # and money in place of the yes does not change the owner's measure
+        yes = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", metric="trigger_coverage", decided="01a1d980-1111")]
+        self.assertEqual(self.found("loop-objective-drift", on_target + yes, self.doc(target=self.DECIDED))[0], [])
+        for extra in ({"metric": "trigger_coverage"}, {"metric": "trigger_coverage", "to_money": "USD per trigger"}):
+            no = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", **extra)]
+            got, _ = self.found("loop-objective-drift", on_target + no, self.doc(target=self.DECIDED))
+            self.assertEqual([(i["part"], i["evidence"]["change_objective_without_yes"]) for i in got], [("untied", 1)])
+            self.assertIn("a change of objective to trigger_coverage has no yes from the owner", got[0]["summary"])
+        # (4) the context part is unchanged on the owner's measure, and wins the part
+        seg = self.doc(target=dict(self.DECIDED, segment=self.SEGMENT))
+        hyp = [self.hyp(1, "2026-11-04T10:00Z", "h-net", predict="a faster RPC path cuts the network after the send by 20 ms")]
+        got, _ = self.found("loop-objective-drift", on_target + spread + hyp, seg)
+        self.assertEqual([(i["part"], i["evidence"]["untied"]) for i in got], [("context", {"trigger_coverage": 4})])
+        # (4) a loop without decided behaves as before: a to_target chain does not price a metric, and a change of objective
+        # needs its money (of loop decision asks --to-money there, of_platform)
+        self.assertEqual([i["part"] for i in self.found("loop-objective-drift", on_target + spread,
+                                                       self.doc(measures=[{"name": "trigger_coverage", "to_target": "x"}]))[0]],
+                         ["unpriced"])
+        bare = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", metric="trigger_coverage")]
+        got, _ = self.found("loop-objective-drift", on_target + bare)
+        self.assertEqual([(i["part"], i["evidence"]["change_objective_without_money"]) for i in got], [("unpriced", 1)])
+        self.assertEqual([i["part"] for i in self.found("loop-objective-drift", on_target + yes)[0]], ["unpriced"])
+        # an empty decided is no yes
+        blank = self.doc(target=dict(self.DECIDED, decided=" ", money="USD per day"))
+        self.assertEqual([i["part"] for i in self.found("loop-objective-drift", on_target + spread, blank)[0]], ["unpriced"])
+
     SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
                "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
 
@@ -660,7 +713,7 @@ class LoopRulesTest(unittest.TestCase):
         on_target = [self.run_(1, "2026-11-04T12:00Z", "day_pass", "h1", 325.8)]
         hyp = [self.hyp(1, "2026-11-04T10:00Z", "h-net", predict="a faster RPC path cuts the network after the send by 20 ms")]
         got, st = self.found("loop-objective-drift", on_target + hyp, seg)
-        self.assertEqual([(i["part"], i["rule_version"]) for i in got], [("context", "ap.loop-objective-drift@1")])
+        self.assertEqual([(i["part"], i["rule_version"]) for i in got], [("context", "ap.loop-objective-drift@2")])
         self.assertEqual(got[0]["evidence"]["context"][0]["hypothesis"], "h-net")
         self.assertIn("The network after the send is outside the segment: report it, and act inside (1 hypothesis names it)",
                       got[0]["summary"])
