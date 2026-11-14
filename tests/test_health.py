@@ -26,11 +26,26 @@ class StateDir(unittest.TestCase):
         self.tmp.cleanup()
 
 
+class _Body:
+    def __init__(self, d):
+        import json as _j
+        self.data = _j.dumps(d).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.data
+
+
 class ChecksTest(StateDir):
-    def readings(self, swap=0.5, errors=0.0):
+    def readings(self, swap=0.5, errors=0.0, served=None):
         return of_health.measure(now=1000.0, server=0.1, lags={"asks": 5.0}, views={"asks": (5.0, 120.0)},
                                  hooks=(errors, 0.3, {"PostToolUse": 0.3}, 400), swap=swap, disk=60.0,
-                                 smoke={"head": "abc", "ok": True, "detail": "ok"})
+                                 smoke={"head": "abc", "ok": True, "detail": "ok"}, served=served or {})
 
     def test_grades_and_limits(self):
         self.assertEqual([of_health.grade(v, 2, 20) for v in (1, 3, 21, None)], ["ok", "degraded", "failed", "failed"])
@@ -43,7 +58,8 @@ class ChecksTest(StateDir):
     def test_an_event_only_on_a_change_and_the_owner_told_on_fail_and_back(self):
         events, told = [], []
         run = lambda r, now: of_health.run(now=now, readings=r, emit=lambda k, p, **kw: events.append(p),  # noqa: E731
-                                           fyi=lambda o, t: told.append((o, t)), log=lambda m: None)
+                                           fyi=lambda o, t: told.append((o, t)), log=lambda m: None,
+                                           cards=lambda state: None)
         run(self.readings(), 1000.0)
         self.assertEqual(events, [])                                       # all ok from the start: nothing recorded
         run(self.readings(errors=0.2), 1060.0)
@@ -74,8 +90,27 @@ class ChecksTest(StateDir):
             self.assertEqual(of_health.swap_share(run), 0.914)
             self.assertEqual(seen[0][0], "/usr/sbin/sysctl")  # launchd's PATH has no /usr/sbin
         r = of_health.measure(now=1.0, server="none", lags={}, views={}, hooks=(0, 0, {}, 0), swap=None, disk=50,
-                              smoke={"head": "x", "ok": True})
+                              smoke={"head": "x", "ok": True}, served={})
         self.assertIn("machine.memory", r) if sys.platform == "darwin" else None
+
+    def test_the_servers_checks_are_carried_and_the_cards_called(self):
+        """of_studio (hand-over f06e0eb7): of-server's own checks on this machine's page, as it serves them, with no
+        event or fyi from here (the server records its own); and the person's cards from the state."""
+        served = of_health.server_checks(url="http://x", opener=lambda req, timeout: _Body({"checks": [
+            {"check": "relay.oldest", "state": "failed", "value": 4000, "limit_degraded": 600, "limit_failed": 3600,
+             "since": "2026-11-14T00:00:00Z", "owner": "of_server"},
+            {"check": "server.health", "state": "ok", "value": 0.2, "limit_degraded": 2, "limit_failed": 20}]}))
+        self.assertEqual(served["relay.oldest"]["limit"], [600, 3600])
+        r = self.readings(served=served)
+        self.assertEqual(r["relay.oldest"]["source"], "of-server")
+        self.assertNotIn("source", r["server.health"])                       # this machine's own measurement stays
+        events, told, carded = [], [], []
+        state = of_health.run(now=2000.0, readings=r, emit=lambda k, p, **kw: events.append(p),
+                              fyi=lambda o, t: told.append(o), log=lambda m: None, cards=carded.append)
+        self.assertEqual([e["check"] for e in events], [])                   # the server records its own
+        self.assertEqual(state["checks"]["relay.oldest"]["since"], "2026-11-14T00:00:00Z")
+        self.assertEqual(carded, [state])
+        self.assertEqual(of_health.server_checks(url="http://x", opener=lambda req, timeout: 1 / 0), {})
 
     def test_hook_readings_take_the_last_ten_minutes_from_the_end(self):
         now = 1_800_000_000.0
