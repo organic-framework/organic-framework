@@ -1463,7 +1463,7 @@ def _mandate_context(hook, index, sess):
             rc = of_fold.reader()
             if rc is not None:
                 try:
-                    runs = of_loop.blind_runs(rc, [w for w, _, _ in loops])
+                    runs = of_loop.blind_runs(rc, {w: lp for w, _, lp in loops})
                 finally:
                     rc.close()
         except Exception:  # noqa: BLE001 - never costs the session its context

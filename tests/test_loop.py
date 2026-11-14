@@ -281,6 +281,34 @@ class ReadingPointTest(unittest.TestCase):
                         ("--metric", "race_margin_ms", "--proxy-held", "maybe")):
                 self.assertNotEqual(run("run", "w-speed", "--rung", "oracle", *bad).returncode, 0, bad)
 
+    def test_a_run_without_its_proxy_is_filled_from_its_measure(self):
+        """of_studio's hand-over 18c240ff: a run written before the flags, or without --proxy-held, on a measure with
+        proxy_for is a proxy whose condition is unknown, as the card and the rule read it."""
+        import of_events
+        import of_store
+        rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="h1", change="a", cost_h=1.0, voi="med"),
+                ev(2, "of.loop_run", 2, work="w", rung="oracle", hypothesis="h1", metric="race_margin_ms", value=0.4,
+                   accepted=True)]
+        h = of_loop.register(rows, "w", PROXIED)["hypotheses"][0]
+        self.assertTrue(h["blind"])
+        self.assertEqual(h["last_run"]["observed_at"], "our nodes' receive time of the rival's transaction")
+        self.assertEqual(h["last_run"]["proxy"], {"for": "the block's builder",
+                                                  "valid_when": "one of our own nodes built the block", "held": "unknown"})
+        self.assertFalse(of_loop.register(rows, "w")["hypotheses"][0]["blind"])   # without its loop: as recorded
+        target = [rows[0], ev(3, "of.loop_run", 3, work="w", rung="oracle", hypothesis="h1",
+                              metric=LOOP["target"]["metric"], value=1.0)]
+        self.assertFalse(of_loop.register(target, "w", PROXIED)["hypotheses"][0]["blind"])  # read where it happens
+        with tempfile.TemporaryDirectory() as root:
+            conn = of_store.connect(os.path.join(root, "of.db"))
+            of_store.add_event(conn, of_events.record("loop_run", {"work": "w-speed", "hypothesis": "h1",
+                                                                   "rung": "oracle", "metric": "race_margin_ms",
+                                                                   "value": 0.4}))
+            conn.commit()
+            self.assertEqual(of_loop.blind_runs(conn, ["w-speed"]), [])         # ids only: as recorded
+            runs = of_loop.blind_runs(conn, {"w-speed": PROXIED})
+            self.assertEqual([r["proxy"]["held"] for _, r, _ in runs], ["unknown"])
+            conn.close()
+
     def test_the_start_context_shows_such_runs_as_not_observed(self):
         import of_context
         import of_events
