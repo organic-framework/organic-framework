@@ -345,6 +345,12 @@ def verify_chain(grant, by_subject, key, now_iso, depth=0):
     return False, last
 
 
+def ended(why):
+    """Is a check's reason a grant's own normal end rather than a fault? Expiry is: the grant did what it was issued
+    for, and `of registry check` only says it may leave the file."""
+    return why == "expired"
+
+
 def check_all(grants_by_org, key, now_iso):
     """[(org, id, ok, reason)] for every grant: what `of registry check` reports."""
     by_subject = {}
@@ -701,15 +707,21 @@ def rekey(staged=None, orgs_file=None, sock=None):
     return sorted(docs), n, line
 
 
-def missing_issued(grants_by_org, events):
+def missing_issued(grants_by_org, events, now_iso=None):
     """[(org, grant id)] issued (of.grant_issued) and never revoked (of.grant_revoked) that are missing from the
-    organization's file: `of registry check` reports them. `events` are (name, org, payload) tuples."""
+    organization's file: `of registry check` reports them. `events` are (name, org, payload) tuples. A grant whose
+    `expires` has passed (NOW_ISO) ended by itself and may leave the file (a user organization, 2026-11-14: 13
+    time-boxed grants expired, and taking them out of the file failed the check)."""
     issued, revoked = {}, set()
     for name, org, payload in events:
         gid = (payload or {}).get("grant_id")
         if not gid:
             continue
         if name == "of.grant_issued":
+            ends = (payload or {}).get("expires")
+            if now_iso and ends and str(ends) <= now_iso:
+                issued.pop((org, gid), None)  # ended at its own expiry: a normal end
+                continue
             issued[(org, gid)] = True
         elif name == "of.grant_revoked":
             revoked.add((org, gid))
