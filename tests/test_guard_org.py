@@ -168,10 +168,32 @@ class SshRuleTest(unittest.TestCase):
         self.assertEqual(self.hit("ssh us-alias"), ["ssh to us-alias (HostName 192.0.2.5)"])
         self.assertEqual(self.hit("ssh fra uptime"), ["ssh to fra (HostName fra.example.net)"])
 
-    def test_a_variable_counts_as_a_match(self):
-        self.assertEqual(self.hit("ssh $HOST uptime"), ["ssh to a destination held in a variable"])
+    def test_a_variable_counts_as_a_match_where_its_literal_parts_fit(self):
+        """A bare variable can be any host; `agent-$h-node` only what fits agent-*-node (a user organization, msg
+        01a1d7c9-9bc8: its loops over two hosts were denied by every other host group's rule)."""
+        self.assertEqual(self.hit("ssh $HOST uptime"), ["ssh to *, a destination held in a variable that may be us"])
         self.assertTrue(self.hit("scp f \"$H\":/tmp/"))
         self.assertTrue(self.hit("ssh $(cat h) uptime"))
+        self.assertEqual(self.hit("for h in a b; do ssh agent-$h-node uptime; done"), [])   # never us, gw*, fra…
+        self.assertTrue(self.hit("ssh u@gw-${N}.lan"))                                       # fits gw*
+        self.assertTrue(self.hit("ssh 192.0.2.$i"))                                           # fits 192.0.2.5
+        self.assertEqual(self.hit("ssh 198.51.100.$i"), [])
+
+    def test_an_alias_a_variable_can_fit_is_folded(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host agent-us-node\n  HostName us.example.net\nHost agent-x-node\n  HostName 192.0.2.5\n")
+            got = self.hit(f"ssh -F {cfg} agent-$h-node", resolver=of_guard.ssh_resolver)
+        self.assertEqual(got, ["ssh to agent-*-node, a destination held in a variable that may be 192.0.2.5 "
+                               "(HostName 192.0.2.5)"])
+
+    def test_globs_meet(self):
+        for a, b, want in (("agent-*-node", "agent-us-node", True), ("agent-*-node", "bastion-node", False),
+                           ("*", "anything", True), ("gw*", "gw-*.lan", True), ("a?c", "abc", True),
+                           ("a*c", "b*", False), ("192.0.2.*", "192.0.2.5", True), ("x*y", "*z", False)):
+            self.assertEqual(of_guard._globs_meet(a, b), want, (a, b))
 
     def test_what_does_not(self):
         for cmd in ("ssh other", "ssh other 'ssh us'", "scp ./a:b ./c", "git push origin main", "echo ssh us",

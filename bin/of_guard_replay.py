@@ -26,6 +26,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,21 +120,35 @@ def org_replay(rules, rows):
 
 
 def org_breakdown(rules, rows):
-    """{(rule id, position, namespace, verb, kind): calls} for the kubectl calls each rule matched: what a narrow
-    Role per position would have to allow (asked for a k8s_keeper, 2026-11-09). Namespace `(all)` is -A, `(default)`
-    the kubeconfig's own, `(variable)` one held in a variable; kind `unparsed` when the call names none readably.
-    Counts only: no command text and no object names."""
+    """{(rule id, position, namespace, verb, kind): calls} for the calls each rule matched. For a kubectl rule: what a
+    narrow Role per position would have to allow (asked for a k8s_keeper, 2026-11-09); namespace `(all)` is -A,
+    `(default)` the kubeconfig's own, `(variable)` one held in a variable; kind `unparsed` when the call names none
+    readably. For an ssh rule (O3): namespace `(ssh)`, verb the command (ssh, scp …), kind the destination as typed, or
+    the glob of a destination held in a variable (a user organization asked, msg 01a1d7c9-9bc8). Counts only: no
+    command text and no object names."""
     import of_guard
-    out = collections.Counter()
+    out, resolvers = collections.Counter(), {}
     for pos, _day, cmd in rows:
-        if "kubectl" not in cmd:
-            continue
+        kube = [r for r in rules if isinstance(r.get("kubectl"), dict)] if "kubectl" in cmd else []
+        ssh = [r for r in rules if isinstance(r.get("ssh"), dict)] if of_guard._SSH_WORDS.search(cmd) else []
         try:
-            calls = of_guard.kubectl_calls(cmd)
+            calls = of_guard.kubectl_calls(cmd) if kube else []
+            scalls = of_guard.ssh_calls(cmd) if ssh else []
         except Exception:  # noqa: BLE001
             continue
-        for r in rules:
+        for r in kube + ssh:
             if pos in (r.get("except") or []) or (r.get("subject") not in (None, "*") and r["subject"] != pos):
+                continue
+            if r in ssh:
+                for c in scalls:
+                    if c["config"] not in resolvers:
+                        resolvers[c["config"]] = of_guard.ssh_resolver(c["config"])
+                    for d in c["destinations"]:
+                        one = dict(c, destinations=[d])
+                        if of_guard.ssh_rule_match(r["ssh"], one, resolvers[c["config"]]):
+                            host = of_guard._ssh_host(d[0]) or re.sub(r"\*+", "*", of_guard._ssh_host(
+                                of_guard._SSH_VAR.sub("*", str(d[0]))) or "*")
+                            out[(r["id"], pos, "(ssh)", c["head"], host)] += 1
                 continue
             for c in calls:
                 if not of_guard.kubectl_rule_match(r["kubectl"], c):

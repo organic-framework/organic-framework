@@ -2798,6 +2798,28 @@ def _ssh_pattern_match(patterns, name):
     return hit
 
 
+_SSH_VAR = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB__\w*|`[^`]*`")
+
+
+def _globs_meet(a, b):
+    """Can one name match both globs A and B (`*` and `?`; other characters literal)? `agent-*-node` and
+    `agent-us-node` meet; `agent-*-node` and `bastion-node` do not."""
+    import functools
+
+    @functools.lru_cache(None)
+    def meet(i, j):
+        if i == len(a) and j == len(b):
+            return True
+        if i < len(a) and a[i] == "*":
+            return meet(i + 1, j) or (j < len(b) and meet(i, j + 1))
+        if j < len(b) and b[j] == "*":
+            return meet(i, j + 1) or (i < len(a) and meet(i + 1, j))
+        if i < len(a) and j < len(b) and (a[i] == "?" or b[j] == "?" or a[i] == b[j]):
+            return meet(i + 1, j + 1)
+        return False
+    return meet(0, 0)
+
+
 def ssh_resolver(config=None):
     """name -> the HostName the ssh config in effect gives it (the first matching Host block that sets one, `%h` the
     name), or None. The config: -F when given, else the user's own and the system's (aliases are folded: an alias is
@@ -2810,6 +2832,7 @@ def ssh_resolver(config=None):
             if hostname and _ssh_pattern_match(patterns, name):
                 return hostname.replace("%h", name).replace("%%", "%").lower()
         return None
+    resolve.blocks = blocks  # for a destination held in a variable: the aliases its literal parts can fit
     return resolve
 
 
@@ -2821,8 +2844,18 @@ def ssh_rule_match(match, call, resolve=None):
     globs = [str(h).lower() for h in match.get("hosts") or []]
     for word, how in call["destinations"]:
         host = _ssh_host(word)
-        if host is None:
-            return f"{call['head']} {how} a destination held in a variable"
+        if host is None:  # held in a variable: only what its literal parts can fit (a user organization, msg
+            # 01a1d7c9-9bc8: `agent-$h-node` loops are never `bastion-node`); a bare variable can be any host
+            pattern = re.sub(r"\*+", "*", _ssh_host(_SSH_VAR.sub("*", str(word))) or "*")
+            names = [pattern] + [hn.replace("%h", pattern).lower()
+                                 for pats, hn in getattr(resolve, "blocks", []) or [] if hn
+                                 and any(_globs_meet(p.lower(), pattern) for p in pats if not p.startswith("!"))]
+            for n in names:
+                g = next((g for g in globs if _globs_meet(n, g)), None)
+                if g:
+                    return (f"{call['head']} {how} {pattern}, a destination held in a variable that may be {g}"
+                            + (f" (HostName {n})" if n != pattern else ""))
+            continue
         whole = str(word).rsplit("@", 1)[-1].lower()  # a bare IPv6 destination (`ssh fe80::1`)
         names = [host] + [n for n in [whole, resolve(host) if resolve else None] if n and n != host]
         for n in names:

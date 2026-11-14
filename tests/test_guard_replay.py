@@ -42,6 +42,19 @@ class ReplayTest(unittest.TestCase):
                          {("admin", "a", "evm", "get", "pods"): 2, ("admin", "a", "evm", "get", "services"): 1,
                           ("admin", "a", "(all)", "get", "unparsed"): 1})
 
+    def test_org_breakdown_splits_an_ssh_rule_by_destination(self):
+        """A user organization, msg 01a1d7c9-9bc8: the breakdown crashed on an ssh rule; it now counts each
+        destination a rule matched, a variable's as the glob of its literal parts."""
+        rules = [{"id": "admin", "kubectl": {"admin": {"configs": ["~/.kube/config"]}}},
+                 {"id": "gw", "except": ["net_keeper"], "ssh": {"hosts": ["gw*", "192.0.2.9"]}}]
+        rows = [("a", "d", "ssh gw2 uptime; scp f gw1:/tmp/"), ("a", "d", "ssh -J gw3 other"),
+                ("a", "d", "for h in us fra; do ssh agent-$h-node id; done"), ("a", "d", "ssh $H id"),
+                ("a", "d", "kubectl -n x get pods"), ("net_keeper", "d", "ssh gw2")]
+        self.assertEqual(dict(of_guard_replay.org_breakdown(rules, rows)),
+                         {("gw", "a", "(ssh)", "ssh", "gw2"): 1, ("gw", "a", "(ssh)", "scp", "gw1"): 1,
+                          ("gw", "a", "(ssh)", "ssh", "gw3"): 1, ("gw", "a", "(ssh)", "ssh", "*"): 1,
+                          ("admin", "a", "x", "get", "pods"): 1})
+
 
     def test_org_replay_names_a_grant_that_would_be_refused(self):
         # a proposed grant `of grant issue` would refuse (admin: true) is named, not replayed; the rest run
