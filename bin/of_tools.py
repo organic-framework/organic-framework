@@ -345,7 +345,7 @@ def header(org, tid, docs, ancestors=None, state_dir=None):
     """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper).
 
     The token goes only to a Claude Code process that OF launched with this tool: the nearest parent started with
-    `--mcp-config <state>/tools/<session>.mcp.json` and `--session-id <session>`, whose file names this tool's shared
+    `--mcp-config <state>/tools/<session>.mcp.json` and `--session-id <session>` (or `--resume <session>`), whose file names this tool's shared
     URL. A position is never taken from the caller's word (of_review, PR 132: a named position handed the token to
     any caller). An agent's own shell command reaches its own session's file, so it gets the token only when its
     profile has the tool."""
@@ -360,7 +360,10 @@ def header(org, tid, docs, ancestors=None, state_dir=None):
         if "--mcp-config" not in argv:
             continue
         path = argv[argv.index("--mcp-config") + 1] if argv.index("--mcp-config") + 1 < len(argv) else ""
-        sid = argv[argv.index("--session-id") + 1] if "--session-id" in argv[:-1] else None
+        # A move, a restart or `of resume-command` relaunches the session with `--resume <session>` (2026-11-14, a user
+        # organization: moved sessions got no token and Claude Code fell back to OAuth); the file check is the same.
+        flag = next((f for f in ("--session-id", "--resume") if f in argv[:-1]), None)
+        sid = argv[argv.index(flag) + 1] if flag else None
         if not sid or os.path.realpath(path) != os.path.join(tools_dir, f"{sid}.mcp.json"):
             raise ToolsError("the calling Claude Code session was not launched by OF with its tool profile")
         try:
