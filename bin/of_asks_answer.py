@@ -41,7 +41,7 @@ LATE_AFTER_S = 600         # a later delivery says when it was answered
 
 def ask_details(conn, ask_id):
     """(payload of the ask event, session id, position, ts). A declared ask's payload is its newest version (of ask
-    --amend: of_asks.at_version), with `version`, `choice_version` and `amended`."""
+    --amend: of_asks.at_version), with `version` and `amended`."""
     row = conn.execute("SELECT payload, session_id, position, ts, host_id FROM event WHERE event_id = ?",
                        (ask_id,)).fetchone()
     if not row:
@@ -207,27 +207,47 @@ def card(conn, item, positions):
                       "turns": doing.get("recent_turns") or []},
             "org": p.get("_org"), "since": item.get("since"), "who": item.get("who") or [], "context": ctx,
             "links": doing.get("links") or links(q, ctx), "session": session, "ids": item.get("ids") or [], "kind": item.get("kind"),
-            # the version shown (of ask --amend): an answer carries it, and is refused when a later one changed the
-            # options or the yes (of_asks.stale_choice)
-            "version": payload.get("version") or 1, "choice_version": payload.get("choice_version") or 1,
-            "amended": payload.get("amended"),
+            # the version shown (of ask --amend): an answer carries it, and is refused once a later one exists
+            # (of_asks.stale)
+            "version": payload.get("version") or 1, "amended": payload.get("amended"),
             "answerable": bool(aid) and item.get("kind") not in ("permission", "registry") and
             (not kind.startswith("blocked:") or bool(opts)),
             "blocked": {"pane": payload.get("pane"), "fingerprint": payload.get("fingerprint"),
                         "options": payload.get("options") or []} if kind.startswith("blocked:") else None}
 
 
-def frame(ask_id, answer):
+def frame(ask_id, answer, version=None, question=None):
+    """The answer as typed into the asker's pane. On an amended ask, it names the version answered and quotes that
+    version's question, never a bare answer (docs/events.md, of.ask_amended; of_review on PR 181)."""
+    if version and question:
+        q = " ".join(str(question).split())
+        return (f"Answer from the founder to your question {ask_id[-8:]} (version {version}: \u00ab"
+                f"{q if len(q) <= 300 else q[:299] + '…'}\u00bb): {answer}")
     return f"Answer from the founder to your question {ask_id[-8:]}: {answer}"
+
+
+def answered_question(conn, ask_id, version):
+    """The question of the version an answer names, when the ask was amended (None when it never was: the frame
+    stays as it was)."""
+    import of_asks
+    row = conn.execute("SELECT payload, ts, position, host_id FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    if not row or not of_asks.amendments(conn, ask_id, row[1], row[2], row[3]):
+        return None
+    try:
+        raw = json.loads(row[0] or "{}")
+    except ValueError:
+        return None
+    return full_question(of_asks.at_version(conn, ask_id, raw, row[1], row[2], row[3], version=version or 1), "")
 
 
 TYPED_VIAS = ("asks-ui", "conductor")  # answers typed into the asker's pane: the popup's, and the conductor's chat's
 
 
-def typed_answer(p, ask_id):
+def typed_answer(p, ask_id, question=None):
     """What the asker's pane gets for an answer event's payload: the frame, and for an answer given in the person's
-    conductor's chat (of_asks_chat) the person's own words under it, so the asker sees what the answer rests on."""
-    text = frame(ask_id, p.get("answer") or "")
+    conductor's chat (of_asks_chat) the person's own words under it, so the asker sees what the answer rests on.
+    question: the answered version's question, on an amended ask (answered_question)."""
+    text = frame(ask_id, p.get("answer") or "", p.get("version") or 1, question)
     if p.get("via") == "conductor" and p.get("quote"):
         text += f"\n(Given in the conductor's chat at {str(p.get('prompt_ts') or '')[11:16]}Z, in these words: " \
                 f"\u00ab{' '.join(str(p['quote']).split())[:600]}\u00bb)"
@@ -326,8 +346,8 @@ AMENDED = "amended"  # the start of the status a refused answer gets: the card s
 
 
 def amended_refusal(c, shown):
-    """The status line for an answer refused because the ask changed its options or yes after the card was shown."""
-    return (f"{AMENDED}: {c.get('position') or 'the asker'} changed this card's options after you saw it (version "
+    """The status line for an answer refused because the asker amended the ask after the card was shown."""
+    return (f"{AMENDED}: {c.get('position') or 'the asker'} changed this card after you saw it (version "
             f"{shown or 1}, now {c.get('version') or 1}): look at the new version and answer again")
 
 
@@ -493,7 +513,7 @@ def _answer(conn, item, text, positions, pane_of):
         return answer_blocked(c, text)
     import of_asks
     shown = item.get("version")  # the version the card showed when the answer was given (None: the first)
-    if of_asks.stale_choice(shown, c.get("choice_version")):
+    if of_asks.stale(shown, c.get("version")):
         return False, amended_refusal(c, shown)
     lock = _lock()  # the check and the record together: the popup's thread and the outbox sender race (see below)
     try:
@@ -510,7 +530,9 @@ def _answer(conn, item, text, positions, pane_of):
     for position, session, ids in rec:
         pane = pane_of(position)
         session = session or live_session(position, positions)
-        status = deliver(pane, frame(ids[0], text), session) if pane else \
+        own = c.get("amended") and ids[0] == c["ids"][0]  # the card's own ask, amended: its version and words
+        status = deliver(pane, frame(ids[0], text, shown or 1, c["question"]) if own else frame(ids[0], text),
+                         session) if pane else \
             f"no live pane: OF types it when {position} has one (for {REDELIVER_MAX_AGE_H} h)"
         out.append(f"{position}: {status}" if len(rec) > 1 else status)
     return True, "answer recorded; " + ("; ".join(out) or "no asker to deliver it to")
@@ -600,8 +622,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             seen.add(same)
             if (not only or position == only) and not delivered(conn, position, marks, ts):
                 out.append({"key": f"answer:{eid}:{position}", "position": position, "marks": marks, "since": ts,
-                            "text": typed_answer(p, ids[0]) + _late(ts, now, "the founder answered",
-                                                                       busy=busy_since(conn, position, ts, now)),
+                            "text": typed_answer(p, ids[0], answered_question(conn, ids[0], p.get("version")))
+                            + _late(ts, now, "the founder answered", busy=busy_since(conn, position, ts, now)),
                             "sender": "owner", "channel": "asks-ui"})
     open_ids = {a["event_id"] for a in asks if a.get("state") == "open"}
     for eid, ts, payload in conn.execute(  # cards the owner handed to a position in his window (of_asks_inbox, d)

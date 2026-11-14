@@ -86,7 +86,6 @@ ANY_SOURCE = ("of.ask_withdrawn", "of.agent_question_answered", "of.agent_questi
 
 # What `of ask --amend` may change (docs/events.md, of.ask_amended): the payload carries the new value under each name
 AMENDABLE = ("text", "options", "yes_option", "tags", "due", "blocking", "task")
-CHOICE = ("options", "yes_option")  # a change of these refuses an answer given to an earlier version; text alone not
 
 
 def relevant(name, source, payload=None):
@@ -166,6 +165,9 @@ def project(rows, state=None):
             owners_own = all(x is None or x.get("to") in OWNER_ADDRESSES for x in named)
             for aid in p_.get("ask_ids") or [p_.get("ask_id")]:
                 ask = by_id.get(aid)
+                if ask and older_version(p_.get("version"), ask):
+                    continue  # an answer to a version since amended, recorded anyway (a race): it closes nothing;
+                    # the newest version stays open on the card (docs/events.md, of.ask_amended)
                 if ask and ask["state"] == "open" and ask.get("task"):
                     # a task is work for the owner, not a question: an answer is his claim that it is done; it
                     # stays open until the asker checks the result (of status --done-task) or withdraws it
@@ -311,8 +313,9 @@ def project(rows, state=None):
             m = ANSWER_FRAME.match(((r["payload"] or {}).get("text") or "").lstrip())
             open_here = [a for a in declared.get(r.get("position"), [])
                          if a["state"] == "open" and a.get("session_id") in (sid, None) and not a.get("task")]
-            if m:  # the popup's answer names its ask
-                targets = [a for a in open_here if a["event_id"].endswith(m.group(1))]
+            if m:  # the popup's answer names its ask (and the version it answered, on an amended one)
+                targets = [a for a in open_here if a["event_id"].endswith(m.group(1))
+                           and not older_version(int(m.group(2)) if m.group(2) else None, a)]
             elif r["ts"] >= FREE_TEXT_SEEN_SINCE:  # free text marks the session's open asks seen and closes none:
                 # the asker judges whether the words answered one (`of status working --answered <id>`); else it stays
                 # in the owner's list (of_architect, 2026-11-07: 04c0bc48 was closed by a prompt about another agent)
@@ -401,8 +404,11 @@ def amend(ask, r):
     before = (ask.get("amended") or {}).get("all") or []
     ask["version"] = v
     ask["amended"] = {"version": v, "at": r["ts"], "changed": ch, "all": [c for c in AMENDABLE if c in ch or c in before]}
-    if set(ch) & set(CHOICE):
-        ask["choice_version"] = v
+
+
+def older_version(answered, ask):
+    """True when an answer names a version older than the ask's newest (an int it carries; none names no version)."""
+    return isinstance(answered, int) and not isinstance(answered, bool) and answered < (ask.get("version") or 1)
 
 
 def amendments(conn, ask_id, ts, position, host):
@@ -431,14 +437,13 @@ def ask_host(conn, ask_id):
 
 def at_version(conn, ask_id, payload, ts, position, host, version=None):
     """The ask's payload (its of.agent_question's) as of `version`, the newest when None: its question, options,
-    yes_option, tags, due, blocking and steps after each amend up to it, with `version` (1 when never amended),
-    `amended` ({version, at, changed, all}) and `choice_version` (the last version that changed the options or the yes;
-    1 when none did). Only the amends of its own position and machine (HOST: the ask's host_id) count. A loop's
-    decided <ask id>#<n> resolves on the answered version's options (docs/events.md)."""
+    yes_option, tags, due, blocking and steps after each amend up to it, with `version` (1 when never amended) and
+    `amended` ({version, at, changed, all}). Only the amends of its own position and machine (HOST: the ask's host_id)
+    count (docs/events.md, of.ask_amended)."""
     out = dict(payload or {})
     qs = out.get("questions") if isinstance(out.get("questions"), list) else []
     q = dict(qs[0]) if qs and isinstance(qs[0], dict) else {}
-    out.update(version=1, choice_version=1, amended=None)
+    out.update(version=1, amended=None)
     last = 1
     for ets, p in amendments(conn, ask_id, ts, position, host) if conn is not None and ask_id else ():
         v = p.get("version")
@@ -457,18 +462,17 @@ def at_version(conn, ask_id, payload, ts, position, host, version=None):
         before = (out.get("amended") or {}).get("all") or []
         out.update(version=v, amended={"version": v, "at": ets, "changed": ch,
                                        "all": [c for c in AMENDABLE if c in ch or c in before]})
-        if set(ch) & set(CHOICE):
-            out["choice_version"] = v
         last = v
     if q:
         out["questions"] = [q] + list(qs[1:])
     return out
 
 
-def stale_choice(shown, choice_version):
-    """True when an answer given to version `shown` (1 when the card carried none) must be refused: a later version
-    changed the options or the yes (docs/events.md, of.ask_amended)."""
-    return (choice_version or 1) > (shown if isinstance(shown, int) and not isinstance(shown, bool) else 1)
+def stale(shown, current):
+    """True when an answer given to version `shown` (1 when the card carried none) must be refused: the ask has a
+    later version. Any change counts, its text included: a sentence can change what a yes means (docs/events.md,
+    of.ask_amended; of_review on PR 181: a text amend turned staging into production)."""
+    return (current or 1) > (shown if isinstance(shown, int) and not isinstance(shown, bool) else 1)
 
 
 # Texts OF's own tools type into a pane (bin/of _deliver_ask, the relay); before 2026-11-06 a routed question was
@@ -476,7 +480,8 @@ def stale_choice(shown, choice_version):
 TOOL_FRAME = re.compile(r"(?:<pasted_content[^>]*>\s*)?(?:Question from \S+ \(unit |Message from \S+ \(via )")
 FREE_TEXT_SEEN_SINCE = "2026-11-07T00:00:00"  # from here the owner's free text closes no declared ask (history before keeps
 # its closures: those asks are days old and their askers moved on)
-ANSWER_FRAME = re.compile(r"(?:<pasted_content[^>]*>\s*)?Answer from the founder to your question ([0-9a-f]{8})\b")
+ANSWER_FRAME = re.compile(r"(?:<pasted_content[^>]*>\s*)?Answer from the founder to your question ([0-9a-f]{8})\b"
+                          r"(?: \(version (\d+))?")
 DECLARE_AFTER_S = 120  # a status declared this long after the turn's end still speaks for that turn
 
 

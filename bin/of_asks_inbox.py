@@ -808,7 +808,7 @@ class Outgoing:
     def __init__(self, answer, act, handoff=None):
         self.answer, self.act, self.handoff = answer, act, handoff
         self.pending, self.hidden, self.errors, self.undone = [], set(), {}, None
-        self.amended = []  # answers refused because the asker changed the options meanwhile: the screen takes them
+        self.amended = []  # answers refused because the asker amended the card meanwhile: the screen takes them
 
     def queue(self, item, what, text=None, written=False):
         k = key_of(item)
@@ -1294,7 +1294,7 @@ class Inbox:
         curses.curs_set(1)
 
     def take_amended(self, drafts=()):
-        """Answers refused because the asker changed the card's options or yes after he saw it (of ask --amend): the
+        """Answers refused because the asker amended the card after he saw it (of ask --amend): the
         card loads its new version, and what he wrote waits in r for it (the founder, 2026-11-12: no path loses typed
         text); a pick of an option is not kept. DRAFTS: the detached sender's refusals, as the loader found them."""
         import of_asks_answer
@@ -1314,7 +1314,7 @@ class Inbox:
             except OSError:
                 pass
             who = ", ".join(item.get("who") or []) or tr("the asker")
-            self.msg = tr("{who} changed this card's options after you saw it: look at the new version", who=who) + (
+            self.msg = tr("{who} changed this card after you saw it: look at the new version", who=who) + (
                 tr("; your text waits in r") if written and (text or "").strip() else "")
         if refused and self.pending_drafts is not None:
             gone = {(item.get("ids") or [None])[0] for _, item, _, _ in refused}
@@ -1479,7 +1479,7 @@ class Inbox:
         self.send(item, what, text)
 
     def send(self, item, what, text, written=False):
-        if what == "answer":  # the version he saw goes with it: a later change of the options refuses it
+        if what == "answer":  # the version he saw goes with it: a later version refuses it
             item = dict(item, version=(self.cards.get(key_of(item)) or {}).get("version") or version_of(item),
                         written=bool(written))
         self.out.queue(item, what, text if what == "answer" else None, written=written)

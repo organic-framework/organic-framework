@@ -433,6 +433,9 @@ class Yeses:
         amend(self.at_v2, 2, options=["no, keep p99", "yes, p50 is the target"], yes_option=2)
         amend(self.at_v2, 3, yes_option=1, by="lab_other")                    # by another position: ignored
         answer(self.at_v2, "yes, p50 is the target", version=2)               # chose option 2 of version 2
+        self.stale_v1 = ask("p50 on staging?")
+        amend(self.stale_v1, 2, text="p50 on production?")                    # then the answer given to version 1:
+        answer(self.stale_v1, "yes, p50 is the target", version=1)            # recorded anyway, it counts for nothing
         self.foreign = ask("p50, amended elsewhere?")
         amend(self.foreign, 2, host="another-machine", yes_option=2)          # another machine's: not an amend
         answer(self.foreign, "yes, p50 is the target")                        # so an unversioned answer stands
@@ -506,7 +509,8 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertEqual(r(y.foreign + "#1"), ("ask", y.foreign))           # of_server on PR 181
             self.assertEqual(r(y.at_v2 + "#2").words, 'asked "p50 at version 2?", chose option 2 "yes, p50 is the '
                              'target"')
-            for no in (y.then_yes_moved + "#2", y.then_reworded + "#2", y.unversioned + "#1", y.at_v2 + "#1"):
+            for no in (y.then_yes_moved + "#2", y.then_reworded + "#2", y.unversioned + "#1", y.at_v2 + "#1",
+                       y.stale_v1 + "#1"):                                      # only on the newest version
                 self.assertIsNone(r(no), no)
             for no in (y.ask, y.bare + "#1", y.unmarked + "#1",                 # no option named; no person's channel;
                        y.refused + "#2",                                        # no yes marked; a refusal by its number

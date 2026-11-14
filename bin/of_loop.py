@@ -79,7 +79,8 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
       chat) or its text (the popup). A free-text answer, another option, a refusal or an ask of another work is no
       yes. This proves who chose which option, never that it is a yes on the measure: the structure keeper who cites
       it in the registry checks the words (docs/registry.md, Works, "What the check proves"). An amended ask resolves
-      on the version the answer names (of_asks.at_version): its work, options, yes and words. GOAL_YES is accepted
+      only on an answer to its newest version, read as that version had it (of_asks.at_version): its work, options,
+      yes and words. GOAL_YES is accepted
       and no longer read: a goal's own yes is not cited for a loop's target. Its words are the question and the chosen
       option;
     - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
@@ -116,24 +117,30 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
         return Yes("prompt", eid, _short(p.get("text"))) if origin == "human" and where else None
     if name != "of.agent_question" or "ask" not in kinds or option is None or work is None:
         return None
-    last = None
-    for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
-                              "ORDER BY ts, rowid", (ts,)):
+    last = last_ts = None
+    for ats, ap in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
+                                "ORDER BY ts, rowid", (ts,)):
         a = json.loads(ap or "{}")
         if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER \
                 and a.get("via") in PERSON_CHANNELS:
-            last = a
+            last, last_ts = a, ats
     if not last:
         return None
-    # the ask as the answered version had it (of ask --amend, docs/events.md of.ask_amended): its work, options, yes
-    # and words, so an amend after the answer re-labels nothing; an answer that names no version, on an ask that was
-    # amended, resolves to nothing (of_platform, message 01a1dbad-e794)
+    # an amended ask (of ask --amend, docs/events.md of.ask_amended) resolves only on an answer to its newest version
+    # before the answer (an amend after it applies to nothing), read as that version had it: its work, options, yes
+    # and words. An answer that names no version, on an amended ask, resolves to nothing (of_platform, message
+    # 01a1dbad-e794); so does one to an older version (of_review on PR 181)
     import of_asks
+    before = [a for t, a in of_asks.amendments(conn, eid, ts, position, host) if t <= last_ts]
+    newest = max([1] + [a["version"] for a in before if isinstance(a.get("version"), int)
+                        and not isinstance(a.get("version"), bool)])
     v = last.get("version")
     if not isinstance(v, int) or isinstance(v, bool):
-        if of_asks.amendments(conn, eid, ts, position, host):
+        if before:
             return None
         v = 1
+    if v != newest:
+        return None
     p = of_asks.at_version(conn, eid, p, ts, position, host, version=v)
     if p.get("work") != work:
         return None

@@ -254,7 +254,6 @@
  "Part of what the agents do is recorded late or not at all, so their questions and states may reach you late.": "Часть того, что делают агенты, записывается с опозданием или не записывается вовсе, поэтому их вопросы и состояния могут доходить до тебя с опозданием.",
  "The newest commit in this machine's working copy fails OF's smoke check, so agents' hooks and `of` commands may fail until it is fixed or rolled back.": "Последний коммит в рабочей копии на этой машине не проходит дымовую проверку OF, поэтому хуки агентов и команды `of` могут падать, пока его не исправят или не откатят.",
  "Amended (version {v}, at {at}): {what}": "Изменён (версия {v}, в {at}): {what}",
- "{who} changed this card's options after you saw it: look at the new version": "{who}: варианты карточки изменены уже после показа, посмотри новую версию",
  "; your text waits in r": "; твой текст ждёт в r",
  "the asker": "спрашивающий",
  "the question": "вопрос",
@@ -263,5 +262,6 @@
  "the tags": "теги",
  "the due time": "срок",
  "blocking": "блокирующий",
- "the steps": "шаги"
+ "the steps": "шаги",
+ "{who} changed this card after you saw it: look at the new version": "{who}: карточка изменена уже после показа, посмотри новую версию"
 }

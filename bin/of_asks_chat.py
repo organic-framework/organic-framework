@@ -206,18 +206,18 @@ def _options_of(conn, ask):
 
 
 def _version_of(conn, ask):
-    """(version, choice_version, amended) of the ask's newest payload (of ask --amend; of_asks.at_version)."""
+    """(version, amended) of the ask's newest payload (of ask --amend; of_asks.at_version)."""
     import of_asks_answer
     p = of_asks_answer.ask_details(conn, ask["event_id"])[0] or {}
-    return p.get("version") or 1, p.get("choice_version") or 1, p.get("amended")
+    return p.get("version") or 1, p.get("amended")
 
 
 def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, now=None, version=None):
     """Is the prompt evidence for this answer to this card? Returns {ids, answer, option, prompt, conductor, evidence,
     position, session, version}; raises ValueError with the reason, said so the conductor can act on it.
     version: the card's version the conductor showed the person (`of asks --chat` prints it on an amended card); none
-    is the first. An answer to a version whose options or yes changed since is refused, and one dated before the
-    version it names (docs/events.md, of.ask_amended)."""
+    is the first. An answer to an earlier version than the newest is refused, and one dated before the version it
+    names (docs/events.md, of.ask_amended)."""
     import of_asks
     now = now or time.time()
     if (option is None) == (text is None):
@@ -274,14 +274,14 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
     import of_asks
     if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 1):
         raise ValueError(f"--version {version}: a card's version is 1 or more")
-    cur, choice, amended = _version_of(conn, first)
+    cur, amended = _version_of(conn, first)
     shown = version or 1
     if shown > cur:
         raise ValueError(f"--version {shown}: ask {first['event_id'][-8:]} is at version {cur}")
-    if of_asks.stale_choice(shown, choice):
-        raise ValueError(f"ask {first['event_id'][-8:]} was amended: version {choice} changed its options since version "
-                         f"{shown}; show the person the card as `of asks --chat` prints it now and record their answer "
-                         f"with --version {cur}")
+    if of_asks.stale(shown, cur):
+        raise ValueError(f"ask {first['event_id'][-8:]} was amended: it is at version {cur}, not {shown}; show the "
+                         f"person the card as `of asks --chat` prints it now and record their answer with --version "
+                         f"{cur}")
     if shown > 1 and amended and _epoch(_shown_at(conn, first, shown)) > pts:
         raise ValueError(f"--prompt {p['event_id']} was typed at {_hm(p['ts'])}, before version {shown} of the card: "
                          "it answers an earlier one")
@@ -374,11 +374,13 @@ def answer(conn, asks, positions, ask_ref, prompt_ref, pane_of, option=None, tex
     if not eid:
         raise ValueError("the answer could not be written to the event store")
     out = [f"answered: {', '.join(i[-8:] for i in c['ids'])} with {c['answer'][:80]!r} ({c['evidence']})"]
-    p = {"answer": c["answer"], "via": "conductor", "prompt_ts": c["prompt"]["ts"], "quote": c["prompt"]["text"]}
+    p = {"answer": c["answer"], "via": "conductor", "prompt_ts": c["prompt"]["ts"], "quote": c["prompt"]["text"],
+         "version": c.get("version") or 1}
     for position, session, ids in of_asks_answer.recipients(conn, c["ids"], c["position"], c["session"]):
         pane = pane_of(position)
         session = session or of_asks_answer.live_session(position, positions)
-        status = of_asks_answer.deliver(pane, of_asks_answer.typed_answer(p, ids[0]), session) if pane else \
+        q = of_asks_answer.answered_question(conn, ids[0], p["version"])  # an amended ask: its version and words
+        status = of_asks_answer.deliver(pane, of_asks_answer.typed_answer(p, ids[0], q), session) if pane else \
             f"no live pane: OF types it when {position} has one (for {of_asks_answer.REDELIVER_MAX_AGE_H} h)"
         out.append(f"  {position}: {status}")
     return out
@@ -395,7 +397,7 @@ def chat_view(conn, asks):
         a = g["first"]
         members = [by_id[i] for i in g["ask_ids"] if i in by_id]
         tag = f"[{a['event_id'][-8:]}] {', '.join(g['who'])}, waiting {of_asks.age(g['since'])}"
-        v, _, amended = _version_of(conn, a) if a.get("version") else (1, 1, None)
+        v, amended = _version_of(conn, a) if a.get("version") else (1, None)
         if amended:  # the conductor names the version it showed: of asks answer … --version N
             tag += (f", amended: version {v} ({', '.join(amended.get('changed') or [])} changed at "
                     f"{str(amended.get('at') or '')[11:16]}Z; answer with --version {v})")

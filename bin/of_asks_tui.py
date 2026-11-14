@@ -555,7 +555,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
         k = key_of(x)
         hidden.add(k)
         errors.pop(k, None)
-        if what == "answer":  # the version on screen goes with it (of ask --amend: a later change of options refuses it)
+        if what == "answer":  # the version on screen goes with it (of ask --amend: a later version refuses it)
             shown = c.get("version") if c is not None and it is not None and key_of(it) == k else None
             x = dict(x, version=shown or ((x.get("first") or {}).get("version") or 1))
         pending.append({"key": k, "item": x, "what": what, "text": text, "at": time.time(), "started": False,
