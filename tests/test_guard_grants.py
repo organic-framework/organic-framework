@@ -88,6 +88,15 @@ class ShapeTest(unittest.TestCase):
                   ("of.grant_issued", "t", {"grant_id": "g-3"}), ("of.grant_revoked", "t", {"grant_id": "g-3"})]
         self.assertEqual(of_grants.missing_issued({"t": [{"id": "g-1"}]}, events), [("t", "g-2")])
 
+    def test_a_kind_o1_cannot_fold_is_a_warning(self):
+        g = rule_grant(scope={"kubectl": dict(RUNNER, kinds=["Secret", "secertss",
+                                                              "externalsecrets.external-secrets.io"])})
+        self.assertEqual(of_grants.shape_problems(g), [])
+        self.assertEqual(len(of_grants.shape_warnings(g)), 1)
+        self.assertIn("'secertss'", of_grants.shape_warnings(g)[0])
+        g = rule_grant(scope={"kubectl": dict(RUNNER, kinds="secrets")})
+        self.assertTrue(of_grants.shape_problems(g))                                   # a list, as the other keys
+
     def test_a_grant_that_expired_is_a_normal_end(self):
         """A user organization, 2026-11-14: 13 time-boxed grants expired at midnight; the check failed while they
         stayed in the file ("expired"), and again once they left it ("missing from the file")."""

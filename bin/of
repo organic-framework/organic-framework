@@ -2190,6 +2190,9 @@ def cmd_registry(args):
             events = [(n, o, json.loads(p) if isinstance(p, str) else (p or {})) for n, o, p in rows]
         except Exception:  # noqa: BLE001 - no local store: nothing to compare with
             events = []
+        for org, gs in grants_by_org.items():
+            for g in gs or []:
+                problems += [f"{WARN}{org}:registry/grants.yaml: {g.get('id')}: {w}" for w in of_grants.shape_warnings(g)]
         for org, gid in of_grants.missing_issued(grants_by_org, events, _now_iso()):
             problems.append(f"{org}:registry/grants.yaml: {gid}: issued (of.grant_issued) and never revoked, but "
                             "missing from the file")

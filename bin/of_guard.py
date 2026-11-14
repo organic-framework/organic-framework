@@ -814,7 +814,7 @@ _KUBECTL_VALUE = {"-n", "--namespace", "-o", "--output", "-l", "--selector", "--
                   "--max-log-requests", "--patch", "--to-revision", "-k", "--kustomize", "--overrides",
                   "--context", "--cluster", "--user", "-f", "--filename", "--kubeconfig", "--server", "--as",
                   "--as-group", "--token", "--cache-dir", "--request-timeout", "--chunk-size", "--client-key",
-                  "--client-certificate", "--certificate-authority"}
+                  "--client-certificate", "--certificate-authority", "--raw"}
 
 
 def _positional(args, value_flags):
@@ -830,6 +830,19 @@ def _positional(args, value_flags):
     return out
 
 
+# `kubectl get --raw /api/v1/namespaces/<ns>/secrets/<name>`: the API path itself names the namespace and the kind
+_RAW_PATH = re.compile(r"^/apis?/(?:[^/?]+/)?v[^/?]*/(?:namespaces/([^/?]+)/)?([^/?]+)(?:/[^/?]+(/[^/?]+)?)?")
+
+
+def _kube_raw(args):
+    """(namespace or None, kind or None, subresource or None) of a `--raw` API path, or None without --raw."""
+    path = _opt_value(args, ("--raw",))
+    if path is None:
+        return None
+    m = _RAW_PATH.match(path)
+    return (m.group(1), m.group(2).lower(), (m.group(3) or "").strip("/") or None) if m else (None, None, None)
+
+
 def _kubectl_secret_deny(args):
     """Cluster reads that print a stored Secret's values (of_architect, 2026-11-06, after three real leaks,
     the last from a go-template/jsonpath that fell back to printing the whole object). For a Secret kind
@@ -841,6 +854,9 @@ def _kubectl_secret_deny(args):
     has_secret = any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a))
     has_pod = any(p in ("pod", "pods", "po") for a in nonopt for p in re.split(r"[,/]", a))
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0]
+    raw = _kube_raw(args)  # the API's own JSON: a Secret's values; a pod's spec with its env values (not its log)
+    if raw and (raw[1] == "secrets" or (raw[1] == "pods" and raw[2] is None)):
+        return _prints(f"kubectl {sub or ''} --raw on {raw[1]}".replace("  ", " "))
     if sub == "edit" and has_secret:
         return _prints("kubectl edit secret")
     if sub == "apply" and "view-last-applied" in args and has_secret:
@@ -2291,6 +2307,49 @@ _KIND_ALIAS = {"po": "pods", "pod": "pods", "deploy": "deployments", "deployment
                "sc": "storageclasses", "role": "roles", "rolebinding": "rolebindings", "clusterrole": "clusterroles",
                "clusterrolebinding": "clusterrolebindings"}
 _KUBE_SUBVERB = {"rollout", "set", "auth", "certificate", "config", "plugin", "apply"}
+# what `kubectl get all` lists
+_KUBE_ALL = {"pods", "services", "deployments", "replicasets", "statefulsets", "daemonsets", "jobs", "cronjobs",
+             "horizontalpodautoscalers", "replicationcontrollers"}
+_KUBE_CLUSTER = {"nodes", "namespaces", "persistentvolumes", "storageclasses", "clusterroles", "clusterrolebindings",
+                 "customresourcedefinitions", "certificatesigningrequests", "priorityclasses", "runtimeclasses",
+                 "volumeattachments", "csidrivers", "csinodes", "mutatingwebhookconfigurations",
+                 "validatingwebhookconfigurations", "apiservices", "ingressclasses", "(none)"}
+_KUBE_KNOWN = set(_KIND_ALIAS.values()) | _KUBE_ALL | _KUBE_CLUSTER | {
+    "limitranges", "resourcequotas", "podtemplates", "leases", "endpointslices", "controllerrevisions",
+    "networkpolicies", "poddisruptionbudgets", "tokenreviews", "subjectaccessreviews", "bindings", "componentstatuses"}
+# groups whose kinds are the API's own: a version and one of these is stripped (`deployments.v1.apps` is deployments)
+_KUBE_BUILTIN_GROUPS = {"", "core", "apps", "batch", "autoscaling", "policy", "networking.k8s.io",
+                        "rbac.authorization.k8s.io", "storage.k8s.io", "apiextensions.k8s.io", "certificates.k8s.io",
+                        "coordination.k8s.io", "discovery.k8s.io", "events.k8s.io", "node.k8s.io",
+                        "scheduling.k8s.io", "admissionregistration.k8s.io", "apiregistration.k8s.io",
+                        "flowcontrol.apiserver.k8s.io", "resource.k8s.io", "authentication.k8s.io",
+                        "authorization.k8s.io"}
+_KUBE_SINGULAR = {"networkpolicy": "networkpolicies", "limitrange": "limitranges", "resourcequota": "resourcequotas",
+                  "lease": "leases", "endpointslice": "endpointslices", "priorityclass": "priorityclasses",
+                  "ingressclass": "ingressclasses", "apiservice": "apiservices"}
+
+
+def fold_kind(kind):
+    """(the kind as O1 compares it, whether it is known): case, alias and singular folded, a version and a group of
+    the API's own stripped (`Secret`, `secret`, `secrets.v1` and `secrets.v1.` are secrets). A custom resource's
+    plural keeps its group (`externalsecrets.external-secrets.io` is not secrets), and counts as known, since its
+    group says what it is (of_architect, msg 01a1d7b2-a99a)."""
+    k = str(kind).strip().lower().rstrip(".")
+    name, _, rest = k.partition(".")
+    parts = [p for p in rest.split(".") if p] if rest else []
+    if parts and re.fullmatch(r"v\d+(?:(?:alpha|beta)\d+)?", parts[0]):
+        parts = parts[1:]
+    group = ".".join(parts)
+    name = _KUBE_SINGULAR.get(name, _KIND_ALIAS.get(name, name))
+    if group in _KUBE_BUILTIN_GROUPS:
+        return name, name in _KUBE_KNOWN
+    return f"{name}.{group}", True
+
+
+def _kind_matches(want, have):
+    """A rule's folded kind against a call's: equal, or the same plural where the call names no group (calls rarely
+    do: `get externalsecrets` is externalsecrets.external-secrets.io's)."""
+    return want == have or ("." in want and "." not in have and want.split(".", 1)[0] == have)
 _KUBE_POD_VERBS = {"exec", "attach", "cp", "logs", "port-forward", "debug"}
 
 
@@ -2301,10 +2360,20 @@ def _kube_kinds(verb, pos, cut):
     sub = pos[1] if verb in _KUBE_SUBVERB and len(pos) > 1 and not (verb == "apply" and pos[1] != "view-last-applied") \
         else None
     label, rest = (f"{verb} {sub}", pos[2:]) if sub else (verb, pos[1:])
+    raw = _kube_raw(cut)
+    if raw is not None:
+        return label, [fold_kind(raw[1])[0]] if raw[1] else ["(none)"]
+    if verb == "run":
+        return label, ["pods"]
+    if verb == "create" and rest[:1] == ["token"]:
+        return label, ["serviceaccounts"]
     if verb in _KUBE_POD_VERBS:
         tgt = next((a for a in rest if ":" in a), "") if verb == "cp" else (rest[0] if rest else "")
-        if verb != "cp" and "/" in tgt:
+        if verb != "cp" and "/" in tgt:  # `logs deploy/x`, `port-forward svc/x`: through that kind to its pods
             first = tgt.split("/")[0]
+            if first and "$" not in first and re.match(r"^[A-Za-z][\w.-]*$", first):
+                return label, sorted({fold_kind(first)[0], "pods"})
+            return label, ["unparsed"]
         else:
             return label, ["pods"] if tgt else ["unparsed"]
     elif verb in ("cordon", "uncordon", "drain"):
@@ -2319,7 +2388,7 @@ def _kube_kinds(verb, pos, cut):
                                             for a in cut) else "(none)"]
     if not first or "$" in first or "__OFSUB__" in first or not re.match(r"^[A-Za-z][\w.,-]*$", first):
         return label, ["unparsed"]
-    return label, [_KIND_ALIAS.get(k.lower(), k.lower()) for k in first.split(",") if k]
+    return label, [fold_kind(k)[0] for k in first.split(",") if k]
 
 
 def _kubectl_call(args, env):
@@ -2341,7 +2410,8 @@ def _kubectl_call(args, env):
         (verb == "version" and any(a.startswith("--client") for a in cut))
     label, kinds = _kube_kinds(verb, pos, cut) if verb else (None, [])
     run = args[args.index("--") + 1:] if verb == "exec" and "--" in args else None  # what runs in the pod
-    return {"verb": verb, "targets": targets, "namespace": _opt_value(cut, ("-n", "--namespace")), "exec_argv": run,
+    namespace = _opt_value(cut, ("-n", "--namespace")) or (_kube_raw(cut) or (None,))[0]
+    return {"verb": verb, "targets": targets, "namespace": namespace, "exec_argv": run,
             "all_namespaces": any(a in ("-A", "--all-namespaces") for a in cut), "verb_label": label, "kinds": kinds,
             "config": _norm_path(cfg), "config_from": src, "context": _opt_value(cut, ("--context",)),
             "user": _opt_value(cut, ("--user",)), "local": local}
@@ -2408,8 +2478,15 @@ def kubectl_rule_match(match, call):
     verbs: [exec, …]            the call's verb is one of them;
     pods: ["runner-*"]          a target pod name matches a glob (a name held in a variable never matches);
     namespaces: [runners-jobs]
-                                the call names one of these namespaces with -n/--namespace (a pod name held in a
-                                variable is still seen; a call that relies on the kubeconfig's namespace is not);
+                                the call names one of these namespaces with -n/--namespace or in a --raw API path,
+                                reads every namespace (-A), or names none and so relies on the kubeconfig's, which
+                                the guard does not read, unless all its kinds are cluster-scoped (of_architect,
+                                2026-11-14; a pod name held in a variable is still seen);
+    kinds: [secrets, pods]      the call's resource kinds include one, both sides folded (`fold_kind`); `run`, `exec`
+                                and the other verbs into a pod are pods, through another kind too (`logs deploy/x`);
+                                `create token` is serviceaccounts; `get all` is the kinds it lists; a --raw path its
+                                own kind; a kind held in a variable or read from a file (-f, -k) counts as a match:
+                                a false positive over a miss (a user organization's signing-key Secrets, 2026-11-14);
     admin: {configs: [~/.kube/config], contexts: [...], users: [...]}
                                 the call reaches the cluster (not a local verb) with one of these credentials:
                                 the kubeconfig in effect (flag, KUBECONFIG, else the default), --context or --user.
@@ -2425,9 +2502,25 @@ def kubectl_rule_match(match, call):
     if verbs is not None and call["verb"] not in verbs:
         return None
     if match.get("namespaces") is not None:
-        if call["namespace"] not in match["namespaces"]:
+        if call["namespace"] in match["namespaces"]:
+            said.append(f"kubectl {call['verb']} in namespace {call['namespace']}")
+        elif call.get("all_namespaces"):
+            said.append(f"kubectl {call['verb']} in every namespace (-A)")
+        elif call["namespace"] is None and not set(call.get("kinds") or ["(none)"]) <= _KUBE_CLUSTER:
+            # the kubeconfig's namespace, which the guard does not read: it may be one of these (of_architect)
+            said.append(f"kubectl {call['verb']} with no -n, so the kubeconfig's namespace (give -n)")
+        else:
             return None
-        said.append(f"kubectl {call['verb']} in namespace {call['namespace']}")
+    if match.get("kinds") is not None:
+        want = {fold_kind(k)[0] for k in match["kinds"]}
+        have = set(call.get("kinds") or [])
+        if "all" in have:
+            have |= _KUBE_ALL
+        hit = sorted(h for h in have if any(_kind_matches(w, h) for w in want)) or \
+            sorted(have & {"unparsed", "(from file)"})
+        if not hit:
+            return None
+        said.append(f"kubectl {call['verb']} on {', '.join(hit)}")
     if pods is not None:
         hit = next((t for t in call["targets"] if any(fnmatch.fnmatchcase(t, str(g)) for g in pods)), None)
         if not hit:

@@ -345,6 +345,18 @@ def verify_chain(grant, by_subject, key, now_iso, depth=0):
     return False, last
 
 
+def shape_warnings(grant):
+    """What `of registry check` warns of in a well-formed grant: a kubectl kind O1 cannot fold matches nothing, so a
+    typo would be a rule that never fires (of_architect, msg 01a1d7b2-a99a)."""
+    kinds = ((grant.get("scope") or {}).get("kubectl") or {}).get("kinds") if isinstance(
+        (grant.get("scope") or {}).get("kubectl"), dict) else None
+    if not _str_list(kinds):
+        return []
+    import of_guard
+    return [f"scope kubectl.kinds: {k!r} is no kind O1 knows; give its plural, with its group if it is a custom "
+            "resource (a typo matches nothing)" for k in kinds if not of_guard.fold_kind(k)[1]]
+
+
 def ended(why):
     """Is a check's reason a grant's own normal end rather than a fault? Expiry is: the grant did what it was issued
     for, and `of registry check` only says it may leave the file."""
@@ -402,7 +414,7 @@ def verify_request(grants_by_org, key, now_iso, grant_id, subject, action=None):
 
 # ------------------------------------------------- organization rules (deny grants; docs/registry.md)
 
-RULE_KEYS = ("verbs", "pods", "namespaces", "admin", "allow_exec")
+RULE_KEYS = ("verbs", "pods", "namespaces", "kinds", "admin", "allow_exec")
 ADMIN_KEYS = ("configs", "contexts", "users")
 GUARD_STATE = "guard-grants.json"
 
@@ -450,7 +462,7 @@ def shape_problems(grant):
         if not isinstance(k, dict) or not k or set(k) - set(RULE_KEYS):
             out.append(f"scope kubectl takes only {', '.join(RULE_KEYS)}")
         else:
-            for key in ("verbs", "pods", "namespaces"):
+            for key in ("verbs", "pods", "namespaces", "kinds"):
                 if key in k and not _str_list(k[key]):
                     out.append(f"scope kubectl.{key} is a list of strings")
             ax = k.get("allow_exec")
