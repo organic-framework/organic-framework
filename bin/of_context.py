@@ -6,6 +6,9 @@ organization, system, role), the current mandate (summary, status, throughput, s
 (cut to a limit), the organization's binding rules (AGENTS.md sections), and the team (the other
 positions of the organization, with what each does now). Recording is unaffected; this only adds
 context, and only for enrolled positions.
+
+A position that owns or does a work whose loop target the owner decided (docs/registry.md, Works, "The owner's
+measure") is told so: the target, the id of that yes, and that its money is reported, never asked for as a proof.
 """
 
 import os
@@ -46,8 +49,24 @@ def rules(agents_md, limit=RULES_MAX):
     return out[:limit] + ("\n…" if len(out) > limit else "") if out else None
 
 
-def build(position, positions):
-    """additionalContext for one enrolled position, or None."""
+def owner_measures(loops):
+    """Lines naming each loop whose target the owner decided, from [(work id, owner|doer, loop)]."""
+    import of_loop
+    out = []
+    for wid, role, loop in loops or []:
+        if of_loop.decided(loop):
+            out.append(f"- `{wid}` (you are its {role}): {of_loop.target_line(loop)}.")
+    if not out:
+        return []
+    return (["", "## Loops whose measure the owner decided"] + out
+            + ["The measure itself justifies the work's changes. Report cost and money beside it; never ask the owner, "
+               "or relay an ask, to price, justify or prove it in money. The plateau question and every gate on an act "
+               "stay (docs/registry.md, Works, \"The owner's measure\")."])
+
+
+def build(position, positions, loops=None):
+    """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
+    or does (bin/of position_loops)."""
     p = next((x for x in positions if x["name"] == position), None)
     if not p or not p.get("enrolled"):
         return None
@@ -69,6 +88,7 @@ def build(position, positions):
         lines.append("- management functions covered: " + ", ".join(map(str, p["mandate_functions"])))
     if p.get("waiting_on"):
         lines.append(f"- registry says you wait on: {p['waiting_on']}")
+    lines += owner_measures(loops)
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
     if brief:
         lines += ["", "## Brief", brief.strip()]

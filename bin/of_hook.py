@@ -1345,7 +1345,12 @@ def _mandate_context(hook, index, sess):
     of = importlib.util.module_from_spec(spec)
     loader.exec_module(of)
     positions, _ = of.load_positions(os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
-    ctx = of_context.build(name, positions)
+    me = next((p for p in positions if p.get("name") == name), None)
+    try:  # the works it owns or does with a loop: a target the owner decided is named (docs/registry.md, Works)
+        loops = of.position_loops(me, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")) if me else []
+    except Exception:  # noqa: BLE001 - an unreadable registry or loop.yaml never costs the session its context
+        loops = []
+    ctx = of_context.build(name, positions, loops)
     if not ctx:
         return
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
