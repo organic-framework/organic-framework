@@ -29,11 +29,19 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
   guard's probe in each config dir and a look at its orgs.yaml, and asks launchd for the daemons.
 - `plan` (the default) prints what `apply` would do and changes nothing.
 
-  sudo python3 deploy/host/plane.py plan  --org-user of:organic-framework-build=<of's home>/organic-framework-build
-  sudo python3 deploy/host/plane.py apply --org-user of:organic-framework-build=<of's home>/organic-framework-build \\
-                                          --org-user acme:acme=<acme's home>/acme-org --claude-dir acme:.claude-a
-  sudo python3 deploy/host/plane.py deploy --commit <full hash> --smoke-as of --org-user of:... --org-user acme:...
-  sudo python3 deploy/host/plane.py start|stop|check --org-user ...
+Run it with Apple's python from the release checkout, which the trust check covers. The first time there is no
+checkout yet: clone the public repository into a folder root alone owns, with root's git running no hook, and deploy
+from there; every later run is from /opt/organic-framework:
+
+  sudo /bin/mkdir -m 700 /var/root/of-bootstrap
+  sudo /usr/bin/git -c core.hooksPath=/dev/null clone -q https://github.com/organic-framework/organic-framework.git \\
+       /var/root/of-bootstrap/organic-framework
+  sudo /usr/bin/python3 /var/root/of-bootstrap/organic-framework/deploy/host/plane.py deploy --commit <full hash> \\
+       --smoke-as of --org-user of:organic-framework-build=<of's home>/organic-framework-build \\
+       --org-user acme:acme=<acme's home>/acme-org
+  sudo /usr/bin/python3 /opt/organic-framework/deploy/host/plane.py plan  --org-user ... [--claude-dir acme:.claude-a]
+  sudo /usr/bin/python3 /opt/organic-framework/deploy/host/plane.py apply --org-user ... [--claude-dir ...]
+  sudo /usr/bin/python3 /opt/organic-framework/deploy/host/plane.py start|stop|check --org-user ...
 
 The owner's remote view (B4: saved herdr machines `of@localhost` and `acme@localhost` under the admin user, for the
 phone) is in docs/remote-access.md, "A separate agent host".
