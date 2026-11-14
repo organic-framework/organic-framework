@@ -94,7 +94,7 @@ works:
   ```
 
   It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events (cbx runs), `of loop` derives them instead of asking the doer.
-- **A decision is one `of.loop_decision` event:** keep, drop, step up a rung, step back (reframe), or change the objective. A change of objective must name its money metric (§6), or, on a target the owner decided, the owner's yes on the new measure (§4.2).
+- **A decision is one `of.loop_decision` event:** keep, drop, park, reopen, step up a rung, step back (reframe), or change the objective. `reopen` puts a parked or dropped hypothesis back to `open`, with a note that names what changed or whose word reopened it (2026-11-14: a user organization's owner revived a parked hypothesis, and it was recorded as `keep`, which reads as a hypothesis that won and counts in the hit rate). A change of objective must name its money metric (§6), or, on a target the owner decided, the owner's yes on the new measure (§4.2).
 - **The next experiment is chosen by value of information per cost.** The register shows the open hypotheses in that order, so the doer and the owner see why the next one is next. The cost is the rung's runner-hours, the evaluation's time; it is never money or tokens.
 
 ### 4.2 The owner's measure (2026-11-14)
