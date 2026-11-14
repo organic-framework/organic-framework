@@ -332,7 +332,8 @@ class MovePieces(unittest.TestCase):
                                          "/Users/alex/.local/state/of/capacity/moves/of_field-analyst-20261106T103000Z.md",
                                          model="claude-opus-5-5", effort="high")
         self.assertIn("CLAUDE_CONFIG_DIR=/Users/alex/.claude-e claude --resume 0b1e2c3d-4a5b-4c6d-8e7f-90a1b2c3d4e5", cmd)
-        self.assertIn("-n of_field-analyst --model claude-opus-5-5 --effort high --dangerously-skip-permissions", cmd)
+        self.assertIn("-n of_field-analyst --settings ", cmd)
+        self.assertIn("--model claude-opus-5-5 --effort high --dangerously-skip-permissions", cmd)
         self.assertLess(len(cmd.encode()), 1024)  # macOS canonical line limit for `herdr pane run`
         home = os.path.expanduser("~")
         cmd = of_capacity.launch_command("/w", os.path.join(home, ".claude"), "sid", "n", "/note")
@@ -2567,9 +2568,9 @@ class PositionMemory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
                                              memory_dir="/s/memory/acme/net_keeper", state_dir=t)
-            self.assertEqual(self.settings_of(cmd), {"autoMemoryDirectory": "/s/memory/acme/net_keeper"})
+            self.assertEqual(self.settings_of(cmd), {"feedbackDrafts": "off",
+                                                     "autoMemoryDirectory": "/s/memory/acme/net_keeper"})
             self.assertEqual(of_capacity.flags_from_args(cmd)[3], "/s/memory/acme/net_keeper")
-        self.assertNotIn("--settings", of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md"))
 
     def test_launch_command_carries_the_credential_deny_rules_in_a_file(self):
         # of_platform, 2026-11-11: of spawn writes the deny rules; a move or resume must keep them. In a
@@ -2579,12 +2580,23 @@ class PositionMemory(unittest.TestCase):
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
                                              memory_dir="/s/m", deny=deny, state_dir=t)
             self.assertLess(len(cmd.encode()), 1024)
-            self.assertEqual({"autoMemoryDirectory": "/s/m", "permissions": {"deny": deny}}, self.settings_of(cmd))
+            self.assertEqual({"feedbackDrafts": "off", "autoMemoryDirectory": "/s/m", "permissions": {"deny": deny}},
+                             self.settings_of(cmd))
             path = shlex.split(cmd.split("--settings ", 1)[1])[0]
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             only = of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md", deny=["Read(/k/**)"],
                                               state_dir=t)
-            self.assertEqual({"permissions": {"deny": ["Read(/k/**)"]}}, self.settings_of(only))
+            self.assertEqual({"feedbackDrafts": "off", "permissions": {"deny": ["Read(/k/**)"]}},
+                             self.settings_of(only))
+
+    def test_every_launch_keeps_feedback_drafts_off_as_spawn_does(self):
+        # PR 185 (of_review): a session spawned with drafts off had them on again after its first move, and a
+        # queued draft is what held up a production keeper's /exit on 2026-11-14.
+        with tempfile.TemporaryDirectory() as t:
+            for kw in ({}, {"memory_dir": "/s/m"}, {"deny": ["Read(/k/**)"]},
+                       {"tools": (["--mcp-config", "/t.json"], {"allowedMcpServers": [{"serverName": "x"}]})}):
+                cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md", state_dir=t, **kw)
+                self.assertEqual(self.settings_of(cmd).get("feedbackDrafts"), "off", kw)
 
     def test_deny_for_follows_spawn_and_fails_open_to_the_guard(self):
         from unittest import mock
