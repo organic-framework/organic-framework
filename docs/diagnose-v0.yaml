@@ -118,14 +118,20 @@ rules:
     remedies: [deputy or published interface for its most frequent request, split its interfaces]
 
   missing-verifier:
-    version: 0                   # built 2026-11-14 on of.founder_correction (of.correction was never recorded; diagnose.md 2.9)
+    version: 1                   # v1 (2026-11-14): part answers, a position with no merged work against the owner's prompts (mandate 5; diagnose.md 2.9); v0 (2026-11-14): built on of.founder_correction (of.correction was never recorded)
+    labels_carry_from: [0]       # part results is v0's detection, unchanged
     p: 0.6
     m_decide: 5
-    thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3, correction_kinds: [output, fact]}
-    needs: [of.founder_correction, of.work_record, wr.position]   # work-record relations (reverts, fixes) will add code rework
+    thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3, correction_kinds: [output, fact],
+                 answers_corrections_per_prompt_gte: 0.05}   # a hypothesis from the first week (of_conductor 0.08), for the structure keeper's labels
+    needs:                       # work-record relations (reverts, fixes) will add code rework; answers needs the work records to know a position merged none
+      results: [of.founder_correction, of.work_record, wr.position]
+      answers: [of.founder_correction, of.human_prompt, of.work_record, wr.position]
     decider: structure_keeper    # its remedies, a review step or a verifier position, are structure changes (as chatty@2)
     delta_m: "owner correction prompts on the position x minutes_per_prompt"
-    remedies: [cross-model review before results reach the owner or production, verifier position]
+    remedies:
+      results: [cross-model review before results reach the owner or production, verifier position]
+      answers: ["a check before an answer reaches the owner: a second model reads it against its sources, and where each reading in it was taken", verifier position for the class of answers]
 
   chatty:
     version: 3                   # v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs (diagnose.md 2.10); v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)

@@ -596,8 +596,8 @@ class CorrectionRulesTest(unittest.TestCase):
         prs = [self.pr(i, "bot_search") for i in range(5)]
         other = [self.pr(9, "bot_operator", 1)]   # the repository's reviews are submitted ones
         got, st = self.found("missing-verifier", prs + other + fixes)
-        self.assertEqual([(i["affected"], i["rule_version"], i["decider"]) for i in got],
-                         [(["bot_search"], "ap.missing-verifier@0", "structure_keeper")])
+        self.assertEqual([(i["affected"], i["rule_version"], i["decider"], i["part"]) for i in got],
+                         [(["bot_search"], "ap.missing-verifier@1", "structure_keeper", "results")])
         e = got[0]["evidence"]
         self.assertEqual((e["corrections_n"], e["merged"], e["reviews_known"], e["rework_per_merged"]), (3, 5, 5, 0.6))
         self.assertEqual([c["kind"] for c in e["corrections"]], ["output", "fact", "output"])
@@ -625,7 +625,37 @@ class CorrectionRulesTest(unittest.TestCase):
                                                   "work to weigh them against"]))
         # blocked until the owner's corrections are recorded
         _, st = self.found("missing-verifier", prs)
-        self.assertEqual((st["status"], st["missing"]), ("blocked", ["of.founder_correction"]))
+        self.assertEqual((st["status"], st["missing"]), ("blocked", ["of.founder_correction", "of.human_prompt"]))
+
+    def test_missing_verifier_answers(self):
+        """Part answers (mandate 5): a position with no merged work, against the owner's prompts in its sessions
+        (of_architect's denominator, relay msg 01a1daab-63fd)."""
+        asked = [prompt(f"hp{k}", f"2026-11-0{1 + k % 4}T{8 + k // 4:02d}:00Z", "s-bot_search", "check the pool")
+                 for k in range(40)]
+        fixes = [self.fix(1, "2026-11-01T10:30Z", "bot_search", "output"), self.fix(2, "2026-11-02T10:30Z", "bot_search", "fact"),
+                 self.fix(3, "2026-11-03T10:30Z", "bot_search", "output"), self.fix(4, "2026-11-03T11:30Z", "bot_search", "method")]
+        others = [self.pr(i, "bot_operator", 1) for i in range(3)]   # merged work exists, none of it bot_search's
+        got, st = self.found("missing-verifier", others + asked + fixes)
+        self.assertEqual([(i["affected"], i["part"], i["rule_version"]) for i in got],
+                         [(["bot_search"], "answers", "ap.missing-verifier@1")])
+        e = got[0]["evidence"]
+        self.assertEqual((e["corrections_n"], e["owner_prompts"], e["corrections_per_prompt"], e["merged"]), (3, 40, 0.075, 0))
+        self.assertEqual(got[0]["summary"], "bot_search: 3 of the owner's corrections of its results in 40 of his prompts "
+                         "to it (8%); it merged no work, and no review of its answers is recorded")
+        self.assertIn("a second model reads it against its sources", got[0]["remedies"][0])
+        # quiet: 3 in 100 prompts (3%); corrections of its method only; the same position once it merged work (part results)
+        more = asked + [prompt(f"hq{k}", f"2026-11-04T{k % 12 + 8:02d}:{k // 12:02d}Z", "s-bot_search", "and now?")
+                        for k in range(60)]
+        method = [self.fix(10 + k, f"2026-11-0{1 + k}T10:30Z", "bot_search", "method") for k in range(4)]
+        for quiet in (others + more + fixes, others + asked + method,
+                      others + asked + fixes + [self.pr(9, "bot_search", 1)]):
+            q, st = self.found("missing-verifier", quiet)
+            self.assertEqual((q, st["status"]), ([], "quiet"))
+        # without the owner's prompts the part is blocked; part results still runs and notes the position
+        q, st = self.found("missing-verifier", others + fixes)
+        self.assertEqual((q, st["parts_blocked"], st["notes"]),
+                         ([], {"answers": ["of.human_prompt"]},
+                          ["bot_search: 3 of the owner's corrections of its results, and no merged work to weigh them against"]))
 
 
 class ChattyInjectedTest(unittest.TestCase):

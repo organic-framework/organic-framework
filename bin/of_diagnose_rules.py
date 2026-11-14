@@ -820,10 +820,14 @@ def rule_context_overload(model, rows, a, b, cat, spec):
     return out
 
 
-def rule_missing_verifier(model, rows, a, b, cat, spec):
-    """v0, built 2026-11-14 on of.founder_correction. The owner keeps correcting a position's results (corrections of
-    kind output or fact) against its merged work, and none of that work has a submitted review: its wrong results reach
-    him first. The review count (`reviews` on the work record) counts submitted reviews only; a verdict posted as a
+def rule_missing_verifier(model, rows, a, b, cat, spec, parts=("results", "answers")):
+    """Part results (v0, built 2026-11-14 on of.founder_correction): the owner keeps correcting a position's results
+    (corrections of kind output or fact) against its merged work, and none of that work has a submitted review: its
+    wrong results reach him first. Part answers (v1, 2026-11-14, mandate 5): a position with no merged work, whose results
+    are its answers, against the owner's own prompts in its sessions; the denominator is of_architect's decision (relay
+    msg 01a1daab-63fd): prompts are recorded where they happen, while "answers that relay a conclusion" would need a
+    classifier's label, itself a proxy. No review of an answer is recorded, so that part cannot read review evidence and
+    says so. The review count (`reviews` on the work record) counts submitted reviews only; a verdict posted as a
     comment, as this framework's own pull requests get, is not read. So a repository none of whose merged PRs in the
     window has a submitted review says nothing either way (PR 176 review). Reverts and fixes between work records
     (docs/events.md, backlog item 10) are not recorded yet, so they add nothing. A position with no merged work, or none
@@ -848,14 +852,36 @@ def rule_missing_verifier(model, rows, a, b, cat, spec):
         if who and repo in submits:
             known[who] += 1
             reviewed[who] += n > 0
+    prompts = collections.Counter()   # the owner's own prompts in each position's sessions (part answers)
+    if "answers" in parts:
+        sp = of_model.session_positions(model, rows)
+        for r in rows:
+            if r["name"] == "of.human_prompt" and of_model.in_window(r, a, b) and of_model.owner_prompt(r):
+                pos = r.get("position") if r.get("position") in positions else sp.get(r.get("session_id"))
+                if pos:
+                    prompts[pos] += 1
     out, notes = [], []
     for pos, cs in sorted(owner_corrections(model, rows, a, b).items()):
         mine = [c for c in cs if (c.get("payload") or {}).get("kind") in kinds]
         n, w = len(mine), merged.get(pos, 0)
         if n < t.get("corrections_gte", 3) or reviewed[pos]:
             continue
+        if not w and "answers" in parts:
+            k = prompts.get(pos, 0)
+            if not k or n / k < t.get("answers_corrections_per_prompt_gte", 0.05):
+                continue
+            ev = {"corrections": [_correction(c) for c in mine][-10:], "corrections_n": n, "owner_prompts": k,
+                  "corrections_per_prompt": round(n / k, 3), "merged": 0, "reviews": "not recorded for answers",
+                  "since": mine[0]["ts"]}
+            out.append(issue(cat, "missing-verifier", [pos], ev,
+                             f"{pos}: {n} of the owner's corrections of its results in {k} of his prompts to it "
+                             f"({round(100 * n / k)}%); it merged no work, and no review of its answers is recorded",
+                             delta_m=n * mpp, part="answers"))
+            continue
         if not w:
             notes.append(f"{pos}: {n} of the owner's corrections of its results, and no merged work to weigh them against")
+            continue
+        if "results" not in parts:
             continue
         if n / w < t.get("rework_per_wr_gte", 0.2):
             continue
@@ -870,7 +896,7 @@ def rule_missing_verifier(model, rows, a, b, cat, spec):
                          f"{pos}: {n} of the owner's corrections of its results against {w} merged changes "
                          f"({round(100 * n / w)}%), and none has a submitted review"
                          + ("" if known[pos] == w else f" (of the {known[pos]} that can show one)"),
-                         delta_m=n * mpp))
+                         delta_m=n * mpp, part="results"))
     return out, [], notes
 
 
