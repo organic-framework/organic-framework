@@ -164,6 +164,39 @@ class SshRuleTest(unittest.TestCase):
                     "autossh -M 0 -N us", "/usr/bin/ssh -p 22 us", "timeout 5 ssh -tt us", "bash -c 'ssh us'"):
             self.assertTrue(self.hit(cmd), cmd)
 
+    def test_option_clusters_are_read_the_getopt_way(self):
+        """of_review and of_secrets-review on organic-framework PR 152: `-vp 22 us` took 22 for the destination."""
+        for cmd in ("ssh -vp 22 us", "ssh -vl root us", "ssh -vi ~/.ssh/k us", "ssh -4vJ other us", "ssh -P tag us",
+                    "autossh -M 0 -vp 22 us", "sftp -vP 22 us", "ssh -4p 22 us", "ssh -Ap 2222 us",
+                    "rsync -avze 'ssh -J us' f ok.example.org:/tmp", "ssh us."):
+            self.assertTrue(self.hit(cmd), cmd)
+        self.assertEqual(self.hit("ssh -4vJ gw1 other"), ["ssh via the jump host gw1"])
+        self.assertEqual(self.hit("ssh -vp 22 other"), [])
+
+    def test_the_configs_own_jumps_and_what_hides_them(self):
+        """of_secrets-review on PR 152: a bastion alias's ProxyJump reached a denied host; a FIFO given to -F hung the
+        hook; a Match block can send an alias anywhere."""
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory() as t:
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host bastion-alias\n  HostName ok.example.org\n  ProxyJump us\n"
+                         "Host viacmd\n  ProxyCommand ssh -W %h:%p gw7\n")
+            hit = lambda cmd: self.hit(cmd, resolver=of_guard.ssh_resolver)  # noqa: E731
+            self.assertEqual(hit(f"ssh -F {cfg} bastion-alias"), ["ssh to bastion-alias (via the jump host us)"])
+            self.assertEqual(hit(f"ssh -F {cfg} viacmd"), ["ssh to viacmd (in its ProxyCommand gw7)"])
+            self.assertEqual(hit(f"ssh -F {cfg} plain.example.org"), [])
+            match = os.path.join(t, "match")
+            with open(match, "w") as fh:
+                fh.write("Match host mm\n  HostName us\n")
+            self.assertIn("a Match block sets hostname", hit(f"ssh -F {match} mm")[0])
+            fifo = os.path.join(t, "fifo")
+            os.mkfifo(fifo)
+            t0 = time.time()
+            self.assertIn("not a plain file", hit(f"ssh -F {fifo} anywhere")[0])
+            self.assertLess(time.time() - t0, 2)                                         # never blocks
+
     def test_an_alias_is_folded_to_its_hostname(self):
         self.assertEqual(self.hit("ssh us-alias"), ["ssh to us-alias (HostName 192.0.2.5)"])
         self.assertEqual(self.hit("ssh fra uptime"), ["ssh to fra (HostName fra.example.net)"])
@@ -210,7 +243,7 @@ class SshRuleTest(unittest.TestCase):
                 fh.write("Host US us-east\n  HostName 192.0.2.5\n  IdentityFile ~/.ssh/shared\n")
             cfg = os.path.join(t, "config")
             with open(cfg, "w") as fh:
-                fh.write(f"Include {inc}\nMatch exec \"touch {t}/ran\"\n  HostName 192.0.2.5\n"
+                fh.write(f"Include {inc}\nMatch exec \"touch {t}/ran\"\n  User nobody\n"
                          "Host !secret *.corp\n  HostName %h.example.net\nHost *\n  ServerAliveInterval 30\n")
             resolve = of_guard.ssh_resolver(cfg)
             self.assertEqual(resolve("us-east"), "192.0.2.5")
