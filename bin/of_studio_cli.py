@@ -58,7 +58,11 @@ def _model(args, rows=None):
     all_orgs = of_studio.orgs()
     rows = of_studio.org_rows(rows if rows is not None else _rows(of_model.iso(at - 9 * 86400)), org,
                               [o for o in all_orgs if o["name"] != org["name"]])
-    return org, of_model.build(doc, rows, at=at, org=org["name"], rev=rev, window_h=7 * 24), rows
+    m = of_model.build(doc, rows, at=at, org=org["name"], rev=rev, window_h=7 * 24)
+    # every row here is the local store's: the asks from the listener's view, as Studio's pages read them
+    import of_measures
+    of_measures.attach_asks_view(m, rows, of_measures.view_asks())
+    return org, m, rows
 
 
 # ------------------------------------------------------------------ printing
@@ -523,15 +527,11 @@ def _activity(args):
 
 
 def _ask_ids():
-    try:
-        import of_store
-        conn = of_store.connect()
-        try:
-            return {x for (x,) in conn.execute("SELECT event_id FROM event WHERE name IN (?, ?)", of_model.ASK_KINDS)}
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001 — no store: ask ids not checked
-        return None
+    """Every ask's event id, from the listener's asks view (of_measures.view_asks); None when this host keeps none:
+    the ask ids under `confirmed:` are then not checked."""
+    import of_measures
+    v = of_measures.view_asks()
+    return {a["event_id"] for a in v["asks"]} if v else None
 
 
 def cmd_activity(args):
@@ -587,6 +587,7 @@ def coupling_input(args):
                               [o for o in of_studio.orgs() if o["name"] != org["name"]])
     rows = [r for r in rows if (of_model.epoch(r.get("ts")) or 0) <= b]
     m = of_model.build(doc, rows, at=b, org=org["name"], rev=rev, window_h=max(1, args.days) * 24)
+    of_measures.attach_asks_view(m, rows, of_measures.view_asks())
     works = of_works.rows_for(m, rows, org, b, of_measures.attention(m, rows, b))
     hs = of_handover.project([r for r in rows if str(r.get("name")).startswith("of.handover_")])
     return org, of_model.structure_input(m, rows, a, b, works, hs.values(), of_measures.asks_routed(m, rows))
@@ -632,15 +633,31 @@ def _tell(to, text):
         print(f"of model escalations: could not tell {to}: {exc}", file=sys.stderr)
 
 
-def _escalations_done(org):
-    """{(delegation, condition, evidence)} already recorded as of.escalation_due for the organization: one indexed read
-    of that event name, not the window."""
+ESCALATION_KEEP_S = 90 * 86400   # records written before their ids were fixed are matched by content this far back
+
+
+def escalation_id(org, x):
+    """The fixed id of one escalation's record (of_events.stable_id): the same on every machine and every run."""
+    import of_events
+    return of_events.stable_id("escalation_due", org, x["delegation"], x["condition"], *x["evidence"])
+
+
+def _escalations_done(org, esc=(), now=None):
+    """{(delegation, condition, evidence)} already recorded as of.escalation_due for the organization, among the
+    escalations `esc`: looked up by their fixed ids, and, for records written before 2026-11-14 with an id of their own,
+    by content over the last ESCALATION_KEEP_S. Never the whole log."""
     try:
         import of_store
-        rows = of_store.connect().execute("SELECT payload, org FROM event WHERE name = 'of.escalation_due'").fetchall()
+        conn = of_store.connect()
+        ids = {escalation_id(org, x): (x["delegation"], x["condition"], tuple(x["evidence"])) for x in esc}
+        found = {e for (e,) in conn.execute(f"SELECT event_id FROM event WHERE event_id IN ({','.join('?' * len(ids))})",
+                                            list(ids))} if ids else set()
+        since = of_model.iso((now or time.time()) - ESCALATION_KEEP_S)
+        rows = conn.execute("SELECT payload, org FROM event WHERE name = 'of.escalation_due' AND ts >= ?", (since,)).fetchall()
+        conn.close()
     except Exception:  # noqa: BLE001 — no store: nothing recorded
         return set()
-    out = set()
+    out = {ids[e] for e in found}
     for pl, o in rows:
         try:
             p = json.loads(pl) if pl else {}
@@ -814,7 +831,7 @@ def cmd_escalations(args):
                 _escalations_stale(org["name"], age, b)
             return 0
         _escalations_stale(org["name"], age, b, fresh=True)   # the episode, if any, is over
-        done = _escalations_done(org["name"])
+        done = _escalations_done(org["name"], esc, b)
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
         diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
@@ -829,7 +846,7 @@ def cmd_escalations(args):
             import of_events
             of_events.emit("escalation_due", {"delegation": x["delegation"], "unit": x["unit"], "condition": x["condition"],
                                               "from_owner": x["to_owner"], "to": x["from_owner"], "evidence": x["evidence"]},
-                           position=x["to_owner"], org=org["name"])
+                           event_id=escalation_id(org["name"], x), position=x["to_owner"], org=org["name"])
             written += 1
     if args.json:
         print(json.dumps(esc, indent=1, ensure_ascii=False))

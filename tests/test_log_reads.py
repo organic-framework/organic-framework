@@ -63,7 +63,6 @@ ALLOWED = {
     ('of_listen.py', 'load_state', 'of_asks.load(conn)'): ASKS,
     ('of_listen.py', 'step', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
     ('of_listen.py', 'prepare', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
-    ('of_model.py', 'load_events', "SELECT event_id, payload FROM event WHERE name = 'of.prompt_"): STUDIO,
     ('of_paste.py', 'pending', "SELECT json_extract(payload, '$.prompt_id') FROM event WHERE"): RARE,
     ('of_pulse.py', 'load_rows', 'SELECT event_id, ts, name, session_id, position, payload, or'): CONST,
     ('of_pulse.py', 'current_asks', 'of_asks.load(conn or of_store.connect())'): ASKS,
@@ -81,10 +80,7 @@ ALLOWED = {
     ('of_studio.py', 'pr_state_rows', "of_model.load_events(of_store.connect(), names=('of.pr_state"): STUDIO,
     ('of_studio.py', 'diff_rows', "of_model.load_events(of_store.connect(), names=('of.diff_app"): STUDIO,
     ('of_studio.py', 'loop_rows', 'of_model.load_events(conn, names=of_loops.KINDS)'): STUDIO,
-    ('of_studio.py', 'ask_ids', 'SELECT event_id FROM event WHERE name IN (?, ?)'): STUDIO,
     ('of_studio_cli.py', 'cmd_corrections', "of_model.load_events(conn, names=('of.founder_correction',))"): STUDIO,
-    ('of_studio_cli.py', '_escalations_done', "SELECT payload, org FROM event WHERE name = 'of.escalation_d"): STUDIO,
-    ('of_studio_cli.py', '_ask_ids', 'SELECT event_id FROM event WHERE name IN (?, ?)'): STUDIO,
     ('of_tools.py', 'usage', 'SELECT session_id, position FROM event WHERE position IS NOT'): RARE,
 }
 
