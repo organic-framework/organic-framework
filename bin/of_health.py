@@ -84,6 +84,37 @@ def server_health(url=None, timeout=20.0, opener=None):
         return None
 
 
+def server_checks(url=None, timeout=5.0, opener=None, token=None):
+    """of-server's own checks (GET /v1/health/checks, an authenticated endpoint; docs/health.md §3), as {check: record}
+    with the limit as [degraded, failed] and source "of-server", or {} when it does not answer. The machine's token from
+    of_client, one try with a short timeout (this runs every minute). Its events and fyi are the server's."""
+    import urllib.request
+    try:
+        if url is None:
+            import of_ship
+            url = of_ship.config().get("server_url")
+        if not url:
+            return {}
+        import of_client
+        if token is None and opener is None:
+            token = of_client.Client(url).token()
+        req = urllib.request.Request(url.rstrip("/") + "/v1/health/checks")
+        secret = dict(of_client.access_headers(url), **({"Authorization": f"Bearer {token}"} if token else {}))
+        for k, v in secret.items():  # never sent on to a redirect's host
+            req.add_unredirected_header(k, v)
+        with (opener or urllib.request.urlopen)(req, timeout=timeout) as r:
+            body = json.loads(r.read() or b"{}")
+    except Exception:  # noqa: BLE001 - no answer: its checks are not on this machine's page this minute
+        return {}
+    out = {}
+    for c in body.get("checks") or []:
+        if isinstance(c, dict) and c.get("check") and c.get("state") in ("ok", "degraded", "failed"):
+            out[c["check"]] = {"value": c.get("value"), "limit": [c.get("limit_degraded"), c.get("limit_failed")],
+                               "state": c["state"], "owner": c.get("owner") or "of_server", "since": c.get("since"),
+                               "source": "of-server"}
+    return out
+
+
 def _read_only(path=None):
     import sqlite3
     import of_store
@@ -208,7 +239,8 @@ def free_disk_gib(path=None):
 
 # ------------------------------------------------------------------ one run
 
-def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, smoke=None, views=None):
+def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, smoke=None, views=None,
+            served=None):
     """{check: {value, limit, state, owner, detail?}} for this machine. Each reading can be given (tests)."""
     now = time.time() if now is None else now
     out = {}
@@ -231,6 +263,8 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
     if sw is not None:  # no reading is no finding: the machine's own tools failed, not its memory
         put("machine.memory", sw, *LIMITS["machine.memory"])
     put("machine.disk", free_disk_gib() if disk is None else disk, *LIMITS["machine.disk"])
+    for check, r in (server_checks() if served is None else served).items():  # of-server's own, as it serves them
+        out.setdefault(check, r)  # this machine's server.health (its answer time here) stays where both have one
     sm = _smoke_reading() if smoke is None else smoke
     if sm is not None:
         out["commit.smoke"] = {"value": str(sm.get("head") or "")[:12], "limit": None, "state": "ok" if sm.get("ok") else "failed",
@@ -293,7 +327,7 @@ def load_state():
         return {}
 
 
-def run(now=None, readings=None, emit=None, fyi=None, log=print):
+def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None):
     """One run: measure, compare with health.json, record each change, tell owners. Returns the new state."""
     now = time.time() if now is None else now
     emit = emit or of_events.emit
@@ -302,6 +336,9 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print):
     new = measure(now) if readings is None else readings
     for check, r in new.items():
         prev = old.get(check) or {}
+        if r.get("source") == "of-server":  # the server records and tells its own checks' changes
+            r["since"] = r.get("since") or (prev.get("since") if prev.get("state") == r["state"] else iso(now))
+            continue
         r["since"] = prev.get("since") if prev.get("state") == r["state"] else iso(now)
         if prev.get("state") != r["state"] and (prev or r["state"] != "ok"):
             try:
@@ -324,6 +361,12 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print):
     with open(state_path() + ".tmp", "w") as fh:
         json.dump(state, fh, indent=1)
     os.replace(state_path() + ".tmp", state_path())
+    if cards is None or cards:
+        try:  # the person's card when their own work is hit (of_studio's, docs/health.md §3; hand-over f06e0eb7)
+            import of_studio_health
+            (cards or of_studio_health.cards)(state)
+        except Exception as e:  # noqa: BLE001 - the page and the events stand without it
+            log(f"of health: cards: {type(e).__name__}: {e}")
     return state
 
 
