@@ -190,11 +190,21 @@ class RbacTest(unittest.TestCase):
                                                                 "verbs": ["*"]}]},
             {"metadata": {"name": "system:controller:namespace-controller"},
              "rules": [{"apiGroups": ["*"], "resources": ["*"], "verbs": ["delete", "get", "list"]}]},
+            {"metadata": {"name": "system:helper"}, "rules": [{"apiGroups": [""], "resources": ["secrets"],
+                                                                "verbs": ["list"]}]},
+            {"metadata": {"name": "node-proxy"}, "rules": [{"apiGroups": [""], "resources": ["nodes/proxy"],
+                                                             "verbs": ["get"]}]},
+            {"metadata": {"name": "debugger"}, "rules": [{"apiGroups": [""], "resources": ["pods/ephemeralcontainers"],
+                                                           "verbs": ["patch"]}]},
+            {"metadata": {"name": "forwarder"}, "rules": [{"apiGroups": [""], "resources": ["pods/portforward"],
+                                                            "verbs": ["create"]}]},
         ],
         "roles": [{"metadata": {"name": "runner", "namespace": "of-server"},
                    "rules": [{"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create"]}]},
                   {"metadata": {"name": "shell", "namespace": "of-server"},
-                   "rules": [{"apiGroups": [""], "resources": ["pods/exec"], "verbs": ["create"]}]}],
+                   "rules": [{"apiGroups": [""], "resources": ["pods/exec"], "verbs": ["create"]}]},
+                  {"metadata": {"name": "pods", "namespace": "cloudflared"},
+                   "rules": [{"apiGroups": [""], "resources": ["pods"], "verbs": ["create"]}]}],
         "rolebindings": [
             {"metadata": {"name": "ci", "namespace": "of-server"}, "roleRef": {"kind": "Role", "name": "runner"},
              "subjects": [{"kind": "ServiceAccount", "name": "ci"}]},
@@ -203,11 +213,25 @@ class RbacTest(unittest.TestCase):
             {"metadata": {"name": "other", "namespace": "elsewhere"}, "roleRef": {"kind": "ClusterRole",
                                                                                  "name": "edit"},
              "subjects": [{"kind": "User", "name": "far"}]},
+            {"metadata": {"name": "debug", "namespace": "clickhouse"}, "roleRef": {"kind": "ClusterRole",
+                                                                                  "name": "debugger"},
+             "subjects": [{"kind": "User", "name": "debugger"}]},
+            {"metadata": {"name": "fwd", "namespace": "clickhouse"}, "roleRef": {"kind": "ClusterRole",
+                                                                                "name": "forwarder"},
+             "subjects": [{"kind": "User", "name": "forwarder"}]},
+            # nodes/proxy through a RoleBinding grants nothing: nodes are cluster-scoped
+            {"metadata": {"name": "np", "namespace": "of-server"}, "roleRef": {"kind": "ClusterRole",
+                                                                              "name": "node-proxy"},
+             "subjects": [{"kind": "User", "name": "local-only"}]},
+            {"metadata": {"name": "tunnel-ops", "namespace": "cloudflared"}, "roleRef": {"kind": "Role",
+                                                                                        "name": "pods"},
+             "subjects": [{"kind": "User", "name": "tunnel-ops"}]},
         ],
         "clusterrolebindings": [
-            {"metadata": {"name": "cluster-admin"}, "roleRef": {"kind": "ClusterRole", "name": "cluster-admin"},
+            {"metadata": {"name": "cluster-admin", "labels": {"kubernetes.io/bootstrapping": "rbac-defaults"}},
+             "roleRef": {"kind": "ClusterRole", "name": "cluster-admin"},
              "subjects": [{"kind": "Group", "name": "system:masters"}]},
-            {"metadata": {"name": "system:controller:namespace-controller"},
+            {"metadata": {"name": "system:controller:namespace-controller", "labels": {"kubernetes.io/bootstrapping": "rbac-defaults"}},
              "roleRef": {"kind": "ClusterRole", "name": "system:controller:namespace-controller"},
              "subjects": [{"kind": "ServiceAccount", "name": "namespace-controller", "namespace": "kube-system"}]},
             {"metadata": {"name": "devs-edit"}, "roleRef": {"kind": "ClusterRole", "name": "edit"},
@@ -216,6 +240,11 @@ class RbacTest(unittest.TestCase):
              "subjects": [{"kind": "User", "name": "deployer"}]},
             {"metadata": {"name": "viewers"}, "roleRef": {"kind": "ClusterRole", "name": "view"},
              "subjects": [{"kind": "Group", "name": "system:authenticated"}]},
+            # named like a default, without the API server's label: a chart's own binding
+            {"metadata": {"name": "system:helper"}, "roleRef": {"kind": "ClusterRole", "name": "system:helper"},
+             "subjects": [{"kind": "ServiceAccount", "name": "helper", "namespace": "tools"}]},
+            {"metadata": {"name": "node-debug"}, "roleRef": {"kind": "ClusterRole", "name": "node-proxy"},
+             "subjects": [{"kind": "User", "name": "node-debugger"}]},
         ],
     }
 
@@ -224,12 +253,40 @@ class RbacTest(unittest.TestCase):
                                               ("roles", "clusterroles", "rolebindings", "clusterrolebindings")})
         subjects = {s: (how, boot) for s, how, _, boot in r}
         self.assertIn("Group:developers", subjects)
-        self.assertEqual(subjects["ServiceAccount:of-server/ci"][0], "starts pods, which mount any Secret")
-        self.assertEqual(subjects["User:oncall"][0], "execs into pods, which hold mounted Secrets")
+        self.assertTrue(subjects["ServiceAccount:of-server/ci"][0].startswith("starts pods"))
+        self.assertTrue(subjects["User:oncall"][0].startswith("runs code in pods"))
+        self.assertFalse(subjects["ServiceAccount:tools/helper"][1])   # a system: name without the label
+        self.assertIn("nodes/proxy", subjects["User:node-debugger"][0])
+        self.assertNotIn("User:local-only", subjects)
         self.assertTrue(subjects["Group:system:masters"][1])
         self.assertTrue(subjects["ServiceAccount:kube-system/namespace-controller"][1])
         self.assertNotIn("User:far", subjects)                 # bound in another namespace
         self.assertNotIn("Group:system:authenticated", subjects)  # view reads no Secrets
+
+    def test_debug_and_port_forward(self):
+        r = nc.secret_readers("clickhouse", **{k: self.RBAC[k] for k in
+                                               ("roles", "clusterroles", "rolebindings", "clusterrolebindings")})
+        subjects = {s: how for s, how, _, _ in r}
+        self.assertTrue(subjects["User:debugger"].startswith("runs code in pods"))
+        self.assertIn("port-forward", subjects["User:forwarder"])
+
+    def test_rule_access_edges(self):
+        self.assertIsNotNone(nc.rule_access({"apiGroups": [""], "resources": ["pods/ephemeralcontainers"],
+                                             "verbs": ["update"]}))
+        self.assertIsNone(nc.rule_access({"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
+                                         cluster=False))
+        self.assertIsNone(nc.rule_access({"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}))
+        self.assertIsNotNone(nc.rule_access({"apiGroups": [""], "resources": ["services/proxy"], "verbs": ["get"]}))
+
+    def test_connector_namespace_is_checked(self):
+        accept = ["Group:developers", "ServiceAccount:of-server/ci", "User:oncall", "ServiceAccount:tools/helper",
+                  "User:node-debugger", "User:debugger", "User:forwarder"]
+        argv = ["--no-exec"] + [x for a in accept for x in ("--accept", a)]
+        code, out = run(FakeCluster(rbac=self.RBAC), *argv)
+        self.assertEqual(code, 0, out)
+        code, out = run(FakeCluster(rbac=self.RBAC), *argv, "--connector-namespace", "cloudflared")
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  cloudflared: User:tunnel-ops starts pods", out)
 
     def test_unexpected_reader_fails_and_accept_passes(self):
         code, out = run(FakeCluster(rbac=self.RBAC), "--no-exec")
@@ -237,8 +294,11 @@ class RbacTest(unittest.TestCase):
         self.assertIn("FAIL  of-server: Group:developers reads Secrets", out)
         self.assertIn("PASS  of-server: User:deployer", out)
         self.assertNotIn("FAIL  of-server: Group:system:masters", out)
+        self.assertIn("FAIL  of-server: ServiceAccount:tools/helper reads Secrets", out)
         code, out = run(FakeCluster(rbac=self.RBAC), "--no-exec", "--accept", "Group:developers",
-                        "--accept", "ServiceAccount:of-server/ci", "--accept", "User:oncall")
+                        "--accept", "ServiceAccount:of-server/ci", "--accept", "User:oncall",
+                        "--accept", "ServiceAccount:tools/helper", "--accept", "User:node-debugger",
+                        "--accept", "User:debugger", "--accept", "User:forwarder")
         self.assertEqual(code, 0, out)
 
 
@@ -259,7 +319,15 @@ class ChartPolicyTest(unittest.TestCase):
         p = self.render("networkPolicy:\n  ingressFrom:\n"
                         "    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cloudflared}}\n")
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("a namespaceSelector alone admits every pod", p.stderr)
+        self.assertIn("a namespaceSelector alone, or with an empty podSelector, admits every pod", p.stderr)
+
+    def test_empty_pod_selector_is_refused(self):
+        for sel in ("{}", "{matchLabels: {}}"):
+            p = self.render("networkPolicy:\n  ingressFrom:\n"
+                            "    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cloudflared}}\n"
+                            f"      podSelector: {sel}\n")
+            self.assertNotEqual(p.returncode, 0, sel)
+            self.assertIn("an empty podSelector", p.stderr)
 
     def test_defaults_name_pods_and_dns(self):
         import yaml
@@ -275,11 +343,11 @@ class ChartPolicyTest(unittest.TestCase):
 
     def test_node_local_dns_and_git_sync(self):
         import yaml
-        p = self.render("networkPolicy:\n  dnsTo:\n    - ipBlock: {cidr: 169.254.0.0/16}\n"
+        p = self.render("networkPolicy:\n  dnsTo:\n    - ipBlock: {cidr: 169.254.20.10/32}\n"
                         "grants:\n  gitSync: {enabled: true, repo: x, sshKeySecret: k}\n")
         self.assertEqual(p.returncode, 0, p.stderr)
         spec = yaml.safe_load(p.stdout)["spec"]
-        self.assertEqual(spec["egress"][1]["to"], [{"ipBlock": {"cidr": "169.254.0.0/16"}}])
+        self.assertEqual(spec["egress"][1]["to"], [{"ipBlock": {"cidr": "169.254.20.10/32"}}])
         git = spec["egress"][2]["to"][0]["ipBlock"]
         self.assertEqual(git["cidr"], "0.0.0.0/0")
         self.assertIn("169.254.0.0/16", git["except"])

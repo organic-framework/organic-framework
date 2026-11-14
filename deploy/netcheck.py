@@ -15,10 +15,13 @@ cluster (AGENTS.md, Framework and apps).
    pods) and by ClickHouse (its Service, and its pods on every port ClickHouse listens on). With --connector-namespace,
    a pod there that is not the connector is refused by the server too.
 4. From inside the server's container: ClickHouse answers; the scratch target and the API server do not.
-5. Who can read the two namespaces' Secrets through RBAC: a get, list or watch on Secrets, or starting a pod (which
-   mounts any Secret of its namespace), or exec or attach into one. Every subject outside the cluster's bootstrap
-   bindings must be named with --deployer or --accept, or the check fails. Impersonation and role escalation are not
-   followed.
+5. Who RBAC lets read the Secrets of the server's, ClickHouse's and the connector's namespaces, or reach their pods
+   past NetworkPolicy: a get, list or watch on Secrets; starting a pod (it mounts any Secret of its namespace, and in
+   the connector's namespace it can carry the connector's labels); exec, attach or an ephemeral container in a pod
+   (`kubectl debug`), which holds its Secrets mounted; nodes/proxy, bound cluster-wide (the kubelet runs commands in
+   any pod); port-forward or a proxy through the API server. Every subject outside the API server's own default
+   bindings (label kubernetes.io/bootstrapping: rbac-defaults) must be named with --deployer or --accept, or the check
+   fails. Impersonation and role escalation are not followed.
 
 Each probe is a TCP connect from a pod of the server's own image (python3), or of --image. Nothing secret is read or
 printed: no Secret is fetched, only RBAC objects. Exit 0 when every line passes."""
@@ -220,19 +223,29 @@ _CORE = {"", "*"}
 _WORKLOAD_GROUPS = {"", "apps", "batch", "*"}
 _WORKLOADS = {"pods", "deployments", "replicasets", "statefulsets", "daemonsets", "jobs", "cronjobs",
               "replicationcontrollers"}
-_INTO_POD = {"pods/exec", "pods/attach", "pods/ephemeralcontainers"}
+# A subresource of a pod that runs code inside it, with the verbs that do (`kubectl debug` patches
+# pods/ephemeralcontainers; of_secrets-review on organic-framework PR 169).
+_INTO_POD = {"pods/exec": {"create", "get", "*"}, "pods/attach": {"create", "get", "*"},
+             "pods/ephemeralcontainers": {"create", "get", "update", "patch", "*"}}
+_THROUGH_API = {"pods/portforward", "pods/proxy", "services/proxy"}
 
 
-def rule_access(rule):
-    """How a PolicyRule lets its holder read a namespace's Secrets, or None."""
+def rule_access(rule, cluster=True):
+    """How a PolicyRule lets its holder read a namespace's Secrets or reach its pods past NetworkPolicy, or None.
+    CLUSTER: the rule is bound cluster-wide (a ClusterRoleBinding), the only way nodes/proxy is granted."""
     groups, res, verbs = (set(rule.get(k) or []) for k in ("apiGroups", "resources", "verbs"))
     named = rule.get("resourceNames")
-    if groups & _CORE and res & {"secrets", "*"} and verbs & {"get", "list", "watch", "*"}:
+    core = groups & _CORE
+    if core and res & {"secrets", "*"} and verbs & {"get", "list", "watch", "*"}:
         return "reads Secrets" + (f" (only {', '.join(named)})" if named else "")
     if groups & _WORKLOAD_GROUPS and res & (_WORKLOADS | {"*"}) and verbs & {"create", "update", "patch", "*"}:
-        return "starts pods, which mount any Secret"
-    if groups & _CORE and res & _INTO_POD and verbs & {"create", "get", "*"}:
-        return "execs into pods, which hold mounted Secrets"
+        return "starts pods, which mount any Secret and carry any labels"
+    if core and any(r in res and verbs & v for r, v in _INTO_POD.items()):
+        return "runs code in pods (exec, attach or kubectl debug), which hold mounted Secrets"
+    if cluster and core and "nodes/proxy" in res and verbs & {"get", "create", "*"}:
+        return "runs code in any pod through the kubelet (nodes/proxy)"
+    if core and res & _THROUGH_API and verbs:
+        return "reaches pods through the API server (port-forward or proxy), past NetworkPolicy"
     return None
 
 
@@ -243,35 +256,33 @@ def subject_key(s, binding_ns=None):
 
 
 def bootstrap(binding):
-    """The API server's own bootstrap bindings (system:… to system:…, and cluster-admin to system:masters)."""
-    name, ref = binding["metadata"]["name"], binding.get("roleRef", {}).get("name", "")
-    if name.startswith("system:") and ref.startswith("system:"):
-        return True
-    subjects = binding.get("subjects") or []
-    return bool(subjects) and all(s.get("kind") == "Group" and s.get("name") == "system:masters" for s in subjects)
+    """The API server's own default bindings, by the label it puts on them; a name proves nothing (any chart may call
+    its binding system:…; of_secrets-review on organic-framework PR 169)."""
+    labels = binding["metadata"].get("labels") or {}
+    return labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
 
 
 def secret_readers(namespace, roles, clusterroles, rolebindings, clusterrolebindings):
-    """[(subject, how, binding, bootstrap)] of everyone RBAC lets read NAMESPACE's Secrets."""
+    """[(subject, how, binding, bootstrap)] of everyone RBAC lets read NAMESPACE's Secrets or reach its pods (rule_access)."""
     croles = {r["metadata"]["name"]: r for r in clusterroles}
     nroles = {r["metadata"]["name"]: r for r in roles if r["metadata"].get("namespace") == namespace}
     out = []
 
-    def add(binding, role, where):
+    def add(binding, role, where, cluster):
         if not role:
             return
-        hows = sorted({h for h in (rule_access(r) for r in role.get("rules") or []) if h})
+        hows = sorted({h for h in (rule_access(r, cluster) for r in role.get("rules") or []) if h})
         for s in binding.get("subjects") or []:
             for how in hows:
                 out.append((subject_key(s, binding["metadata"].get("namespace")), how, where, bootstrap(binding)))
     for b in clusterrolebindings:
-        add(b, croles.get(b.get("roleRef", {}).get("name")), f"ClusterRoleBinding {b['metadata']['name']}")
+        add(b, croles.get(b.get("roleRef", {}).get("name")), f"ClusterRoleBinding {b['metadata']['name']}", True)
     for b in rolebindings:
         if b["metadata"].get("namespace") != namespace:
             continue
         ref = b.get("roleRef", {})
         role = croles.get(ref.get("name")) if ref.get("kind") == "ClusterRole" else nroles.get(ref.get("name"))
-        add(b, role, f"RoleBinding {namespace}/{b['metadata']['name']}")
+        add(b, role, f"RoleBinding {namespace}/{b['metadata']['name']}", False)
     return out
 
 
@@ -287,7 +298,7 @@ def check_rbac(k, rep, namespaces, deployer, accept):
                                  objs["clusterrolebindings"])
         boot = sorted({s for s, _, _, b in readers if b})
         if boot:
-            rep.note(f"{ns}: the API server's bootstrap bindings also reach Secrets: {', '.join(boot)}")
+            rep.note(f"{ns}: the API server's default bindings also reach it: {', '.join(boot)}")
         seen = set()
         for subject, how, where, is_boot in sorted(readers):
             if is_boot or (subject, how) in seen:
@@ -395,7 +406,8 @@ def main(argv=None, k=None, out=sys.stdout):
         else:
             for kind, name, pns in reversed(made):
                 k.run(["delete", kind, name, "--wait=false", "--ignore-not-found"] + (["-n", pns] if pns else []))
-    check_rbac(k, rep, [ns] + ([chns] if chns else []), set(a.deployer), set(a.accept))
+    check_rbac(k, rep, [ns] + ([chns] if chns else []) + ([a.connector_namespace] if a.connector_namespace else []),
+               set(a.deployer), set(a.accept))
     print(f"{'FAILED' if rep.failed else 'PASSED'}: {rep.failed} failing line(s)", file=out)
     return 1 if rep.failed else 0
 
