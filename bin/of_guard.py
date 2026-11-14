@@ -4182,7 +4182,6 @@ _HERDR_REMOTE_OPTS = ("--machine", "--remote")  # typing on another machine: not
 _HERDR_OPT_VALUE = {"--until", "--timeout"}
 _HERDR_OPT_FLAG = {"--wait"}
 _TMUX_GLOBAL_VALUE = {"-L", "-S", "-f", "-T"}
-_TMUX_SEND_VALUE = {"-t", "-N", "-c"}
 _HERDR_PANE = re.compile(r"^w\w+:p\w+$")
 _OWN_PANE = re.compile(r"^\$\{?HERDR_PANE_ID\}?$")
 _BRACKETED_PASTE = re.compile(r"\x1b\[20[01]~")
@@ -4281,33 +4280,54 @@ def typing_declarations(cmd, depth=0):
 
 def _tmux_typing(args):
     """G25 for `tmux send-keys` (how agents type on the remote surface; of_review on organic-framework PR 170):
-    [{target ('tmux', pane or target) or ('tmux-own', None), kind, sha256}]. Literal text (-l, one word) is read;
-    keys are typing the guard cannot read."""
-    while args and args[0] in _TMUX_GLOBAL_VALUE or (args and re.match(r"^-[2CDluvV]+$", args[0])):
+    [{target ('tmux', pane or target) or ('tmux-own', None), kind, sha256}], one for each send-keys of a command
+    sequence (`\\;`, `';'`, or a word that ends in `;`). Options are read as getopt reads them, letter by letter, so
+    `-lt %3` and `-lt%3` name %3. Literal text (-l, one word) is read; keys are typing the guard cannot read."""
+    while args and (args[0] in _TMUX_GLOBAL_VALUE or re.match(r"^-[2CDluvV]+$", args[0])):
         args = args[2:] if args[0] in _TMUX_GLOBAL_VALUE else args[1:]
-    if not args or args[0] not in ("send-keys", "send"):
-        return []
-    target, literal, keys, k, doubt = None, False, [], 1, False
-    while k < len(args):
-        a = args[k]
-        if a in _TMUX_SEND_VALUE:
-            if a == "-t" and k + 1 < len(args):
-                target = args[k + 1]
-            k += 2
-            continue
-        if re.match(r"^-[lRMHKX]+$", a):
-            literal = literal or "l" in a
-            doubt = doubt or bool(re.search(r"[HKX]", a))
-        elif a.startswith("-t") and len(a) > 2:
-            target = a[2:]
+    commands, cur = [], []
+    for w in args:
+        if w == ";":
+            commands.append(cur)
+            cur = []
+        elif w.endswith(";") and not w.endswith("\\;"):
+            cur.append(w[:-1])
+            commands.append(cur)
+            cur = []
         else:
+            cur.append(w)
+    commands.append(cur)
+    out = []
+    for cmd in commands:
+        if not cmd or cmd[0] not in ("send-keys", "send"):
+            continue
+        target, literal, keys, k, doubt = None, False, [], 1, False
+        while k < len(cmd):
+            a = cmd[k]
+            if a == "--":
+                keys += cmd[k + 1:]
+                break
+            if a.startswith("-") and len(a) > 1 and not keys:  # getopt: options until the first key
+                for n, ch in enumerate(a[1:], 1):
+                    if ch in "cNt":  # takes a value: the rest of the word, else the next word
+                        val = a[n + 1:]
+                        if not val and k + 1 < len(cmd):
+                            k += 1
+                            val = cmd[k]
+                        target = val if ch == "t" else target
+                        break
+                    literal = literal or ch == "l"
+                    doubt = doubt or ch in "HKX" or ch not in "FHKlMRX"
+                k += 1
+                continue
             keys.append(a)
-        k += 1
-    if target is None:
-        tgt = ("tmux-own", None)
-    elif _unread(target) or re.search(r"[{}*?\[\]]", target):
-        tgt = ("unknown", None)
-    else:
-        tgt = ("tmux", target)
-    readable = literal and not doubt and len(keys) == 1 and not _unread(keys[0])
-    return [{"target": tgt, "kind": "tmux send-keys", "sha256": typed_digest(keys[0]) if readable else None}]
+            k += 1
+        if target is None:
+            tgt = ("tmux-own", None)
+        elif _unread(target) or re.search(r"[{}*?\[\]]", target):
+            tgt = ("unknown", None)
+        else:
+            tgt = ("tmux", target)
+        readable = literal and not doubt and len(keys) == 1 and not _unread(keys[0])
+        out.append({"target": tgt, "kind": "tmux send-keys", "sha256": typed_digest(keys[0]) if readable else None})
+    return out
