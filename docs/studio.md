@@ -381,10 +381,10 @@ The founder asked on 2026-11-12 for a goal broken into sub-goals, and those into
 |---|---|
 | `of.loop_hypothesis` | `work`, `id`, `change`, `predict`, `cost: {rung, runner_h}`, `voi` (`low`, `med`, `high`), `status` (`open`, `testing`, `kept`, `dropped`, `parked`). A later event with the same `id` updates the hypothesis |
 | `of.loop_run` | `work`, `hypothesis`, `rung`, `result` (text), `value` (a number in `metric`'s units), `metric` (default: the target's), `queued_at` (when it entered the rung), `started_at`, `ended_at` (default: the event's ts), `runner_h`, `tokens`, `evidence` |
-| `of.loop_decision` | `work`, `hypothesis`, `decision` (`keep`, `drop`, `step_up`, `step_back`, `change_objective`), `rung`, `metric` and `money` (for a change of objective), or `metric` and `decided` (a change of objective on the owner's measure: the owner's yes on the new one), `note` |
+| `of.loop_decision` | `work`, `hypothesis`, `decision` (`keep`, `drop`, `park`, `reopen`, `step_up`, `step_back`, `change_objective`), `rung`, `metric` and `money` (for a change of objective), or `metric` and `decided` (a change of objective on the owner's measure: the owner's yes on the new one), `note` |
 | `of.loop_cost` | `work`, `run`, `session`, `from`, `to`, `usd` (null: unknown), `fresh_tokens`, `responses`, `by_model` (`of_capacity`) |
 
-A run starts an open hypothesis (`testing`); `keep` and `drop` end it (`kept`, `dropped`).
+A run starts an open hypothesis (`testing`); `keep` and `drop` end it (`kept`, `dropped`), `park` sets it aside (`parked`), and `reopen` puts a parked, dropped or kept one back to `open` (of_platform's change of 2026-11-14), so it leaves the hit rate and the last kept and dropped, and its next run starts it again.
 
 **The metrics:**
 - **Cycle time per rung** is the median, over the rung's runs, of the time from entering the rung to the result. A run enters at `queued_at`, else at the end of the same hypothesis' previous run, else when the hypothesis was recorded.

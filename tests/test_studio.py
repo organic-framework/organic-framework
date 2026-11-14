@@ -1769,6 +1769,21 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(h["h2"]["status"], "parked")
         self.assertEqual(c["runs"][0]["id"], "r-1")
         self.assertEqual([x["id"] for x in c["register"]["parked"]], ["h2"])
+        # reopen (of_platform, hand-over 7b804b09): a kept or parked hypothesis goes back to open, with its status update
+        reopen = lambda i, ts, hid: [self.ev(i, ts, "of.loop_decision", {"hypothesis": hid, "decision": "reopen", "note": "new data"}),
+                                     self.ev(i + 1, ts, "of.loop_hypothesis", {"id": hid, "status": "open", "status_at": ts})]
+        kept = rows + [self.ev(6, "2026-11-04T01:00Z", "of.loop_decision", {"hypothesis": "h1", "decision": "keep"})]
+        self.assertEqual((self.card(kept)["kept"], self.card(kept)["hit_rate"]), (1, 1.0))
+        c = self.card(kept + reopen(7, "2026-11-05T00:00Z", "h1") + reopen(9, "2026-11-05T00:00Z", "h2"))
+        h = {x["id"]: x for x in c["hypotheses"]}
+        self.assertEqual((h["h1"]["status"], h["h2"]["status"]), ("open", "open"))
+        self.assertEqual((c["kept"], c["decided"], c["hit_rate"]), (0, 0, None))
+        self.assertEqual(sorted(x["id"] for x in c["register"]["open"]), ["h1", "h2"])
+        self.assertEqual((c["register"]["last_kept"], c["register"]["parked"]), ([], []))
+        again = self.card(kept + reopen(7, "2026-11-05T00:00Z", "h1") +
+                          [self.ev(11, "2026-11-06T00:00Z", "of.loop_run", {"hypothesis": "h1", "rung": "offline"})])
+        self.assertEqual(next(x for x in again["hypotheses"] if x["id"] == "h1")["status"], "testing")   # its next run
+        self.assertEqual(again["decisions_all"][-1]["kind"], "reopen")
 
     def test_the_card_renders(self):
         c = self.card()

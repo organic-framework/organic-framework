@@ -7,7 +7,7 @@ checkpoint_days, wip_arms). The register and the log are events (§4.1, of_platf
                       a later event with the same id updates the hypothesis (its status above all)
   of.loop_run         {work, hypothesis, rung, result, value, metric, queued_at, started_at, ended_at, runner_h, tokens,
                       evidence}; ended_at defaults to the event's ts, metric to the target's
-  of.loop_decision    {work, hypothesis, decision: keep|drop|park|step_up|step_back|change_objective, rung, metric,
+  of.loop_decision    {work, hypothesis, decision: keep|drop|park|reopen|step_up|step_back|change_objective, rung, metric,
                       to_money (also as money), decided (a change of objective on the owner's measure), note}
   (of_platform's names, docs/events.md: a run's id is `run`; a hypothesis update carries `status` and `status_at`)
   of.loop_cost        {work, run, session, from, to, usd, fresh_tokens, responses, by_model}: of_capacity, about an hour
@@ -35,7 +35,8 @@ UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this mach
 KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost")
 DAY = 86400
 VOI = {"low": 1, "med": 2, "medium": 2, "high": 3}
-STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked"}
+STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}   # of_loop.STATUS_OF: reopen puts a
+# parked, dropped or kept hypothesis back to open (RFC 0005 §4.1; of_platform's change of 2026-11-14, hand-over 7b804b09)
 PLATEAU_CYCLES, PLATEAU_GAIN = 3, 0.01     # RFC 0005 §6: 3 cycles in a row gain under 1% of the target
 DRIFT_RUNS = 3                             # the latest runs that decide whether the loop measures its target
 
@@ -173,6 +174,8 @@ def _hypotheses(evs):
         elif r["name"] == "of.loop_decision" and pl.get("hypothesis") and pl.get("decision") in STATUS_OF:
             h = hyp.setdefault(str(pl["hypothesis"]), {"id": str(pl["hypothesis"]), "recorded_at": t})
             h["status"], h["decided_at"], h["status_at"] = STATUS_OF[pl["decision"]], t, t
+            if pl["decision"] == "reopen":   # open again: neither kept nor dropped, and no longer decided
+                h.pop("decided_at")
         elif r["name"] == "of.loop_run" and pl.get("hypothesis"):
             h = hyp.get(str(pl["hypothesis"]))
             if h is not None and h.get("status") == "open":
