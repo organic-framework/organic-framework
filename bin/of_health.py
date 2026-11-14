@@ -297,13 +297,23 @@ def _ticks():
 
 def _view_ages(now):
     """{view: (age seconds, its acceptable lag)} for the views readers trust (of_listen.SERVES_READERS)."""
+    out = {}
     try:
         import of_listen
         lags = listener_lags(now)
-        return {v: (lags.get(v, 0.0), float(getattr(of_listen, "LAG_OK_S", {}).get(v, 120)))
-                for v in of_listen.SERVES_READERS if v in lags}
+        out.update({v: (lags.get(v, 0.0), float(getattr(of_listen, "LAG_OK_S", {}).get(v, 120)))
+                    for v in of_listen.SERVES_READERS if v in lags})
     except Exception:  # noqa: BLE001
-        return {}
+        pass
+    try:  # the fold views (bin/of_fold.py): each declares its lag_ok_s, and read() gives its age
+        import of_fold
+        for name, v in of_fold.views().items():
+            r = of_fold.read(v, now=now, tail=0)
+            if r.age_s is not None:
+                out[name] = (round(r.age_s, 1), float(v.lag_ok_s))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def _smoke_reading(repo=None):
