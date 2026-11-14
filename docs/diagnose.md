@@ -142,7 +142,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Signals:**
   - compactions per active day (`of.compaction`); a day is active when the position's sessions recorded a hook or import event on it;
   - rereads of the same artifact (not read yet);
-  - forgotten-fact errors: the owner's corrections of the position within 2 hours after one of its compactions, either of kind `fact` or repeating an earlier correction of the same rule (`repeat_of`: he explains again what it held before).
+  - forgotten-fact errors: the owner's corrections of the position within 2 hours after one of its compactions, either of kind `fact` or repeating an earlier correction of the same rule (`repeat_of`: he explains again what it held before). One correction counts per prompt (`prompt_id`), as in 2.9.
 - **Rule.** Over 7 days:
   - compactions per active day ≥ max(4, 3 × the organization's median, over the positions active in the window);
   - and ≥ 2 forgotten-fact errors after compactions.
@@ -227,12 +227,13 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
 - **Signals:**
   - rework on a position's results: `reverts`/`fixes` relations on its WR (not recorded yet, `events.md` backlog item 10), and the owner's corrections of its results, those of kind `output` or `fact` (`correction_kinds`). Corrections of its method, scope or process are not rework on a result;
-  - review evidence on the path: a merged change of the position's in the window with at least one submitted review (`reviews` on its work record).
+  - review evidence on the path: a merged change of the position's in the window with at least one submitted review (`reviews` on its work record). The count holds GitHub's submitted reviews only. A verdict posted as a pull request comment, the way this framework's own pull requests are reviewed (`Verdict: approve`), is not read. So a repository in which no merged pull request of the window has a submitted review says nothing either way (PR 176 review).
 - **Rule.** Over 7 days, all of:
   - (corrections + reverts) ÷ WR ≥ 0.2;
   - with ≥ 3 corrections;
   - and no review evidence on the position's path.
-- **What it cannot tell yet is a note, not an issue.** A position with ≥ 3 corrections of its results and no merged work has nothing to divide by. A position whose merged changes do not say whether they were reviewed cannot show the third condition: local commits carry no review count, nor do PRs imported before organic-framework 11aee30. When only some changes say, the issue counts only those.
+- **One correction per prompt.** A prompt the judge read twice counts once (`prompt_id`), as in Studio's repeat-correction rate (PR 176 review).
+- **What it cannot tell yet is a note, not an issue.** A position with ≥ 3 corrections of its results and no merged work has nothing to divide by. A position none of whose merged changes can show a review cannot show the third condition. Local commits carry no review count, nor do PRs imported before organic-framework 11aee30, and a repository reviewed by comments shows none. When only some changes can show one, the issue counts only those and says how many.
 - **Decider:** the structure keeper. A review step and a verifier position are structure changes, as for chatty@3.
 - **Default remedy.** A verification step: a cross-model review before results go to the owner or to production. Or a verifier position for the class of result.
 - **ΔT basis:** rework avoided, plus decisions made on wrong facts avoided. *p* = 0.6. *m_decide* = 5 min.
@@ -610,7 +611,7 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | 2.4, 2.8 | `blocked_on` with an end | backlog v1.1 item 7 |
 | 2.5 | `of.compaction` (v1); rereads; the owner's corrections | Compactions and `of.founder_correction` (RFC 0006 §2.4) exist, and the rule reads both from 2026-11-14. Reread detection: new |
 | 2.6 runtime | runtime writes as work records (deploys, host actions, settings) | `of.deployment` (backlog item 2); host actions: new |
-| 2.9 | `reverts`/`fixes` relations; review evidence; a denominator for positions whose results are answers, not merged work | Relations: backlog item 10. Review evidence: the review count on merged PRs (2.27's input); reviews of local commits and of answers: new |
+| 2.9 | `reverts`/`fixes` relations; review evidence; a denominator for positions whose results are answers, not merged work | Relations: backlog item 10. Review evidence: the count of submitted reviews on merged PRs (2.27's input). Reviews given as pull request comments (`Verdict:`), reviews of local commits and of answers: new |
 | 2.10 | reply and reference tracking on messages | new |
 | 2.11 | `of.mandate_changed` (v1.1); `reason_class` (item 11); MAST sampling | backlog; RFC §5.3.5 |
 | 2.12 | `mandate_functions` on positions | registry (`of_platform`, 2026-11-05); the stakeholder map as data is still new |
@@ -671,7 +672,7 @@ The columns:
 | fragmented-ownership@1 | blocked (`of.deployment`, `wr.position`) | blocked | code P/R 1.0; negatives: keeper named inside the windows, one window only | — | runtime part not built (no `of.deployment`) |
 | orphan-work@3 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
-| missing-verifier@0 | 2026-11-14: quiet; 1 note (a position that answers the owner, 7 corrections of its results, no merged work) | 2026-11-14: quiet; 1 note (`of_conductor`, 18 corrections of its results, no merged work) | P/R 1.0; negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed; reports blocked without the owner's corrections | — | a part for positions whose results are answers (both notes), with its denominator; reverts |
+| missing-verifier@0 | 2026-11-14: quiet; 1 note (a position that answers the owner, 7 corrections of its results, no merged work) | 2026-11-14: quiet; 1 note (`of_conductor`, 18 corrections of its results, no merged work) | P/R 1.0; negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed, a repository reviewed by comments; reports blocked without the owner's corrections | — | a part for positions whose results are answers (both notes), with its denominator; reviews given as comments; reverts |
 | chatty@3 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair), fire; 10 fp, all below v3's floor (2026-11-12) | 19 pair issues to review |
 | unclear-mandate@1 | quiet | quiet | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding | — | — |
 | function-gap@0 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |

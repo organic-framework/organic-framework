@@ -739,19 +739,25 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
 # was never recorded; from 2026-11-14 both rules read the owner's corrections instead.
 
 def owner_corrections(model, rows, a, b):
-    """{position: [row]}: of.founder_correction in [a, b) by the position it corrects, oldest first."""
-    positions, sp, out = model["positions"], None, collections.defaultdict(list)
-    for r in rows:
-        if r["name"] != "of.founder_correction" or not of_model.in_window(r, a, b):
+    """{position: [row]}: of.founder_correction in [a, b) by the position it corrects (an alias counts as its canonical
+    name), oldest first. One correction per `prompt_id` (else event id), as of_measures.repeat_corrections counts them:
+    a judge run again on a prompt counts once (PR 176 review)."""
+    positions, sp, out, seen = model["positions"], None, collections.defaultdict(list), set()
+    canon = {str(x): n for n, p in positions.items() for x in [n] + list(p.get("aliases") or [])}
+    for r in sorted((r for r in rows if r["name"] == "of.founder_correction"), key=lambda r: epoch(r.get("ts")) or 0):
+        pl = r.get("payload") or {}
+        key = pl.get("prompt_id") or r.get("event_id")
+        if key in seen:
             continue
-        pos = (r.get("payload") or {}).get("position") or r.get("position")
-        if pos not in positions:
+        seen.add(key)
+        if not of_model.in_window(r, a, b):
+            continue
+        pos = canon.get(str(pl.get("position") or r.get("position")))
+        if pos is None:
             sp = sp if sp is not None else of_model.session_positions(model, rows)
             pos = sp.get(r.get("session_id"))
         if pos:
             out[pos].append(r)
-    for v in out.values():
-        v.sort(key=lambda r: epoch(r["ts"]) or 0)
     return out
 
 
@@ -814,24 +820,32 @@ def rule_context_overload(model, rows, a, b, cat, spec):
 
 def rule_missing_verifier(model, rows, a, b, cat, spec):
     """v0, built 2026-11-14 on of.founder_correction. The owner keeps correcting a position's results (corrections of
-    kind output or fact) against its merged work, and none of that work was reviewed: its wrong results reach him first.
-    Reverts and fixes between work records (docs/events.md, backlog item 10) are not recorded yet, so they add nothing.
-    A position with no merged work, or whose merged work does not say whether it was reviewed, gets a note, not an issue."""
+    kind output or fact) against its merged work, and none of that work has a submitted review: its wrong results reach
+    him first. The review count (`reviews` on the work record) counts submitted reviews only; a verdict posted as a
+    comment, as this framework's own pull requests get, is not read. So a repository none of whose merged PRs in the
+    window has a submitted review says nothing either way (PR 176 review). Reverts and fixes between work records
+    (docs/events.md, backlog item 10) are not recorded yet, so they add nothing. A position with no merged work, or none
+    that can show a review, gets a note, not an issue."""
     t = spec.get("thresholds") or {}
     kinds = set(t.get("correction_kinds") or ("output", "fact"))
     mpp = (cat.get("defaults") or {}).get("minutes_per_prompt", 1.5)
     positions = model["positions"]
     merged, _ = work_by_position(model, rows, a, b)
     attrib = of_model.pr_attribution(rows, positions, of_model.session_index(positions))
-    known, reviewed = collections.Counter(), collections.Counter()
+    counted = []   # (position, repository, reviews) of each merged PR that gives its count
     for r in rows:
         pl = r.get("payload") or {}
         if r["name"] != "of.work_record" or pl.get("source") == "pr-link" or not of_model.in_window(r, a, b):
             continue
         who = r.get("position") if r.get("position") in positions else attrib.get(of_model.pr_key(pl))
-        if who and isinstance(pl.get("reviews"), int) and not of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
+        if isinstance(pl.get("reviews"), int) and not of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
+            counted.append((who, pl.get("repo"), pl["reviews"]))
+    submits = {repo for _, repo, n in counted if n > 0}   # repositories whose reviews are submitted ones
+    known, reviewed = collections.Counter(), collections.Counter()
+    for who, repo, n in counted:
+        if who and repo in submits:
             known[who] += 1
-            reviewed[who] += pl["reviews"] > 0
+            reviewed[who] += n > 0
     out, notes = [], []
     for pos, cs in sorted(owner_corrections(model, rows, a, b).items()):
         mine = [c for c in cs if (c.get("payload") or {}).get("kind") in kinds]
@@ -845,15 +859,15 @@ def rule_missing_verifier(model, rows, a, b, cat, spec):
             continue
         if not known[pos]:
             notes.append(f"{pos}: {n} of the owner's corrections of its results against {w} merged changes, none of "
-                         f"which says whether it was reviewed")
+                         f"which can show a review (no review count, or a repository with no submitted review)")
             continue
         ev = {"corrections": [_correction(c) for c in mine][-10:], "corrections_n": n, "merged": w,
               "reviews_known": known[pos], "reviewed": 0, "rework_per_merged": round(n / w, 2),
               "reverts": "not recorded", "since": mine[0]["ts"]}
         out.append(issue(cat, "missing-verifier", [pos], ev,
                          f"{pos}: {n} of the owner's corrections of its results against {w} merged changes "
-                         f"({round(100 * n / w)}%), and none of them was reviewed"
-                         + ("" if known[pos] == w else f" (of the {known[pos]} that say whether they were)"),
+                         f"({round(100 * n / w)}%), and none has a submitted review"
+                         + ("" if known[pos] == w else f" (of the {known[pos]} that can show one)"),
                          delta_m=n * mpp))
     return out, [], notes
 
