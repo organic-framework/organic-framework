@@ -12,6 +12,7 @@ import ast
 import os
 import re
 import shlex
+import stat
 import warnings
 
 import of_classify
@@ -2589,7 +2590,7 @@ def kubectl_rule_match(match, call):
 # miss, aliases folded by reading the ssh config (never `ssh -G`, which runs Match exec), and the limits named.
 _SSH_HEADS = {"ssh", "scp", "sftp", "rsync", "mosh", "sshfs", "autossh"}
 _SSH_WORDS = re.compile(r"\b(?:ssh|scp|sftp|rsync|mosh|sshfs|autossh)\b")
-_SSH_VALUE = {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p", "-Q",
+_SSH_VALUE = {"-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-P", "-p", "-Q",
               "-R", "-S", "-W", "-w"}
 _SSH_OPT_VALUE = {
     "ssh": _SSH_VALUE, "autossh": _SSH_VALUE | {"-M"},
@@ -2682,19 +2683,24 @@ def _ssh_argv(head, args):
         if a == "--":
             positional += args[i + 1:]
             break
-        if a.startswith("--") and "=" in a:
-            flag, v = a.split("=", 1)
-            from_option(flag, v)
+        if a.startswith("--"):
+            if "=" in a:
+                from_option(*a.split("=", 1))
+            elif a in vals and i + 1 < len(args):
+                from_option(a, args[i + 1])
+                i += 1
             i += 1
             continue
-        if a.startswith("-") and len(a) > 1:
-            flag = a[:2] if not a.startswith("--") else a
-            if flag in vals and a == flag and i + 1 < len(args):
-                from_option(flag, args[i + 1])
-                i += 2
-                continue
-            if not a.startswith("--") and flag in vals and len(a) > 2:  # -Jhost, -oKey=Value, -p22
-                from_option(flag, a[2:])
+        if a.startswith("-") and len(a) > 1:  # a cluster, the getopt way: `-4vJ jump`, `-vp 22`, `-avze 'ssh …'`
+            for k in range(1, len(a)):  # (of_review and of_secrets-review on organic-framework PR 152)
+                flag = "-" + a[k]
+                if flag in vals:
+                    if k + 1 < len(a):
+                        from_option(flag, a[k + 1:])  # -Jhost, -oKey=Value, -p22
+                    elif i + 1 < len(args):
+                        from_option(flag, args[i + 1])
+                        i += 1
+                    break
             i += 1
             continue
         positional.append(a)
@@ -2745,21 +2751,41 @@ def ssh_calls(cmd, depth=0):
     return out
 
 
-def _ssh_config_blocks(path, depth=0, seen=None):
-    """[(host patterns, HostName or None)] of an ssh config's Host blocks, in order, Include followed (globs; a
-    relative path is under ~/.ssh). Match blocks are skipped: their conditions run commands, and the guard never
-    does (`ssh -G` would). Read as text; never printed."""
+_SSH_SETS = ("hostname", "proxyjump", "proxycommand")  # where a call goes
+
+
+def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
+    """[{patterns, hostname, proxyjump, proxycommand}] of an ssh config's Host blocks, in order, Include followed (globs;
+    a relative path is under ~/.ssh, or /etc/ssh for the system's config). Each file is opened without blocking and
+    read only when it is a regular file (a FIFO given to -F would hang the hook). Match blocks are not evaluated: their
+    conditions run commands, and the guard never does (`ssh -G` would). OPAQUE, a list, gets the reason when the guard
+    cannot tell where a call goes: a Match block that sets HostName, ProxyJump or ProxyCommand, or a file it cannot
+    read (of_secrets-review on organic-framework PR 152). Read as text; never printed."""
     import glob
     seen = seen if seen is not None else set()
     path = os.path.expanduser(path)
+    base = base or (os.path.dirname(path) if path.startswith("/etc/ssh") else os.path.expanduser("~/.ssh"))
     if depth > 8 or path in seen:
         return []
     seen.add(path)
     try:
-        with open(path, errors="replace") as fh:
-            text = fh.read(_SSH_CONFIG_MAX)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        if opaque is not None:
+            opaque.append(f"its ssh config {os.path.basename(path)} cannot be read")
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            if opaque is not None:
+                opaque.append(f"its ssh config {os.path.basename(path)} is not a plain file")
+            return []
+        text = os.read(fd, _SSH_CONFIG_MAX).decode("utf-8", "replace")
     except OSError:
         return []
+    finally:
+        os.close(fd)
     out, block = [], None
     for line in text.splitlines():
         line = line.strip()
@@ -2767,22 +2793,26 @@ def _ssh_config_blocks(path, depth=0, seen=None):
             continue
         key, val = _ssh_opts(line)
         if key == "host":
-            block = val.split()
-            out.append([block, None])
+            block = {"patterns": val.split()}
+            out.append(block)
         elif key == "match":
             block = "match"
         elif key == "include":
             for pat in val.split():
                 pat = os.path.expanduser(pat)
                 if not os.path.isabs(pat):
-                    pat = os.path.join(os.path.expanduser("~/.ssh"), pat)
+                    pat = os.path.join(base, pat)
                 for p in sorted(glob.glob(pat)):
-                    out += _ssh_config_blocks(p, depth + 1, seen)
-        elif key == "hostname" and block != "match":
+                    out += _ssh_config_blocks(p, depth + 1, seen, opaque, base)
+        elif key in _SSH_SETS:
+            if block == "match":
+                if opaque is not None and f"a Match block sets {key}" not in opaque:
+                    opaque.append(f"a Match block sets {key}")
+                continue
             if block is None:
-                out.append([["*"], val])
-            elif out and out[-1][1] is None:
-                out[-1][1] = val
+                block = {"patterns": ["*"]}
+                out.append(block)
+            block.setdefault(key, val)
     return out
 
 
@@ -2823,44 +2853,89 @@ def _globs_meet(a, b):
 def ssh_resolver(config=None):
     """name -> the HostName the ssh config in effect gives it (the first matching Host block that sets one, `%h` the
     name), or None. The config: -F when given, else the user's own and the system's (aliases are folded: an alias is
-    the common miss, of_architect)."""
-    blocks = (_ssh_config_blocks(config) if config else
-              _ssh_config_blocks("~/.ssh/config") + _ssh_config_blocks("/etc/ssh/ssh_config"))
+    the common miss, of_architect). Also `.hops(name)`: [(word, how)] of the first ProxyJump and the first
+    ProxyCommand a matching block sets, ssh keeping the first value it gets (of_secrets-review on PR 152: a bastion
+    alias reached a denied jump); `.blocks`; `.opaque`: why the guard cannot tell where a call goes, if it cannot."""
+    opaque = []
+    blocks = (_ssh_config_blocks(config, opaque=opaque) if config else
+              _ssh_config_blocks("~/.ssh/config", opaque=opaque) + _ssh_config_blocks("/etc/ssh/ssh_config",
+                                                                                        opaque=opaque))
+
+    def first(name, key):
+        return next((b[key] for b in blocks if b.get(key) and _ssh_pattern_match(b["patterns"], name)), None)
 
     def resolve(name):
-        for patterns, hostname in blocks:
-            if hostname and _ssh_pattern_match(patterns, name):
-                return hostname.replace("%h", name).replace("%%", "%").lower()
-        return None
-    resolve.blocks = blocks  # for a destination held in a variable: the aliases its literal parts can fit
+        hostname = first(name, "hostname")
+        return hostname.replace("%h", name).replace("%%", "%").lower() if hostname else None
+
+    def hops(name):
+        jump, command = first(name, "proxyjump"), first(name, "proxycommand")
+        return _ssh_hops(jump, command)
+    resolve.blocks, resolve.hops, resolve.opaque = blocks, hops, opaque
     return resolve
+
+
+def _ssh_hops(jump, command):
+    """[(word, how)] a ProxyJump value and a ProxyCommand value reach."""
+    out = [(h.strip(), "via the jump host") for h in str(jump or "").split(",")
+           if h.strip() and h.strip().lower() != "none"]
+    out += [(w, "in its ProxyCommand") for w in str(command or "").split()
+            if not w.startswith("-") and "%" not in w and w.lower() != "none"]
+    return out
+
+
+def _ssh_reach(host, resolve, depth=0):
+    """[(name, note)] a literal destination reaches: itself, its HostName, and the jumps its config block names, each
+    of those followed the same way (at most 3 deep)."""
+    out = [(host.rstrip("."), None)]
+    if resolve is None or depth > 3:
+        return out
+    hostname = resolve(host)
+    if hostname:
+        out.append((hostname.rstrip("."), f"HostName {hostname}"))
+    for word, how in (getattr(resolve, "hops", None) or (lambda n: []))(host):
+        h = _ssh_host(word)
+        if h is None:
+            out.append(("*", "its config's jump held in a variable"))
+            continue
+        out += [(n, f"{how} {h}" + (f", {note}" if note else "")) for n, note in _ssh_reach(h, resolve, depth + 1)]
+    return out
 
 
 def ssh_rule_match(match, call, resolve=None):
     """What an ssh matcher matched in one call, as a short phrase, or None. `match`: {hosts: [globs]}, compared
-    case-insensitively with each destination the call reaches (`_ssh_argv`) as typed and as the ssh config's HostName
-    for it. A destination held in a variable or a substitution matches: a false positive over a miss."""
+    case-insensitively with each destination the call reaches (`_ssh_argv`), as typed and through the ssh config: its
+    HostName, and the ProxyJump and ProxyCommand its block sets (`_ssh_reach`). A destination held in a variable
+    matches wherever its literal parts can fit a listed host. A config the guard cannot read through, or one whose
+    Match block sets where a call goes, makes the call a match: a false positive over a miss."""
     import fnmatch
     globs = [str(h).lower() for h in match.get("hosts") or []]
+    opaque = getattr(resolve, "opaque", None)
+    if opaque and call["destinations"]:
+        return f"{call['head']}: {opaque[0]}, so the guard cannot tell where it goes"
     for word, how in call["destinations"]:
         host = _ssh_host(word)
         if host is None:  # held in a variable: only what its literal parts can fit (a user organization, msg
             # 01a1d7c9-9bc8: `agent-$h-node` loops are never `bastion-node`); a bare variable can be any host
             pattern = re.sub(r"\*+", "*", _ssh_host(_SSH_VAR.sub("*", str(word))) or "*")
-            names = [pattern] + [hn.replace("%h", pattern).lower()
-                                 for pats, hn in getattr(resolve, "blocks", []) or [] if hn
-                                 and any(_globs_meet(p.lower(), pattern) for p in pats if not p.startswith("!"))]
-            for n in names:
-                g = next((g for g in globs if _globs_meet(n, g)), None)
+            names = [(pattern, None)]
+            for b in getattr(resolve, "blocks", []) or []:
+                if any(_globs_meet(p.lower(), pattern) for p in b["patterns"] if not p.startswith("!")):
+                    if b.get("hostname"):
+                        names.append((b["hostname"].replace("%h", pattern).lower(), f"HostName {b['hostname']}"))
+                    names += [((_ssh_host(w) or "*"), f"{h} {w}") for w, h in _ssh_hops(b.get("proxyjump"),
+                                                                                       b.get("proxycommand"))]
+            for n, note in names:
+                g = next((g for g in globs if _globs_meet(n.rstrip("."), g)), None)
                 if g:
                     return (f"{call['head']} {how} {pattern}, a destination held in a variable that may be {g}"
-                            + (f" (HostName {n})" if n != pattern else ""))
+                            + (f" ({note})" if note else ""))
             continue
         whole = str(word).rsplit("@", 1)[-1].lower()  # a bare IPv6 destination (`ssh fe80::1`)
-        names = [host] + [n for n in [whole, resolve(host) if resolve else None] if n and n != host]
-        for n in names:
+        names = _ssh_reach(host, resolve) + ([(whole, None)] if whole != host else [])
+        for n, note in names:
             if any(fnmatch.fnmatchcase(n, g) for g in globs):
-                return f"{call['head']} {how} {host}" + (f" (HostName {n})" if n != host else "")
+                return f"{call['head']} {how} {host}" + (f" ({note})" if note else "")
     return None
 
 
