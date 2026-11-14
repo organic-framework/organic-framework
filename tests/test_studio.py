@@ -2334,6 +2334,70 @@ class HealthTabTest(unittest.TestCase):
         self.assertIn("health", dict(of_studio.VIEWS))
 
 
+class StudioViewsTest(unittest.TestCase):
+    """of_studio's fold views (bin/of_studio_views.py on bin/of_fold.py): the PRs' latest states, the applied diffs and
+    the loop events come from the listener's views, not the log's whole history of those names."""
+
+    def ev(self, rowid, name, ts, payload, org="acme"):
+        return {"rowid": rowid, "event_id": f"x{rowid}", "ts": ts, "name": name, "session_id": "s-op",
+                "position": "bot_operator", "source": "of", "org": org, "payload": payload}
+
+    def test_the_folds(self):
+        import of_loops
+        import of_studio_views as V
+        self.assertEqual(tuple(of_loops.KINDS), V.LOOP_KINDS)
+        pr = lambda i, ts, upd, state, org="acme": self.ev(i, "of.pr_state", ts, {
+            "url": "https://github.com/acme/arb/pull/7", "updated_at": upd, "state": state}, org)
+        ch = V.PR_STATES.fold({}, [pr(1, "2026-11-01T10:00:00Z", "2026-11-01T10:00:00Z", "open"),
+                                   pr(2, "2026-11-02T10:00:00Z", "2026-11-02T09:00:00Z", "open"),
+                                   pr(3, "2026-11-03T10:00:00Z", "2026-11-01T11:00:00Z", "open"),   # an older state, late
+                                   pr(4, "2026-11-03T10:00:00Z", "2026-11-01T11:00:00Z", "open", org="beta")])
+        self.assertEqual({k: v["event_id"] for k, v in ch.items()}, {"acme|arb#7": "x2", "beta|arb#7": "x4"})
+        rows = dict(ch)
+        self.assertEqual(V.PR_STATES.fold(rows, [pr(5, "2026-11-01T12:00:00Z", "2026-11-01T12:00:00Z", "closed")]), {})
+        self.assertEqual(V.PR_STATES.fold(rows, [pr(6, "2026-11-05T12:00:00Z", "2026-11-05T12:00:00Z", "closed")])
+                         ["acme|arb#7"]["payload"]["state"], "closed")
+        d = V.DIFFS_APPLIED.fold({}, [self.ev(7, "of.diff_applied", "2026-11-06T08:00:00Z",
+                                              {"id": "del-1", "kind": "delegate", "org": "acme", "diff": "x" * 1000})], )
+        self.assertEqual(d["x7"]["payload"], {"id": "del-1", "kind": "delegate", "org": "acme"})   # not the diff's text
+        self.assertEqual(of_model.delegation_effective(d.values()), {"del-1": of_model.epoch("2026-11-06T08:00:00Z")})
+        lp = self.ev(8, "of.loop_run", "2026-11-07T08:00:00Z", {"work": "w", "value": 1.0})
+        self.assertEqual(V.LOOP_EVENTS.fold({}, [lp])["x8"]["payload"], {"work": "w", "value": 1.0})
+
+    def test_read_through_the_listeners_store(self):
+        import tempfile
+        from unittest import mock
+        import of_fold
+        import of_store
+        import of_studio_views as V
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "of.db")}):
+            conn = of_store.connect()
+            conn.execute("INSERT INTO event (rowid, event_id, ts, name, org, source, payload, record) VALUES (?,?,?,?,?,?,?,?)",
+                         (10, "x9", "2026-11-07T08:00:00Z", "of.loop_run", "acme", "of", '{"work": "w"}', "{}"))
+            conn.commit()
+            self.assertIsNone(V.rows_of(V.LOOP_EVENTS))                        # never built: the caller reads as before
+            p = of_fold.FoldProcessor(V.LOOP_EVENTS)
+            p.handle(conn, [self.ev(1, "of.loop_run", "2026-11-07T07:00:00Z", {"work": "w"}),
+                            self.ev(2, "of.loop_run", "2026-11-07T07:30:00Z", {"work": "w"}, org="beta")])
+            conn.commit()
+            conn.close()
+            got = V.rows_of(V.LOOP_EVENTS, lambda x: x.get("org") == "acme")
+            self.assertEqual([r["event_id"] for r in got], ["x1", "x9"])           # the view, and the log's tail after it
+            with mock.patch.object(of_model, "load_events", side_effect=AssertionError("the view, not the log")):
+                dd = types_ns(org="acme", _source=None, rows=[])
+                self.assertEqual([r["event_id"] for r in of_studio.Data.loop_rows(dd)], ["x1", "x9"])
+        dd = types_ns(org="acme", _source=None, rows=[], _org_cfg={"name": "acme", "paths": []}, _others=[])
+        from unittest import mock
+        with mock.patch("of_studio_views.rows_of", return_value=None), \
+                mock.patch.object(of_model, "load_events", return_value=[dict(ev(1, "2026-11-01T00:00Z", "of.pr_state", "s"), org="acme")]):
+            self.assertEqual([r["event_id"] for r in of_studio.Data.pr_state_rows(dd)], ["e1"])   # before the view exists
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)
+
+
 class StructureInputTest(unittest.TestCase):
     """Who works with whom over a window, for a structure review (of_conductor msg 01a1d096-4ca3, 2026-11-12): messages
     once each, hand-overs and asks as pairs, rolled up to units with the line to one's owner apart; works that couple
