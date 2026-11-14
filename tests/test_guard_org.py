@@ -264,8 +264,19 @@ class SshRuleTest(unittest.TestCase):
         for cmd in ("ssh other -L 2222:us:22", "ssh -L 127.0.0.1:2222:gw1:22 other", "ssh -R 9000:us:22 other",
                     "ssh -o LocalForward='2222 us:22' other", "ssh other -L [::1]:2222:192.0.2.5:22"):
             self.assertTrue(self.hit(cmd), cmd)
-        for cmd in ("ssh other -L 8080:web.example.org:80", "ssh -D 1080 other", "ssh -L 8080:/tmp/sock other"):
+        for cmd in ("ssh other -L /tmp/s:us:22", "ssh -R /tmp/s:us:22 other", "ssh -L 2222/us/22 other"):
+            self.assertTrue(self.hit(cmd), cmd)                       # a socket on one side, us on the other (PR 165)
+        for cmd in ("ssh other -L 8080:web.example.org:80", "ssh -D 1080 other", "ssh -L 8080:/tmp/sock other",
+                    "ssh -L /tmp/a:/tmp/b other", "ssh -L 127.0.0.1:8080:/tmp/sock other"):
             self.assertEqual(self.hit(cmd), [], cmd)
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:                      # its config's forwards, every matching block's
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host db-1\n  LocalForward 2222 web.example.org:80\n  LocalForward 2223 us:22\n"
+                         "Host db-*\n  RemoteForward 9000 gw4:22\n")
+            self.assertIn("forwarding to us", self.hit(f"ssh -F {cfg} db-1", resolver=of_guard.ssh_resolver)[0])
+            self.assertIn("forwarding to gw4", self.hit(f"ssh -F {cfg} db-2", resolver=of_guard.ssh_resolver)[0])
         self.assertEqual(of_guard._ssh_forward_target("2222:us:22"), "us")
         self.assertEqual(of_guard._ssh_forward_target("[::1]:2222:[fe80::1]:22"), "fe80::1")
         self.assertIsNone(of_guard._ssh_forward_target("1080"))
