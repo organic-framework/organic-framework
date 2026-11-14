@@ -4804,7 +4804,8 @@ def cmd_pulse(args):
         import of_scratch
         mem = of_pulse.load_memory()
         of_scratch.check(positions, agents, bind, mem, prompt=None if args.no_nudge else of_pulse.herdr_prompt,
-                         log=(lambda m: None) if args.quiet else print, conn=conn)
+                         log=(lambda m: None) if args.quiet else print, conn=conn,
+                         org_paths=_org_paths() if os.path.exists(ORGS_FILE) else None)
         of_pulse.save_memory(mem)
     except Exception as e:  # noqa: BLE001
         print(f"scratch check: {e}")
