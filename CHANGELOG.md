@@ -13,6 +13,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ### Added
 
+- Development loops: **the owner's measure**. A loop target may carry `decided`, the person's yes on that measure, read from the registry only and resolved in the event log. Then the target needs no `money`, which becomes a reading beside it; each measure chains to the target by `to_target` or to money; `of loop hypothesis` takes no `--voi`, and an absent one ranks as `med`; `of loop decision change_objective` names the person's new yes with `--decided`. No position asks the owner to prove that measure in money. The plateau question and every gate on an act stay.
 - `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
 - `of init --language`: the language agents use with the organization's head, one explicit setting kept in `~/.config/of/owner.yaml`.
 - `of init --surface remote`, for a head who reaches OF only through the chat with their conductor (Remote Control, the desktop or the mobile app): the conductor starts with Remote Control on, and every agent starts in tmux. Kept in `~/.config/of/owner.yaml`; the design is `docs/remote.md`.
