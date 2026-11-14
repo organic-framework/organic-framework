@@ -191,13 +191,18 @@ class SharedServerTest(unittest.TestCase):
             with open(other, "w") as fh:
                 json.dump({"mcpServers": {}}, fh)
 
-            def chain(path, sid="s-1"):
+            def chain(path, sid="s-1", flag="--session-id"):
                 return [(11, "/bin/sh -c of tools header acme/grafana-read"),
-                        (10, f"claude --session-id {sid} -n x --settings y --mcp-config {path}")]
+                        (10, f"claude {flag} {sid} -n x --settings y --mcp-config {path}")]
             hdr = of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=chain(mine), state_dir=st)
+            self.assertEqual(hdr, {"Authorization": f"Bearer {tok}"})
+            # a moved, restarted or resumed session runs as `claude --resume <session>`
+            hdr = of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=chain(mine, flag="--resume"),
+                                  state_dir=st)
             self.assertEqual(hdr, {"Authorization": f"Bearer {tok}"})
             refused = [chain(other, "s-2"),                              # a session whose profile lacks it
                        chain(mine, "s-2"),                               # another session's file
+                       chain(mine, "s-2", "--resume"),                   # another session's file, resumed
                        chain("/tmp/forged.mcp.json"),                    # a file OF did not write
                        [(10, "claude --session-id s-1")],                # not launched by OF
                        [(10, "/bin/zsh")]]                               # no Claude Code at all
