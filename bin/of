@@ -3410,6 +3410,10 @@ def cmd_ask(args):
     refusal = of_ask_text.check(args.question, opts, args.task)
     if refusal:
         raise OfError(refusal)
+    yes = getattr(args, "yes", None)
+    if yes is not None and not (args.work and 1 <= yes <= len(opts)):  # the option a loop's decided may cite
+        raise OfError(f'--yes <n> marks which of --options is the yes on the work\'s decision, so it needs --work and an '
+                      f'option number 1..{len(opts) or "n"} (docs/registry.md, Works, "The owner\'s measure")')
     import of_asks_chat  # where the person can do a task: phone, browser or machine (docs/remote.md §3 row 4)
     refusal = of_asks_chat.check_where(getattr(args, "where", None), args.task, args.command)
     if refusal:
@@ -3440,6 +3444,7 @@ def cmd_ask(args):
         **({"task": True, "steps": task, "command": of_hook_mask(args.command) if args.command else None,
             "where": "machine" if args.command else (getattr(args, "where", None) or "machine")} if task else {}),
         **({"work": _work(me.get("_org"), args.work)} if args.work else {}),
+        **({"yes_option": yes} if yes is not None else {}),
         **({"escalated_from": src["event_id"]} if src else {})},
         position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender))
     if src:  # the unit owner's rewrite: OF's copy is superseded (of_asks), or there is none yet and none will come
@@ -6000,6 +6005,8 @@ def main(argv=None):
     ak2 = sub.add_parser("ask", help="ask the founder (or a peer) a question, visibly: of ask \"…\" [--options \"a|b\"] [--blocking]")
     ak2.add_argument("question", nargs="?", help="the question (with --task: a one-line title; default: the first step)")
     ak2.add_argument("--options", help="choices separated by |")
+    ak2.add_argument("--yes", type=int, help="with --work: the number of the option that is the yes on the work's "
+                     "decision; only that option, when chosen, is the owner's yes a loop's decided may cite")
     ak2.add_argument("--task", help="work the owner must do with his own hands (a key, a login, a payment, a UI click), "
                                     "step by step; an answer does not close it, you do after checking: --done-task")
     ak2.add_argument("--command", help="with --task: the command for the owner to paste")
