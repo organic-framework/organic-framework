@@ -2839,12 +2839,12 @@ def _ssh_pattern_match(patterns, name):
 _SSH_VAR = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB__\w*|`[^`]*`")
 
 
-def _globs_meet(a, b, limit=2048):
+def _globs_meet(a, b, limit=256):
     """Can one name match both globs A and B (`*` and `?`; other characters literal)? `agent-*-node` and
     `agent-us-node` meet; `agent-*-node` and `bastion-node` do not. A table, row by row, never a recursion: a word
     of 1,200 characters raised RecursionError, and the hook then lost every organization rule of that line (of_review
     and of_secrets-review on organic-framework PR 152). A glob longer than LIMIT counts as meeting: a false positive
-    over a miss."""
+    over a miss; a DNS name is at most 253 characters, so every real case stays exact and the worst pair small."""
     a, b = re.sub(r"\*+", "*", a), re.sub(r"\*+", "*", b)
     if len(a) > limit or len(b) > limit:
         return True
@@ -3154,18 +3154,22 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         try:  # each rule alone: an error while one matches counts as its match, and never loses the others
             # (of_review and of_secrets-review on organic-framework PR 152: a RecursionError lost them all)
             if isinstance(r.get("kubectl"), dict):
-                if calls is None:
-                    try:
-                        calls = kubectl_calls(cmd, env)
-                    except Exception:  # noqa: BLE001 - a parser slip never denies on an organization's rule
-                        calls = []
+                if calls is None:  # a line the parser cannot read counts as a match, as a matching error does
+                    try:            # (PR 152's notes: 25 of 31,216 kubectl lines and 4 of 12,185 ssh lines in 21 days)
+                        calls = kubectl_calls(cmd, env) if "kubectl" in cmd else []
+                    except Exception as e:  # noqa: BLE001
+                        calls = e
+                if isinstance(calls, Exception):
+                    raise calls
                 m = next(filter(None, (kubectl_rule_match(r["kubectl"], c) for c in calls)), None)
             else:
                 if scalls is None:
                     try:
                         scalls = ssh_calls(cmd) if _SSH_WORDS.search(cmd) else []
-                    except Exception:  # noqa: BLE001
-                        scalls = []
+                    except Exception as e:  # noqa: BLE001
+                        scalls = e
+                if isinstance(scalls, Exception):
+                    raise scalls
                 m = None
                 for c in scalls:
                     if c["config"] not in resolvers:
@@ -3179,7 +3183,7 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         except Exception as e:  # noqa: BLE001
             m = f"a call the guard could not read ({type(e).__name__}), counted as a match"
         if m:
-            hits.append((r, m))
+            hits.append((r, m if len(m) <= 300 else m[:297] + "..."))  # a long word never fills the record
     return hits
 
 
