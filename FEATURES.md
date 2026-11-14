@@ -56,7 +56,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | The desk: the agents of the owner's current case, in view | `of desk`; [`docs/desk.md`](docs/desk.md) | Works | `test_case`, `test_router`; 4,615 routing decisions on 6 days |
 | Pinned views | `of view` | Works | `test_focus` |
 | The pulse: who waits on whom, nudges, stalls | `of pulse`, `of listen` | Works | `test_pulse`, `test_listen`; 1,711 pulses and 1,306 nudges, every day |
-| Disk: each live session's scratch folder sized, its position told past a cap, new writes refused past a quota, a card to the owner when free disk runs low | `of pulse`; [`docs/storage.md`](docs/storage.md), Disk and retention | Early (built 2026-11-11) | `test_scratch`, `test_guard_scratch` |
+| Disk: each live session's scratch folder sized, its position told past a cap, new writes refused past a quota, a structure keeper told when its organization's sessions in one project pass a total, a card to the owner when free disk runs low that names what takes the space (swap, the event store, the temporary folders by project) | `of pulse`; [`docs/storage.md`](docs/storage.md), Disk and retention | Early (built 2026-11-11) | `test_scratch`, `test_guard_scratch` |
 | Resuming a session on its own account, model and permission mode after herdr restarts | `of resume-command`; `bin/of-shell.zsh` | Works | `test_resume` |
 
 ## Questions, messages and hand-overs

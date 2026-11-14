@@ -13,6 +13,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ### Added
 
+- Disk: the pulse tells an organization's structure keeper once when its own live sessions in one project folder pass 12 GiB together, listing only those sessions, and the low-disk card names what takes the space: swap, OF's event store, and the live sessions' temporary folders by project. `of.disk_usage` carries the swap, the store and the projects.
 - Development loops: **the owner's measure**. A loop target may carry `decided`, the person's yes on that measure, read from the registry only and resolved in the event log. Then the target needs no `money`, which becomes a reading beside it; each measure chains to the target by `to_target` or to money; `of loop hypothesis` takes no `--voi`, and an absent one ranks as `med`; the check proves who said it and shows the words, and only the structure keeper cites the yes, so `of loop decision change_objective` is refused on such a loop. No position asks the owner to prove that measure in money. The plateau question and every gate on an act stay.
 - `INSTALL.md`: a guide for the coding agent that installs OF for a person. It gives the questions to ask, each step's command and check, the steps only the person can take, and a recommended setup on a machine that stays on, reached over Tailscale.
 - `of init --language`: the language agents use with the organization's head, one explicit setting kept in `~/.config/of/owner.yaml`.
