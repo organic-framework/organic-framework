@@ -40,7 +40,11 @@ def key(rule, affected):
 def run_scenario(sc):
     doc, events, labels = sc["doc"], sc["events"], sc["labels"]
     a, b = epoch(sc.get("a", A_ISO)), epoch(sc.get("b", B_ISO))
-    model = of_model.build(doc, events, at=sc.get("b", B_ISO), org=doc.get("organization"))
+    # a loop target's decided counts only as a person's yes in the log (docs/registry.md Works, "Where it is read");
+    # a scenario names its yeses, and the harness never reads this machine's log
+    yeses = set(sc.get("yeses") or ())
+    model = of_model.build(doc, events, at=sc.get("b", B_ISO), org=doc.get("organization"),
+                           resolve=lambda d: ("ask", d) if d in yeses else None)
     res = of_diagnose.diagnose(model, events, a, b, context=sc.get("context"))
     fired = {key(it.get("rule"), it.get("affected")) for it in res.get("issues", [])}
     status = {r.get("rule"): r.get("status") for r in res.get("rules", [])}

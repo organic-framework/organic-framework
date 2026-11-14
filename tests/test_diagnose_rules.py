@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import of_diagnose  # noqa: E402  (the run)
 import of_diagnose_rules as R  # noqa: E402
 import of_measures as M  # noqa: E402
+import of_loops  # noqa: E402  (UNREAD, the resolver's answer for a log that will not open)
 import of_model  # noqa: E402
 
 FA, Q0 = M.FA, M.QV0
@@ -571,8 +572,10 @@ class LoopRulesTest(unittest.TestCase):
         return ev(f"d{i}", ts, "of.loop_decision", "s-search", dict({"work": self.W, "hypothesis": hid, "decision": kind}, **extra),
                   position="bot_search")
 
-    def found(self, rule, rows, doc=None):
-        m = of_model.build(doc or self.doc(), rows, at=self.B)
+    YES = {"01a1d957-c8b6", "01a1d980-1111"}   # the ids that resolve as a person's yes; never this machine's log
+
+    def found(self, rule, rows, doc=None, resolve=None):
+        m = of_model.build(doc or self.doc(), rows, at=self.B, resolve=resolve or (lambda d: ("ask", d) if d in self.YES else None))
         d = of_diagnose.diagnose(m, rows, self.A, self.B)
         return [i for i in d["issues"] if i["rule"] == "ap." + rule], next(r for r in d["rules"] if r["rule"] == "ap." + rule)
 
@@ -702,6 +705,34 @@ class LoopRulesTest(unittest.TestCase):
         # an empty decided is no yes
         blank = self.doc(target=dict(self.DECIDED, decided=" ", money="USD per day"))
         self.assertEqual([i["part"] for i in self.found("loop-objective-drift", on_target + spread, blank)[0]], ["unpriced"])
+
+    def test_objective_drift_when_decided_does_not_resolve(self):
+        # the PR 168 review's addition to hand-over 95bf514e (docs/registry.md Works, "Where it is read, and how it is checked"): an id
+        # that is not a person's yes in the log leaves the loop one without decided, and the issue says why
+        on_target = [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 0.9)]
+        spread = [self.run_(i, f"2026-11-0{4 + i // 2}T1{i}:00Z", "offline", "h2", 18 - i, metric="trigger_coverage")
+                  for i in range(2, 6)]
+        tied = [{"name": "trigger_coverage", "to_target": "every trigger seen is one more reaction timed"}]
+        typed = self.doc(target=dict(self.DECIDED, decided="01a1d999-0000"), measures=tied)
+        got, _ = self.found("loop-objective-drift", on_target + spread, typed)
+        self.assertEqual([i["part"] for i in got], ["unpriced"])
+        self.assertEqual({k: got[0]["evidence"][k] for k in ("decided_unresolved", "decided_unresolved_why")},
+                         {"decided_unresolved": "01a1d999-0000", "decided_unresolved_why": "not_found"})
+        self.assertNotIn("decided", got[0]["evidence"])
+        self.assertIn("price it in money before more work on it (the target's decided 01a1d999-0000 does not count as the "
+                      "owner's yes: the log holds no answered ask of the owner or prompt a person typed with that id)",
+                      got[0]["summary"])
+        # a log that cannot be read is said so
+        unread, _ = self.found("loop-objective-drift", on_target + spread, typed, resolve=lambda d: of_loops.UNREAD)
+        self.assertEqual(unread[0]["evidence"]["decided_unresolved_why"], "unread")
+        self.assertIn("the event log could not be read to look it up", unread[0]["summary"])
+        # the same target resolving is quiet; a resolved target and a change of objective whose yes does not resolve
+        self.assertEqual(self.found("loop-objective-drift", on_target + spread,
+                                    self.doc(target=self.DECIDED, measures=tied))[0], [])
+        lost = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", metric="trigger_coverage", decided="01a1d999-1111")]
+        got, _ = self.found("loop-objective-drift", on_target + lost, self.doc(target=self.DECIDED))
+        self.assertEqual([(i["part"], i["evidence"]["change_objective_unresolved"]) for i in got], [("untied", ["01a1d999-1111"])])
+        self.assertIn("a change of objective to trigger_coverage has no yes from the owner", got[0]["summary"])
 
     SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
                "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
