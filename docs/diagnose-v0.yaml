@@ -128,12 +128,12 @@ rules:
     remedies: [cross-model review before results reach the owner or production, verifier position]
 
   chatty:
-    version: 2                   # v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
-    labels_carry_from: [0, 1]    # v1 kept the organization and pair parts' issue ids; v2 changes only the decider
+    version: 3                   # v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs (diagnose.md 2.10); v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
+    labels_carry_from: [0, 1, 2] # v1 kept the organization and pair parts' issue ids; v2 changes only the decider; v3 only narrows what fires
     decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
     p: 0.6
     m_decide: 5
-    thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, unused_after_hours: 24, observed_days_gte: 3,
+    thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, pair_merged_prs_gte: 3, unused_after_hours: 24, observed_days_gte: 3,
                  injected_turns_per_hour_gte: 20, flood_hours_gte: 3, nudges_per_pair_gte: 10}
     needs: {default: [of.agent_message_out, of.work_record, wr.position], receiver_flood: [of.agent_message_in], repeat_nudges: [of.human_prompt]}   # parts run on their own inputs (of_studio 44d4852)
     # default reads attributed merged PRs: without wr.position every busy pair has 0 PRs and fires (first user organization, 2026-11-10: 133)

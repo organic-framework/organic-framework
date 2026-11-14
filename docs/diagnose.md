@@ -146,7 +146,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Rule.** Over 7 days:
   - compactions per active day ≥ max(4, 3 × the organization's median, over the positions active in the window);
   - and ≥ 2 forgotten-fact errors after compactions.
-- **Decider:** the structure keeper. Both remedies, a fresh holder and a split, are structure changes, as for chatty@2.
+- **Decider:** the structure keeper. Both remedies, a fresh holder and a split, are structure changes, as for chatty@3.
 - **Evidence:** the compactions, the active days and the rate, the organization's median and the floor it sets, and each correction with its kind, rule, `repeat_of` and the minutes since the compaction before it.
 - **Default remedy.**
   - A fresh holder with a written handover, if the load is history-bound (one long-lived session).
@@ -233,18 +233,19 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   - with ≥ 3 corrections;
   - and no review evidence on the position's path.
 - **What it cannot tell yet is a note, not an issue.** A position with ≥ 3 corrections of its results and no merged work has nothing to divide by. A position whose merged changes do not say whether they were reviewed cannot show the third condition: local commits carry no review count, nor do PRs imported before organic-framework 11aee30. When only some changes say, the issue counts only those.
-- **Decider:** the structure keeper. A review step and a verifier position are structure changes, as for chatty@2.
+- **Decider:** the structure keeper. A review step and a verifier position are structure changes, as for chatty@3.
 - **Default remedy.** A verification step: a cross-model review before results go to the owner or to production. Or a verifier position for the class of result.
 - **ΔT basis:** rework avoided, plus decisions made on wrong facts avoided. *p* = 0.6. *m_decide* = 5 min.
 
-### 2.10 Chatty coordination — `ap.chatty@2`
+### 2.10 Chatty coordination — `ap.chatty@3`
 
 *v1 (2026-11-07), at the founder's request through `of_architect` and `of_lab`: the receiver's side. v0 saw chatter only as messages per merged PR, from the sender's side. v1 adds two parts: a position whose turns are mostly started by typed-in text, and a waiter whose wait is pushed again and again by nudges. Built by `of_studio` (2026-11-07). The pair and organization part keep their issue ids, so owner labels on @0 still apply to them.*
 *v2 (2026-11-10): decided by the structure keeper, not the owner, through `of_platform`'s daily keeper digest (`of_architect`'s decision). Its remedies, a published interface, a queue or a hand-over, are structure diffs the owner approves. With PRs attributed it raised 56 issues in the first user organization that would otherwise have reached its owner. Labels carry over: only the decider changed.*
+*v3 (2026-11-14), the relay-era recalibration: the pair part measures a pair per merged PR only when the pair merged ≥ 3 PRs in the window (`pair_merged_prs_gte`). The first user organization's structure keeper labelled the pair issues of 2026-11-12: all 10 false positives were pairs whose work is not merged code, at most one PR between them in the week. Their notes name the work: the structure keeper's registry and brief commits in the organization's repository; compliance and legal registers and questions to counsel; a treasury keeper's wallet and signer policy; an auditor's findings handed to their owners by message. Both true positives (a coordinator with two code positions) merged 21 and 29 PRs, at 10.7 and 36 messages per PR. So the threshold stays at 10 per PR on relay-era counts, and only the denominator's floor is new. On 2026-11-14 it takes the organization's open pair issues from 43 to 19. The rule's notes count the pairs below the floor (33, labelled ones included). Labels carry over: v3 only narrows what fires.*
 
 *Counting rule (no version bump: it fixes the input, not the rule): only days that have ended and whose merged PRs are imported count, for the parts that read WR and for §2.13. Otherwise, today's missing PRs inflate msgs per WR.*
 
-*Input rule (2026-11-10, no version bump): the organization part compares like with like. From 2026-11-06 the relay logs every `of send` (`of.agent_message_out` with source `of`), where earlier windows saw only messages found in transcripts (`import`, `hook`): in the first user organization about 3,300 a day against about 500, and the part fired "3.4 to 25.4 per PR". When the recorders that wrote at least 10% of each window's messages differ, the part is not compared and says so in the rule's notes. From 2026-11-13 both windows are relay-era. The pair part's threshold (10 per PR) was set on transcript-era counts; it is recalibrated on the first relay-era week, with labels.*
+*Input rule (2026-11-10, no version bump): the organization part compares like with like. From 2026-11-06 the relay logs every `of send` (`of.agent_message_out` with source `of`), where earlier windows saw only messages found in transcripts (`import`, `hook`): in the first user organization about 3,300 a day against about 500, and the part fired "3.4 to 25.4 per PR". When the recorders that wrote at least 10% of each window's messages differ, the part is not compared and says so in the rule's notes. From 2026-11-13 both windows are relay-era. The pair part's threshold (10 per PR) was set on transcript-era counts; v3 recalibrated it on the first relay-era week, with labels.*
 
 *Input rule (2026-11-10, no version bump): the organization and pair parts divide by **attributed** merged PRs, so they need `wr.position` (at least half of the merged PRs attributed to a position), as §2.4 does. On the first user organization on 2026-11-10, 90 of 820 merged PRs were attributed: 133 pair issues fired, 68 of them on pairs with no attributed PR. Until PRs are attributed, these two parts report blocked.*
 
@@ -258,7 +259,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   | Part | Condition |
   |---|---|
   | organization | msgs per WR rises ≥ 50% against the previous window |
-  | pair | one pair has ≥ 10 msgs per WR, typically booking or status traffic with a coordinator |
+  | pair | one pair has ≥ 10 msgs per WR over ≥ 3 merged PRs (v3), typically booking or status traffic with a coordinator |
   | `receiver_flood` | a position had ≥ 20 typed-in turns in an hour, on ≥ 3 hours |
   | `repeat_nudges` | `of pulse` nudged the same position ≥ 10 times for the same waiter |
 
@@ -671,7 +672,7 @@ The columns:
 | orphan-work@3 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
 | missing-verifier@0 | 2026-11-14: quiet; 1 note (a position that answers the owner, 7 corrections of its results, no merged work) | 2026-11-14: quiet; 1 note (`of_conductor`, 18 corrections of its results, no merged work) | P/R 1.0; negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed; reports blocked without the owner's corrections | — | a part for positions whose results are answers (both notes), with its denominator; reverts |
-| chatty@2 | fired 31 (pair 19, flood 5, nudges 7) | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges) | 2 tp (pair), fire | 19 pair issues to review |
+| chatty@3 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair), fire; 10 fp, all below v3's floor (2026-11-12) | 19 pair issues to review |
 | unclear-mandate@1 | quiet | quiet | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding | — | — |
 | function-gap@0 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
