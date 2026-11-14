@@ -835,17 +835,20 @@ def _positional(args, value_flags):
 _RAW_POD_SUBS = ("log", "proxy")  # a pod's subresources that are not the Pod object (status, ephemeralcontainers … are)
 
 
-def _kube_raw(args):
+def _kube_raw(args, line_vars=None):
     """(namespace or None, kind, subresource or None) of a `--raw` API path, read as the API server reads it (of_review
     and of_secrets-review on organic-framework PR 151): cut at `#`, percent-decoded until it no longer changes, cut at
     `?`, empty and `.` segments dropped and `..` applied, lowercased, and a leading legacy `watch/` (which streams the
     objects) or `proxy/` (its subresource is then proxy) dropped. The kind is `unparsed` for a path the guard cannot
     read (held in a variable or a substitution) and `(none)` for a path that names no object (discovery, /healthz).
-    None without --raw."""
+    A variable LINE_VARS knows (set earlier on the same line, as G14 follows one) is read as its value (of_review on
+    PR 151: `P=/api/v1/…/secrets/k; kubectl get --raw "$P"`). None without --raw."""
     from urllib.parse import unquote
     path = _opt_value(args, ("--raw",))
     if path is None:
         return None
+    if "$" in path and line_vars:
+        path = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: line_vars.get(m.group(1) or m.group(2), m.group(0)), path)
     if "$" in path or "__OFSUB__" in path or "`" in path:
         return None, "unparsed", None
     p = path.split("#", 1)[0]
@@ -880,7 +883,7 @@ def _kube_raw(args):
     return ns, rest[0], sub
 
 
-def _kubectl_secret_deny(args):
+def _kubectl_secret_deny(args, line_vars=None):
     """Cluster reads that print a stored Secret's values (of_architect, 2026-11-06, after three real leaks,
     the last from a go-template/jsonpath that fell back to printing the whole object). For a Secret kind
     (any alias/namespace, -A, comma lists, `all`): allow only -o name, the default table and `describe`
@@ -891,8 +894,10 @@ def _kubectl_secret_deny(args):
     has_secret = any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a))
     has_pod = any(p in ("pod", "pods", "po") for a in nonopt for p in re.split(r"[,/]", a))
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0]
-    raw = _kube_raw(args)  # the API's own JSON: a Secret's values; the Pod, its spec with env values (not its log)
-    if raw and (raw[1] == "secrets" or (raw[1] == "pods" and (raw[2] or "").split("/")[0] not in _RAW_POD_SUBS)):
+    raw = _kube_raw(args, line_vars)  # the API's JSON: a Secret's values; the Pod, its spec with env (not its log);
+    # a service account's token subresource, which mints and prints a bearer token (of_secrets-review on PR 151)
+    if raw and (raw[1] == "secrets" or (raw[1] == "pods" and (raw[2] or "").split("/")[0] not in _RAW_POD_SUBS)
+                or (raw[1] == "serviceaccounts" and (raw[2] or "").split("/")[0] == "token")):
         return _prints(f"kubectl {sub or ''} --raw on {raw[1]}".replace("  ", " "))
     if sub == "edit" and has_secret:
         return _prints("kubectl edit secret")
@@ -910,7 +915,7 @@ def _kubectl_secret_deny(args):
     return None
 
 
-def _cluster_secret_deny(head, args, to_file):
+def _cluster_secret_deny(head, args, to_file, line_vars=None):
     """A command that prints a stored secret value from a cluster or a secret manager. Writing it to a file is
     the owner's to allow, so a `>` redirect is exempt (of_architect, 2026-11-06)."""
     if head in ("wg", "awg"):  # WireGuard/Amnezia: showconf and the private/preshared keys (plain `show` is public)
@@ -922,7 +927,7 @@ def _cluster_secret_deny(head, args, to_file):
     if to_file:
         return None
     if head == "kubectl":
-        return _kubectl_secret_deny(args)
+        return _kubectl_secret_deny(args, line_vars)
     if head == "helm":
         pos = _positional(args, _KUBECTL_VALUE | {"--kube-context"})
         if pos[:1] == ["get"] and len(pos) > 1 and pos[1] in ("values", "all", "manifest"):
@@ -2138,6 +2143,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
         return _reads(READERS.search(bare) and _loose_secret_path(bare))
     here = _DENY_CWD[0]  # the directory a command runs in, following `cd` along the line (G17)
     exported = {}        # what `export` set earlier on the line (G17: GIT_CONFIG_* variables)
+    line_vars = {}       # shell variables a bare `NAME=value` set earlier on the line (G6: a --raw path)
     lab_link = False     # a link or a socket made under of_herdr's lab earlier on the line (G19)
     for pipe in pipes:
         last = len(pipe) - 1
@@ -2150,6 +2156,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 continue
             s = _simple(stext)
             if not s:
+                line_vars.update(_assignments(stext))  # `P=…;` alone: a shell variable the line reads later
                 continue
             if s[0] == "<read":
                 return (f"a command that reads memory or a core dump ({s[1]})", s[1]) if _memory_path(s[1]) \
@@ -2161,7 +2168,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 hit = _security_deny(args)
                 if hit:
                     return hit
-            hit = _cluster_secret_deny(head, args, to_file) or _memory_deny(head, args) \
+            hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
+                or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
