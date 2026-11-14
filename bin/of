@@ -3148,6 +3148,8 @@ def cmd_relay(args):
             stop.wait(3600)
     except KeyboardInterrupt:
         stop.set()
+    finally:
+        of_relay.clear_heartbeat()
     return 0
 
 
@@ -3185,6 +3187,8 @@ def _relay_service(action):
         print(f"of relay: stopped the pid-file relay (pid {old})")
     if action == "off":
         r = subprocess.run(["launchctl", "bootout", target], capture_output=True, text=True)
+        import of_relay_client
+        of_relay_client.clear_heartbeat()  # no stale pid for the watchdog (of_review on organic-framework PR 142)
         print("of relay: off" if r.returncode == 0 else "of relay: was not loaded")
         return 0
     if not os.path.exists(plist):  # a machine set up before of init installed it (of_onboarding, 9b8f7e9)

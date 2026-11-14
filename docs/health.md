@@ -22,7 +22,7 @@ The checks never run on the listener's loop, because the listener is one of the 
 | Check | What it measures | Degraded | Failed | Runs in | Owner |
 |---|---|---|---|---|---|
 | `server.health` | of-server's answer time on `/v1/health` | over 2 s | over 20 s, or no answer | `of health run` | `of_server` |
-| `relay.oldest` | the age of the oldest message queued for an idle receiver | over 10 min | over 60 min | of-server | `of_server` |
+| `relay.oldest` | how long the oldest message has been queued for a live, idle receiver, from the first check that saw it so (a wait on a busy agent counts nothing; a message the person holds, with a dialog open or text in the input box, does not count) | over 10 min | over 60 min | of-server | `of_server` |
 | `listener.lag.<processor>` | events behind, and seconds since the processor's last tick | over 2 min | over 10 min | `of health run` | `of_platform` |
 | `view.age.<view>` | the age of each view a screen or the CLI reads | over the view's declared lag | over 5 times it | `of health run` | `of_platform`, with the view's owner |
 | `hooks.errors` | hook calls that failed or spooled, out of all calls, in the last 10 min | over 1% | over 10% | `of health run` | `of_platform` |

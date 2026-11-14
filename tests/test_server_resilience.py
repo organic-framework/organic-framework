@@ -240,6 +240,14 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(len(tries), 1)
         self.assertIn("did not complete (TimeoutExpired", self.said[-1])
 
+    def test_a_restart_launchd_refuses_is_recorded_as_failed(self):
+        # of_review on organic-framework PR 142: `kickstart -k` after a bootout exits 113 ("Could not find service")
+        with mock.patch.object(of_server.of_events, "emit", lambda *a, **k: None):
+            got = [of_server.watchdog(self.cfg, now=t, probe=lambda: False, restart=lambda: mock.Mock(returncode=113),
+                                      dump=self.dumped.append, log=self.said.append) for t in range(0, 240, 60)]
+        self.assertEqual(got[-1], "restart_failed")
+        self.assertIn("launchctl exit 113", self.said[-1])
+
     def test_without_launchd_it_only_says_so(self):
         with mock.patch.object(of_server, "launchd_job", lambda: None), \
                 mock.patch.object(of_server.of_events, "emit", lambda *a, **k: None):
