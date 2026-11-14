@@ -245,8 +245,12 @@ def phase_restore(home, uid, bundle, src_home):
 B3_CUT = "2026-11-15T12:00:00.000Z"
 
 
-def _b3_rec(of_events, kind, payload, ts, position="acme_ops", session="S1", host="laptop"):
-    r = of_events.record(kind, payload, position=position, session=session)
+B3_SRC_HOST = "laptop"   # the source machine id; --dry-run lists it, --person-acts-from names it
+
+
+def _b3_rec(of_events, kind, payload, ts, position="acme_ops", session="S1", host=B3_SRC_HOST, org=ORG):
+    # org is carried on the event: the merge moves one organization's rows (--org), so the delta must be tagged.
+    r = of_events.record(kind, payload, position=position, session=session, org=org)
     r["timestamp"] = ts
     r["host.id"] = host
     if kind == "handover_proposed":
@@ -262,9 +266,10 @@ def _b3_ask(of_events, text, ts):
 
 
 def phase_b3(home):
-    """B3-1 (the event-store delta merge by id is idempotent) and B3-2 (the delta's ask and hand-over show in the
-    target's `of asks` / `of handover list`). of_server's merge (bin/of_merge_delta.py, organic-framework PR via
-    of_release; ref from of_server 01a1dc73), run as the target user on a copy of the source store, no account/herdr."""
+    """B3-1 (one organization's event-store delta merged by id, idempotent), B3-2 (the delta's ask and hand-over
+    show in the target's `of asks` / `of handover list`), and B3-3 (acts of a person are held unless the merge
+    names the host that wrote them, --person-acts-from). of_server's merge (bin/of_merge_delta.py; reviewed ref
+    4b96314, of_server 01a1dc7b), run as the target user on a copy of the source store, with no account or herdr."""
     sys.path.insert(0, TREE)
     import of_store, of_events  # noqa: E402
     base = os.path.join(home, "b3")
@@ -291,17 +296,40 @@ def phase_b3(home):
     src.close()
     dst.close()
 
-    # B3-1: the CLI merge of_server documented, then a second run that must add nothing.
-    merge_cli = [sys.executable, os.path.join(TREE, "of_merge_delta.py"), "--source", src_path, "--target", dst_path,
-                 "--since", B3_CUT, "--json"]
-    r1 = subprocess.run(merge_cli, capture_output=True, text=True)
-    c1 = json.loads(r1.stdout) if r1.stdout.strip() else {}
-    r2 = subprocess.run(merge_cli, capture_output=True, text=True)
-    c2 = json.loads(r2.stdout) if r2.stdout.strip() else {}
+    def run_merge(target, *extra):
+        # --org is required (a merge moves one organization's rows); --since is the cutover.
+        cli = [sys.executable, os.path.join(TREE, "of_merge_delta.py"), "--source", src_path, "--target", target,
+               "--org", ORG, "--since", B3_CUT, "--json", *extra]
+        r = subprocess.run(cli, capture_output=True, text=True)
+        return (json.loads(r.stdout) if r.stdout.strip() else {}), r
+
+    def ev_count(path, name=None):
+        c = of_store.connect(path)
+        try:
+            q = "SELECT count(*) FROM event" + (" WHERE name = ?" if name else "")
+            return c.execute(q, (name,) if name else ()).fetchone()[0]
+        finally:
+            c.close()
+
+    FROM_SRC = ["--person-acts-from", B3_SRC_HOST]   # 4b96314: acts of a person cross only from a named host
+
     ok = True
+    # B3-dry: --dry-run writes nothing and lists the delta's acts of a person (here the one human prompt) with the
+    # host that wrote them, so whoever runs the cutover sees them first (of_server's reviewed behaviour, PR 195).
+    cdry, _ = run_merge(dst_path, "--dry-run")
+    pa = cdry.get("person_acts", [])
+    ok &= emit("B3-dry", ev_count(dst_path) == 1
+               and any(a.get("name") == "of.human_prompt" and a.get("host_id") == B3_SRC_HOST for a in pa),
+               f"dry wrote nothing (store still {ev_count(dst_path)}); person_acts="
+               f"{[(a.get('name'), a.get('host_id'), a.get('held')) for a in pa]}")
+
+    # B3-1: the real merge, naming the source host so its person acts cross, adds the delta once (the two asks, the
+    # hand-over, the human prompt => 3 events, 1 hook record); a second run adds nothing for every table.
+    c1, _ = run_merge(dst_path, *FROM_SRC)
+    c2, _ = run_merge(dst_path, *FROM_SRC)
     ok &= emit("B3-1-merge", c1.get("event", {}).get("added") == 3 and c1.get("hook_record", {}).get("added") == 1,
                f"first merge: events+{c1.get('event', {}).get('added')}, hooks+{c1.get('hook_record', {}).get('added')}")
-    tot2 = sum(t.get("added", 0) for t in c2.values()) if c2 else None
+    tot2 = sum(t.get("added", 0) for t in c2.values() if isinstance(t, dict))
     ok &= emit("B3-1-idempotent", tot2 == 0, f"second merge total added={tot2}")
 
     # B3-2: the delta shows in the target's user-facing projections; OF_DB points `of` at the target store.
@@ -322,6 +350,21 @@ def phase_b3(home):
                f"delta ask in `of asks`: {'Make p50 the target?' in asks_out}")
     ok &= emit("B3-2-handover", "Rotate the key" in hands_out,
                f"delta hand-over in `of handover list`: {'Rotate the key' in hands_out}")
+
+    # B3-3: into a fresh target with no --person-acts-from, the human prompt is held (its event stays out) while
+    # the asks and the hand-over merge; a later run that names the source host brings the held act in.
+    dst2 = os.path.join(base, "host2.db")
+    d2 = of_store.connect(dst2)
+    of_store.add_event(d2, before)   # the pre-cutover shared ask, as B1 left it
+    d2.close()
+    chold, _ = run_merge(dst2)                       # no --person-acts-from: hold the person act
+    ok &= emit("B3-3-held", chold.get("event", {}).get("held") == 1 and ev_count(dst2, "of.human_prompt") == 0
+               and ev_count(dst2) == 3   # before + the two org events (ask, hand-over); the human prompt held out
+               and any(a.get("name") == "of.human_prompt" and a.get("held") for a in chold.get("person_acts", [])),
+               f"held: event held={chold.get('event', {}).get('held')}, human_prompt in store={ev_count(dst2, 'of.human_prompt')}, store={ev_count(dst2)}")
+    crel, _ = run_merge(dst2, *FROM_SRC)             # naming the host brings the held act in
+    ok &= emit("B3-3-from-host", ev_count(dst2, "of.human_prompt") == 1 and crel.get("event", {}).get("added") == 1,
+               f"after naming the host: human_prompt in store={ev_count(dst2, 'of.human_prompt')}, added={crel.get('event', {}).get('added')}")
     return 0 if ok else 1
 
 
