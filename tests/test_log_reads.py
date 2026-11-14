@@ -46,8 +46,6 @@ ALLOWED = {
     ('of_asks_tui.py', 'load', 'of_asks.load(conn)'): ASKS,
     ('of_capacity.py', '_session_rows', "SELECT ts, payload FROM event WHERE name = 'of.holder_change"): CAPACITY,
     ('of_capacity.py', 'creds', "SELECT name, payload FROM event WHERE name IN ('of.credentia"): CAPACITY,
-    ('of_capacity.py', 'loop_costs', "SELECT payload FROM event WHERE name = 'of.loop_cost'"): CAPACITY,
-    ('of_capacity.py', 'loop_costs', 'SELECT event_id, ts, session_id, payload FROM event WHERE na'): CAPACITY,
     ('of_conductor_panel.py', 'open_cards', 'of_asks.load(conn)'): ASKS,
     ('of_conductor_panel.py', 'card_titles', 'of_asks.load(conn)'): ASKS,
     ('of_corrections.py', 'due_digests', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
