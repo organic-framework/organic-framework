@@ -67,6 +67,42 @@ class HeartbeatTest(StateDir):
         self.assertIn("poll http://s", loops)
         self.assertTrue(R.relay_healthy()[0])
 
+    def test_each_organizations_pull_moves_the_coord_loop(self):
+        """Two organizations on one hung server: each pull is bounded, but together they outlast STALE_S, so the
+        loop is stamped before each one (of_review on organic-framework PR 142)."""
+        seen = {}
+
+        class Client:
+            def put_presence(self, body):
+                return {}
+
+            def poll_messages(self, wait):
+                time.sleep(0.05)
+                return {"messages": []}
+
+            def coord(self, org, after):
+                if org == "a" and "a" not in seen:
+                    seen["a"] = time.time()
+                    time.sleep(0.6)                                          # the first organization's slow pull
+                elif org == "b" and "b" not in seen:
+                    seen["b"] = time.time()
+                    time.sleep(0.4)                                          # the presence loop writes meanwhile
+                    with open(R.heartbeat_path()) as fh:
+                        seen["tick"] = json.load(fh)["loops"]["coord http://s"]
+                return {"last": 0, "events": []}
+        with mock.patch.object(R, "org_drains", lambda default: {}), \
+                mock.patch.object(R, "record_queues", lambda *a, **k: None), \
+                mock.patch.object(R, "PRESENCE_CHECK", 0.1):
+            stop, threads = R.run(lambda: {}, lambda u: Client(), {"a": "http://s", "b": "http://s"}, "http://s",
+                                  log=lambda m: None)
+            try:
+                deadline = time.time() + 5
+                while time.time() < deadline and "tick" not in seen:
+                    time.sleep(0.1)
+            finally:
+                stop.set()
+        self.assertGreaterEqual(seen["tick"], seen["a"] + 0.5)               # stamped after a's pull, before b's
+
 
 class WatchdogTest(StateDir):
     def test_a_relay_whose_loops_stopped_is_dumped_then_restarted(self):
