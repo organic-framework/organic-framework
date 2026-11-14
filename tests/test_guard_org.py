@@ -327,6 +327,21 @@ class AllowJumpTest(unittest.TestCase):
             self.assertEqual(self.hit(f"ssh -F {cfg} target", resolver=of_guard.ssh_resolver), [])
             self.assertTrue(self.hit(f"ssh -F {cfg} elsewhere", resolver=of_guard.ssh_resolver))
 
+    def test_to_is_the_name_ssh_connects_to_and_a_forward_stays_in(self):
+        """of_secrets-review on PR 157: `to` matched the typed alias, so `Host 192.0.2.70` with another HostName was an
+        allowed jump to another target; a forward rides the allowed jump past it."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host 192.0.2.70\n  HostName secret.internal\nHost real\n  HostName 192.0.2.70\n")
+            hit = lambda cmd: self.hit(cmd, resolver=of_guard.ssh_resolver)  # noqa: E731
+            self.assertTrue(hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70"))           # really secret.internal
+            self.assertEqual(hit(f"ssh -F {cfg} -J agent-gateway real"), [])             # really 192.0.2.70
+            self.assertTrue(hit(f"ssh -F {cfg} -o 'ProxyCommand ssh -W %h:%p agent-gateway' 192.0.2.70"))
+        for fwd in ("-L 8080:192.0.2.9:80", "-R 9000:localhost:22", "-D 1080", "-W db:5432", "-O forward"):
+            self.assertTrue(self.hit(f"ssh -J agent-gateway {fwd} 192.0.2.70"), fwd)
+
 
 class OrgRuleTest(unittest.TestCase):
     def test_exec_into_a_runner_pod(self):
