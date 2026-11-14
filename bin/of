@@ -800,15 +800,46 @@ def work_loop(org, wid, orgs_file=None):
         w = ((yaml.safe_load(fh) or {}).get("works") or {}).get(wid)
     if not isinstance(w, dict):
         return None, None
+    return w, _loop_of(w, org, orgs_file)
+
+
+def _loop_of(w, org, orgs_file=None):
+    """A work's loop: its `loop:` in the registry, else the loop.yaml beside its doc, else None."""
     if "loop" in w:
-        return w, w["loop"]
+        return w["loop"]
     dp = doc_path(w.get("doc"), _org_paths(orgs_file or ORGS_FILE).get(org) or [])
     ly = os.path.join(os.path.dirname(dp), "loop.yaml") if dp else None
     if ly and os.path.isfile(ly):
         with open(ly) as fh:
             doc = yaml.safe_load(fh) or {}
-        return w, doc.get("loop", doc)
-    return w, None
+        return doc.get("loop", doc)
+    return None
+
+
+def position_loops(position, orgs_file=None):
+    """[(work id, owner|doer, loop)] of the works with a loop that POSITION (a loaded position) owns or does in its
+    organization: for the session's start context (bin/of_context.py). One read of its registry."""
+    regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
+    path, name = regs.get(position.get("_org")), position.get("name")
+    if not path or not name:
+        return []
+    with open(path) as fh:
+        works = (yaml.safe_load(fh) or {}).get("works") or {}
+    out = []
+    for wid, w in works.items() if isinstance(works, dict) else ():
+        if not isinstance(w, dict):
+            continue
+        doers = w.get("doers") if isinstance(w.get("doers"), list) else []
+        role = "owner" if w.get("owner") == name else "doer" if name in doers else None
+        if not role:
+            continue
+        try:
+            loop = _loop_of(w, position["_org"], orgs_file)
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(loop, dict):
+            out.append((str(wid), role, loop))
+    return out
 
 
 def check_works(works, position_names, systems, units=None, statuses=None):
@@ -1933,7 +1964,7 @@ def cmd_loop(args):
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work)
     if args.action == "show":
-        print(f"{args.work} ({org}): target {(loop.get('target') or {}).get('metric')}; ladder {' > '.join(of_loop.rungs(loop))}")
+        print(f"{args.work} ({org}): {of_loop.target_line(loop)}; ladder {' > '.join(of_loop.rungs(loop))}")
         seg = (loop.get("target") or {}).get("segment")
         if isinstance(seg, dict):  # docs/registry.md, Works: the segment and its context beside the target
             print(f"  segment (controlled): {seg.get('start')} -> {seg.get('end')}")
@@ -1942,7 +1973,7 @@ def cmd_loop(args):
                 print(f"  context (outside the segment, never a target): {'; '.join(parts)}")
         for h in reg["hypotheses"]:  # the change, the prediction and the latest run's verdict each say what they are:
             # a prediction printed alone was read as a finding (of_conductor, 2026-11-12)
-            print(f"  {h['id']} {h['status']:<8} voi {h['voi'] or '?':<4} cost {h['cost'] or '?':<22} runs {h['runs']}  {h['change']}")
+            print(f"  {h['id']} {h['status']:<8} voi {h['voi'] or '(med)':<5} cost {h['cost'] or '?':<22} runs {h['runs']}  {h['change']}")
             if h.get("predict"):
                 pr = " ".join(str(h["predict"]).split())
                 print(f"      prediction (not a result): {pr[:240] + ('…' if len(pr) > 240 else '')}")
@@ -1972,11 +2003,14 @@ def cmd_loop(args):
                 raise OfError(f"no single hypothesis {hid!r} on {args.work}")
             return m[0]
         return None
+    owners = of_loop.decided(loop)  # the owner's yes on the target's measure (docs/registry.md, Works)
     if args.action == "hypothesis":
         if not args.text:
             raise OfError('usage: of loop hypothesis <work> "<change>" --predict "…" --cost "…" --voi low|med|high')
-        if args.voi not in of_loop.VOI:
+        if args.voi is not None and args.voi not in of_loop.VOI:
             raise OfError("--voi is low, med or high")
+        if args.voi is None and not owners:
+            raise OfError("--voi is low, med or high (optional only on a loop whose target the owner decided)")
         hid = of_loop.hypothesis_id(args.work, args.text)
         payload = {"work": args.work, "id": hid, "hypothesis": hid, "change": args.text, "predict": args.predict,
                    "cost": of_loop.cost_of(args.cost, of_loop.rungs(loop)), "voi": args.voi, "status": "open"}
@@ -2009,7 +2043,11 @@ def cmd_loop(args):
         dec = args.text
         if dec not in of_loop.DECISIONS:
             raise OfError(f"a decision is one of {', '.join(of_loop.DECISIONS)}")
-        if dec == "change_objective" and not (args.metric and (args.to_money or args.money)):
+        if dec == "change_objective" and owners and not (args.metric and args.decided):
+            raise OfError(f"{args.work}'s target is the owner's measure ({owners}): change_objective names the new "
+                          'metric and the owner\'s yes on it: --metric "…" --decided <their ask id or prompt event id> '
+                          '(docs/registry.md, Works, "The owner\'s measure")')
+        if dec == "change_objective" and not owners and not (args.metric and (args.to_money or args.money)):
             raise OfError('change_objective names the new metric and its chain to money: --metric "…" --to-money "…" '
                           "(RFC 0005 §6)")
         if args.rung and args.rung not in of_loop.rungs(loop):
@@ -2018,6 +2056,7 @@ def cmd_loop(args):
                    "rung": args.rung, "metric": args.metric if dec == "change_objective" else None,
                    "to_money": (args.to_money or args.money) if dec == "change_objective" else None,
                    "money": (args.to_money or args.money) if dec == "change_objective" else None,  # Studio's name
+                   "decided": args.decided if dec == "change_objective" else None,
                    "note": args.note}
         kind = "loop_decision"
     of_events.emit(kind, {k: v for k, v in payload.items() if v is not None}, position=me["name"],
@@ -5672,7 +5711,8 @@ def main(argv=None):
     lp.add_argument("text", nargs="?", help="hypothesis: the change; decision: keep|drop|park|step_up|step_back|change_objective")
     lp.add_argument("--predict")
     lp.add_argument("--cost", help='the rung and runner-hours, e.g. "day_pass, 6 runner-h"')
-    lp.add_argument("--voi", help="value of information: low | med | high")
+    lp.add_argument("--voi", help="value of information: low | med | high (optional on a target the owner decided; "
+                    "absent counts as med)")
     lp.add_argument("--rung")
     lp.add_argument("--hypothesis")
     lp.add_argument("--result")
@@ -5680,6 +5720,8 @@ def main(argv=None):
     lp.add_argument("--money", help="change_objective: same as --to-money")
     lp.add_argument("--to-money", help="change_objective: how the new metric becomes money")
     lp.add_argument("--metric", help="run: the metric measured (default the target's); change_objective: the new metric")
+    lp.add_argument("--decided", help="change_objective on a target the owner decided: the owner's yes on the new "
+                    "measure (their ask id, or the event id of their own prompt)")
     lp.add_argument("--value", help="run: a number in the metric's unit")
     lp.add_argument("--accepted", help="run: yes | no (the rung's accept criterion met)")
     lp.add_argument("--runner-h", help="run: runner hours it used")

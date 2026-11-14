@@ -4,10 +4,13 @@ and the hypothesis register and decision log as events.
 - check_loop(loop, wid): the schema of RFC 0005 §4 (target, measures, ladder, checkpoint_days, wip_arms, babysit_model).
 - of.loop_hypothesis {work, hypothesis, change, predict, cost, cost_h, voi}: recorded before its test.
 - of.loop_run {work, rung, hypothesis, result, evidence, source}: recorded when a run on a rung ends.
-- of.loop_decision {work, decision, hypothesis, rung, money, note}: keep, drop, park, step_up, step_back,
-  change_objective (which names its money metric).
+- of.loop_decision {work, decision, hypothesis, rung, money, decided, note}: keep, drop, park, step_up, step_back,
+  change_objective (which names its money metric, or on a target the owner decided, the owner's yes on the new one).
 - register(rows, work): the hypotheses with their derived status (open, testing, kept, dropped, parked), the next one
-  first by value of information per runner-hour. No agent reports progress: status comes from runs and decisions.
+  first by value of information per runner-hour (an absent voi counts as med). No agent reports progress: status
+  comes from runs and decisions.
+- decided(loop): the owner's yes on the target's measure (docs/registry.md, Works, "The owner's measure"): then money
+  is a reading, measures chain to the target or to money, and no position asks the owner for a money proof.
 """
 
 import hashlib
@@ -25,19 +28,36 @@ CONTEXT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 THROUGHPUT = ("raise", "sustain", "expense", "measure", "coordinate")
 
 
+def decided(loop):
+    """The owner's yes on the target's measure (target.decided: an ask id or the event id of the owner's own prompt),
+    or None. Only a non-empty text counts (docs/registry.md, Works, "The owner's measure")."""
+    t = (loop or {}).get("target") if isinstance(loop, dict) else None
+    d = t.get("decided") if isinstance(t, dict) else None
+    return d.strip() if isinstance(d, str) and d.strip() else None
+
+
 def check_loop(loop, wid, warn="warning: "):
-    """Problems with a work's loop (RFC 0005 §4); warnings start with `warn`."""
+    """Problems with a work's loop (RFC 0005 §4); warnings start with `warn`. On a target the owner decided, money is
+    optional and a measure chains to the target (to_target) or to money (docs/registry.md, Works, "The owner's
+    measure")."""
     tag = f"{wid}: loop"
     if not isinstance(loop, dict):
         return [f"{tag} must be a mapping"]
     out = [f"{warn}{tag}: unknown key {k!r}" for k in sorted(set(loop) - LOOP_KEYS)]
     t = loop.get("target")
+    owners = decided(loop)
     if not isinstance(t, dict):
-        out.append(f"{tag}: target is required (metric, money)")
+        out.append(f"{tag}: target is required (metric, and money unless the owner decided the measure)")
     else:
-        for k in ("metric", "money"):
+        if t.get("decided") is not None and not owners:
+            out.append(f"{tag}: target.decided is the owner's yes on the measure: their ask id, or the event id of "
+                       "their own prompt that names it")
+        for k in ("metric",) if owners else ("metric", "money"):
             if not isinstance(t.get(k), str) or not t[k].strip():
-                out.append(f"{tag}: target.{k} is required")
+                out.append(f"{tag}: target.{k} is required" + (" (or decided, the owner's yes on the measure; "
+                                                                "docs/registry.md, Works)" if k == "money" else ""))
+        if owners and t.get("money") is not None and (not isinstance(t["money"], str) or not t["money"].strip()):
+            out.append(f"{tag}: target.money, when given, is a text (a reading shown beside the target)")
         if t.get("throughput_class") is not None and t["throughput_class"] not in THROUGHPUT:
             out.append(f"{tag}: target.throughput_class {t['throughput_class']!r} is not one of {', '.join(THROUGHPUT)}")
         if t.get("better") is not None and t["better"] not in ("higher", "lower"):
@@ -50,8 +70,13 @@ def check_loop(loop, wid, warn="warning: "):
         for i, m in enumerate(ms):
             if not isinstance(m, dict) or not m.get("name"):
                 out.append(f"{tag}: measures[{i}] needs a name")
+            elif owners:
+                if not str(m.get("to_money") or "").strip() and not str(m.get("to_target") or "").strip():
+                    out.append(f"{tag}: measure {m['name']!r} needs to_target (how it moves the target the owner "
+                               "decided) or to_money")
             elif not str(m.get("to_money") or "").strip():
-                out.append(f"{tag}: measure {m['name']!r} needs to_money (its chain to money, RFC 0005 §6)")
+                out.append(f"{tag}: measure {m['name']!r} needs to_money (its chain to money, RFC 0005 §6"
+                           + ("; to_target only on a target the owner decided" if m.get("to_target") else "") + ")")
     lad = loop.get("ladder")
     if not isinstance(lad, list) or not lad:
         out.append(f"{tag}: ladder is required, cheapest rung first")
@@ -173,6 +198,21 @@ def context_matches(field, part, prose=False):
     return bool(words) and words <= content_words(field)
 
 
+def target_line(loop):
+    """How `of loop show` and the session's start context name a target: its metric, and on a target the owner
+    decided, that yes's id and that its money is reported, never asked for as a proof."""
+    t = (loop or {}).get("target") if isinstance(loop, dict) else None
+    t = t if isinstance(t, dict) else {}
+    line = f"target {t.get('metric')}" + (f" ({t['better']} is better)" if t.get("better") in ("higher", "lower") else "")
+    d = decided(loop)
+    if not d:
+        return line
+    line += (f"; the owner decided this measure ({d}): its money is reported beside it"
+             + (f" as a reading ({' '.join(str(t['money']).split())})" if isinstance(t.get("money"), str) and t["money"].strip() else "")
+             + ", never asked of the owner as a proof")
+    return line
+
+
 def rungs(loop):
     return [r["rung"] for r in (loop or {}).get("ladder") or [] if isinstance(r, dict) and r.get("rung")]
 
@@ -241,7 +281,7 @@ def register(rows, work):
         # hypothesis was read as a finding; of_review on PR 61)
         h["unmet_open"] = h["status"] in live and (h.get("last_run") or {}).get("accepted") is False
 
-    def key(h):
-        per = VOI.get(h["voi"], 1) / max(h.get("cost_h") or 0.0, 0.05)
+    def key(h):  # an absent voi counts as med (docs/registry.md, Works, "The owner's measure"); money never enters it
+        per = VOI.get(h["voi"] or "med", 1) / max(h.get("cost_h") or 0.0, 0.05)
         return (h["status"] not in live, -per, h["since"])
     return {"hypotheses": sorted(hyps.values(), key=key), "runs": runs, "decisions": decs}
