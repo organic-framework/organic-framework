@@ -465,7 +465,9 @@ def cmd_loops(args):
     if not cards:
         print(f"{d.org}: no work has a loop (RFC 0005: loop: on a work in the registry, or of.loop_* events)")
         return 0
-    tgt = lambda t: (t.get("metric") or "-")[:40] + (f' (decided {t["decided"]})' if t.get("decided") else "")
+    tgt = lambda t: (t.get("metric") or "-")[:40] + (f' (decided {t["decided"]})' if t.get("decided") else
+                                                     f' (decided {t["decided_unresolved"]}: does not resolve)'
+                                                     if t.get("decided_unresolved") else "")
     _table([(w["id"][:40], tgt(c["spec"]["target"]), of_loops.summary(c, d.now) or "-",
              ", ".join(c["drift"]) or "-") for w, c in cards], ["work", "target", "where it stands", "drift"])
     return 0

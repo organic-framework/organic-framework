@@ -634,9 +634,11 @@ def record_systems(pl, systems, pmap):
     return {pmap.system(repo, path) for repo, path in _touched(pl) if repo}
 
 
-def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_h=HALF_LIFE_H, max_systems=MAX_SYSTEMS):
+def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_h=HALF_LIFE_H, max_systems=MAX_SYSTEMS,
+          resolve=None):
     """MODEL(t). events: rows {event_id, ts, name, session_id, position, payload} (any order).
-    Only events at or before `at` count; work records within the last `window_h` hours (default: all) give coupling and writes."""
+    Only events at or before `at` count; work records within the last `window_h` hours (default: all) give coupling and writes.
+    resolve: id -> a person's yes in the log, for the loops' `decided` (loops_of; by default this machine's log)."""
     at_s = epoch(at) if at is not None else time.time()
     lo = at_s - window_h * 3600 if window_h else None
     positions, systems = _positions(doc), _systems(doc)
@@ -776,7 +778,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
         "mandate": mandate, "orphan_work": orphan,
         "map_repos": sorted(map_repos),   # the repository names the map claims (area_of's repos; the rule surface)
         "work_records": {"total": len(wr_ids), "attributed": wr_attributed, "unmapped": unmapped, "by_system": wr_by_system},
-        "loops": loops_of(doc, events, at_s),
+        "loops": loops_of(doc, events, at_s, resolve),
         "goals": goals, "conditions": conditions_of(doc, goals),   # docs/registry.md, Goals
         "cells": cells_of(positions, systems, methods_of(doc)),   # RFC 0007 §2.3
     }
@@ -785,9 +787,11 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
 LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost")
 
 
-def loops_of(doc, events, at_s):
+def loops_of(doc, events, at_s, resolve=None):
     """{work: the loop projection} for every registry work with a `loop:` or with loop events (RFC 0005; bin/of_loops.py),
-    computed once for the loop card and the loop rules (docs/diagnose.md §4.1)."""
+    computed once for the loop card and the loop rules (docs/diagnose.md §4.1). A target's `decided` counts only when it
+    resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver(), which opens
+    this machine's store only when some id is to be looked up."""
     works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
     rows = [r for r in events if (epoch(r.get("ts")) or 0) <= at_s]
     ids = {w for w, x in works.items() if isinstance(x, dict) and isinstance(x.get("loop"), dict)}
@@ -795,7 +799,9 @@ def loops_of(doc, events, at_s):
     if not ids:
         return {}
     import of_loops
-    return {w: of_loops.project(w, (works.get(w) or {}).get("loop"), rows, at_s, work=works.get(w) or {}) for w in sorted(ids)}
+    resolve = resolve or of_loops.log_resolver()
+    return {w: of_loops.project(w, (works.get(w) or {}).get("loop"), rows, at_s, work=works.get(w) or {}, resolve=resolve)
+            for w in sorted(ids)}
 
 
 # ------------------------------------------------------------------ units (docs/studio.md §2.4)

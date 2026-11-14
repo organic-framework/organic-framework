@@ -17,7 +17,10 @@ checkpoint_days, wip_arms). The register and the log are events (§4.1, of_platf
 
 The owner's measure (docs/registry.md, Works; RFC 0005 §4.2, 2026-11-14): a target with `decided`, the id of the yes of
 the person who owns the work's goal, is itself what the loop's changes are for. Its money is a reading, a measure may
-chain to it by `to_target` instead of `to_money`, and a run on such a measure is tied to the target, not drift.
+chain to it by `to_target` instead of `to_money`, and a run on such a measure is tied to the target, not drift. The id
+counts only when it resolves in the log as a person's yes (of_platform's of_loop.resolve_decided; "Where it is read,
+and how it is checked"): project() takes a resolver for that, and without one, or when the id does not resolve, the
+target is one without `decided`, and `decided_unresolved` names the id with `decided_unresolved_why`.
   checkpoint_trend(curve, ...)      the target per checkpoint_days period: a standing work's progress (docs/registry.md)
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
@@ -26,6 +29,8 @@ Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
 import statistics
 
 from of_model import epoch, iso
+
+UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this machine's log cannot be read
 
 KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost")
 DAY = 86400
@@ -71,6 +76,43 @@ def decided_of(target):
     return d.strip() if isinstance(d, str) and d.strip() else None
 
 
+def log_resolver(conn=None):
+    """id -> the person's yes it names in this machine's log (of_loop.resolve_decided, of_platform), each id looked up
+    once, through a read-only connection opened on the first lookup; UNREAD when the store will not open, or this host
+    has no of_loop (of-server's image)."""
+    held, memo = {"conn": conn}, {}
+
+    def resolve(did):
+        if did not in memo:
+            try:
+                import sqlite3
+                import of_loop
+                if held["conn"] is None:
+                    import of_fold
+                    held["conn"] = of_fold.reader() or False
+                memo[did] = of_loop.resolve_decided(held["conn"], did) if held["conn"] else UNREAD
+            except (ImportError, sqlite3.Error, ValueError):
+                memo[did] = UNREAD
+        return memo[did]
+    return resolve
+
+
+def owners_yes(did, resolve):
+    """(the id when RESOLVE finds it in the log as a person's yes, else None; why it does not count, else None):
+    `unread` when the log could not be read, `not_found` when it holds no such yes, `not_looked_up` with no resolver."""
+    if not did:
+        return None, None
+    found = resolve(did) if resolve else None
+    if found and found != UNREAD:
+        return did, None
+    return None, ("unread" if found == UNREAD else "not_found" if resolve else "not_looked_up")
+
+
+UNRESOLVED_WHY = {"unread": "this machine's event log could not be read to look it up",
+                  "not_found": "this machine's log holds no such yes (an ask the owner answered, or a prompt a person typed)",
+                  "not_looked_up": "it was not looked up in a log here"}
+
+
 def tied(spec):
     """The measures a run may measure without drifting from the target (RFC 0005 §6): those with `to_money`, and on a
     target the owner decided also those with `to_target` (§4.2)."""
@@ -78,8 +120,9 @@ def tied(spec):
     return {str(m["name"]) for m in spec["measures"] if m.get("to_money") or (own and m.get("to_target"))}
 
 
-def spec_of(raw):
-    """The work's `loop:` normalized, or None."""
+def spec_of(raw, resolve=None):
+    """The work's `loop:` normalized, or None. RESOLVE: id -> the person's yes in the log (log_resolver); the target's
+    `decided` is its id only when that finds it."""
     if not isinstance(raw, dict):
         return None
     target = raw.get("target") or {}
@@ -91,7 +134,9 @@ def spec_of(raw):
     t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
     t["segment"] = _segment(target.get("segment"))
-    t["decided"] = decided_of(target)
+    t["decided"], why = owners_yes(decided_of(target), resolve)
+    if why:   # the loop is one without decided, and says why (docs/registry.md, Works, "Where it is read")
+        t["decided_unresolved"], t["decided_unresolved_why"] = decided_of(target), why
     return {"target": t,
             "measures": [dict(m, to_money=m.get("to_money"), to_target=m.get("to_target"))
                          for m in raw.get("measures") or [] if isinstance(m, dict) and m.get("name")],
@@ -164,8 +209,11 @@ def _runs(evs, spec, hyp):
 
 
 def _priority(h):
-    """Value of information per cost (RFC 0005 §4.1): voi low/med/high = 1/2/3 over the runner hours, at least 0.1."""
-    return VOI.get(str(h.get("voi") or "").lower(), 1) / max(h.get("cost_runner_h") or 0.1, 0.1)
+    """Value of information per cost (RFC 0005 §4.1), as `of loop` orders its register (of_loop.register): voi
+    low/med/high = 1/2/3, an absent one med (docs/registry.md, Works, "The owner's measure"), over the runner hours
+    (1 when not given, at least 0.05); money never enters it."""
+    rh = h.get("cost_runner_h")
+    return VOI.get(str(h.get("voi") or "med").lower(), 1) / max(1.0 if rh is None else rh, 0.05)
 
 
 def _wip_series(hyp, evs):
@@ -208,10 +256,12 @@ def babysit(rows, doers, a, b):
     return out
 
 
-def project(work_id, spec, rows, now, days=7, work=None):
+def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
     """The loop card and the rules' projection (docs/diagnose.md §4.1). Every number comes from the events; a missing
-    input shows as None, never as zero. work: the registry's entry, for its owner and doers."""
-    spec = spec_of(spec) if spec and "rungs" not in spec else spec
+    input shows as None, never as zero. work: the registry's entry, for its owner and doers. resolve: id -> the
+    person's yes in the log (log_resolver), for the target's `decided` and a change of objective's; without it neither
+    counts."""
+    spec = spec_of(spec, resolve) if spec and "rungs" not in spec else spec
     evs = events(rows, work_id)
     if not spec and not evs:
         return None
@@ -276,6 +326,11 @@ def project(work_id, spec, rows, now, days=7, work=None):
     usd = [r["usd"] for r in wk_runs if r["usd"] is not None]
     testing = [h for h in hyp.values() if h.get("status") == "testing"]
     decisions = [dict((r.get("payload") or {}), ts=epoch(r.get("ts"))) for r in evs if r["name"] == "of.loop_decision"]
+    for x in decisions:   # a change of objective's yes counts as the target's does; `of loop` refuses an unresolved one
+        raw = x.get("decided").strip() if isinstance(x.get("decided"), str) and x["decided"].strip() else None
+        x["decided"], why = owners_yes(raw, resolve)
+        if why:
+            x["decided_unresolved"], x["decided_unresolved_why"] = raw, why
     by_time = lambda hs, k: sorted(hs, key=lambda h: h.get(k) or h.get("updated_at") or 0, reverse=True)
     work = work or {}
     doers = [str(x) for x in work.get("doers") or []]
@@ -295,8 +350,8 @@ def project(work_id, spec, rows, now, days=7, work=None):
                   "position": r["position"], "session": r["session"], "model": r["model"], "usd": r["usd"],
                   "fresh_tokens": r["fresh_tokens"]} for r in runs],
         "decisions_all": [{"ts": x["ts"], "kind": x.get("decision"), "hypothesis": x.get("hypothesis"), "metric": x.get("metric"),
-                           "to_money": x.get("to_money") or x.get("money"),
-                           "decided": x.get("decided") if isinstance(x.get("decided"), str) and x["decided"].strip() else None}
+                           "to_money": x.get("to_money") or x.get("money"), "decided": x["decided"],
+                           **({"decided_unresolved": x["decided_unresolved"]} if x.get("decided_unresolved") else {})}
                           for x in sorted(decisions, key=lambda x: x["ts"] or 0)],
         "metrics": {"rungs": {x["rung"]: {"runs": x["runs"], "cycle_time": x["cycle_time_h"], "wait_share": x["wait_share"]}
                               for x in ladder},
