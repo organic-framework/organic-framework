@@ -736,11 +736,9 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=("of.pr_state",))]
-            elif (rows := _view_rows("PR_STATES", lambda x: x.get("org") == self.org)) is not None:
-                pass   # the listener's view: each PR's latest state, which is all its readers take
-            else:   # the view is not built yet on this host
-                import of_store
-                rows = org_rows(of_model.load_events(of_store.connect(), names=("of.pr_state",)), self._org_cfg, self._others)
+            else:   # the listener's view: each PR's latest state, which is all its readers take; none built yet on
+                # this host: the page's own rows alone (docs/studio.md §5.1a), never the log's whole history
+                rows = _view_rows("PR_STATES", lambda x: x.get("org") == self.org) or []
         except Exception:  # noqa: BLE001 — no store: the page's own rows
             rows = []
         self._pr_rows = rows
@@ -755,15 +753,10 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=of_loops.KINDS)]
-            elif (rows := _view_rows("LOOP_EVENTS", lambda x: x.get("org") == self.org)) is not None:
-                pass   # the listener's view
-            else:   # the view is not built yet on this host
-                import of_store
-                conn = of_store.connect()
-                try:
-                    rows = org_rows(of_model.load_events(conn, names=of_loops.KINDS), self._org_cfg, self._others)
-                finally:
-                    conn.close()
+            else:   # the listener's view; none built yet on this host: the page's own rows
+                rows = _view_rows("LOOP_EVENTS", lambda x: x.get("org") == self.org)
+                if rows is None:
+                    rows = [r for r in self.rows if r.get("name") in of_loops.KINDS]
         except Exception:  # noqa: BLE001 — no store: the page's own rows
             rows = [r for r in self.rows if r.get("name") in of_loops.KINDS]
         self._loop_rows = rows
@@ -856,11 +849,9 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=("of.diff_applied",))]
-            elif (rows := _view_rows("DIFFS_APPLIED", lambda x: (x.get("payload") or {}).get("org") == self.org)) is not None:
-                pass   # the listener's view: the diff's id, kind and organization, which is all its readers take
-            else:   # the view is not built yet on this host
-                import of_store
-                rows = org_rows(of_model.load_events(of_store.connect(), names=("of.diff_applied",)), self._org_cfg, self._others)
+            else:   # the listener's view: the diff's id, kind and organization, which is all its readers take; none
+                # built yet on this host: the page's own rows (merged below)
+                rows = _view_rows("DIFFS_APPLIED", lambda x: (x.get("payload") or {}).get("org") == self.org) or []
         except Exception:  # noqa: BLE001 — no store: the page's own rows
             rows = []
         have = {r.get("event_id") for r in rows}

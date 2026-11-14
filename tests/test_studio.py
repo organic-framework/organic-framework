@@ -2388,9 +2388,13 @@ class StudioViewsTest(unittest.TestCase):
                 self.assertEqual([r["event_id"] for r in of_studio.Data.loop_rows(dd)], ["x1", "x9"])
         dd = types_ns(org="acme", _source=None, rows=[], _org_cfg={"name": "acme", "paths": []}, _others=[])
         from unittest import mock
+        loop = dict(ev(2, "2026-11-01T00:00Z", "of.loop_run", "s"), org="acme")
+        dd.rows = [loop]
         with mock.patch("of_studio_views.rows_of", return_value=None), \
-                mock.patch.object(of_model, "load_events", return_value=[dict(ev(1, "2026-11-01T00:00Z", "of.pr_state", "s"), org="acme")]):
-            self.assertEqual([r["event_id"] for r in of_studio.Data.pr_state_rows(dd)], ["e1"])   # before the view exists
+                mock.patch.object(of_model, "load_events", side_effect=AssertionError("never the log's whole history")):
+            self.assertEqual(of_studio.Data.pr_state_rows(dd), [])               # no view built yet: the page's own rows
+            self.assertEqual(of_studio.Data.loop_rows(dd), [loop])
+            self.assertEqual(of_studio.Data.diff_rows(dd), [])
 
 
 def types_ns(**kw):
