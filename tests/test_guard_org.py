@@ -69,7 +69,7 @@ class KindsTest(unittest.TestCase):
 
     def test_kinds(self):
         self.assertEqual(self.kinds("kubectl -n evm get pods,svc"), ("get", ["pods", "services"]))
-        self.assertEqual(self.kinds("kubectl logs --tail 50 -n x deploy/api"), ("logs", ["deployments"]))
+        self.assertEqual(self.kinds("kubectl logs --tail 50 -n x deploy/api"), ("logs", ["deployments", "pods"]))
         self.assertEqual(self.kinds("kubectl -n x exec -it p -- sh"), ("exec", ["pods"]))
         self.assertEqual(self.kinds("kubectl apply -f k.yaml"), ("apply", ["(from file)"]))
         self.assertEqual(self.kinds("kubectl rollout restart deploy/x -n y"), ("rollout restart", ["deployments"]))
@@ -77,8 +77,61 @@ class KindsTest(unittest.TestCase):
         self.assertEqual(self.kinds("kubectl drain node1"), ("drain", ["nodes"]))
         self.assertEqual(self.kinds("kubectl wait --for=condition=complete job/x"), ("wait", ["jobs"]))
         self.assertEqual(self.kinds("kubectl auth can-i get pods"), ("auth can-i", ["(none)"]))
-        self.assertEqual(self.kinds("kubectl get jobs.batch -n z"), ("get", ["jobs.batch"]))
+        self.assertEqual(self.kinds("kubectl get jobs.batch -n z"), ("get", ["jobs"]))
         self.assertTrue(of_guard.kubectl_calls("kubectl top pods -A")[0]["all_namespaces"])
+
+
+SECRETS = {"id": "signing-secrets", "mode": "deny", "reason": "signing keys", "except": [],
+           "kubectl": {"verbs": ["get", "describe"], "kinds": ["Secret"], "namespaces": ["signer"], "admin": ADMIN}}
+
+
+class KindsRuleTest(unittest.TestCase):
+    """O1's `kinds` and namespaces read as a reader would (a user organization's signing-key Secrets, msg
+    01a1d7ac-c34b; of_architect's six conditions, msg 01a1d7b2-a99a)."""
+
+    def hit(self, cmd, rule=SECRETS):
+        return [r["id"] for r, _ in of_guard.org_rule_hits("Bash", {"command": cmd}, [rule], "x")]
+
+    def test_kinds_are_folded_on_both_sides(self):
+        for k in ("secret", "Secret", "secrets", "secrets.v1", "secrets.v1.", "SECRETS"):
+            self.assertEqual(of_guard.fold_kind(k), ("secrets", True), k)
+        self.assertEqual(of_guard.fold_kind("deployments.v1.apps"), ("deployments", True))
+        self.assertEqual(of_guard.fold_kind("externalsecrets.external-secrets.io"),
+                         ("externalsecrets.external-secrets.io", True))  # a custom resource keeps its group
+        self.assertFalse(of_guard.fold_kind("secertss")[1])               # a typo: registry check warns
+        self.assertEqual(self.hit("kubectl get secrets.v1 -n signer"), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get externalsecrets -n signer"), [])
+        crd = dict(SECRETS, kubectl=dict(SECRETS["kubectl"], kinds=["externalsecrets.external-secrets.io"]))
+        self.assertEqual(self.hit("kubectl get externalsecrets -n signer", crd), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get secrets -n signer", crd), [])
+
+    def test_the_kind_must_match(self):
+        self.assertEqual(self.hit("kubectl get secrets -n signer"), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl describe secret k -n signer"), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get pods -n signer"), [])
+        self.assertEqual(self.hit("kubectl get secrets -n other"), [])
+        self.assertEqual(self.hit("kubectl get $KIND -n signer"), ["signing-secrets"])      # a false positive over a miss
+        self.assertEqual(self.hit("kubectl get --raw /api/v1/namespaces/signer/secrets"), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get --raw /api/v1/namespaces/other/secrets"), [])
+
+    def test_every_namespace_and_none_named(self):
+        self.assertEqual(self.hit("kubectl get secrets -A"), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get secrets"), ["signing-secrets"])               # the kubeconfig's namespace
+        nodes = dict(SECRETS, kubectl={"verbs": ["get"], "namespaces": ["signer"], "admin": ADMIN})
+        self.assertEqual(self.hit("kubectl get nodes", nodes), [])                            # cluster-scoped only
+        self.assertEqual(self.hit("kubectl get pods", nodes), ["signing-secrets"])
+        said = of_guard.org_rule_hits("Bash", {"command": "kubectl get secrets"}, [SECRETS], "x")[0][1]
+        self.assertIn("give -n", said)
+
+    def test_what_reaches_pods_and_service_accounts(self):
+        pods = dict(SECRETS, kubectl={"kinds": ["pods"], "namespaces": ["signer"]})
+        for cmd in ("kubectl logs -n signer deploy/x", "kubectl exec -n signer deploy/x -- id",
+                    "kubectl port-forward -n signer svc/x 8080", "kubectl run t -n signer --image=busybox",
+                    "kubectl get all -n signer", "kubectl get --raw /api/v1/namespaces/signer/pods/p/log"):
+            self.assertEqual(self.hit(cmd, pods), ["signing-secrets"], cmd)
+        sa = dict(SECRETS, kubectl={"kinds": ["serviceaccounts"], "namespaces": ["signer"]})
+        self.assertEqual(self.hit("kubectl create token signer-sa -n signer", sa), ["signing-secrets"])
+        self.assertEqual(self.hit("kubectl get all -n signer"), [])                           # all holds no Secrets
 
 
 class OrgRuleTest(unittest.TestCase):

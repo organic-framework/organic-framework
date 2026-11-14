@@ -212,6 +212,13 @@ class GuardBashTest(unittest.TestCase):
         # of_architect, 2026-11-06, after a real GitHub App key leaked through a last-applied-configuration
         self.assertTrue(deny("kubectl -n ci get secret acme-inc-arc -o yaml"))
         self.assertTrue(deny("kubectl get secret -A -o json"))
+        # the API's own JSON through --raw (2026-11-14: it passed): a Secret, a pod's spec; a pod's log or proxy passes
+        self.assertTrue(deny("kubectl get --raw /api/v1/namespaces/ci/secrets/acme-inc-arc"))
+        self.assertTrue(deny("kubectl get --raw=/api/v1/secrets"))
+        self.assertTrue(deny("kubectl get --raw '/api/v1/namespaces/ci/pods?labelSelector=app=x'"))
+        self.assertIsNone(deny("kubectl get --raw /api/v1/namespaces/ci/pods/p/log"))
+        self.assertIsNone(deny("kubectl get --raw /api/v1/namespaces/ci/pods/p:9090/proxy/metrics"))
+        self.assertIsNone(deny("kubectl get --raw /api/v1/nodes"))
         self.assertTrue(deny("kubectl get cm,secret -o yaml"))
         # of_architect, 13:47Z leak: for a Secret, every -o except name/default is denied; jsonpath/go-template
         # fall back to the whole object on error, so they are denied even when key-looking
