@@ -825,7 +825,8 @@ def _rpr(i, ts, pos, reviews=0):
     return ev(f"rv{i}", ts, "of.work_record", sid_of(pos), pl, position=pos)
 
 
-_PRS = [_rpr(k, _at(_day("11-02", k), 15), "bot_search") for k in range(5)]
+# another position's reviewed PR: the repository's reviews are submitted ones, so a 0 on bot_search's PRs says "none"
+_PRS = [_rpr(k, _at(_day("11-02", k), 15), "bot_search") for k in range(5)] + [_rpr(19, _at("11-02", 16), "bot_operator", 1)]
 _RESULTS = [_fc(10, _at("11-03"), "bot_search", "output"), _fc(11, _at("11-04"), "bot_search", "fact"),
             _fc(12, _at("11-05"), "bot_search", "output")]
 
@@ -833,7 +834,7 @@ SCENARIOS += [
     # three corrections of its results against five merged PRs, none reviewed
     _case("missing-verifier/positive", _org_doc(), _PRS + _RESULTS, ("ap.missing-verifier", ["bot_search"], "positive")),
     # the same, but one PR had a review: there is a verifier on the path
-    _case("missing-verifier/negative-reviewed", _org_doc(), _PRS[:4] + [_rpr(9, _at("11-06", 15), "bot_search", 1)] + _RESULTS,
+    _case("missing-verifier/negative-reviewed", _org_doc(), _PRS[1:] + [_rpr(9, _at("11-06", 15), "bot_search", 1)] + _RESULTS,
           ("ap.missing-verifier", ["bot_search"], "negative")),
     # corrections of how it works (method, process), not of its results
     _case("missing-verifier/negative-method", _org_doc(),
@@ -846,6 +847,9 @@ SCENARIOS += [
     # merged work that does not say whether it was reviewed: a note, never an issue
     _case("missing-verifier/negative-unknown-reviews", _org_doc(),
           [_rpr(40 + k, _at(_day("11-02", k), 15), "bot_search", None) for k in range(5)] + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+    # a repository whose reviews are verdicts posted as comments: no merged PR in it has a submitted review (PR 176 review)
+    _case("missing-verifier/negative-comment-reviews", _org_doc(), _PRS[:5] + _RESULTS,
           ("ap.missing-verifier", ["bot_search"], "negative")),
 ]
 
