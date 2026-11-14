@@ -2946,9 +2946,11 @@ def _ssh_chain_of(head, args):
     if head not in ("ssh", "autossh", "scp", "sftp", "rsync"):
         raise _Doubt(head)
     vals = _SSH_OPT_VALUE.get(head, set())
-    out = {"dests": [], "jumps": None, "proxycommand": None, "port": None}
+    out = {"dests": [], "jumps": None, "proxycommand": None, "port": None, "forwards": False}
 
     def option(flag, v):
+        if flag in ("-L", "-R", "-D", "-W", "-O") and head in ("ssh", "autossh"):
+            out["forwards"] = True  # through an allowed jump it reaches past it (of_secrets-review on PR 157)
         if flag == "-J":
             out["jumps"] = (out["jumps"] or []) + [h for h in str(v).split(",") if h.strip()]
         elif flag == _SSH_PORT_FLAG.get(head):
@@ -3018,6 +3020,9 @@ def _ssh_contacts(call, resolve):
     first = (lambda n, k: next((b[k] for b in getattr(resolve, "blocks", []) or []
                                 if b.get(k) and _ssh_pattern_match(b["patterns"], n)), None)) if resolve else \
         (lambda n, k: None)
+    def real(host):  # the name ssh connects to: the folded config's HostName, else the name as typed
+        hostname = resolve(host) if resolve else None
+        return (hostname or host).rstrip(".").lower()
     out = []
     for dword in chain["dests"]:
         dest, _ = _ssh_hop(dword)
@@ -3031,7 +3036,7 @@ def _ssh_contacts(call, resolve):
         if jumps:
             hops = [_ssh_hop(h) for h in jumps]
             hops = [(h, p or first(h, "port") or "22") for h, p in hops] + [(dest, dport)]
-            out += [(hops[k][0], hops[k + 1]) for k in range(len(hops) - 1)]
+            out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
         elif command and command.lower() != "none":
             words = command.split()
             if not words or os.path.basename(words[0]) != "ssh":
@@ -3041,14 +3046,14 @@ def _ssh_contacts(call, resolve):
                 next((x[2:] for x in words[1:] if x.startswith("-W") and len(x) > 2), None)
             if not w or not sub["dests"]:
                 raise _Doubt("a ProxyCommand without -W")
-            to_host, _, to_port = w.replace("%h", dest).replace("%p", dport).rpartition(":")
+            to_host, _, to_port = w.replace("%h", real(dest)).replace("%p", dport).rpartition(":")
             via = sub["dests"][0]
             inner = [_ssh_hop(h) for h in sub["jumps"] or []]
             via_host = _ssh_hop(via)[0]
             hops = [(h, p or first(h, "port") or "22") for h, p in inner] + [
                 (via_host, sub["port"] or first(via_host, "port") or "22")]
-            out += [(hops[k][0], hops[k + 1]) for k in range(len(hops) - 1)]
-            out.append((hops[-1][0], (to_host.strip("[]").lower(), to_port)))
+            out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
+            out.append((hops[-1][0], (to_host.strip("[]").lower(), to_port)))  # the gateway resolves a -W target
         out.append((dest, None))
     return out
 
@@ -3069,6 +3074,8 @@ def _ssh_allowed(match, call, resolve, position):
     def listed(host):
         return any(fnmatch.fnmatchcase(n, g) for n in names(host) for g in globs)
     try:
+        if _ssh_chain_of(call["head"], call.get("args") or [])["forwards"]:
+            return False  # a forward rides the allowed jump past it: never the exact use allowed
         contacts = _ssh_contacts(call, resolve)
     except _Doubt:
         return False
@@ -3078,16 +3085,17 @@ def _ssh_allowed(match, call, resolve, position):
         if to is None:
             return False
         if not any(any(fnmatch.fnmatchcase(n, str(v).lower()) for n in names(host) for v in e.get("via") or [])
-                   and any(_ssh_to_matches(t, to, names) for t in e.get("to") or []) for e in entries):
+                   and any(_ssh_to_matches(t, to) for t in e.get("to") or []) for e in entries):
             return False
     return True
 
 
-def _ssh_to_matches(entry_to, to, names):
-    """An allow_jump `to` (`host:port`, the port 22 when left out) against a jump's next hop (host, port)."""
+def _ssh_to_matches(entry_to, to):
+    """An allow_jump `to` (`host:port`, the port 22 when left out) against a jump's next hop (the name ssh connects
+    to, port): never the alias typed, which a config could point anywhere (of_secrets-review on PR 157)."""
     import fnmatch
     host, _, port = str(entry_to).rpartition(":") if re.search(r":\d+$", str(entry_to)) else (str(entry_to), "", "22")
-    return port == str(to[1]) and any(fnmatch.fnmatchcase(n, host.strip("[]").lower()) for n in names(to[0]))
+    return port == str(to[1]) and fnmatch.fnmatchcase(str(to[0]), host.strip("[]").lower())
 
 
 def ssh_rule_match(match, call, resolve=None, position=None):
