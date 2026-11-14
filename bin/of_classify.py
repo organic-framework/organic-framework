@@ -553,6 +553,12 @@ def relay_reply_to(text):
 # denied inside ~/.config/<org>, a warning elsewhere, where 225 reads in 21 days were live flows (etcd.env, pins.env).
 _CRED_SUFFIXES = ("*.password", "*.header", "*.client-secret", "*.secret_access_key", "*.secrets", "*.creds",
                   "*.secret.json", "*.secret.yaml", "*.secret.yml")
+# cloud CLIs' cached sign-ins (G1.12; of_architect's condition 5, msg 01a1db57-17f9): the AWS SSO session's token and
+# the role credentials the CLI derives from it, and gcloud's and Azure's token stores, read by whoever runs as the user
+_CLOUD_CACHES = (".aws/sso/cache/**", ".aws/cli/cache/**", ".config/gcloud/credentials.db",
+                 ".config/gcloud/access_tokens.db", ".config/gcloud/application_default_credentials.json",
+                 ".config/gcloud/legacy_credentials/**", ".azure/msal_token_cache.json", ".azure/msal_token_cache.bin",
+                 ".azure/accessTokens.json", ".azure/service_principal_entries.json")
 SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12", "*.pfx", "*.jks",
                 # of_server, 2026-11-07: the native rules denied id_ecdsa but the guard let `cat` read it
                 "id_ecdsa*", "id_dsa*",
@@ -569,7 +575,7 @@ SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*
                 ".config/of/service-accounts/**",
                 # a user organization's security keeper (OFF-020, 2026-11-11): a funded private key in plaintext in an
                 # untracked executors.txt at a checkout's root; and a known misspelled secrets file (OFF-001)
-                "executors*.txt", "*secrtets*", *_CRED_SUFFIXES)
+                "executors*.txt", "*secrtets*", *_CRED_SUFFIXES, *_CLOUD_CACHES)
 SECRET_EXCEPT = (".env.example", ".env.sample", ".env.template", "*.pub", "*.example.txt")
 
 
@@ -603,7 +609,7 @@ DENY_READ_GLOBS = (".env", ".env.local", ".env.prod", ".env.production", ".env.d
                    "*.secret", "*.token", "*token*.txt", "credentials.json", "service-account*.json",
                    "*.kubeconfig", "kubeconfig*", "*_ed25519", "*_rsa", ".config/of/clickhouse/**",
                    ".config/of/grant_ed25519", ".local/state/of/redact-backup/**", ".config/of/service-accounts/**",
-                   "executors.txt", *_CRED_SUFFIXES)
+                   "executors.txt", *_CRED_SUFFIXES, *_CLOUD_CACHES)
 
 
 def deny_rules():

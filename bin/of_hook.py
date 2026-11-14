@@ -1187,8 +1187,11 @@ def _org_guard(hook, sess):
     A broken store or registry fails open here (an organization's rule); the critical rules above never do."""
     global OUTPUT
     cmd = str((hook.get("tool_input") or {}).get("command") or "")
-    if hook.get("tool_name") != "Bash" or not ("kubectl" in cmd or of_guard._SSH_WORDS.search(cmd)):
-        return False  # kubectl (O1) and the ssh family (O3) are the matchers: every other call skips the grants
+    if hook.get("tool_name") != "Bash":
+        return False
+    # kubectl (O1) and the ssh family (O3) match only inside their own commands; a commands scope (O4) reads every
+    # Bash call, so a line without them still goes on when the organization has one (its rules come from one JSON file)
+    quick = "kubectl" in cmd or bool(of_guard._SSH_WORDS.search(cmd))
     sid = hook.get("session_id")
     try:
         import of_grants
@@ -1198,6 +1201,8 @@ def _org_guard(hook, sess):
         if not org:
             return False
         rules, notes = of_grants.guard_rules(org, STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
+        if not quick and not any(isinstance(r.get("commands"), dict) for r in rules):
+            return False
         hits = of_guard.org_rule_hits("Bash", hook.get("tool_input"), rules, name,
                                       {"KUBECONFIG": os.environ.get("KUBECONFIG")})
     except Exception:
