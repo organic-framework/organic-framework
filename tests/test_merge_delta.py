@@ -159,6 +159,40 @@ class MergeTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_the_target_ships_the_merged_rows_itself(self):
+        """B3's ClickHouse part: the merged rows come after the target's ship cursor, so its own shipper sends them
+        through its own of-server (masked with its key); ClickHouse keeps an event and a transcript record once by its
+        key. An event the source had from the coordination feed is never shipped by the target either."""
+        import sqlite3
+        import of_coord
+        import of_ship
+        src = of_store.connect(self.src_path)
+        fed = rec("state_declared", {"state": "working"}, "2026-11-15T12:20:00.000Z", host="colleague")
+        of_store.add_event(src, fed, raw_ref=of_coord.RAW_REF + "77")
+        src.close()
+        dst = of_store.connect(self.dst_path)   # the target has shipped what it had before the merge
+        for table, key in of_ship.TABLES:
+            top = dst.execute(f"SELECT max({key}) FROM {table}").fetchone()[0] or 0
+            dst.execute("INSERT OR REPLACE INTO ship_cursor VALUES (?, ?)", (table, top))
+        dst.close()
+        self.merge(person_acts_from=["laptop"])
+        conn = of_store.connect(self.dst_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            shipped = {}
+            for table, _last, batch in of_ship._batches(conn, {"tenant": "t", "batch_rows": 500,
+                                                              "batch_bytes": 10 ** 7}, "host"):
+                shipped.setdefault(table, []).extend(batch)
+        finally:
+            conn.close()
+        ids = {d.get("event_id") or (d.get("record") and json.loads(d["record"]).get("of.event.id"))
+               for d in shipped.get("event", [])}
+        self.assertTrue({self.after_ask["of.event.id"], self.handover["of.event.id"],
+                         self.prompt["of.event.id"]} <= ids, ids)
+        self.assertNotIn(fed["of.event.id"], ids)
+        self.assertEqual(sorted(d["record_uuid"] for d in shipped.get("transcript_record", [])), ["u-1", "u-2"])
+        self.assertEqual([d["hook_event"] for d in shipped.get("hook_record", [])], ["UserPromptSubmit"])
+
     def test_a_blob_whose_bytes_are_not_its_hash_is_refused(self):
         """of_secrets-review on PR 195: a poisoned blob would land, and keep the real one out for good."""
         src = of_store.connect(self.src_path)

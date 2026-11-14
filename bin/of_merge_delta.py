@@ -32,8 +32,9 @@ opened read-only; the target is written one table per transaction. Run it where 
 source's of.db: selecting by time reads the source's tables whole (a 20-minute delta of a 3.5-million-record store took
 about a minute of disk reads), which is no job for the laptop being moved off. The projections read the log, so the
 delta's asks and hand-overs appear in `of asks` and `of handover list` at once; `of listen rebuild` re-derives the
-listener's views in time order after a large merge. ClickHouse holds the shipped copy of these rows; its merge is a
-separate step."""
+listener's views in time order after a large merge. ClickHouse needs no copy of its own: the merged rows come after
+the target's ship cursor, so its own `of ship` sends them through its own of-server, and ClickHouse keeps an event and a
+transcript record once by its key (docs/storage.md, "Merging another machine's store")."""
 import argparse
 import hashlib
 import json
