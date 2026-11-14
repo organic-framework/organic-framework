@@ -68,9 +68,25 @@ def owner_measures(loops, resolve=None):
                 "measure\")."] if real else []))
 
 
-def build(position, positions, loops=None, resolve=None):
+def not_observed_runs(runs, limit=5):
+    """Lines for the newest runs of the position's loops that are proxies whose condition did not hold or is unknown,
+    from [(work, run, ts)] (of_loop.blind_runs): shown as not observed, never as the number alone (docs/registry.md,
+    Works, "Where a reading is taken")."""
+    import of_loop
+    if not runs:
+        return []
+    out = [f"- `{w}` {r.get('hypothesis') or r.get('run') or '?'}, run {str(ts)[:16]} on {r.get('rung') or '?'}: "
+           f"{of_loop.not_observed(r)}." for w, r, ts in runs[:limit]]
+    return (["", "## Loop runs not observed where their event happens"] + out
+            + ["Such a run decides nothing: no keep or drop rests on it, and a conclusion about the event rests only on "
+               "readings taken where it happens, or on the data where the condition held (docs/registry.md, Works, "
+               "\"Where a reading is taken\")."])
+
+
+def build(position, positions, loops=None, resolve=None, runs=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
-    or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver)."""
+    or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
+    newest runs that are proxies whose condition did not hold (of_loop.blind_runs)."""
     p = next((x for x in positions if x["name"] == position), None)
     if not p or not p.get("enrolled"):
         return None
@@ -93,6 +109,7 @@ def build(position, positions, loops=None, resolve=None):
     if p.get("waiting_on"):
         lines.append(f"- registry says you wait on: {p['waiting_on']}")
     lines += owner_measures(loops, resolve)
+    lines += not_observed_runs(runs)
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
     if brief:
         lines += ["", "## Brief", brief.strip()]

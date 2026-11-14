@@ -1455,7 +1455,20 @@ def _mandate_context(hook, index, sess):
         loops = of.position_loops(me, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")) if me else []
     except Exception:  # noqa: BLE001 - an unreadable registry or loop.yaml never costs the session its context
         loops = []
-    ctx = of_context.build(name, positions, loops, of._decided_resolver(positions=positions) if loops else None)
+    runs = []
+    if loops:  # their newest runs that are proxies whose condition did not hold (docs/registry.md, Works)
+        try:
+            import of_fold
+            import of_loop
+            rc = of_fold.reader()
+            if rc is not None:
+                try:
+                    runs = of_loop.blind_runs(rc, [w for w, _, _ in loops])
+                finally:
+                    rc.close()
+        except Exception:  # noqa: BLE001 - never costs the session its context
+            runs = []
+    ctx = of_context.build(name, positions, loops, of._decided_resolver(positions=positions) if loops else None, runs)
     if not ctx:
         return
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
