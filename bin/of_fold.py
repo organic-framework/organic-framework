@@ -28,7 +28,7 @@ import of_events
 
 Read = namedtuple("Read", "rows cursor age_s late")
 TAIL = 500
-VIEW_MODULES = ("of_fold",)  # the modules whose import registers views; an owner adds its own
+VIEW_MODULES = ("of_fold", "of_studio_views")  # the modules whose import registers views; an owner adds its own
 DDL = """
 CREATE TABLE IF NOT EXISTS view_fold (view TEXT, key TEXT, row TEXT, PRIMARY KEY (view, key));
 CREATE TABLE IF NOT EXISTS view_fold_meta (view TEXT PRIMARY KEY, version TEXT, cursor INTEGER, at REAL);
