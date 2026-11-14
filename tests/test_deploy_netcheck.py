@@ -16,18 +16,25 @@ _spec.loader.exec_module(nc)
 SERVER_LABELS = {"app.kubernetes.io/name": "of-server", "app.kubernetes.io/instance": "of-server"}
 
 
-def pod(name, labels, ip):
-    return {"metadata": {"name": name, "labels": labels}, "status": {"podIP": ip, "phase": "Running"}}
+def pod(name, labels, ip, ready=True):
+    return {"metadata": {"name": name, "labels": labels},
+            "status": {"podIP": ip, "phase": "Running",
+                       "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+
+CONNECTOR_PEER = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "cloudflared"}},
+                  "podSelector": {"matchLabels": {"app": "cloudflared"}}}
 
 
 class FakeCluster:
     """Answers the kubectl calls netcheck makes. `reach(source, host, port)` is the network: source is the probe's
     namespace, or 'server' for the exec."""
 
-    def __init__(self, enforce=True, rbac=None, policies=True):
+    def __init__(self, enforce=True, rbac=None, policies=True, peer=None, server_ready=True):
         self.enforce, self.calls, self.applied = enforce, [], {}
         self.rbac = rbac or {"roles": [], "clusterroles": [], "rolebindings": [], "clusterrolebindings": []}
-        self.policies = policies
+        self.policies, self.peer, self.server_ready = policies, peer or CONNECTOR_PEER, server_ready
+        self.current = None                           # the probe whose results are being answered
 
     def reach(self, source, host, port):
         if host.startswith("192.0.2.10"):           # the scratch targets
@@ -36,7 +43,8 @@ class FakeCluster:
                 return "timeout" if self.enforce else "open"
             return "timeout" if closed and self.enforce else "open"
         if source == "server":
-            return "open" if (host.startswith("clickhouse.") and port == 8123) or not self.enforce else "timeout"
+            return "open" if (host.startswith("clickhouse.") and port == 8123) or host == "127.0.0.1" \
+                or not self.enforce else "timeout"
         return "timeout" if self.enforce else "open"
 
     def run(self, args, stdin=None):
@@ -51,7 +59,7 @@ class FakeCluster:
                 items = [pod("target-open", {"role": "open"}, "192.0.2.101"),
                          pod("target-closed", {"role": "closed"}, "192.0.2.102")]
             elif ns == "of-server":
-                items = [pod("of-server-of-server-abc", SERVER_LABELS, "192.0.2.11")]
+                items = [pod("of-server-of-server-abc", SERVER_LABELS, "192.0.2.11", self.server_ready)]
             elif ns == "clickhouse":
                 items = [pod("clickhouse-xyz", {"app": "clickhouse"}, "192.0.2.21")]
             else:
@@ -60,7 +68,8 @@ class FakeCluster:
         if a[:2] == ["get", "networkpolicy"]:
             ns = a[a.index("-n") + 1]
             pols = {"of-server": [{"metadata": {"name": "of-server-of-server"}, "spec": {
-                        "podSelector": {"matchLabels": SERVER_LABELS}, "policyTypes": ["Ingress", "Egress"]}}],
+                        "podSelector": {"matchLabels": SERVER_LABELS}, "policyTypes": ["Ingress", "Egress"],
+                        "ingress": [{"from": [self.peer], "ports": [{"port": 18200}]}]}}],
                     "clickhouse": [{"metadata": {"name": "default-deny"}, "spec": {"podSelector": {},
                                                                                   "policyTypes": ["Ingress"]}}]}
             return 0, json.dumps({"items": pols.get(ns, []) if self.policies else []}), ""
@@ -78,9 +87,11 @@ class FakeCluster:
             return 0, "", ""
         if a[0] == "logs":
             ns, name = a[a.index("-n") + 1], a[-1].split("/", 1)[1]
+            self.current = name                       # the probe pod whose results these are
             cmd = self.applied[(ns, name)]["spec"]["containers"][0]["command"]
             return 0, self._results(ns, json.loads(cmd[4])), ""
         if a[0] == "exec":
+            self.current = "exec"
             return 0, self._results("server", json.loads(a[a.index("-c", a.index("--")) + 2])), ""
         return 1, "", "unexpected call " + " ".join(a)
 
@@ -97,17 +108,20 @@ class FakeCluster:
         return json.loads(out)
 
 
-def run(cluster, *argv):
+def run(cluster, *argv, connector=True):
     out = io.StringIO()
-    code = nc.main(list(argv) + ["--deployer", "User:deployer"], k=cluster, out=out)
+    code = nc.main(list(argv) + ["--deployer", "User:deployer"]
+                   + (["--connector-namespace", "cloudflared"] if connector else []), k=cluster, out=out)
     return code, out.getvalue()
 
 
 class NetcheckTest(unittest.TestCase):
     def test_enforcing_cluster_passes(self):
-        code, out = run(FakeCluster(), "--connector-namespace", "cloudflared")
+        code, out = run(FakeCluster())
         self.assertEqual(code, 0, out)
         self.assertNotIn("FAIL", out)
+        self.assertIn("PASS  NetworkPolicy of-server/of-server-of-server admits only named pods", out)
+        self.assertIn("from the server: the server itself 127.0.0.1:18200 (it listens) answers", out)
         self.assertIn("a target behind deny-all (the cluster enforces NetworkPolicy) is refused", out)
         self.assertIn("from cloudflared: server Service", out)
         self.assertIn("from the server: ClickHouse clickhouse.clickhouse.svc:8123 answers", out)
@@ -127,6 +141,61 @@ class NetcheckTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("from of-server: skipped, the probe reaches nothing", out)
         self.assertNotIn("PASS  from of-server:", out)
+
+    def test_connector_namespace_is_required(self):
+        code, out = run(FakeCluster(), connector=False)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  --connector-namespace given", out)
+
+    def test_a_reset_where_the_plugin_drops_fails(self):
+        c = FakeCluster()
+        reach = c.reach
+        c.reach = lambda src, h, p: "refused" if h == "192.0.2.11" else reach(src, h, p)  # Running, not listening
+        code, out = run(c)
+        self.assertEqual(code, 1)
+        self.assertIn("server pod of-server-of-server-abc:18200 is refused: refused, but this cluster's plugin denies "
+                      "with timeout", out)
+
+    def test_a_plugin_that_rejects_counts_refusals(self):
+        c = FakeCluster()
+        reach = c.reach
+        c.reach = lambda src, h, p: "refused" if reach(src, h, p) == "timeout" else reach(src, h, p)
+        code, out = run(c)
+        self.assertEqual(code, 0, out)
+
+    def test_a_server_pod_not_ready_fails(self):
+        code, out = run(FakeCluster(server_ready=False))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  server pod of-server/of-server-of-server-abc is Ready", out)
+        self.assertIn("FAIL  server pods in of-server: none Ready", out)
+
+    def test_labels_outside_the_pinned_namespace(self):
+        c = FakeCluster()
+        code, out = run(c)
+        self.assertEqual(code, 0, out)
+        probe = c.applied[(next(ns for ns, n in c.applied if n == "probe-labels-0"), "probe-labels-0")]
+        self.assertEqual(probe["metadata"]["labels"]["app"], "cloudflared")
+        # a namespace left open: the policy fails its own line, and the probe carrying the labels gets in
+        c = FakeCluster(peer={"namespaceSelector": {}, "podSelector": {"matchLabels": {"app": "cloudflared"}}})
+        reach = c.reach
+        c.reach = lambda src, h, p: "open" if c.current == "probe-labels-0" and p == 18200 else reach(src, h, p)
+        code, out = run(c)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  NetworkPolicy of-server/of-server-of-server admits only named pods: ingress[0] admits "
+                      "pods with those labels in every namespace", out)
+        self.assertRegex(out, r"FAIL  from of-netcheck-\w+ with the labels app=cloudflared: server Service "
+                              r"of-server-of-server\.of-server\.svc:18200 is refused: open")
+
+    def test_peer_problems(self):
+        pol = lambda *peers: {"spec": {"ingress": [{"from": list(peers)}]}}
+        self.assertEqual(nc.peer_problems(pol(CONNECTOR_PEER)), [])
+        self.assertEqual(nc.peer_problems(pol({"ipBlock": {"cidr": "192.168.104.0/24"}})), [])
+        self.assertIn("every address", nc.peer_problems(pol({"ipBlock": {"cidr": "0.0.0.0/0"}}))[0])
+        self.assertIn("every pod of a namespace", nc.peer_problems(pol({"namespaceSelector": {"matchLabels": {
+            "a": "b"}}, "podSelector": None}))[0])
+        self.assertIn("every pod of every namespace", nc.peer_problems(pol({"namespaceSelector": {}}))[0])
+        self.assertIn("no from", nc.peer_problems({"spec": {"ingress": [{"ports": [{"port": 1}]}]}})[0])
+        self.assertEqual(nc.peer_problems({"spec": {"podSelector": {}}}), [])     # default-deny
 
     def test_missing_policies_fail(self):
         code, out = run(FakeCluster(policies=False))
@@ -278,15 +347,24 @@ class RbacTest(unittest.TestCase):
         self.assertIsNone(nc.rule_access({"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}))
         self.assertIsNotNone(nc.rule_access({"apiGroups": [""], "resources": ["services/proxy"], "verbs": ["get"]}))
 
+    ACCEPT = ["Group:developers", "ServiceAccount:of-server/ci", "User:oncall", "ServiceAccount:tools/helper",
+              "User:node-debugger", "User:debugger", "User:forwarder"]
+
     def test_connector_namespace_is_checked(self):
-        accept = ["Group:developers", "ServiceAccount:of-server/ci", "User:oncall", "ServiceAccount:tools/helper",
-                  "User:node-debugger", "User:debugger", "User:forwarder"]
-        argv = ["--no-exec"] + [x for a in accept for x in ("--accept", a)]
+        argv = ["--no-exec"] + [x for a in self.ACCEPT for x in ("--accept", a)]
         code, out = run(FakeCluster(rbac=self.RBAC), *argv)
-        self.assertEqual(code, 0, out)
-        code, out = run(FakeCluster(rbac=self.RBAC), *argv, "--connector-namespace", "cloudflared")
         self.assertEqual(code, 1)
-        self.assertIn("FAIL  cloudflared: User:tunnel-ops starts pods", out)
+        self.assertEqual([ln for ln in out.splitlines() if ln.startswith("FAIL  ")],
+                         ["FAIL  cloudflared: User:tunnel-ops starts pods, which mount any Secret and carry any labels "
+                          "(RoleBinding cloudflared/tunnel-ops): only the deployer may; remove the binding, or name "
+                          "the subject with --accept"])
+
+    def test_a_copied_bootstrap_label_is_not_bootstrap(self):
+        b = {"metadata": {"name": "extra", "labels": {"kubernetes.io/bootstrapping": "rbac-defaults"}},
+             "subjects": [{"kind": "User", "name": "mallory"}]}
+        self.assertFalse(nc.bootstrap(b))
+        b["subjects"] = [{"kind": "Group", "name": "system:masters"}]
+        self.assertTrue(nc.bootstrap(b))
 
     def test_unexpected_reader_fails_and_accept_passes(self):
         code, out = run(FakeCluster(rbac=self.RBAC), "--no-exec")
@@ -295,10 +373,8 @@ class RbacTest(unittest.TestCase):
         self.assertIn("PASS  of-server: User:deployer", out)
         self.assertNotIn("FAIL  of-server: Group:system:masters", out)
         self.assertIn("FAIL  of-server: ServiceAccount:tools/helper reads Secrets", out)
-        code, out = run(FakeCluster(rbac=self.RBAC), "--no-exec", "--accept", "Group:developers",
-                        "--accept", "ServiceAccount:of-server/ci", "--accept", "User:oncall",
-                        "--accept", "ServiceAccount:tools/helper", "--accept", "User:node-debugger",
-                        "--accept", "User:debugger", "--accept", "User:forwarder")
+        argv = ["--no-exec"] + [x for a in self.ACCEPT + ["User:tunnel-ops"] for x in ("--accept", a)]
+        code, out = run(FakeCluster(rbac=self.RBAC), *argv)
         self.assertEqual(code, 0, out)
 
 
@@ -319,7 +395,7 @@ class ChartPolicyTest(unittest.TestCase):
         p = self.render("networkPolicy:\n  ingressFrom:\n"
                         "    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cloudflared}}\n")
         self.assertNotEqual(p.returncode, 0)
-        self.assertIn("a namespaceSelector alone, or with an empty podSelector, admits every pod", p.stderr)
+        self.assertIn("a namespaceSelector alone, or with an empty or null podSelector, admits every pod", p.stderr)
 
     def test_empty_pod_selector_is_refused(self):
         for sel in ("{}", "{matchLabels: {}}"):
@@ -327,7 +403,23 @@ class ChartPolicyTest(unittest.TestCase):
                             "    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cloudflared}}\n"
                             f"      podSelector: {sel}\n")
             self.assertNotEqual(p.returncode, 0, sel)
-            self.assertIn("an empty podSelector", p.stderr)
+            self.assertIn("an empty or null podSelector", p.stderr)
+
+    def test_null_pod_selector_and_open_namespace_are_refused(self):
+        cases = {"      podSelector: null\n": "an empty or null podSelector",
+                 "      podSelector: {matchLabels: {app: cloudflared}}\n": None}
+        for tail, msg in cases.items():
+            p = self.render("networkPolicy:\n  ingressFrom:\n"
+                            "    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: cloudflared}}\n" + tail)
+            self.assertEqual(p.returncode == 0, msg is None, (tail, p.stderr))
+        for ns in ("{}", "null"):
+            p = self.render("networkPolicy:\n  ingressFrom:\n"
+                            f"    - namespaceSelector: {ns}\n      podSelector: {{matchLabels: {{app: cloudflared}}}}\n")
+            self.assertNotEqual(p.returncode, 0, ns)
+            self.assertIn("selects every namespace", p.stderr)
+        p = self.render("networkPolicy:\n  dnsTo:\n    - namespaceSelector: {matchLabels: {a: b}}\n")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("networkPolicy.dnsTo", p.stderr)
 
     def test_defaults_name_pods_and_dns(self):
         import yaml

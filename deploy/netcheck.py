@@ -7,14 +7,19 @@ cluster (AGENTS.md, Framework and apps).
       --connector-namespace cloudflared --deployer User:<who deploys>
 
 1. Policies select the pods: a NetworkPolicy with Ingress selects the server's pods, and one ClickHouse's; the
-   names do not matter, so a keeper's own manifests count as well as deploy/clickhouse/clickhouse.yaml.
+   names do not matter, so a keeper's own manifests count as well as deploy/clickhouse/clickhouse.yaml. Each of
+   them admits only named pods: no rule without `from`, no empty pod or namespace selector, no /0 block.
 2. The cluster enforces NetworkPolicy: in a scratch namespace a probe reaches an open target and is refused by a
    target behind a deny-all policy. A cluster whose network plugin ignores policies fails here, and then nothing
    below holds, whatever it prints.
 3. A probe in the scratch namespace, and one in the server's own namespace, are refused by the server (its Service and
-   pods) and by ClickHouse (its Service, and its pods on every port ClickHouse listens on). With --connector-namespace,
-   a pod there that is not the connector is refused by the server too.
-4. From inside the server's container: ClickHouse answers; the scratch target and the API server do not.
+   its Ready pods) and by ClickHouse (its Service, and its Ready pods on every port ClickHouse listens on). A refusal
+   counts only as the deny the control showed: where the plugin drops, a reset means the connection reached the pod.
+   A probe in the scratch namespace carrying the pod labels the server's policy admits is refused too, so labels
+   alone, outside the connector's namespace, get nobody in. In --connector-namespace (required), a pod that is not
+   the connector is refused.
+4. From inside the server's container: the server answers on its own loopback (it listens), ClickHouse answers; the
+   scratch target and the API server do not.
 5. Who RBAC lets read the Secrets of the server's, ClickHouse's and the connector's namespaces, or reach their pods
    past NetworkPolicy: a get, list or watch on Secrets; starting a pod (it mounts any Secret of its namespace, and in
    the connector's namespace it can carry the connector's labels); exec, attach or an ephemeral container in a pod
@@ -97,12 +102,17 @@ class Report:
         print("      " + text, file=self.out)
 
 
-def judge(expect, result):
-    """A target meant to be open must answer; one meant to be closed must time out or be refused. An unresolved name
-    or another error proves nothing either way, so it fails."""
+DENY = ("timeout", "refused")
+
+
+def judge(expect, result, deny=DENY):
+    """A target meant to be open must answer; one meant to be closed must give DENY, how this cluster's plugin denies
+    (the deny-all control's result: a drop times out, a reject is refused). Where the plugin drops, a refusal means the
+    connection reached the pod and found nothing listening, which proves nothing about the policy (of_review on
+    organic-framework PR 169). An unresolved name or another error proves nothing either way, so it fails."""
     if expect == "open":
         return result == "open"
-    return result in ("timeout", "refused")
+    return result in deny
 
 
 def probe_pod(name, ns, image, labels, command, ready_port=None):
@@ -158,31 +168,90 @@ def selects(selector, labels):
 
 
 def policies_for(k, ns, selector):
-    """(names of the NetworkPolicies with Ingress that select the pods SELECTOR names, number of pods)."""
+    """([NetworkPolicies with Ingress that select the pods SELECTOR names], number of pods)."""
     pods = k.json("get", "pods", "-n", ns, "-l", selector).get("items") or []
     pols = k.json("get", "networkpolicy", "-n", ns).get("items") or []
-    names = sorted({p["metadata"]["name"] for p in pols for pod in pods
-                    if "Ingress" in (p["spec"].get("policyTypes") or ["Ingress"])
-                    and selects(p["spec"].get("podSelector"), pod["metadata"].get("labels") or {})})
-    return names, len(pods)
+    chosen = {p["metadata"]["name"]: p for p in pols for pod in pods
+              if "Ingress" in (p["spec"].get("policyTypes") or ["Ingress"])
+              and selects(p["spec"].get("podSelector"), pod["metadata"].get("labels") or {})}
+    return [chosen[n] for n in sorted(chosen)], len(pods)
 
 
-def pod_ips(k, ns, selector):
+def named(selector):
+    """A LabelSelector that names something: an empty or missing one selects everything."""
+    return isinstance(selector, dict) and bool(selector.get("matchLabels") or selector.get("matchExpressions"))
+
+
+def peer_problems(policy):
+    """Why a NetworkPolicy's ingress admits more than named pods (the chart refuses these at render; a keeper's own
+    manifests are read here)."""
+    out = []
+    for i, rule in enumerate(policy["spec"].get("ingress") or []):
+        peers = (rule or {}).get("from")
+        if not peers:
+            out.append(f"ingress[{i}] has no from: it admits every source")
+            continue
+        for peer in peers:
+            if "ipBlock" in peer:
+                cidr = str((peer.get("ipBlock") or {}).get("cidr") or "")
+                if cidr.endswith("/0"):
+                    out.append(f"ingress[{i}] admits every address ({cidr})")
+            elif not named(peer.get("podSelector")):
+                out.append(f"ingress[{i}] admits every pod of " + ("every namespace" if "namespaceSelector" in peer and
+                           not named(peer.get("namespaceSelector")) else "a namespace"))
+            elif "namespaceSelector" in peer and not named(peer.get("namespaceSelector")):
+                out.append(f"ingress[{i}] admits pods with those labels in every namespace")
+    return out
+
+
+def admitted_labels(policies):
+    """The pod labels the policies' ingress peers name, one dict per peer that names pods by labels a pod can carry."""
+    out = []
+    for p in policies:
+        for rule in p["spec"].get("ingress") or []:
+            for peer in (rule or {}).get("from") or []:
+                sel = peer.get("podSelector")
+                if not named(sel):
+                    continue
+                labels = dict(sel.get("matchLabels") or {})
+                for e in sel.get("matchExpressions") or []:
+                    if e.get("operator") == "In" and e.get("values"):
+                        labels[e["key"]] = e["values"][0]
+                    elif e.get("operator") == "Exists":
+                        labels[e["key"]] = "x"
+                if labels and labels not in out:
+                    out.append(labels)
+    return out
+
+
+def ready(pod):
+    return any(c.get("type") == "Ready" and c.get("status") == "True"
+               for c in (pod.get("status") or {}).get("conditions") or [])
+
+
+def pod_ips(k, ns, selector, rep=None, what=None):
+    """[(name, ip)] of the Ready pods SELECTOR names. With REP, a pod that is not Ready fails a line: a probe refused
+    by it would prove nothing (of_review on organic-framework PR 169)."""
     items = k.json("get", "pods", "-n", ns, "-l", selector).get("items") or []
+    for p in items:
+        if rep is not None and not ready(p):
+            rep.line(False, f"{what} pod {ns}/{p['metadata']['name']} is Ready", "not Ready: a refusal from it proves "
+                     "nothing; run the check again once it is")
     return [(p["metadata"]["name"], p["status"].get("podIP")) for p in items
-            if p.get("status", {}).get("podIP") and p["status"].get("phase") == "Running"]
+            if p.get("status", {}).get("podIP") and ready(p)]
 
 
-def run_probe(k, rep, ns, name, image, targets, timeout, soft=False):
+def run_probe(k, rep, ns, name, image, targets, timeout, soft=False, deny=DENY, labels=None, control=None):
     """Run one probe pod in NS over TARGETS [(label, host, port, expect)] and report each line. The first target is
     the control the probe must reach; with SOFT, a probe that reaches nothing (an egress policy of its own namespace)
-    only notes that its lines are skipped, since a refusal from it would prove nothing."""
-    probe = probe_pod(name, ns, image, {"role": "probe"},
+    only notes that its lines are skipped, since a refusal from it would prove nothing. CONTROL names the target behind
+    deny-all: its result is how this cluster denies, returned for the probes after it. LABELS: the probe pod's own."""
+    probe = probe_pod(name, ns, image, dict(labels or {}, role="probe"),
                       ["python3", "-I", "-c", PROBE, json.dumps([t[:3] for t in targets]), str(timeout)])
     code, _, err = k.run(["apply", "-f", "-"], stdin=json.dumps(probe))
     if code:
         rep.line(False, f"probe pod {ns}/{name}", err.strip()[-300:])
-        return
+        return deny
     wait = str(int(60 + len(targets) * (timeout + 1))) + "s"
     if not k.ok("wait", "-n", ns, "--for=jsonpath={.status.phase}=Succeeded", f"pod/{name}", f"--timeout={wait}"):
         try:
@@ -193,28 +262,36 @@ def run_probe(k, rep, ns, name, image, targets, timeout, soft=False):
         except LookupError as e:
             why = str(e)
         rep.line(False, f"probe pod {ns}/{name} did not finish", f"{why} (an image the cluster cannot pull: --image)")
-        return
+        return deny
     code, log, _ = k.run(["logs", "-n", ns, f"pod/{name}"])
     got = parse_results(log)
     if soft and got.get(targets[0][0]) != "open":
         rep.note(f"from {ns}: skipped, the probe reaches nothing ({got.get(targets[0][0], 'no result')}; an egress "
                  "policy of that namespace); the scratch namespace's lines cover the same targets")
-        return
+        return deny
+    if control and got.get(control) in DENY:
+        deny = (got[control],)
+    _report(rep, f"from {ns}" + (" with the labels " + ",".join(f"{k_}={v}" for k_, v in sorted(labels.items()))
+                                 if labels else ""), targets, got, deny)
+    return deny
+
+
+def _report(rep, source, targets, got, deny):
     for label, host, port, expect in targets:
         r = got.get(label, "no result")
-        rep.line(judge(expect, r), f"from {ns}: {label} {'answers' if expect == 'open' else 'is refused'}", r)
+        why = r if expect == "open" or r not in DENY else (
+            f"{r}, but this cluster's plugin denies with {deny[0]}: the connection reached the pod" if len(deny) == 1
+            else r)
+        rep.line(judge(expect, r, deny), f"{source}: {label} {'answers' if expect == 'open' else 'is refused'}", why)
 
 
-def exec_probe(k, rep, ns, deploy, targets, timeout):
+def exec_probe(k, rep, ns, deploy, targets, timeout, deny=DENY):
     code, log, err = k.run(["exec", "-n", ns, f"deploy/{deploy}", "-c", "of-server", "--", "python3", "-I", "-c",
                             PROBE, json.dumps([t[:3] for t in targets]), str(timeout)])
     if code:
         rep.line(False, f"exec into {ns}/{deploy}", err.strip()[-300:])
         return
-    got = parse_results(log)
-    for label, host, port, expect in targets:
-        r = got.get(label, "no result")
-        rep.line(judge(expect, r), f"from the server: {label} {'answers' if expect == 'open' else 'is refused'}", r)
+    _report(rep, "from the server", targets, parse_results(log), deny)
 
 
 # ------------------------------------------------------------------ RBAC
@@ -256,10 +333,13 @@ def subject_key(s, binding_ns=None):
 
 
 def bootstrap(binding):
-    """The API server's own default bindings, by the label it puts on them; a name proves nothing (any chart may call
-    its binding system:…; of_secrets-review on organic-framework PR 169)."""
+    """The API server's own default bindings: the label it puts on them, and only system identities bound (a name
+    proves nothing, and a label can be copied; of_secrets-review and of_review on organic-framework PR 169)."""
     labels = binding["metadata"].get("labels") or {}
-    return labels.get("kubernetes.io/bootstrapping") == "rbac-defaults"
+    subjects = binding.get("subjects") or []
+    return labels.get("kubernetes.io/bootstrapping") == "rbac-defaults" and bool(subjects) and all(
+        (s.get("kind") in ("User", "Group") and str(s.get("name") or "").startswith("system:"))
+        or (s.get("kind") == "ServiceAccount" and s.get("namespace") == "kube-system") for s in subjects)
 
 
 def secret_readers(namespace, roles, clusterroles, rolebindings, clusterrolebindings):
@@ -325,7 +405,8 @@ def main(argv=None, k=None, out=sys.stdout):
                     help="ClickHouse's namespace (deploy/clickhouse/clickhouse.yaml); 'none' when it is outside")
     ap.add_argument("--clickhouse-service", default="clickhouse", help="ClickHouse's Service name")
     ap.add_argument("--clickhouse-selector", default="app=clickhouse", help="ClickHouse's pod labels, k=v,…")
-    ap.add_argument("--connector-namespace", help="the tunnel connector's namespace: a stranger pod there is refused")
+    ap.add_argument("--connector-namespace", help="the namespace whose pods the server admits (the tunnel connector's "
+                    "or the ingress controller's): required; a stranger pod there is refused")
     ap.add_argument("--image", help="an image with python3 for the probes (default: the server's own)")
     ap.add_argument("--context", help="the kubectl context")
     ap.add_argument("--deployer", action="append", default=[], help="Kind:name allowed to read Secrets (repeat)")
@@ -346,29 +427,40 @@ def main(argv=None, k=None, out=sys.stdout):
     image = a.image or next((c["image"] for c in dep["spec"]["template"]["spec"]["containers"]
                              if c["name"] == "of-server"), None)
 
+    if not a.connector_namespace:
+        rep.line(False, "--connector-namespace given", "name the namespace whose pods the server admits, so a stranger "
+                 "pod there is probed")
     labels = ",".join(f"{key}={v}" for key, v in sorted(dep["spec"]["selector"]["matchLabels"].items()))
+    server_policies = []
     for pns, sel, what in [(ns, labels, "the server's pods")] + ([(chns, a.clickhouse_selector, "ClickHouse's pods")]
                                                                   if chns else []):
         try:
-            names, n = policies_for(k, pns, sel)
+            pols, n = policies_for(k, pns, sel)
         except LookupError as e:
-            names, n = [], 0
+            pols, n = [], 0
             rep.line(False, f"NetworkPolicies in {pns}", str(e))
-        rep.line(bool(names and n), f"{what} in {pns} are selected by a NetworkPolicy with Ingress"
+        names = [p["metadata"]["name"] for p in pols]
+        rep.line(bool(pols and n), f"{what} in {pns} are selected by a NetworkPolicy with Ingress"
                  + (f" ({', '.join(names)})" if names else ""), "no pods" if not n else "none")
+        for p in pols:
+            why = peer_problems(p)
+            rep.line(not why, f"NetworkPolicy {pns}/{p['metadata']['name']} admits only named pods", "; ".join(why))
+        if pns == ns:
+            server_policies = pols
     denied = [(f"server Service {server}.{ns}.svc:{SERVER_PORT}", f"{server}.{ns}.svc", SERVER_PORT, "closed")]
-    denied += [(f"server pod {n}:{SERVER_PORT}", ip, SERVER_PORT, "closed") for n, ip in pod_ips(k, ns, labels)]
+    server_pods = pod_ips(k, ns, labels, rep, "server")
+    denied += [(f"server pod {n}:{SERVER_PORT}", ip, SERVER_PORT, "closed") for n, ip in server_pods]
     if chns:
         chs = f"{a.clickhouse_service}.{chns}.svc"
         ch = [(f"ClickHouse Service {chs}:8123", chs, 8123, "closed")]
-        ch_pods = pod_ips(k, chns, a.clickhouse_selector)
+        ch_pods = pod_ips(k, chns, a.clickhouse_selector, rep, "ClickHouse")
         ch += [(f"ClickHouse pod {n}:{p}", ip, p, "closed") for n, ip in ch_pods for p in CLICKHOUSE_PORTS]
         if not ch_pods:
-            rep.line(False, f"ClickHouse pods in {chns}", "none running")
+            rep.line(False, f"ClickHouse pods in {chns}", "none Ready")
     else:
         ch = []
-    if len(denied) == 1:
-        rep.line(False, f"server pods in {ns}", "none running")
+    if not server_pods:
+        rep.line(False, f"server pods in {ns}", "none Ready")
 
     scratch = "of-netcheck-" + secrets.token_hex(3)
     stranger = f"of-netcheck-{scratch[-6:]}"
@@ -389,17 +481,23 @@ def main(argv=None, k=None, out=sys.stdout):
         control = [("an open target (the probe can connect)", ips["target-open"], TARGET_PORT, "open"),
                    ("a target behind deny-all (the cluster enforces NetworkPolicy)", ips["target-closed"],
                     TARGET_PORT, "closed")]
-        run_probe(k, rep, scratch, "probe", image, control + denied + ch, a.timeout)
+        deny = run_probe(k, rep, scratch, "probe", image, control + denied + ch, a.timeout, control=control[1][0])
+        for i, lab in enumerate(admitted_labels(server_policies)):
+            # labels alone, outside the namespace the policy pins, must get nobody in (of_review on PR 169)
+            run_probe(k, rep, scratch, f"probe-labels-{i}", image, control[:1] + denied, a.timeout, deny=deny,
+                      labels=lab)
         made.append(("pod", stranger, ns))
-        run_probe(k, rep, ns, stranger, image, control[:1] + ch + denied, a.timeout, soft=True)
+        run_probe(k, rep, ns, stranger, image, control[:1] + ch + denied, a.timeout, soft=True, deny=deny)
         if a.connector_namespace:
             made.append(("pod", stranger, a.connector_namespace))
-            run_probe(k, rep, a.connector_namespace, stranger, image, control[:1] + denied, a.timeout, soft=True)
+            run_probe(k, rep, a.connector_namespace, stranger, image, control[:1] + denied, a.timeout, soft=True,
+                      deny=deny)
         if not a.no_exec:
-            mine = [(f"ClickHouse {chs}:8123", chs, 8123, "open")] if chns else []
+            mine = [(f"the server itself 127.0.0.1:{SERVER_PORT} (it listens)", "127.0.0.1", SERVER_PORT, "open")]
+            mine += [(f"ClickHouse {chs}:8123", chs, 8123, "open")] if chns else []
             mine += [("the scratch target", ips["target-open"], TARGET_PORT, "closed"),
                      ("the API server kubernetes.default.svc:443", "kubernetes.default.svc", 443, "closed")]
-            exec_probe(k, rep, ns, server, mine, a.timeout)
+            exec_probe(k, rep, ns, server, mine, a.timeout, deny=deny)
     finally:
         if a.keep:
             rep.note(f"kept: namespace {scratch}" + "".join(f", pod {n}/{p}" for kind, p, n in made if kind == "pod"))

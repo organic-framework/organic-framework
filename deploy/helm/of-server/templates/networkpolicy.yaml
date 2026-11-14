@@ -1,12 +1,10 @@
 {{- if .Values.networkPolicy.enabled }}
-{{- /* Who may reach the server names pods, never a whole namespace: an entry with a namespaceSelector alone, or with
-an empty podSelector, admits every pod of that namespace (2026-11-14, the founder: other containers must not reach the
-server or the database; the empty selector, of_secrets-review on organic-framework PR 169). */}}
-{{- range .Values.networkPolicy.ingressFrom }}
-{{- if not (or (hasKey . "ipBlock") (dig "podSelector" "matchLabels" (dict) .) (dig "podSelector" "matchExpressions" (list) .)) }}
-{{- fail "networkPolicy.ingressFrom: each entry needs a podSelector with matchLabels or matchExpressions (the connector's or the ingress controller's pod labels) or an ipBlock; a namespaceSelector alone, or with an empty podSelector, admits every pod of that namespace" }}
-{{- end }}
-{{- end }}
+{{- /* Who may reach the server, and what it reaches, names pods, never a whole namespace or every namespace
+(2026-11-14, the founder: other containers must not reach the server or the database; the empty and null selectors,
+of_secrets-review and of_review on organic-framework PR 169). */}}
+{{- include "of-server.namedPeers" (list "networkPolicy.ingressFrom" .Values.networkPolicy.ingressFrom) }}
+{{- include "of-server.namedPeers" (list "networkPolicy.clickhouseTo" .Values.networkPolicy.clickhouseTo) }}
+{{- include "of-server.namedPeers" (list "networkPolicy.dnsTo" .Values.networkPolicy.dnsTo) }}
 {{- if not .Values.networkPolicy.dnsTo }}
 {{- fail "networkPolicy.dnsTo: name the cluster's DNS pods" }}
 {{- end }}
