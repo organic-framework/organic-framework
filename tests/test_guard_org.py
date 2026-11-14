@@ -258,6 +258,12 @@ class SshRuleTest(unittest.TestCase):
                            ("a" * 300 + "*", "b", True)):                              # past the limit
             self.assertEqual(of_guard._globs_meet(a, b), want, (a, b))
 
+    def test_options_after_the_destination_are_read(self):
+        """OpenSSH reads options after the host, up to the remote command (of_secrets-review on PR 157): a jump there
+        reached a denied host unseen."""
+        self.assertEqual(self.hit("ssh other -J gw2 uptime"), ["ssh via the jump host gw2"])
+        self.assertEqual(self.hit("ssh other uptime -J gw2"), [])                       # the remote command's words
+
     def test_what_does_not(self):
         for cmd in ("ssh other", "ssh other 'ssh us'", "scp ./a:b ./c", "git push origin main", "echo ssh us",
                     "of send x 'ssh us later'", "cat ~/.ssh/config"):
@@ -346,6 +352,22 @@ class AllowJumpTest(unittest.TestCase):
             self.assertTrue(self.hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70", resolver=of_guard.ssh_resolver))
             self.assertTrue(self.hit(f"ssh -F {cfg} -o 'ProxyCommand ssh -W %h:%p agent-gateway' 192.0.2.70",
                                      resolver=of_guard.ssh_resolver))
+        for after in ("-L 8080:192.0.2.9:80", "-D 1080 id"):                  # options after the host (OpenSSH)
+            self.assertTrue(self.hit(f"ssh -J agent-gateway 192.0.2.70 {after}"), after)
+        self.assertEqual(self.hit("ssh 192.0.2.70 -J agent-gateway uptime"), [])     # a jump after the host: allowed
+        self.assertTrue(self.hit("ssh 192.0.2.70 -J agent-gateway uptime", position="other_keeper"))
+        for o in ("-o LocalForward='8080 192.0.2.9:80'", "-o RemoteForward=9000:localhost:22",
+                  "-o DynamicForward=1080", "-o PermitLocalCommand=yes -o LocalCommand='ssh gw9'"):
+            self.assertTrue(self.hit(f"ssh -J agent-gateway {o} 192.0.2.70"), o)
+        with tempfile.TemporaryDirectory() as t:  # forwards and local commands from the config
+            for body in ("Host 192.0.2.70\n  LocalForward 8080 192.0.2.9:80\n", "Host agent-gateway\n  DynamicForward 1080\n",
+                         "Match host *\n  RemoteForward 9000 localhost:22\n",
+                         "Host 192.0.2.70\n  PermitLocalCommand yes\n  LocalCommand ssh gw9\n"):
+                cfg = os.path.join(t, "c")
+                with open(cfg, "w") as fh:
+                    fh.write(body)
+                self.assertTrue(self.hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70", resolver=of_guard.ssh_resolver),
+                                body)
         for fwd in ("-L 8080:192.0.2.9:80", "-R 9000:localhost:22", "-D 1080", "-W db:5432", "-O forward",
                     "-L 9000:agent-gateway:22"):
             self.assertTrue(self.hit(f"ssh -J agent-gateway {fwd} 192.0.2.70"), fwd)

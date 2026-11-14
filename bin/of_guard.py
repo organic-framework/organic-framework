@@ -2712,6 +2712,9 @@ def _ssh_argv(head, args):
             i += 1
             continue
         positional.append(a)
+        if head in ("ssh", "autossh") and len(positional) == 1:  # OpenSSH reads options after the destination too,
+            i += 1                                              # up to the remote command (of_secrets-review, PR 157)
+            continue
         if head in ("ssh", "autossh", "sftp", "mosh"):  # the destination; what follows is the remote command
             break
         i += 1
@@ -2760,6 +2763,7 @@ def ssh_calls(cmd, depth=0):
 
 
 _SSH_SETS = ("hostname", "proxyjump", "proxycommand", "port")  # where a call goes
+_SSH_FWD = ("localforward", "remoteforward", "dynamicforward", "permitlocalcommand")  # what rides a connection past it
 
 
 def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
@@ -2812,6 +2816,14 @@ def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
                     pat = os.path.join(base, pat)
                 for p in sorted(glob.glob(pat)):
                     out += _ssh_config_blocks(p, depth + 1, seen, opaque, base)
+        elif key in _SSH_FWD:  # read for allow_jump only; a Match block's counts for every host (of_secrets-review)
+            if block == "match":
+                out.append({"patterns": ["*"], key: val})
+            else:
+                if block is None:
+                    block = {"patterns": ["*"]}
+                    out.append(block)
+                block.setdefault(key, val)
         elif key in _SSH_SETS:
             if block == "match":
                 if opaque is not None and f"a Match block sets {key}" not in opaque:
@@ -2965,6 +2977,8 @@ def _ssh_chain_of(head, args):
                 out["port"] = val
             elif key == "hostname":
                 raise _Doubt("-o HostName")
+            elif key in _SSH_FWD or key == "localcommand":  # a forward or a local command rides the jump past it
+                out["forwards"] = True
         elif flag in ("-e", "--rsh"):
             words = str(v).split()
             if not words or os.path.basename(words[0]) != "ssh":
@@ -2998,6 +3012,9 @@ def _ssh_chain_of(head, args):
             i += 1
             continue
         positional.append(a)
+        if head in ("ssh", "autossh") and len(positional) == 1:  # options after the destination, as OpenSSH reads
+            i += 1
+            continue
         if head in ("ssh", "autossh", "sftp"):
             break
         i += 1
@@ -3028,10 +3045,16 @@ def _ssh_contacts(call, resolve):
         # connects to that one first, which this reading does not follow (of_review on PR 157)
         if any(str(first(hop, k) or "none").lower() != "none" for k in ("proxyjump", "proxycommand")):
             raise _Doubt(f"{hop} has its own jump")
-        return hop
+        return unforwarded(hop)
+
+    def unforwarded(host):  # a forward or a local command its config sets rides the connection past the jump
+        if any(first(host, k) for k in _SSH_FWD[:3]) or \
+                str(first(host, "permitlocalcommand") or "no").lower() in ("yes", "true"):
+            raise _Doubt(f"{host} forwards")
+        return host
     out = []
     for dword in chain["dests"]:
-        dest, _ = _ssh_hop(dword)
+        dest = unforwarded(_ssh_hop(dword)[0])
         dport = chain["port"] or first(dest, "port") or "22"
         jumps, command = chain["jumps"], chain["proxycommand"]
         if jumps is None and command is None:
