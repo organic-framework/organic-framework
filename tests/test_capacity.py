@@ -456,6 +456,27 @@ class PlanAndWatch(unittest.TestCase):
             of_capacity.watch(pos, asked.append, log=lambda m: None, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # a new reset period: ask again
 
+    def test_with_the_balancer_on_asks_only_when_no_account_has_room(self):
+        asked = []
+        with tempfile.TemporaryDirectory() as state:
+            of_capacity.STATE_DIR = state
+            rows = [dict(r, observed_at="2026-11-06T06:50:00Z", probe={}, error=None,
+                         windows={k: dict(v) for k, v in r["windows"].items()}) for r in self.ROWS]
+            probe_fn = lambda d, now: next(r for r in rows if r["config_dir"] == d)  # noqa: E731
+            sessions = {"/g": [{"session": "s1"}, {"session": "s2"}, {"session": "s3"}], "/e": [{"session": "s4"}]}
+            kw = dict(dirs=["/g", "/e", "/d", "/p"], now=1_800_000_000, probe_fn=probe_fn,
+                      sessions_fn=lambda d: sessions.get(d, []), emit=lambda *a: None)
+            pos = [dict(p) for p in self.POS]
+            on = {"auto": True}
+            of_capacity.watch(pos, asked.append, log=lambda m: None, policy=on, **kw)
+            self.assertEqual(asked, [])  # /d has room: relief moves them, nothing to decide
+            for r in rows[1:]:
+                r["windows"]["seven_day"]["utilization"] = 95
+            of_capacity.watch(pos, asked.append, log=lambda m: None, policy=on, fresh=True, **kw)
+            self.assertEqual(len(asked), 2)  # no room anywhere: the owner decides, for /g and for /e
+            of_capacity.watch(pos, asked.append, log=lambda m: None, policy={"auto": False}, fresh=True, **kw)
+            self.assertEqual(len(asked), 2)  # asked once per window and reset, as before
+
     def test_probe_runs_without_hooks_or_mcp(self):
         cmd = of_capacity.probe_command()
         self.assertIn('{"disableAllHooks": true}', cmd)
