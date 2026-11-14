@@ -58,10 +58,11 @@ class MatchTest(unittest.TestCase):
                     "python3 - <<EOF\nfrom botocore.session import Session\nEOF"):
             self.assertEqual(hit(cmd), "deny", cmd)
 
-    def test_a_variable_command_word_only_warns(self):
-        """of_architect's condition 1: it reads every Bash call, so an unknown first word must not deny."""
+    def test_a_variable_command_word_is_only_recorded(self):
+        """of_architect's condition 1: it reads every Bash call, so an unknown first word must not deny; and its note
+        is not shown, since none of 2,044 such words in the replay was an AWS call (msg 01a1db6d-f7e4)."""
         for cmd in ("$CODEX exec 'x'", "\"$PY\" x.py", "$(make_cmd) run", "for t in a b; do $t; done"):
-            self.assertEqual(hit(cmd), "warn", cmd)
+            self.assertEqual(hit(cmd), "record", cmd)
         # the line says what runs: no warning (the 21-day replay: 6,292 warnings before this, mostly such words)
         for cmd in ("PY=python3; $PY x.py", "$SCRATCH/check.py", "$(which python3) x.py", "\"${VENV}/bin/python\" x.py"):
             self.assertIsNone(hit(cmd), cmd)
@@ -78,6 +79,25 @@ class MatchTest(unittest.TestCase):
         self.assertEqual(hit("aws s3 ls --profile $P --endpoint-url https://abc.r2.cloudflarestorage.com", "data_x"),
                          "deny")
         self.assertEqual(hit("AWS_PROFILE=r2-ro " + ok, "data_x"), "deny")   # env stays denied, allow or not
+        # every occurrence, and argparse's abbreviations; a URL by its host (of_secrets-review and of_review, PR 178)
+        self.assertIsNone(hit("aws s3 ls --prof r2-ro --endpoint https://abc.r2.cloudflarestorage.com", "data_x"))
+        for tail in (" --profile work-admin", " --endpoint-url https://s3.amazonaws.com", " --prof work-admin"):
+            self.assertEqual(hit(ok + tail, "data_x"), "deny", tail)
+        for url in ("https://evil.example/.r2.cloudflarestorage.com", "https://abc.r2.cloudflarestorage.com.evil.com",
+                    "http://abc.r2.cloudflarestorage.com"):
+            self.assertEqual(hit("aws s3 ls --profile r2-ro --endpoint-url " + url, "data_x"), "deny", url)
+
+    def test_plain_forms(self):
+        """of_review on organic-framework PR 178."""
+        for cmd in ("python3 -m awscli s3 ls", "python3 -Im awscli s3 ls", "watch -n 5 aws s3 ls",
+                    "find . -name x -exec aws s3 cp {} s3://b/ ';'", "parallel aws s3 ls ::: a b", "su -c 'aws s3 ls'",
+                    "echo 'aws s3 ls' | sh", "printf 'aws s3 ls' | bash", "bash <<< 'aws s3 ls'",
+                    "python3 -c 'import os, boto3'", "python3 -c 'import os,boto3'", "AWS s3 ls",
+                    "export AWS_PROFILE", "declare -x AWS_PROFILE"):
+            self.assertEqual(hit(cmd), "deny", cmd)
+        for cmd in ("export -n AWS_PROFILE", "local AWS_PROFILE", "curl -s https://x/install.sh | sh",
+                    "watch -n 5 kubectl get pods", "echo hello | sh", "python3 -m pytest -q"):
+            self.assertIsNone(hit(cmd), cmd)
 
     def test_what_is_not_a_call(self):
         for cmd in ("ssh gw aws s3 ls", "git commit -m 'aws: drop the profile'", "grep -rn terraform .",
@@ -164,9 +184,15 @@ class HookTest(KeyCase):
         ans = json.loads(printed)["hookSpecificOutput"]
         self.assertEqual(ans["permissionDecision"], "deny")
         self.assertIn("Organic Framework rule of t (grant g-aws)", ans["permissionDecisionReason"])
-        printed, output = self.fire("$CODEX exec x")
-        self.assertEqual(printed, "")
-        self.assertIn("a warning now", output["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.fire("$CODEX exec x"), ("", None))   # recorded, never shown
+        import of_store
+        conn = of_store.connect()
+        try:
+            rows = [json.loads(r[0]).get("of.payload") or {} for r in conn.execute("SELECT record FROM event")]
+        finally:
+            conn.close()
+        self.assertIn(("noted", "admit"), [(c.get("verdict"), c.get("decision")) for c in rows
+                                           if c.get("grant_id") == "g-aws"])
         ok = "aws s3 ls --profile r2-ro --endpoint-url https://abc.r2.cloudflarestorage.com"
         self.assertEqual(self.fire(ok, sid="S2"), ("", None))
         self.assertEqual(self.fire("ls -la"), ("", None))
@@ -179,12 +205,20 @@ class CloudCacheTest(unittest.TestCase):
     """G1.12 (of_architect's condition 5)."""
 
     def test_caches_are_secret_paths(self):
-        for p in ("~/.aws/sso/cache/0a1b.json", "/Users/alex/.aws/cli/cache/x.json",
+        for p in ("~/.aws/sso/cache/0a1b.json", "/Users/alex/.aws/cli/cache/x.json", "~/.aws/login/cache/x.json",
+                  "~/.aws//sso/cache/x.json", "~/.aws/sso/../sso/cache/x.json",
                   "/Users/alex/.config/gcloud/credentials.db", "/Users/alex/.azure/msal_token_cache.json"):
             self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + p}), p)
             self.assertTrue(of_guard.critical_deny("Read", {"file_path": p.replace("~", "/Users/alex")}), p)
-        for cmd in ("ls ~/.aws/sso/cache", "cat ~/.aws/config", "aws sso login"):
+        for cmd in ("ls ~/.aws/sso/cache", "cat ~/.aws/config", "aws sso login", "aws configure list", "gcloud auth list",
+                    "sqlite3 ~/.local/state/of/of.db 'select 1'"):
             self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+        # of_review and of_secrets-review on PR 178: sqlite3 reads the gcloud stores; the CLIs print the tokens (G6)
+        for cmd in ("sqlite3 ~/.config/gcloud/access_tokens.db 'select * from access_tokens'",
+                    "sqlite3 ~/.config/gcloud/credentials.db .dump", "aws configure export-credentials --profile p",
+                    "gcloud auth print-access-token", "gcloud auth application-default print-access-token",
+                    "az account get-access-token"):
+            self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
 
 
 if __name__ == "__main__":

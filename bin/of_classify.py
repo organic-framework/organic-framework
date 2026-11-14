@@ -555,7 +555,7 @@ _CRED_SUFFIXES = ("*.password", "*.header", "*.client-secret", "*.secret_access_
                   "*.secret.json", "*.secret.yaml", "*.secret.yml")
 # cloud CLIs' cached sign-ins (G1.12; of_architect's condition 5, msg 01a1db57-17f9): the AWS SSO session's token and
 # the role credentials the CLI derives from it, and gcloud's and Azure's token stores, read by whoever runs as the user
-_CLOUD_CACHES = (".aws/sso/cache/**", ".aws/cli/cache/**", ".config/gcloud/credentials.db",
+_CLOUD_CACHES = (".aws/sso/cache/**", ".aws/cli/cache/**", ".aws/login/cache/**", ".config/gcloud/credentials.db",
                  ".config/gcloud/access_tokens.db", ".config/gcloud/application_default_credentials.json",
                  ".config/gcloud/legacy_credentials/**", ".azure/msal_token_cache.json", ".azure/msal_token_cache.bin",
                  ".azure/accessTokens.json", ".azure/service_principal_entries.json")
