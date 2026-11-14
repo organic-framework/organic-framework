@@ -205,6 +205,14 @@ def check_loop(loop, wid, warn="warning: ", resolve=None):
             out.append(f"{tag}: target.money, when given, is a text (a reading shown beside the target)")
         if not str(t.get("observed_at") or "").strip():  # docs/registry.md, Works, "Where a reading is taken"
             out.append(f"{warn}{tag}: target has no observed_at (where its reading is taken)")
+        if t.get("proxy_for") is not None:
+            out.append(f"{tag}: target.proxy_for: the target is read inside its segment; a money line that stands for "
+                       "an event elsewhere is chain_proxy_for (at, valid_when)")
+        cp = t.get("chain_proxy_for")
+        if cp is not None and not (isinstance(cp, dict) and str(cp.get("at") or "").strip()
+                                   and str(cp.get("valid_when") or "").strip()):
+            out.append(f"{tag}: target.chain_proxy_for needs at (where the event its money line stands for happens) "
+                       "and valid_when")
         if t.get("throughput_class") is not None and t["throughput_class"] not in THROUGHPUT:
             out.append(f"{tag}: target.throughput_class {t['throughput_class']!r} is not one of {', '.join(THROUGHPUT)}")
         if t.get("better") is not None and t["better"] not in ("higher", "lower"):
@@ -360,6 +368,10 @@ def target_line(loop, resolve):
     t = (loop or {}).get("target") if isinstance(loop, dict) else None
     t = t if isinstance(t, dict) else {}
     line = f"target {t.get('metric')}" + (f" ({t['better']} is better)" if t.get("better") in ("higher", "lower") else "")
+    cp = t.get("chain_proxy_for")
+    if isinstance(cp, dict) and cp.get("at") and cp.get("valid_when"):
+        line += (f"; its money line{' (' + ' '.join(str(t['money']).split()) + ')' if t.get('money') else ''} is a "
+                 f"proxy for {cp['at']}, valid only when {cp['valid_when']}")
     d = decided(loop)
     if not d:
         return line
@@ -390,6 +402,22 @@ def reading_of(loop, metric):
     return None, None
 
 
+def declared(loop, metric):
+    """Is METRIC the target's metric or a declared measure's name (docs/registry.md, Works, "A run names where its
+    reading was taken")?"""
+    t = (loop or {}).get("target") if isinstance(loop, dict) else None
+    return (isinstance(t, dict) and metric == t.get("metric")) or any(
+        isinstance(m, dict) and m.get("name") == metric for m in (loop or {}).get("measures") or [])
+
+
+LOCATE_KEYS = ("observed_at", "direct", "proxy")
+
+
+def is_locate(p):
+    """An of.loop_run that `of loop locate` wrote: the same run id with only its reading point (no rung)."""
+    return isinstance(p, dict) and not p.get("rung") and any(k in p for k in LOCATE_KEYS)
+
+
 def with_reading(run, loop):
     """RUN with its reading's point and proxy filled from LOOP when the event has none: a run written before the
     flags, or without --proxy-held, on a measure with proxy_for is a proxy whose condition is unknown (docs/registry.md,
@@ -401,23 +429,41 @@ def with_reading(run, loop):
     out = dict(run)
     if not out.get("observed_at") and observed_at:
         out["observed_at"] = observed_at
-    if not isinstance(out.get("proxy"), dict) and pf:
+    if not isinstance(out.get("proxy"), dict) and pf and not out.get("direct"):
         out["proxy"] = {"for": pf["at"], "valid_when": pf["valid_when"], "held": "unknown"}
+    out["located"] = bool(out.get("observed_at"))  # judged only against its loop: without one, as recorded
+    return out
+
+
+def locate(run, loc):
+    """RUN with the reading point an `of loop locate` event LOC gave it."""
+    out = dict(run)
+    for k in LOCATE_KEYS:
+        out.pop(k, None)
+    out.update({k: loc[k] for k in LOCATE_KEYS if k in loc})
+    out["located"] = bool(out.get("observed_at"))
     return out
 
 
 def blind(run):
-    """True for a run whose reading stands for an event elsewhere and whose condition did not hold or is unknown: it
-    decides nothing (docs/registry.md, Works, "Where a reading is taken")."""
-    pr = (run or {}).get("proxy")
-    return isinstance(pr, dict) and pr.get("held") != "held"
+    """True for a run that decides nothing (docs/registry.md, Works, "Where a reading is taken"): its reading stands
+    for an event elsewhere and the condition did not hold or is unknown, or it names no reading point at all
+    (located False, from with_reading or locate: an unlocated run counts as a proxy not shown to hold)."""
+    run = run or {}
+    pr = run.get("proxy")
+    return run.get("located") is False or (isinstance(pr, dict) and pr.get("held") != "held")
 
 
 def not_observed(run):
-    """How such a run is shown: 'not observed at <at>', then its reading labelled as a proxy, never the number alone."""
+    """How such a run is shown: 'not observed at <at>', then its reading labelled as a proxy, never the number alone;
+    an unlocated one as 'not located'."""
+    value = run.get("value")
+    if run.get("located") is False:
+        return (f"not located: no reading point is named for {run.get('metric')}"
+                + (f" ({value})" if value is not None else "")
+                + f"; it decides nothing until `of loop locate <work> --run {run.get('run')}` names where it was taken")
     pr = run.get("proxy") or {}
     held = {"not_held": "did not hold", "unknown": "is not known to hold"}.get(pr.get("held"), "is not known to hold")
-    value = run.get("value")
     return (f"not observed at {pr.get('for')}; its reading at {run.get('observed_at') or '?'} is a proxy"
             + (f" ({run.get('metric')} {value})" if value is not None else f" ({run.get('metric')})")
             + f", valid only when {pr.get('valid_when')}, which {held}")
@@ -429,15 +475,22 @@ def blind_runs(conn, works, limit=500):
     (with_reading). Reads the newest LIMIT loop runs by one indexed name."""
     import json
     loops = works if isinstance(works, dict) else {}
-    works, seen, out = set(works), set(), []
+    works, seen, out, located = set(works), set(), [], {}
     for pl, ts in conn.execute("SELECT payload, ts FROM event WHERE name = 'of.loop_run' ORDER BY ts DESC LIMIT ?",
                                (limit,)):
         p = json.loads(pl or "{}")
+        if p.get("work") not in works:
+            continue
+        if is_locate(p):  # newer than its run: applied when the run comes
+            located.setdefault((p["work"], p.get("run")), p)
+            continue
         key = (p.get("work"), p.get("hypothesis") or p.get("run"))
-        if p.get("work") not in works or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         p = with_reading(p, loops.get(p.get("work")))
+        if (p["work"], p.get("run")) in located:
+            p = locate(p, located[(p["work"], p.get("run"))])
         if blind(p):
             out.append((p["work"], p, ts))
     return out
@@ -476,7 +529,7 @@ def register(rows, work, loop=None):
     metric, ts} of its latest run) and unmet_open (still open or testing while its latest run did not meet its rung's
     accept criterion); open and testing ones first,
     by VOI per runner-hour (higher first), then oldest."""
-    hyps, runs, decs = {}, [], []
+    hyps, runs, decs, by_run = {}, [], [], {}
     for r in sorted(rows, key=lambda x: x["ts"]):
         p = r.get("payload") or {}
         if p.get("work") != work:
@@ -491,16 +544,20 @@ def register(rows, work, loop=None):
             hyps[hid] = {"id": hid, "change": p.get("change"), "predict": p.get("predict"), "cost": cost.get("text"),
                          "cost_h": cost.get("runner_h", 1.0), "voi": p.get("voi"), "status": p.get("status") or "open",
                          "runs": 0, "since": r["ts"], "last": r["ts"]}
+        elif r["name"] == "of.loop_run" and is_locate(p):  # `of loop locate`: the run's reading point, from now on
+            i = by_run.get(p.get("run"))
+            if i is not None:
+                runs[i] = locate(runs[i], p)
         elif r["name"] == "of.loop_run":
             p = with_reading(p, loop)  # a run on a proxy measure that names no proxy: its condition is unknown
             runs.append(dict(p, ts=r["ts"]))
+            if p.get("run"):
+                by_run[p["run"]] = len(runs) - 1
             h = hyps.get(p.get("hypothesis"))
             if h:
                 h["runs"] += 1
                 h["last"] = r["ts"]
-                h["last_run"] = {k: p.get(k) for k in ("rung", "accepted", "value", "metric", "observed_at", "proxy")} \
-                    | {"ts": r["ts"]}
-                h["blind_runs"] = h.get("blind_runs", 0) + (1 if blind(p) else 0)
+                h.setdefault("run_index", []).append(len(runs) - 1)
                 if h["status"] == "open":
                     h["status"] = "testing"
         elif r["name"] == "of.loop_decision":
@@ -509,8 +566,13 @@ def register(rows, work, loop=None):
             if h and p.get("decision") in STATUS_OF:
                 h["status"], h["last"], h["decided_at"] = STATUS_OF[p["decision"]], r["ts"], r["ts"]
     live = {"open": 0, "testing": 0}
-    for h in hyps.values():  # a hypothesis whose every run is a proxy that did not hold: no keep or drop on it
-        h["blind"] = h["runs"] > 0 and h.get("blind_runs", 0) == h["runs"]
+    for h in hyps.values():  # a hypothesis whose every run decides nothing (a proxy not shown to hold, or unlocated):
+        mine = [runs[i] for i in h.pop("run_index", [])]  # no keep or drop on it
+        if mine:
+            lr = mine[-1]
+            h["last_run"] = {k: lr.get(k) for k in ("rung", "accepted", "value", "metric", "observed_at", "proxy",
+                                                    "direct", "located", "run")} | {"ts": lr["ts"]}
+        h["blind"] = bool(mine) and all(blind(x) for x in mine)
     for h in hyps.values():  # accepted is the rung's accept criterion (docs/events.md), not the prediction: say only
         # that the latest run missed it while no decision closed the hypothesis (of_conductor, 2026-11-12: an open
         # hypothesis was read as a finding; of_review on PR 61)
