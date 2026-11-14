@@ -47,7 +47,8 @@ class ResumeCommandTest(unittest.TestCase):
                                              state_dir=self.home))
         self.assertEqual(argv[:5], ["env", f"CLAUDE_CONFIG_DIR={own}", "claude", "--resume", SID])
         with open(argv[argv.index("--settings") + 1]) as fh:  # a settings file, as of spawn writes it
-            self.assertEqual(json.load(fh), {"autoMemoryDirectory": "/m/acme_org", "permissions": {"deny": deny}})
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "autoMemoryDirectory": "/m/acme_org",
+                                             "permissions": {"deny": deny}})
         self.assertEqual((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]),
                          ("claude-opus-5-5", "xhigh"))
         self.assertEqual(argv[-1], of_capacity.BYPASS_FLAG)
@@ -66,7 +67,11 @@ class ResumeCommandTest(unittest.TestCase):
             argv = shlex.split(of_resume.command(SID, [base], plan_root=os.path.join(self.home, "none")))
         finally:
             of_capacity.is_default = orig
-        self.assertEqual(argv, ["env", "-u", "CLAUDE_CONFIG_DIR", "claude", "--resume", SID])  # no mode: default
+        self.assertEqual(argv[:6], ["env", "-u", "CLAUDE_CONFIG_DIR", "claude", "--resume", SID])  # no mode: default
+        self.assertEqual(argv[6:7], ["--settings"])                              # every session: AGENT_SETTINGS
+        with open(argv[7]) as fh:
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off"})
+        self.assertEqual(len(argv), 8)
         self.assertIsNone(of_resume.command("00000000-0000-4000-8000-000000000000", [base]))
 
 
