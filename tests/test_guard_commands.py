@@ -222,6 +222,11 @@ class CommentTest(unittest.TestCase):
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a#b " + key}))
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a\\ #b " + key}))   # an escaped blank
         self.assertEqual(of_guard._tokens("echo a\\ #b c"), ["echo", "a #b", "c"])
+        # a backslash-newline joins the words (of_secrets-review on PR 178), in _tokens and in _segments
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a\\\n#b " + key}))
+        self.assertEqual(of_guard._tokens("echo a\\\n#b c"), ["echo", "a#b", "c"])
+        self.assertEqual(of_guard._segments("echo a#b; cat c # d"), [["echo", "a#b"], ["cat", "c"]])
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "echo x; cat a#b " + key}))
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + key + " # a note"}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo ok # cat " + key}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo '# cat' ok"}))
