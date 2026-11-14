@@ -314,9 +314,18 @@ A page takes 12 to 30 s to compute: the model, the measures and diagnose over a 
 | **Systems** | Each system's evidence (RFC 0007 §2.2): its plain name, where it runs and the evidence, code over 30 days (merged, open, last, writers, and how many records have no position), money, and each governance fact as ✓ with its ask id, "unconfirmed" or "ask not found", then its needs. Tiles count the live systems with runtime and money evidence and the unconfirmed facts. Below: the systems changed together over 30 days | §3.4a |
 | **Cells** | The cells matrix: systems × the kinds of work in use. A cell shows `D` when it has a decider, then its number of doers. Red: needed with no decider. Amber: 3 or more doers, or two deciders. Green: needed and decided. Grey: held, not needed. Lists follow: needed cells with no owner, cells with 3 or more doers, two deciders, and unknown entries in `owns` or `needs` | §3.4a |
 | **Waits** | The heatmap: positions × hours of the window, cells coloured by the dominant cause, intensity by agent-minutes waited | §3.3 |
+| **Health** | Every check of this machine and of-server (docs/health.md §2): state, value, degraded and failed limits, owner and how long it has been in that state, failed first; the checks that bring the person a card are marked. Read at each request, the tenant's alone | §5.2a |
 | **Owner** | The owner's header: L, λ, W and the Little residual, answer delay percentiles, dead-end asks, inbound concentration, plumbing share, (a). For the founder, a delegated unit is one row with its rolled-up numbers. Then the repeat-correction rate per position and week | §3.1, §3.2, §3.2b |
 
 The page opens on the inbox (RFC 0001 §5.9).
+
+### 5.2a Health, and the card when the person's work is hit
+
+`of_architect`'s design, docs/health.md §3 (hand-over `f06e0eb7`, 2026-11-14); `bin/of_studio_health.py`, kept apart from `bin/of_studio.py` so the minute's job imports only it.
+
+- **The tab** reads the state that `of health run` (`of_platform`) writes every minute, `health.json` in OF's state folder, at each request: never the page cache and never the log, so it is as fresh as the job. It shows every check with its state, value, limits, owner, detail and how long it has been in that state, failed first. A state older than 3 minutes is marked **stopped**: the job itself is not running. A check the person's card watches but the state lacks is named (`relay.oldest` until the job carries of-server's checks). Only the tenant sees it; a unit's viewer gets 403.
+- **The card.** `of_studio_health.cards(state, now)` opens one card to the person for each episode of `server.health`, `relay.oldest`, `view.age.asks` (the view the questions screen reads), `hooks.errors` or `commit.smoke` once it has failed for 5 minutes: `of.agent_question` {`detected_by: declared`, `source: health`, `from_position: of_studio`, `to: owner`, `topic_key: health-<check>`}, naming the check, its value and limit, its owner and what the person sees meanwhile, in their language (`of_locale`). When the check is no longer failed, or no longer measured, the card is closed by `of.agent_question_answered` {`via: health`}. Open cards are kept by event id in `studio/health-cards.json`, so closing one reads nothing from the log. The other checks go to their owners only (`of health run`'s `--fyi`).
+- **Planned:** `of health run` calls `cards()` after it writes the state, and carries of-server's own checks (`GET /v1/health/checks`) into it. Both are `of_platform`'s job; until then the tab shows the machine's checks and no card is filed.
 
 ### 5.3 Issues in the inbox (diagnose v0)
 

@@ -26,7 +26,8 @@ import of_model
 
 DAY = 86400
 VIEWS = (("inbox", "Inbox"), ("goals", "Goals"), ("works", "Works"), ("owner", "Owner"), ("review", "Review"), ("coverage", "Coverage"), ("structure", "Structure"),
-         ("systems", "Systems"), ("cells", "Cells"), ("waits", "Waits"))
+         ("systems", "Systems"), ("cells", "Cells"), ("waits", "Waits"), ("health", "Health"))
+LIVE_VIEWS = ("health",)   # read at each request from a small file, never from the page cache (bin/of_studio_health.py)
 CAUSE_CLASS = {"owner": "c-owner", "peer": "c-peer", "capacity": "c-capacity", "suspended": "c-suspended",
                "external": "c-external", "stalled": "c-stalled"}
 CAUSE_LABEL = {"owner": "on the owner", "peer": "on a peer", "capacity": "on capacity (runners, CI, limits)",
@@ -934,19 +935,22 @@ def link(view, org, **kw):
     return f"/studio/{view}?" + urllib.parse.urlencode(q)
 
 
-def page(d, view, body, css_href="/studio/static/studio.css", inline_css=None):
+def page(d, view, body, css_href="/studio/static/studio.css", inline_css=None, footer=None):
     nav = "".join(f'<a class="tab{" on" if v == view else ""}" href="{e(link(v, d.org))}">{e(t)}</a>' for v, t in VIEWS)
     orgs_ = "".join(f'<a class="org{" on" if o == d.org else ""}" href="{e(link(view if o != ALL else "inbox", o))}">'
                     f'{e("all organizations" if o == ALL else o)}</a>' for o in d.orgs)
     style = f"<style>{inline_css}</style>" if inline_css else f'<link rel="stylesheet" href="{e(css_href)}">'
     stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(d.now))
+    if footer is None:
+        footer = (f"Model at {e(stamp)}<!--of:age--> · registry {e(d.model['registry_rev'])} · window "
+                  f"{e(of_model.iso(d.a)[:10])} – {e(of_model.iso(d.b)[:10])} · {len(d.rows)} events{e(asks_note(d))}")
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Org Studio · {e(d.org)}</title>{style}</head>
 <body><header><div class="brand">Org Studio</div><nav class="orgs">{orgs_}</nav></header>
 <nav class="tabs">{nav}</nav>
 <main>{body}</main>
-<footer>Model at {e(stamp)}<!--of:age--> · registry {e(d.model['registry_rev'])} · window {e(of_model.iso(d.a)[:10])} – {e(of_model.iso(d.b)[:10])} · {len(d.rows)} events{e(asks_note(d))}</footer>
+<footer>{footer}</footer>
 </body></html>"""
 
 
@@ -2738,6 +2742,8 @@ def _render_cache(orgs_file=None, log=None):
             if log:
                 log(f"{d.org}: escalations not written: {exc}")
         for view, _ in VIEWS:
+            if view in LIVE_VIEWS:
+                continue
             _write_page(_page_path(d.org, view), render(view, d, {"org": d.org}))
             written += 1
         _write_page(_page_path(d.org, "coverage", True), render("coverage", d, {"org": d.org, "all": "1"}))
@@ -2927,9 +2933,35 @@ def render(view, d, query=None, inline_css=None):
         except ValueError:
             n = None
         body = view_structure(d, n)
+    elif view == "health":
+        return health_page(d, inline_css)
     else:
         view, body = "inbox", view_inbox(d)
     return page(d, view, body, inline_css=inline_css)
+
+
+def health_page(d, inline_css=None):
+    """The Health tab (docs/health.md §3): `of health run`'s state as it is now, for every organization alike; `d` gives
+    only the navigation. Never cached, never computed from the log."""
+    try:
+        import of_studio_health
+    except ImportError:  # of-server's image carries Studio without the machine's health
+        return page(d, "health", '<h2>Health</h2><p class="note">This server does not carry the machine\'s health '
+                    'checks; <code>of health</code> on the machine shows them.</p>', inline_css=inline_css, footer="")
+    state = of_studio_health.load_state()
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(d.now))
+    return page(d, "health", of_studio_health.body(state, d.now), inline_css=inline_css,
+                footer=f"Read at {e(stamp)} from <code>health.json</code>, which <code>of health run</code> writes every "
+                       f"minute; not from the page cache")
+
+
+def live_page(view, q, now=None, inline_css=None):
+    """A view in LIVE_VIEWS for the tenant: no Data, only the organizations' names for the navigation."""
+    import types
+    names = [o["name"] for o in orgs()]
+    org = q.get("org") if q.get("org") in names + [ALL] else (names[-1] if names else None)
+    d = types.SimpleNamespace(org=org, orgs=([ALL] if len(names) > 1 else []) + names, now=now or time.time())
+    return health_page(d, inline_css)
 
 
 def css():
@@ -2994,6 +3026,13 @@ def handle(method, path, query=None, viewer=None, source=None, page=None):
     view = sub or "inbox"
     if view not in dict(VIEWS):
         return 404, "text/plain; charset=utf-8", b"not found"
+    if view in LIVE_VIEWS:   # the machine's health: the tenant's alone, read at each request
+        if unit or page is not None or source is not None:
+            return 403, "text/plain; charset=utf-8", b"studio: the Health tab is the machine owner's"
+        try:
+            return 200, "text/html; charset=utf-8", live_page(view, q).encode()
+        except OSError as exc:  # no orgs.yaml: say so, never a 500
+            return 503, "text/html; charset=utf-8", unavailable(exc).encode()
     if page is None and source is None and not unit:
         hit = cached_page(view, q)
         if hit:
@@ -3023,6 +3062,10 @@ def handle(method, path, query=None, viewer=None, source=None, page=None):
 
 def write_file(path, org=None, view="inbox"):
     """`of studio --file`: one static page with the stylesheet inlined (for a look before the mount exists)."""
+    if view in LIVE_VIEWS:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(live_page(view, {"org": org}, inline_css=css()))
+        return path
     d = build(view, org)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(render(view, d, inline_css=css()))
