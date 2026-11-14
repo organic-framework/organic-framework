@@ -179,9 +179,10 @@ class ScratchTest(unittest.TestCase):
         for w in ("wt-a", "wt-b"):
             os.makedirs(os.path.join(repo, ".claude", "worktrees", w))
         os.makedirs(os.path.join(self.tmp.name, "orgs", "u-code", ".claude", "worktrees", "wt-u"))
+        os.makedirs(os.path.join(repo, ".worktrees", "repo-wt-c"))           # the agents' own layout
         org_paths = {"t": [os.path.join(self.tmp.name, "orgs", "t-code")],
                      "u": [os.path.join(self.tmp.name, "orgs", "u-code")]}
-        self.sizes.update({"wt-a": 8 * GiB, "wt-b": 5 * GiB, "wt-u": 2 * GiB, "S-k": 0})
+        self.sizes.update({"wt-a": 8 * GiB, "wt-b": 5 * GiB, "wt-u": 2 * GiB, "repo-wt-c": 3 * GiB, "S-k": 0})
         positions = POS + [{"name": "keeper", "_org": "t"}]
         os.makedirs(os.path.join(self.base, "-Users-x-repo", "S-k"))
         agents = [agent("big", "S-big", "busy"), agent("keeper", "S-k")]
@@ -192,19 +193,20 @@ class ScratchTest(unittest.TestCase):
         of_scratch.check(positions, agents, bind, mem, **args)
         notes = [t for p, t in typed if p == "p-keeper"]
         self.assertEqual(len(notes), 1)
-        self.assertIn("Your organization's Claude Code worktrees inside its checkouts together hold 13.0 GiB", notes[0])
+        self.assertIn("Your organization's worktrees inside its checkouts together hold 16.0 GiB", notes[0])
+        self.assertIn("repo/.worktrees/repo-wt-c 3.0 GiB", notes[0])
         self.assertIn("repo/.claude/worktrees/wt-a 8.0 GiB", notes[0])
         self.assertNotIn("wt-u", notes[0])                                       # another organization's
         q = [e for e in self.events("of.agent_question") if e.get("source") == "disk_check"][0]["questions"][0]
-        self.assertIn("Claude Code worktrees inside the checkouts 15.0 GiB", q["question"])
+        self.assertIn("worktrees inside the checkouts 18.0 GiB", q["question"])
         u = self.events("of.disk_usage")[-1]
-        self.assertEqual(sorted(w["bytes"] for w in u["worktrees"]), [2 * GiB, 13 * GiB])
+        self.assertEqual(sorted(w["bytes"] for w in u["worktrees"]), [2 * GiB, 16 * GiB])
         of_scratch.check(positions, agents, bind, mem, **dict(args, now=2))
         self.assertEqual(len([t for p, t in typed if p == "p-keeper"]), 1)       # once per episode
         os.rmdir(os.path.join(repo, ".claude", "worktrees", "wt-a"))             # removed: under the cap again
         of_scratch.check(positions, agents, bind, mem, **dict(args, now=3))
         self.assertNotIn("t", mem["worktrees_told"])
-        self.assertEqual(sorted(os.path.basename(w) for w in mem["worktrees"]), ["wt-b", "wt-u"])
+        self.assertEqual(sorted(os.path.basename(w) for w in mem["worktrees"]), ["repo-wt-c", "wt-b", "wt-u"])
         self.assertEqual(of_scratch.home_label(os.path.expanduser("~/acme/repo")), "~/acme/repo")
 
     def test_a_project_is_named_without_the_home_folder(self):
