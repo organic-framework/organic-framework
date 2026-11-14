@@ -222,10 +222,26 @@ class SshRuleTest(unittest.TestCase):
         self.assertEqual(got, ["ssh to agent-*-node, a destination held in a variable that may be 192.0.2.5 "
                                "(HostName 192.0.2.5)"])
 
+    def test_a_long_word_never_loses_the_lines_rules(self):
+        """of_review and of_secrets-review on PR 152: _globs_meet recursed per character, a 1,200-character word with a
+        variable raised RecursionError, and every organization rule of that line was lost."""
+        long = "gw" + "x" * 5000 + "$h"
+        self.assertTrue(self.hit(f"ssh {long} id"))
+        self.assertTrue(self.hit(f'scp f "{"y" * 3000}$H:/tmp"'))                   # past the limit: a match
+        both = [r["id"] for r, _ in of_guard.org_rule_hits(
+            "Bash", {"command": f"ssh {long}; kubectl get secrets -n signer"}, [SSH, SECRETS], "x",
+            resolver=lambda cfg: lambda n: None)]
+        self.assertEqual(both, ["shared-key", "signing-secrets"])
+        boom = dict(SSH, ssh={"hosts": 5})                                            # a rule that raises
+        said = of_guard.org_rule_hits("Bash", {"command": "ssh us"}, [boom, SECRETS], "x")
+        self.assertIn("counted as a match", said[0][1])
+
     def test_globs_meet(self):
         for a, b, want in (("agent-*-node", "agent-us-node", True), ("agent-*-node", "bastion-node", False),
                            ("*", "anything", True), ("gw*", "gw-*.lan", True), ("a?c", "abc", True),
-                           ("a*c", "b*", False), ("192.0.2.*", "192.0.2.5", True), ("x*y", "*z", False)):
+                           ("a*c", "b*", False), ("192.0.2.*", "192.0.2.5", True), ("x*y", "*z", False),
+                           ("a**b", "a*b", True), ("", "", True), ("", "*", True), ("*", "", True), ("?", "", False),
+                           ("a" * 3000 + "*", "b", True)):                             # past the limit
             self.assertEqual(of_guard._globs_meet(a, b), want, (a, b))
 
     def test_what_does_not(self):

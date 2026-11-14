@@ -2831,23 +2831,32 @@ def _ssh_pattern_match(patterns, name):
 _SSH_VAR = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB__\w*|`[^`]*`")
 
 
-def _globs_meet(a, b):
+def _globs_meet(a, b, limit=2048):
     """Can one name match both globs A and B (`*` and `?`; other characters literal)? `agent-*-node` and
-    `agent-us-node` meet; `agent-*-node` and `bastion-node` do not."""
-    import functools
-
-    @functools.lru_cache(None)
-    def meet(i, j):
-        if i == len(a) and j == len(b):
-            return True
-        if i < len(a) and a[i] == "*":
-            return meet(i + 1, j) or (j < len(b) and meet(i, j + 1))
-        if j < len(b) and b[j] == "*":
-            return meet(i, j + 1) or (i < len(a) and meet(i + 1, j))
-        if i < len(a) and j < len(b) and (a[i] == "?" or b[j] == "?" or a[i] == b[j]):
-            return meet(i + 1, j + 1)
-        return False
-    return meet(0, 0)
+    `agent-us-node` meet; `agent-*-node` and `bastion-node` do not. A table, row by row, never a recursion: a word
+    of 1,200 characters raised RecursionError, and the hook then lost every organization rule of that line (of_review
+    and of_secrets-review on organic-framework PR 152). A glob longer than LIMIT counts as meeting: a false positive
+    over a miss."""
+    a, b = re.sub(r"\*+", "*", a), re.sub(r"\*+", "*", b)
+    if len(a) > limit or len(b) > limit:
+        return True
+    n, m = len(a), len(b)
+    row = [False] * (m + 1)  # row[j]: do a[i+1:] and b[j:] meet; first the empty a
+    row[m] = True
+    for j in range(m - 1, -1, -1):
+        row[j] = b[j] == "*" and row[j + 1]
+    for i in range(n - 1, -1, -1):
+        cur = [False] * (m + 1)
+        cur[m] = a[i] == "*" and row[m]
+        for j in range(m - 1, -1, -1):
+            if a[i] == "*":
+                cur[j] = row[j] or cur[j + 1]
+            elif b[j] == "*":
+                cur[j] = cur[j + 1] or row[j]
+            else:
+                cur[j] = (a[i] == "?" or b[j] == "?" or a[i] == b[j]) and row[j + 1]
+        row = cur
+    return row[0]
 
 
 def ssh_resolver(config=None):
@@ -2953,31 +2962,35 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         sub = r.get("subject")
         if (position and position in (r.get("except") or [])) or (sub not in (None, "*") and sub != position):
             continue
-        if isinstance(r.get("kubectl"), dict):
-            if calls is None:
-                try:
-                    calls = kubectl_calls(cmd, env)
-                except Exception:  # noqa: BLE001 - a parser slip never denies on an organization's rule
-                    calls = []
-            m = next(filter(None, (kubectl_rule_match(r["kubectl"], c) for c in calls)), None)
-        elif isinstance(r.get("ssh"), dict):
-            if scalls is None:
-                try:
-                    scalls = ssh_calls(cmd) if _SSH_WORDS.search(cmd) else []
-                except Exception:  # noqa: BLE001
-                    scalls = []
-            m = None
-            for c in scalls:
-                if c["config"] not in resolvers:
-                    try:
-                        resolvers[c["config"]] = (resolver or ssh_resolver)(c["config"])
-                    except Exception:  # noqa: BLE001 - an unreadable config folds nothing
-                        resolvers[c["config"]] = None
-                m = ssh_rule_match(r["ssh"], c, resolvers[c["config"]])
-                if m:
-                    break
-        else:
+        if not isinstance(r.get("kubectl"), dict) and not isinstance(r.get("ssh"), dict):
             continue
+        try:  # each rule alone: an error while one matches counts as its match, and never loses the others
+            # (of_review and of_secrets-review on organic-framework PR 152: a RecursionError lost them all)
+            if isinstance(r.get("kubectl"), dict):
+                if calls is None:
+                    try:
+                        calls = kubectl_calls(cmd, env)
+                    except Exception:  # noqa: BLE001 - a parser slip never denies on an organization's rule
+                        calls = []
+                m = next(filter(None, (kubectl_rule_match(r["kubectl"], c) for c in calls)), None)
+            else:
+                if scalls is None:
+                    try:
+                        scalls = ssh_calls(cmd) if _SSH_WORDS.search(cmd) else []
+                    except Exception:  # noqa: BLE001
+                        scalls = []
+                m = None
+                for c in scalls:
+                    if c["config"] not in resolvers:
+                        try:
+                            resolvers[c["config"]] = (resolver or ssh_resolver)(c["config"])
+                        except Exception:  # noqa: BLE001 - an unreadable config folds nothing
+                            resolvers[c["config"]] = None
+                    m = ssh_rule_match(r["ssh"], c, resolvers[c["config"]])
+                    if m:
+                        break
+        except Exception as e:  # noqa: BLE001
+            m = f"a call the guard could not read ({type(e).__name__}), counted as a match"
         if m:
             hits.append((r, m))
     return hits
