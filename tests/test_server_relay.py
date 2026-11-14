@@ -149,6 +149,28 @@ class RelayTest(unittest.TestCase):
         with self.app.store.conn() as c:                                        # the registry lists no such alias
             self.assertIsNone(c.execute("SELECT 1 FROM position_aliases WHERE alias = 'ofb_dev'").fetchone())
 
+    def test_a_holder_briefly_away_keeps_its_name(self):
+        """of_secrets-review on PR 164: an alias taken while the name's holder was briefly absent redirected its
+        messages for 30 days; without the registry any joined machine could take any absent name."""
+        a, b = self.machine("a", ["zeta"]), self.machine("b", ["zeta"])
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "away_keeper", "session_id": "S2",
+                                                         "kind": "agent"}]})
+        self.call(b, "PUT", "/v1/presence", {"holders": []})                    # away: a restart, a move
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "zeta_new", "session_id": "S1",
+                                                         "kind": "agent", "aliases": ["away_keeper"]}]})
+        self.call(a, "POST", "/v1/messages", {"msg_id": "m-away", "to": "zeta:away_keeper", "from": "zeta:x_keeper",
+                                              "text": "for the one away"})
+        with self.app.store.conn() as c:
+            self.assertEqual(c.execute("SELECT to_position FROM messages WHERE msg_id = 'm-away'").fetchone()[0],
+                             "away_keeper")                                     # presented within a day: kept
+            self.assertIsNone(c.execute("SELECT 1 FROM position_aliases WHERE alias = 'away_keeper'").fetchone())
+            c.execute("INSERT INTO position_aliases VALUES ('zeta', 'away_keeper', 'zeta_new', 'm-a', ?)",
+                      (time.time(),))                                           # one taken before (an old server)
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "away_keeper", "session_id": "S2",
+                                                         "kind": "agent"}]})   # the holder is back
+        with self.app.store.conn() as c:
+            self.assertIsNone(c.execute("SELECT 1 FROM position_aliases WHERE alias = 'away_keeper'").fetchone())
+
     def test_long_poll_wakes_on_new_message(self):
         a, b = self.machine("a", ["ofb"]), self.machine("b", ["ofb"])
         self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_dev"}]})

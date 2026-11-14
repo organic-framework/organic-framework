@@ -40,8 +40,10 @@ CREATE INDEX IF NOT EXISTS messages_to ON messages (to_org, to_position, state);
 CREATE INDEX IF NOT EXISTS messages_from ON messages (from_org, from_position, state);
 CREATE TABLE IF NOT EXISTS position_aliases (org TEXT, alias TEXT, position TEXT, machine_id TEXT, updated REAL,
   PRIMARY KEY (org, alias));
+CREATE TABLE IF NOT EXISTS presented (org TEXT, position TEXT, last_seen REAL, PRIMARY KEY (org, position));
 """
 ALIAS_TTL = 30 * 86400  # an alias a holder presented within this many seconds still readdresses a new message
+ALIAS_QUIET = 86400     # a name a holder presented within this many seconds is never taken as an alias
 
 
 def registered_aliases(path, position):
@@ -161,6 +163,10 @@ class Relay:
         with self.app.store.tx() as c:
             c.execute("DELETE FROM presence WHERE machine_id = ?", (m["machine_id"],))
             c.executemany("INSERT OR REPLACE INTO presence VALUES (?,?,?,?,?,?,?,?)", rows)
+            # a name a holder presents is a position, never an alias: one taken while it was away is void at once
+            # (of_secrets-review on organic-framework PR 164)
+            c.executemany("INSERT OR REPLACE INTO presented VALUES (?, ?, ?)", [(r[1], r[2], r[7]) for r in rows])
+            c.executemany("DELETE FROM position_aliases WHERE org = ? AND alias = ?", [(r[1], r[2]) for r in rows])
         self._aliases(m, holders)
         with self.cond:
             self.cond.notify_all()  # a holder appeared: waiting messages may now be deliverable
@@ -178,8 +184,13 @@ class Relay:
         joined, now = self._machine_orgs(m), time.time()
         files = self.app.cfg.get("positions_files") or {}
         with self.app.store.tx() as c:
-            presented = {(o, p) for o, p in c.execute("SELECT org, position FROM presence WHERE updated > ?",
-                                                      (now - PRESENCE_TTL,))}
+            # a name presented within ALIAS_QUIET is taken by no alias: a holder away for a restart, a move or a
+            # night keeps it (of_secrets-review on PR 164); without the registry this is what limits a joined
+            # machine, which could present the name itself anyway
+            presented = {(o, p) for o, p in c.execute("SELECT org, position FROM presented WHERE last_seen > ?",
+                                                      (now - ALIAS_QUIET,))}
+            presented |= {(o, p) for o, p in c.execute("SELECT org, position FROM presence WHERE updated > ?",
+                                                       (now - PRESENCE_TTL,))}
             for h in holders:
                 org, pos, aliases = h.get("org"), h.get("position"), h.get("aliases")
                 if not isinstance(aliases, list) or not (m["tenant"] or org in joined):
@@ -196,10 +207,14 @@ class Relay:
                               (pos, f"sent to {a}, an alias of {pos}", org, a))
 
     def _canonical(self, org, pos):
-        """The position an alias names, or the name itself."""
+        """The position an alias names, or the name itself (always while a holder presents that name)."""
+        now = time.time()
         with self.app.store.conn() as c:
+            if c.execute("SELECT 1 FROM presented WHERE org = ? AND position = ? AND last_seen > ?",
+                         (org, pos, now - ALIAS_QUIET)).fetchone():
+                return pos
             r = c.execute("SELECT position FROM position_aliases WHERE org = ? AND alias = ? AND updated > ?",
-                          (org, pos, time.time() - ALIAS_TTL)).fetchone()
+                          (org, pos, now - ALIAS_TTL)).fetchone()
         return r[0] if r else pos
 
     UNSENT_ITEMS = 10
