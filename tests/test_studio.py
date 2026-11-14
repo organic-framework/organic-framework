@@ -2291,6 +2291,22 @@ class HealthTabTest(unittest.TestCase):
             gone["checks"].pop("commit.smoke")
             self.assertEqual([x[:2] for x in H.cards(gone, self.NOW + 60, emit, path)], [("closed", "commit.smoke")])
             self.assertIn("no longer measured", sent[-1][1]["note"])
+            # on a machine without the OF team's organization: filed in the machine's, with no sending position
+            st = self.state(**{"server.health": dict(fail(self.NOW - 400), owner="of_server")})
+            self.assertEqual([x[:2] for x in H.cards(st, self.NOW, emit, path, org="acme")], [("opened", "server.health")])
+            name, pl, kw = sent[-1]
+            self.assertEqual((pl["from_position"], kw["position"], kw["org"]), (None, None, "acme"))
+            self.assertEqual([x[:2] for x in H.cards(self.state(), self.NOW + 60, emit, path)], [("closed", "server.health")])
+            self.assertIsNone(sent[-1][2]["position"])
+        with tempfile.TemporaryDirectory() as d:
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                fh.write("orgs:\n  - name: acme\n  - name: beta\n")
+            self.assertEqual(H.card_org(orgs), "acme")
+            with open(orgs, "w") as fh:
+                fh.write(f"orgs:\n  - name: acme\n  - name: {H.TEAM_ORG}\n")
+            self.assertEqual(H.card_org(orgs), H.TEAM_ORG)
+            self.assertIsNone(H.card_org(os.path.join(d, "none.yaml")))
 
     def test_the_tab_is_live_and_the_tenants(self):
         import json

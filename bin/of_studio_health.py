@@ -24,6 +24,7 @@ CARD_AFTER_S = 300      # docs/health.md §3: a card only after 5 minutes failed
 STALE_S = 180           # `of health run` writes every minute: a state this old means the job has stopped
 CARD_SOURCE = "health"
 CARD_FROM = "of_studio"  # the card is Studio's (docs/health.md §5); an answer to it comes here
+TEAM_ORG = "organic-framework-build"   # the OF team's organization, where CARD_FROM is a position (of_health.TEAM_ORG)
 JOB_OWNER = "of_platform"
 
 # The checks that hit the person's own work (docs/health.md §3), each with what they see meanwhile.
@@ -187,10 +188,29 @@ def _save(path, mem):
     os.replace(path + ".tmp", path)
 
 
-def cards(state, now=None, emit=None, path=None):
+def card_org(orgs_file=None):
+    """The organization a card is filed in (of_review on organic-framework PR 156): the OF team's when this machine
+    lists it, else the first organization listed, so a machine without the OF team's still gets its card. None with
+    no list."""
+    import yaml
+    path = orgs_file or os.environ.get("OF_ORGS") or os.path.join(
+        os.environ.get("OF_CONFIG_DIR") or os.path.expanduser("~/.config/of"), "orgs.yaml")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    listed = doc.get("orgs") if isinstance(doc, dict) else None
+    names = [str(o.get("name")) for o in (listed if isinstance(listed, list) else []) if isinstance(o, dict) and o.get("name")]
+    return TEAM_ORG if TEAM_ORG in names else (names[0] if names else None)
+
+
+def cards(state, now=None, emit=None, path=None, org=None):
     """Open a card for each PERSON check failed for CARD_AFTER_S that has none, and close the card of each check that is
     no longer failed (or no longer measured). Each card is kept in health-cards.json by its event id, so closing it reads
-    nothing from the log. Returns [(opened|closed, check, event id)]."""
+    nothing from the log; a closure takes its ask's organization (of_events.emit). The card is filed in `org`, by
+    default card_org(); outside the OF team's organization it names no sending position, since of_studio is none
+    there. Returns [(opened|closed, check, event id)]."""
     from of_locale import tr
     now = time.time() if now is None else now
     emit = emit or of_events.emit
@@ -204,19 +224,21 @@ def cards(state, now=None, emit=None, path=None):
         failing = bool(r) and r.get("state") == "failed"
         if failing and card is None and since is not None and now - since >= CARD_AFTER_S:
             owner = r.get("owner") or JOB_OWNER
+            org = org or card_org()
+            sender = CARD_FROM if org in (TEAM_ORG, None) else None
             eid = emit("agent_question", {
-                "detected_by": "declared", "source": CARD_SOURCE, "from_position": CARD_FROM, "to": "owner",
+                "detected_by": "declared", "source": CARD_SOURCE, "from_position": sender, "to": "owner",
                 "topic_key": f"health-{check}", "blocking": False,
                 "questions": [{"question": card_text(check, r, now),
                                "options": [tr("leave it to {owner} (recommended: they own the fix)", owner=owner),
-                                           tr("I want to look at it now with of_conductor")]}]},
-                position=CARD_FROM)
-            mem[check] = {"event_id": eid, "opened": iso(now), "since": r.get("since")}
+                                           tr("I want to look at it now")]}]},
+                position=sender, org=org)
+            mem[check] = {"event_id": eid, "opened": iso(now), "since": r.get("since"), "org": org, "from": sender}
             done.append(("opened", check, eid))
         elif card is not None and not failing:
             note = (f"{check} is {r.get('state')} again since {r.get('since')}" if r else f"{check} is no longer measured")
             emit("agent_question_answered", {"ask_id": card["event_id"], "ask_ids": [card["event_id"]], "by": CARD_FROM,
-                                             "via": CARD_SOURCE, "note": note}, position=CARD_FROM)
+                                             "via": CARD_SOURCE, "note": note}, position=card.get("from"))
             mem.pop(check)
             done.append(("closed", check, card["event_id"]))
     if done:

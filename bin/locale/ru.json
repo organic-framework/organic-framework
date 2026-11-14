@@ -243,7 +243,7 @@
  "Positions are still loading: try again in a moment.": "Позиции ещё загружаются: попробуй через мгновение.",
  "OF's health check {check} has failed on this machine for {mins} min: {value}, the limit is {limit}. {meanwhile} Its owner is {owner}; Studio's Health tab shows every check. This card closes itself when the check is back. What should be done?": "Проверка здоровья OF {check} на этой машине не проходит уже {mins} мин: {value}, предел {limit}. {meanwhile} Её владелец — {owner}; все проверки видны на вкладке Health в Studio. Карточка закроется сама, когда проверка снова пройдёт. Что делать?",
  "leave it to {owner} (recommended: they own the fix)": "оставить это {owner} (рекомендую: исправление за ним)",
- "I want to look at it now with of_conductor": "хочу разобраться сейчас вместе с of_conductor",
+ "I want to look at it now": "хочу разобраться сейчас",
  "Studio and the messages between agents go through of-server, so they may be slow or not answer.": "Studio и сообщения между агентами идут через of-server, поэтому они могут тормозить или не отвечать.",
  "A message to an idle agent has waited over an hour to be typed in, so agents may be waiting on each other without knowing it.": "Сообщение свободному агенту ждёт больше часа и до сих пор не впечатано, поэтому агенты могут ждать друг друга, не зная об этом.",
  "Your questions screen reads this view, so new questions may show late and answered ones may still show.": "Экран вопросов читает это представление, поэтому новые вопросы могут появляться с опозданием, а отвеченные ещё висеть.",
