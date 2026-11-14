@@ -1746,10 +1746,10 @@ class LockDirs(unittest.TestCase):
 
 
 class MoveBackups(unittest.TestCase):
-    def test_backup_goes_after_a_day_when_the_position_runs_notes_stay(self):
+    def test_backup_goes_after_six_hours_when_the_position_runs_notes_stay(self):
         root = tempfile.mkdtemp()
         now = 1_800_000_000
-        old = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now - 30 * 3600))
+        old = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now - 8 * 3600))
         new = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now - 2 * 3600))
         for d in (f"op-{old}", f"op-{new}", f"gone-{old}", f"op-{old}-resume", "memory-merge-x"):
             os.makedirs(os.path.join(root, d, "backup", "projects"))
