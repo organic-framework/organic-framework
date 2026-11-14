@@ -16,8 +16,10 @@ One loop per machine:
 
 import hashlib
 import json
+import math
 import os
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -1154,19 +1156,55 @@ def launchd_pid(label, domain=None, run=subprocess.run):
     return int(m.group(1)) if m else None
 
 
-def relay_healthy(now=None, stale=STALE_S, path=None):
-    """(ok, pid, detail): the relay's heartbeat (this user's, or the one at `path`) is fresh and every loop ran within
-    `stale` seconds."""
-    now = time.time() if now is None else now
+HEARTBEAT_MAX = 64 * 1024
+
+
+def read_heartbeat(path=None, uid=None, cap=HEARTBEAT_MAX):
+    """The heartbeat as {ts, pid, loops}, or None. The agent host's root watchdog reads it in an organization user's
+    folder, so it is opened without following a link and without blocking (a FIFO), must be a regular file of at most
+    CAP bytes owned by UID when given, and any field of the wrong type counts as no heartbeat (of_secrets-review and
+    of_review on organic-framework PR 144)."""
     try:
-        with open(path or heartbeat_path()) as fh:
-            hb = json.load(fh)
-    except (OSError, ValueError):
+        fd = os.open(path or heartbeat_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > cap or (uid is not None and st.st_uid != uid):
+            return None
+        raw = os.read(fd, cap + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        hb = json.loads(raw) if len(raw) <= cap else None
+    except (ValueError, RecursionError):
+        return None
+
+    def num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+    loops = hb.get("loops") or {} if isinstance(hb, dict) else None
+    if not (isinstance(hb, dict) and num(hb.get("ts")) and isinstance(loops, dict)
+            and all(isinstance(k, str) and num(t) for k, t in loops.items())):
+        return None
+    pid = hb.get("pid")
+    return {"ts": hb["ts"], "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+            "loops": loops}
+
+
+def relay_healthy(now=None, stale=STALE_S, path=None, uid=None):
+    """(ok, pid, detail): the relay's heartbeat (this user's, or the one at `path`, owned by `uid` when given) is
+    fresh and every loop ran within `stale` seconds."""
+    now = time.time() if now is None else now
+    hb = read_heartbeat(path, uid)
+    if hb is None:
         return False, None, "no heartbeat"
-    late = sorted(k for k, t in (hb.get("loops") or {}).items() if now - t > stale)
-    if now - hb.get("ts", 0) > stale:
-        return False, hb.get("pid"), f"heartbeat {int(now - hb.get('ts', 0))} s old"
-    return (not late), hb.get("pid"), ("loops behind: " + ", ".join(late)) if late else "ok"
+    late = sorted(k for k, t in hb["loops"].items() if now - t > stale)
+    if now - hb["ts"] > stale:
+        return False, hb["pid"], f"heartbeat {int(now - hb['ts'])} s old"
+    return (not late), hb["pid"], ("loops behind: " + ", ".join(late)) if late else "ok"
 
 
 def watchdog(now=None, restart=None, dump=None, log=None, installed=None, pid_of=None):
