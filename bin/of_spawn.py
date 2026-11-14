@@ -99,11 +99,19 @@ def deny_rules(position, org, cat, named=None, roots=None):
     return rules
 
 
+# Every agent session starts with these (spawn, resume-command, a capacity move). feedbackDrafts "off": Claude Code's
+# SendFeedback tool queues drafts for a person to review, nobody reviews them in an agent's pane, and a queued draft
+# makes /exit open the drafts' review first; on 2026-11-14 22:50Z that held up a production keeper's move off a spent
+# account (of_capacity's proposal; the setting is Claude Code's own: notify, quiet or off).
+AGENT_SETTINGS = {"feedbackDrafts": "off"}
+
+
 def session_settings(memory=None, deny=None, extra=None):
-    """The one --settings JSON: the memory directory (bin/of_memory.py, RFC 0006), the credential deny rules, and
-    extra keys such as the tool profile's allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md
-    §4)."""
-    s = json.loads(memory) if memory else {}
+    """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
+    deny rules, and extra keys such as the tool profile's allowedMcpServers and enabledPlugins (of_tools.launch_parts,
+    docs/tools.md §4)."""
+    s = dict(AGENT_SETTINGS)
+    s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
     for k, v in (extra or {}).items():

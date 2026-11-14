@@ -35,7 +35,8 @@ class SpawnPlanTest(unittest.TestCase):
         pl = plan(cwd="/tmp")
         self.assertEqual((pl["workspace"], pl["tab"], pl["session"]), ("ac·platform", "net", "S-1"))
         self.assertTrue(pl["brief"].startswith("You hold the position net_keeper. Read /h/acme/org/registry/briefs/"))
-        self.assertIn("--session-id S-1 -n net_keeper --dangerously-skip-permissions", pl["command"])
+        self.assertIn("--session-id S-1 -n net_keeper --settings ", pl["command"])  # every session: AGENT_SETTINGS
+        self.assertTrue(pl["command"].endswith(".settings.json --dangerously-skip-permissions"), pl["command"])
         self.assertIn("CLAUDE_CONFIG_DIR=", pl["command"])
         self.assertIn("holder: {runtime: claude-code, session: S-1", of_spawn.registry_line(pl, "wF:p1"))
 
@@ -186,8 +187,12 @@ class CredentialDenyTest(unittest.TestCase):
             s = json.load(fh)
         self.assertEqual(s["autoMemoryDirectory"], "/m/app")
         self.assertEqual(s["permissions"]["deny"], deny)
-        self.assertNotIn("--settings", plan(cwd="/w")["command"])
-        self.assertEqual(json.loads(of_spawn.session_settings(None, ["Read(//a)"])), {"permissions": {"deny": ["Read(//a)"]}})
+        self.assertEqual(s["feedbackDrafts"], "off")
+        bare = plan(cwd="/w")["command"]                                       # every session: no feedback drafts
+        with open(shlex.split(bare.split("--settings ", 1)[1])[0]) as fh:
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off"})
+        self.assertEqual(json.loads(of_spawn.session_settings(None, ["Read(//a)"])),
+                         {"feedbackDrafts": "off", "permissions": {"deny": ["Read(//a)"]}})
 
 
 class OwnerStepsTest(unittest.TestCase):
