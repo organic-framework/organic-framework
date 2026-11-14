@@ -34,8 +34,10 @@ checkout yet: clone the public repository into a folder root alone owns, with ro
 from there; every later run is from /opt/organic-framework:
 
   sudo /bin/mkdir -m 700 /var/root/of-bootstrap
-  sudo /usr/bin/git -c core.hooksPath=/dev/null clone -q https://github.com/organic-framework/organic-framework.git \\
-       /var/root/of-bootstrap/organic-framework
+  sudo /usr/bin/git -c core.hooksPath=/dev/null clone -q --no-checkout \\
+       https://github.com/organic-framework/organic-framework.git /var/root/of-bootstrap/organic-framework
+  sudo /usr/bin/git -c core.hooksPath=/dev/null -C /var/root/of-bootstrap/organic-framework checkout -q --detach \\
+       <the same full hash>
   sudo /usr/bin/python3 /var/root/of-bootstrap/organic-framework/deploy/host/plane.py deploy --commit <full hash> \\
        --smoke-as of --org-user of:organic-framework-build=<of's home>/organic-framework-build \\
        --org-user acme:acme=<acme's home>/acme-org
