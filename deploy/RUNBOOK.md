@@ -61,13 +61,34 @@ helm upgrade --install of-server deploy/helm/of-server -n of-server --create-nam
   -f values-acme.yaml
 ```
 
-`values-acme.yaml` sets at least: `image.repository`, `image.tag`, `orgs`, `tenant`, `vaultDatabase`, `unassignedDatabase`, `clickhouse.url`, `existingSecret`, `trustedGrantKeys`, `grants.gitSync.*`, `networkPolicy.*` (the namespaces of the tunnel and of ClickHouse).
+`values-acme.yaml` sets at least: `image.repository`, `image.tag`, `orgs`, `tenant`, `vaultDatabase`, `unassignedDatabase`, `clickhouse.url`, `existingSecret`, `trustedGrantKeys`, `grants.gitSync.*`, `networkPolicy.*` (the tunnel connector's namespace and pod labels, ClickHouse's, the cluster's DNS; §4.1).
 
 **Grants and the registry** reach the server one of two ways: `grants.gitSync.*` checks the organization's repository out read-only, or, for a repository without a remote, `grants.configMap: {name, keys: {<org>: {grants: <key>, positions: <key>}}}` mounts a ConfigMap that the organization's keeper fills from `registry/grants.yaml` and `registry/positions.yaml` with a committed script, rerun when they change. Never both. Without either, the server refuses finance facts and new messages that need a grant.
 
 Exposure: point the Cloudflare tunnel at `http://of-server-of-server.of-server.svc:18200`, path prefix `/v1/`, behind Cloudflare Access if the organization uses it for machines (a service token per machine, which the machine names in its `orgs.yaml` as `server_access`, docs/registry.md), or enable the chart's Ingress. `/v1/health` answers only `{ok, version}` here.
 
 Sizing: requests 100m CPU and 256 Mi, limits 1 CPU and 1 Gi. Masking costs about 5 CPU-minutes per GB of transcripts.
+
+### 4.1 Isolation: no other pod reaches the server or ClickHouse
+
+The founder, 2026-11-14 (prompt 01a1d97e-d730): "We need a plan for running the server in our cluster now, but safely, so that other containers cannot reach the DB and the server."
+
+- **The server** (`networkPolicy` in the values, on by default; keep it on). In: only port 18200, only from `ingressFrom`, the tunnel connector's or the ingress controller's pods, named by namespace and pod labels in one entry; the chart refuses an entry that names a namespace alone, which would admit every pod in it. Out: only `clickhouseTo` on 8123, `dnsTo` on 53 and, with git-sync, `gitSyncTo` on 22 and 443 (by default any address outside the private and link-local ranges, so no pod, node or cloud metadata service). A policy covers the whole pod: with git-sync the server's own container may open 22 and 443 to the same addresses; `grants.configMap` avoids that.
+- **ClickHouse** (`deploy/clickhouse/clickhouse.yaml`): `default-deny` on every pod of its namespace, and `clickhouse`: in only from of-server's pods on 8123 (the manifest names the namespace `of-server`; edit it if yours differs), out only to the cluster's DNS. Its other ports (9000, 9004, 9005, 9009) take nothing. A keeper who keeps these policies in their own manifests keeps the same effect; the check below tests the effect, not the names.
+- **DNS**: by default the `kube-dns` pods in `kube-system`. A cluster that resolves through a node-local cache on a link-local address adds that address to `dnsTo` as an `ipBlock` (and to ClickHouse's egress).
+- **The cluster's network plugin must enforce NetworkPolicy.** A plugin that does not still accepts the objects and then ignores them, so nothing above holds: flannel alone, for example, or a managed cluster where policy enforcement is not switched on. The check proves enforcement in the cluster itself.
+- **The kubelet's readiness probes** come from the node; the common plugins admit them. If a pod goes unready once the policies apply, the plugin blocks them: admit the nodes' addresses.
+
+**Prove it** after every install, and after every change to a policy, the network plugin or the namespaces:
+
+```sh
+python3 deploy/netcheck.py --namespace of-server --release of-server --clickhouse-namespace clickhouse \
+    --connector-namespace <the tunnel's namespace> --deployer <Kind:name of whoever deploys>
+```
+
+It makes a scratch namespace and removes it after. There, a probe pod must reach an open target and be refused by a target behind a deny-all policy: a cluster that does not enforce NetworkPolicy fails here. The same probe, a stranger pod in the server's namespace and one in the connector's namespace must be refused by the server (its Service and pods) and by ClickHouse (its Service, and its pods on every port). From inside the server's container, ClickHouse must answer and the scratch target and the API server must not. The probes run the server's own image (python3); `--image` names another the cluster can pull. `--clickhouse-service` and `--clickhouse-selector` name a ClickHouse that is not the reference manifest's; `--clickhouse-namespace none` skips it when it runs outside the cluster. Exit 0 only when every line passes; nothing secret is read.
+
+**Secrets: only the deployer reads them.** In the server's and ClickHouse's namespaces, reading a Secret includes three rights: get, list or watch on Secrets; creating a pod or any workload (a pod mounts any Secret of its namespace); exec or attach into a pod (the server's pod holds its Secret mounted). Grant none of them to anyone but the deployer, and check the cluster-wide bindings as well: a ClusterRoleBinding to `edit` or `admin` reaches every namespace. The server's pod has no API token (`automountServiceAccountToken: false`), and its ServiceAccount needs no binding. The same check lists everyone RBAC gives one of the three rights, outside the API server's bootstrap bindings, and fails unless each is named with `--deployer` or `--accept`. It does not follow impersonation or role escalation (`impersonate`, `bind`, `escalate`): grant those to nobody here.
 
 ## 5. Enroll machines
 
@@ -91,6 +112,7 @@ Revoke a machine or every machine of a person: `of_server.py revoke --machine-id
 ## 6. Verify
 
 - `kubectl -n of-server get pods`: ready.
+- `python3 deploy/netcheck.py …` (§4.1): every line passes.
 - From an enrolled machine: `of shipped` shows receipts moving from `queued` to `committed`.
 - In ClickHouse (tenant): rows in `of_acme.event`; no `[secret:` value missing where a test secret was sent; one `of.secret_detected` per test secret in `of_acme_vault.event` and none in `of_acme.event`.
 
