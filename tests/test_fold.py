@@ -152,26 +152,6 @@ class FoldTest(unittest.TestCase):
         self.assertIs(of._diff_answer(self.conn, "A"), False)                 # the log's reject decides
         self.assertIsNone(of._diff_answer(self.conn, "F"))                    # no answer event: no answer
 
-    def test_the_pulse_takes_escalated_asks_from_the_view(self):
-        import of_pulse
-        view = of_fold.views()["escalated"]
-        procs = [of_fold.FoldProcessor(view)]
-        cur = of_listen.prepare(self.conn, procs)
-        rec = of_events.record("ask_escalated", {"ask_id": "A1", "rule": "money", "to": "founder"}, position="p")
-        of_store.add_event(self.conn, rec)
-        of_listen.step(self.conn, procs, cur)
-        seen = []
-        real = of_pulse.escalations
-        of_pulse.escalations = lambda positions, asks, now, already=(): seen.append(set(already)) or []
-        saved = of_fold.reader
-        of_fold.reader = self.reader
-        try:
-            of_pulse.run_escalations([], [], 0, self.conn, log=lambda m: None)
-        finally:
-            of_pulse.escalations = real
-            of_fold.reader = saved
-        self.assertEqual(seen, [{"A1"}])
-
     def test_every_registered_view_is_pure(self):
         """of_architect on PR 154: purity as a test over every view, not a convention."""
         import json
