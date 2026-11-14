@@ -2200,20 +2200,29 @@ _USER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
 
 
 def host_watchdog(cfg, relays, now=None, restart=None, dump=None, log=None, domain="system", state_dir=None,
-                  pid_of=None, uid_of=None):
+                  pid_of=None, uid_of=None, code=(), service_user="_ofserver", owner_ok=None):
     """The agent host's one root watchdog (deploy/host/setup.py): of-server, and each organization user's relay, each
     a LaunchDaemon in `domain`. RELAYS: [(user, label, that user's OF state folder)]. Returns {name: result}.
 
     Root runs it, so it acts through no path anyone else controls (of_secrets-review and of_review on
     organic-framework PR 144): its state is in STATE_DIR, a folder of root's alone; every pid is launchd's; each
     heartbeat is read without following a link or blocking, as a regular file of that user's; one check that fails
-    never stops the next. It records no event: root's own store is read by nobody, and its log is the record."""
+    never stops the next. It records no event: root's own store is read by nobody, and its log is the record.
+
+    CODE: the programs it and the daemons it restarts run (the python, ClickHouse, the release's bin/). Each run
+    looks at them again, cheaply (`_code_unsafe`: owners and modes, no walk; deploy/host/setup.py's check is the whole
+    one): while one is unsafe it restarts nothing and says so in its log (of_secrets-review on PR 144)."""
     import pwd
     import of_relay_client
     state_dir = _private_dir(state_dir or HOST_WATCHDOG_DIR)
     pid_of = pid_of or (lambda label: of_relay_client.launchd_pid(label, domain))
     uid_of = uid_of or (lambda user: pwd.getpwnam(user).pw_uid)
     log = log or (lambda m: log_line(m, sys.stdout))
+    unsafe = _code_unsafe(code, [u for u, _, _ in relays] + [service_user], owner_ok) if code else []
+    if unsafe:
+        log("restarting nothing: the code root and the daemons run changed since deploy/host/setup.py checked it; "
+            "run its `plan` again: " + "; ".join(unsafe[:5]))
+        return {"code": "unsafe"}
     checks = [("of-server", None, "of-server", LAUNCHD_LABEL, "watchdog.json", "server_watchdog",
                "has not answered /v1/health", lambda: _health(cfg, timeout=WATCHDOG["probe_timeout"]) is not None)]
     for user, label, state in relays:
@@ -2232,6 +2241,56 @@ def host_watchdog(cfg, relays, now=None, restart=None, dump=None, log=None, doma
         except Exception as e:  # noqa: BLE001 - one relay's failure must not stop the others' or the server's check
             out[key] = "error"
             log(f"{name}: the check failed: {type(e).__name__}: {e}"[:300])
+    return out
+
+
+def _code_unsafe(paths, untrusted, owner_ok=None):
+    """What is unsafe now about PATHS and every folder above each (its real path's, and its own): owned by someone
+    other than root or an admin who is none of UNTRUSTED, writable by others, or by a group one of them is in. ACLs
+    and the trees below are setup.py's whole check."""
+    import grp
+    import pwd
+    import stat
+    users = []
+    for u in untrusted:
+        try:
+            users.append(pwd.getpwnam(u))
+        except KeyError:
+            pass
+    groups = {g for pw in users for g in os.getgrouplist(pw.pw_name, pw.pw_gid)}
+    names = {pw.pw_name for pw in users} | set(untrusted)
+    if owner_ok is None:
+        try:
+            admin = grp.getgrnam("admin").gr_gid
+        except KeyError:
+            admin = None
+
+        def owner_ok(uid):
+            if uid == 0:
+                return True
+            try:
+                pw = pwd.getpwuid(uid)
+            except KeyError:
+                return False
+            return admin is not None and pw.pw_name not in names and admin in os.getgrouplist(pw.pw_name, pw.pw_gid)
+    seen, out = set(), []
+    for p in paths:
+        for q in (os.path.realpath(p), os.path.abspath(p)):
+            while q not in seen:
+                seen.add(q)
+                try:
+                    st = os.lstat(q)
+                except OSError as e:
+                    out.append(f"{q}: {e.strerror}")
+                    break
+                if not stat.S_ISLNK(st.st_mode):
+                    if not owner_ok(st.st_uid):
+                        out.append(f"{q}: owned by uid {st.st_uid}")
+                    if st.st_mode & 0o002 or (st.st_mode & 0o020 and st.st_gid in groups):
+                        out.append(f"{q}: writable by {'others' if st.st_mode & 0o002 else 'gid ' + str(st.st_gid)}")
+                if q == "/":
+                    break
+                q = os.path.dirname(q)
     return out
 
 
@@ -2369,6 +2428,8 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     hw.add_argument("--domain", default="system")
     hw.add_argument("--relay", action="append", default=[], help="USER:LABEL:STATE_DIR (repeat)")
     hw.add_argument("--state-dir", default=HOST_WATCHDOG_DIR, help="the watchdog's own state, a folder of root's alone")
+    hw.add_argument("--code", action="append", default=[], help="a program it and its daemons run, looked at each run")
+    hw.add_argument("--service-user", default="_ofserver")
     rp = sub.add_parser("replay-dead", help="queue dead batches again (after fixing the cause)")
     rp.add_argument("--batch-id", action="append", help="only these batches (default: all dead)")
     iv = sub.add_parser("invite", help="a one-time enrollment code (printed once)")
@@ -2382,7 +2443,7 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
         run(config=a.config)
     elif a.cmd == "host-watchdog":
         host_watchdog(load_config(a.config), [tuple(r.split(":", 2)) for r in a.relay], domain=a.domain,
-                      state_dir=a.state_dir)
+                      state_dir=a.state_dir, code=a.code, service_user=a.service_user)
     elif a.cmd == "writer":
         import fcntl
         import signal

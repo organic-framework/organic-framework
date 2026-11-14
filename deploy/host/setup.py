@@ -7,8 +7,9 @@ holds of-server, ClickHouse, their passwords and the tenant master key, none of 
 script, run as root:
 
 - refuses to go on when root or `_ofserver` would run code that an organization user or `_ofserver` can change: the
-  python, everything under its install prefix (Homebrew's whole /opt/homebrew, whose libraries it loads), ClickHouse
-  and the release checkout this script runs from (`trust_problems`);
+  python, everything under its install prefix (Homebrew's whole /opt/homebrew, whose libraries it loads), ClickHouse,
+  the release checkout this script runs from and the python running it (`trust_problems`), or when the daemons'
+  python cannot import PyYAML under -E -s;
 - creates `_ofserver` (hidden, no login shell, its home /var/of-server mode 700) and checks each organization user
   exists, making its home 700;
 - writes /etc/of: of-server's config (root-owned, readable by `_ofserver` only), ClickHouse's config and users, and the
@@ -515,13 +516,38 @@ def code_roots():
     return brew + [PYTHON, CLICKHOUSE, OF_ROOT]
 
 
-def check_code(org_users, run=subprocess.run, here=None):
-    """trust_problems over code_roots(), and this script must be the release checkout's, the one the check covers."""
+def interpreter_roots(prefix=None, path=None, executable=None):
+    """The python running this script as root: its prefix, every folder on its sys.path (this script's own is in the
+    release checkout), and its executable, after them so its tree is the prefix's (of_review on PR 144)."""
+    path = sys.path if path is None else path
+    return ([prefix or sys.prefix] + [p for p in path if p and os.path.isdir(p)]
+            + [executable or sys.executable])
+
+
+def yaml_problem(run=subprocess.run):
+    """of-server reads its config with PyYAML, and under -E -s only the python's own site-packages count: a user
+    install (`pip install --user`) is not seen (of_review on PR 144). Asked of the checked python, as `nobody`."""
+    r = run(["sudo", "-n", "-u", "nobody", "--", PYTHON, "-E", "-s", "-c", "import yaml"], capture_output=True,
+            text=True, cwd="/", timeout=60)
+    if r.returncode == 0:
+        return None
+    return (f"{PYTHON} -E -s cannot import yaml, which of-server reads its config with: install PyYAML into that "
+            "python's own site-packages, as the admin who owns it (for example `brew install pyyaml`), not as a "
+            "user install")
+
+
+def check_code(org_users, run=subprocess.run, here=None, interpreter=None):
+    """trust_problems over code_roots() and the python running this script; this script must be the release
+    checkout's, the one the check covers; then the daemons' python must import PyYAML under -E -s."""
     here = os.path.realpath(here or __file__)
     problems = []
     if not here.startswith(os.path.realpath(OF_ROOT) + os.sep):
         problems.append(f"this script runs from {here}, not from the release checkout {OF_ROOT} the check covers")
-    return problems + trust_problems(code_roots(), [*org_users, SERVICE_USER], run=run)
+    roots = code_roots() + (interpreter_roots() if interpreter is None else interpreter)
+    problems += trust_problems(roots, [*org_users, SERVICE_USER], run=run)
+    if not problems:  # only a python found safe is run, and as nobody
+        problems += [p for p in [yaml_problem(run)] if p]
+    return problems
 
 
 # ------------------------------------------------------------------ the plan
@@ -603,7 +629,9 @@ class Plan(Files):
                 relay_label(u), [py, of_bin, "relay", "run"], user=u, env={"HOME": home}, keep="failure",
                 log=f"{LOGS}/relay-{u}.log", workdir=home), 0o644)
         argv = priv + [server_py, "--config", f"{ETC}/server.yaml", "host-watchdog", "--domain", "system",
-                       "--state-dir", WATCHDOG_STATE]
+                       "--state-dir", WATCHDOG_STATE, "--service-user", SERVICE_USER]
+        for c in (PYTHON, CLICKHOUSE, f"{OF_ROOT}/bin"):  # looked at again each run, cheaply (of_secrets-review)
+            argv += ["--code", c]
         for u in self.org_users:
             argv += ["--relay", f"{u}:{relay_label(u)}:/Users/{u}/.local/state/of"]
         self.log(f"{LOGS}/host-watchdog.log", "root")
