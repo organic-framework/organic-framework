@@ -6,6 +6,9 @@
 # Then: kubectl apply -f clickhouse.yaml; wait for the pod; load the schema from schema.py:
 #   kubectl -n clickhouse exec -i deploy/clickhouse -- clickhouse-client --user admin \
 #     --password "$(cat admin.password)" --multiquery < schema.sql
+# Isolation (deploy/RUNBOOK.md §4.1): the namespace denies every connection in and out, and ClickHouse takes only
+# of-server's pods on 8123 and resolves names through the cluster's DNS. The schema load above goes through the API
+# server (exec), not the pod network. Proved by deploy/netcheck.py.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: clickhouse-data, namespace: clickhouse}
@@ -46,3 +49,32 @@ metadata: {name: clickhouse, namespace: clickhouse}
 spec:
   selector: {app: clickhouse}
   ports: [{name: http, port: 8123, targetPort: http}]
+---
+# Every pod of the namespace: nothing in, nothing out, unless a policy below admits it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: clickhouse}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: clickhouse, namespace: clickhouse}
+spec:
+  podSelector: {matchLabels: {app: clickhouse}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # of-server's pods only: namespace AND pod labels in one entry. The namespace is the one of-server is released
+    # into (deploy/RUNBOOK.md §4); edit it here if yours differs. 9000 (native), 9004, 9005 and 9009 stay closed.
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: of-server}}
+          podSelector: {matchLabels: {app.kubernetes.io/name: of-server}}
+      ports: [{port: 8123, protocol: TCP}]
+  egress:
+    # The cluster's DNS only (the same pods as the chart's networkPolicy.dnsTo; a node-local cache on a link-local
+    # address is added here as an ipBlock).
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]

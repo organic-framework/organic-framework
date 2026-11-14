@@ -1,4 +1,14 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- /* Who may reach the server names pods, never a whole namespace: an entry with a namespaceSelector alone admits
+every pod of that namespace (2026-11-14, the founder: other containers must not reach the server or the database). */}}
+{{- range .Values.networkPolicy.ingressFrom }}
+{{- if not (or (hasKey . "podSelector") (hasKey . "ipBlock")) }}
+{{- fail "networkPolicy.ingressFrom: each entry needs a podSelector (the connector's or the ingress controller's pod labels) or an ipBlock; a namespaceSelector alone admits every pod of that namespace" }}
+{{- end }}
+{{- end }}
+{{- if not .Values.networkPolicy.dnsTo }}
+{{- fail "networkPolicy.dnsTo: name the cluster's DNS pods" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -16,11 +26,13 @@ spec:
     - to: {{- toYaml .Values.networkPolicy.clickhouseTo | nindent 8 }}
       ports:
         - {port: {{ .Values.networkPolicy.clickhousePort }}, protocol: TCP}
-    - ports:   # DNS
+    - to: {{- toYaml .Values.networkPolicy.dnsTo | nindent 8 }}
+      ports:
         - {port: 53, protocol: UDP}
         - {port: 53, protocol: TCP}
     {{- if .Values.grants.gitSync.enabled }}
-    - ports:   # git-sync to the repository host
+    - to: {{- toYaml .Values.networkPolicy.gitSyncTo | nindent 8 }}
+      ports:   # git-sync to the repository host
         - {port: 22, protocol: TCP}
         - {port: 443, protocol: TCP}
     {{- end }}

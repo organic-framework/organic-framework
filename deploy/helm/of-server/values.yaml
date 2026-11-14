@@ -77,19 +77,45 @@ ingress:
   annotations: {}
   tls: []
 
+# Isolation (deploy/RUNBOOK.md §4.1): the server takes connections only from the tunnel's connector pods and talks only
+# to ClickHouse, the cluster's DNS and, with git-sync, the repository host. Keep it on in every cluster; it holds only
+# where the cluster's network plugin enforces NetworkPolicy, which `deploy/netcheck.py` proves.
 networkPolicy:
   enabled: true
-  # Who may reach the server: the tunnel's or the ingress controller's pods.
+  # Who may reach the server: the connector's or the ingress controller's pods, by namespace AND pod labels (both
+  # keys in one entry). An entry with a namespaceSelector alone is refused at render: it admits every pod there.
   ingressFrom:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: cloudflared
-  # ClickHouse, by CIDR or selector; DNS is always allowed; 22/443 for git-sync when enabled.
+      podSelector:
+        matchLabels:
+          app: cloudflared               # REQUIRED: the connector Deployment's pod labels, as the cluster has them
+  # ClickHouse's pods (deploy/clickhouse/clickhouse.yaml labels them app: clickhouse), or an ipBlock for one outside.
   clickhouseTo:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: clickhouse
+      podSelector:
+        matchLabels:
+          app: clickhouse
   clickhousePort: 8123
+  # The cluster's DNS pods (CoreDNS on k3s, EKS, kubeadm). A cluster that resolves through a node-local cache on a
+  # link-local address names it here as an ipBlock.
+  dnsTo:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  # git-sync's 22/443, with grants.gitSync only: any address outside the cluster's private and link-local ranges
+  # (the cloud's metadata service among them), so the sidecar reaches the repository host and no pod or node. A
+  # repository host on a private network is named here by its own ipBlock.
+  gitSyncTo:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
 
 resources:                          # fits the Lab's 2 vCPU / 4 GB k3s node
   requests: {cpu: 100m, memory: 256Mi}
