@@ -52,6 +52,25 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RepositoryRootTest(unittest.TestCase):
+    def test_a_root_that_is_a_repository_matches_paths_written_with_its_name(self):
+        """of_field-analyst, 2026-11-15: orgs.yaml lists the framework's checkout itself as the organization's path,
+        and the registry writes "organic-framework/bin/..."; every edit there was unowned (536 verdicts, rt-v4..v6)."""
+        with tempfile.TemporaryDirectory() as parent:
+            repo = os.path.join(parent, "framework")
+            os.makedirs(os.path.join(repo, "bin"))
+            systems = {"diag": {"keeper": "x_diag", "paths": ["framework/bin/of_diagnose*.py"]},
+                       "core": {"keeper": "x_core", "repos": ["framework"]}}
+            positions = [{"name": "x", "_org": "o", "_systems": systems}]
+            f = os.path.join(repo, "bin", "of_diagnose_rules.py")
+            for roots in ([repo], [parent]):                                     # the checkout itself, or its parent
+                idx = of_router.build_index(positions, {"o": roots})
+                self.assertEqual(of_router.resolve(f, idx), ("o", "diag", "x_diag"), roots)
+                self.assertEqual(of_router.resolve(os.path.join(repo, "README.md"), idx), ("o", "core", "x_core"))
+            idx = of_router.build_index(positions, {"o": [repo]})
+            self.assertEqual(of_router.resolve(os.path.join(parent, "other", "a.py"), idx), (None, None, None))
+
+
 class ReadsTest(unittest.TestCase):
     def test_cross_position_reads_only(self):
         import of_reads
