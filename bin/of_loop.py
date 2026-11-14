@@ -42,7 +42,11 @@ def decided(loop):
 
 
 UNREAD = ("unread", None)  # a resolver's answer when this machine's log cannot be read: no exception, only a warning
-HUMAN_ANSWER = "owner"  # `by` of an answer a person gave: the popup, the owner's terminal, their conductor's chat
+HUMAN_ANSWER = "owner"  # `by` of an answer a person gave
+# the person's own channels: the popup they click at the machine, and their conductor's chat, whose prompt `of asks
+# answer` checks. `by: owner` alone is no proof: `of asks answered` writes it from any process without an agent's
+# session variable (of_server on organic-framework PR 168; the diff approval reads asks-ui only, PR 154)
+PERSON_CHANNELS = ("asks-ui", "conductor")
 _ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,35}$")
 
 
@@ -69,8 +73,9 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
     """Yes(kind, event id, words) of the person's yes that DID names in the log, or None (docs/registry.md, Works,
     "Where it is read, and how it is checked"; of_review on organic-framework PR 168):
     - 'ask': DID is `<ask id>#<option number>`. The ask was filed for WORK (`of ask --work`), or it is the yes GOAL_YES
-      (the decided of the goal the work serves) records; the owner's latest answer (`by: owner`, never an agent's
-      closure) chose exactly that option: its number (`option`, through the conductor's chat) or its text (the popup).
+      (the decided of the goal the work serves) records; the owner's latest answer through their own channel (`by:
+      owner` with `via` asks-ui or conductor, PERSON_CHANNELS; never an agent's closure or `of asks answered`) chose
+      exactly that option: its number (`option`, through the conductor's chat) or its text (the popup).
       A free-text answer, another option, a refusal or an ask of another work is no yes. Its words are the question
       and the chosen option;
     - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
@@ -120,7 +125,8 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
     for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
                               "ORDER BY ts, rowid", (ts,)):
         a = json.loads(ap or "{}")
-        if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER:
+        if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER \
+                and a.get("via") in PERSON_CHANNELS:
             last = a
     if not last:
         return None
@@ -129,7 +135,10 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
     if chosen != option:
         return None
     label = opts[option - 1].get("label") if isinstance(opts[option - 1], dict) else opts[option - 1]
-    return Yes("ask", eid, f'asked "{_short(q.get("question"), 100)}", chose option {option} "{_short(label, 80)}"')
+    said = (f', in their words "{_short(last.get("quote"), 80)}"'  # the chat's option is the conductor's reading
+            if last.get("via") == "conductor" and last.get("quote") else "")
+    return Yes("ask", eid, f'asked "{_short(q.get("question"), 100)}", chose option {option} "{_short(label, 80)}"'
+               + said)
 
 
 def owners_yes(loop, resolve):
