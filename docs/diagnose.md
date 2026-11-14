@@ -687,21 +687,21 @@ The columns:
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
 | lingering@0 | quiet | quiet | P/R 1.0 | — | — |
 | inbound-backlog@0 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0 | — | — |
-| loop-cheapest-rung@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-checkpoint@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-plateau@1 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-wip@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | a real case |
-| loop-babysit-model@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-objective-drift@2 | blocked (no declared loop) | blocked | P/R 1.0 (6 tp: unpriced, untied runs, a change of objective on the owner's measure, a `decided` that does not resolve, context by a hypothesis, context by a named run; negatives: priced, a measure tied to the owner's target, a change of objective with its money on a priced loop, a lever inside the segment, a name near the part's name, no segment) | — | the search week, once its runs are derived; part `context` once a loop declares its segment; part `untied` once a loop declares `decided` |
-| loop-eval-bottleneck@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-observed-elsewhere@0 | — (added 2026-11-14) | — | P/R 1.0 (2 tp: a drop on proxies not shown to hold, an accept on such a proxy; negatives: a run on the data where the condition held, a keep that also rests on runs on the target, a proxy reported with no accept, a direct reading whose money chain rests on a proxy); reports blocked while no run says where it was read | — | the first user organization's case of 2026-11-14, once its measures name `observed_at` and `proxy_for` |
+| loop-cheapest-rung@0 | 2026-11-15, 18 declared loops: fired 5, quiet 1, blocked 12 (no run in the window) | no declared loop | P/R 1.0 | — | the 5 issues to label with their doers |
+| loop-checkpoint@0 | 2026-11-15, 18 loops: fired 1, quiet 5, blocked 12 | no declared loop | P/R 1.0 | — | the issue to label with its work owner |
+| loop-plateau@1 | 2026-11-15, 18 loops: quiet 6, blocked 12 | no declared loop | P/R 1.0 | — | a real case: quiet on the 6 loops with runs |
+| loop-wip@0 | 2026-11-15, 18 loops: fired 2, quiet 16 | no declared loop | P/R 1.0 | — | the 2 issues to label with their doers |
+| loop-babysit-model@0 | 2026-11-15, 18 loops: quiet 18 | no declared loop | P/R 1.0 | — | a real case |
+| loop-objective-drift@2 | 2026-11-15, 18 loops: fired 4, quiet 2, blocked 12; partly from runs whose metric names no declared measure | no declared loop | P/R 1.0 (6 tp: unpriced, untied runs, a change of objective on the owner's measure, a `decided` that does not resolve, context by a hypothesis, context by a named run; negatives: priced, a measure tied to the owner's target, a change of objective with its money on a priced loop, a lever inside the segment, a name near the part's name, no segment) | — | the 4 issues to label with their work owners; runs that name their measure |
+| loop-eval-bottleneck@0 | 2026-11-15, 18 loops: fired 2, quiet 4, blocked 12 | no declared loop | P/R 1.0 | — | the 2 issues to label with their work owners |
+| loop-observed-elsewhere@0 | 2026-11-15, 18 loops: quiet 3, blocked 15. 12 have no run; on 3, runs name no declared measure (0 of 42, 0 of 5, 0 of 6), so no run says where it was read | no declared loop | P/R 1.0 (2 tp: a drop on proxies not shown to hold, an accept on such a proxy; negatives: a run on the data where the condition held, a keep that also rests on runs on the target, a proxy reported with no accept, a direct reading whose money chain rests on a proxy); reports blocked while no run says where it was read | — | runs that name their measure (a schema matter, with `of_architect`); then the first user organization's case of 2026-11-14 |
 | unkept-system@0 | fired 1 (delivery), 2026-11-10 | quiet | both parts P/R 1.0; negatives: external keeper, unsupported, a supersystem (keeper and unit) | — | — |
 | off-map-work@0 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |
 | cell-gap@0 | blocked (no `needs` yet) | blocked | all three parts P/R 1.0; reports blocked without cells | — | U1's cells |
 | cell-overlap@0 | blocked (no `owns` yet) | blocked | P/R 1.0; reports blocked without cells | — | U1's cells |
 | unsourced-requirement@0 | fired 2, 2026-11-11 | quiet | both parts P/R 1.0; negatives: a quoted source, the hedge kept in the done_when, a returned hand-over, spec words; reports blocked without hand-overs | — | the 2 U1 issues to label with its structure keeper |
 
-The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live run above. Their real cases wait for the loop events of the search week (§4.1), derived from the runner records.
+The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live run above. On 2026-11-15 each ran on each of the first user organization's 18 declared loops alone (this position's mandate 5); its results per loop are in that organization's records. Twelve loops had no run ending in the window. On three loops no run's metric names a declared measure or the target's metric. Those runs inherit neither `observed_at` nor `proxy` from their measure, so 2.28 cannot see where they were read, and 2.21 reads them as unpriced or untied. Among them is the loop of the founder's prompt of 2026-11-14 (01a1da18-f250), whose measures carry `proxy_for` at the block's builder. That a run names its measure is a schema matter, sent to `of_architect` on 2026-11-15.
 
 `of.correction` was never recorded. context-overload and missing-verifier read the owner's corrections, `of.founder_correction`, instead, and were built on 2026-11-14. With them every rule of the catalogue has a result in `lab-drift-v0`.
 
