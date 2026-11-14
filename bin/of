@@ -2459,7 +2459,8 @@ def cmd_asks(args):
         relayed_by = _asks_actor()
         try:
             out = of_asks_chat.answer(conn, asks, positions, args.id, args.prompt, pane_of, option=args.option,
-                                      text=args.text, relayed_by=None if relayed_by == "owner" else relayed_by)
+                                      text=args.text, relayed_by=None if relayed_by == "owner" else relayed_by,
+                                      version=args.version)
         except ValueError as e:
             raise OfError(f"not recorded: {e}")
         print("\n".join(out))
@@ -2530,8 +2531,10 @@ def cmd_asks(args):
         print(f"{len(groups)} open item(s) waiting on you ({sum(len(g['ask_ids']) for g in groups)} asks)")
         for g in groups:
             mark = of_asks.label(g["since"], cfg)
+            am = (g.get("first") or {}).get("amended")
             print(f"  {g['ask_ids'][0][-8:]}  {of_asks.age(g['since']):>5} {mark:<8} {', '.join(g['who']):<34} "
-                  f"{g['kind']:<22} {g['text'][:80]}")
+                  f"{g['kind']:<22} {g['text'][:80]}" + (f"  [amended v{am['version']}: {', '.join(am['changed'])}]"
+                                                          if am else ""))
         if groups:
             print("answer in the agent's pane (of go <name>), then: of asks answered <id>")
         return 0
@@ -2543,8 +2546,10 @@ def cmd_asks(args):
         who = a["position"] or (a["session_id"] or "?")[:8]
         state = "" if a["state"] == "open" else f" [{a['state']}]"
         mark = of_asks.label(a["ts"], cfg) if a["state"] == "open" else ""
+        am = a.get("amended")
         print(f"  {a['event_id'][-8:]}  {of_asks.age(a['ts']):>5} {mark:<8} {who:<24} {a['kind']:<20} "
-              f"{panes.get(a['session_id'], '-'):<6} {a['text'][:80]}{state}")
+              f"{panes.get(a['session_id'], '-'):<6} {a['text'][:80]}{state}"
+              + (f"  [amended v{am['version']}: {', '.join(am['changed'])}]" if am else ""))
     if shown and not args.all:
         print("answer in the agent's pane: of go <name>")
     return 0
@@ -3412,6 +3417,8 @@ def cmd_ask(args):
     import of_pulse
     positions = _load_quiet()
     me = _me(positions, args.sender)
+    if getattr(args, "amend", None):
+        return _amend_ask(args, positions, me)
     opts = [o.strip() for o in (args.options or "").split("|") if o.strip()]
     if not args.question and not args.task:
         raise OfError('usage: of ask "<question>" [--options "a|b"] | of ask "<title>" --task "<steps>" [--command "…"]')
@@ -4443,17 +4450,154 @@ def _escalates(me, ident):
     return hits[0]
 
 
-def _deliver_ask(positions, me, to, ask_id, text, opts, blocking, escalated=None):
+def _deliver_ask(positions, me, to, ask_id, text, opts, blocking, escalated=None, amended=None):
     """Type a routed question into the unit owner's pane; what is not typed now, the pulse types later
-    (of_asks_answer.redeliver_pass). `escalated`: the rule that already sent it to the founder."""
+    (of_asks_answer.redeliver_pass). `escalated`: the rule that already sent it to the founder. `amended`: (version,
+    [fields]) when this is a new version of a question it has (of ask --amend); it is typed only now, and a question
+    the pulse types later is its newest version."""
     import of_asks_answer
     pane = next((a["pane_id"] for p, a in bind(positions, live_agents_or_none(warn=False))[0] if p["name"] == to), None)
-    frame = of_asks_answer.routed_frame(me["name"], me.get("_unit"), ask_id, text, opts, blocking, escalated)
+    frame = of_asks_answer.routed_frame(me["name"], me.get("_unit"), ask_id, text, opts, blocking, escalated, amended)
     if pane:
         print("  " + of_asks_answer.deliver(pane, frame, None, sender=me["name"], human_channel=None))
+    elif amended:
+        print(f"  {to} has no live pane here: it sees the new version in its queue (of asks --all), and in the question "
+              "OF types in when it has a pane, if it has not had it yet")
     else:
         print(f"  {to} has no live pane here; OF types the question in when it has one (for 24 h)"
               + ("" if escalated else ", and it escalates per escalate_when"))
+
+
+def _amend_ask(args, positions, me):
+    """of ask --amend <id>: a new version of an open ask this position filed, with no answer yet (docs/events.md,
+    of.ask_amended): new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, --task (a task's
+    steps). The ask keeps its id and filing time; one decision stays one card. A different decision is a new ask, with
+    this one withdrawn (of_field-analyst's review of a user organization's delegated unit, message 01a1dba9-6182: 83 of
+    252 founder asks withdrawn or superseded before an answer, corrections refiled as replacement cards)."""
+    import of_asks
+    import of_asks_answer
+    import of_events
+    import of_store
+    for flag, val in (("--command", args.command), ("--where", getattr(args, "where", None)), ("--work", args.work),
+                      ("--to", args.to), ("--escalates", args.escalates)):
+        if val:
+            raise OfError(f"--amend keeps the ask's {flag[2:]}: it changes the text, --options, --yes, --tags, --due, "
+                          "--blocking/--no-blocking and --task (a task's steps). Another one is a new decision: a new "
+                          "ask (of ask), with this one withdrawn (of asks withdraw <id>)")
+    ref = args.amend.strip()
+    conn = of_store.connect()
+
+    def find(asks):
+        return [a for a in asks if len(ref) >= 8 and (a["event_id"].startswith(ref) or a["event_id"].endswith(ref))]
+    asks = _asks_now(conn, quiet=True)
+    hits = find(asks)
+    if not hits and _drain_spool_now(conn):  # filed a moment ago, while the store was busy: still in the spool
+        asks = _asks_now(conn, quiet=True)
+        hits = find(asks)
+    if len(hits) != 1:
+        raise OfError(f"--amend {ref}: {len(hits)} asks match (give at least the last 8 characters of its id, as of "
+                      "asks prints it)")
+    a = hits[0]
+    short = a["event_id"][-8:]
+    if a.get("position") != me["name"]:
+        raise OfError(f"--amend: ask {short} was filed by {a.get('position') or 'another session'}; only the position "
+                      "that filed an ask amends it")
+    if not (a.get("kind") or "").startswith(("question (declared", "task")):
+        raise OfError(f"--amend: ask {short} is a {a.get('kind')}, not one filed with of ask")
+    if a["state"] == "escalated":
+        copy = next((x for x in asks if x.get("escalated_from") == a["event_id"] and x["state"] == "open"), None)
+        raise OfError(f"--amend: ask {short} was escalated to the founder" + (
+            f"; his card is its copy {copy['event_id'][-8:]}: amend that one" if copy else ""))
+    if a["state"] != "open":
+        raise OfError(f"--amend: ask {short} is {a['state']}: only an open ask with no answer is amended; a new "
+                      "decision is a new ask (of ask)")
+    if a.get("claimed_at"):
+        raise OfError(f"--amend: the founder said done on task {short}: check the result (of status working "
+                      f"--done-task {short}) or say what you still see (--reopen-task {short} --note …)")
+    payload, _session, _position, _ts = of_asks_answer.ask_details(conn, a["event_id"])  # its newest version
+    if payload.get("detected_by") != "declared" or payload.get("from_position") not in (None, me["name"]):
+        raise OfError(f"--amend: ask {short} was not filed by {me['name']} with of ask")
+    is_task = bool(payload.get("task"))
+    if args.task and not is_task:
+        raise OfError(f"--amend --task: ask {short} is a question; work for the founder's hands is another decision: "
+                      "file it as a task (of ask --task) and withdraw this one (of asks withdraw)")
+    q = (payload.get("questions") or [{}])[0] if isinstance((payload.get("questions") or [{}])[0], dict) else {}
+    cur_opts = of_asks_answer.options(payload)
+    current = {"text": q.get("question") or "", "options": cur_opts, "yes_option": payload.get("yes_option"),
+               "tags": list(payload.get("tags") or []), "due": payload.get("due"),
+               "blocking": bool(payload.get("blocking")), "task": payload.get("steps")}
+    new = {}
+    if args.question:
+        new["text"] = of_hook_mask(args.question)
+    if args.options is not None:
+        new["options"] = [o.strip() for o in args.options.split("|") if o.strip()]
+    if args.task:
+        new["task"] = of_hook_mask(args.task)
+    opts = new.get("options", cur_opts)
+    import of_ask_text  # no estimate of effort or duration (founder, 2026-11-11), in the new version as in the first
+    refusal = of_ask_text.check(new.get("text", current["text"]), opts, new.get("task"))
+    if refusal:
+        raise OfError(refusal)
+    if args.yes is not None:
+        if not (payload.get("work") and 1 <= args.yes <= len(opts)):
+            raise OfError(f"--yes <n> marks which option is the yes on the ask's work, so the ask needs one (--work at "
+                          f"filing) and an option number 1..{len(opts) or 'n'}")
+        new["yes_option"] = args.yes
+    elif "options" in new and new["options"] != cur_opts and current["yes_option"]:
+        raise OfError(f"--amend: the options change and option {current['yes_option']} was the yes on the work's "
+                      "decision: say again which one is the yes (--yes <n>)")
+    if args.tags:
+        import of_classify
+        try:
+            new["tags"] = [] if args.tags.strip().lower() == "none" else of_classify.parse_tags(args.tags)
+        except ValueError as e:
+            raise OfError(str(e))
+    if args.due:
+        new["due"] = _due(args.due)
+    if args.blocking is not None:
+        new["blocking"] = bool(args.blocking)
+    changed = [k for k in of_asks.AMENDABLE if k in new and new[k] != current[k]]
+    if not changed:
+        raise OfError(f"--amend: nothing differs from ask {short}'s version {payload.get('version') or 1}")
+    version = (payload.get("version") or 1) + 1
+    body = {"ask_id": a["event_id"], "version": version, "changed": changed, **{k: new[k] for k in changed},
+            "by": me["name"], "reason": of_hook_mask(args.reason) if getattr(args, "reason", None) else None}
+    if "text" in changed:
+        body["topic_key"] = _topic_key(new["text"])
+    if not of_events.emit("ask_amended", body, position=me["name"], org=me.get("_orgid"),
+                          session=_asker_session(me, args.sender)):
+        raise OfError("--amend: the event store did not take the amend; nothing changed")
+    text = new.get("text", current["text"])
+    blocking = new.get("blocking", current["blocking"])
+    to = a.get("to") or "founder"
+    esc_now = None
+    if to not in of_asks.OWNER_ADDRESSES and ({"tags", "blocking", "due"} & set(changed)):
+        # new tags (or blocking, or a nearer due) are judged by the delegation's escalate_when again; an escalation's
+        # fixed ids keep one sent before from being sent twice (of_pulse.escalate)
+        import of_pulse
+        a2 = dict(a, text=" ".join(text.split()), tags=new.get("tags", current["tags"]),
+                  tags_declared=bool(a.get("tags_declared") or "tags" in changed),
+                  kind="question (declared)" + (" blocking" if blocking else "") if not is_task else a["kind"],
+                  due=new.get("due", current["due"]))
+        hit = of_pulse.escalations(positions, [a2], __import__("time").time())
+        if hit:
+            esc_now = hit[0][1]
+            of_pulse.escalate(*hit[0])
+    if to not in of_asks.OWNER_ADDRESSES:  # the unit owner sees the amend in its pane
+        _deliver_ask(positions, me, to, a["event_id"], text, opts, blocking, esc_now, amended=(version, changed))
+    try:  # the `ask` token on the asker's pane shows the new text
+        import of_herdr_asks
+        pane = of_herdr_asks.panes_by_position(positions, live_agents(), bind).get(me["name"])
+        if pane and "text" in changed:
+            of_herdr_asks.set_ask(pane, text)
+    except Exception:
+        pass
+    _reconcile_ask_tokens(positions)
+    print(f"amended ask {short}: version {version} ({', '.join(changed)} changed); it keeps its id and its filing time"
+          + (f", and was escalated to the founder ({esc_now})" if esc_now else "")
+          + (". An answer the founder gives to an earlier version is refused and he sees this one"
+             if {"options", "yes_option"} & set(changed) else ""))
+    return 0
 
 
 def _topic_key(text):
@@ -5899,6 +6043,8 @@ def main(argv=None):
                     "tasks for a phone or a browser, and what waits for the machine")
     ak.add_argument("--option", type=int, help="answer: the card's option the person chose (1..N)")
     ak.add_argument("--text", help="answer: the person's words, as typed in the prompt")
+    ak.add_argument("--version", type=int, help="answer: the version of an amended card the person was shown, as "
+                    "--chat prints it (none: the first); an answer to a version whose options changed since is refused")
     ak.add_argument("--prompt", help="answer: the event id of the person's prompt in the conductor's session "
                     "(of prompts --mine prints it)")
     ak.add_argument("--pending", action="store_true", help="judge: the candidates the Stop hook queued")
@@ -6031,13 +6177,19 @@ def main(argv=None):
     ak2.add_argument("--work", help="the work (registry works:) this ask belongs to (docs/works.md)")
     ak2.add_argument("--tags", help="escalation tags: prod_change:<system>+<system>,money,security_incident,"
                                     "irreversible,window_go:<system> (default: guessed from the text)")
-    ak2.add_argument("--blocking", action="store_true", help="you cannot continue without the answer")
+    ak2.add_argument("--blocking", action=argparse.BooleanOptionalAction, default=None,
+                     help="you cannot continue without the answer (with --amend, --no-blocking takes it back)")
     ak2.add_argument("--due", help="when the answer is needed: an ISO time or +40m / +2h; the popup orders by it")
     ak2.add_argument("--to", default=None, help="founder (default), or the owner of your unit when it is delegated; "
                      "from a delegated unit, --to founder goes to the unit owner unless a declared --tags matches "
                      "its escalate_when")
     ak2.add_argument("--escalates", help="a unit owner's rewrite for the founder of an ask routed to it (its id): it "
                      "replaces OF's escalated copy, or escalates it now; his answer reaches you and the asker")
+    ak2.add_argument("--amend", metavar="ID", help="correct your open ask with no answer in place: a new version with the "
+                     "new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, --task; it keeps "
+                     "its id and filing time. Never a replacement card; a different decision is a new ask, with the "
+                     "old one withdrawn")
+    ak2.add_argument("--reason", help="with --amend: why it changed, in a few words (kept on the event)")
     ak2.add_argument("--from", dest="sender")
     ak2.set_defaults(fn=cmd_ask)
     pg = sub.add_parser("plugins", help="of plugins [list|detect] [--org O]: the plugin families, their "

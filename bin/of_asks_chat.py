@@ -205,9 +205,19 @@ def _options_of(conn, ask):
     return of_asks_answer.options(of_asks_answer.ask_details(conn, ask["event_id"])[0]) or list(ask.get("options") or [])
 
 
-def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, now=None):
+def _version_of(conn, ask):
+    """(version, choice_version, amended) of the ask's newest payload (of ask --amend; of_asks.at_version)."""
+    import of_asks_answer
+    p = of_asks_answer.ask_details(conn, ask["event_id"])[0] or {}
+    return p.get("version") or 1, p.get("choice_version") or 1, p.get("amended")
+
+
+def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, now=None, version=None):
     """Is the prompt evidence for this answer to this card? Returns {ids, answer, option, prompt, conductor, evidence,
-    position, session}; raises ValueError with the reason, said so the conductor can act on it."""
+    position, session, version}; raises ValueError with the reason, said so the conductor can act on it.
+    version: the card's version the conductor showed the person (`of asks --chat` prints it on an amended card); none
+    is the first. An answer to a version whose options or yes changed since is refused, and one dated before the
+    version it names (docs/events.md, of.ask_amended)."""
     import of_asks
     now = now or time.time()
     if (option is None) == (text is None):
@@ -261,6 +271,20 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
     if now - pts > PROMPT_MAX_AGE_H * 3600:
         raise ValueError(f"--prompt {p['event_id']} is older than {PROMPT_MAX_AGE_H} h ({p['ts']}): ask the person "
                          "again")
+    import of_asks
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int) or version < 1):
+        raise ValueError(f"--version {version}: a card's version is 1 or more")
+    cur, choice, amended = _version_of(conn, first)
+    shown = version or 1
+    if shown > cur:
+        raise ValueError(f"--version {shown}: ask {first['event_id'][-8:]} is at version {cur}")
+    if of_asks.stale_choice(shown, choice):
+        raise ValueError(f"ask {first['event_id'][-8:]} was amended: version {choice} changed its options since version "
+                         f"{shown}; show the person the card as `of asks --chat` prints it now and record their answer "
+                         f"with --version {cur}")
+    if shown > 1 and amended and _epoch(_shown_at(conn, first, shown)) > pts:
+        raise ValueError(f"--prompt {p['event_id']} was typed at {_hm(p['ts'])}, before version {shown} of the card: "
+                         "it answers an earlier one")
     members = [by_id[i] for i in g["ask_ids"] if i in by_id]
     ids = [a["event_id"] for a in members if _epoch(a["ts"]) < pts
            and not (a.get("reopened_at") and _epoch(a["reopened_at"]) >= pts)]
@@ -301,7 +325,16 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
         next(c["name"] for c in mine if (c.get("holder") or {}).get("session") == p["session_id"])
     return {"ids": ids, "answer": answer, "option": option, "prompt": p, "conductor": via,
             "evidence": "the prompt " + evidence,
-            "position": first.get("position"), "session": first.get("session_id")}
+            "position": first.get("position"), "session": first.get("session_id"), "version": shown}
+
+
+def _shown_at(conn, ask, version):
+    """When version `version` of the ask was filed (its amend's ts; the ask's own for the first)."""
+    import of_asks
+    for ts, p in of_asks.amendments(conn, ask["event_id"], ask["ts"], ask.get("position")):
+        if p.get("version") == version:
+            return ts
+    return ask["ts"]
 
 
 def recorded(conn, prompt_id, ids):
@@ -325,14 +358,15 @@ def record(c, relayed_by=None):
         "ask_id": c["ids"][0], "ask_ids": c["ids"], "answer": of_hook.mask(c["answer"]), "via": "conductor",
         "by": "owner", "prompt": p["event_id"], "prompt_ts": p["ts"], "quote": of_hook.mask(p["text"])[:600],
         "conductor": c["conductor"], "evidence": c["evidence"], "relayed_by": relayed_by,
-        **({"option": c["option"]} if c["option"] is not None else {})},
+        **({"option": c["option"]} if c["option"] is not None else {}), "version": c.get("version") or 1},
         position=c["position"], session=c["session"])
 
 
-def answer(conn, asks, positions, ask_ref, prompt_ref, pane_of, option=None, text=None, relayed_by=None, now=None):
+def answer(conn, asks, positions, ask_ref, prompt_ref, pane_of, option=None, text=None, relayed_by=None, now=None,
+           version=None):
     """Check, record and deliver. Returns the status lines; raises ValueError when the prompt is no evidence."""
     import of_asks_answer
-    c = check(conn, asks, positions, ask_ref, prompt_ref, option=option, text=text, now=now)
+    c = check(conn, asks, positions, ask_ref, prompt_ref, option=option, text=text, now=now, version=version)
     if recorded(conn, c["prompt"]["event_id"], c["ids"]):
         return [f"recorded already: {len(c['ids'])} ask(s) answered from prompt {c['prompt']['event_id'][-8:]}"]
     eid = record(c, relayed_by)
@@ -360,6 +394,10 @@ def chat_view(conn, asks):
         a = g["first"]
         members = [by_id[i] for i in g["ask_ids"] if i in by_id]
         tag = f"[{a['event_id'][-8:]}] {', '.join(g['who'])}, waiting {of_asks.age(g['since'])}"
+        v, _, amended = _version_of(conn, a) if a.get("version") else (1, 1, None)
+        if amended:  # the conductor names the version it showed: of asks answer … --version N
+            tag += (f", amended: version {v} ({', '.join(amended.get('changed') or [])} changed at "
+                    f"{str(amended.get('at') or '')[11:16]}Z; answer with --version {v})")
         # the whole group, as check() reads it: one held ask keeps the card at the machine (finding 9)
         how = "waiting" if any(in_chat(m) == "waiting" for m in members) else in_chat(a)
         if how == "answer":
@@ -379,7 +417,7 @@ def chat_view(conn, asks):
     out = []
     if cards:
         out += ["Cards to answer here (the conductor records an answer: of asks answer <id> --option N | "
-                "--text \"<the person's words>\" --prompt <event id>):"] + cards
+                "--text \"<the person's words>\" --prompt <event id> [--version N, as an amended card names it]):"] + cards
     if steps:
         out += ["Tasks the person can do from a phone or a browser (when done, they say so; the asker checks):"] + steps
     if waiting:

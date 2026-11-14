@@ -252,5 +252,16 @@
  "A message to an idle agent has waited over an hour to be typed in, so agents may be waiting on each other without knowing it.": "Сообщение свободному агенту ждёт больше часа и до сих пор не впечатано, поэтому агенты могут ждать друг друга, не зная об этом.",
  "Your questions screen reads this view, so new questions may show late and answered ones may still show.": "Экран вопросов читает это представление, поэтому новые вопросы могут появляться с опозданием, а отвеченные ещё висеть.",
  "Part of what the agents do is recorded late or not at all, so their questions and states may reach you late.": "Часть того, что делают агенты, записывается с опозданием или не записывается вовсе, поэтому их вопросы и состояния могут доходить до тебя с опозданием.",
- "The newest commit in this machine's working copy fails OF's smoke check, so agents' hooks and `of` commands may fail until it is fixed or rolled back.": "Последний коммит в рабочей копии на этой машине не проходит дымовую проверку OF, поэтому хуки агентов и команды `of` могут падать, пока его не исправят или не откатят."
+ "The newest commit in this machine's working copy fails OF's smoke check, so agents' hooks and `of` commands may fail until it is fixed or rolled back.": "Последний коммит в рабочей копии на этой машине не проходит дымовую проверку OF, поэтому хуки агентов и команды `of` могут падать, пока его не исправят или не откатят.",
+ "Amended (version {v}, at {at}): {what}": "Изменён (версия {v}, в {at}): {what}",
+ "{who} changed this card's options after you saw it: look at the new version": "{who}: варианты карточки изменены уже после показа, посмотри новую версию",
+ "; your text waits in r": "; твой текст ждёт в r",
+ "the asker": "спрашивающий",
+ "the question": "вопрос",
+ "the options": "варианты",
+ "the yes option": "вариант «да»",
+ "the tags": "теги",
+ "the due time": "срок",
+ "blocking": "блокирующий",
+ "the steps": "шаги"
 }

@@ -13,7 +13,7 @@ stays on the machine where it happened: only that machine acts on its panes (§4
 EVENTS = frozenset({
     # asks to the founder or a unit owner, and their life
     "of.agent_question", "of.agent_question_judged", "of.agent_question_answered", "of.ask_escalated",
-    "of.ask_withdrawn", "of.escalation_due", "of.question_labelled",
+    "of.ask_withdrawn", "of.ask_amended", "of.escalation_due", "of.question_labelled",
     # declared states and stalls
     "of.state_declared", "of.stall_detected", "of.nudge_sent",
     # who holds what, and mandates

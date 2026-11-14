@@ -40,7 +40,8 @@ LATE_AFTER_S = 600         # a later delivery says when it was answered
 
 
 def ask_details(conn, ask_id):
-    """(payload of the ask event, session id, position, ts)."""
+    """(payload of the ask event, session id, position, ts). A declared ask's payload is its newest version (of ask
+    --amend: of_asks.at_version), with `version`, `choice_version` and `amended`."""
     row = conn.execute("SELECT payload, session_id, position, ts FROM event WHERE event_id = ?", (ask_id,)).fetchone()
     if not row:
         return {}, None, None, None
@@ -48,6 +49,9 @@ def ask_details(conn, ask_id):
         payload = json.loads(row[0]) if row[0] else {}
     except ValueError:
         payload = {}
+    if isinstance(payload, dict) and payload.get("detected_by") == "declared":
+        import of_asks
+        payload = of_asks.at_version(conn, ask_id, payload, row[3], row[2])
     return payload, row[1], row[2], row[3]
 
 
@@ -202,6 +206,10 @@ def card(conn, item, positions):
                       "turns": doing.get("recent_turns") or []},
             "org": p.get("_org"), "since": item.get("since"), "who": item.get("who") or [], "context": ctx,
             "links": doing.get("links") or links(q, ctx), "session": session, "ids": item.get("ids") or [], "kind": item.get("kind"),
+            # the version shown (of ask --amend): an answer carries it, and is refused when a later one changed the
+            # options or the yes (of_asks.stale_choice)
+            "version": payload.get("version") or 1, "choice_version": payload.get("choice_version") or 1,
+            "amended": payload.get("amended"),
             "answerable": bool(aid) and item.get("kind") not in ("permission", "registry") and
             (not kind.startswith("blocked:") or bool(opts)),
             "blocked": {"pane": payload.get("pane"), "fingerprint": payload.get("fingerprint"),
@@ -230,10 +238,14 @@ def answer_mark(ask_id):
     return f"Answer from the founder to your question {ask_id[-8:]}"
 
 
-def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None):
+def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amended=None):
     """A question `of ask` routed to a delegated unit's owner, as typed into the owner's pane. `escalated`: the
-    escalate_when rule that already sent it to the founder; the owner then rewrites it instead of filing it again."""
-    return (f"Question from {asker} (unit {unit}, delegated to you; ask {ask_id[-8:]}"
+    escalate_when rule that already sent it to the founder; the owner then rewrites it instead of filing it again.
+    `amended`: (version, [fields]) for a new version of a question it has (of ask --amend)."""
+    # the frame starts as every routed question does: the projection (of_asks.TOOL_FRAME), the relay and the paste
+    # source know a tool's text by it, never as the person's words
+    note = f"; amended to version {amended[0]} ({', '.join(amended[1])} changed)" if amended else ""
+    return (f"Question from {asker} (unit {unit}, delegated to you; ask {ask_id[-8:]}{note}"
             f"{'; escalated to the founder' if escalated else ''}{', blocking' if blocking else ''}): {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")
             + (escalated_note(asker, ask_id, escalated) if escalated else
@@ -301,12 +313,21 @@ def escalated_mark(ask_id):
     return f"ask {ask_id[-8:]}; escalated to the founder"
 
 
-def record(ask_ids, answer, position=None, session=None):
+def record(ask_ids, answer, position=None, session=None, version=None):
     import of_events
     import of_hook
     return of_events.emit("agent_question_answered", {
         "ask_id": ask_ids[0], "ask_ids": list(ask_ids), "answer": of_hook.mask(answer), "via": "asks-ui",
-        "by": "owner"}, position=position, session=session)
+        "by": "owner", **({"version": version} if version else {})}, position=position, session=session)
+
+
+AMENDED = "amended"  # the start of the status a refused answer gets: the card shows the new version
+
+
+def amended_refusal(c, shown):
+    """The status line for an answer refused because the ask changed its options or yes after the card was shown."""
+    return (f"{AMENDED}: {c.get('position') or 'the asker'} changed this card's options after you saw it (version "
+            f"{shown or 1}, now {c.get('version') or 1}): look at the new version and answer again")
 
 
 SAME_ANSWER_S = 600  # the same answer to the same asks within this is one answer
@@ -358,7 +379,8 @@ def save_draft(item, text):
     path = os.path.join(drafts_dir(), f"{aid}.json")
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         json.dump({"ask_id": aid, "ask_ids": item.get("ids") or [], "who": item.get("who") or [], "text": text,
-                   "saved_at": time.time(), "item": {k: item.get(k) for k in ("who", "text", "since", "ids", "kind")}},
+                   "saved_at": time.time(), "item": {k: item.get(k) for k in ("who", "text", "since", "ids", "kind",
+                                                                              "version", "written")}},
                   fh, ensure_ascii=False)
     return path
 
@@ -468,11 +490,15 @@ def _answer(conn, item, text, positions, pane_of):
         return False, "cannot answer this item here"
     if c.get("blocked"):
         return answer_blocked(c, text)
+    import of_asks
+    shown = item.get("version")  # the version the card showed when the answer was given (None: the first)
+    if of_asks.stale_choice(shown, c.get("choice_version")):
+        return False, amended_refusal(c, shown)
     lock = _lock()  # the check and the record together: the popup's thread and the outbox sender race (see below)
     try:
         again = recorded_already(conn, c["ids"], text)
         if not again:
-            record(c["ids"], text, c["position"], c["session"])
+            record(c["ids"], text, c["position"], c["session"], version=shown or c.get("version"))
     finally:
         lock.close()
     drop_draft(item)
@@ -608,6 +634,7 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         if not asker or to == asker or (only and to != only) or inbox_only(p) or \
                 delivered(conn, to, [routed_mark(eid)], ts):
             continue
+        p = of_asks.at_version(conn, eid, p, ts, asker)  # typed late: its newest version (of ask --amend)
         text = routed_frame(asker, units.get(asker), eid, full_question(p, ""), options(p), bool(p.get("blocking")))
         out.append({"key": f"routed:{eid}:{to}", "position": to, "marks": [routed_mark(eid)], "since": ts,
                     "text": text + _late(ts, now, f"{asker} asked"), "sender": asker, "channel": None})
