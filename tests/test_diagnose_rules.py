@@ -679,15 +679,18 @@ class LoopRulesTest(unittest.TestCase):
         before, _ = self.found("loop-objective-drift", on_target + spread)
         self.assertEqual([i["issue_id"] for i in before], [got[0]["issue_id"]])
         self.assertEqual(before[0]["part"], "unpriced")
-        # (2) a change of objective with its metric and the owner's yes has its basis; without the yes it fires at once,
-        # and money in place of the yes does not change the owner's measure
+        # (2) on the owner's measure no change of objective is the loop's to record (PR 168 review: the structure keeper
+        # rewrites the target in the registry, and of loop refuses one): it fires at once, whether it names a yes, money or
+        # neither, and the summary says where the measure changes
         yes = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", metric="trigger_coverage", decided="01a1d980-1111")]
-        self.assertEqual(self.found("loop-objective-drift", on_target + yes, self.doc(target=self.DECIDED))[0], [])
-        for extra in ({"metric": "trigger_coverage"}, {"metric": "trigger_coverage", "to_money": "USD per trigger"}):
+        for extra in ({"metric": "trigger_coverage", "decided": "01a1d980-1111"}, {"metric": "trigger_coverage"},
+                      {"metric": "trigger_coverage", "to_money": "USD per trigger"}):
             no = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", **extra)]
             got, _ = self.found("loop-objective-drift", on_target + no, self.doc(target=self.DECIDED))
-            self.assertEqual([(i["part"], i["evidence"]["change_objective_without_yes"]) for i in got], [("untied", 1)])
-            self.assertIn("a change of objective to trigger_coverage has no yes from the owner", got[0]["summary"])
+            self.assertEqual([(i["part"], i["evidence"]["change_objective_on_owners_measure"]) for i in got], [("untied", 1)])
+            self.assertIn("a change of objective to trigger_coverage was recorded on the owner's measure, which changes only "
+                          "in the registry: tie the metric to the target, or get the owner's yes on a new measure", got[0]["summary"])
+            self.assertIn("the structure keeper rewrites the target and its decided in the registry", " ".join(got[0]["remedies"]))
         # (4) the context part is unchanged on the owner's measure, and wins the part
         seg = self.doc(target=dict(self.DECIDED, segment=self.SEGMENT))
         hyp = [self.hyp(1, "2026-11-04T10:00Z", "h-net", predict="a faster RPC path cuts the network after the send by 20 ms")]
@@ -720,19 +723,14 @@ class LoopRulesTest(unittest.TestCase):
                          {"decided_unresolved": "01a1d999-0000", "decided_unresolved_why": "not_found"})
         self.assertNotIn("decided", got[0]["evidence"])
         self.assertIn("price it in money before more work on it (the target's decided 01a1d999-0000 does not count as the "
-                      "owner's yes: the log holds no answered ask of the owner or prompt a person typed with that id)",
-                      got[0]["summary"])
+                      "owner's yes: the log holds no person's yes with that id", got[0]["summary"])
         # a log that cannot be read is said so
         unread, _ = self.found("loop-objective-drift", on_target + spread, typed, resolve=lambda d: of_loops.UNREAD)
         self.assertEqual(unread[0]["evidence"]["decided_unresolved_why"], "unread")
         self.assertIn("the event log could not be read to look it up", unread[0]["summary"])
-        # the same target resolving is quiet; a resolved target and a change of objective whose yes does not resolve
+        # the same target resolving is quiet
         self.assertEqual(self.found("loop-objective-drift", on_target + spread,
                                     self.doc(target=self.DECIDED, measures=tied))[0], [])
-        lost = [self.decide(1, "2026-11-05T09:00Z", "h1", "change_objective", metric="trigger_coverage", decided="01a1d999-1111")]
-        got, _ = self.found("loop-objective-drift", on_target + lost, self.doc(target=self.DECIDED))
-        self.assertEqual([(i["part"], i["evidence"]["change_objective_unresolved"]) for i in got], [("untied", ["01a1d999-1111"])])
-        self.assertIn("a change of objective to trigger_coverage has no yes from the owner", got[0]["summary"])
 
     SEGMENT = {"start": "the block is seen at our own node", "end": "the bundle leaves our sender",
                "context": ["the network after the send", {"name": "rival_ordering", "what": "a third party's ordering rule"}]}
