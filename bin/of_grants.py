@@ -731,11 +731,11 @@ def missing_issued(grants_by_org, events, now_iso=None):
             continue
         if name == "of.grant_issued":
             ends = (payload or {}).get("expires")
-            if now_iso and ends and str(ends) <= now_iso:
-                issued.pop((org, gid), None)  # ended at its own expiry: a normal end
-                continue
-            issued[(org, gid)] = True
+            # ended at its own expiry only when every issue of that id has: an event is unsigned, so a second one with a
+            # past expiry never cancels a standing grant's (of_secrets-review on organic-framework PR 150)
+            ended_now = bool(now_iso and ends and str(ends) <= now_iso)
+            issued[(org, gid)] = issued.get((org, gid), False) or not ended_now
         elif name == "of.grant_revoked":
             revoked.add((org, gid))
     have = {(org, g.get("id")) for org, gs in grants_by_org.items() for g in gs or []}
-    return sorted(k for k in issued if k not in revoked and k not in have)
+    return sorted(k for k, live in issued.items() if live and k not in revoked and k not in have)

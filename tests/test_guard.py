@@ -228,6 +228,14 @@ class GuardBashTest(unittest.TestCase):
             self.assertTrue(deny(f"kubectl get --raw '{path}'"), path)
         self.assertIsNone(deny("kubectl get --raw /api/v1/proxy/namespaces/ci/pods/p:9090/metrics"))
         self.assertIsNone(deny("kubectl get --raw /api/v1"))
+        # a path set earlier on the line is read as its value (of_review on PR 151); an unknown one stays unparsed
+        self.assertTrue(deny('P=/api/v1/namespaces/ci/secrets/k; kubectl get --raw "$P"'))
+        self.assertTrue(deny('export P=/api/v1/namespaces/ci/secrets; kubectl get --raw "${P}"'))
+        self.assertIsNone(deny('P=/api/v1/namespaces/ci/pods/p/log; kubectl get --raw "$P"'))
+        self.assertIsNone(deny('kubectl get --raw "$P"'))
+        # a service account's token subresource mints and prints a bearer token (of_secrets-review on PR 151)
+        self.assertTrue(deny("kubectl create --raw /api/v1/namespaces/ci/serviceaccounts/sa/token -f req.json"))
+        self.assertIsNone(deny("kubectl get --raw /api/v1/namespaces/ci/serviceaccounts/sa"))
         self.assertTrue(deny("kubectl get cm,secret -o yaml"))
         # of_architect, 13:47Z leak: for a Secret, every -o except name/default is denied; jsonpath/go-template
         # fall back to the whole object on error, so they are denied even when key-looking

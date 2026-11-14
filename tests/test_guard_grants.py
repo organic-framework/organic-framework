@@ -106,6 +106,9 @@ class ShapeTest(unittest.TestCase):
         now = "2026-11-14T00:30:00Z"
         self.assertEqual(of_grants.missing_issued({"t": []}, events, now), [("t", "g-2"), ("t", "g-3")])
         self.assertEqual(of_grants.missing_issued({"t": []}, events), [("t", "g-1"), ("t", "g-2"), ("t", "g-3")])
+        # an event is unsigned: a second issue of a standing grant's id with a past expiry never cancels it
+        forged = events + [("of.grant_issued", "t", {"grant_id": "g-3", "expires": "2026-11-01T00:00:00Z"})]
+        self.assertEqual(of_grants.missing_issued({"t": []}, forged, now), [("t", "g-2"), ("t", "g-3")])
         self.assertTrue(of_grants.ended("expired"))
         for why in ("revoked", "bad or missing signature", "issuer's grant g-9: expired", "counter exhausted"):
             self.assertFalse(of_grants.ended(why), why)
