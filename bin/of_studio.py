@@ -653,6 +653,7 @@ class Data:
         self.repo = org["repo"]
         doc, rev = of_model.registry_at(org["repo"], self.now)
         loaded = rows is None   # rows given (tests, callers with their own rows) are the page's whole input
+        reader = conn   # a caller's own store, else the asks view is read read-only (of_asks.reader)
         since = of_model.iso(self.a - 2 * DAY)  # two more days, for asks opened before the window
         if rows is None and source is not None:
             # profile 2: of-server's reader over the organization's database (rows are that organization's already)
@@ -680,6 +681,10 @@ class Data:
             have = {r.get("event_id") for r in self.rows}
             self.rows += [r for r in self.loop_rows() if r.get("event_id") not in have]
         full = of_model.build(doc, self.rows, at=self.now, org=self.org, rev=rev, window_h=days * 24)
+        # asks from the listener's asks view, never projected from the page's rows (organic-framework-build
+        # reports/of-log-readers-2026-11-14.md 3.2); of-server's reader and given rows keep projecting theirs
+        self.asks_view = of_measures.view_asks(reader) if loaded and source is None else None
+        of_measures.attach_asks_view(full, self.rows, self.asks_view)
         self.compute(full, unit)
 
     def rows_between(self, a, b):
@@ -797,8 +802,9 @@ class Data:
         return cache[days]
 
     def ask_ids(self):
-        """Event ids of every ask the store holds (any organization: the system architect's ask may be filed from
-        another one), to check the ask ids under `confirmed:`; None when not checkable (rows given, no store)."""
+        """Event ids of every ask (any organization: the system architect's ask may be filed from another one), to
+        check the ask ids under `confirmed:`: the listener's asks view holds them all, so the log is not read; None when
+        not checkable (rows given, no view on this host)."""
         if "_ask_ids" in self.__dict__:
             return self._ask_ids
         ids = None
@@ -807,13 +813,8 @@ class Data:
             try:
                 if src is not None:
                     ids = {r["event_id"] for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=of_model.ASK_KINDS)}
-                else:
-                    import of_store
-                    conn = of_store.connect()
-                    try:
-                        ids = {x for (x,) in conn.execute("SELECT event_id FROM event WHERE name IN (?, ?)", of_model.ASK_KINDS)}
-                    finally:
-                        conn.close()
+                elif getattr(self, "asks_view", None):
+                    ids = {a["event_id"] for a in self.asks_view["asks"]}
             except Exception:  # noqa: BLE001 — no store: not checked
                 ids = None
         self._ask_ids = ids
@@ -945,8 +946,17 @@ def page(d, view, body, css_href="/studio/static/studio.css", inline_css=None):
 <body><header><div class="brand">Org Studio</div><nav class="orgs">{orgs_}</nav></header>
 <nav class="tabs">{nav}</nav>
 <main>{body}</main>
-<footer>Model at {e(stamp)}<!--of:age--> · registry {e(d.model['registry_rev'])} · window {e(of_model.iso(d.a)[:10])} – {e(of_model.iso(d.b)[:10])} · {len(d.rows)} events</footer>
+<footer>Model at {e(stamp)}<!--of:age--> · registry {e(d.model['registry_rev'])} · window {e(of_model.iso(d.a)[:10])} – {e(of_model.iso(d.b)[:10])} · {len(d.rows)} events{e(asks_note(d))}</footer>
 </body></html>"""
+
+
+def asks_note(d):
+    """Where the page's asks come from: the listener's asks view, with its lag when it is late; nothing when they were
+    projected from the page's own rows."""
+    v = getattr(d, "asks_view", None)
+    if not v:
+        return ""
+    return " · asks from the listener's view" + (f", {_age(v['age_s'] or 0)} behind" if v.get("late") else "")
 
 
 def empty_note(d):

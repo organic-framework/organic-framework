@@ -1127,9 +1127,12 @@ def load_events(conn, since=None, until=None, names=None):
         out.append({"event_id": e, "ts": ts, "name": n, "session_id": s, "position": pos, "org": org,
                     "cwd": cwd, "source": src, "harness": harness, "payload": payload})
     if not names or "of.human_prompt" in names:
-        # a correction may come days after its prompt: every one in the store, whatever window the caller loads
+        # a correction may come days after its prompt, never before it (`of db prompt-origins` writes it from the
+        # transcript later; all 261 in the store on 2026-11-14 follow theirs): every one since the window's start,
+        # whatever end the caller loads
         have = {r["event_id"] for r in out if r["name"] == "of.prompt_origin"}
-        for e, pl in conn.execute("SELECT event_id, payload FROM event WHERE name = 'of.prompt_origin' ORDER BY ts, rowid"):
+        for e, pl in conn.execute("SELECT event_id, payload FROM event WHERE name = 'of.prompt_origin' AND ts >= ? "
+                                  "ORDER BY ts, rowid", (since or "",)):
             if e not in have:
                 try:
                     out.append({"event_id": e, "name": "of.prompt_origin", "payload": json.loads(pl) if pl else {}})

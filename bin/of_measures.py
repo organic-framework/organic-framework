@@ -14,6 +14,7 @@ this module never re-runs a classifier.
 
 import collections
 import datetime
+import json
 import re
 import time
 
@@ -142,12 +143,133 @@ _ROUTED = collections.OrderedDict()   # the last few projections: one page asks 
 ROUTED_KEEP = 4
 
 
+def view_asks(conn=None):
+    """Every ask of the listener's asks view, carried on with the log's tail (of_asks.current_asks, the read of
+    organic-framework-build reports/of-log-readers-2026-11-14.md 3.2), each with its organization (`org`) and, on an
+    escalated copy, the asker it names (`from_position`): {"asks", "cursor", "age_s", "late"}. None when this host
+    keeps no such view (no listener, a test's store, of-server's reader): its callers then project their rows.
+    A late view is returned as it is, with late set: a reader shows its age, it never projects the log instead (3.3)."""
+    own = conn is None
+    conn = conn or of_asks.reader()
+    if conn is None:
+        return None
+    try:
+        r = of_asks.current_asks(conn)
+        if r["age_s"] is None and not r["asks"]:
+            return None
+        try:
+            orgs = dict(conn.execute("SELECT event_id, org FROM view_asks"))
+        except Exception:  # noqa: BLE001 - a view older than its org column
+            orgs = {}
+        # asks the tail folded are not in the view's table yet; escalated copies name their asker only in the payload
+        want = [a["event_id"] for a in r["asks"] if a["event_id"] not in orgs or a.get("source") == "escalated"]
+        found = {}
+        for i in range(0, len(want), 500):
+            part = want[i:i + 500]
+            for e, org, pl in conn.execute("SELECT event_id, org, payload FROM event WHERE event_id IN "
+                                           f"({','.join('?' * len(part))})", part):
+                found[e] = (org, pl)
+        asks = []
+        for a in r["asks"]:
+            a = dict(a, org=orgs.get(a["event_id"], (found.get(a["event_id"]) or (None, None))[0]))
+            if a.get("source") == "escalated":
+                try:
+                    a["from_position"] = (json.loads((found.get(a["event_id"]) or (None, None))[1] or "{}")
+                                          .get("from_position"))
+                except ValueError:
+                    pass
+            asks.append(a)
+        return {"asks": asks, "cursor": r["cursor"], "age_s": r["age_s"], "late": r["late"]}
+    finally:
+        if own:
+            conn.close()
+
+
+def attach_asks_view(model, rows, view):
+    """Give the model its organization's asks from `view` (view_asks()), so asks_routed reads them instead of
+    projecting `rows`. An ask belongs to the model's organization by its own org; an untagged one (an event with no
+    org, placed by its cwd) when its event is among the organization's rows. No view: the model is left as it was."""
+    if view is None:
+        return model
+    org, ids = model.get("org"), None
+    mine = []
+    for a in view["asks"]:
+        if a.get("org") is None:
+            ids = {r.get("event_id") for r in rows} if ids is None else ids
+            if a["event_id"] not in ids:
+                continue
+        elif a["org"] != org:
+            continue
+        mine.append(a)
+    model["asks_view"] = dict(view, asks=mine)
+    return model
+
+
+_VIEW_ROUTED = collections.OrderedDict()
+
+
+def _view_routed(model, rows, effective):
+    """[(t0, t1, ask, recipient)] over the model's asks view, routed as _asks_routed routes a projection's: t0 the ask's
+    epoch, t1 its closing epoch or None. Kept per model, view and delegations, like asks_routed's projections."""
+    view = model["asks_view"]
+    positions = model["positions"]
+    key = (model.get("org"), model.get("at"), view.get("cursor"), len(view["asks"]),
+           hash(tuple(sorted((n, p.get("accountable"), p.get("accountable_before"), p.get("delegation_diff"), p.get("session"))
+                             for n, p in positions.items()))),
+           None if effective is None else tuple(sorted(effective.items(), key=str)))
+    hit = _VIEW_ROUTED.get(key)
+    if hit is not None:
+        _VIEW_ROUTED.move_to_end(key)
+        return hit
+    sessions = of_model.session_index(positions)
+    hit = []
+    for ask in view["asks"]:
+        t0 = epoch(ask.get("ts"))
+        if ask.get("state") == "not_a_question" or t0 is None:
+            continue   # the judge's no: never in the owner's queue, at any time
+        p = of_model.position_of(ask, positions, sessions)
+        ask = dict(ask, position=p)
+        if ask.get("source") == "escalated":
+            to = ask.get("to")
+            acc = of_model.HUMAN if to in of_asks.OWNER_ADDRESSES else to
+            ask.update(escalated_by=p, position=ask.get("from_position") or p)
+        else:
+            acc = of_model.accountable_at(positions[p], t0, effective) if p in positions else of_model.HUMAN
+        hit.append((t0, epoch(ask.get("closed_at")) if ask.get("closed_at") else None, ask, acc))
+    _VIEW_ROUTED[key] = hit
+    while len(_VIEW_ROUTED) > ROUTED_KEEP:
+        _VIEW_ROUTED.popitem(last=False)
+    return hit
+
+
+def rows_end(rows):
+    """The epoch of the latest row: the time `rows` reach, which callers cut at their window's end."""
+    last = max((r.get("ts") or "" for r in rows), default="")
+    return epoch(last) if last else None
+
+
 def asks_routed(model, rows, effective=None):
     """[(ask, recipient)]: every ask of bin/of_asks.py's lifecycle with whom it waits on: the position's accountable
     owner at the ask's time (a delegated unit's owner once its delegation took effect), an escalated copy whom it names,
     the human owner for a session without a position. Asks the judge called no question are left out.
-    The same model and rows give the same projection, kept for the next caller (2026-11-14: one user organization's page
-    projected it 16 times, 40 s of its 154); each caller gets its own copies of the ask dicts."""
+    With the listener's asks view on the model (attach_asks_view), the asks are the view's up to the time `rows` reach,
+    each as it stood then (closed later: open), and none is projected. Without it, the lifecycle is projected over
+    `rows`, and the same model and rows give the same projection, kept for the next caller (2026-11-14: one user
+    organization's page projected it 16 times, 40 s of its 154). Each caller gets its own copies of the ask dicts."""
+    if model.get("asks_view") is not None:
+        effective = of_model.delegation_effective(rows) if effective is None else effective
+        end = rows_end(rows)
+        if end is None:
+            return []
+        out = []
+        for t0, t1, ask, acc in _view_routed(model, rows, effective):
+            if t0 > end:
+                continue
+            k = dict(ask)
+            if t1 is not None and t1 > end:
+                k.update(state="open", closed_at=None, closed_by=None)
+            out.append((k, acc))
+        return out
     ids = rows_key(rows)
     if ids is None:   # rows without ids (hand-made): nothing to key on
         return _asks_routed(model, rows, effective)
@@ -242,7 +364,11 @@ _WINDOW_ASKS = collections.OrderedDict()
 
 def _window_asks(model, rows, a, b):
     """Every ask raised in [a, b) by the lifecycle over the window's rows alone (the owner's inbound concentration).
-    The same for every owner of one page: projected once and kept like asks_routed's."""
+    The same for every owner of one page: projected once and kept like asks_routed's. With the asks view on the model,
+    the view's asks raised in [a, b) instead."""
+    if model.get("asks_view") is not None:
+        a, b = epoch(a), epoch(b)
+        return [dict(k) for t0, _, k, _ in _view_routed(model, rows, of_model.delegation_effective(rows)) if a <= t0 < b]
     positions = model["positions"]
     sessions = of_model.session_index(positions)
     win = [r for r in rows if in_window(r, a, b)]
@@ -890,7 +1016,7 @@ def attention(model, rows, now, who=of_model.HUMAN, stall_after_s=STALL_AFTER_S)
                  and not (r["name"] == "of.agent_question"
                           and "declared" in ((r.get("payload") or {}).get("source"), (r.get("payload") or {}).get("detected_by")))]
     for k in asks_of(model, hook_rows, who):
-        if k["state"] == "open":
+        if k["state"] == "open" and "topic_key" not in k:   # topic_key: filed with `of ask` (step 1), from the asks view
             put(k.get("position") or "(unregistered)", "waiting_owner", who, k["ts"], k["kind"], k.get("text"), k["event_id"])
     # 4. stalls from `of pulse`: of.stall_detected, until the position shows life again (any later event of it
     #    other than pulse bookkeeping); of.nudge_sent counts the nudges since

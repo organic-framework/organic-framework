@@ -2084,6 +2084,134 @@ class EscalationsFromCacheTest(unittest.TestCase):
         self.assertIn("acme are missing", tell.call_args.args[1])
 
 
+class AsksViewTest(unittest.TestCase):
+    """Studio's asks come from the listener's asks view (of_asks.current_asks), never a projection of the page's rows
+    (organic-framework-build reports/of-log-readers-2026-11-14.md 3.2, the founder's goal of 2026-11-14)."""
+
+    def ask(self, i, ts, sid, state="open", closed_at=None, org="acme", **kw):
+        return dict({"event_id": f"q{i}", "ts": ts, "session_id": sid, "position": None, "kind": "question (heuristic)",
+                     "text": f"ask {i}?", "state": state, "closed_by": None, "closed_at": closed_at, "n_options": 0,
+                     "org": org}, **kw)
+
+    def view(self):
+        return {"cursor": 9, "age_s": 0.0, "late": False, "asks": [
+            self.ask(1, "2026-11-06T10:00:00.000Z", "s-op", "answered", "2026-11-06T12:00:00.000Z"),
+            self.ask(2, "2026-11-06T10:30:00.000Z", "s-k8s"),
+            self.ask(3, "2026-11-06T10:40:00.000Z", "s-op", "not_a_question", "2026-11-06T10:41:00.000Z"),
+            self.ask(4, "2026-11-06T10:50:00.000Z", None, position="colleague", source="escalated", to="founder",
+                     escalated_from="q2", from_position="k8s_keeper", topic_key="t4", kind="question (declared)"),
+            self.ask(5, "2026-11-06T10:55:00.000Z", "s-op", org="beta"),
+            self.ask(6, "2026-11-06T10:56:00.000Z", "s-op", org=None),
+            self.ask(7, "2026-11-06T10:57:00.000Z", "s-op", org=None),
+            self.ask(8, "2026-11-06T10:58:00.000Z", "s-op", topic_key="t8", source="declared", kind="question (declared)")]}
+
+    def rows(self, end):
+        return [ev(1, "2026-11-06T09:00:00.000Z", "of.turn_end", "s-op"), ev(2, end, "of.turn_end", "s-op"),
+                dict(ev(3, "2026-11-06T10:57:00.000Z", "of.agent_question", "s-op"), event_id="q7")]
+
+    def test_asks_are_the_views_as_they_stood_when_the_rows_end(self):
+        from unittest import mock
+        m = of_model.build(DOC, [], at="2026-11-06T13:00Z", org="acme")
+        rows = self.rows("2026-11-06T10:59:00.000Z")
+        M.attach_asks_view(m, rows, self.view())
+        self.assertEqual([a["event_id"] for a in m["asks_view"]["asks"]], ["q1", "q2", "q3", "q4", "q7", "q8"])
+        with mock.patch.object(M.of_asks, "project", side_effect=AssertionError("asks are not projected")):
+            founder = {k["event_id"]: k for k in M.asks_of(m, rows)}
+            self.assertEqual(sorted(founder), ["q1", "q4", "q7", "q8"])        # q3: the judge's no; q2: the colleague's
+            self.assertEqual((founder["q1"]["state"], founder["q1"]["closed_at"]), ("open", None))   # answered later
+            self.assertEqual(founder["q1"]["position"], "bot_operator")        # the holder session names it
+            self.assertEqual((founder["q4"]["position"], founder["q4"]["escalated_by"]), ("k8s_keeper", "colleague"))
+            self.assertEqual([k["event_id"] for k in M.asks_of(m, rows, "colleague")], ["q2"])
+            later = self.rows("2026-11-06T13:00:00.000Z")
+            self.assertEqual({k["event_id"]: k["state"] for k in M.asks_of(m, later)}["q1"], "answered")
+            early = [r for r in rows if r["ts"] < "2026-11-06T10:00:00"]
+            self.assertEqual(M.asks_of(m, early), [])                           # raised after the rows end
+            founder["q1"]["state"] = "changed"                                  # each caller gets its own copies
+            self.assertEqual({k["event_id"]: k["state"] for k in M.asks_of(m, rows)}["q1"], "open")
+            o = M.owner(m, rows, "2026-11-06T09:00Z", "2026-11-06T11:00Z")
+            self.assertEqual((o["arrivals"], o["open_at_end"]), (4, 4))
+            self.assertEqual(o["owner_share_of_human_asks"], 0.8)               # 4 of the 5 raised: q2 is the colleague's
+            att = {x["position"]: x for x in M.attention(m, rows, of_model.epoch("2026-11-06T11:00Z"))}
+            self.assertIn("bot_operator", att)
+            self.assertNotEqual(att["bot_operator"]["ask_id"], "q8")            # a declared ask is step 1's, from the rows
+
+    def test_no_view_projects_the_rows_as_before(self):
+        m = of_model.build(DOC, [], at="2026-11-06T13:00Z", org="acme")
+        self.assertIs(M.attach_asks_view(m, [], None), m)
+        self.assertNotIn("asks_view", m)
+        rows = [ev(1, "2026-11-06T10:00:00Z", "of.agent_question", "s-op", {"question": "Ship it?"}),
+                ev(2, "2026-11-06T10:01:00Z", "of.turn_end", "s-op")]
+        self.assertEqual([k["event_id"] for k in M.asks_of(m, rows)], ["e1"])
+
+    def test_view_asks_reads_the_view_and_names_orgs_and_askers(self):
+        import json, tempfile, of_store
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            conn.executescript("CREATE TABLE view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, ask TEXT);"
+                               "CREATE TABLE IF NOT EXISTS listener_meta (key TEXT PRIMARY KEY, value TEXT);")
+            put = lambda i, ts, name, org, pl: conn.execute(
+                "INSERT INTO event (event_id, ts, name, session_id, org, source, payload, record) VALUES (?,?,?,?,?,?,?,?)",
+                (i, ts, name, "s-1", org, "of", json.dumps(pl), "{}"))
+            put("q1", "2026-11-06T10:00:00.000Z", "of.agent_question", "acme", {"source": "escalated", "from_position": "k8s_keeper"})
+            a1 = self.ask(1, "2026-11-06T10:00:00.000Z", "s-1", source="escalated")
+            a1.pop("org")
+            conn.execute("INSERT INTO view_asks VALUES (?,?,?,?)", ("q1", a1["ts"], "acme", json.dumps(a1)))
+            rowid = conn.execute("SELECT max(rowid) FROM event").fetchone()[0]
+            conn.execute("INSERT INTO listener_meta VALUES (?, ?)", (M.of_asks.FOLD_KEY, json.dumps({"rowid": rowid})))
+            conn.commit()
+            v = M.view_asks(conn)
+            self.assertEqual((v["late"], v["cursor"]), (False, rowid))
+            self.assertEqual([(a["event_id"], a["org"], a["from_position"]) for a in v["asks"]], [("q1", "acme", "k8s_keeper")])
+            # an ask filed after the view's mark is folded from the log's tail, with the org of its event
+            put("q2", "2026-11-06T10:05:00.000Z", "of.agent_question", "beta",
+                {"source": "declared", "detected_by": "declared", "question": "Ship it?", "topic_key": "t"})
+            conn.commit()
+            v = M.view_asks(conn)
+            self.assertEqual({a["event_id"]: a["org"] for a in v["asks"]}, {"q1": "acme", "q2": "beta"})
+            conn.execute("DELETE FROM listener_meta")
+            conn.execute("DELETE FROM view_asks")
+            conn.commit()
+            self.assertIsNone(M.view_asks(conn))                                  # no view: callers project
+            conn.close()
+
+    def test_the_ask_ids_under_confirmed_come_from_the_view(self):
+        import types
+        import of_studio_cli
+        from unittest import mock
+        d = types.SimpleNamespace(_loaded=True, _source=None, asks_view=self.view())
+        self.assertEqual(of_studio.Data.ask_ids(d), {f"q{i}" for i in range(1, 9)})
+        self.assertIsNone(of_studio.Data.ask_ids(types.SimpleNamespace(_loaded=True, _source=None, asks_view=None)))
+        with mock.patch.object(M, "view_asks", return_value=self.view()):
+            self.assertIn("q4", of_studio_cli._ask_ids())
+        with mock.patch.object(M, "view_asks", return_value=None):
+            self.assertIsNone(of_studio_cli._ask_ids())
+        self.assertIn(" · asks from the listener's view, 12 min behind",
+                      of_studio.asks_note(types.SimpleNamespace(asks_view={"late": True, "age_s": 720})))
+        self.assertEqual(of_studio.asks_note(types.SimpleNamespace(asks_view=None)), "")
+
+    def test_an_escalation_is_recorded_once_by_its_fixed_id(self):
+        import json, tempfile, of_store
+        import of_studio_cli
+        from unittest import mock
+        x = {"delegation": "del-1", "condition": "issue.severity >= high", "evidence": ["i-1"]}
+        old = dict(x, evidence=["i-0"])
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "of.db")}):
+            conn = of_store.connect()
+            put = lambda i, ts, pl: conn.execute(
+                "INSERT INTO event (event_id, ts, name, org, source, payload, record) VALUES (?,?,?,?,?,?,?)",
+                (i, ts, "of.escalation_due", "acme", "of", json.dumps(pl), "{}"))
+            now = of_model.epoch("2026-11-14T12:00Z")
+            put(of_studio_cli.escalation_id("acme", x), "2026-11-14T11:00:00.000Z", x)   # by its fixed id
+            put("legacy-1", "2026-11-13T21:10:00.000Z", old)                         # an own id, before the fix
+            put("legacy-2", "2026-08-01T00:00:00.000Z", dict(x, evidence=["i-9"]))    # past the window
+            conn.commit()
+            conn.close()
+            done = of_studio_cli._escalations_done("acme", [x, old, dict(x, evidence=["i-9"])], now)
+        self.assertEqual(done, {("del-1", "issue.severity >= high", ("i-1",)), ("del-1", "issue.severity >= high", ("i-0",))})
+        self.assertEqual(of_studio_cli.escalation_id("acme", x), of_studio_cli.escalation_id("acme", dict(x)))
+        self.assertNotEqual(of_studio_cli.escalation_id("acme", x), of_studio_cli.escalation_id("beta", x))
+
+
 class StructureInputTest(unittest.TestCase):
     """Who works with whom over a window, for a structure review (of_conductor msg 01a1d096-4ca3, 2026-11-12): messages
     once each, hand-overs and asks as pairs, rolled up to units with the line to one's owner apart; works that couple
