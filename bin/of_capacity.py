@@ -1538,11 +1538,11 @@ def check_bypass_after_start(pane, log=print, wait=20, step=2, herdr=None):
         return None
 
 
-MOVE_BACKUP_KEEP_H = 24
+MOVE_BACKUP_KEEP_H = 6  # a move gone wrong shows in minutes; 24 h held 2.2 GB on 2026-11-14 at 17 GiB free
 
 
 def prune_move_backups(live_names, now=None, root=None, keep_h=MOVE_BACKUP_KEEP_H, log=print, dry_run=False):
-    """Delete the `backup/` of a move work dir once the move is a day old and its position runs in a live session.
+    """Delete the `backup/` of a move work dir once the move is MOVE_BACKUP_KEEP_H old and its position runs live.
     The backup holds the target's older copy of the session's files, saved before the copy; it is only needed to
     undo a move gone wrong. note.md, conflicts/ and registry.diff stay (kilobytes). of_platform, 2026-11-09: 193 dirs
     held 7.2 GB in two days, storefront_operator's three moves 0.8 GB each, with the Mac's disk at 60 GiB free.
