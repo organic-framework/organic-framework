@@ -9,14 +9,14 @@
 
 ## 1. Summary
 
-Much of a company's work is a **development loop**: change something, evaluate it, keep or drop it, repeat, until it earns money. OF already follows works, but not their loops, so a loop can run for days without anyone seeing:
+Much of a company's work is a **development loop**: change something, evaluate it, keep or drop it, repeat, until it earns money, or until it moves a measure its owner chose (§4.2, 2026-11-14). OF already follows works, but not their loops, so a loop can run for days without anyone seeing:
 - where it stands;
 - what it costs;
-- whether it still aims at money.
+- whether it still aims at money, or at the measure its owner chose.
 
 This RFC makes the loop a first-class part of a work. It carries:
-- a money target;
-- a chain of measures that maps each evaluation to money;
+- a target priced in money, or a measure its owner decided, with money reported beside it (§4.2);
+- a chain of measures that maps each evaluation to that target;
 - an **evaluation ladder** whose rungs have a cost, a latency and an acceptance rule;
 - a **hypothesis register** that chooses the next experiment by information per cost;
 - a **decision log**.
@@ -42,7 +42,7 @@ From its structure keeper's analysis (a private report; work `acme-search-ladder
 | Product development flow (Reinertsen) | Cost of delay; small batches and fast feedback; WIP limits; choose the next experiment by the value of information per unit of cost |
 | Theory of constraints (Goldratt), applied to the loop itself | Find the loop's bottleneck (usually evaluation), exploit it with cheap rungs first, subordinate the schedule to it, then elevate it |
 | Double-loop learning (Argyris) | Single loops tune inside the frame; a plateau calls for questioning the frame, with an outside review |
-| Goodhart's law | Each rung's metric must be money or a proxy proven against money; otherwise the loop optimizes the proxy |
+| Goodhart's law | Each rung's metric must be money or a proxy proven against money; otherwise the loop optimizes the proxy. The warning is against a proxy an agent chose: when the owner decides the measure, the owner carries that risk, and money is reported beside it (§4.2) |
 
 ## 4. The object: `loop:` on a work
 
@@ -94,8 +94,12 @@ works:
   ```
 
   It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events (cbx runs), `of loop` derives them instead of asking the doer.
-- **A decision is one `of.loop_decision` event:** keep, drop, step up a rung, step back (reframe), or change the objective. A change of objective must name its money metric (§6).
-- **The next experiment is chosen by value of information per cost.** The register shows the open hypotheses in that order, so the doer and the owner see why the next one is next.
+- **A decision is one `of.loop_decision` event:** keep, drop, step up a rung, step back (reframe), or change the objective. A change of objective must name its money metric (§6), or, on a target the owner decided, the owner's yes on the new measure (§4.2).
+- **The next experiment is chosen by value of information per cost.** The register shows the open hypotheses in that order, so the doer and the owner see why the next one is next. The cost is the rung's runner-hours, the evaluation's time; it is never money or tokens.
+
+### 4.2 The owner's measure (2026-11-14)
+
+The person who owns a work's goal may decide that the loop's target is itself what its changes are for (`target.decided`, the id of their yes; docs/registry.md, Works, "The owner's measure"). Then `money` is a reading, not a requirement; each measure chains to the target (`to_target`) or to money; `--voi` is optional and judged against the target; a change of objective names the owner's new yes instead of a chain to money; and no position asks the owner to price or prove that measure in money. The plateau question and every gate on an act (§6, decision rights) stay as they are. This came from a user organization whose owner chose a speed objective and accepted that the spend on it may bring no money gain.
 
 ## 5. Loop metrics: derived, never reported
 
@@ -106,7 +110,7 @@ As for works (`docs/works.md` §3), no agent writes "60%". From the events:
 | Cycle time per rung | From a hypothesis entering a rung to its result |
 | Cycles a day | Runs per day, per rung |
 | Hit rate | The share of hypotheses kept |
-| Gain per cycle | Change in the target per kept cycle, in the target's units and in money |
+| Gain per cycle | Change in the target per kept cycle, in the target's units, and in money when the target is priced |
 | Cost per cycle | Tokens (`of_capacity`, by session) and runner hours |
 | Wait share | Time waiting for a rung (a runner slot, a review, a window) over elapsed time |
 | Time to first money | From the loop's start to its first production rung |
@@ -124,7 +128,7 @@ Each rule is a diagnose anti-pattern with an owner and a test, `of_field-analyst
 | **Plateau** | 3 cycles in a row gain under 1% of the target | A step back and an outside review. The owner is asked for a reframe review by a second position (double loop) |
 | **WIP limit** | More than `wip_arms` arms in flight | "Finish or park one arm" |
 | **Babysitting model** | Runner commands and monitors run on a model above `babysit_model` | To `of_capacity` and the doer: route babysitting to the cheaper model |
-| **Objective drift** | A run's metric is not the target and has no `to_money` in `measures`; or a run's metric or a hypothesis's predicted effect is a context part of the target's segment (2026-11-12) | "Price a ms in revenue before more speed work"; for a context part, "The live market on the day is outside the segment: report it, and act inside" |
+| **Objective drift** | A run's metric is not the target and has no `to_money` in `measures` (on a target the owner decided, no `to_target` either; §4.2); or a run's metric or a hypothesis's predicted effect is a context part of the target's segment (2026-11-12) | "Price a ms in revenue before more speed work"; on a target the owner decided, "Tie this metric to the target, or get the owner's yes on a new measure", never a price; for a context part, "The live market on the day is outside the segment: report it, and act inside" |
 | **Evaluation bottleneck** | Wait share over 40% on one rung | To the owner: elevate the rung (more runners, a cheaper rung) |
 
 Decision rights follow acc-v0:
@@ -136,7 +140,7 @@ Decision rights follow acc-v0:
 ## 7. Studio: the loop card
 
 One card per work with a loop. Its reader is the work's owner (for the search work: `acme_throughput-owner`) and the founder. It shows:
-- **The target, the stake and the money metric.** A red mark appears when the current runs measure something else.
+- **The target, the stake and the money metric**, or, on a target the owner decided, the id of that yes, with money as a reading (§4.2). A red mark appears when the current runs measure something else.
 - **The ladder:** each rung with its cycle time, last result and wait share. The highest rung reached is highlighted, with the days since the last production checkpoint.
 - **The register:** open hypotheses by value of information per cost, and the last kept and dropped ones.
 - **The curve of the target per cycle,** with the plateau rule's window marked.
