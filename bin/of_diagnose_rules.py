@@ -827,9 +827,10 @@ def rule_missing_verifier(model, rows, a, b, cat, spec, parts=("results", "answe
     are its answers, against the owner's own prompts in its sessions; the denominator is of_architect's decision (relay
     msg 01a1daab-63fd): prompts are recorded where they happen, while "answers that relay a conclusion" would need a
     classifier's label, itself a proxy. No review of an answer is recorded, so that part cannot read review evidence and
-    says so. The review count (`reviews` on the work record) counts submitted reviews only; a verdict posted as a
-    comment, as this framework's own pull requests get, is not read. So a repository none of whose merged PRs in the
-    window has a submitted review says nothing either way (PR 176 review). Reverts and fixes between work records
+    says so. Review evidence is a submitted review (`reviews` on the work record) or, from v2, a verdict comment by
+    another position (`verdicts`: this framework's own pull requests are reviewed so; of_platform, 2026-11-15). A PR
+    whose verdicts were not read, in a repository none of whose merged PRs in the window has a submitted review, says
+    nothing either way (PR 176 review). Reverts and fixes between work records
     (docs/events.md, backlog item 10) are not recorded yet, so they add nothing. A position with no merged work, or none
     that can show a review, gets a note, not an issue."""
     t = spec.get("thresholds") or {}
@@ -838,20 +839,29 @@ def rule_missing_verifier(model, rows, a, b, cat, spec, parts=("results", "answe
     positions = model["positions"]
     merged, _ = work_by_position(model, rows, a, b)
     attrib = of_model.pr_attribution(rows, positions, of_model.session_index(positions))
-    counted = []   # (position, repository, reviews) of each merged PR that gives its count
+    counted = []   # (position, repository, submitted reviews or None, verdicts or None) of each merged PR
     for r in rows:
         pl = r.get("payload") or {}
         if r["name"] != "of.work_record" or pl.get("source") == "pr-link" or not of_model.in_window(r, a, b):
             continue
+        if of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
+            continue
         who = r.get("position") if r.get("position") in positions else attrib.get(of_model.pr_key(pl))
-        if isinstance(pl.get("reviews"), int) and not of_model.BOT_AUTHOR.search(str(pl.get("author") or "")):
-            counted.append((who, pl.get("repo"), pl["reviews"]))
-    submits = {repo for _, repo, n in counted if n > 0}   # repositories whose reviews are submitted ones
+        n = pl.get("reviews") if isinstance(pl.get("reviews"), int) else None
+        v = pl.get("verdicts") if isinstance(pl.get("verdicts"), list) else None
+        if n is not None or v is not None:
+            counted.append((who, pl.get("repo"), n, v))
+    submits = {repo for _, repo, n, _ in counted if n}   # repositories whose reviews are submitted ones
     known, reviewed = collections.Counter(), collections.Counter()
-    for who, repo, n in counted:
-        if who and repo in submits:
+    for who, repo, n, v in counted:
+        if not who:
+            continue
+        # v2: a verdict comment ("Verdict: approve|changes"; docs/events.md, `verdicts`) by another position is a
+        # review, whatever its verdict; one without a Position line counts too
+        by_other = v is not None and any(isinstance(x, dict) and x.get("position") != who for x in v)
+        if v is not None or repo in submits:
             known[who] += 1
-            reviewed[who] += n > 0
+            reviewed[who] += bool(n) or by_other
     prompts = collections.Counter()   # the owner's own prompts in each position's sessions (part answers)
     if "answers" in parts:
         sp = of_model.session_positions(model, rows)
@@ -889,14 +899,15 @@ def rule_missing_verifier(model, rows, a, b, cat, spec, parts=("results", "answe
             continue
         if not known[pos]:
             notes.append(f"{pos}: {n} of the owner's corrections of its results against {w} merged changes, none of "
-                         f"which can show a review (no review count, or a repository with no submitted review)")
+                         f"which can show a review (no review count and no verdicts read, or a repository with no "
+                         f"submitted review)")
             continue
         ev = {"corrections": [_correction(c) for c in mine][-10:], "corrections_n": n, "merged": w,
               "reviews_known": known[pos], "reviewed": 0, "rework_per_merged": round(n / w, 2),
               "reverts": "not recorded", "since": mine[0]["ts"]}
         out.append(issue(cat, "missing-verifier", [pos], ev,
                          f"{pos}: {n} of the owner's corrections of its results against {w} merged changes "
-                         f"({round(100 * n / w)}%), and none has a submitted review"
+                         f"({round(100 * n / w)}%), and none has a review (submitted, or a verdict by another position)"
                          + ("" if known[pos] == w else f" (of the {known[pos]} that can show one)"),
                          delta_m=n * mpp, part="results"))
     return out, [], notes

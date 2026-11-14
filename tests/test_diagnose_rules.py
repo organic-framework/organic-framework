@@ -597,29 +597,41 @@ class CorrectionRulesTest(unittest.TestCase):
         other = [self.pr(9, "bot_operator", 1)]   # the repository's reviews are submitted ones
         got, st = self.found("missing-verifier", prs + other + fixes)
         self.assertEqual([(i["affected"], i["rule_version"], i["decider"], i["part"]) for i in got],
-                         [(["bot_search"], "ap.missing-verifier@1", "structure_keeper", "results")])
+                         [(["bot_search"], "ap.missing-verifier@2", "structure_keeper", "results")])
         e = got[0]["evidence"]
         self.assertEqual((e["corrections_n"], e["merged"], e["reviews_known"], e["rework_per_merged"]), (3, 5, 5, 0.6))
         self.assertEqual([c["kind"] for c in e["corrections"]], ["output", "fact", "output"])
         self.assertEqual(got[0]["summary"], "bot_search: 3 of the owner's corrections of its results against 5 merged "
-                         "changes (60%), and none has a submitted review")
+                         "changes (60%), and none has a review (submitted, or a verdict by another position)")
         # some changes do not say whether they were reviewed: the issue says how many can
         part, _ = self.found("missing-verifier", prs[:3] + [self.pr(7, "bot_search", None), self.pr(8, "bot_search", None)]
                              + other + fixes)
-        self.assertTrue(part[0]["summary"].endswith("none has a submitted review (of the 3 that can show one)"))
+        self.assertTrue(part[0]["summary"].endswith("none has a review (submitted, or a verdict by another position) "
+                                                    "(of the 3 that can show one)"))
         # quiet: one reviewed change; two corrections of results; 20 changes (15%); a note when nothing says or nothing merged
         for quiet in (prs[:4] + [self.pr(4, "bot_search", 1)] + fixes, prs + other + fixes[1:],
                       [self.pr(i, "bot_search") for i in range(20)] + other + fixes):
             q, st = self.found("missing-verifier", quiet)
             self.assertEqual((q, st["status"]), ([], "quiet"))
         unread = ("bot_search: 3 of the owner's corrections of its results against 5 merged changes, none of which can "
-                  "show a review (no review count, or a repository with no submitted review)")
+                  "show a review (no review count and no verdicts read, or a repository with no submitted review)")
         q, st = self.found("missing-verifier", [self.pr(i, "bot_search", None) for i in range(5)] + other + fixes)
         self.assertEqual((q, st["notes"]), ([], [unread]))
         # a repository whose reviews are given as comments (`Verdict: approve`, as this framework's own pull requests
         # get) shows 0 submitted reviews on every merged PR: it says nothing either way (PR 176 review)
         q, st = self.found("missing-verifier", prs + fixes)
         self.assertEqual((q, st["notes"]), ([], [unread]))
+        # v2: the verdicts a PR's comments carry (docs/events.md `verdicts`, of_platform 2026-11-15) are read. Read and
+        # empty, or only the author's own: no review, an issue. A verdict by another position, or one with no Position
+        # line, whatever it says: a review, quiet
+        def judged(v):
+            return [dict(p, payload=dict(p["payload"], verdicts=v)) for p in prs]
+        for v in ([], [{"verdict": "approve", "position": "bot_search"}]):
+            got2, _ = self.found("missing-verifier", judged(v) + fixes)
+            self.assertEqual([(i["part"], i["rule_version"]) for i in got2], [("results", "ap.missing-verifier@2")])
+        for v in ([{"verdict": "changes", "position": "of_review"}], [{"verdict": "approve", "position": None}]):
+            q, st = self.found("missing-verifier", judged(v) + fixes)
+            self.assertEqual((q, st["status"]), ([], "quiet"))
         q, st = self.found("missing-verifier", [self.pr(i, "bot_operator") for i in range(5)] + other + fixes)
         self.assertEqual((q, st["notes"]), ([], ["bot_search: 3 of the owner's corrections of its results, and no merged "
                                                   "work to weigh them against"]))
@@ -637,7 +649,7 @@ class CorrectionRulesTest(unittest.TestCase):
         others = [self.pr(i, "bot_operator", 1) for i in range(3)]   # merged work exists, none of it bot_search's
         got, st = self.found("missing-verifier", others + asked + fixes)
         self.assertEqual([(i["affected"], i["part"], i["rule_version"]) for i in got],
-                         [(["bot_search"], "answers", "ap.missing-verifier@1")])
+                         [(["bot_search"], "answers", "ap.missing-verifier@2")])
         e = got[0]["evidence"]
         self.assertEqual((e["corrections_n"], e["owner_prompts"], e["corrections_per_prompt"], e["merged"]), (3, 40, 0.075, 0))
         self.assertEqual(got[0]["summary"], "bot_search: 3 of the owner's corrections of its results in 40 of his prompts "
@@ -646,7 +658,7 @@ class CorrectionRulesTest(unittest.TestCase):
         # the results issue keeps v0's id (PR 179 review)
         self.assertEqual(got[0]["issue_id"], of_diagnose.issue_id("missing-verifier", ["answers:bot_search"]))
         fp = ev("lab1", "2026-11-04T20:00Z", "of.issue_labelled", None,
-                {"issue_id": got[0]["issue_id"], "rule": "ap.missing-verifier", "rule_version": "ap.missing-verifier@1",
+                {"issue_id": got[0]["issue_id"], "rule": "ap.missing-verifier", "rule_version": "ap.missing-verifier@2",
                  "label": "false_positive"})
         res, _ = self.found("missing-verifier", [fp] + [self.pr(i, "bot_search") for i in range(5)] + others + asked + fixes)
         self.assertEqual([(i["part"], i["state"], i["issue_id"]) for i in res],
