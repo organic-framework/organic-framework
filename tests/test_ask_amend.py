@@ -46,8 +46,8 @@ class Store(unittest.TestCase):
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
-    def add(self, kind, payload, ts, position="of_a", session="S1", host=None):
-        rec = of_events.record(kind, payload, position=position, session=session, org="ofb")
+    def add(self, kind, payload, ts, position="of_a", session="S1", host=None, source="of"):
+        rec = of_events.record(kind, payload, position=position, session=session, org="ofb", source=source)
         rec["timestamp"] = ts
         if host:  # an event another machine of the organization wrote, pulled from the coordination feed
             rec["host.id"] = host
@@ -76,11 +76,11 @@ class ProjectionTest(Store):
         self.assertEqual((a["ts"], a["state"], a["text"], a["n_options"], a["tags"], a["due"], a["kind"]),
                          ("2026-11-15T10:00:00Z", "open", "Deploy the relay tonight?", 3, ["prod_change:relay"],
                           "2026-11-15T20:00:00Z", "question (declared) blocking"))
-        self.assertEqual((a["version"], a["choice_version"], a["topic_key"]), (2, 2, "k2"))
+        self.assertEqual((a["version"], a["topic_key"]), (2, "k2"))
         self.assertEqual(a["amended"]["changed"], ["text", "options", "tags", "due", "blocking"])
         self.amend(aid, 3, "2026-11-15T10:40:00Z", text="Deploy the relay tonight, after the backup?", blocking=False)
         a = self.asks()[aid]
-        self.assertEqual((a["version"], a["choice_version"], a["kind"]), (3, 2, "question (declared)"))  # text: no choice
+        self.assertEqual((a["version"], a["kind"]), (3, "question (declared)"))
         self.assertEqual((a["amended"]["changed"], a["amended"]["all"]),
                          (["text", "blocking"], ["text", "options", "tags", "due", "blocking"]))
         self.assertEqual(len(of_asks.group([a])), 1)  # one decision, one card
@@ -113,8 +113,8 @@ class ProjectionTest(Store):
         self.amend(aid, 4, "2026-11-15T10:30:00Z", by="of_b", text="Not its asker")
         self.amend(aid, 4, "2026-11-15T10:31:00Z", host="another-machine", text="Not its machine")
         p0 = of_asks_answer.ask_details(self.conn, aid)[0]
-        self.assertEqual((p0["version"], p0["choice_version"], of_asks_answer.options(p0), p0["yes_option"],
-                          of_asks_answer.full_question(p0, "")), (3, 2, ["no", "yes"], 2, "Deploy the relay now?"))
+        self.assertEqual((p0["version"], of_asks_answer.options(p0), p0["yes_option"],
+                          of_asks_answer.full_question(p0, "")), (3, ["no", "yes"], 2, "Deploy the relay now?"))
         raw = json.loads(self.conn.execute("SELECT payload FROM event WHERE event_id = ?", (aid,)).fetchone()[0])
         host = of_asks.ask_host(self.conn, aid)
         self.assertEqual(host, of_events.machine_id())
@@ -124,8 +124,8 @@ class ProjectionTest(Store):
         v2 = of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", host, version=2)
         self.assertEqual(of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", None)["version"], 1)
         self.assertEqual((of_asks_answer.full_question(v2, ""), v2["yes_option"]), ("Deploy the relay today?", 2))
-        self.assertTrue(of_asks.stale_choice(None, 2) and of_asks.stale_choice(1, 2))
-        self.assertFalse(of_asks.stale_choice(2, 2) or of_asks.stale_choice(3, 2) or of_asks.stale_choice(None, 1))
+        self.assertTrue(of_asks.stale(None, 2) and of_asks.stale(1, 2) and of_asks.stale(2, 3))
+        self.assertFalse(of_asks.stale(2, 2) or of_asks.stale(3, 2) or of_asks.stale(None, 1))
 
     def test_an_amend_from_another_machine_is_ignored_everywhere(self):
         """of_server on PR 181: the feed brings every machine's of.ask_amended, and `by` is the sender's word."""
@@ -163,8 +163,7 @@ class AnswerTest(Store):
         aid = self.ask()
         self.amend(aid, 2, "2026-11-15T10:10:00Z", options=["yes, tonight", "no"])
         c = of_asks_answer.card(self.conn, self.item(aid), [{"name": "of_a"}])
-        self.assertEqual((c["options"], c["version"], c["choice_version"], c["amended"]["changed"]),
-                         (["yes, tonight", "no"], 2, 2, ["options"]))
+        self.assertEqual((c["options"], c["version"], c["amended"]["changed"]), (["yes, tonight", "no"], 2, ["options"]))
         of_locale.set_language("en")
         try:
             rows = "\n".join(t for t, _ in of_asks_tui.card_lines(dict(c, who=["of_a"], since=None), 100))
@@ -187,13 +186,47 @@ class AnswerTest(Store):
                                            lambda p: "p1")
         self.assertTrue(ok, status)
         self.assertEqual([(a["answer"], a["version"]) for a in self.answers()], [("yes, tonight", 2)])
+        self.assertEqual(self.typed, [("p1", f"Answer from the founder to your question {aid[-8:]} (version 2: "
+                                             "\u00abDeploy the relay today?\u00bb): yes, tonight")])  # never bare
 
-    def test_a_change_of_text_alone_keeps_the_answer(self):
-        aid = self.ask()
-        self.amend(aid, 2, "2026-11-15T10:10:00Z", text="Deploy the relay today, after the backup?")
+    def test_a_change_of_text_alone_refuses_it_too(self):
+        """of_review on PR 181: a text amend turned staging into production, and the yes given to staging reached the
+        asker as a bare yes."""
+        aid = self.ask("Drain node 3 of the staging cluster now?")
+        self.amend(aid, 2, "2026-11-15T10:10:00Z", text="Drain node 3 of the production cluster now?")
         ok, status = of_asks_answer.answer(self.conn, self.item(aid, 1), "yes", [{"name": "of_a"}], lambda p: "p1")
+        self.assertFalse(ok)
+        self.assertTrue(status.startswith(of_asks_answer.AMENDED), status)
+        self.assertEqual((self.answers(), self.typed), ([], []))
+        ok, status = of_asks_answer.answer(self.conn, self.item(aid, 2), "yes", [{"name": "of_a"}], lambda p: "p1")
         self.assertTrue(ok, status)
-        self.assertEqual([(a["answer"], a["version"]) for a in self.answers()], [("yes", 1)])
+        self.assertIn("(version 2: \u00abDrain node 3 of the production cluster now?\u00bb): yes", self.typed[0][1])
+
+    def test_an_answer_to_an_older_version_recorded_anyway_closes_nothing(self):
+        """A path that cannot refuse it, or one that raced the amend: the newest version stays open on the card, and the
+        asker gets the answer as one to version N, with that version's words (docs/events.md, of.ask_amended)."""
+        aid = self.ask("Drain node 3 of the staging cluster now?")
+        self.amend(aid, 2, "2026-11-15T10:10:00Z", text="Drain node 3 of the production cluster now?")
+        self.add("agent_question_answered", {"ask_id": aid, "ask_ids": [aid], "answer": "yes", "via": "asks-ui",
+                                             "by": "owner", "version": 1}, "2026-11-15T10:11:00Z")
+        self.assertEqual(self.asks()[aid]["state"], "open")
+        out = of_asks_answer.pending(self.conn, list(self.asks().values()), [{"name": "of_a"}],
+                                     now=of_asks_chat._epoch("2026-11-15T10:30:00Z"), min_age=0)
+        (typed,) = [x["text"] for x in out if x["key"].startswith("answer:")]
+        self.assertTrue(typed.startswith(f"Answer from the founder to your question {aid[-8:]} (version 1: \u00abDrain "
+                                         "node 3 of the staging cluster now?\u00bb): yes"), typed)
+        self.add("human_prompt", {"origin": "human", "text": typed}, "2026-11-15T10:31:00Z",  # typed into its pane
+                 source="hook")
+        self.assertEqual(self.asks()[aid]["state"], "open")
+        self.add("human_prompt", {"origin": "human", "text": f"Answer from the founder to your question {aid[-8:]} "
+                                  "(version 2: \u00abDrain node 3 of the production cluster now?\u00bb): no"},
+                 "2026-11-15T10:40:00Z", source="hook")
+        self.assertEqual(self.asks()[aid]["state"], "answered")
+        other = self.ask("Rotate the token?", ts="2026-11-15T11:00:00Z")
+        self.amend(other, 2, "2026-11-15T11:05:00Z", text="Rotate the token today?")
+        self.add("agent_question_answered", {"ask_id": other, "ask_ids": [other], "answer": "yes", "via": "asks-ui",
+                                             "by": "owner", "version": 2}, "2026-11-15T11:06:00Z")
+        self.assertEqual(self.asks()[other]["state"], "answered")  # the newest version's answer closes it
 
     def test_the_outbox_drops_an_answer_refused_as_amended(self):
         aid = self.ask()
@@ -256,11 +289,16 @@ class ChatAmendTest(ChatTest):
                        .fetchone()[0])
         self.assertEqual(p["version"], 2)
 
-    def test_a_change_of_text_alone_needs_no_version(self):
+    def test_a_change_of_text_alone_needs_the_version_too(self):
         aid = self.ask("Lift the hold?", ["yes", "no"], from_position="of_a")
         self.amend(aid, 2, "2026-11-11T10:02:00Z", text="Lift the hold today?")
-        c = self.check(aid, self.prompt("yes", ts="2026-11-11T10:05:00Z"), option=1)
-        self.assertEqual((c["answer"], c["version"]), ("yes", 1))
+        pid = self.prompt("yes", ts="2026-11-11T10:05:00Z")
+        self.refused(aid, pid, "--version 2", option=1)
+        out = of_asks_chat.answer(self.conn, self.asks(), POSITIONS, aid[-8:], pid, lambda name: "p1", option=1,
+                                  version=2, now=now_of("2026-11-11T10:06:00Z"))
+        self.assertIn("answered:", out[0])
+        self.assertTrue(self.typed[0][1].startswith(f"Answer from the founder to your question {aid[-8:]} (version 2: "
+                                                    "\u00abLift the hold today?\u00bb): yes"), self.typed[0][1])
 
 
 REG = """units:

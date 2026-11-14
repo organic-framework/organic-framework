@@ -4598,8 +4598,8 @@ def _amend_ask(args, positions, me):
     _reconcile_ask_tokens(positions)
     print(f"amended ask {short}: version {version} ({', '.join(changed)} changed); it keeps its id and its filing time"
           + (f", and was escalated to the founder ({esc_now})" if esc_now else "")
-          + (". An answer the founder gives to an earlier version is refused and he sees this one"
-             if {"options", "yes_option"} & set(changed) else ""))
+          + ". An answer the founder gives to an earlier version is refused and he sees this one; an answer that "
+            "reaches you names the version it answered")
     return 0
 
 
@@ -6047,7 +6047,7 @@ def main(argv=None):
     ak.add_argument("--option", type=int, help="answer: the card's option the person chose (1..N)")
     ak.add_argument("--text", help="answer: the person's words, as typed in the prompt")
     ak.add_argument("--version", type=int, help="answer: the version of an amended card the person was shown, as "
-                    "--chat prints it (none: the first); an answer to a version whose options changed since is refused")
+                    "--chat prints it (none: the first); an answer to an earlier version than the newest is refused")
     ak.add_argument("--prompt", help="answer: the event id of the person's prompt in the conductor's session "
                     "(of prompts --mine prints it)")
     ak.add_argument("--pending", action="store_true", help="judge: the candidates the Stop hook queued")

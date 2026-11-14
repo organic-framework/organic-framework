@@ -977,7 +977,7 @@ class AmendScreenTest(unittest.TestCase):
         box.take_amended()
         self.assertEqual(box.reply_drafts["A"], "Yes, but after 18:00 UTC")
         self.assertNotIn("A", box.cards)  # its new version loads
-        self.assertIn("changed this card's options after you saw it", box.msg)
+        self.assertIn("changed this card after you saw it", box.msg)
         self.assertIn("your text waits in r", box.msg)
         b = item("B", "Pay the invoice?")  # a pick of an option is not kept; the detached sender's refusal too
         box.take_amended([{"ask_id": "B", "ask_ids": ["B"], "text": "yes", "why": "amended: …",
