@@ -123,6 +123,26 @@ class ListenTest(unittest.TestCase):
         self.assertEqual((states(got["asks"]), got["late"]), (full(), False))
         self.assertEqual(states(got["asks"])[a2][0], "open")
 
+    def test_a_rebuild_of_the_asks_view_reads_only_its_names(self):
+        """of_asks's PR 181 bumps the asks view's version: a rebuild from rowid 0 through the generic catch-up read
+        every event of the log (the founder's read-path rule, 2026-11-14)."""
+        a1 = self.ask("Merge PR 2349 now?")
+        for i in range(5):
+            of_events.emit("tool_use", {"tool": "Bash", "i": i})                 # not the view's
+        p = of_listen.AsksProcessor()
+        p.MIN_FLUSH_S = 0
+        fed = []
+        real = p.handle
+        p.handle = lambda conn, rows: fed.extend(rows) or real(conn, rows)
+        cur = of_listen.prepare(self.conn, [p])
+        of_listen.step(self.conn, [p], cur)
+        self.assertEqual({r["name"] for r in fed}, {"of.agent_question"})
+        top = self.conn.execute("SELECT max(rowid) FROM event").fetchone()[0]
+        self.assertEqual(cur[p.name], top)                                       # its cursor at the end all the same
+        got = of_asks.current_asks(self.conn)
+        self.assertEqual((got["late"], [a["event_id"] for a in got["asks"]]), (False, [a1]))
+        self.assertEqual(got["cursor"], top)                                     # nothing left for a reader to fold
+
     def test_current_asks_reads_one_snapshot_even_when_the_listener_writes_between_its_reads(self):
         """of_review on PR 133: the fold mark and the asks were read in two transactions; a listener write between
         them left the mark one write behind and the tail was folded twice, an ask coming back twice."""

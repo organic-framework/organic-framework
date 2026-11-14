@@ -107,6 +107,10 @@ class AsksProcessor(Processor):
         self.state, self.fed, self.tail = None, "", []
         self.written = {}  # event_id -> the row last written to view_asks: a flush writes only what changed
         self.max_rowid, self.fold = 0, None  # the last event handled; a shadow build's fold_meta, kept for settle()
+        import of_asks
+        # a rebuild or a new version catches up on these names only (relevant() takes nothing else): a rebuild from
+        # rowid 0 had read the whole log (the founder's read-path rule, 2026-11-14; seen on organic-framework PR 181)
+        self.catch_up_names = tuple(of_asks.READS)
 
     def _relevant(self, r):
         import of_asks
@@ -1022,11 +1026,15 @@ def _catch_up(conn, p, cursors, top, beat):
     while True:
         if beat:
             beat()
-        names = getattr(p, "fold_names", None)  # a fold view reads only its own names
+        # a fold view, and the asks view, read only their own names
+        names = getattr(p, "fold_names", None) or getattr(p, "catch_up_names", None)
         rows = fetch(conn, cursors[p.name], top=top, names=names)
         if not rows:
             if names and cursors[p.name] < top:  # none of its names up to TOP: its cursor moves there all the same
-                changed |= bool(p.handle(conn, [], upto=top))
+                if getattr(p, "fold_names", None):
+                    changed |= bool(p.handle(conn, [], upto=top))
+                elif hasattr(p, "max_rowid"):
+                    p.max_rowid = max(p.max_rowid, top)  # what the view reflects: everything up to TOP
                 cursors[p.name] = top
                 try:
                     conn.execute("UPDATE listener_cursor SET last_rowid = ?, updated_at = ? WHERE processor = ?",
