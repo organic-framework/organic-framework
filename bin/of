@@ -314,9 +314,10 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             # a works warning is `of registry check`'s (deep); printed by every command, a new warning of the loop
             # check put 14 lines on each `of` call (2026-11-12)
             problems += [f"{org}:registry/positions.yaml: works: {pr}"
-                         for pr in check_works(works, names, systems, units, statuses, resolve)
+                         for pr in check_works(works, names, systems, units, statuses, resolve, doc.get("goals"))
                          if deep or not pr.startswith(WARN)]
-            problems += [f"{org}: works: {pr}" for pr in loop_files(works, _org_paths(orgs_file).get(org) or [], resolve)
+            problems += [f"{org}: works: {pr}" for pr in loop_files(works, _org_paths(orgs_file).get(org) or [], resolve,
+                                                                   doc.get("goals"))
                          if deep or not pr.startswith(WARN)]
     if deep:  # tool profiles (docs/tools.md; of_tools.check, of_tools's rules)
         try:
@@ -781,15 +782,27 @@ def _decided_resolver(conn=None, positions=None):
     def typed_by_person(position, host):
         return position in conductors
 
-    def resolve(did):
+    def resolve(did, work=None, goal_yes=None, kinds=("ask", "prompt")):
         if held["conn"] is None:
             import of_fold
             held["conn"] = of_fold.reader() or False
-        return of_loop.resolve_decided(held["conn"], did, typed_by_person) if held["conn"] else of_loop.UNREAD
+        return (of_loop.resolve_decided(held["conn"], did, typed_by_person, work, goal_yes, kinds) if held["conn"]
+                else of_loop.UNREAD)
     return resolve
 
 
-def loop_files(works, roots, resolve=None):
+def _goal_yes(w, goals):
+    """The decided of the goal work W serves (registry goals:), which may cite the ask that decided its measure."""
+    g = (goals or {}).get(str(w.get("goal"))) if isinstance(goals, dict) and isinstance(w, dict) and w.get("goal") else None
+    return g.get("decided") if isinstance(g, dict) else None
+
+
+def _for_work(resolve, wid, goal_yes=None):
+    """RESOLVE (id, work, goal's yes) bound to one work: an ask counts only when filed for it, or as its goal's yes."""
+    return (lambda did, kinds=("ask", "prompt"): resolve(did, wid, goal_yes, kinds)) if resolve else None
+
+
+def loop_files(works, roots, resolve=None, goals=None):
     """A `loop.yaml` beside a work's doc (RFC 0005 §4) is checked like a `loop:` in the registry; a work with both is a
     problem (one place per loop)."""
     import of_loop
@@ -815,7 +828,7 @@ def loop_files(works, roots, resolve=None):
             out.append(f"{wid}: loop: target.decided is read from the registry only: a loop.yaml cannot carry it, "
                        "since the work's owner who keeps that file may be an agent; the structure keeper moves the "
                        "loop into the registry's works entry")
-        out += of_loop.check_loop(_without_decided(loop), wid, WARN, resolve)
+        out += of_loop.check_loop(_without_decided(loop), wid, WARN, _for_work(resolve, wid, _goal_yes(w, goals)))
     return out
 
 
@@ -854,14 +867,15 @@ def _loop_of(w, org, orgs_file=None):
 
 
 def position_loops(position, orgs_file=None):
-    """[(work id, owner|doer, loop)] of the works with a loop that POSITION (a loaded position) owns or does in its
+    """[(work id, owner|doer, loop, its goal's decided)] of the works with a loop that POSITION (a loaded position) owns or does in its
     organization: for the session's start context (bin/of_context.py). One read of its registry."""
     regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
     path, name = regs.get(position.get("_org")), position.get("name")
     if not path or not name:
         return []
     with open(path) as fh:
-        works = (yaml.safe_load(fh) or {}).get("works") or {}
+        doc = yaml.safe_load(fh) or {}
+    works, goals = doc.get("works") or {}, doc.get("goals")
     out = []
     for wid, w in works.items() if isinstance(works, dict) else ():
         if not isinstance(w, dict):
@@ -875,11 +889,11 @@ def position_loops(position, orgs_file=None):
         except (OSError, yaml.YAMLError):
             continue
         if isinstance(loop, dict):
-            out.append((str(wid), role, loop))
+            out.append((str(wid), role, loop, _goal_yes(w, goals)))
     return out
 
 
-def check_works(works, position_names, systems, units=None, statuses=None, resolve=None):
+def check_works(works, position_names, systems, units=None, statuses=None, resolve=None, goals=None):
     """works: {id: {title, kind, doc, systems, owner, doers, stages, done_when, due, review, state, match}}
     (docs/registry.md, Works). Doers and owners are positions of this organization or people outside the
     registry written external:<name>; an omitted owner is the unit owner of the work's systems."""
@@ -898,7 +912,7 @@ def check_works(works, position_names, systems, units=None, statuses=None, resol
             continue
         if "loop" in w:  # a development loop (RFC 0005 §4): someone owns it and someone does it (4b5a274)
             import of_loop
-            out += of_loop.check_loop(w["loop"], tag, WARN, resolve)
+            out += of_loop.check_loop(w["loop"], tag, WARN, _for_work(resolve, wid, _goal_yes(w, goals)))
             if not w.get("owner"):
                 out.append(f"{tag}: a work with a loop needs an owner")
             if not w.get("doers"):
@@ -2000,7 +2014,9 @@ def cmd_loop(args):
         "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work)
-    resolve = _decided_resolver(conn, _load_quiet())
+    with open(regs[org]) as fh:
+        goals = (yaml.safe_load(fh) or {}).get("goals")
+    resolve = _for_work(_decided_resolver(conn, _load_quiet()), args.work, _goal_yes(w, goals))
     if args.action == "show":
         print(f"{args.work} ({org}): {of_loop.target_line(loop, resolve)}; ladder {' > '.join(of_loop.rungs(loop))}")
         seg = (loop.get("target") or {}).get("segment")
@@ -2026,6 +2042,10 @@ def cmd_loop(args):
                       f"(of loop decision {args.work} <decision> --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
+            if d.get("decided"):  # the owner's yes it cites, with their words, so a reader sees what they named
+                y = resolve(d["decided"], kinds=("ask",))
+                print(f"      the owner's yes {d['decided']}: " + (y.words if y and y != of_loop.UNREAD
+                                                                   else "not found in this machine's log"))
         return 0
     positions = _load_quiet()
     me = _me(positions, getattr(args, "sender", None))
@@ -2043,8 +2063,9 @@ def cmd_loop(args):
         return None
     owners = of_loop.owners_yes(loop, resolve)  # the owner's yes on the target's measure, found in the log
     unresolved = of_loop.decided(loop) if not owners else None
-    why = (f" ({args.work}'s target names {unresolved} as the owner's yes, but this machine's log holds no answered ask "
-           "of the owner or prompt typed in their conductor's session with that id)") if unresolved else ""
+    why = (f" ({args.work}'s target names {unresolved} as the owner's yes, but this machine's log holds no such yes: an "
+           "ask for this work with the option the owner chose, or a prompt typed in their conductor's session)"
+           ) if unresolved else ""
     if args.action == "hypothesis":
         if not args.text:
             raise OfError('usage: of loop hypothesis <work> "<change>" --predict "…" --cost "…" --voi low|med|high')
@@ -2088,9 +2109,11 @@ def cmd_loop(args):
             raise OfError(f"{args.work}'s target is the owner's measure ({owners}): change_objective names the new "
                           'metric and the owner\'s yes on it: --metric "…" --decided <their ask id or prompt event id> '
                           '(docs/registry.md, Works, "The owner\'s measure")')
-        if dec == "change_objective" and owners and not resolve(args.decided):
-            raise OfError(f"--decided {args.decided} is not the owner's yes in this machine's log: an ask the owner "
-                          "answered, or a prompt typed in their conductor's session (of asks --all; of prompts)")
+        if dec == "change_objective" and owners and not resolve(args.decided, kinds=("ask",)):
+            raise OfError(f"--decided {args.decided} is not the owner's yes in this machine's log: it is "
+                          "<ask id>#<option>, an ask filed for this work (of ask --work) whose answer chose that option "
+                          "(of asks --all). A prompt does not count here: the structure keeper writes a measure the "
+                          "owner chose in a prompt into the registry")
         if dec == "change_objective" and not owners and not (args.metric and (args.to_money or args.money)):
             raise OfError('change_objective names the new metric and its chain to money: --metric "…" --to-money "…" '
                           "(RFC 0005 §6)" + why)

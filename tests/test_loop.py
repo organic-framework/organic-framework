@@ -250,9 +250,26 @@ class Yeses:
         self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"}, position="lab_conductor")
         self.elsewhere = add("human_prompt", {"origin": "human", "text": "typed in a doer's pane"})
         add("prompt_origin", {"event_id": self.corrected, "origin": "injected", "evidence": "turnOrigin"})
-        self.ask = add("agent_question", {"questions": [{"question": "p50 instead of p99?"}]})
-        add("agent_question_answered", {"ask_id": self.ask, "ask_ids": [self.ask], "by": "owner", "via": "asks-ui",
-                                        "answer": "yes"})
+        def answer(ask, words, by="owner", **more):
+            add("agent_question_answered", {"ask_id": ask, "ask_ids": [ask], "by": by, "via": "asks-ui",
+                                            "answer": words, **more})
+        opts = ["yes, p50 is the target", "no, keep p99"]
+
+        def ask(q, work="w-speed"):
+            return add("agent_question", {"questions": [{"question": q, "options": opts}], "work": work})
+        self.ask = ask("p50 instead of p99?")
+        answer(self.ask, "yes, p50 is the target")                           # option 1 chosen in the popup
+        self.chat = ask("p50 as the target, from the chat?")
+        answer(self.chat, "yes, p50 is the target", option=1)                 # option 1 through the conductor's chat
+        self.refused = ask("p50 as the target?")
+        answer(self.refused, "no, keep p99")                                  # option 2: the refusal
+        self.free = ask("p50, really?")
+        answer(self.free, "sure, why not")                                    # free text: no option chosen
+        self.other = ask("Rotate the relay token?", work="w-ops")
+        answer(self.other, "yes, p50 is the target")
+        self.flipped = ask("p90?")
+        answer(self.flipped, "yes, p50 is the target")
+        answer(self.flipped, "no, keep p99")                                  # the latest answer counts
         self.closed = add("agent_question", {"questions": [{"question": "p95?"}]})
         add("agent_question_answered", {"ask_id": self.closed, "ask_ids": [self.closed], "by": "lab_doer",
                                         "via": "status"})
@@ -296,14 +313,25 @@ class OwnersMeasureTest(unittest.TestCase):
             seen = []
             y.conn.set_trace_callback(seen.append)
             person = lambda pos, host: pos == "lab_conductor"  # noqa: E731
-            r = lambda d: of_loop.resolve_decided(y.conn, d, person)  # noqa: E731
+            r = lambda d: of_loop.resolve_decided(y.conn, d, person, "w-speed")  # noqa: E731
             self.assertEqual(r(y.prompt), ("prompt", y.prompt))                 # a prompt a person typed
             self.assertEqual(r(y.prompt[:13]), ("prompt", y.prompt))            # by its first two groups
-            self.assertEqual(r(y.ask), ("ask", y.ask))                          # an ask the owner answered
-            self.assertEqual(r(y.ask[-8:]), ("ask", y.ask))                     # by its short id, as of asks prints it
+            self.assertEqual(r(y.ask + "#1"), ("ask", y.ask))                   # the ask with the option that is the yes
+            self.assertEqual(r(y.ask[-8:] + "#1"), ("ask", y.ask))              # by its short id, as of asks prints it
+            self.assertEqual(r(y.chat + "#1"), ("ask", y.chat))                 # the option's number, from the chat
             self.assertEqual(of_loop.resolve_decided(y.conn, y.elsewhere), ("prompt", y.elsewhere))  # no place rule
-            for no in (y.injected, y.corrected, y.elsewhere, y.closed, y.open, y.closed[-8:], "01a1d999-0000", y.prompt[:8], "",
-                       None, "x' OR 1=1 --", "owner"):
+            self.assertEqual(r(y.ask + "#1").words,                             # the cited words
+                             'asked "p50 instead of p99?", chose option 1 "yes, p50 is the target"')
+            self.assertEqual(r(y.prompt).words, "reaction time is the target, I accept the risk")
+            self.assertEqual(r(y.refused + "#2"), ("ask", y.refused))           # the option it cites is the one chosen
+            self.assertEqual(of_loop.resolve_decided(y.conn, y.other + "#1", work="w-speed", goal_yes=y.other[-8:]),
+                             ("ask", y.other))                                  # the goal's own yes may be cited
+            self.assertIsNone(of_loop.resolve_decided(y.conn, y.prompt, person, kinds=("ask",)))  # change_objective
+            for no in (y.ask,                                                   # no option named
+                       y.ask + "#2", y.refused + "#1", y.free + "#1",           # another option, a refusal, free text
+                       y.other + "#1", y.flipped + "#1", y.ask + "#3",          # another work, taken back, no such option
+                       y.injected, y.corrected, y.elsewhere, y.closed + "#1", y.open + "#1", y.closed[-8:],
+                       "01a1d999-0000", y.prompt[:8], y.prompt + "#1", "", None, "x' OR 1=1 --", "owner"):
                 self.assertIsNone(r(no), no)                                    # an agent's word or nothing never counts
             reads = [q for q in seen if "FROM event" in q]
             self.assertTrue(reads)
@@ -371,23 +399,28 @@ class OwnersMeasureTest(unittest.TestCase):
             r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--to-money", "STOREFRONT per ms")
             self.assertNotEqual(r.returncode, 0)                                # (3) a chain to money is not the owner's yes
             self.assertIn("--decided", r.stderr)
-            self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", y.ask[-8:]).returncode, 0)
-            for no in ("01a1d999-0000", y.closed[-8:], y.injected, y.elsewhere):  # no yes of the owner, or not where
-                # only the person types (a doer's pane)
+            yes = y.ask[-8:] + "#1"
+            self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", yes).returncode, 0)
+            for no in ("01a1d999-0000", y.closed[-8:] + "#1", y.injected, y.elsewhere, y.refused + "#1",
+                       y.other[-8:] + "#1", y.ask[-8:], y.prompt):              # no yes of the owner for this work;
+                # a prompt, even the person's, does not count for a change of objective
                 r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", no)
                 self.assertNotEqual(r.returncode, 0, no)
                 self.assertIn("is not the owner's yes in this machine's log", r.stderr)
-            r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", y.ask[-8:])
+            r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", yes)
             self.assertEqual(r.returncode, 0, r.stderr)
             db = sqlite3.connect(os.path.join(root, "state", "of.db"))
             hyp = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_hypothesis'").fetchone()[0])
             self.assertNotIn("voi", hyp)
             decs = [json.loads(r[0]) for r in db.execute("SELECT payload FROM event WHERE name = 'of.loop_decision'")]
-            self.assertEqual([(d["metric"], d["decided"]) for d in decs], [("p50 ms", y.ask[-8:])])
+            self.assertEqual([(d["metric"], d["decided"]) for d in decs], [("p50 ms", yes)])
             self.assertNotIn("to_money", decs[0])
+            show = run("show", "w-speed").stdout
+            self.assertIn(f'the owner\'s yes {yes}: asked "p50 instead of p99?", chose option 1 "yes, p50 is the '
+                          'target"', show)
             out = run("show", "w-speed").stdout                                 # (4) the target, its yes, money reported
             self.assertIn("target reaction from the input to the send, p99, ms (lower is better); the owner decided "
-                          f"this measure ({y.prompt[:13]}): its money is reported beside it, never asked of the owner "
+                          f"this measure ({y.prompt[:13]}: reaction time is the target, I accept the risk): its money is reported beside it, never asked of the owner "
                           "as a proof", out)
             self.assertIn("voi (med)", out)
         with tempfile.TemporaryDirectory() as root:                            # a decided id the log does not hold
@@ -440,12 +473,13 @@ class OwnersMeasureTest(unittest.TestCase):
             positions, _ = of.load_positions(orgs)
             resolve = of._decided_resolver(y.conn, positions)
             by = {p["name"]: p for p in positions}
-            self.assertEqual([(w, r) for w, r, _ in of.position_loops(by["lab_owner"], orgs)], [("w-speed", "owner")])
+            self.assertEqual([(w, r) for w, r, _, _ in of.position_loops(by["lab_owner"], orgs)], [("w-speed", "owner")])
             for name, role in (("lab_owner", "owner"), ("lab_doer", "doer")):
                 ctx = of_context.build(name, positions, of.position_loops(by[name], orgs), resolve)
                 self.assertIn("## Loops whose target names the owner's yes", ctx)
                 self.assertIn(f"- `w-speed` (you are its {role}): target reaction from the input to the send, p99, ms "
-                              f"(lower is better); the owner decided this measure ({y.prompt}): its money is "
+                              f"(lower is better); the owner decided this measure ({y.prompt}: reaction time is the target, I accept "
+                              "the risk): its money is "
                               "reported beside it, never asked of the owner as a proof.", ctx)
                 self.assertIn("never ask the owner, or relay an ask, to price, justify or prove it in money", ctx)
             self.assertEqual(of.position_loops(by["lab_other"], orgs), [])

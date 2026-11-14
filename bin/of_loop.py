@@ -46,17 +46,43 @@ HUMAN_ANSWER = "owner"  # `by` of an answer a person gave: the popup, the owner'
 _ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,35}$")
 
 
-def resolve_decided(conn, did, typed_by_person=None):
-    """(kind, event id) of the owner's yes that DID names in the log, or None:
+class Yes(tuple):
+    """(kind, event id) of a person's yes, equal to that pair, with `words`: what they said, for a reader to check that
+    it names the measure (of_review on organic-framework PR 168: no code can)."""
+
+    def __new__(cls, kind, eid, words=""):
+        y = super().__new__(cls, (kind, eid))
+        y.words = words
+        return y
+
+
+def _short(text, n=160):
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
+def _option_text(o):
+    return " ".join(str(o.get("label") if isinstance(o, dict) else o).split()).casefold()
+
+
+def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, kinds=("ask", "prompt")):
+    """Yes(kind, event id, words) of the person's yes that DID names in the log, or None (docs/registry.md, Works,
+    "Where it is read, and how it is checked"; of_review on organic-framework PR 168):
+    - 'ask': DID is `<ask id>#<option number>`. The ask was filed for WORK (`of ask --work`), or it is the yes GOAL_YES
+      (the decided of the goal the work serves) records; the owner's latest answer (`by: owner`, never an agent's
+      closure) chose exactly that option: its number (`option`, through the conductor's chat) or its text (the popup).
+      A free-text answer, another option, a refusal or an ask of another work is no yes. Its words are the question
+      and the chosen option;
     - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
       where only the person types: TYPED_BY_PERSON(position, host id) says so (bin/of: the session holding a
-      conductor, or this machine when its owner.yaml names its owner); without it, any such prompt;
-    - 'ask': an ask (of.agent_question) with an answer by the owner (`by: owner`), not an agent's closure.
-    DID is an event id or its prefix of at least its first two groups, or an ask's short id (its last 8 characters, as
-    `of asks` prints it); one that names no event, or several, is None. Reads by the primary key, and by one indexed
-    name from the event's time (docs/registry.md, Works, "The owner's measure"; of_review on PR 168)."""
+      conductor); without it, any such prompt. No code can tell whether its words are a yes; its first words are shown.
+    KINDS limits what counts (a change of objective takes an ask only). The id part is an event id or its prefix of at
+    least its first two groups, or an ask's short id (its last 8 characters, as `of asks` prints it); one that names no
+    event, or several, is None. Reads by the primary key, and by one indexed name from the event's time."""
     import json
     did = str(did or "").strip().lower()
+    m = re.fullmatch(r"(.+)#(\d{1,2})", did)
+    did, option = (m.group(1), int(m.group(2))) if m else (did, None)
     if not _ID.match(did) or (len(did) < 13 and not re.fullmatch(r"[0-9a-f]{8}", did)):
         return None
     cols = "event_id, name, ts, payload, position, host_id"
@@ -70,7 +96,7 @@ def resolve_decided(conn, did, typed_by_person=None):
         return None
     eid, name, ts, pl, position, host = next(iter(found.values()))
     p = json.loads(pl or "{}")
-    if name == "of.human_prompt":
+    if name == "of.human_prompt" and "prompt" in kinds and option is None:
         origin = p.get("origin")
         for (cp,) in conn.execute("SELECT payload FROM event WHERE name = 'of.prompt_origin' AND ts >= ? ORDER BY ts, "
                                   "rowid", (ts,)):
@@ -78,14 +104,32 @@ def resolve_decided(conn, did, typed_by_person=None):
             if c.get("event_id") == eid:
                 origin = c.get("origin")
         where = typed_by_person is None or typed_by_person(position, host)
-        return ("prompt", eid) if origin == "human" and where else None
-    if name == "of.agent_question":
-        for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ?",
-                                  (ts,)):
-            a = json.loads(ap or "{}")
-            if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER:
-                return ("ask", eid)
-    return None
+        return Yes("prompt", eid, _short(p.get("text"))) if origin == "human" and where else None
+    if name != "of.agent_question" or "ask" not in kinds or option is None:
+        return None
+    goal_ask = re.sub(r"#.*$", "", str(goal_yes or "").strip().lower())
+    by_goal = bool(goal_ask) and (eid.startswith(goal_ask) or eid.endswith(goal_ask))
+    if not (by_goal or (work is not None and p.get("work") == work)):
+        return None
+    qs = p.get("questions") if isinstance(p.get("questions"), list) else []
+    q = qs[0] if qs and isinstance(qs[0], dict) else {}
+    opts = q.get("options") if isinstance(q.get("options"), list) else []
+    if not 1 <= option <= len(opts):
+        return None
+    last = None
+    for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
+                              "ORDER BY ts, rowid", (ts,)):
+        a = json.loads(ap or "{}")
+        if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER:
+            last = a
+    if not last:
+        return None
+    chosen = last.get("option") if isinstance(last.get("option"), int) else next(
+        (i + 1 for i, o in enumerate(opts) if _option_text(o) == _option_text(last.get("answer") or "")), None)
+    if chosen != option:
+        return None
+    label = opts[option - 1].get("label") if isinstance(opts[option - 1], dict) else opts[option - 1]
+    return Yes("ask", eid, f'asked "{_short(q.get("question"), 100)}", chose option {option} "{_short(label, 80)}"')
 
 
 def owners_yes(loop, resolve):
@@ -113,8 +157,9 @@ def check_loop(loop, wid, warn="warning: ", resolve=None):
                    "open, so the target gets no exception here")
         owners = None
     elif not found:
-        out.append(f"{tag}: target.decided {owners!r} is not the owner's yes in this machine's log (an ask the owner "
-                   "answered, or a prompt typed in their conductor's session): it lifts nothing until it is")
+        out.append(f"{tag}: target.decided {owners!r} is not the owner's yes in this machine's log (an ask for this "
+                   "work with the option the owner chose, <ask id>#<n>, or a prompt typed in their conductor's session): it lifts nothing until "
+                   "it is")
         owners = None
     if not isinstance(t, dict):
         out.append(f"{tag}: target is required (metric, and money unless the owner decided the measure)")
@@ -279,10 +324,11 @@ def target_line(loop, resolve):
     if not d:
         return line
     if not owners_yes(loop, resolve):
-        return (line + f"; it names {d} as the owner's yes, but this machine's log holds no such yes (an ask the owner "
-                       "answered, or a prompt typed in their conductor's session): unresolved, so it is not the owner's decision and the loop "
+        return (line + f"; it names {d} as the owner's yes, but this machine's log holds no such yes (an ask for this "
+                       "work with the option the owner chose, or a prompt typed in their conductor's session): unresolved, so it is not the owner's decision and the loop "
                        "needs its chain to money")
-    line += (f"; the owner decided this measure ({d}): its money is reported beside it"
+    words = getattr(resolve(d), "words", "")
+    line += (f"; the owner decided this measure ({d}" + (f": {words}" if words else "") + "): its money is reported beside it"
              + (f" as a reading ({' '.join(str(t['money']).split())})" if isinstance(t.get("money"), str) and t["money"].strip() else "")
              + ", never asked of the owner as a proof")
     return line
