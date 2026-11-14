@@ -346,6 +346,12 @@ def _code_deny(code, lang=None):
     if _TOOL_TOKEN_CODE.search(re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)):  # G23 in code;
         # a triple-quoted block is text an edit carries (G8), not a call (of_secrets-review on organic-framework PR 136)
         return TOOL_TOKEN_DENY, "of_tools in code"
+    if _PERSON_ACT_CODE.search(re.sub(r"'''.*?'''|\"\"\".*?\"\"\"", " ", code, flags=re.S)):  # G24 in code
+        if PERSON_ACT_MODE == "deny":
+            return PERSON_ACT_DENY, "a person's act written by code"
+        note = ("code that writes what only a person does", "a person's act written by code", PERSON_ACT_NOTE)
+        if note not in _WARNINGS:  # the code is read on more than one path; note it once
+            _WARNINGS.append(note)
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
     for lit in lits:
@@ -1324,6 +1330,14 @@ _OWNER_AGENT = re.compile(r"2BUA8C4S2C\.com\.1password|com\.1password/t/agent\.s
 _GRANT_SIGN_CODE = re.compile(r"\b(?:sign_ed25519|cmd_grant)\s*\(")
 # G23 in code: of_tools' token reader or its CLI asked for the header (a tripwire; docs/guard.md G23 Known limits)
 _TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|header\s*\(|main\s*\(\s*\[\s*['\"]header)")
+# G24 in code: what only a person does, written by code (a tripwire; docs/guard.md G24): the asks popup's and the
+# conductor chat's writers, the relay's typing as a person's channel, and an emit or record of the events that say a
+# person answered, typed, or approved (of_server's trust review of organic-framework PR 168)
+_PERSON_ACT_CODE = re.compile(
+    r"\bof_asks_answer\b[\s\S]*?\b(?:record|not_a_question|answer_blocked|deliver)\s*\("
+    r"|\bof_asks_chat\b[\s\S]*?\b(?:record|answer)\s*\("
+    r"|\bherdr_deliver\s*\("
+    r"|\b(?:emit|record)\s*\(\s*['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved)['\"]")
 _REMOVERS = {"rm", "unlink", "shred", "truncate", "mv"}
 _COPIERS = {"cp", "install", "rsync", "ln", "ditto"}
 _IN_PLACE = {"sed", "gsed", "perl", "ruby"}
@@ -1409,6 +1423,16 @@ def _script_of(head, args):
     return head, args
 
 
+# G24 warns first: the code's own keepers ran its writers on live state 12 times in 21 days (debugging the popup and
+# the relay's typing); it denies once they test them in an isolated HOME, as tests/isolate.py does.
+PERSON_ACT_MODE = "warn"
+PERSON_ACT_NOTE = ("code that writes what only a person does (an answer to an ask, a prompt or its origin, a diff's "
+                   "approval, text typed as a person's) makes a record that a person acted when none did; test such "
+                   "code in an isolated HOME. This is noted now and will be denied (docs/guard.md G24)")
+PERSON_ACT_DENY = ("code that writes what only a person does: an answer to an ask, a prompt or its origin, a diff's "
+                   "approval, or text typed as a person's (docs/guard.md G24). The person answers in the popup or in "
+                   "their conductor's chat; a position closes its own ask with `of status working --answered <id>`, "
+                   "and messages another with `of send`")
 TOOL_TOKEN_DENY = ("a shared tool server's access token, which only Claude Code reads, through the helper it runs "
                    "itself when it connects (docs/guard.md G23; docs/tools.md §4a)")
 
