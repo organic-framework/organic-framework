@@ -255,8 +255,9 @@ class Yeses:
                                             **({"via": via} if via else {}), **more})
         opts = ["yes, p50 is the target", "no, keep p99"]
 
-        def ask(q, work="w-speed"):
-            return add("agent_question", {"questions": [{"question": q, "options": opts}], "work": work})
+        def ask(q, work="w-speed", yes=1):
+            return add("agent_question", {"questions": [{"question": q, "options": opts}], "work": work,
+                                          **({"yes_option": yes} if yes else {})})
         self.ask = ask("p50 instead of p99?")
         answer(self.ask, "yes, p50 is the target")                           # option 1 chosen in the popup
         self.chat = ask("p50 as the target, from the chat?")
@@ -271,6 +272,8 @@ class Yeses:
         answer(self.free, "sure, why not")                                    # free text: no option chosen
         self.other = ask("Rotate the relay token?", work="w-ops")
         answer(self.other, "yes, p50 is the target")
+        self.unmarked = ask("p50, with no yes marked?", yes=None)
+        answer(self.unmarked, "yes, p50 is the target")                       # filed without --yes: no option is a yes
         self.flipped = ask("p90?")
         answer(self.flipped, "yes, p50 is the target")
         answer(self.flipped, "no, keep p99")                                  # the latest answer counts
@@ -329,11 +332,11 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertEqual(r(y.ask + "#1").words,                             # the cited words
                              'asked "p50 instead of p99?", chose option 1 "yes, p50 is the target"')
             self.assertEqual(r(y.prompt).words, "reaction time is the target, I accept the risk")
-            self.assertEqual(r(y.refused + "#2"), ("ask", y.refused))           # the option it cites is the one chosen
             self.assertEqual(of_loop.resolve_decided(y.conn, y.other + "#1", work="w-speed", goal_yes=y.other[-8:]),
                              ("ask", y.other))                                  # the goal's own yes may be cited
             self.assertIsNone(of_loop.resolve_decided(y.conn, y.prompt, person, kinds=("ask",)))  # change_objective
-            for no in (y.ask, y.bare + "#1",                                    # no option named; no person's channel
+            for no in (y.ask, y.bare + "#1", y.unmarked + "#1",                 # no option named; no person's channel;
+                       y.refused + "#2",                                        # no yes marked; a refusal by its number
                        y.ask + "#2", y.refused + "#1", y.free + "#1",           # another option, a refusal, free text
                        y.other + "#1", y.flipped + "#1", y.ask + "#3",          # another work, taken back, no such option
                        y.injected, y.corrected, y.elsewhere, y.closed + "#1", y.open + "#1", y.closed[-8:],
@@ -343,6 +346,30 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertTrue(reads)
             for q in reads:                                                     # by the key or one indexed name
                 self.assertTrue("event_id >=" in q or "name = '" in q, q)
+
+    def test_1_of_ask_yes_marks_the_option_that_is_the_yes(self):
+        """of_review on organic-framework PR 168: the ask names its yes when filed (`of ask --work W --yes N`)."""
+        import json
+        import sqlite3
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            env = dict(os.environ, OF_ORGS=cli_org(root, OWNED), OF_STATE=os.path.join(root, "state"))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            of = os.path.join(HERE, "..", "bin", "of")
+            q = ("Change the speed loop's target from p99 to p50 latency? The p50 tracks the triggers we lose; the "
+                 "p99 stays reported.")
+            ask = lambda *a: subprocess.run([sys.executable, of, "ask", q, "--options",  # noqa: E731
+                                             "yes, p50 is the target|no, keep p99", *a, "--from", "lab_doer"],
+                                            capture_output=True, text=True, env=env)
+            for bad in (("--yes", "1"), ("--work", "w-speed", "--yes", "3"), ("--work", "w-speed", "--yes", "0")):
+                r = ask(*bad)
+                self.assertNotEqual(r.returncode, 0, bad)
+                self.assertIn("--yes <n> marks which of --options is the yes", r.stderr)
+            r = ask("--work", "w-speed", "--yes", "1")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            db = sqlite3.connect(os.path.join(root, "state", "of.db"))
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.agent_question'").fetchone()[0])
+            self.assertEqual((p["work"], p["yes_option"]), ("w-speed", 1))
 
     def test_1_decided_is_read_from_the_registry_only_and_an_unread_log_warns(self):
         """docs/registry.md, Works, "The owner's measure", "Where it is read" (of_architect, after PR 168's review)."""
@@ -408,6 +435,7 @@ class OwnersMeasureTest(unittest.TestCase):
             yes = y.ask[-8:] + "#1"
             self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", yes).returncode, 0)
             for no in ("01a1d999-0000", y.closed[-8:] + "#1", y.injected, y.elsewhere, y.refused + "#1",
+                       y.refused + "#2",
                        y.other[-8:] + "#1", y.ask[-8:], y.prompt):              # no yes of the owner for this work;
                 # a prompt, even the person's, does not count for a change of objective
                 r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", no)
