@@ -3783,25 +3783,13 @@ def _diff_answer(conn, ask_id):
     import of_locale
     words = sorted({v.lower() for k in ("approve", "yes") for v in of_locale.variants(k)}, key=len, reverse=True)
     yes = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in words) + r")(?!\w)", re.I)
+    # a trust decision reads the log, never a view: any process of this user may write a view's rows without an event,
+    # and a row made or edited there would approve a diff (of_server on PR 154). One name, by the event_name_ts index.
     last = None
-    answers = None
-    try:  # the answers view (bin/of_fold.py), current up to its tail; a late or missing one: the answers' own events
-        import of_fold
-        r = of_fold.read("answers")
-        if not r.late:
-            answers = sorted(((r.rows.get(ask_id) or {}).get("answers") or []), key=lambda x: str(x.get("ts") or ""))
-    except Exception:  # noqa: BLE001
-        answers = None
-    if answers is None:  # an approval is never decided on a late view
-        answers = []
-        for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' "
-                                  "ORDER BY ts, rowid"):
-            p = json.loads(pl or "{}")
-            if ask_id in (p.get("ask_ids") or [p.get("ask_id")]):
-                answers.append({"by": p.get("by"), "via": p.get("via"), "answer": p.get("answer")})
-    for a in answers:
-        if a.get("by") == "owner" and a.get("via") == "asks-ui":
-            last = bool(yes.match(str(a.get("answer") or "")))
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' ORDER BY ts, rowid"):
+        p = json.loads(pl or "{}")
+        if ask_id in (p.get("ask_ids") or [p.get("ask_id")]) and p.get("by") == "owner" and p.get("via") == "asks-ui":
+            last = bool(yes.match(str(p.get("answer") or "")))
     return last
 
 

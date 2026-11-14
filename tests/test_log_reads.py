@@ -24,8 +24,8 @@ ASKS = "the asks projection where no listener view exists yet (current_asks retu
 HANDOVER = "hand-overs (769 events) by the name index since f91fae4: milliseconds; a view when they grow"
 RARE = "one rare name by the name index (kind B): a small view in step 4 of the order"
 CONST = "a constant read: the last rowid"
-FALLBACK = ("the deliberate fallback where a fold view is late or missing: one name by the event_name_ts index "
-            "(of_architect on PR 154)")
+FALLBACK = ("a trust decision (a diff's approval) reads the log, never a view anyone of this user may write: one "
+            "name by the event_name_ts index (of_server on PR 154)")
 BYID = "one event by its rowid"
 OFFLINE = "an offline command (of db stats)"
 STUDIO = "of_studio's readers: its fold views (its steps 2 and 3, on the shared contract)"
