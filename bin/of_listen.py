@@ -1280,6 +1280,24 @@ def _has_meta(conn):
     return conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'listener_meta'").fetchone() is not None
 
 
+def make_beat(conn, processors, clock=time.time):
+    """The first catch-up's beat, called between batches at most every HEARTBEAT_S. With every view whole it is the
+    full heartbeat. While a view is rebuilt in place (prepare() set in_place and dropped the heartbeat) readers must not
+    trust the views yet, but the listener is alive: only the watchdog's file beats, so a long replay is never
+    restarted (of_review on PR 145 and PR 149)."""
+    whole = not any(getattr(p, "in_place", False) for p in processors)
+    last = [0.0]
+
+    def beat():
+        if clock() - last[0] >= HEARTBEAT_S:
+            if whole:
+                heartbeat(conn)
+            else:
+                _touch(heartbeat_path())
+            last[0] = clock()
+    return beat
+
+
 def heartbeat(conn):
     """Never fatal: a busy store skips one beat (a 'database is locked' here crash-looped the listener). The beat goes
     to listener_meta, which readers trust (fresh()), and to the file listen.heartbeat, which the watchdog reads without
@@ -1319,16 +1337,7 @@ def run(stop=None, log=print, rebuild=False):
                 return
             time.sleep(2)
     log(f"of listen: {', '.join(f'{p.name}@{p.version} from {cursors[p.name]}' for p in processors)}")
-    whole = not any(getattr(p, "in_place", False) for p in processors)
-    last = [0.0]
-
-    def beat():
-        if time.time() - last[0] >= HEARTBEAT_S:
-            if whole:
-                heartbeat(conn)
-            else:  # a view rebuilt in place is not one readers may trust yet, but the listener is alive: the
-                _touch(heartbeat_path())  # watchdog's file beats, so a long replay is never restarted (of_review, PR 145)
-            last[0] = time.time()
+    beat = make_beat(conn, processors)
     while True:  # the first catch-up: a busy store waits and continues from where it got (never a crash)
         try:
             if step(conn, processors, cursors, beat=beat):
