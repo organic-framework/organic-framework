@@ -145,7 +145,7 @@ def org_breakdown(rules, rows):
                         resolvers[c["config"]] = of_guard.ssh_resolver(c["config"])
                     for d in c["destinations"]:
                         one = dict(c, destinations=[d])
-                        if of_guard.ssh_rule_match(r["ssh"], one, resolvers[c["config"]]):
+                        if of_guard.ssh_rule_match(r["ssh"], one, resolvers[c["config"]], pos):
                             host = of_guard._ssh_host(d[0]) or re.sub(r"\*+", "*", of_guard._ssh_host(
                                 of_guard._SSH_VAR.sub("*", str(d[0]))) or "*")
                             out[(r["id"], pos, "(ssh)", c["head"], host)] += 1
