@@ -250,9 +250,9 @@ class Yeses:
         self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"}, position="lab_conductor")
         self.elsewhere = add("human_prompt", {"origin": "human", "text": "typed in a doer's pane"})
         add("prompt_origin", {"event_id": self.corrected, "origin": "injected", "evidence": "turnOrigin"})
-        def answer(ask, words, by="owner", **more):
-            add("agent_question_answered", {"ask_id": ask, "ask_ids": [ask], "by": by, "via": "asks-ui",
-                                            "answer": words, **more})
+        def answer(ask, words, by="owner", via="asks-ui", **more):
+            add("agent_question_answered", {"ask_id": ask, "ask_ids": [ask], "by": by, "answer": words,
+                                            **({"via": via} if via else {}), **more})
         opts = ["yes, p50 is the target", "no, keep p99"]
 
         def ask(q, work="w-speed"):
@@ -260,7 +260,11 @@ class Yeses:
         self.ask = ask("p50 instead of p99?")
         answer(self.ask, "yes, p50 is the target")                           # option 1 chosen in the popup
         self.chat = ask("p50 as the target, from the chat?")
-        answer(self.chat, "yes, p50 is the target", option=1)                 # option 1 through the conductor's chat
+        answer(self.chat, "yes, p50 is the target", via="conductor", option=1,  # option 1 through the conductor's chat
+               quote="ok, p50 it is")
+        self.bare = ask("p50, closed by of asks answered?")
+        answer(self.bare, "yes, p50 is the target", via=None)                 # by: owner with no person's channel
+        answer(self.bare, "yes, p50 is the target", via="status")
         self.refused = ask("p50 as the target?")
         answer(self.refused, "no, keep p99")                                  # option 2: the refusal
         self.free = ask("p50, really?")
@@ -319,6 +323,8 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertEqual(r(y.ask + "#1"), ("ask", y.ask))                   # the ask with the option that is the yes
             self.assertEqual(r(y.ask[-8:] + "#1"), ("ask", y.ask))              # by its short id, as of asks prints it
             self.assertEqual(r(y.chat + "#1"), ("ask", y.chat))                 # the option's number, from the chat
+            self.assertEqual(r(y.chat + "#1").words, 'asked "p50 as the target, from the chat?", chose option 1 "yes, '
+                             'p50 is the target", in their words "ok, p50 it is"')  # the person's own quote beside it
             self.assertEqual(of_loop.resolve_decided(y.conn, y.elsewhere), ("prompt", y.elsewhere))  # no place rule
             self.assertEqual(r(y.ask + "#1").words,                             # the cited words
                              'asked "p50 instead of p99?", chose option 1 "yes, p50 is the target"')
@@ -327,7 +333,7 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertEqual(of_loop.resolve_decided(y.conn, y.other + "#1", work="w-speed", goal_yes=y.other[-8:]),
                              ("ask", y.other))                                  # the goal's own yes may be cited
             self.assertIsNone(of_loop.resolve_decided(y.conn, y.prompt, person, kinds=("ask",)))  # change_objective
-            for no in (y.ask,                                                   # no option named
+            for no in (y.ask, y.bare + "#1",                                    # no option named; no person's channel
                        y.ask + "#2", y.refused + "#1", y.free + "#1",           # another option, a refusal, free text
                        y.other + "#1", y.flipped + "#1", y.ask + "#3",          # another work, taken back, no such option
                        y.injected, y.corrected, y.elsewhere, y.closed + "#1", y.open + "#1", y.closed[-8:],
