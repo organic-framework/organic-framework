@@ -8,12 +8,16 @@ checkpoint_days, wip_arms). The register and the log are events (§4.1, of_platf
   of.loop_run         {work, hypothesis, rung, result, value, metric, queued_at, started_at, ended_at, runner_h, tokens,
                       evidence}; ended_at defaults to the event's ts, metric to the target's
   of.loop_decision    {work, hypothesis, decision: keep|drop|park|step_up|step_back|change_objective, rung, metric,
-                      to_money (also as money), note}
+                      to_money (also as money), decided (a change of objective on the owner's measure), note}
   (of_platform's names, docs/events.md: a run's id is `run`; a hypothesis update carries `status` and `status_at`)
   of.loop_cost        {work, run, session, from, to, usd, fresh_tokens, responses, by_model}: of_capacity, about an hour
                       after a run ends, the recording session's spend in the run's window; usd null = unknown
 
   project(work_id, spec, rows, now)  the loop card's data: ladder, register, curve, cost, decisions and the §5 metrics
+
+The owner's measure (docs/registry.md, Works; RFC 0005 §4.2, 2026-11-14): a target with `decided`, the id of the yes of
+the person who owns the work's goal, is itself what the loop's changes are for. Its money is a reading, a measure may
+chain to it by `to_target` instead of `to_money`, and a run on such a measure is tied to the target, not drift.
   checkpoint_trend(curve, ...)      the target per checkpoint_days period: a standing work's progress (docs/registry.md)
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
@@ -60,6 +64,20 @@ def context_label(part):
     return part
 
 
+def decided_of(target):
+    """The owner's yes on the target's measure (docs/registry.md, Works, "The owner's measure"): the id as written, when
+    it is a non-empty text as `of registry check` takes it, else None (the target is then priced in money, as before)."""
+    d = (target or {}).get("decided") if isinstance(target, dict) else None
+    return d.strip() if isinstance(d, str) and d.strip() else None
+
+
+def tied(spec):
+    """The measures a run may measure without drifting from the target (RFC 0005 §6): those with `to_money`, and on a
+    target the owner decided also those with `to_target` (§4.2)."""
+    own = bool(spec["target"].get("decided"))
+    return {str(m["name"]) for m in spec["measures"] if m.get("to_money") or (own and m.get("to_target"))}
+
+
 def spec_of(raw):
     """The work's `loop:` normalized, or None."""
     if not isinstance(raw, dict):
@@ -73,8 +91,10 @@ def spec_of(raw):
     t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
     t["segment"] = _segment(target.get("segment"))
+    t["decided"] = decided_of(target)
     return {"target": t,
-            "measures": [m for m in raw.get("measures") or [] if isinstance(m, dict) and m.get("name")],
+            "measures": [dict(m, to_money=m.get("to_money"), to_target=m.get("to_target"))
+                         for m in raw.get("measures") or [] if isinstance(m, dict) and m.get("name")],
             "ladder": ladder, "rungs": names, "production": prod,
             "checkpoint_days": _num(raw.get("checkpoint_days")) or 3, "wip_arms": int(_num(raw.get("wip_arms")) or 2),
             "babysit_model": raw.get("babysit_model") or "sonnet"}
@@ -245,9 +265,9 @@ def project(work_id, spec, rows, now, days=7, work=None):
         flat = all(abs(tail[i][1] - tail[i - 1][1]) < PLATEAU_GAIN * abs(tail[i - 1][1] or 1) for i in range(1, len(tail)))
         plateau = {"from": tail[1][0], "to": tail[-1][0], "flat": flat}
 
-    priced = {str(m["name"]) for m in spec["measures"] if m.get("to_money")}
+    tied_to = tied(spec)
     latest = sorted(runs, key=lambda r: r["ended"])[-DRIFT_RUNS:]
-    drift = [r["metric"] for r in latest if not r["on_target"] and r["metric"] not in priced]
+    drift = [r["metric"] for r in latest if not r["on_target"] and r["metric"] not in tied_to]
     wk_runs = [r for r in runs if r["ended"] >= week]
     kept_week = [h for h in kept if (h.get("decided_at") or 0) >= week]
     runner_h = round(sum(r["runner_h"] for r in wk_runs), 2)
@@ -275,7 +295,9 @@ def project(work_id, spec, rows, now, days=7, work=None):
                   "position": r["position"], "session": r["session"], "model": r["model"], "usd": r["usd"],
                   "fresh_tokens": r["fresh_tokens"]} for r in runs],
         "decisions_all": [{"ts": x["ts"], "kind": x.get("decision"), "hypothesis": x.get("hypothesis"), "metric": x.get("metric"),
-                           "to_money": x.get("to_money") or x.get("money")} for x in sorted(decisions, key=lambda x: x["ts"] or 0)],
+                           "to_money": x.get("to_money") or x.get("money"),
+                           "decided": x.get("decided") if isinstance(x.get("decided"), str) and x["decided"].strip() else None}
+                          for x in sorted(decisions, key=lambda x: x["ts"] or 0)],
         "metrics": {"rungs": {x["rung"]: {"runs": x["runs"], "cycle_time": x["cycle_time_h"], "wait_share": x["wait_share"]}
                               for x in ladder},
                     "wip": _wip_series(hyp, evs),

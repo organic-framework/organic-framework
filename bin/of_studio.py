@@ -1817,6 +1817,10 @@ def view_works(d, wid=None):
     return empty_note(d) + "".join(out)
 
 
+OWNER_MEASURE = "the owner's measure, decided "   # docs/registry.md, Works, "The owner's measure"
+OWNER_YES = " · the owner's yes "
+
+
 def _loops_table(d, loops):
     import of_loops
     trs = []
@@ -1824,6 +1828,7 @@ def _loops_table(d, loops):
         if not c:
             continue
         t = c["spec"]["target"]
+        src = (t.get("stake"), OWNER_MEASURE + t["decided"] if t.get("decided") else None)
         marks = []
         if c["drift"]:
             marks.append(f'<span class="flag crit">measures {e(", ".join(c["drift"]))}, not the target</span>')
@@ -1835,7 +1840,7 @@ def _loops_table(d, loops):
             marks.append('<span class="flag">over the WIP limit</span>')
         trs.append(f'<tr><td><a href="{e(link("works", d.org, w=w["id"]))}">{e(w["title"])}</a>'
                    f'<div class="src"><code>{e(w["id"])}</code> · owner {e(w.get("owner") or "–")}</div></td>'
-                   f'<td>{e(t.get("metric") or "no target declared")}<div class="src">{e(t.get("stake") or "")}</div></td>'
+                   f'<td>{e(t.get("metric") or "no target declared")}<div class="src">{e(" · ".join(x for x in src if x))}</div></td>'
                    f'<td>{e(of_loops.summary(c, d.now) or "")} {"".join(marks)}</td></tr>')
     if not trs:
         return ""
@@ -1853,11 +1858,19 @@ def _loop_card(d, w):
     st = of_loops.stamp
     spec, t = c["spec"], c["spec"]["target"]
     h = lambda x: "–" if x is None else f"{x:g}"
+    own = t.get("decided")   # the owner's measure (docs/registry.md, Works; RFC 0005 §4.2): money is a reading
     drift = (f'<p class="crit"><b>The latest runs measure {e(", ".join(c["drift"]))}, not the target</b>, and the loop\'s '
-             '<code>measures</code> give it no price in money (objective drift, RFC 0005 §6).</p>') if c["drift"] else ""
-    facts = [("Target", t.get("metric") or "not declared: the work's loop: in the registry names it"),
-             ("Money", t.get("money") or "–"), ("Stake", t.get("stake") or "–"), ("Class", t.get("throughput_class") or "–"),
-             ("Started", st(c["start"])), ("Events", str(c["events"]))]
+             + ('<code>measures</code> tie it to the target by neither <code>to_target</code> nor <code>to_money</code> '
+                '(objective drift, RFC 0005 §6): tie the metric to the target, or get the owner\'s yes on a new measure.</p>'
+                if own else '<code>measures</code> give it no price in money (objective drift, RFC 0005 §6).</p>')) if c["drift"] else ""
+    facts = [("Target", t.get("metric") or "not declared: the work's loop: in the registry names it")]
+    if own:
+        facts.append(("Decided", f"{own}: the yes of the goal's owner on this measure, which is itself what the loop's "
+                                 "changes are for; its money is a reading, shown with the cost below"))
+    else:
+        facts.append(("Money", t.get("money") or "–"))
+    facts += [("Stake", t.get("stake") or "–"), ("Class", t.get("throughput_class") or "–"),
+              ("Started", st(c["start"])), ("Events", str(c["events"]))]
     seg = t.get("segment")
     if seg:   # docs/registry.md: the segment the organization controls, and the parts outside it reported beside it
         facts[1:1] = [("Segment", f'{seg.get("start") or "?"} → {seg.get("end") or "?"}'),
@@ -1892,7 +1905,10 @@ def _loop_card(d, w):
     cw = c["cost_week"]
     decisions = "".join(f'<li>{e(st(x.get("ts")))} <b>{e(x.get("decision") or "?")}</b>'
                         f'{" " + e(x["hypothesis"]) if x.get("hypothesis") else ""}{" → " + e(x["rung"]) if x.get("rung") else ""}'
-                        f'{": " + e(x["metric"]) if x.get("metric") else ""}{" · " + e(str(x["note"])[:200]) if x.get("note") else ""}</li>'
+                        f'{": " + e(x["metric"]) if x.get("metric") else ""}'
+                        f'{OWNER_YES + e(str(x["decided"])) if x.get("decided") else ""}'
+                        f'{" · to money: " + e(str(x.get("to_money") or x.get("money"))) if x.get("to_money") or x.get("money") else ""}'
+                        f'{" · " + e(str(x["note"])[:200]) if x.get("note") else ""}</li>'
                         for x in c["decisions"])
     rate = "–" if c["hit_rate"] is None else f'{round(100 * c["hit_rate"])}% ({c["kept"]} of {c["decided"]} decided)'
     return f"""<h2 class="lead">Development loop <span class="sub">RFC 0005 §7; derived from the loop's events, never reported</span></h2>
@@ -1907,10 +1923,25 @@ WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wi
 <h3>Register <span class="sub">in test, then open hypotheses by value of information per runner-hour</span></h3>
 {f'<div class="scroll"><table><thead><tr><th>Id</th><th>Change</th><th>Predicted</th><th>Cost</th><th>VoI</th><th>Status</th></tr></thead><tbody>{reg_rows}</tbody></table></div>' if reg_rows else '<p class="quiet">No open hypothesis.</p>'}
 {f'<details><summary>Last kept and dropped</summary><table><tbody>{done_rows}</tbody></table></details>' if done_rows else ""}
-<h3>Cost this week</h3><p>{"no cost recorded yet" if cw["usd"] is None else f'${cw["usd"]:,.2f}'}{f' ({cw["runs_without_usd"]} run{"s" if cw["runs_without_usd"] != 1 else ""} without a cost yet: of_capacity prices a run an hour after it ends, and a run without a start stays unknown)' if cw["runs_without_usd"] else ""}
+<h3>Cost this week{", and money as a reading" if own else ""}</h3><p>{"no cost recorded yet" if cw["usd"] is None else f'${cw["usd"]:,.2f}'}{f' ({cw["runs_without_usd"]} run{"s" if cw["runs_without_usd"] != 1 else ""} without a cost yet: of_capacity prices a run an hour after it ends, and a run without a start stays unknown)' if cw["runs_without_usd"] else ""}
  · {h(cw["runner_h"])} runner-h · {"–" if cw["tokens"] is None else f'{cw["tokens"]:,.0f} fresh tokens'}
  · per kept cycle {"–" if cw["usd_per_kept_cycle"] is None else f'${cw["usd_per_kept_cycle"]:,.2f}'} and {h(cw["runner_h_per_kept_cycle"])} runner-h</p>
-<h3>Decision log</h3>{f"<ul>{decisions}</ul>" if decisions else '<p class="quiet">No decision recorded.</p>'}"""
+{_money_reading(d, w, t) if own else ""}<h3>Decision log</h3>{f"<ul>{decisions}</ul>" if decisions else '<p class="quiet">No decision recorded.</p>'}"""
+
+
+def _money_reading(d, w, t):
+    """On the owner's measure (docs/registry.md, Works; RFC 0005 §4.2): the target's money line, if any, and the spend
+    this month of the goal the work serves, both readings beside the cost; nothing waits on them, and no money is no
+    mark."""
+    parts = [f'Money: {e(t["money"])}' if t.get("money") else "No money line given"]
+    gid = w.get("goal")
+    sp = goal_spend(d) if gid and getattr(d, "org", None) else None
+    tot = ((sp or {}).get("goals") or {}).get(gid) if gid else None
+    if tot and tot.get("responses"):
+        parts.append(f'the goal {e(gid)} spent ${tot["cost_usd"]:,.0f} this month ({tokens(tot["fresh"])} fresh tokens)')
+    return (f'<p>{" · ".join(parts)}.</p><p class="legend">The owner decided this measure ({e(t["decided"])}): money and '
+            'cost are reported here, never asked of the owner as the measure\'s justification. The plateau question and every '
+            'gate on an act stay the owner\'s (RFC 0005 §4.2).</p>')
 
 
 def _standing_review(w, d):
