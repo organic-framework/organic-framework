@@ -831,16 +831,52 @@ def _positional(args, value_flags):
 
 
 # `kubectl get --raw /api/v1/namespaces/<ns>/secrets/<name>`: the API path itself names the namespace and the kind
-_RAW_PATH = re.compile(r"^/apis?/(?:[^/?]+/)?v[^/?]*/(?:namespaces/([^/?]+)/)?([^/?]+)(?:/[^/?]+(/[^/?]+)?)?")
+_RAW_POD_SUBS = ("log", "proxy")  # a pod's subresources that are not the Pod object (status, ephemeralcontainers … are)
 
 
 def _kube_raw(args):
-    """(namespace or None, kind or None, subresource or None) of a `--raw` API path, or None without --raw."""
+    """(namespace or None, kind, subresource or None) of a `--raw` API path, read as the API server reads it (of_review
+    and of_secrets-review on organic-framework PR 151): cut at `#`, percent-decoded until it no longer changes, cut at
+    `?`, empty and `.` segments dropped and `..` applied, lowercased, and a leading legacy `watch/` (which streams the
+    objects) or `proxy/` (its subresource is then proxy) dropped. The kind is `unparsed` for a path the guard cannot
+    read (held in a variable or a substitution) and `(none)` for a path that names no object (discovery, /healthz).
+    None without --raw."""
+    from urllib.parse import unquote
     path = _opt_value(args, ("--raw",))
     if path is None:
         return None
-    m = _RAW_PATH.match(path)
-    return (m.group(1), m.group(2).lower(), (m.group(3) or "").strip("/") or None) if m else (None, None, None)
+    if "$" in path or "__OFSUB__" in path or "`" in path:
+        return None, "unparsed", None
+    p = path.split("#", 1)[0]
+    for _ in range(4):
+        q = unquote(p)
+        if q == p:
+            break
+        p = q
+    segs = []
+    for seg in p.split("?", 1)[0].split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            segs = segs[:-1]
+            continue
+        segs.append(seg.lower())
+    if segs[:1] == ["api"] and len(segs) > 2:
+        rest = segs[2:]
+    elif segs[:1] == ["apis"] and len(segs) > 3:
+        rest = segs[3:]
+    else:
+        return None, "(none)", None
+    legacy_proxy = rest[:1] == ["proxy"]
+    if rest[:1] in (["watch"], ["proxy"]):
+        rest = rest[1:]
+    ns = None
+    if rest[:1] == ["namespaces"] and len(rest) >= 3:
+        ns, rest = rest[1], rest[2:]
+    if not rest:
+        return ns, "(none)", None
+    sub = "proxy" if legacy_proxy else ("/".join(rest[2:]) or None)
+    return ns, rest[0], sub
 
 
 def _kubectl_secret_deny(args):
@@ -854,8 +890,8 @@ def _kubectl_secret_deny(args):
     has_secret = any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a))
     has_pod = any(p in ("pod", "pods", "po") for a in nonopt for p in re.split(r"[,/]", a))
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0]
-    raw = _kube_raw(args)  # the API's own JSON: a Secret's values; a pod's spec with its env values (not its log)
-    if raw and (raw[1] == "secrets" or (raw[1] == "pods" and raw[2] is None)):
+    raw = _kube_raw(args)  # the API's own JSON: a Secret's values; the Pod, its spec with env values (not its log)
+    if raw and (raw[1] == "secrets" or (raw[1] == "pods" and (raw[2] or "").split("/")[0] not in _RAW_POD_SUBS)):
         return _prints(f"kubectl {sub or ''} --raw on {raw[1]}".replace("  ", " "))
     if sub == "edit" and has_secret:
         return _prints("kubectl edit secret")
@@ -2362,7 +2398,7 @@ def _kube_kinds(verb, pos, cut):
     label, rest = (f"{verb} {sub}", pos[2:]) if sub else (verb, pos[1:])
     raw = _kube_raw(cut)
     if raw is not None:
-        return label, [fold_kind(raw[1])[0]] if raw[1] else ["(none)"]
+        return label, [raw[1] if raw[1] in ("unparsed", "(none)") else fold_kind(raw[1])[0]]
     if verb == "run":
         return label, ["pods"]
     if verb == "create" and rest[:1] == ["token"]:
