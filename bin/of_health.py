@@ -86,8 +86,10 @@ def server_health(url=None, timeout=20.0, opener=None):
 
 def server_checks(url=None, timeout=5.0, opener=None, token=None):
     """of-server's own checks (GET /v1/health/checks, an authenticated endpoint; docs/health.md §3), as {check: record}
-    with the limit as [degraded, failed] and source "of-server", or {} when it does not answer. The machine's token from
-    of_client, one try with a short timeout (this runs every minute). Its events and fyi are the server's."""
+    with the limit as [degraded, failed] and source "of-server", or {} when it does not answer. One try with a short
+    timeout, with the machine's cached token only: refreshing one is of_client's four tries of 120 s each, which held the
+    minute's run past an of-server hang (of_review on PR 159); with none valid, the server's checks wait for the relay
+    or `of ship` to refresh it. Its events and fyi are the server's."""
     import urllib.request
     try:
         if url is None:
@@ -97,7 +99,9 @@ def server_checks(url=None, timeout=5.0, opener=None, token=None):
             return {}
         import of_client
         if token is None and opener is None:
-            token = of_client.Client(url).token()
+            token = cached_token(of_client.Client(url).token_path)
+            if not token:
+                return {}
         req = urllib.request.Request(url.rstrip("/") + "/v1/health/checks")
         secret = dict(of_client.access_headers(url), **({"Authorization": f"Bearer {token}"} if token else {}))
         for k, v in secret.items():  # never sent on to a redirect's host
@@ -113,6 +117,17 @@ def server_checks(url=None, timeout=5.0, opener=None, token=None):
                                "state": c["state"], "owner": c.get("owner") or "of_server", "since": c.get("since"),
                                "source": "of-server"}
     return out
+
+
+def cached_token(path, now=None, margin=60):
+    """The machine's server token from of_client's cache when it is good for MARGIN seconds more, else None: never a
+    request for a new one."""
+    try:
+        with open(path) as fh:
+            t = json.load(fh)
+        return t["token"] if float(t["expires"]) - (now or time.time()) > margin else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _read_only(path=None):

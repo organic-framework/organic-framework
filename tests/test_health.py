@@ -112,6 +112,16 @@ class ChecksTest(StateDir):
         self.assertEqual(carded, [state])
         self.assertEqual(of_health.server_checks(url="http://x", opener=lambda req, timeout: 1 / 0), {})
 
+    def test_only_a_cached_token_never_a_refresh(self):
+        """of_review on PR 159: token() refreshes with four tries of 120 s each, which held the minute's run."""
+        import json as _j
+        path = os.path.join(self.tmp.name, "token.json")
+        self.assertIsNone(of_health.cached_token(path))
+        with open(path, "w") as fh:
+            _j.dump({"token": "T", "expires": 1000.0}, fh)
+        self.assertEqual(of_health.cached_token(path, now=900.0), "T")
+        self.assertIsNone(of_health.cached_token(path, now=950.0))           # within a minute of its end: none
+
     def test_hook_readings_take_the_last_ten_minutes_from_the_end(self):
         now = 1_800_000_000.0
         with open(os.path.join(self.tmp.name, "hook-timing.jsonl"), "w") as fh:
