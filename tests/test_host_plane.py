@@ -234,6 +234,19 @@ class DeployTest(unittest.TestCase):
         self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # no compileall, no smoke
         self.assertFalse(any(a[0] == plane.SUDO and "smoke" in a for a in self.ran))
 
+    def test_the_trust_check_covers_the_new_tree_and_the_python_root_runs(self):
+        """of_review on PR 148: before compileall, Homebrew's python runs as root; the check must cover it too."""
+        from unittest import mock
+        seen = []
+        with mock.patch.object(host, "trust_problems", lambda roots, users, run=None: seen.append(list(roots)) or []):
+            plane.deploy(self.git(self.src, "rev-parse", "main").strip(), "of", ["of"], run=self.run_with(True),
+                         log=lambda m: None, root=self.root, source=self.src, self_check=lambda: [],
+                         final_check=lambda: [])
+        roots = seen[0]
+        self.assertTrue(roots[0].startswith(self.root + ".new-"))           # the new tree
+        self.assertIn(host.PYTHON, roots)                                     # the python root runs on it
+        self.assertNotIn(self.root, roots)                                    # not the tree it replaces
+
     def test_the_script_and_its_python_are_checked_first(self):
         self.me = ["of may write the folder of plane.py"]
         with self.assertRaises(SystemExit) as e:

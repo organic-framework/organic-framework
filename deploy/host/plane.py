@@ -357,7 +357,10 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
         fail("the checkout is not the pinned commit")
     run([CHOWN, "-R", "-P", "root:wheel", new], capture_output=True, cwd="/", env=ROOT_ENV)
     run([CHMOD, "-R", "u+rwX,go+rX,go-w", new], capture_output=True, cwd="/", env=ROOT_ENV)
-    problems = (trust or (lambda: host.trust_problems([new], [*org_users, host.SERVICE_USER], run=run)))()
+    # the new tree, and what root runs on it: Homebrew's python (compileall below), as code_roots() names it, without
+    # the tree in place, which this one replaces (of_review on PR 148: 54e0748 had it, the fresh tree lost it)
+    roots = [new] + [r for r in host.code_roots() if os.path.realpath(r) != os.path.realpath(root)]
+    problems = (trust or (lambda: host.trust_problems(roots, [*org_users, host.SERVICE_USER], run=run)))()
     if problems:
         fail("the trust check failed (" + "; ".join(problems)[:300] + ")")
     # the user runs the smoke check, never root; git in root's tree needs it named safe for that user
