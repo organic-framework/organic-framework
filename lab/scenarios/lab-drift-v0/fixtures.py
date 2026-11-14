@@ -853,6 +853,22 @@ SCENARIOS += [
           ("ap.missing-verifier", ["bot_search"], "negative")),
 ]
 
+
+def _judged(prs, verdicts):
+    """The PRs as imported from 2026-11-15, with the verdict comments their comments carry (docs/events.md)."""
+    return [dict(p, payload=dict(p["payload"], verdicts=verdicts)) for p in prs]
+
+
+SCENARIOS += [
+    # v2: verdicts read and none given: no review, though the repository has no submitted review either
+    _case("missing-verifier/positive-verdicts-read", _org_doc(), _judged(_PRS[:5], []) + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "positive")),
+    # v2: another position approved one of them in a verdict comment: a verifier is on the path
+    _case("missing-verifier/negative-verdict-review", _org_doc(),
+          _judged(_PRS[:4], []) + _judged(_PRS[4:5], [{"verdict": "approve", "position": "bot_operator"}]) + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+]
+
 # Part answers (v1, mandate 5): a position with no merged work, against the owner's prompts in its sessions. Another
 # position's merged PRs keep the work records attributed; bot_search merges none.
 _ASKED = [prompt(f"aq{k}", _at(_day("11-02", k % 4), 8 + k // 4), sid_of("bot_search"), "check the pool") for k in range(40)]

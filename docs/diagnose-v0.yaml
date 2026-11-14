@@ -118,8 +118,8 @@ rules:
     remedies: [deputy or published interface for its most frequent request, split its interfaces]
 
   missing-verifier:
-    version: 1                   # v1 (2026-11-14): part answers, a position with no merged work against the owner's prompts (mandate 5; diagnose.md 2.9); v0 (2026-11-14): built on of.founder_correction (of.correction was never recorded)
-    labels_carry_from: [0]       # part results is v0's detection, unchanged
+    version: 2                   # v2 (2026-11-15): part results reads verdict comments as review evidence (diagnose.md 2.9); v1 (2026-11-14): part answers, a position with no merged work against the owner's prompts (mandate 5); v0 (2026-11-14): built on of.founder_correction (of.correction was never recorded)
+    labels_carry_from: [1]       # part answers is unchanged (its own issue ids); part results now reads more review evidence
     p: 0.6
     m_decide: 5
     thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3, correction_kinds: [output, fact],
