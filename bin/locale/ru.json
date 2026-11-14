@@ -44,7 +44,7 @@
  "This Mac has {free} GiB of free space left (under {below}). Below about 20 GiB the relay, OF's event store and every session are at risk. What takes the space: {consumers}. The pulse has asked the positions over {cap} GiB, and the structure keepers of projects over {project} GiB, to clean their folders; it deletes nothing itself. The card closes itself once more than {clear} GiB are free. What should be done?": "На Маке осталось {free} ГиБ свободного места (меньше {below}). Ниже примерно 20 ГиБ под угрозой relay, база событий OF и все сессии. Что занимает место: {consumers}. Пульс уже попросил позиции сверх {cap} ГиБ и хранителей структуры проектов сверх {project} ГиБ почистить свои папки; сам он ничего не удаляет. Карточка закроется сама, когда свободно станет больше {clear} ГиБ. Что делать?",
  "swap {gib} GiB (it grows when memory runs short: fewer live sessions shrink it)": "подкачка {gib} ГиБ (растёт, когда не хватает памяти: чем меньше живых сессий, тем она меньше)",
  "OF's event store {gib} GiB": "база событий OF {gib} ГиБ",
- "Claude Code worktrees inside the checkouts {gib} GiB, most in {lines}": "рабочие копии Claude Code внутри репозиториев {gib} ГиБ, больше всего в {lines}",
+ "worktrees inside the checkouts {gib} GiB, most in {lines}": "рабочие копии (worktrees) внутри репозиториев {gib} ГиБ, больше всего в {lines}",
  "the live sessions' temporary folders {gib} GiB, most in {lines}": "временные папки живых сессий {gib} ГиБ, больше всего в {lines}",
  "To do for you": "Сделать тебе",
  "Trust the folder {cwd} in the account {acct}, to start {position}": "Доверить папку {cwd} в аккаунте {acct}, чтобы запустить {position}",

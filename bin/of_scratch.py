@@ -16,8 +16,8 @@ What the pulse does with this module:
 - tells an organization's structure keeper once, in its pane when it is idle, when its own organization's live
   sessions in one project folder together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
   session's position and size; again only after the project fell under it;
-- sizes the Claude Code worktrees inside each organization's checkouts (`<path>/.claude/worktrees/*` and one level
-  down, from orgs.yaml `paths`) on the same cadence and budget, and tells an organization's structure keeper once
+- sizes the worktrees inside each organization's checkouts (`<path>/.claude/worktrees/*`, Claude Code's, and
+  `<path>/.worktrees/*`, the agents' own; each also one level down; from orgs.yaml `paths`) on the same cadence and budget, and tells an organization's structure keeper once
   when its worktrees pass WORKTREE_CAP together (2026-11-14, of_capacity: ten such worktrees of about 1 GiB each took
   free disk from 35.8 to 18.4 GB in five hours while every scratch folder stayed flat);
 - files one card to the founder when free disk falls under CARD_BELOW, naming what takes the space (swap, OF's
@@ -40,7 +40,7 @@ GiB = 2 ** 30
 SCRATCH_CAP = 3 * GiB
 SCRATCH_QUOTA = 6 * GiB  # the hard line: the guard refuses new writes into a folder over it (docs/guard.md)
 PROJECT_CAP = 12 * GiB   # a project folder's live sessions together: its structure keeper is told
-WORKTREE_CAP = 12 * GiB  # an organization's Claude Code worktrees inside its checkouts together
+WORKTREE_CAP = 12 * GiB  # an organization's worktrees inside its checkouts together
 VM_DIR = "/System/Volumes/VM"  # macOS's swap files, on the same disk as everything else
 SIZE_EVERY_S = 1800
 OVER_EVERY_S = 300       # a folder over the cap is re-sized every pulse: a runaway grows GiBs in 30 minutes
@@ -101,20 +101,25 @@ def home_label(path):
     return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
 
 
+WORKTREE_ROOTS = ((".claude", "worktrees"), (".worktrees",))  # Claude Code's layout, and the agents' own
+
+
 def worktree_dirs(org_paths):
-    """[(org, repository as ~/…, worktree folder)]: Claude Code's worktrees inside each organization's checkouts,
-    `<path>/.claude/worktrees/*` and `<path>/*/.claude/worktrees/*` for each of its orgs.yaml `paths`."""
+    """[(org, repository as ~/…, worktree folder, its path in the repository)]: the worktrees inside each
+    organization's checkouts, `<path>/<root>/*` and `<path>/*/<root>/*` for each WORKTREE_ROOTS layout and each of its
+    orgs.yaml `paths` (of_review on PR 180: on the founder's Mac `.worktrees` held more than `.claude/worktrees`)."""
     out, seen = [], set()
     for org, paths in sorted((org_paths or {}).items()):
         for p in paths or []:
             root = os.path.expanduser(str(p))
-            for wt_root in sorted(glob.glob(os.path.join(root, ".claude", "worktrees"))
-                                  + glob.glob(os.path.join(root, "*", ".claude", "worktrees"))):
-                repo = home_label(os.path.dirname(os.path.dirname(wt_root)))
-                for w in sorted(glob.glob(os.path.join(wt_root, "*"))):
-                    if os.path.isdir(w) and not os.path.islink(w) and w not in seen:
-                        seen.add(w)
-                        out.append((org, repo, w))
+            for layout in WORKTREE_ROOTS:
+                for wt_root in sorted(glob.glob(os.path.join(root, *layout))
+                                      + glob.glob(os.path.join(root, "*", *layout))):
+                    repo_dir = wt_root[:-len(os.path.join(*layout)) - 1]
+                    for w in sorted(glob.glob(os.path.join(wt_root, "*"))):
+                        if os.path.isdir(w) and not os.path.islink(w) and w not in seen:
+                            seen.add(w)
+                            out.append((org, home_label(repo_dir), w, os.path.relpath(w, repo_dir)))
     return out
 
 
@@ -208,11 +213,10 @@ def project_note(keeper, project, total, sessions):
 
 
 def worktree_note(keeper, total, trees):
-    """KEEPER's note: its own organization's worktrees [(repository, name, bytes)], which hold TOTAL together."""
-    lines = "; ".join(f"{repo}/.claude/worktrees/{name} {gib(b)} GiB"
-                      for repo, name, b in sorted(trees, key=lambda x: -x[2])[:10])
+    """KEEPER's note: its own organization's worktrees [(repository, path in it, bytes)], which hold TOTAL together."""
+    lines = "; ".join(f"{repo}/{rel} {gib(b)} GiB" for repo, rel, b in sorted(trees, key=lambda x: -x[2])[:10])
     return (f"Message from of_pulse (via of pulse, authority: none; worktrees in the checkouts)\n"
-            f"Your organization's Claude Code worktrees inside its checkouts together hold {gib(total)} GiB, over the "
+            f"Your organization's worktrees inside its checkouts together hold {gib(total)} GiB, over the "
             f"{gib(WORKTREE_CAP)} GiB they may take: {lines}. They live in the repositories, not in a session's scratch "
             f"folder, so the per-session limits do not see them. As the structure keeper, ask the positions that made "
             f"them to remove the ones no open task uses (git worktree remove <path>). OF deletes nothing.\n"
@@ -221,7 +225,7 @@ def worktree_note(keeper, total, trees):
 
 def consumers(top_projects, swap=None, store=None, top_repos=()):
     """What takes this Mac's disk, as a person reads it, largest first: swap, OF's event store, the live sessions'
-    temporary folders and the Claude Code worktrees inside the checkouts, each with its largest parts."""
+    temporary folders and the worktrees inside the checkouts, each with its largest parts."""
     parts = []
     if swap:
         parts.append((swap, tr("swap {gib} GiB (it grows when memory runs short: fewer live sessions shrink it)",
@@ -236,8 +240,7 @@ def consumers(top_projects, swap=None, store=None, top_repos=()):
     wt = sum(b for _, b in top_repos)
     if wt:
         lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_repos[:4])
-        parts.append((wt, tr("Claude Code worktrees inside the checkouts {gib} GiB, most in {lines}", gib=gib(wt),
-                             lines=lines)))
+        parts.append((wt, tr("worktrees inside the checkouts {gib} GiB, most in {lines}", gib=gib(wt), lines=lines)))
     return "; ".join(t for _, t in sorted(parts, key=lambda x: -x[0])) or tr("sizes not measured yet")
 
 
@@ -264,7 +267,7 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
           conn=None, clock=time.monotonic, swap=swap_bytes, store=store_bytes, keeper=None, org_paths=None):
     """One pulse's pass. mem is the pulse's memory (keys "scratch", "scratch_projects"). Returns the positions told
     this pass. KEEPER(positions, org) names an organization's structure keeper (of_pulse.structure_keeper); ORG_PATHS
-    ({org: [paths]}, orgs.yaml) is where the organizations' checkouts and their Claude Code worktrees are."""
+    ({org: [paths]}, orgs.yaml) is where the organizations' checkouts and their worktrees are."""
     now = now or time.time()
     base = base or base_dir()
     free = shutil.disk_usage(os.path.expanduser("~")).free if free is None else free
@@ -322,11 +325,11 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
         _write_quota(over, now)
     wt = mem.setdefault("worktrees", {})  # {worktree folder: {org, repo, at, bytes}}
     found = worktree_dirs(org_paths) if org_paths else []
-    for gone in set(wt) - {w for _, _, w in found}:
+    for gone in set(wt) - {w for _, _, w, _ in found}:
         wt.pop(gone)  # removed: no longer on disk
-    for org, repo, w in found:
+    for org, repo, w, rel in found:
         e = wt.setdefault(w, {"at": None, "bytes": None})
-        e.update(org=org, repo=repo)
+        e.update(org=org, repo=repo, rel=rel)
         if (e["at"] is None or now - e["at"] >= SIZE_EVERY_S) and clock() - start < SIZE_BUDGET_S:
             b = size(w)
             if b is not None:
@@ -360,7 +363,7 @@ def _tell_worktree_keepers(positions, pairs, mem, wt, prompt, log, keeper=None):
     by_org = {}
     for path, e in wt.items():
         if e.get("bytes"):
-            by_org.setdefault(e["org"], []).append((e["repo"], os.path.basename(path), e["bytes"]))
+            by_org.setdefault(e["org"], []).append((e["repo"], e.get("rel") or os.path.basename(path), e["bytes"]))
     for org in [o for o in state if sum(b for _, _, b in by_org.get(o, [])) < WORKTREE_CAP]:
         state.pop(org)  # back under the cap: a new episode tells again
     panes = {p["name"]: a for p, a in pairs}
