@@ -370,6 +370,22 @@ def reading_of(loop, metric):
     return None, None
 
 
+def with_reading(run, loop):
+    """RUN with its reading's point and proxy filled from LOOP when the event has none: a run written before the
+    flags, or without --proxy-held, on a measure with proxy_for is a proxy whose condition is unknown (docs/registry.md,
+    Works, "Where a reading is taken": unknown when not given; as Studio's card and the rule read it, of_studio's
+    hand-over 18c240ff)."""
+    if not loop or not isinstance(run, dict):
+        return run
+    observed_at, pf = reading_of(loop, run.get("metric"))
+    out = dict(run)
+    if not out.get("observed_at") and observed_at:
+        out["observed_at"] = observed_at
+    if not isinstance(out.get("proxy"), dict) and pf:
+        out["proxy"] = {"for": pf["at"], "valid_when": pf["valid_when"], "held": "unknown"}
+    return out
+
+
 def blind(run):
     """True for a run whose reading stands for an event elsewhere and whose condition did not hold or is unknown: it
     decides nothing (docs/registry.md, Works, "Where a reading is taken")."""
@@ -388,9 +404,11 @@ def not_observed(run):
 
 
 def blind_runs(conn, works, limit=500):
-    """[(work, run payload, ts)]: the newest run of each hypothesis of WORKS when it is a proxy that did not hold or is
-    unknown, for the session's start context. Reads the newest LIMIT loop runs by one indexed name."""
+    """[(work, run payload, ts)]: the newest run of each hypothesis of WORKS ({work: loop}, or work ids) when it is a
+    proxy that did not hold or is unknown, for the session's start context; a run is filled from its loop
+    (with_reading). Reads the newest LIMIT loop runs by one indexed name."""
     import json
+    loops = works if isinstance(works, dict) else {}
     works, seen, out = set(works), set(), []
     for pl, ts in conn.execute("SELECT payload, ts FROM event WHERE name = 'of.loop_run' ORDER BY ts DESC LIMIT ?",
                                (limit,)):
@@ -399,6 +417,7 @@ def blind_runs(conn, works, limit=500):
         if p.get("work") not in works or key in seen:
             continue
         seen.add(key)
+        p = with_reading(p, loops.get(p.get("work")))
         if blind(p):
             out.append((p["work"], p, ts))
     return out
@@ -431,7 +450,7 @@ def hypothesis_id(work, change, at=None):
     return hashlib.sha256(f"{work}|{change}|{at or time.time()}".encode()).hexdigest()[:8]
 
 
-def register(rows, work):
+def register(rows, work, loop=None):
     """{hypotheses: [...], runs: [...], decisions: [...]} for a work from its loop events (dicts: name, ts,
     payload). Each hypothesis: id, change, predict, cost, voi, status, runs, last, last_run ({rung, accepted, value,
     metric, ts} of its latest run) and unmet_open (still open or testing while its latest run did not meet its rung's
@@ -453,6 +472,7 @@ def register(rows, work):
                          "cost_h": cost.get("runner_h", 1.0), "voi": p.get("voi"), "status": p.get("status") or "open",
                          "runs": 0, "since": r["ts"], "last": r["ts"]}
         elif r["name"] == "of.loop_run":
+            p = with_reading(p, loop)  # a run on a proxy measure that names no proxy: its condition is unknown
             runs.append(dict(p, ts=r["ts"]))
             h = hyps.get(p.get("hypothesis"))
             if h:

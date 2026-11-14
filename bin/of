@@ -2004,7 +2004,7 @@ def cmd_loop(args):
     rows = [{"name": n, "ts": ts, "payload": json.loads(pl or "{}")} for n, ts, pl in conn.execute(
         "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
-    reg = of_loop.register(rows, args.work)
+    reg = of_loop.register(rows, args.work, loop)
     resolve = _for_work(_decided_resolver(conn, _load_quiet()), args.work)
     if args.action == "show":
         print(f"{args.work} ({org}): {of_loop.target_line(loop, resolve)}; ladder {' > '.join(of_loop.rungs(loop))}")
