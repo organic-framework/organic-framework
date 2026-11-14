@@ -1048,10 +1048,6 @@ WATCHDOG_LABEL = "dev.organic-framework.listen-watchdog"
 WATCHDOG = {"every": 60, "failing_for": 180, "restart_gap": 900, "ticks_stale": 900}
 
 
-def pid_path():
-    return os.path.join(of_events.STATE_DIR, "listen.pid")
-
-
 def ticks_path():
     return os.path.join(of_events.STATE_DIR, "listen.ticks")
 
@@ -1067,24 +1063,6 @@ def _touch(path):
             pass
     except OSError:
         pass
-
-
-def _write_pid():
-    try:
-        with open(os.open(pid_path(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            fh.write(str(os.getpid()))
-    except OSError:
-        pass
-
-
-def _alive(pid):
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
 
 
 def _plist(label, argv, log, extra=""):
@@ -1174,35 +1152,24 @@ def _heartbeat_age(now):
 
 
 def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log=print, settings=None, pid=None):
-    """One check, run by launchd every minute (`of listen watchdog`). A listener process that is alive, but whose
-    heartbeat is older than STALE_S or whose timers have not turned for `ticks_stale`, through `failing_for` seconds
-    of checks, is restarted, at most once in `restart_gap`; first `kill -USR1` writes its threads' stacks to
-    listen.log. A gap between checks longer than twice `every` (a sleep) starts the count again. A listener with no
-    live process is left to launchd's KeepAlive. Returns ok, failing, waiting, stopped, restarted or restart_failed.
-    As of-server's watchdog (of_server's 3981069), for the listener (hand-over 6d9a8305)."""
-    import signal
-    import subprocess
+    """One check, run by launchd every minute (`of listen watchdog`): of_server.watch for the listener (hand-over
+    6d9a8305; the same rule as of-server's and the relays'). A listener that launchd runs, but whose heartbeat is older
+    than STALE_S or whose timers have not turned for `ticks_stale`, through `failing_for` seconds of checks, is
+    restarted at most once in `restart_gap`, its threads' stacks first written to listen.log. Its pid is launchd's,
+    never a file's: a dead pid left in listen.pid by `of listen rebuild` or a terminal run made a stuck listener look
+    stopped (of_review on PR 145). Returns ok, failing, waiting, stopped, restarted or restart_failed.
+    On the agent host a root daemon watches each organization user's listener (deploy/host/plane.py): OF_STATE is that
+    user's state, OF_LISTEN_TARGET its system daemon (system/<label>), OF_LISTEN_WATCHDOG_STATE a file outside the
+    user's home; it then writes no event into the user's store, which would leave root-owned files there."""
+    import of_relay_client
+    import of_server
     s = dict(WATCHDOG, **(settings or {}))
     now = time.time() if now is None else now
-    state_path = state_path or os.path.join(of_events.STATE_DIR, "listen-watchdog.json")
-    try:
-        with open(state_path) as fh:
-            st = json.load(fh)
-    except (OSError, ValueError):
-        st = {}
-    gap = None if st.get("last_check") is None else now - st["last_check"]
-    st["last_check"] = now
-
-    def save(result):
-        st["result"] = result
-        with open(state_path + ".tmp", "w") as fh:
-            json.dump(st, fh)
-        os.replace(state_path + ".tmp", state_path)
-        return result
-
-    def stamp(m):
-        log(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {m}")
-
+    target = os.environ.get("OF_LISTEN_TARGET") or ""
+    domain, _, label = target.rpartition("/") if target else (None, "", LAUNCHD_LABEL)
+    as_root_for_user = bool(target) and os.geteuid() == 0
+    state_path = state_path or os.environ.get("OF_LISTEN_WATCHDOG_STATE") or os.path.join(of_events.STATE_DIR,
+                                                                                         "listen-watchdog.json")
     if probe is None:
         def probe():
             hb = _heartbeat_age(now)
@@ -1211,57 +1178,27 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
             except OSError:
                 ticks = None
             return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"])
-    if probe():
-        if st.get("failing_since") is not None:
-            stamp(f"the listener is live again after {int(now - st['failing_since'])} s")
-        st = {"last_ok": now, "last_restart": st.get("last_restart"), "last_check": now}
-        return save("ok")
-    if pid is None:
-        try:
-            with open(pid_path()) as fh:
-                pid = int(fh.read().strip() or 0)
-        except (OSError, ValueError):
-            pid = 0
-    if not (pid and _alive(pid)):
-        st.pop("failing_since", None)
-        return save("stopped")
-    if st.get("failing_since") is None or gap is None or gap > 2 * s["every"]:
-        st["failing_since"], st["fails"] = now, 0
-    st["fails"] = st.get("fails", 0) + 1
-    failing = now - st["failing_since"]
-    if failing < s["failing_for"]:
-        return save("failing")
-    if st.get("last_restart") is not None and now - st["last_restart"] < s["restart_gap"]:
-        return save("waiting")
-    try:
-        load = round(os.getloadavg()[0], 1)
-    except OSError:
-        load = None
-    dumped = False
-    try:
-        (dump or (lambda p: (os.kill(p, signal.SIGUSR1), time.sleep(2))))(pid)
-        dumped = True
-    except OSError:
-        pass
-    st["last_restart"] = now  # saved first: a launchctl that hangs still waits restart_gap
-    save("restarting")
-    stamp(f"the listener (pid {pid}) is stuck for {int(failing)} s ({st['fails']} checks; load {load})"
-          + ("; its threads' stacks are in listen.log" if dumped else "") + "; restarting it")
-    error = None
-    try:
-        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
-                                            capture_output=True, timeout=30)))()
-    except Exception as e:  # noqa: BLE001 - under the very load this is for
-        error = f"{type(e).__name__}: {e}"[:200]
-        stamp(f"the restart did not complete ({error})")
-    try:
-        of_events.emit("listener_watchdog", {"action": "restarted" if error is None else "restart_failed", "pid": pid,
-                                             "failing_s": int(failing), "checks": st["fails"], "load1": load,
-                                             **({"error": error} if error else {})}, position="of_platform")
-    except Exception:  # noqa: BLE001 - the restart matters more than its record
-        pass
-    return save("restarted" if error is None else "restart_failed")
+    pid_of = (lambda: pid) if pid is not None else (lambda: of_relay_client.launchd_pid(label, domain))
 
+    def stamp(m):
+        log(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {m}")
+    emit = of_events.emit
+    if as_root_for_user:
+        of_events.emit = lambda *a, **k: None
+    import inspect
+    kw = {}
+    if "domain" in inspect.signature(of_server.watch).parameters:
+        kw["domain"] = domain
+    elif domain and restart is None:  # an of_server.watch from before its `domain`: the system daemon restarted here
+        import subprocess
+        restart = lambda: subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"],  # noqa: E731
+                                         capture_output=True, timeout=30)
+    try:
+        return of_server.watch("the listener", label, probe, pid_of, state_path, now=now, restart=restart,
+                               dump=dump, log=stamp, settings=s, event="listener_watchdog",
+                               silent="has not kept its heartbeat or turned its timers", **kw)
+    finally:
+        of_events.emit = emit
 
 SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
 LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
@@ -1342,7 +1279,6 @@ def run(stop=None, log=print, rebuild=False):
         import faulthandler
         import signal
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
-        _write_pid()
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
     # Readers trust the views only while the heartbeat is fresh. A view rebuilt in place is half-built until

@@ -3582,17 +3582,29 @@ def rollback(repo, commit, by, run=subprocess.run, log=print):
             new = git("rev-parse", "HEAD", cwd=wt).strip()
         finally:
             run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
+    # someone may have started editing a path while the revert was committed (of_review on PR 145: the edit was
+    # lost): look again before main moves, and leave alone any path whose file changed since
+    busy = [p for p in paths if git("diff", head, "--name-only", "--", p).strip()]
+    if busy:
+        raise OfError("of rollback: uncommitted changes in " + ", ".join(busy[:5]) + " appeared while the revert was "
+                      f"made; nothing moved (the revert is {new[:12]}, on no branch)")
     git("update-ref", branch, new, head)  # only if main is still where the revert was made
     there = set(git("ls-tree", "-r", "--name-only", new, "--", *paths).splitlines())
-    if there:
-        git("checkout", new, "--", *sorted(there))
-    for p in sorted(set(paths) - there):  # added by the reverted commit: gone now
-        try:
-            os.remove(os.path.join(repo, p))
-        except FileNotFoundError:
-            pass
-        git("rm", "-q", "--cached", "--ignore-unmatch", "--", p)
-    log(f"rolled back {full[:12]} ({subject}): {new[:12]} on {branch.rsplit('/', 1)[-1]}, {len(paths)} path(s)")
+    kept = []
+    for p in sorted(paths):
+        if git("diff", head, "--name-only", "--", p).strip():  # edited in the last moment: never overwritten
+            kept.append(p)
+            continue
+        if p in there:
+            git("checkout", new, "--", p)
+        else:  # added by the reverted commit: gone now
+            try:
+                os.remove(os.path.join(repo, p))
+            except FileNotFoundError:
+                pass
+            git("rm", "-q", "--cached", "--ignore-unmatch", "--", p)
+    log(f"rolled back {full[:12]} ({subject}): {new[:12]} on {branch.rsplit('/', 1)[-1]}, {len(paths)} path(s)"
+        + (f"; left as they are, edited meanwhile: {', '.join(kept)}" if kept else ""))
     return new
 
 

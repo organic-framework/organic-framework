@@ -161,6 +161,26 @@ class RollbackTest(unittest.TestCase):
         self.assertIn(f"This reverts commit {bad} by of_x", msg)
         self.assertIn("Position: of_platform", msg)
 
+    def test_an_edit_made_while_the_revert_commits_is_never_lost(self):
+        """of_review on PR 145: another agent's edit, made while the revert was being committed, was overwritten."""
+        self.write("a.py", "a = 2\n")
+        bad = self.commit("break a", "of_x")
+        before = self.git("rev-parse", "HEAD").strip()
+
+        def run(argv, **kw):
+            if "commit" in argv and "-F" in argv:  # the revert's commit, in its worktree: someone edits meanwhile
+                self.write("a.py", "a = 3  # someone's edit in the meantime\n")
+            return subprocess.run(argv, **kw)
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.com"}
+        from unittest import mock
+        with mock.patch.dict(os.environ, env), self.assertRaises(self.of.OfError) as e:
+            self.of.rollback(self.repo, bad, "of_platform", run=run, log=lambda m: None)
+        self.assertIn("appeared while the revert was made", str(e.exception))
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), before)         # main did not move
+        with open(os.path.join(self.repo, "a.py")) as fh:
+            self.assertEqual(fh.read(), "a = 3  # someone's edit in the meantime\n")
+
     def test_refused_while_someone_edits_a_path(self):
         self.write("a.py", "a = 2\n")
         bad = self.commit("break a", "of_x")

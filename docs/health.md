@@ -1,6 +1,6 @@
 # OF's own health: checks, one page, one card
 
-Status: **design**, 2026-11-14, `of_architect`.
+Status: **design**, 2026-11-14, `of_architect`; **built in part** the same day: each machine's checks, the state file, the events, `of health`, the smoke check and `of rollback` (`of_platform`, `bin/of_health.py`), and of-server's own checks (`of_server`). Studio's Health tab and the person's card are not built yet.
 
 **Basis.**
 - The founder, 2026-11-13 20:12Z (prompt `01a1d68a-5ab4`, in `of_conductor`'s session): "Let's look once more at the top-level architecture of Organic Framework's tools: where else something may fire, because we keep having an unstable problem."
@@ -39,7 +39,7 @@ A limit here is the starting value. Its owner tunes it in this table with the ev
 - **The event.** One `of.health_changed` event `{check, state, value, limit, since, owner}` is written only when a check changes state. The log does not grow by one event a minute.
 - **The command.** `of health` prints the table.
 - **The page.** Studio's Health tab shows the table, with each failed check's owner and the time since it failed (`of_studio`).
-- **The owner of a check** gets one `--fyi` when it fails, and one when it is back.
+- **The owner of a check** gets one `--fyi` once it has failed for 5 minutes, and one when that failure is over; a check that fails and recovers within 5 minutes tells nobody (2026-11-14: swap around its limit failed and recovered every few minutes, one `--fyi` each time).
 - **The person.** A card goes to the organization's owner only when his own work is hit, after 5 minutes failed:
   - `server.health`;
   - `relay.oldest`;

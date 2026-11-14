@@ -536,6 +536,28 @@ class WatchdogTest(unittest.TestCase):
         os.utime(of_listen.ticks_path(), (old, old))                        # the timers stopped turning
         self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "failing")
 
+    def test_the_pid_is_launchds_never_a_files(self):
+        """of_review on PR 145: a dead pid left in listen.pid by `of listen rebuild` or a terminal run made a stuck
+        listener look stopped, so it was never restarted."""
+        from unittest import mock
+        import of_relay_client
+        with open(os.path.join(self.tmp.name, "listen.pid"), "w") as fh:
+            fh.write("1")                                                       # a stale file: ignored
+        asked = []
+        with mock.patch.object(of_relay_client, "launchd_pid", lambda label, domain=None: asked.append(
+                (label, domain)) or os.getpid()), mock.patch.object(of_events, "emit", lambda *a, **k: None):
+            got = [of_listen.watchdog(now=t, probe=lambda: False, log=lambda m: None,
+                                      restart=lambda: self.calls.append("restart"),
+                                      dump=lambda p: self.calls.append(("dump", p))) for t in (0, 60, 120, 180)]
+        self.assertEqual(got[-1], "restarted")
+        self.assertEqual(asked[0], (of_listen.LAUNCHD_LABEL, None))            # gui/<uid>, the listener's label
+        self.assertIn(("dump", os.getpid()), self.calls)
+        with mock.patch.dict(os.environ, {"OF_LISTEN_TARGET": "system/dev.organic-framework.listen.of"}), \
+                mock.patch.object(of_relay_client, "launchd_pid", lambda label, domain=None: asked.append(
+                    (label, domain)) or None):
+            self.assertEqual(of_listen.watchdog(now=10_000, probe=lambda: False, log=lambda m: None), "stopped")
+        self.assertEqual(asked[-1], ("dev.organic-framework.listen.of", "system"))  # the host's daemon
+
     def test_the_units_run_at_standard_priority_with_a_watchdog(self):
         units = of_listen.launchd_plists(python="/py", of_bin="/of")
         listener = units[of_listen.LAUNCHD_LABEL]
