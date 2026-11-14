@@ -80,7 +80,7 @@ class CopyCommands(unittest.TestCase):
         shutil.rmtree(self.d)
 
     def test_push_and_pull_run_in_the_background_with_only_the_key(self):
-        push = of_carry.copy_commands("/b", self.key, to="of@host:/c/b", bwlimit=1000)
+        push = of_carry.copy_commands("/b", self.key, to="of@host:/c/b", bwlimit=1000, wrapper=["taskpolicy", "-b"])
         self.assertEqual([c[:3] for c in push], [["taskpolicy", "-b", "rsync"]] * 2)
         ssh = push[0][push[0].index("-e") + 1]
         for opt in ("-i " + self.key, "IdentityAgent=none", "IdentitiesOnly=yes", "BatchMode=yes"):
@@ -96,6 +96,17 @@ class CopyCommands(unittest.TestCase):
         self.assertEqual(pull[-1][-3:], ["--files-from=/b/files.txt", "of@host:/", "/b/files/"])
         with self.assertRaises(of_carry.CarryError):
             of_carry.copy_commands("/b", self.key, to="a:/x", frm="b:/y")
+
+    def test_background_priority_by_platform(self):
+        """of_lab's rehearsal, 2026-11-15: taskpolicy is macOS's, and a Linux end failed on it."""
+        mac = {"taskpolicy": "/usr/sbin/taskpolicy", "ionice": None}
+        linux = {"taskpolicy": None, "ionice": "/usr/bin/ionice"}
+        self.assertEqual(of_carry.background(mac.get), ["taskpolicy", "-b"])
+        self.assertEqual(of_carry.background(linux.get), ["nice", "-n", "19", "ionice", "-c3"])
+        self.assertEqual(of_carry.background({}.get), ["nice", "-n", "19"])
+        with mock.patch.object(of_carry, "background", lambda: ["nice", "-n", "19", "ionice", "-c3"]):
+            pull = of_carry.copy_commands("/b", self.key, frm="of@host:/c/b")
+        self.assertTrue(all(c[:6] == ["nice", "-n", "19", "ionice", "-c3", "rsync"] for c in pull))
 
     def test_no_agent_and_no_loose_key(self):
         envs = []
@@ -140,7 +151,13 @@ class Carry(unittest.TestCase):
         with open(os.path.join(pdir, "memory", "MEMORY.md"), "w") as fh:
             fh.write("- folder memory\n")
         with open(os.path.join(self.cfg, "file-history", SID, "abc@v1"), "w") as fh:
-            fh.write("old file\n")
+            fh.write(f"old file, it names {self.proj}\n")  # an edited file's contents: /rewind writes them back
+        os.makedirs(os.path.join(self.cfg, "session-env", SID))
+        with open(os.path.join(self.cfg, "session-env", SID, "hook-0.sh"), "w") as fh:
+            fh.write(f"export TOOLS={self.a}/bin:$PATH\n")
+        os.makedirs(os.path.join(self.cfg, "tasks", SID))
+        with open(os.path.join(self.cfg, "tasks", SID, "1.json"), "w") as fh:
+            json.dump({"id": "1", "subject": f"read {self.proj}/plan.md"}, fh)
         self.mem = os.path.join(self.a, ".local", "state", "of", "memory", "acme", "acme_a")
         os.makedirs(self.mem)
         with open(os.path.join(self.mem, "MEMORY.md"), "w") as fh:
@@ -220,6 +237,13 @@ class Carry(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.b, ".local", "state", "of", "memory", "acme", "acme_a",
                                                     "MEMORY.md")))
         self.assertTrue(os.path.exists(os.path.join(there, "kept", clash.lstrip("/"))))  # B's file kept aside
+        cfg_b = os.path.join(self.b, ".claude-x")
+        self.assertEqual(read(os.path.join(cfg_b, "session-env", SID, "hook-0.sh")),
+                         f"export TOOLS={self.b}/bin:$PATH\n")  # the state's text follows the home
+        self.assertEqual(json.loads(read(os.path.join(cfg_b, "tasks", SID, "1.json")))["subject"],
+                         f"read {os.path.join(self.b, 'org')}/plan.md")
+        self.assertEqual(read(os.path.join(cfg_b, "file-history", SID, "abc@v1")),
+                         f"old file, it names {self.proj}\n")  # a snapshot of contents stays as it was
         lp = json.loads(read(calls[0][1]))
         e = lp["entries"][0]
         self.assertEqual((e["config_dir"], e["cwd"], e["pane"]), (os.path.join(self.b, ".claude-x"),

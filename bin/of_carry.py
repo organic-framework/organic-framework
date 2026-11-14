@@ -11,7 +11,8 @@ another home: /Users/alex on the laptop, /Users/of or /Users/acme on the host, a
   session env, tasks, todos), the folder memory, the position's own memory directory, and their scratch folders under
   the agent tmp root. Read-only for the sessions; freeze them afterwards (`of capacity close`) for a final copy.
 - `copy` (the laptop, at a moment the founder picks): rsync over SSH with an explicit key file, `SSH_AUTH_SOCK`
-  empty and the user's SSH agent refused, at background priority (`taskpolicy -b`) and a bandwidth limit. It pushes a
+  empty and the user's SSH agent refused, at background priority (`taskpolicy -b`, on Linux `nice` and `ionice`) and
+  a bandwidth limit. It pushes a
   bundle to the other machine, or pulls one prepared there.
 - `restore` (the target, as the organization's user): every path rewritten from the source's home and uid to this
   user's (`Rewriter`), the files put in place (whatever is there is kept aside in the bundle first), then each session
@@ -243,15 +244,28 @@ def _key_ok(key):
     return key
 
 
-def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS):
+def background(which=shutil.which):
+    """The wrapper that runs a copy at background priority on this machine: `taskpolicy -b` on macOS, `nice` with
+    `ionice -c3` (idle I/O) on Linux, `nice` alone elsewhere. of_lab's rehearsal on a Linux VM, 2026-11-15: a fixed
+    `taskpolicy -b` failed at any Linux end, since the copy runs on whichever machine pulls or pushes."""
+    if which("taskpolicy"):
+        return ["taskpolicy", "-b"]
+    if which("ionice"):
+        return ["nice", "-n", "19", "ionice", "-c3"]
+    return ["nice", "-n", "19"]
+
+
+def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=None):
     """Pure: the rsync commands of a copy, push (`to`, user@host:DIR) or pull (`frm`, user@host:DIR prepared there),
-    each at background priority with the bandwidth limit, over ssh with only `key`."""
+    each at background priority (`wrapper`, else this machine's `background()`) with the bandwidth limit, over ssh
+    with only `key`."""
     if bool(to) == bool(frm):
         raise CarryError("carry copy needs exactly one of --to user@host:DIR (push) or --from user@host:DIR (pull)")
     ssh = " ".join(["ssh", "-i", shlex.quote(key)] + SSH_OPTS)
     # --chmod=go-rwx: on a host of one OS user per organization nothing arrives readable by another user; the
     # owner's bits stay, so a script stays executable (of_server on PR 116)
-    base = ["taskpolicy", "-b", "rsync", "-a", "--chmod=go-rwx", "--partial", f"--bwlimit={int(bwlimit)}", "-e", ssh]
+    base = list(background() if wrapper is None else wrapper) + [
+        "rsync", "-a", "--chmod=go-rwx", "--partial", f"--bwlimit={int(bwlimit)}", "-e", ssh]
     b = bundle.rstrip("/")
     if to:
         dest = to.rstrip("/")
@@ -324,10 +338,23 @@ def planned(plan, root, org, positions, only=None):
     return lambda p: p in exact or any(p.startswith(x) for x in prefixes) or bool(scratch and scratch.match(p))
 
 
+# A session's own state in a config dir whose text names paths: session-env holds the shell exports its Bash tool
+# sources, tasks and todos the lists it keeps. They are rewritten as text. file-history is not: each file there is a
+# snapshot of an edited file's contents, which /rewind writes back as it was; its index, path by path, is in the
+# transcript's file-history-snapshot records (their keys and realParentDir), which `record` rewrites. Nor are scratch
+# files and memory, which are the session's own work (of_lab's rehearsal, 2026-11-15).
+_STATE_TEXT = re.compile(r"/\.claude[^/]*/(session-env|tasks|todos)/")
+
+
+def _state_text(path):
+    return bool(_STATE_TEXT.search(path))
+
+
 def install(bundle, rw, dry_run=False, log=print, allowed=None):
     """Put the bundle's files that `allowed` accounts for at their rewritten paths; refuse and name the rest. A file
     already there with other contents is kept aside under the bundle's `kept/` first. Transcripts (.jsonl under
-    projects/) are rewritten record by record. A link in a bundle is never followed."""
+    projects/) are rewritten record by record, and the session's state text (_STATE_TEXT) as text. A link in a bundle
+    is never followed."""
     root = os.path.join(bundle, "files")
     done = {"installed": 0, "same": 0, "kept_aside": 0}
     for dirpath, dirs, files in os.walk(root):
@@ -345,6 +372,11 @@ def install(bundle, rw, dry_run=False, log=print, allowed=None):
                 data = fh.read()
             if new.endswith(".jsonl") and "/projects/" in new:
                 data = rw.transcript(data)
+            elif _state_text(new) and rw.touches(data):
+                try:
+                    data = rw.text(data.decode("utf-8")).encode("utf-8")
+                except UnicodeDecodeError:
+                    pass  # not text: as it is
             try:
                 with open(new, "rb") as fh:
                     there = fh.read()
