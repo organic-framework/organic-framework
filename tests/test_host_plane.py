@@ -126,14 +126,16 @@ class FilesTest(unittest.TestCase):
 
 
 class DeployTest(unittest.TestCase):
+    """of_secrets-review on PR 148: only reviewed code (the public main) is deployed, and root runs no Homebrew python
+    before the trust check passed."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.src = os.path.join(self.tmp.name, "src")
+        self.src = os.path.join(self.tmp.name, "public")  # stands for the public repository
         os.makedirs(os.path.join(self.src, "bin"))
         self.git(self.src, "init", "-q", "-b", "main")
         self.commit("v1")
         self.root = os.path.join(self.tmp.name, "opt")
-        self.files = host.Files(self.tmp.name)
         self.ran = []
 
     def tearDown(self):
@@ -155,48 +157,47 @@ class DeployTest(unittest.TestCase):
             self.ran.append(argv)
             if argv[0] == "sudo":
                 user, cmd, _ = inner(argv)
-                if "smoke" in cmd:  # the source's owner runs it, never root
+                if "smoke" in cmd:  # an organization user runs it, never root
                     return subprocess.CompletedProcess(argv, 0 if smoke_ok else 1, "smoke: ok", "smoke: FAILED")
-                return subprocess.run(cmd, capture_output=True, text=True)  # the owner's git bundle
-            if argv[0] in (plane.PYTHON, "chown", "chmod"):
+            if argv[0] in ("sudo", plane.PYTHON, "chown", "chmod"):
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.run(argv, **kw)
         return run
 
-    def deploy(self, ok):
-        return plane.deploy(self.src, "main", run=self.run_with(ok), log=lambda m: None, root=self.root,
-                            files=self.files, owner="of", checked=True)
+    def deploy(self, ref="main", smoke_ok=True, problems=()):
+        return plane.deploy(ref, "of", ["of"], run=self.run_with(smoke_ok), log=lambda m: None, root=self.root,
+                            source=self.src, trust=lambda: list(problems))
 
-    def test_deploy_from_the_owners_bundle_and_a_failing_commit_rolled_back(self):
+    def test_main_is_deployed_and_a_failing_commit_rolled_back(self):
         v1 = self.git(self.src, "rev-parse", "HEAD").strip()
-        self.assertEqual(self.deploy(True), v1)
-        bundles = [a for a in self.ran if a[0] == "sudo" and "bundle" in a]
-        self.assertTrue(bundles and inner(bundles[0])[0] == "of")             # the owner made the bundle
-        self.assertFalse(any(a[:2] == ["git", "-C"] and a[2] == self.src for a in self.ran))  # root: no git there
-        self.assertTrue(any(a[0] == "sudo" and "smoke" in a for a in self.ran))
-        self.assertTrue(any(a[0] == plane.PYTHON and "compileall" in a for a in self.ran))
+        self.assertEqual(self.deploy(), v1)
+        order = [("smoke" if a[0] == "sudo" and "smoke" in a else "compile") for a in self.ran
+                 if (a[0] == "sudo" and "smoke" in a) or (a[0] == plane.PYTHON and "compileall" in a)]
+        self.assertEqual(order, ["smoke", "compile"])            # the smoke check first, root compiles after
+        self.assertTrue(any(a[0] == plane.PYTHON and a[1:3] == ["-E", "-s"] for a in self.ran))
         self.commit("v2 broken")
         with self.assertRaises(SystemExit) as e:
-            self.deploy(False)
+            self.deploy(smoke_ok=False)
         self.assertIn("back on", str(e.exception))
         self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), v1)  # the commit before, still serving
         v3 = self.commit("v3")
-        self.assertEqual(self.deploy(True), v3)
+        self.assertEqual(self.deploy(), v3)
 
-    def test_a_link_in_place_of_the_bundle_is_refused(self):
-        real = self.run_with(True)
-
-        def run(argv, **kw):
-            r = real(argv, **kw)
-            if argv[0] == "sudo" and "bundle" in argv:  # the owner leaves a link where its bundle should be
-                b = self.files.p(plane.HANDOFF_DIR) + "/release.bundle"
-                os.replace(b, b + ".real")
-                os.symlink(b + ".real", b)
-            return r
+    def test_a_commit_not_on_the_public_main_is_refused(self):
+        self.git(self.src, "checkout", "-q", "-b", "unreviewed")
+        side = self.commit("an agent's commit nobody reviewed")
+        self.git(self.src, "checkout", "-q", "main")
         with self.assertRaises(SystemExit) as e:
-            plane.deploy(self.src, "main", run=run, log=lambda m: None, root=self.root, files=self.files,
-                         owner="of", checked=True)
-        self.assertIn("link", str(e.exception))
+            self.deploy(ref=side)
+        self.assertIn("is not on the public main", str(e.exception))
+        self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # nothing run as root
+
+    def test_no_python_as_root_before_the_trust_check_passes(self):
+        with self.assertRaises(SystemExit) as e:
+            self.deploy(problems=["of may write /opt/homebrew/bin"])
+        self.assertIn("the trust check failed", str(e.exception))
+        self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # no compileall, no smoke
+        self.assertFalse(any(a[0] == "sudo" and "smoke" in a for a in self.ran))
 
 
 if __name__ == "__main__":
