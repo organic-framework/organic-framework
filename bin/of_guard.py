@@ -4176,6 +4176,13 @@ def authority_contacts(tool, tool_input):
 _HERDR_TYPING = {("pane", "send-text"): "text", ("pane", "run"): "text", ("agent", "prompt"): "text",
                  ("pane", "send-keys"): "keys", ("agent", "send-keys"): "keys"}
 _HERDR_REMOTE_OPTS = ("--machine", "--remote")  # typing on another machine: not declared here (docs/guard.md G25)
+# the typing subcommands' own options (`herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout
+# MS]`): a value an option takes is never the target (of_secrets-review on PR 170); an option not known here makes the
+# target and the text a doubt
+_HERDR_OPT_VALUE = {"--until", "--timeout"}
+_HERDR_OPT_FLAG = {"--wait"}
+_TMUX_GLOBAL_VALUE = {"-L", "-S", "-f", "-T"}
+_TMUX_SEND_VALUE = {"-t", "-N", "-c"}
 _HERDR_PANE = re.compile(r"^w\w+:p\w+$")
 _OWN_PANE = re.compile(r"^\$\{?HERDR_PANE_ID\}?$")
 _BRACKETED_PASTE = re.compile(r"\x1b\[20[01]~")
@@ -4205,7 +4212,7 @@ def typing_declarations(cmd, depth=0):
         text, subs, docs, _ = _scan(cmd)
         pipes = _split(text)
     except (ValueError, IndexError, RecursionError):
-        return [{"target": ("unknown", None), "kind": "unparsed", "sha256": None}] if "herdr" in str(cmd) else []
+        return [{"target": ("unknown", None), "kind": "unparsed", "sha256": None}] if re.search(r"\b(?:herdr|tmux)\b", str(cmd)) else []
     for sub in subs:
         out += typing_declarations(sub, depth + 1)
     for _, body, opener in docs:
@@ -4220,7 +4227,20 @@ def typing_declarations(cmd, depth=0):
                 s = _simple(raw)
             except (ValueError, IndexError):
                 s = None
-            if not s or s[0] != "herdr" or not isinstance(s[1], list):
+            if not s or not isinstance(s[1], list):
+                continue
+            if s[0] in _SHELLS:  # bash -c '…', sh -c, eval: the string is the command (of_review on PR 170)
+                if s[0] == "eval":
+                    out += typing_declarations(" ".join(s[1]), depth + 1)
+                else:
+                    flags = [k for k, a in enumerate(s[1]) if re.match(r"^-[a-zA-Z]*c[a-zA-Z]*$", a)]
+                    if flags and flags[0] + 1 < len(s[1]):
+                        out += typing_declarations(s[1][flags[0] + 1], depth + 1)
+                continue
+            if s[0] == "tmux":
+                out += _tmux_typing(list(s[1]))
+                continue
+            if s[0] != "herdr":
                 continue
             args = list(s[1])
             remote = False
@@ -4232,18 +4252,62 @@ def typing_declarations(cmd, depth=0):
             how = _HERDR_TYPING.get(tuple(args[:2]))
             if not how or remote:
                 continue
-            rest = [a for a in args[2:] if not a.startswith("--")]
+            rest, doubt, k = [], False, 2
+            while k < len(args):
+                a = args[k]
+                if a in _HERDR_OPT_VALUE:
+                    k += 2
+                    continue
+                if a.startswith("-") and a != "-" and not (a.startswith("--") and "=" in a) and a not in _HERDR_OPT_FLAG:
+                    doubt = True  # an option not known here: which word is the target is a doubt
+                if not a.startswith("-") or a == "-":
+                    rest.append(a)
+                k += 1
             target = rest[0] if rest else ""
-            if _OWN_PANE.match(target):
+            if _OWN_PANE.match(target) and not doubt:
                 tgt = ("own", None)
-            elif not target or _unread(target):
-                tgt = ("unknown", None)
+            elif doubt or not target or _unread(target) or re.search(r"[{}*?\[\]]", target):
+                tgt = ("unknown", None)  # also `{}` from xargs and a glob (of_review on PR 170)
             elif args[0] == "pane" or _HERDR_PANE.match(target):
                 tgt = ("pane", target)
             else:
                 tgt = ("agent", target)
             payload = rest[1:]
-            readable = how == "text" and len(payload) == 1 and not _unread(payload[0]) and payload[0] != "-"
+            readable = how == "text" and not doubt and len(payload) == 1 and not _unread(payload[0]) and payload[0] != "-"
             out.append({"target": tgt, "kind": " ".join(args[:2]),
                         "sha256": typed_digest(payload[0]) if readable else None})
     return out
+
+
+def _tmux_typing(args):
+    """G25 for `tmux send-keys` (how agents type on the remote surface; of_review on organic-framework PR 170):
+    [{target ('tmux', pane or target) or ('tmux-own', None), kind, sha256}]. Literal text (-l, one word) is read;
+    keys are typing the guard cannot read."""
+    while args and args[0] in _TMUX_GLOBAL_VALUE or (args and re.match(r"^-[2CDluvV]+$", args[0])):
+        args = args[2:] if args[0] in _TMUX_GLOBAL_VALUE else args[1:]
+    if not args or args[0] not in ("send-keys", "send"):
+        return []
+    target, literal, keys, k, doubt = None, False, [], 1, False
+    while k < len(args):
+        a = args[k]
+        if a in _TMUX_SEND_VALUE:
+            if a == "-t" and k + 1 < len(args):
+                target = args[k + 1]
+            k += 2
+            continue
+        if re.match(r"^-[lRMHKX]+$", a):
+            literal = literal or "l" in a
+            doubt = doubt or bool(re.search(r"[HKX]", a))
+        elif a.startswith("-t") and len(a) > 2:
+            target = a[2:]
+        else:
+            keys.append(a)
+        k += 1
+    if target is None:
+        tgt = ("tmux-own", None)
+    elif _unread(target) or re.search(r"[{}*?\[\]]", target):
+        tgt = ("unknown", None)
+    else:
+        tgt = ("tmux", target)
+    readable = literal and not doubt and len(keys) == 1 and not _unread(keys[0])
+    return [{"target": tgt, "kind": "tmux send-keys", "sha256": typed_digest(keys[0]) if readable else None}]
