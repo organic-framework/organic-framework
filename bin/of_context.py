@@ -49,24 +49,27 @@ def rules(agents_md, limit=RULES_MAX):
     return out[:limit] + ("\n…" if len(out) > limit else "") if out else None
 
 
-def owner_measures(loops):
-    """Lines naming each loop whose target the owner decided, from [(work id, owner|doer, loop)]."""
+def owner_measures(loops, resolve=None):
+    """Lines naming each loop whose target names the owner's yes, from [(work id, owner|doer, loop)]; RESOLVE (an id ->
+    the yes in the log) tells a real one from an unresolved one, which is named as such (of_review on PR 168)."""
     import of_loop
-    out = []
+    out, real = [], False
     for wid, role, loop in loops or []:
         if of_loop.decided(loop):
-            out.append(f"- `{wid}` (you are its {role}): {of_loop.target_line(loop)}.")
+            out.append(f"- `{wid}` (you are its {role}): {of_loop.target_line(loop, resolve)}.")
+            real = real or bool(of_loop.owners_yes(loop, resolve))
     if not out:
         return []
-    return (["", "## Loops whose measure the owner decided"] + out
-            + ["The measure itself justifies the work's changes. Report cost and money beside it; never ask the owner, "
-               "or relay an ask, to price, justify or prove it in money. The plateau question and every gate on an act "
-               "stay (docs/registry.md, Works, \"The owner's measure\")."])
+    return (["", "## Loops whose target names the owner's yes"] + out
+            + (["Where the owner decided the measure, the measure itself justifies the work's changes. Report cost "
+                "and money beside it; never ask the owner, or relay an ask, to price, justify or prove it in money. "
+                "The plateau question and every gate on an act stay (docs/registry.md, Works, \"The owner's "
+                "measure\")."] if real else []))
 
 
-def build(position, positions, loops=None):
+def build(position, positions, loops=None, resolve=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
-    or does (bin/of position_loops)."""
+    or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver)."""
     p = next((x for x in positions if x["name"] == position), None)
     if not p or not p.get("enrolled"):
         return None
@@ -88,7 +91,7 @@ def build(position, positions, loops=None):
         lines.append("- management functions covered: " + ", ".join(map(str, p["mandate_functions"])))
     if p.get("waiting_on"):
         lines.append(f"- registry says you wait on: {p['waiting_on']}")
-    lines += owner_measures(loops)
+    lines += owner_measures(loops, resolve)
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
     if brief:
         lines += ["", "## Brief", brief.strip()]
