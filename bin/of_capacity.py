@@ -1075,15 +1075,14 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if is_default(target) else [f"CLAUDE_CONFIG_DIR={_q(target)}"]
     parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
+    import of_spawn
     t_argv, t_settings = tools or ([], {})
-    settings = dict(t_settings or {})
+    settings = dict(of_spawn.AGENT_SETTINGS, **(t_settings or {}))  # feedback drafts off, as at spawn (PR 185)
     if memory_dir:
         settings["autoMemoryDirectory"] = memory_dir
     if deny:
         settings["permissions"] = {"deny": list(deny)}
-    if settings:
-        import of_spawn
-        parts += ["--settings", _q(of_spawn.settings_file(json.dumps(settings), sid, state_dir))]
+    parts += ["--settings", _q(of_spawn.settings_file(json.dumps(settings), sid, state_dir))]
     parts += [_q(str(x)) for x in t_argv or []]
     if model:
         parts += ["--model", model]
