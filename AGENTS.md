@@ -71,6 +71,7 @@ Rules:
 - **A founder's pause or decision covers only what his words name** (2026-11-09, from a user organization's lessons). A pause on the agents' mailbox also withdrew the 1Password vault task next to it, and that task then dropped unseen. Withdraw or pause only the item he named; anything next to it keeps or gets its own ask. Before calling a matter settled by an ask, check that its result exists.
 - **One decision per ask.** If you have several, send several asks or number them.
 - **Don't ask what you may decide yourself** within your mandate and grants. In a delegated unit, ask the unit owner first; the founder gets only escalations.
+- **Never ask the owner to prove in money a measure they decided** (2026-11-14: a user organization's owner chose a speed objective and accepted that its spend may bring no money gain, and still got a money-curve ask before that work). When a loop's target carries the owner's `decided`, report its cost and money beside it; never ask for a price, a money curve or a proof, and never relay such an ask. The owner's own questions stay: a plateau on that measure, and every gate on an act (docs/registry.md, Works, "The owner's measure").
 - **When you escalate or relay another position's question, rewrite it** in this form. Never forward it verbatim.
   A unit owner rewrites an ask OF escalated with `of ask --escalates <id>`; the note OF types in says how.
 - Use `--tags` (prod_change:<systems>, money, security_incident, irreversible, window_go:<systems>). Use `--blocking` only when you really stop.
