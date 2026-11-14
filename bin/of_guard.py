@@ -598,23 +598,25 @@ def _wget_deny(args):
 def _strip_comments(text):
     """The line without its comments, as bash reads them: `#` starts one only at the start of a word, outside quotes.
     shlex took a `#` inside a word for one, so `cat a#b <secret>` read as `cat a` (G0.7, 2026-11-14)."""
-    out, i, n, single, double = [], 0, len(text), False, False
+    out, i, n, single, double, start = [], 0, len(text), False, False, True
     while i < n:
         c = text[i]
-        if c == "\\" and not single and i + 1 < n:
-            out.append(text[i:i + 2])
+        if c == "\\" and not single and i + 1 < n:  # an escaped character, a blank too, belongs to the word
+            out.append(text[i:i + 2])               # (`a\ #b` is one word; of_review on organic-framework PR 178)
             i += 2
+            start = False
             continue
-        if c == "'" and not double:
-            single = not single
-        elif c == '"' and not single:
-            double = not double
-        elif c == "#" and not single and not double and (i == 0 or text[i - 1] in " \t\r\n;&|()"):
+        if c == "#" and start and not single and not double:
             j = text.find("\n", i)
             if j < 0:
                 break
             i = j
             continue
+        if c == "'" and not double:
+            single = not single
+        elif c == '"' and not single:
+            double = not double
+        start = not single and not double and c in " \t\r\n;&|()"
         out.append(c)
         i += 1
     return "".join(out)

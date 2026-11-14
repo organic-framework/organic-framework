@@ -220,6 +220,8 @@ class CommentTest(unittest.TestCase):
     def test_a_hash_inside_a_word(self):
         key = "~/.ssh/" + "id_" + "rsa"
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a#b " + key}))
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat a\\ #b " + key}))   # an escaped blank
+        self.assertEqual(of_guard._tokens("echo a\\ #b c"), ["echo", "a #b", "c"])
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + key + " # a note"}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo ok # cat " + key}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo '# cat' ok"}))
