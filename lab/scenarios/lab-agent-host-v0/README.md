@@ -61,8 +61,8 @@ rewrite and install into a scratch home with no resume (docs/capacity.md, "Carry
 | A4 | **resume (forward)** | the restore selects the session for resume as `of` | `restore` selects the carried session (account matched), and writes `plan.local.json` with the entry's `config_dir`, `cwd` and `memory_dir` rewritten to `of`'s home and its `pane` cleared (never another machine's pane id). The actual boot and the `of.capacity_carry_restored` / `of.holder_changed` events are the host's S2 part (see "Lab OS and fidelity"); the lab injects a `restore_fn` and asserts the selection and this local plan. |
 | A5 | **resume (reverse)** | carry the session back to `alex` and restore | the rollback direction selects and rewrites under `alex` the same way; the copy that stayed running on the source is never stopped by the carry. |
 | A6 | account guard | restore a session whose target config dir is signed in to another account | the session is **not** resumed and the restore names it (the owner signs in or chooses the account first). |
-| B3-1 | delta merge | merge the source's post-cutover events and records into the target store and ClickHouse by id | a re-run adds nothing (idempotent on the UUIDv7 id / `ReplacingMergeTree` record id). |
-| B3-2 | delta projections | after the merge | the delta's asks and hand-overs appear in the target's projections. |
+| B3-1 | delta merge | `python3 bin/of_merge_delta.py --source <copy of the source of.db> --target <target of.db> --since <cutover> --json` on the target | the delta is added once — events by `event_id`, transcript records by `(session, uuid)`, hook/runtime records by content with the event `raw_ref` rewritten, and the blobs they name — and a second run adds nothing for every table. |
+| B3-2 | delta projections | after the merge, `of asks --json` and `of handover list` on the target (`OF_DB` → the target store) | the delta's ask ("Make p50 the target?") and hand-over ("Rotate the key") show in the target's user-facing projections, which read the log. |
 
 A sign-in note: until the target config dir is signed in to the account the session ran on, restore does not resume
 it (A6 asserts the guard). A folder-trust note, for the S2 boot: a rewritten folder must be trusted in the target
@@ -85,8 +85,9 @@ nothing heavy on the Mac). The run is recorded in organic-framework-build `repor
 ## Status
 
 - **Harness built and green (2026-11-15, VM `of-lab-e2e1`):** `setup.sh` + `check.py` pass A1, A2, A3, A3b, A4, A5,
-  A6 forward (alex→of) and reverse (of→alex), exit 0. The resume boot and its events are the S2 part (see "Lab OS and
-  fidelity"); B3-1/B3-2 wait on `of_server`. Run report in organic-framework-build `reports/framework/`.
+  A6 forward (alex→of) and reverse (of→alex), and B3-1/B3-2 (the event-store delta merge), exit 0. The resume boot
+  and its events are the S2 part (see "Lab OS and fidelity"). Run report in organic-framework-build
+  `reports/framework/`.
 - **B1 ready:** `of capacity carry prepare|copy|restore` is in (`of_capacity`, 2026-11-13; `restore` gained a required
   `--org <organization>` and restores only positions the target registry has in that organization, folder memory not
   carried, `of_capacity` 2026-11-14). `of_capacity` verified the rewrite and install into a scratch home (539 of 540
@@ -98,8 +99,12 @@ nothing heavy on the Mac). The run is recorded in organic-framework-build `repor
   files are edited-file snapshots `/rewind` writes back, keyed by the already-rewritten transcript records), and
   scratch travels as the session's own work. A rerun on organic-framework PR 190 is green, with A2 taking the Linux wrapper and a new
   `A3-state-text` check asserting the three state folders follow the home while `file-history` is retained.
-- **B3 pending:** `of_server`'s event and record delta merge by id; B3-1 and B3-2 wait for it. Asked `of_server` for
-  the ref and how it is invoked.
+- **B3 event-store merge green (2026-11-15):** `of_server`'s `bin/of_merge_delta.py` (ref 01a1dc73) merges the
+  source's post-cutover delta into the target by id; the lab runs it as the target user on a copy of the source
+  store, with no account or herdr. B3-1 (merge once, a second run adds nothing) and B3-2 (the delta's ask and
+  hand-over show in `of asks` / `of handover list`) pass. One lab note sent to `of_server`: `of handover list` loads
+  the machine's org list before it reads the store, so the target user needs a minimal `orgs.yaml`, while `of asks`
+  needs none. The **ClickHouse record merge is `of_server`'s next ref** and its row is not yet exercised here.
 - **macOS host script (B2) is out of lab scope:** `deploy/host/setup.py` (`of_server`, 2026-11-14) is macOS-only and
   gets its first real run at the host's S0/S2, not here (see "Lab OS and fidelity"). Offered `of_server` a static
   review and a `plan` run.

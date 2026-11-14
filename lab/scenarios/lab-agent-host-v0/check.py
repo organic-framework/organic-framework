@@ -240,6 +240,91 @@ def phase_restore(home, uid, bundle, src_home):
     return 0 if ok else 1
 
 
+# --------------------------------------------------------------------------- phase: B3 delta merge (target)
+
+B3_CUT = "2026-11-15T12:00:00.000Z"
+
+
+def _b3_rec(of_events, kind, payload, ts, position="acme_ops", session="S1", host="laptop"):
+    r = of_events.record(kind, payload, position=position, session=session)
+    r["timestamp"] = ts
+    r["host.id"] = host
+    if kind == "handover_proposed":
+        r["of.payload"]["id"] = r["of.event.id"]
+    return r
+
+
+def _b3_ask(of_events, text, ts):
+    return _b3_rec(of_events, "agent_question",
+                   {"detected_by": "declared", "source": "declared", "from_position": "acme_ops", "to": "founder",
+                    "blocking": False, "topic_key": text[:20],
+                    "questions": [{"question": text, "options": ["yes", "no"]}]}, ts)
+
+
+def phase_b3(home):
+    """B3-1 (the event-store delta merge by id is idempotent) and B3-2 (the delta's ask and hand-over show in the
+    target's `of asks` / `of handover list`). of_server's merge (bin/of_merge_delta.py, organic-framework PR via
+    of_release; ref from of_server 01a1dc73), run as the target user on a copy of the source store, no account/herdr."""
+    sys.path.insert(0, TREE)
+    import of_store, of_events  # noqa: E402
+    base = os.path.join(home, "b3")
+    subprocess.run(["rm", "-rf", base])
+    os.makedirs(base, exist_ok=True)
+    src_path, dst_path = os.path.join(base, "laptop.db"), os.path.join(base, "host.db")
+
+    # a pre-cutover ask B1 already carried to both stores; a post-cutover ask, hand-over and prompt on the laptop
+    # only (the delta). The prompt names a hook record whose per-machine row id the merge must rewrite.
+    src, dst = of_store.connect(src_path), of_store.connect(dst_path)
+    before = _b3_ask(of_events, "Run the old migration?", "2026-11-15T11:00:00.000Z")
+    for c in (src, dst):
+        of_store.add_event(c, before)
+    after_ask = _b3_ask(of_events, "Make p50 the target?", "2026-11-15T12:05:00.000Z")
+    handover = _b3_rec(of_events, "handover_proposed",
+                       {"from": "acme_ops", "to": "acme_db", "title": "Rotate the key",
+                        "done_when": "the new key works"}, "2026-11-15T12:06:00.000Z")
+    ref = of_store.add_hook_record(src, "UserPromptSubmit", "S1", b'{"prompt": "go"}')
+    prompt = _b3_rec(of_events, "human_prompt", {"origin": "human", "text": "go ahead with the rotation"},
+                     "2026-11-15T12:07:00.000Z")
+    for r in (after_ask, handover):
+        of_store.add_event(src, r)
+    of_store.add_event(src, prompt, raw_ref=ref)
+    src.close()
+    dst.close()
+
+    # B3-1: the CLI merge of_server documented, then a second run that must add nothing.
+    merge_cli = [sys.executable, os.path.join(TREE, "of_merge_delta.py"), "--source", src_path, "--target", dst_path,
+                 "--since", B3_CUT, "--json"]
+    r1 = subprocess.run(merge_cli, capture_output=True, text=True)
+    c1 = json.loads(r1.stdout) if r1.stdout.strip() else {}
+    r2 = subprocess.run(merge_cli, capture_output=True, text=True)
+    c2 = json.loads(r2.stdout) if r2.stdout.strip() else {}
+    ok = True
+    ok &= emit("B3-1-merge", c1.get("event", {}).get("added") == 3 and c1.get("hook_record", {}).get("added") == 1,
+               f"first merge: events+{c1.get('event', {}).get('added')}, hooks+{c1.get('hook_record', {}).get('added')}")
+    tot2 = sum(t.get("added", 0) for t in c2.values()) if c2 else None
+    ok &= emit("B3-1-idempotent", tot2 == 0, f"second merge total added={tot2}")
+
+    # B3-2: the delta shows in the target's user-facing projections; OF_DB points `of` at the target store.
+    # `of handover list` loads the machine's org list before it reads the store (the list itself needs no
+    # registry), so give the target user a minimal orgs.yaml; `of asks` needs none.
+    cfgdir = os.path.join(home, ".config", "of")
+    os.makedirs(cfgdir, exist_ok=True)
+    orgs_yaml = os.path.join(cfgdir, "orgs.yaml")
+    if not os.path.exists(orgs_yaml):
+        with open(orgs_yaml, "w") as fh:
+            fh.write("orgs:\n  - name: acme-lab\n")
+    env = dict(os.environ, OF_DB=dst_path)
+    of_bin = os.path.join(TREE, "of")
+    asks = subprocess.run([sys.executable, of_bin, "asks", "--json"], capture_output=True, text=True, env=env)
+    hands = subprocess.run([sys.executable, of_bin, "handover", "list", "--all"], capture_output=True, text=True, env=env)
+    asks_out, hands_out = asks.stdout + asks.stderr, hands.stdout + hands.stderr
+    ok &= emit("B3-2-asks", "Make p50 the target?" in asks_out and "Run the old migration?" in asks_out,
+               f"delta ask in `of asks`: {'Make p50 the target?' in asks_out}")
+    ok &= emit("B3-2-handover", "Rotate the key" in hands_out,
+               f"delta hand-over in `of handover list`: {'Rotate the key' in hands_out}")
+    return 0 if ok else 1
+
+
 # --------------------------------------------------------------------------- orchestrator
 
 def sudo_phase(user, *args):
@@ -314,9 +399,13 @@ def main():
         return phase_build(a.home, a.uid, a.bundle)
     if a.phase == "restore":
         return phase_restore(a.home, a.uid, a.bundle, a.src_home)
+    if a.phase == "b3":
+        return phase_b3(a.home)
     rc = 0
     rc |= direction("alex", "of")      # forward
     rc |= direction("of", "alex")      # reverse (rollback symmetry, A5)
+    print("\n== B3 delta merge (target of) ==")
+    rc |= sudo_phase("of", "--phase", "b3", "--home", USERS["of"][0]).returncode
     print("\nPASS" if rc == 0 else "\nFAIL")
     return rc
 
