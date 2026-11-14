@@ -1233,7 +1233,8 @@ def _org_guard(hook, sess):
         record(r, said, "org_rule", "deny")
         return True
     warned = sess.setdefault("org_warned", [])
-    new = [(r, m) for r, m in hits if r["id"] not in warned]
+    # a `record` hit (O4: a command word held in a variable) is logged and never shown (of_architect, msg 01a1db6d-f7e4)
+    new = [(r, m) for r, m in hits if r["id"] not in warned and r["mode"] != "record"]
     if new:
         _add_context(" ".join(f"Organic Framework rule of {org} (grant {r['id']}; a warning now, a deny later): "
                               f"{r['reason']} Matched: {m}." for r, m in new))
@@ -1244,7 +1245,7 @@ def _org_guard(hook, sess):
             except OSError:
                 pass
     for r, said in hits:
-        record(r, said, "warn", "admit")
+        record(r, said, "noted" if r["mode"] == "record" else "warn", "admit")
     return False
 
 
