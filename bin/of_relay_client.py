@@ -1114,7 +1114,10 @@ def pull_coord(client, url, org, conn, cursor, me):
 RELAY_LABEL = "dev.organic-framework.relay"
 RELAY_WATCHDOG_LABEL = "dev.organic-framework.relay-watchdog"
 HEARTBEAT = "relay-heartbeat.json"
-STALE_S = 300   # a loop not seen moving this long: a poll waits at most 30 s, a failed one 5 s, presence 10 s
+# a loop not seen moving this long: above the longest bounded call, a request to a server that accepts and never
+# answers (of_client: 4 tries of 120 s and the back-off), so a hung server is not taken for a stuck relay (of_review
+# on organic-framework PR 142)
+STALE_S = 900
 
 
 def heartbeat_path():
@@ -1132,6 +1135,25 @@ def write_heartbeat(ticks, now=None):
         pass
 
 
+def clear_heartbeat():
+    """A relay that stopped leaves no heartbeat naming its pid (`of relay off`, the end of `of relay run`)."""
+    try:
+        os.remove(heartbeat_path())
+    except OSError:
+        pass
+
+
+def launchd_pid(label, domain=None, run=subprocess.run):
+    """The pid launchd has for LABEL in DOMAIN (gui/<uid> by default), else None: a relay booted out has none."""
+    try:
+        r = run(["launchctl", "print", f"{domain or 'gui/' + str(os.getuid())}/{label}"], capture_output=True,
+                text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"^\s*pid = (\d+)", r.stdout or "", re.M) if r.returncode == 0 else None
+    return int(m.group(1)) if m else None
+
+
 def relay_healthy(now=None, stale=STALE_S):
     """(ok, pid, detail): the relay's heartbeat is fresh and every loop ran within `stale` seconds."""
     now = time.time() if now is None else now
@@ -1146,13 +1168,16 @@ def relay_healthy(now=None, stale=STALE_S):
     return (not late), hb.get("pid"), ("loops behind: " + ", ".join(late)) if late else "ok"
 
 
-def watchdog(now=None, restart=None, dump=None, log=None, installed=None):
+def watchdog(now=None, restart=None, dump=None, log=None, installed=None, pid_of=None):
     """One check, run by launchd every minute (`of relay watchdog`): a relay process alive whose loops stopped moving
     for 3 minutes of checks gets its threads' stacks written to relay.log (SIGUSR1), then a restart, at most once in 15
     minutes (of_server.watch; docs/health.md §5; of_architect's hand-over 154a0cbf)."""
     import of_server
     plist = os.path.expanduser(f"~/Library/LaunchAgents/{RELAY_LABEL}.plist")
-    return of_server.watch("the relay", RELAY_LABEL, lambda: relay_healthy(now)[0], lambda: relay_healthy(now)[1],
+    # the pid is launchd's, never the heartbeat's: after `of relay off` that pid may belong to any process (of_review
+    # on organic-framework PR 142: a stale heartbeat had a sleep signalled)
+    return of_server.watch("the relay", RELAY_LABEL, lambda: relay_healthy(now)[0],
+                           pid_of or (lambda: launchd_pid(RELAY_LABEL)),
                            os.path.join(of_events.STATE_DIR, "relay-watchdog.json"), now=now, restart=restart,
                            dump=dump, log=log, installed=installed or (lambda: os.path.exists(plist)),
                            event="relay_watchdog", silent="has not moved its loops")

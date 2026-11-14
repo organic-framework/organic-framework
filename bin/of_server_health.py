@@ -3,8 +3,10 @@
 
 - `server.health`: how long the server took to answer /v1/health, from the accept of the connection to the reply
   written, the longest in the last three minutes. A starved or wedged server shows here before its clients give up.
-- `relay.oldest`: the age of the oldest message, other than an fyi, queued for an agent that is live and idle, which
-  the relay should have typed in already.
+- `relay.oldest`: how long the oldest message, other than an fyi, has been queued for an agent that is live and idle,
+  which the relay should have typed in already: counted from the first evaluation that saw it so, never from its
+  creation, so a wait on a busy agent counts nothing (of_review on organic-framework PR 142). A message the person
+  holds, with a dialog open in the pane or text in its input box, does not count either.
 
 Each check keeps one state (ok, degraded, failed) with the table's limits and since when, in the server's store. A
 change writes one of.health_changed; GET /v1/health/checks serves the states to the machines for `of health`.
@@ -23,6 +25,7 @@ PRESENCE_TTL = 120         # as of_server_relay: a presence older than this is n
 # check: (degraded over, failed over), in seconds. docs/health.md §2 holds the values; tune them there with evidence.
 LIMITS = {"server.health": (2.0, 20.0), "relay.oldest": (600.0, 3600.0)}
 IDLE = ("idle", "done")    # herdr's states in which an agent waits for input
+HELD = ("a dialog is open%", "the input box holds text%")  # the relay's deferrals the person holds (of_relay_client)
 
 DDL = """CREATE TABLE IF NOT EXISTS health_checks (name TEXT PRIMARY KEY, state TEXT, value REAL, since TEXT,
   updated TEXT);"""
@@ -48,6 +51,7 @@ class Health:
         self.store, self.now = store, now
         self.emit = emit or (lambda name, data: of_events.emit(name, data))
         self.answers = collections.deque(maxlen=2000)  # (time, seconds) of each /v1/health answer
+        self.waiting = {}  # msg_id: when an evaluation first saw it queued for a live, idle agent
         self.lock = threading.Lock()
         with store.conn() as c:
             c.executescript(DDL)
@@ -64,18 +68,22 @@ class Health:
         return max(vals) if vals else None
 
     def relay_oldest(self):
-        """Seconds the oldest message (no fyi) has waited for a live, idle agent; 0 when none waits."""
+        """Seconds the oldest message (no fyi, none the person holds) has been seen queued for a live, idle agent, by
+        this server's evaluations; 0 when none waits."""
         now = self.now()
         try:
             with self.store.conn() as c:
-                row = c.execute(
-                    "SELECT min(m.created) FROM messages m JOIN presence p ON p.org = m.to_org AND p.position = "
+                rows = c.execute(
+                    "SELECT m.msg_id FROM messages m JOIN presence p ON p.org = m.to_org AND p.position = "
                     "m.to_position WHERE m.state IN ('queued', 'leased') AND COALESCE(m.priority, 'normal') != 'fyi'"
-                    f" AND p.kind = 'agent' AND p.state IN ({', '.join('?' * len(IDLE))}) AND p.updated > ?",
-                    (*IDLE, now - PRESENCE_TTL)).fetchone()
+                    f" AND p.kind = 'agent' AND p.state IN ({', '.join('?' * len(IDLE))}) AND p.updated > ?"
+                    + "".join(" AND COALESCE(m.reason, '') NOT LIKE ?" for _ in HELD),
+                    (*IDLE, now - PRESENCE_TTL, *HELD)).fetchall()
         except Exception:  # noqa: BLE001 - no relay tables yet (a server that never relayed)
             return 0.0
-        return max(0.0, now - row[0]) if row and row[0] else 0.0
+        with self.lock:
+            self.waiting = {r[0]: self.waiting.get(r[0], now) for r in rows}
+            return max((now - t for t in self.waiting.values()), default=0.0)
 
     def evaluate(self):
         """Judge every check with a value now; write a change as one of.health_changed. Returns the changes."""

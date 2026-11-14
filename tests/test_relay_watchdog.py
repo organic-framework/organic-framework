@@ -77,13 +77,31 @@ class WatchdogTest(StateDir):
         def check(t):
             with mock.patch.object(R.of_events, "emit", lambda *a, **k: None):
                 return R.watchdog(now=t, restart=lambda: restarts.append(t), dump=dumped.append, log=said.append,
-                                  installed=lambda: True)
+                                  installed=lambda: True, pid_of=lambda: os.getpid())
         got = [check(t0 + R.STALE_S + 60 * i) for i in range(1, 6)]
         self.assertEqual(got, ["failing"] * 3 + ["restarted", "waiting"])
         self.assertEqual(dumped, [os.getpid()])
         self.assertIn("has not moved its loops", said[-1])
-        R.write_heartbeat({"presence": t0 + 900, "poll http://s": t0 + 900}, now=t0 + 900)
-        self.assertEqual(check(t0 + 910), "ok")
+        t1 = t0 + R.STALE_S + 340
+        R.write_heartbeat({"presence": t1, "poll http://s": t1}, now=t1)
+        self.assertEqual(check(t1 + 10), "ok")
+
+    def test_a_stale_heartbeat_never_signals_another_process(self):
+        # of_review on organic-framework PR 142: after `of relay off` the heartbeat's pid can be any process (a sleep
+        # was signalled); the pid is launchd's, and a relay launchd does not run is stopped
+        R.write_heartbeat({"presence": 1.0}, now=1.0)                    # names this test's own, live pid
+        dumped = []
+        with mock.patch.object(R.of_events, "emit", lambda *a, **k: None):
+            got = {R.watchdog(now=t, restart=lambda: self.fail("restarted"), dump=dumped.append, log=lambda m: None,
+                              installed=lambda: True, pid_of=lambda: None) for t in range(2000, 2600, 60)}
+        self.assertEqual((got, dumped), ({"stopped"}, []))
+        R.clear_heartbeat()
+        self.assertFalse(os.path.exists(R.heartbeat_path()))
+
+    def test_launchd_pid_reads_launchctl(self):
+        out = "gui/501/dev.organic-framework.relay = {\n\tstate = running\n\tpid = 4242\n}"
+        self.assertEqual(R.launchd_pid("x", run=lambda *a, **k: mock.Mock(returncode=0, stdout=out)), 4242)
+        self.assertIsNone(R.launchd_pid("x", run=lambda *a, **k: mock.Mock(returncode=113, stdout="")))
 
     def test_a_stopped_relay_is_left_alone(self):
         R.write_heartbeat({"presence": 1.0}, now=1.0)
@@ -92,8 +110,8 @@ class WatchdogTest(StateDir):
         hb["pid"] = 999999
         with open(R.heartbeat_path(), "w") as fh:
             json.dump(hb, fh)
-        self.assertEqual(R.watchdog(now=1000.0, restart=lambda: self.fail("restarted"), installed=lambda: True),
-                         "stopped")
+        self.assertEqual(R.watchdog(now=1000.0, restart=lambda: self.fail("restarted"), installed=lambda: True,
+                                    pid_of=lambda: None), "stopped")
 
 
 class UnitTest(unittest.TestCase):

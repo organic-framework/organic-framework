@@ -55,8 +55,27 @@ class HealthChecksTest(ServerBase):
         self.message("idle_a", now - 7000, priority="fyi")               # read when it chooses
         self.assertEqual(self.h.relay_oldest(), 0.0)
         self.message("idle_a", now - 900)
-        self.assertEqual(self.h.relay_oldest(), 900)
+        self.assertEqual(self.h.relay_oldest(), 0.0)                     # first seen now: its age before counts nothing
+        self.clock.t += 700
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.assertEqual(self.h.relay_oldest(), 700)
         self.assertEqual([c["state"] for c in self.h.evaluate()], ["degraded"])
+
+    def test_a_wait_on_a_busy_agent_counts_nothing_and_a_held_message_none(self):
+        # of_review on organic-framework PR 142: a message 80 minutes on a busy agent read failed once the turn ended
+        now = self.clock()
+        self.presence("b", "working", now - 10)
+        self.message("b", now - 4800)
+        self.assertEqual(self.h.relay_oldest(), 0.0)
+        self.clock.t += 60
+        self.presence("b", "idle", self.clock() - 5)                     # its turn ended
+        self.assertEqual(self.h.relay_oldest(), 0.0)
+        self.clock.t += 30
+        self.presence("b", "idle", self.clock() - 5)
+        self.assertEqual(self.h.relay_oldest(), 30)
+        with self.app.store.conn() as c:                                 # the person's text holds it
+            c.execute("UPDATE messages SET reason = 'the input box holds text (12 chars)'")
+        self.assertEqual(self.h.relay_oldest(), 0.0)
 
     def test_a_change_writes_one_event_and_a_steady_state_none(self):
         self.h.answered(0.4)

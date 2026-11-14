@@ -1275,9 +1275,11 @@ def make_handler(app):
                         t0 = self.server.accepted.get(self.connection.fileno()) or time.monotonic()
                     except (AttributeError, OSError, ValueError):
                         t0 = time.monotonic()
-                    h = health(app.store, app.writer)
-                    self._send(200, h if app.cfg.get("health_detail", True) else {"ok": h["ok"], "version": VERSION})
-                    app.health_checks.answered(time.monotonic() - t0)  # server.health, as answered
+                    try:
+                        h = health(app.store, app.writer)
+                        self._send(200, h if app.cfg.get("health_detail", True) else {"ok": h["ok"], "version": VERSION})
+                    finally:  # an answer its client no longer waited for is the slowest kind (of_review, PR 142)
+                        app.health_checks.answered(time.monotonic() - t0)  # server.health, as answered
                     return None
                 if u.path == "/v1/schema":
                     return self._send(200, {"schemas": list(SCHEMAS), "types": {k: list(v) for k, v in REQUIRED.items()}})
@@ -2260,10 +2262,13 @@ def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=N
         + ("; its threads' stacks are in its log" if dumped else "") + "; restarting it")
     error = None
     try:
-        (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
-                                            capture_output=True, timeout=30)))()
+        r = (restart or (lambda: subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                                                capture_output=True, timeout=30)))()
+        if getattr(r, "returncode", 0) not in (0, None):  # `Could not find service` (113) after a bootout
+            error = f"launchctl exit {r.returncode}"
     except Exception as e:  # noqa: BLE001 - a timeout under the very load this is for; the next one waits restart_gap
         error = f"{type(e).__name__}: {e}"[:200]
+    if error:
         log(f"the restart did not complete ({error}); the next attempt waits {s['restart_gap']} s")
     try:
         of_events.emit(event, {"action": "restarted" if error is None else "restart_failed", "pid": pid,
