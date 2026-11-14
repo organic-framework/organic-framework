@@ -199,14 +199,20 @@ def phase_restore(home, uid, bundle, src_home):
     tstray = src_home in non_msg
     ok &= emit("A3-rewrite", installed and msg_kept and cwd_rewritten and not tstray,
                f"installed={installed} msg_kept={msg_kept} cwd_rewritten={cwd_rewritten} nonmsg_stray={tstray}")
-    # FINDING (not a gate): install rewrites the transcript's content and every file's PATH, but not the
-    # CONTENT of the other session state (file-history, session-env, todos, tasks, scratch). Those files still
-    # carry the source home inside them after a carry. For of_capacity to judge whether a resumed session reads
-    # any of them by their embedded paths (file-history drives /rewind); the lab cannot tell from here.
-    others = subprocess.run(["grep", "-rIl", src_home, cfg], capture_output=True, text=True).stdout.split()
-    others = [os.path.relpath(f, cfg) for f in others if f != transcript]
-    print(f"FINDING nontranscript-content {len(others)} file(s) under the config dir still contain {src_home}: "
-          + ",".join(others))
+    # A3-state-text (of_capacity 4a295eb): install rewrites the content of session-env, tasks and todos to the
+    # new home; file-history stays byte for byte on purpose (its files are snapshots of edited files' contents
+    # that /rewind writes back verbatim, and their path index lives in the already-rewritten transcript
+    # file-history-snapshot records). Scratch is the session's own work and also travels as it is.
+    def has_src(path):
+        try:
+            return src_home in open(path).read()
+        except OSError:
+            return False
+    followed = {p: not has_src(os.path.join(cfg, p)) for p in
+                ("session-env/" + SID, "tasks/" + SID + "/small.out", "todos/" + SID)}
+    fh_retained = has_src(os.path.join(cfg, "file-history", SID))
+    ok &= emit("A3-state-text", all(followed.values()) and fh_retained,
+               f"session-env/tasks/todos follow home={followed}; file-history retained-by-design={fh_retained}")
     ok &= emit("A3-key", os.path.isdir(os.path.join(cfg, "projects", key_dst))
                and not os.path.isdir(os.path.join(cfg, "projects", key_src)),
                f"folder key {key_src} -> {key_dst}")
@@ -262,8 +268,10 @@ def copy_leg(src, dst):
     dest = f"{dst}@localhost:{USERS[dst][0]}/bundle"
     cmds = oc.copy_commands(os.path.join(src_home, "bundle"), key, to=dest)
     flat = " ".join(cmds[0] + cmds[1])
+    bg = oc.background()   # 4a295eb: per-platform; on this Linux VM a nice/ionice wrapper, never taskpolicy
     contract = ("IdentityAgent=none" in flat and "--chmod=go-rwx" in flat and "--bwlimit=" in flat
-                and key in flat and "--files-from=" in flat and cmds[0][0] == "taskpolicy")
+                and key in flat and "--files-from=" in flat and cmds[0][:len(bg)] == bg
+                and "taskpolicy" not in bg and bg[0] == "nice")
     # run the equivalent rsync as the source user, without taskpolicy and with SSH_AUTH_SOCK empty
     ssh = f"ssh -i {key} -o IdentityAgent=none -o IdentitiesOnly=yes -o BatchMode=yes"
     b = os.path.join(src_home, "bundle")
