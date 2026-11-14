@@ -13,6 +13,9 @@ What it merges, each by the key that names it on every machine:
 - hook and runtime records by their content (time, kind, session or pane, blob), since their row ids are per machine;
   an event's raw_ref to one of them (`hook_record:<id>`) is rewritten to the target's id;
 - the blobs the merged rows name.
+Blobs are hashed before they are stored, and one whose bytes are not its address is refused with the row that names
+it. The delta's acts of a person (PERSON_ACTS) are listed, and --hold-person-acts keeps them out for a later run, since
+the source is a store any process of its OS user can write (of_secrets-review on organic-framework PR 195).
 Machine-local state stays: the ingest and ship cursors (each machine reads its own files and ships its own rows) and
 `meta`. With --since, only rows at or after that time (an event's ts, a record's time); without it, every row. A
 re-run adds nothing. The source is opened read-only; the target is written one table per transaction. Run it where the
@@ -24,6 +27,7 @@ The listener's views fold new rows as they come; `of listen rebuild` re-derives 
 ClickHouse holds the shipped copy of these rows; its merge is a separate step (the server's records are idempotent on
 their ids, so re-shipping the delta adds nothing either)."""
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -43,6 +47,25 @@ CONTENT_KEYED = {"hook_record": (("received_at", "hook_event", "session_id", "bl
                  "runtime_record": (("received_at", "runtime", "type", "pane_id", "blob_sha256"), "received_at")}
 
 
+# What only a person does (docs/guard.md G24): rows the host takes as the owner's answers, words and approvals. The
+# source is a store every process of its one OS user can write, and only grants carry a signature the target checks
+# again, so the merge lists these, and --hold-person-acts keeps them out until whoever runs it has looked
+# (of_secrets-review on organic-framework PR 195)
+PERSON_ACTS = ("of.agent_question_answered", "of.human_prompt", "of.prompt_origin", "of.diff_approved",
+               "of.handover_accepted", "of.handover_verified")
+
+
+def person_act(name, payload):
+    """Is this event a person's act the target would take as theirs?"""
+    if name not in PERSON_ACTS:
+        return False
+    if name == "of.agent_question_answered":
+        return payload.get("by") == "owner"
+    if name == "of.human_prompt":
+        return payload.get("origin") in ("human", "paste")
+    return True
+
+
 class MergeError(Exception):
     pass
 
@@ -50,7 +73,8 @@ class MergeError(Exception):
 def _source(path):
     if not os.path.isfile(path):
         raise MergeError(f"no store at {path}")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    from urllib.parse import quote
+    conn = sqlite3.connect(f"file:{quote(path)}?mode=ro", uri=True)  # a ? or # in the path never reaches the URI
     if conn.execute("SELECT name FROM sqlite_master WHERE name = 'event'").fetchone() is None:
         raise MergeError(f"{path} is not an OF store (no event table)")
     return conn
@@ -64,15 +88,24 @@ def _has(conn, table):
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def _blob(src, dst, sha, dry):
-    """Copy one blob the target lacks; True when it was copied (or would be)."""
+def _blob(src, dst, sha, dry, counts):
+    """Copy one blob the target lacks, after hashing its bytes: a blob whose bytes are not its address is refused, so
+    the row that names it is not merged either (of_secrets-review on organic-framework PR 195: a poisoned blob would
+    also keep the real one out, the blob table being INSERT OR IGNORE). True when the row may be merged."""
     if not sha or dst.execute("SELECT 1 FROM blob WHERE sha256 = ?", (sha,)).fetchone():
+        return True
+    try:
+        data = of_store.get_blob(src, sha)
+    except Exception:  # noqa: BLE001 - an unreadable blob is refused like a wrong one
+        data = None
+    if data is None:
+        return True  # the source lacks it too: the row keeps its reference, as the source had it
+    if hashlib.sha256(data).hexdigest() != sha:
+        counts["blob"]["refused"] += 1
         return False
-    row = src.execute("SELECT sha256, size, codec, zdata FROM blob WHERE sha256 = ?", (sha,)).fetchone()
-    if not row:
-        return False
+    counts["blob"]["added"] += 1
     if not dry:
-        dst.execute("INSERT OR IGNORE INTO blob VALUES (?,?,?,?)", row)
+        of_store.put_blob(dst, data)
     return True
 
 
@@ -99,7 +132,10 @@ def _content_keyed(src, dst, table, since, dry, counts, idmap, only_ids=None):
         if hit:
             m[d["id"]] = hit[0]
             continue
-        counts["blob"]["added"] += _blob(src, dst, d.get("blob_sha256"), dry)
+        if not _blob(src, dst, d.get("blob_sha256"), dry, counts):
+            counts[table]["refused"] += 1
+            m[d["id"]] = None
+            continue
         counts[table]["added"] += 1
         if dry:
             m[d["id"]] = None
@@ -124,14 +160,18 @@ def _raw_ref(src, dst, ref, since, dry, counts, idmap):
     return f"{table}:{new}" if new else (None if not dry else ref)
 
 
-def merge(source, target, since=None, dry_run=False):
-    """{table: {seen, added}} after merging SOURCE's store into TARGET's (paths to of.db)."""
+def merge(source, target, since=None, dry_run=False, hold_person_acts=False):
+    """{table: {seen, added, refused}, person_acts: [...]} after merging SOURCE's store into TARGET's (paths to
+    of.db). person_acts lists the delta's acts of a person (PERSON_ACTS) the target lacked, each with `held` when
+    HOLD_PERSON_ACTS kept it out; a later run without it merges them."""
     if os.path.realpath(source) == os.path.realpath(target):
         raise MergeError("the source and the target are the same store")
     src = _source(source)
     dst = of_store.connect(target)  # the target's schema, migrated as every OF store is
-    counts = {t: {"seen": 0, "added": 0} for t in ("blob", "hook_record", "runtime_record", "transcript_record",
-                                                   "snapshot", "session_fork", "event")}
+    counts = {t: {"seen": 0, "added": 0, "refused": 0} for t in ("blob", "hook_record", "runtime_record",
+                                                                  "transcript_record", "snapshot", "session_fork",
+                                                                  "event")}
+    acts = []
     idmap = {}
 
     def tx(fn):
@@ -168,7 +208,9 @@ def merge(source, target, since=None, dry_run=False):
             if dst.execute("SELECT 1 FROM transcript_record WHERE session_id IS ? AND record_uuid = ?",
                            (d.get("session_id"), d["record_uuid"])).fetchone():
                 continue
-            counts["blob"]["added"] += _blob(src, dst, d.get("blob_sha256"), dry_run)
+            if not _blob(src, dst, d.get("blob_sha256"), dry_run, counts):
+                counts["transcript_record"]["refused"] += 1
+                continue
             counts["transcript_record"]["added"] += 1
             if not dry_run:
                 dst.execute(f"INSERT OR IGNORE INTO transcript_record ({', '.join(have)}) VALUES "
@@ -183,7 +225,9 @@ def merge(source, target, since=None, dry_run=False):
             counts["snapshot"]["seen"] += 1
             if dst.execute("SELECT 1 FROM snapshot WHERE path = ? AND blob_sha256 = ?", (path, sha)).fetchone():
                 continue
-            counts["blob"]["added"] += _blob(src, dst, sha, dry_run)
+            if not _blob(src, dst, sha, dry_run, counts):
+                counts["snapshot"]["refused"] += 1
+                continue
             counts["snapshot"]["added"] += 1
             if not dry_run:
                 dst.execute("INSERT OR IGNORE INTO snapshot (path, taken_at, blob_sha256) VALUES (?,?,?)",
@@ -211,6 +255,18 @@ def merge(source, target, since=None, dry_run=False):
             counts["event"]["seen"] += 1
             if dst.execute("SELECT 1 FROM event WHERE event_id = ?", (d["event_id"],)).fetchone():
                 continue
+            try:
+                payload = json.loads(d.get("payload") or "{}")
+            except ValueError:
+                payload = {}
+            if person_act(d.get("name"), payload if isinstance(payload, dict) else {}):
+                acts.append({"name": d["name"], "event_id": d["event_id"], "ts": d.get("ts"),
+                             "position": d.get("position"), "host_id": d.get("host_id"),
+                             "via": payload.get("via"), "origin": payload.get("origin"),
+                             "ask_id": payload.get("ask_id") or payload.get("id"), "held": bool(hold_person_acts)})
+                if hold_person_acts:
+                    counts["event"]["held"] = counts["event"].get("held", 0) + 1
+                    continue
             counts["event"]["added"] += 1
             if dry_run:
                 continue
@@ -228,6 +284,7 @@ def merge(source, target, since=None, dry_run=False):
     tx(events)
     src.close()
     dst.close()
+    counts["person_acts"] = acts
     return counts
 
 
@@ -236,19 +293,35 @@ def main(argv=None):
     ap.add_argument("--source", required=True, help="the store to read: another machine's of.db (opened read-only)")
     ap.add_argument("--target", required=True, help="the store to merge into: this machine's of.db")
     ap.add_argument("--since", help="only rows at or after this time (ISO, as the store writes it): the cutover point")
-    ap.add_argument("--dry-run", action="store_true", help="count what would be added; write nothing")
+    ap.add_argument("--dry-run", action="store_true", help="count what would be added, list the person's acts; write "
+                    "nothing")
+    ap.add_argument("--hold-person-acts", action="store_true", help="merge everything but the delta's acts of a person "
+                    "(owner answers, human prompts, prompt origins, diff approvals, hand-over accepts and verifies), "
+                    "listed for whoever runs it to look at; a later run without it merges them")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
-        counts = merge(a.source, a.target, a.since, a.dry_run)
+        counts = merge(a.source, a.target, a.since, a.dry_run, a.hold_person_acts)
     except MergeError as e:
         print(f"of_merge_delta: {e}", file=sys.stderr)
         return 2
     if a.json:
         print(json.dumps(counts))
     else:
+        acts = counts.pop("person_acts")
         for t, c in counts.items():
-            print(f"{t:18} seen {c['seen']:>8}  {'would add' if a.dry_run else 'added'} {c['added']:>8}")
+            print(f"{t:18} seen {c['seen']:>8}  {'would add' if a.dry_run else 'added'} {c['added']:>8}"
+                  + (f"  refused {c['refused']} (bytes not their hash)" if c.get("refused") else "")
+                  + (f"  held {c['held']}" if c.get("held") else ""))
+        print(f"\nacts of a person in the delta: {len(acts)}" + (" (held: not merged)" if a.hold_person_acts and acts
+                                                                  else ""))
+        for x in acts[:500]:
+            print(f"  {x['ts']}  {x['name']:30} {x['event_id']}  position {x['position'] or '-'}  host "
+                  f"{x['host_id'] or '-'}" + (f"  via {x['via']}" if x.get("via") else "")
+                  + (f"  origin {x['origin']}" if x.get("origin") else "")
+                  + (f"  ask {str(x['ask_id'])[-8:]}" if x.get("ask_id") else ""))
+        if len(acts) > 500:
+            print(f"  … {len(acts) - 500} more (--json lists them all)")
     return 0
 
 

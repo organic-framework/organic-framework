@@ -56,6 +56,12 @@ python3 bin/of_merge_delta.py --source <copy of the source's of.db> --target ~/.
 
 A re-run adds nothing. The asks and hand-overs from the delta appear in the projections at once, since they read the log; `of listen rebuild` re-derives the listener's views in time order after a large merge. Run it on the target machine against a copy of the source's file: selecting by time reads the source's tables whole. ClickHouse's copy of the same rows is a separate step (`bin/of_merge_delta.py` handles the local store only).
 
+The source is a store every process of its machine's one OS user can write, so the merge takes no row's word for itself (`of_secrets-review` on organic-framework PR 195):
+- **A blob is hashed before it is stored.** One whose bytes are not its address is refused, with the row that names it, and counted; it never takes the address of the real one.
+- **The delta's acts of a person are listed**: the owner's answers (`by: owner`), human prompts, prompt-origin corrections, diff approvals, hand-over accepts and verifies, by name, id, position and host (G24 names them). Run `--dry-run` first and read the list; `--hold-person-acts` merges everything else and keeps them out until a run without it. Grants are the one kind the target checks again, by their signature.
+- **The copy travels and lies as a secret does**: it holds every transcript of the source. Copy it over SSH with the agent key file (`SSH_AUTH_SOCK` empty), into a mode-600 file outside any repository, and delete it once the merge is done.
+- An event with a fixed id (`of_events.stable_id`: an escalation, an expiry) that the target would write later for the same fact is kept once, the source's copy first; both machines mean the same fact by that id.
+
 ## Central store: ClickHouse
 
 - **Why ClickHouse.** The data is append-only, wide and large (about 1 GB a day of raw transcripts from one founder). The questions are aggregations over time, positions and organizations. ClickHouse's columnar compression and `MergeTree` fit this. `ReplacingMergeTree` keyed on the record id makes re-shipping idempotent.

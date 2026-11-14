@@ -71,11 +71,12 @@ class MergeTest(unittest.TestCase):
 
     def test_merge_by_id_and_a_rerun_adds_nothing(self):
         first = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT)
-        self.assertEqual(first["event"], {"seen": 3, "added": 3})
+        self.assertEqual((first["event"]["seen"], first["event"]["added"]), (3, 3))
         self.assertEqual(first["transcript_record"]["added"], 2)   # u-1 and u-2: not S1's history, none of S0's
         self.assertEqual(first["hook_record"]["added"], 1)
         again = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT)
-        self.assertEqual(sum(c["added"] for c in again.values()), 0, again)
+        self.assertEqual(sum(c["added"] for t, c in again.items() if t != "person_acts"), 0, again)
+        self.assertEqual(again["person_acts"], [])   # merged already: nothing new to look at
         everything = of_merge_delta.merge(self.src_path, self.dst_path)   # no --since: the whole store, still idempotent
         self.assertEqual(everything["event"]["added"], 0)
 
@@ -100,6 +101,49 @@ class MergeTest(unittest.TestCase):
             self.assertEqual([h[0] for h in hit], [self.prompt["of.event.id"]])
         finally:
             conn.close()
+
+    def test_a_blob_whose_bytes_are_not_its_hash_is_refused(self):
+        """of_secrets-review on PR 195: a poisoned blob would land, and keep the real one out for good."""
+        import hashlib
+        src = of_store.connect(self.src_path)
+        real = b'{"type": "user", "message": "the real record"}'
+        sha = hashlib.sha256(real).hexdigest()
+        src.execute("INSERT INTO blob VALUES (?,?,?,?)", (sha, 5, "raw", b"other"))
+        src.execute("INSERT INTO transcript_record (source_path, line_offset, blob_sha256, session_id, record_uuid, "
+                    "timestamp) VALUES (?,?,?,?,?,?)", ("/x/S9.jsonl", 0, sha, "S9", "u-9", "2026-11-15T12:30:00Z"))
+        src.close()
+        counts = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT)
+        self.assertEqual((counts["blob"]["refused"], counts["transcript_record"]["refused"]), (1, 1))
+        dst = of_store.connect(self.dst_path)
+        try:
+            self.assertIsNone(of_store.get_blob(dst, sha))
+            self.assertEqual(of_store.put_blob(dst, real), sha)          # the real one can still be stored
+            self.assertEqual(of_store.get_blob(dst, sha), real)
+        finally:
+            dst.close()
+
+    def test_person_acts_are_listed_and_can_be_held(self):
+        """of_secrets-review on PR 195: the owner's answers and words the host takes as his, never merged unseen."""
+        src = of_store.connect(self.src_path)
+        answer = rec("agent_question_answered", {"ask_id": self.after_ask["of.event.id"],
+                                                 "ask_ids": [self.after_ask["of.event.id"]], "by": "owner",
+                                                 "via": "asks-ui", "answer": "yes"}, "2026-11-15T12:08:00.000Z")
+        of_store.add_event(src, answer)
+        src.close()
+        dry = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT, dry_run=True)
+        names = sorted(x["name"] for x in dry["person_acts"])
+        self.assertEqual(names, ["of.agent_question_answered", "of.human_prompt"])
+        self.assertEqual({x["host_id"] for x in dry["person_acts"]}, {"laptop"})
+        held = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT, hold_person_acts=True)
+        self.assertEqual((held["event"]["added"], held["event"]["held"]), (2, 2))
+        conn = of_store.connect(self.dst_path)
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM event WHERE event_id = ?",
+                                           (answer["of.event.id"],)).fetchone())
+        finally:
+            conn.close()
+        later = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT)   # looked at: merged now
+        self.assertEqual(later["event"]["added"], 2)
 
     def test_dry_run_writes_nothing(self):
         counts = of_merge_delta.merge(self.src_path, self.dst_path, since=CUT, dry_run=True)
