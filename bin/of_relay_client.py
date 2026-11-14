@@ -1163,9 +1163,11 @@ def read_heartbeat(path=None, uid=None, cap=HEARTBEAT_MAX):
     """The heartbeat as {ts, pid, loops}, or None. The agent host's root watchdog reads it in an organization user's
     folder, so it is opened without following a link and without blocking (a FIFO), must be a regular file of at most
     CAP bytes owned by UID when given, and any field of the wrong type counts as no heartbeat (of_secrets-review and
-    of_review on organic-framework PR 144)."""
+    of_review on organic-framework PR 144). With UID, no folder on the way is followed through a link either."""
+    path = path or heartbeat_path()
     try:
-        fd = os.open(path or heartbeat_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = (_open_nofollow(path) if uid is not None and os.path.isabs(path)
+              else os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK))
     except OSError:
         return None
     try:
@@ -1192,6 +1194,23 @@ def read_heartbeat(path=None, uid=None, cap=HEARTBEAT_MAX):
     pid = hb.get("pid")
     return {"ts": hb["ts"], "pid": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
             "loops": loops}
+
+
+def _open_nofollow(path):
+    """PATH opened read-only and without blocking, following no link after its first component (the system's own
+    links, /var → /private/var, sit in /, which root alone writes): a link a user put in a folder on the way, to a
+    share that would mount or to a file elsewhere, is never followed (of_review and of_secrets-review on
+    organic-framework PR 144; the same rule as deploy/host/setup.py's Files.folder)."""
+    parts = [p for p in path.split("/") if p]
+    fd = os.open(os.path.realpath("/" + parts[0]) if len(parts) > 1 else "/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[1:-1]:
+            nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nfd
+        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    finally:
+        os.close(fd)
 
 
 def relay_healthy(now=None, stale=STALE_S, path=None, uid=None):

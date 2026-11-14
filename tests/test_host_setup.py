@@ -101,6 +101,9 @@ class SetupTest(unittest.TestCase):
         wd = units[H.WATCHDOG_LABEL]["ProgramArguments"]
         self.assertIn("--relay", wd)
         self.assertEqual(wd[wd.index("--state-dir") + 1], H.WATCHDOG_STATE)    # root's folder, not _ofserver's
+        self.assertEqual([wd[i + 1] for i, w in enumerate(wd) if w == "--code"],  # looked at again each minute
+                         [H.PYTHON, H.CLICKHOUSE, f"{H.OF_ROOT}/bin"])
+        self.assertEqual(wd[wd.index("--service-user") + 1], "_ofserver")
         for label in (H.SERVER_LABEL, H.WATCHDOG_LABEL):                     # no PYTHON* variable, no user site
             self.assertEqual(units[label]["ProgramArguments"][1:3], ["-E", "-s"])
         self.assertEqual(self.mode(H.WATCHDOG_STATE), 0o700)
@@ -306,6 +309,29 @@ class TrustTest(unittest.TestCase):
         self.assertIn("refused", out.getvalue())
         self.assertIn("/opt/y", out.getvalue())
 
+    def test_the_python_running_the_script_is_checked_too_and_pyyaml_must_import_under_E_s(self):
+        """of_review on PR 144: the interpreter running setup.py was not checked, and a user install of PyYAML is not
+        seen by the daemons' -E -s."""
+        roots, asked = [], []
+        here = os.path.join(H.OF_ROOT, "deploy", "host", "setup.py")
+
+        def run(argv, **k):
+            asked.append(argv)
+            return mock.Mock(returncode=1, stdout="", stderr="ModuleNotFoundError: No module named 'yaml'")
+        with mock.patch.object(H, "trust_problems", lambda r, *a, **k: roots.extend(r) or []), \
+                mock.patch.object(H.os.path, "realpath", lambda p: p):
+            got = H.check_code(["of"], run=run, here=here)
+        self.assertIn(sys.prefix, roots)
+        self.assertEqual(roots[-1], sys.executable)                         # after the prefix whose tree it is in
+        self.assertEqual(asked, [["sudo", "-n", "-u", "nobody", "--", H.PYTHON, "-E", "-s", "-c", "import yaml"]])
+        self.assertEqual(len(got), 1)
+        self.assertIn("PyYAML", got[0])
+        asked.clear()
+        with mock.patch.object(H, "trust_problems", lambda *a, **k: ["x may write 1 of them: /opt/y"]), \
+                mock.patch.object(H.os.path, "realpath", lambda p: p):
+            H.check_code(["of"], run=run, here=here)
+        self.assertEqual(asked, [])                                          # an unsafe python is never run
+
     def test_the_script_must_be_the_release_checkouts(self):
         with mock.patch.object(H, "trust_problems", lambda *a, **k: []):
             got = H.check_code(["of"], here="/Users/alex/checkout/deploy/host/setup.py")
@@ -393,6 +419,41 @@ class HostWatchdogTest(unittest.TestCase):
         self.beat(self.now)
         self.assertTrue(of_relay_client.relay_healthy(self.now, path=self.hb, uid=os.getuid())[0])
         self.assertFalse(of_relay_client.relay_healthy(self.now, path=self.hb, uid=os.getuid() + 1)[0])
+
+    def test_a_link_in_a_folder_on_the_way_is_not_followed_for_another_users_heartbeat(self):
+        """of_review and of_secrets-review on PR 144: only the last component was O_NOFOLLOW."""
+        real = os.path.join(self.tmp.name, "real-state")
+        os.makedirs(real)
+        with open(os.path.join(real, of_relay_client.HEARTBEAT), "w") as fh:
+            json.dump({"ts": self.now, "pid": 1, "loops": {"presence": self.now}}, fh)
+        linked = os.path.join(self.tmp.name, "linked")
+        os.symlink(real, linked)
+        hb = os.path.join(linked, of_relay_client.HEARTBEAT)
+        self.assertTrue(of_relay_client.relay_healthy(self.now, path=hb)[0])  # its own: as before
+        self.assertEqual(of_relay_client.relay_healthy(self.now, path=hb, uid=os.getuid()),
+                         (False, None, "no heartbeat"))
+        self.assertTrue(of_relay_client.relay_healthy(self.now, path=os.path.join(real, of_relay_client.HEARTBEAT),
+                                                      uid=os.getuid())[0])
+
+    def test_unsafe_code_restarts_nothing_and_says_why(self):
+        prog = os.path.join(self.tmp.name, "python3")
+        open(prog, "w").close()
+        os.chmod(prog, 0o755)
+        self.beat(self.now - 1000)
+        logged = []
+        ok = dict(code=[prog], owner_ok=lambda uid: True)
+        got, kicked, _ = self.check(**ok)
+        self.assertEqual(got[3]["of-server"], "restarted")                  # safe code: as before
+        os.chmod(prog, 0o777)
+        with mock.patch.object(of_server, "_health", lambda c, timeout=None: None):
+            got = of_server.host_watchdog(self.cfg, [], now=self.now + 900, log=logged.append, state_dir=self.state,
+                                          pid_of=lambda label: os.getpid(), restart=lambda: self.fail("restarted"),
+                                          dump=lambda p: self.fail("signalled"), **ok)
+        self.assertEqual(got, {"code": "unsafe"})
+        self.assertIn(f"{prog}: writable by others", logged[0])
+        got = of_server.host_watchdog(self.cfg, [], now=self.now, log=logged.append, state_dir=self.state,
+                                      code=[os.path.join(self.tmp.name, "gone")], owner_ok=lambda uid: True)
+        self.assertEqual(got, {"code": "unsafe"})
 
     def test_one_relays_failure_does_not_stop_the_others(self):
         self.beat(self.now)
