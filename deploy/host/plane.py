@@ -17,11 +17,11 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
   /var/db/of-plane. It reads that user's two beat files by stat, never opening them (of_listen.watchdog).
 - `apply`, `start` and `deploy` refuse to run unless setup.check_code passes: the python, Homebrew and the release
   checkout belong to root (or an admin who is no organization user) and no organization user may write them.
-- `deploy --from SRC --ref REF` (root): the read-only release checkout /opt/organic-framework at REF, a branch or
-  tag of SRC. SRC's owner makes a git bundle of it (root runs no git in another user's repository); root copies the
-  bundle into its own folder without following a link and fetches from that copy; the owner runs the smoke check
-  (bin/of smoke) on the checkout, never root; a failing commit is put back to the one before. Root then compiles bin/
-  (the users cannot write a read-only checkout's bytecode cache) and makes it root's, readable by all.
+- `deploy [--ref REF] --smoke-as USER --org-user ...` (root): the read-only release checkout /opt/organic-framework at
+  REF, main or a tag or commit the public main contains. Root fetches from the public repository itself, never from
+  an organization user's checkout, whose main may hold commits no one reviewed (of_secrets-review on PR 148). The tree
+  is made root's, the trust check runs, USER (never root) runs the smoke check (bin/of smoke), and only then does
+  root compile bin/ with python -E -s; a failing step puts the commit before back.
 - `start` / `stop` (root) load and unload the plane's daemons; `check` runs, as each user, `of registry check`, the
   guard's probe in each config dir and a look at its orgs.yaml, and asks launchd for the daemons.
 - `plan` (the default) prints what `apply` would do and changes nothing.
@@ -29,7 +29,7 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
   sudo python3 deploy/host/plane.py plan  --org-user of:organic-framework-build=<of's home>/organic-framework-build
   sudo python3 deploy/host/plane.py apply --org-user of:organic-framework-build=<of's home>/organic-framework-build \\
                                           --org-user acme:acme=<acme's home>/acme-org --claude-dir acme:.claude-a
-  sudo python3 deploy/host/plane.py deploy --from <of's home>/organic-framework --ref main
+  sudo python3 deploy/host/plane.py deploy --ref main --smoke-as of --org-user of:... --org-user acme:...
   sudo python3 deploy/host/plane.py start|stop|check --org-user ...
 
 The owner's remote view (B4: saved herdr machines `of@localhost` and `acme@localhost` under the admin user, for the
@@ -40,7 +40,6 @@ import argparse
 import json
 import os
 import pwd
-import stat
 import subprocess
 import sys
 
@@ -54,8 +53,6 @@ PATH = host.PATH
 DAEMONS = host.DAEMONS
 LOGS = host.LOGS
 WATCH_STATE = "/var/db/of-plane"          # root's alone: each root watchdog's state
-DEPLOY_DIR = "/var/db/of-plane-deploy"    # root's alone: the copied bundle
-HANDOFF_DIR = "/var/db/of-plane-handoff"  # lent to the source's owner for its bundle, then taken back
 MARK = "# >>> organic-framework plane (deploy/host/plane.py) >>>"
 END = "# <<< organic-framework plane <<<"
 SERVICES = ("herdr", "listen", "health", "listen-watchdog")
@@ -292,76 +289,21 @@ def load(org_users, unload=False, run=subprocess.run, log=print):
 
 # ------------------------------------------------------------------ deploy
 
-def _take_back(path, files):
-    """The handoff folder made root's alone again, by its descriptor, before root reads what the user left there."""
-    fd = files.folder(path)
-    try:
-        if not files.root:
-            os.fchown(fd, 0, 0)
-        os.fchmod(fd, 0o700)
-    finally:
-        os.close(fd)
+PUBLIC = "https://github.com/organic-framework/organic-framework.git"  # reviewed code only: what of_release merged
 
 
-def _copy_bundle(src_dir, name, dst, files, owner):
-    """Root's own copy of the user's bundle: read with O_NOFOLLOW|O_NONBLOCK, a plain file of the owner with one link."""
-    dfd = files.folder(src_dir)
-    try:
-        try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
-        except OSError as e:
-            raise SystemExit(f"refused: {src_dir}/{name} is a link or missing ({e.strerror})") from None
-    finally:
-        os.close(dfd)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid not in {0, os.geteuid(), files.uid(owner)}:
-            raise SystemExit(f"refused: {src_dir}/{name} is not a plain file of {owner} with one link")
-        data = b""
-        while True:
-            chunk = os.read(fd, 1 << 20)
-            if not chunk:
-                break
-            data += chunk
-    finally:
-        os.close(fd)
-    _write_bytes(files, dst, data)
-
-
-def _write_bytes(files, path, data):
-    parent, name = os.path.split(path)
-    pfd = files.folder(parent, create=True)
-    try:
-        files.unlink(pfd, name, path)
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=pfd)
-        try:
-            host._write_all(fd, data)
-        finally:
-            os.close(fd)
-    finally:
-        os.close(pfd)
-
-
-def deploy(src, ref, run=subprocess.run, log=print, root=None, files=None, owner=None, checked=False):
-    """The release checkout at REF (a branch or tag of SRC); see the module's docstring. Returns the commit."""
+def deploy(ref="main", smoke_as=None, org_users=(), run=subprocess.run, log=print, root=None, source=PUBLIC,
+           trust=None):
+    """The release checkout at REF, which must be on the public main: root fetches from the public repository
+    itself, never from an organization user's checkout, whose main may hold commits no one reviewed (of_secrets-review
+    on PR 148). REF is main, or a tag or commit that the public main contains. In order: the checkout (git only), the
+    tree made root's and read-only, the trust check (setup.trust_problems over the python, Homebrew and the checkout),
+    the smoke check run by SMOKE_AS (an organization user, never root), and only then compileall as root (python -E
+    -s): root runs no Homebrew python before the trust check passed (of_secrets-review on PR 148). A failing step puts
+    the commit before back. Returns the commit."""
     root = root or OF_ROOT
-    files = files or host.Files()
-    owner = owner or pwd.getpwuid(os.stat(src).st_uid).pw_name
-    handoff = files.p(HANDOFF_DIR) if files.root else HANDOFF_DIR
-    deploy_dir = files.p(DEPLOY_DIR) if files.root else DEPLOY_DIR
-    files.mkdir_now(HANDOFF_DIR, 0o700)
-    fd = files.folder(HANDOFF_DIR)  # lent to the owner for its bundle
-    try:
-        files.own(fd, owner, "staff")
-    finally:
-        os.close(fd)
-    r = as_user(owner, ["git", "-C", src, "bundle", "create", os.path.join(handoff, "release.bundle"), ref], run)
-    _take_back(HANDOFF_DIR, files)
-    if r.returncode != 0:
-        raise SystemExit(f"deploy: {owner} could not bundle {ref} of {src}: {(r.stderr or r.stdout).strip()[-300:]}")
-    files.mkdir_now(DEPLOY_DIR, 0o700)
-    copy = os.path.join(deploy_dir, "release.bundle")
-    _copy_bundle(HANDOFF_DIR, "release.bundle", DEPLOY_DIR + "/release.bundle", files, owner)
+    if not smoke_as:
+        raise SystemExit("deploy: name the organization user who runs the smoke check (--smoke-as); root never does")
 
     def git(*a, check=True):
         r = run(["git", "-C", root, *a], capture_output=True, text=True)
@@ -369,30 +311,44 @@ def deploy(src, ref, run=subprocess.run, log=print, root=None, files=None, owner
             raise SystemExit(f"deploy: git {' '.join(a[:2])}: {(r.stderr or r.stdout).strip()[:300]}")
         return r.stdout.strip()
     if not os.path.isdir(os.path.join(root, ".git")):
-        r = run(["git", "clone", "-q", "--no-checkout", copy, root], capture_output=True, text=True)
+        r = run(["git", "init", "-q", root], capture_output=True, text=True)
         if r.returncode != 0:
-            raise SystemExit(f"deploy: git clone: {(r.stderr or r.stdout).strip()[:300]}")
+            raise SystemExit(f"deploy: git init: {(r.stderr or r.stdout).strip()[:300]}")
         before = None
     else:
-        before = git("rev-parse", "HEAD", check=False) or None
-    git("fetch", "-q", copy, ref)
-    git("checkout", "-q", "--detach", "FETCH_HEAD")
-    now = git("rev-parse", "HEAD")
-    # the owner runs the smoke check, never root; git in root's checkout needs it named safe for that user
-    r = as_user(owner, [PYTHON, os.path.join(root, "bin", "of"), "smoke", "--repo", root], run,
-                env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": root})
-    if r.returncode != 0:
+        before = git("rev-parse", "-q", "--verify", "HEAD", check=False) or None
+    git("fetch", "-q", source, "main")
+    public = git("rev-parse", "FETCH_HEAD")
+    if ref == "main":
+        target = public
+    else:
+        git("fetch", "-q", source, ref)
+        target = git("rev-parse", "FETCH_HEAD^{commit}")
+        if run(["git", "-C", root, "merge-base", "--is-ancestor", target, public], capture_output=True).returncode:
+            raise SystemExit(f"deploy: {ref} ({target[:12]}) is not on the public main ({public[:12]}): only "
+                             "reviewed code is deployed")
+
+    def back(why):
         if before:
             git("checkout", "-q", "--detach", before)
-        raise SystemExit(f"deploy: the smoke check failed on {now[:12]}; "
-                         f"{'back on ' + before[:12] if before else 'nothing was checked out before'}: "
-                         f"{(r.stderr or r.stdout).strip()[-300:]}")
-    # the users cannot write a read-only checkout's bytecode cache: compile it here (compiling runs no code)
-    run([PYTHON, "-E", "-s", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True)
+        raise SystemExit(f"deploy: {why} on {target[:12]}; "
+                         f"{'back on ' + before[:12] if before else 'nothing was checked out before'}")
+    git("checkout", "-q", "--detach", target)
     run(["chown", "-R", "-P", "root:wheel", root], capture_output=True)
     run(["chmod", "-R", "u+rwX,go+rX,go-w", root], capture_output=True)
-    log(f"deploy: {root} at {now[:12]} (smoke check ok, by {owner})")
-    return now
+    problems = (trust or (lambda: host.trust_problems(host.code_roots(), [*org_users, host.SERVICE_USER], run=run)))()
+    if problems:
+        back("the trust check failed (" + "; ".join(problems)[:300] + ")")
+    # the user runs the smoke check, never root; git in root's checkout needs it named safe for that user
+    r = as_user(smoke_as, [PYTHON, os.path.join(root, "bin", "of"), "smoke", "--repo", root], run,
+                env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": root})
+    if r.returncode != 0:
+        back("the smoke check failed (" + (r.stderr or r.stdout).strip()[-300:] + ")")
+    # the users cannot write a read-only checkout's bytecode cache: compile it here, after the trust check
+    run([PYTHON, "-E", "-s", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True)
+    run(["chown", "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True)
+    log(f"deploy: {root} at {target[:12]}, on the public main {public[:12]} (trust and smoke checks ok)")
+    return target
 
 
 # ------------------------------------------------------------------ check
@@ -436,16 +392,13 @@ def main(argv=None):
     ap.add_argument("action", nargs="?", default="plan", choices=["plan", "apply", "start", "stop", "check", "deploy"])
     ap.add_argument("--org-user", action="append", default=[], help="user:org=/absolute/repo (repeatable)")
     ap.add_argument("--claude-dir", action="append", default=[], help="user:dir (repeatable; ~/.claude by default)")
-    ap.add_argument("--from", dest="src", help="deploy: the repository to take the release from")
-    ap.add_argument("--ref", help="deploy: a branch or tag of it")
+    ap.add_argument("--ref", default="main", help="deploy: main, or a tag or commit on the public main")
+    ap.add_argument("--smoke-as", help="deploy: the organization user who runs the smoke check")
     a = ap.parse_args(argv)
     if a.action == "deploy":
-        if not (a.src and a.ref):
-            raise SystemExit("deploy needs --from <repository> and --ref <branch or tag>")
         if os.geteuid() != 0:
             raise SystemExit("deploy: run it as root (sudo)")
-        deploy(a.src, a.ref)
-        trust(parse_org_users(a.org_user) or {}, subprocess.run)  # the checkout it made: root's alone
+        deploy(a.ref, a.smoke_as, list(parse_org_users(a.org_user)))
         return 0
     org_users = parse_org_users(a.org_user)
     if not org_users:
