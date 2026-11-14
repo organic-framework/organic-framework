@@ -525,16 +525,26 @@ class WatchdogTest(unittest.TestCase):
     def test_no_process_is_launchds_and_the_probe_reads_heartbeat_and_ticks(self):
         self.assertEqual(of_listen.watchdog(now=0, probe=lambda: False, pid=2 ** 22 + 7, log=lambda m: None),
                          "stopped")
-        conn = of_store.connect(os.path.join(self.tmp.name, "of.db"))
-        conn.executescript(of_listen.DDL)
         import time as _t
-        conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', ?)", (str(_t.time()),))
-        conn.close()
+        of_listen._touch(of_listen.heartbeat_path())                        # the main loop's beat, a file
         of_listen._touch(of_listen.ticks_path())
         self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "ok")
         old = _t.time() - of_listen.WATCHDOG["ticks_stale"] - 60
         os.utime(of_listen.ticks_path(), (old, old))                        # the timers stopped turning
         self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "failing")
+        os.utime(of_listen.ticks_path(), None)
+        old = _t.time() - of_listen.STALE_S - 60
+        os.utime(of_listen.heartbeat_path(), (old, old))                    # the main loop stopped beating
+        self.assertEqual(of_listen.watchdog(pid=os.getpid(), log=lambda m: None), "failing")
+
+    def test_the_probe_never_opens_the_store_and_a_fifo_cannot_block_it(self):
+        """of_server on PR 145: a root watchdog that opened a user's store read-only left root-owned of.db-wal and
+        -shm in the user's folder, and a FIFO in their place blocked it."""
+        os.mkfifo(of_listen.heartbeat_path())
+        os.mkfifo(of_listen.ticks_path())
+        got = of_listen.watchdog(pid=os.getpid(), log=lambda m: None)       # returns: stat only, nothing opened
+        self.assertIn(got, ("ok", "failing"))
+        self.assertEqual(sorted(f for f in os.listdir(self.tmp.name) if f.startswith("of.db")), [])
 
     def test_the_pid_is_launchds_never_a_files(self):
         """of_review on PR 145: a dead pid left in listen.pid by `of listen rebuild` or a terminal run made a stuck

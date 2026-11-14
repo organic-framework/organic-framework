@@ -1048,6 +1048,10 @@ WATCHDOG_LABEL = "dev.organic-framework.listen-watchdog"
 WATCHDOG = {"every": 60, "failing_for": 180, "restart_gap": 900, "ticks_stale": 900}
 
 
+def heartbeat_path():
+    return os.path.join(of_events.STATE_DIR, "listen.heartbeat")
+
+
 def ticks_path():
     return os.path.join(of_events.STATE_DIR, "listen.ticks")
 
@@ -1137,20 +1141,6 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
     return out
 
 
-def _heartbeat_age(now):
-    import sqlite3
-    try:
-        import of_store
-        conn = sqlite3.connect(f"file:{of_store.db_path()}?mode=ro", uri=True, timeout=5)
-        try:
-            row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
-        finally:
-            conn.close()
-        return None if not row else now - float(row[0])
-    except Exception:  # noqa: BLE001 - no store, no table: no heartbeat
-        return None
-
-
 def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log=print, settings=None, pid=None):
     """One check, run by launchd every minute (`of listen watchdog`): of_server.watch for the listener (hand-over
     6d9a8305; the same rule as of-server's and the relays'). A listener that launchd runs, but whose heartbeat is older
@@ -1171,34 +1161,38 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
     state_path = state_path or os.environ.get("OF_LISTEN_WATCHDOG_STATE") or os.path.join(of_events.STATE_DIR,
                                                                                          "listen-watchdog.json")
     if probe is None:
-        def probe():
-            hb = _heartbeat_age(now)
-            try:
-                ticks = now - os.path.getmtime(ticks_path())
-            except OSError:
-                ticks = None
+        def probe():  # two files' times by stat: never an open, so no store file is made and no FIFO can block it
+            def age(path):
+                try:
+                    return now - os.stat(path).st_mtime
+                except OSError:
+                    return None
+            hb, ticks = age(heartbeat_path()), age(ticks_path())
             return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"])
     pid_of = (lambda: pid) if pid is not None else (lambda: of_relay_client.launchd_pid(label, domain))
 
     def stamp(m):
         log(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {m}")
-    emit = of_events.emit
-    if as_root_for_user:
-        of_events.emit = lambda *a, **k: None
     import inspect
-    kw = {}
-    if "domain" in inspect.signature(of_server.watch).parameters:
+    kw, params = {}, inspect.signature(of_server.watch).parameters
+    if "record" in params:  # of_server's switch for the event (its PR 144); else the emit is silenced below
+        kw["record"] = not as_root_for_user
+    if "domain" in params:
         kw["domain"] = domain
     elif domain and restart is None:  # an of_server.watch from before its `domain`: the system daemon restarted here
         import subprocess
         restart = lambda: subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"],  # noqa: E731
                                          capture_output=True, timeout=30)
+    emit = of_events.emit
+    if as_root_for_user and "record" not in params:
+        of_events.emit = lambda *a, **k: None
     try:
         return of_server.watch("the listener", label, probe, pid_of, state_path, now=now, restart=restart,
                                dump=dump, log=stamp, settings=s, event="listener_watchdog",
                                silent="has not kept its heartbeat or turned its timers", **kw)
     finally:
         of_events.emit = emit
+
 
 SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
 LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
@@ -1264,8 +1258,11 @@ def _has_meta(conn):
 
 
 def heartbeat(conn):
-    """Never fatal: a busy store skips one beat (a 'database is locked' here crash-looped the listener)."""
+    """Never fatal: a busy store skips one beat (a 'database is locked' here crash-looped the listener). The beat goes
+    to listener_meta, which readers trust (fresh()), and to the file listen.heartbeat, which the watchdog reads without
+    opening the store (of_server on PR 145: a root watchdog opening a user's store left root-owned files there)."""
     import sqlite3
+    _touch(heartbeat_path())
     try:
         conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', ?)", (str(time.time()),))
         return True

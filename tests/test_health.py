@@ -181,6 +181,30 @@ class RollbackTest(unittest.TestCase):
         with open(os.path.join(self.repo, "a.py")) as fh:
             self.assertEqual(fh.read(), "a = 3  # someone's edit in the meantime\n")
 
+    def test_a_path_edited_in_the_last_moment_is_kept_and_staged_as_main(self):
+        """of_server and of_review on PR 145: a path left as it was kept its pre-revert content staged, so the next
+        plain commit undid the revert for it."""
+        self.write("a.py", "a = 2\n")
+        bad = self.commit("break a", "of_x")
+
+        def run(argv, **kw):
+            r = subprocess.run(argv, **kw)
+            if "update-ref" in argv:  # main has moved; the file is edited before it is written
+                self.write("a.py", "a = 4  # an edit in the last moment\n")
+            return r
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@example.com"}
+        from unittest import mock
+        said = []
+        with mock.patch.dict(os.environ, env):
+            new = self.of.rollback(self.repo, bad, "of_platform", run=run, log=said.append)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), new)
+        self.assertIn("edited meanwhile: a.py", said[0])
+        with open(os.path.join(self.repo, "a.py")) as fh:
+            self.assertEqual(fh.read(), "a = 4  # an edit in the last moment\n")  # the edit is kept
+        self.assertEqual(self.git("diff", "--cached", "--name-only"), "")         # nothing staged undoes the revert
+        self.assertEqual(self.git("show", f"{new}:a.py"), "a = 1\n")
+
     def test_refused_while_someone_edits_a_path(self):
         self.write("a.py", "a = 2\n")
         bad = self.commit("break a", "of_x")
