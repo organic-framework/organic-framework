@@ -357,7 +357,7 @@ A position receives more than it takes: peer messages wait in its queue on the s
 - **Severity.** Overload is `medium`. Unattended is `high`, because work waits on nobody.
 - **ΔT basis:** sender waiting hours removed: the backlog minutes × the senders waiting, on *raise*/*sustain* positions. Owner minutes are 0 unless the owner relays around the queue (§2.2). *p* = 0.5. *m_decide* = 5 min.
 
-### 2.16–2.22 Development-loop rules (RFC 0005 §6)
+### 2.16–2.22 and 2.28 Development-loop rules (RFC 0005 §6)
 
 *v0 (2026-11-07), built: `bin/of_diagnose_rules.py`, on `of_studio`'s projection (`of_model.loops`) and `of_platform`'s loop events, both of that day.* [RFC 0005](rfc/0005-development-loops.md) makes a work's development loop an object:
 - a target in money;
@@ -365,7 +365,7 @@ A position receives more than it takes: peer messages wait in its queue on the s
 - an evaluation ladder, cheapest rung first;
 - a hypothesis register and a decision log.
 
-These seven rules watch it. Each is per work, with `affected: [<work>]`.
+These rules watch it: seven from 2026-11-07, and 2.28 from 2026-11-14. Each is per work, with `affected: [<work>]`.
 
 **Inputs and status.** They read the loop projection of §4.1, which does not exist yet:
 - the schema is `of_architect`'s (RFC §8 step 1);
@@ -387,11 +387,12 @@ A rule reports `blocked` while the organization has no declared loop or no run i
 |---|---|---|---|---|
 | 2.16 | `ap.loop-cheapest-rung@0` | ≥ 2 runs on a rung for a hypothesis that has no accepted run on a cheaper rung that already existed (`since` ≤ the run) | doer | low |
 | 2.17 | `ap.loop-checkpoint@0` | The loop ran in the last `checkpoint_days` (default 3), but no run reached a production rung in that time, counted from the loop's start or its last production run | work_owner | medium |
-| 2.18 | `ap.loop-plateau@0` | 3 consecutive runs on the target metric each improve the best earlier result by < 1% of it | work_owner | medium |
+| 2.18 | `ap.loop-plateau@1` | 3 consecutive runs on the target metric each improve the best earlier result by < 1% of it | work_owner | medium |
 | 2.19 | `ap.loop-wip@0` | More than `wip_arms` hypotheses in `testing` for ≥ 12 h | doer | low |
 | 2.20 | `ap.loop-babysit-model@0` | ≥ 100 runner commands and monitors by the loop's doers on a model ranked above `babysit_model` (default `sonnet`) | doer, with `of_capacity` | low |
 | 2.21 | `ap.loop-objective-drift@2` | `unpriced`: ≥ 3 runs, and ≥ 30% of the loop's runs, measure a metric that is neither the target's nor a measure with `to_money`. `untied`: the same on a target the owner decided (`decided`), where a measure with `to_target` is tied too, or any change of objective recorded there. `context`: a run, a hypothesis or a change of objective names a part outside the target's segment | work_owner | medium |
 | 2.22 | `ap.loop-eval-bottleneck@0` | On one rung with ≥ 3 runs, the wait share (queued to started, over queued to ended) is > 40% | work_owner | medium |
+| 2.28 | `ap.loop-observed-elsewhere@0` | `decision`: a keep or a drop rests only on runs on a proxy not shown to hold (`held` is `not_held` or `unknown`). `accepted`: a run on such a proxy carries `accepted`. One is enough | doer | `decision` medium, `accepted` low |
 
 Per rule:
 
@@ -407,7 +408,7 @@ Per rule:
   - The issue goes to the work owner, who approves the shadow rung.
   - ΔT basis: the stake per day (`target.stake`) × the days without a production signal, as cost of delay.
 - **2.18 Plateau.**
-  - A cycle is a run whose metric is the target's.
+  - A cycle is a run whose metric is the target's, read where its event happens. From v1 (2026-11-14) a run on a proxy not shown to hold (2.28) is no cycle: it decides nothing, and the loop card keeps it out of the curve and the plateau (§4.1).
   - The gain is its value over the best earlier value, relative to that best. The direction comes from `target.better` (`higher`, the default, or `lower`).
   - Remedy: a step back (double loop). The owner asks a second position for a reframe review: by default the position the unit owner names; for the OF team, `of_architect` (RFC §9 q2).
   - The first user organization's case: the day pass stayed at the same value from 11-05 to 11-07.
@@ -449,6 +450,16 @@ Per rule:
   - Remedy: elevate the rung (more runners for it), or move hypotheses to a cheaper rung. It goes to the owner, since it costs capacity.
   - v0 reads `of_studio`'s wait share as the projection gives it, over all the rung's runs so far, and fires only for a loop that ran in the window. A week-windowed share is v1, once the projection gives one.
   - The first user organization's case: 76 of 92 relayed messages to the doer were about runner slots, and 58 of 118 hours were gaps.
+- **2.28 Observed elsewhere** (v0, 2026-11-14; hand-over e640ea57 from `of_architect`, basis: the founder's prompt `01a1da18-f250` of 2026-11-14, "The cause must be found and this behaviour fixed systemically"; spec: [`registry.md`](registry.md), Works, "Where a reading is taken", and RFC 0005 §4.3 and §6). A reading taken anywhere else than where its event happens is a proxy. Its measure, or the run itself, names `proxy_for`: where the event happens (`at`) and the condition under which the reading equals the one there (`valid_when`). The run records whether that condition held in its data (`held`, `not_held`, `unknown`). A proxy not shown to hold, whose `held` is `not_held` or `unknown`, decides nothing. `of loop` refuses a keep or a drop that rests only on such runs, and writes no `accepted` on them. The rule finds what got past that check: decisions written before it existed, runs synced from a runner, and events written by other tools.
+  - **Part `decision`.** A `keep` or `drop` decision in the window on a hypothesis whose every run before the decision is a proxy not shown to hold. A hypothesis with no run is not this rule's case. One run on the data where the condition held (`held`), or one run taken where its event happens (no proxy), is enough for the decision to stand.
+  - **Part `accepted`.** A run that ended in the window on such a proxy carries `accepted`, true or false. A rung's accept is never judged on it.
+  - One hit fires. One issue per work. When both parts fire, `decision` names it and the accepted runs stay in its evidence.
+  - A measure read where its event happens whose chain (`to_money`, `to_target`) rests on a reading elsewhere carries `chain_proxy_for`, not `proxy_for` ([`registry.md`](registry.md), Works, "A direct reading with a proxy chain"). Its runs are direct readings, and the rule leaves them alone. A price or a ranking taken from that chain is an inference, which the money line's label shows.
+  - Nudge (RFC 0005 §6), after what fired: "`<metric>` was read at `<observed_at>`, and the event happens at `<at>`: report it as not observed there, or run it on the data where `<valid_when>` held."
+  - Remedies. For `decision`: reopen the hypothesis and report its reading as not observed where the event happens, labelled as a proxy; run it where the event happens, or on the data where the condition held, before a keep or a drop. For `accepted`: record no accept on a proxy not shown to hold, and rerun it on the data where the condition held, which counts as taken there.
+  - The evidence names `observed_at`, `proxy_for` (the proxy's `for`), `valid_when` and `held` of the last such run, the `decisions` with their runs, and the `accepted_runs`.
+  - **Inputs.** It reads `runs[].proxy` and `runs[].observed_at` (§4.1): `of_platform`'s run fields from 2026-11-14 (hand-over 52b9d314), and `of_studio`'s projection of them, which takes both from the run's measure when the event names none, with `held` then `unknown`. A measure that the structure keeper marks with `proxy_for` therefore makes its earlier runs proxies of unknown condition. While no run of a declared loop says where it was read, the rule reports `blocked: of.loop_run.observed_at` and raises nothing.
+  - The first user organization's case: on 2026-11-14 an analysis took the time a rival's transaction reached the organization's own nodes as the time it reached the block's builder, and that reading had already carried two decisions that day. Its loop events are to be checked once its measures name `observed_at` and `proxy_for`.
 
 **Calibration.** The thresholds are RFC 0005 §6's, unconfirmed. Each rule gets synthetic fixtures in `lab-drift-v0` (a positive and a negative), and the search week as its first real case. A rule that fires on every loop, or on none, has a wrong threshold (§5).
 
@@ -598,6 +609,7 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | 2.15 | `of.inbound_queue` on ≥ 3 days; presence for the live-holder test | Queue events exist, with exact ages since 2026-11-06 12:53Z (`of_platform`). Presence: new; v0 uses the registry |
 | §3 | T and OE events per organization | app adapters |
 | 2.16–2.22 | The loop projection of §4.1 | RFC 0005 §8 steps 1–3 |
+| 2.28 | `observed_at` and `proxy` on runs, and `proxy_for` on measures | `of_platform`'s `of loop run` and `of registry check` from 2026-11-14 (hand-over 52b9d314); `of_studio`'s projection the same day; each loop's measures in its organization's registry |
 | 2.25, 2.26 | `needs:` on systems and `owns:` on positions | RFC 0007 steps 1 and 3: the schema exists; each organization's system architect fills it |
 | 2.27 | A merged PR's body and review count on its work record | Exist since organic-framework 11aee30 (2026-11-11); records imported earlier get them on their next re-import |
 
@@ -608,13 +620,13 @@ The loop rules read one projection per work, `model["loops"][<work>]`, through `
 | Field | Meaning | Source | Owner | Read by |
 |---|---|---|---|---|
 | `work`, `owner`, `doers` | The work id, its owner (`work_owner`), the positions doing it | registry `works:` | `of_architect` (schema) | all |
-| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`), **`segment`** (`start`, `end`, `context`: a list of parts, each a text or `{name, what}`; `segment` is null when the target names none), **`decided`** (the owner's yes on the measure, docs/registry.md Works, "The owner's measure", only when it resolves in this machine's log as a person's yes; else null, and the target is priced in money), **`decided_words`** (what the person said: the ask's question and chosen option, or the prompt's first words), **`decided_unresolved`** and **`decided_unresolved_why`** (`not_found`, `unread`, `not_looked_up`; present only when an id is written and does not resolve) | registry `works.<w>.loop.target` | `of_architect`; `segment` in `of_studio`'s projection since organic-framework PR 60, `decided` since `of_studio`'s change of 2026-11-14 | 2.17, 2.18, 2.21 |
-| `measures[]` | `name`, `to_money` (empty means not priced), **`to_target`** (how it moves a target the owner decided; null when not given; 2.21 counts it only on such a target) | `loop.measures` | `of_architect` | 2.21 |
+| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`), **`segment`** (`start`, `end`, `context`: a list of parts, each a text or `{name, what}`; `segment` is null when the target names none), **`decided`** (the owner's yes on the measure, docs/registry.md Works, "The owner's measure", only when it resolves in this machine's log as a person's yes; else null, and the target is priced in money), **`decided_words`** (what the person said: the ask's question and chosen option, or the prompt's first words), **`decided_unresolved`** and **`decided_unresolved_why`** (`not_found`, `unread`, `not_looked_up`; present only when an id is written and does not resolve), **`observed_at`** (where its reading is taken; null when not named) | registry `works.<w>.loop.target` | `of_architect`; `segment` in `of_studio`'s projection since organic-framework PR 60, `decided` since `of_studio`'s change of 2026-11-14 | 2.17, 2.18, 2.21 |
+| `measures[]` | `name`, `to_money` (empty means not priced), **`to_target`** (how it moves a target the owner decided; null when not given; 2.21 counts it only on such a target), and as the registry writes them **`observed_at`** and **`proxy_for`** {`at`, `valid_when`} ([`registry.md`](registry.md), Works, "Where a reading is taken") | `loop.measures` | `of_architect` | 2.21 |
 | `ladder[]` | Cheapest first: `rung`, `cost`, `latency`, `accept`, **`production`** (true for shadow and higher), **`since`** (when the rung became available; default the loop's start) | `loop.ladder` | `of_architect`; `production` and `since` are new | 2.16, 2.17, 2.22 |
 | `checkpoint_days`, `wip_arms`, `babysit_model` | Per work; defaults 3, 2, `sonnet` | `loop` | `of_architect` | 2.17, 2.19, 2.20 |
 | `hypotheses[]` | `id`, `ts`, `status` and `status_at`, the last of `open`, `testing`, `kept`, `dropped`, `parked`; **`predict`** and **`change`** (texts, null when the event gave none) | `of.loop_hypothesis` | `of_platform`; `predict` and `change` in `of_studio`'s projection since organic-framework PR 60 | 2.16, 2.19, 2.21 |
-| `runs[]` | `id`, `rung`, `hypothesis` (may be empty), `metric`, **`value`** (a number in the metric's unit), **`accepted`** (the rung's `accept` met), **`queued_at`**, `started_at`, `ended_at`, `position`, `session`, `model` | `of.loop_run`, or derived from runner records (cbx) | `of_platform`; `value`, `accepted` and `queued_at` are new beside RFC §4.1's `result` text | 2.16–2.18, 2.21, 2.22 |
-| `decisions[]` | `ts`, `kind` (`keep`, `drop`, `step_up`, `step_back`, `change_objective`), `hypothesis`, and for `change_objective` the new `metric` and its `to_money`. **`decided`** is always null: only the registry cites the owner's yes, and `of loop` refuses a change of objective on a decided loop. An event that names one keeps it in **`decided_unresolved`**, with `decided_unresolved_why` `decision` | `of.loop_decision` | `of_platform` | 2.21 |
+| `runs[]` | `id`, `rung`, `hypothesis` (may be empty), `metric`, `on_target`, **`value`** (a number in the metric's unit), **`accepted`** (the rung's `accept` met; `of loop run` writes none on a proxy not shown to hold, so one there is 2.28's part `accepted`), **`observed_at`** (where the reading was taken) and **`proxy`** (`{for, valid_when, held}`, `held` one of `held`, `not_held`, `unknown`; null when the reading is taken where its event happens), each from the event, a part it lacks from its metric's measure (`observed_at`, and `proxy_for`, which counts only when it names `at`), with `held` then `unknown`; any other `held` reads `unknown`, `result`, **`queued_at`**, `started_at`, `ended_at`, `position`, `session`, `model`. A run on a proxy not shown to hold is not observed: it stays out of `curve`, `plateau`, `trend` and the gains | `of.loop_run`, or derived from runner records (cbx) | `of_platform`; `value`, `accepted` and `queued_at` are new beside RFC §4.1's `result` text; `observed_at` and `proxy` in `of_studio`'s projection since its change of 2026-11-14 | 2.16–2.18, 2.21, 2.22, 2.28 |
+| `decisions[]` | `ts`, `kind` (`keep`, `drop`, `step_up`, `step_back`, `change_objective`), `hypothesis`, and for `change_objective` the new `metric` and its `to_money`. **`decided`** is always null: only the registry cites the owner's yes, and `of loop` refuses a change of objective on a decided loop. An event that names one keeps it in **`decided_unresolved`**, with `decided_unresolved_why` `decision` | `of.loop_decision` | `of_platform` | 2.21, 2.28 |
 | `metrics.rungs.<rung>` | `runs`, `cycle_time`, **`wait_share`** | RFC §5 | `of_studio` | 2.22 |
 | `metrics.wip` | Hypotheses in `testing` over time, as `[(ts, n)]` | RFC §5 | `of_studio` | 2.19 |
 | `metrics.production` | `last_at` (the last run on a production rung), `days_since` | RFC §5 | `of_studio` | 2.17 |
@@ -659,11 +671,12 @@ The columns:
 | inbound-backlog@0 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0 | — | — |
 | loop-cheapest-rung@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
 | loop-checkpoint@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
-| loop-plateau@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
+| loop-plateau@1 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
 | loop-wip@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | a real case |
 | loop-babysit-model@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
 | loop-objective-drift@2 | blocked (no declared loop) | blocked | P/R 1.0 (6 tp: unpriced, untied runs, a change of objective on the owner's measure, a `decided` that does not resolve, context by a hypothesis, context by a named run; negatives: priced, a measure tied to the owner's target, a change of objective with its money on a priced loop, a lever inside the segment, a name near the part's name, no segment) | — | the search week, once its runs are derived; part `context` once a loop declares its segment; part `untied` once a loop declares `decided` |
 | loop-eval-bottleneck@0 | blocked (no declared loop) | blocked | P/R 1.0 | — | the search week, once its runs are derived |
+| loop-observed-elsewhere@0 | — (added 2026-11-14) | — | P/R 1.0 (2 tp: a drop on proxies not shown to hold, an accept on such a proxy; negatives: a run on the data where the condition held, a keep that also rests on runs on the target, a proxy reported with no accept, a direct reading whose money chain rests on a proxy); reports blocked while no run says where it was read | — | the first user organization's case of 2026-11-14, once its measures name `observed_at` and `proxy_for` |
 | unkept-system@0 | fired 1 (delivery), 2026-11-10 | quiet | both parts P/R 1.0; negatives: external keeper, unsupported, a supersystem (keeper and unit) | — | — |
 | off-map-work@0 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |
 | cell-gap@0 | blocked (no `needs` yet) | blocked | all three parts P/R 1.0; reports blocked without cells | — | U1's cells |

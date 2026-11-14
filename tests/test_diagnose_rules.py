@@ -535,7 +535,7 @@ class ChattyInjectedTest(unittest.TestCase):
 
 
 class LoopRulesTest(unittest.TestCase):
-    """The development-loop rules (diagnose.md 2.16-2.22) through the projection of_model.build makes (of_loops)."""
+    """The development-loop rules (diagnose.md 2.16-2.22, 2.28) through the projection of_model.build makes (of_loops)."""
     A, B = "2026-11-01T00:00Z", "2026-11-08T00:00Z"
     W = "w-search"
 
@@ -551,9 +551,11 @@ class LoopRulesTest(unittest.TestCase):
                               {"name": "bot_search", "system": "bot", "holder": {"session": "s-search"}}],
                 "works": {self.W: {"owner": "bot_operator", "doers": ["bot_search"], "loop": spec}}}
 
-    def run_(self, i, ts, rung, hyp, value=None, metric=None, accepted=True, queued=None, started=None):
+    def run_(self, i, ts, rung, hyp, value=None, metric=None, accepted=True, queued=None, started=None, proxy=None):
         pl = {"work": self.W, "run": f"r{i}", "rung": rung, "hypothesis": hyp, "value": value, "accepted": accepted,
               "ended_at": ts}
+        if proxy:
+            pl["proxy"] = proxy
         if metric:
             pl["metric"] = metric
         if queued:
@@ -624,6 +626,13 @@ class LoopRulesTest(unittest.TestCase):
                    for i, (d, v) in enumerate(((3, 40), (4, 30), (5, 20), (6, 10)), 1)]
         low = self.doc(target={"metric": "day_pass", "better": "lower"})
         self.assertEqual(self.found("loop-plateau", falling, low)[0], [])
+        # v1: a cycle read on a proxy not shown to hold is not observed, so it is no cycle (as on the card)
+        proxied = [self.run_(i, f"2026-11-0{d}T12:00Z", "day_pass", "h1", v,
+                             proxy={"for": "the live market", "valid_when": "the day is replayed", "held": held})
+                   for i, (d, v, held) in enumerate(((3, 211.7, "held"), (4, 325.8, "held"), (5, 325.8, "not_held"),
+                                                      (6, 326.0, "unknown"), (7, 325.9, "held")), 1)]
+        self.assertEqual(self.found("loop-plateau", proxied)[0], [])
+        self.assertEqual(self.found("loop-plateau", flat)[0][0]["rule_version"], "ap.loop-plateau@1")
 
     def test_wip_limit(self):
         three = [self.run_(i, "2026-11-05T10:00Z", "offline", f"h{i}", 1) for i in (1, 2, 3)]
@@ -779,6 +788,108 @@ class LoopRulesTest(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertGreater(got[0]["evidence"]["rungs"]["gate"]["wait_share"], 0.4)
         self.assertEqual(self.found("loop-eval-bottleneck", [gate(i, "10:05") for i in (1, 2, 3)])[0], [])
+
+    # ---- 2.28 Observed elsewhere (hand-over e640ea57; docs/registry.md, Works, "Where a reading is taken")
+    TARGET_AT = {"metric": "day_pass", "money": "USD per day", "observed_at": "the replay's revenue ledger"}
+    RACE = {"name": "race_margin_ms", "observed_at": "our own nodes' receive time of the rival's transaction",
+            "proxy_for": {"at": "the block's builder", "valid_when": "one of our own nodes built the block"},
+            "to_money": "won races x margin"}
+
+    def seen(self, i, ts, hyp, held=None, accepted=None, metric="race_margin_ms", **pl):
+        """A run as `of loop run` writes it since 2026-11-14 (docs/events.md loop_run): no `accepted` on a proxy not shown
+        to hold, `proxy.held` given or absent (then unknown, from its measure's proxy_for)."""
+        pl = dict({"work": self.W, "run": f"r{i}", "rung": "offline", "hypothesis": hyp, "metric": metric, "value": 4.0,
+                   "ended_at": ts}, **pl)
+        if held:
+            pl["proxy"] = {"for": "the block's builder", "valid_when": "one of our own nodes built the block", "held": held}
+        if accepted is not None:
+            pl["accepted"] = accepted
+        return ev(f"run{i}", ts, "of.loop_run", "s-search", pl, position="bot_search")
+
+    def observed(self, rows, **loop):
+        return self.found("loop-observed-elsewhere", rows, self.doc(target=self.TARGET_AT, measures=[self.RACE], **loop))
+
+    def test_observed_elsewhere_decision(self):
+        h = [self.hyp(1, "2026-11-04T09:00Z", "h-speed")]
+        runs = [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held"), self.seen(2, "2026-11-05T12:00Z", "h-speed", "not_held")]
+        got, st = self.observed(h + runs + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")])
+        self.assertEqual([(i["part"], i["rule_version"], i["decider"]) for i in got],
+                         [("decision", "ap.loop-observed-elsewhere@0", "doer")])
+        self.assertEqual(st["status"], "fired")
+        self.assertEqual(got[0]["summary"],
+                         "w-search: the drop of hypothesis h-speed rests only on runs on a proxy not shown to hold: "
+                         "race_margin_ms was read at our own nodes' receive time of the rival's transaction, and the event "
+                         "happens at the block's builder: report it as not observed there, or run it on the data where one of "
+                         "our own nodes built the block held")
+        e = got[0]["evidence"]
+        self.assertEqual((e["observed_at"], e["proxy_for"], e["valid_when"], e["held"]),
+                         (self.RACE["observed_at"], "the block's builder", "one of our own nodes built the block", "not_held"))
+        self.assertEqual([(d["decision"], d["hypothesis"], [r["run"] for r in d["runs"]]) for d in e["decisions"]],
+                         [("drop", "h-speed", ["r1", "r2"])])
+        self.assertIn("reopen the hypothesis", got[0]["remedies"][0])
+        # a keep on runs that never said whether the condition held: unknown, from the measure's proxy_for
+        bare = [self.seen(1, "2026-11-04T12:00Z", "h-speed")]
+        kept, _ = self.observed(h + bare + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "keep")])
+        self.assertEqual([(i["part"], i["evidence"]["held"]) for i in kept], [("decision", "unknown")])
+        self.assertIn("the keep of hypothesis h-speed rests only on runs on a proxy not shown to hold",
+                      kept[0]["summary"])
+        self.assertEqual(kept[0]["issue_id"], got[0]["issue_id"])
+        # a run named a proxy by itself (--proxy-for, --valid-when), its measure saying nothing
+        own = [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held", metric="latency_ms", observed_at="the offline replay")]
+        named, _ = self.found("loop-observed-elsewhere", h + own + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")],
+                              self.doc(target=self.TARGET_AT))
+        self.assertIn("latency_ms was read at the offline replay, and the event happens at the block's builder", named[0]["summary"])
+        # quiet: one run on the data where the condition held, a run on the target taken where it happens, a park,
+        # a decision on a hypothesis with no run; a decision before the window is not this window's (nothing in it)
+        held = runs + [self.seen(3, "2026-11-05T12:30Z", "h-speed", "held")]
+        on_target = runs + [self.seen(3, "2026-11-05T12:30Z", "h-speed", metric="day_pass")]
+        for quiet in (h + held + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")],
+                      h + on_target + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")],
+                      h + runs + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "park")],
+                      h + runs + [self.decide(1, "2026-11-05T13:00Z", "h-other", "drop")]):
+            q, st = self.observed(quiet)
+            self.assertEqual((q, st["status"]), ([], "quiet"))
+        before = h + [self.seen(1, "2026-10-28T12:00Z", "h-speed", "not_held"), self.decide(1, "2026-10-29T13:00Z", "h-speed", "drop")]
+        self.assertEqual(self.observed(before)[0], [])
+        # a direct reading whose money chain rests on a proxy (chain_proxy_for): its runs decide as direct readings
+        chain = dict(self.RACE, chain_proxy_for=self.RACE["proxy_for"], observed_at="our own clocks, receipt to send")
+        del chain["proxy_for"]
+        direct = h + [self.seen(1, "2026-11-04T12:00Z", "h-speed", accepted=True), self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")]
+        q, st = self.found("loop-observed-elsewhere", direct, self.doc(target=self.TARGET_AT, measures=[chain]))
+        self.assertEqual((q, st["status"]), ([], "quiet"))
+
+    def test_observed_elsewhere_accepted(self):
+        h = [self.hyp(1, "2026-11-04T09:00Z", "h-speed")]
+        got, _ = self.observed(h + [self.seen(1, "2026-11-04T12:00Z", "h-speed", "unknown", accepted=True)])
+        self.assertEqual([(i["part"], i["severity"]) for i in got], [("accepted", "low")])
+        self.assertTrue(got[0]["summary"].startswith(
+            "w-search: 1 run on a proxy not shown to hold carries an accept: race_margin_ms was read at"))
+        self.assertEqual([r["run"] for r in got[0]["evidence"]["accepted_runs"]], ["r1"])
+        # a failed accept is judged on the proxy too
+        failed, _ = self.observed(h + [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held", accepted=False),
+                                       self.seen(2, "2026-11-05T12:00Z", "h-speed", "unknown", accepted=True)])
+        self.assertIn("2 runs on a proxy not shown to hold carry an accept",
+                      failed[0]["summary"])
+        # both parts on one work: one issue, the decision names it, the accepted runs in its evidence
+        both, _ = self.observed(h + [self.seen(1, "2026-11-04T12:00Z", "h-speed", "unknown", accepted=True),
+                                     self.decide(1, "2026-11-05T13:00Z", "h-speed", "keep")])
+        self.assertEqual([(i["part"], i["issue_id"], len(i["evidence"]["accepted_runs"])) for i in both],
+                         [("decision", got[0]["issue_id"], 1)])
+        # quiet: an accept on the data where the condition held; a proxy run with no accept, as of loop run writes it
+        for quiet in ([self.seen(1, "2026-11-04T12:00Z", "h-speed", "held", accepted=True)],
+                      [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held")]):
+            self.assertEqual(self.observed(h + quiet)[0], [])
+
+    def test_observed_elsewhere_blocked_until_runs_say_where(self):
+        # runs and measures that name no point and no proxy: the rule cannot tell, and says so
+        h = [self.hyp(1, "2026-11-04T09:00Z", "h1")]
+        old = h + [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 300), self.decide(1, "2026-11-05T13:00Z", "h1", "drop")]
+        got, st = self.found("loop-observed-elsewhere", old)
+        self.assertEqual((got, st["status"], st["missing"]), ([], "blocked", ["of.loop_run.observed_at"]))
+        # the same once the run names where it was read, and it is no proxy: quiet
+        named = h + [self.seen(1, "2026-11-04T12:00Z", "h1", metric="day_pass", observed_at="the replay's revenue ledger"),
+                     self.decide(1, "2026-11-05T13:00Z", "h1", "drop")]
+        self.assertEqual(self.found("loop-observed-elsewhere", named)[1]["status"], "quiet")
 
 
 if __name__ == "__main__":

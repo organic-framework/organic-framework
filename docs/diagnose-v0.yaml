@@ -189,7 +189,7 @@ rules:
     delta_m: "0 unless the owner relays around the queue (ap.owner-relay); dT: sender waiting hours removed"
     remedies: {overload: [deputy or published interface for its most frequent request, keepers decide routine within their grants], unattended: [route senders to the successor or unit owner, give the position a holder]}
 
-  # ---- development-loop rules (RFC 0005 §6; diagnose.md 2.16-2.22). v0 (2026-11-07): proposal, blocked until the loop
+  # ---- development-loop rules (RFC 0005 §6; diagnose.md 2.16-2.22, 2.28). v0 (2026-11-07): proposal, blocked until the loop
   # projection of diagnose.md 4.1 exists. Per work, affected [<work>]. The first remedy is a pulse nudge to the doer.
   loop-cheapest-rung:
     version: 0
@@ -214,7 +214,7 @@ rules:
     remedies: ["nudge: what goes to shadow next", put the best kept hypothesis behind a flag in shadow on one site]
 
   loop-plateau:
-    version: 0
+    version: 1                   # v1 (2026-11-14): a run on a proxy not shown to hold is no cycle (diagnose.md 2.18, 2.28)
     p: 0.6
     m_decide: 10
     thresholds: {cycles_gte: 3, gain_share_lt: 0.01}
@@ -274,6 +274,23 @@ rules:
     severity: medium
     delta_m: "0; dT: the wait hours on the rung"
     remedies: [elevate the rung (more runners), move hypotheses to a cheaper rung, schedule work around the rung]
+
+  loop-observed-elsewhere:       # diagnose.md 2.28; v0 (2026-11-14): hand-over e640ea57 (RFC 0005 §4.3, §6 rule 8)
+    version: 0
+    p: {decision: 0.6, accepted: 0.6}
+    m_decide: {decision: 5, accepted: 2}
+    thresholds: {}               # one keep or drop resting only on such proxies, or one accepted run on one, fires at once
+    needs:                       # and runs[].proxy or runs[].observed_at on a run of a declared loop: blocked without
+      decision: [registry.works.loop, of.loop_decision]
+      accepted: [registry.works.loop, of.loop_run]
+    decider: doer
+    severity: {decision: medium, accepted: low}
+    delta_m: "0; dT: the work a keep or a drop moved on a reading that does not stand for its event"
+    remedies:
+      decision: ["reopen the hypothesis, and report its reading as not observed where the event happens, labelled as a proxy",
+                 "run it where the event happens, or on the data where the proxy's condition held, before a keep or a drop"]
+      accepted: ["record no accept on a proxy not shown to hold: report it as not observed where the event happens",
+                 "rerun it on the data where the proxy's condition held, which counts as taken there"]
 
   # ---- structure coverage (diagnose.md 2.23-2.26; of_architect, 2026-11-10): the registry's coverage as Studio shows it
   # (model coverage and cells, one computation), routed to the organization's structure keeper, never to the owner.
