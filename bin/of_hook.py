@@ -1350,7 +1350,7 @@ def _mandate_context(hook, index, sess):
         loops = of.position_loops(me, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")) if me else []
     except Exception:  # noqa: BLE001 - an unreadable registry or loop.yaml never costs the session its context
         loops = []
-    ctx = of_context.build(name, positions, loops, of._decided_resolver() if loops else None)
+    ctx = of_context.build(name, positions, loops, of._decided_resolver(positions=positions) if loops else None)
     if not ctx:
         return
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}

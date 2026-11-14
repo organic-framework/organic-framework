@@ -294,7 +294,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         for uid, u in (first.get("_units") or {}).items():
             if isinstance(u, dict) and u.get("memory") is not None and u["memory"] not in MEMORY_SCOPES:
                 problems.append(f"{rel}: units: {uid}: memory {u['memory']!r} is not one of {', '.join(MEMORY_SCOPES)}")
-    resolve = _decided_resolver() if deep else None  # only `of registry check` reads the log for a loop's decided
+    resolve = _decided_resolver(positions=positions) if deep else None  # only `of registry check` reads the log for a loop's decided
     for org, path, _ in org_registries(orgs_file):  # works: (docs/works.md, step 1)
         if org in BROKEN or org not in docs:
             continue
@@ -768,17 +768,24 @@ def doc_path(doc, roots):
     return None
 
 
-def _decided_resolver(conn=None):
+def _decided_resolver(conn=None, positions=None):
     """id -> the owner's yes it names in this machine's log, or None (of_loop.resolve_decided), through a read-only
-    connection opened on first use; of_loop.UNREAD for every id when the store will not open."""
+    connection opened on first use; of_loop.UNREAD for every id when the store will not open. A prompt counts only
+    where a person alone types (docs/registry.md, Works, "Where it is read, and how it is checked"): in the session of
+    a position with role conductor among POSITIONS. The other place that section names, a machine whose owner.yaml
+    names the person, is not read: owner.yaml names no person today (language, surface), so no prompt counts by it."""
     import of_loop
     held = {"conn": conn}
+    conductors = {p.get("name") for p in positions or [] if p.get("role") == "conductor"}
+
+    def typed_by_person(position, host):
+        return position in conductors
 
     def resolve(did):
         if held["conn"] is None:
             import of_fold
             held["conn"] = of_fold.reader() or False
-        return of_loop.resolve_decided(held["conn"], did) if held["conn"] else of_loop.UNREAD
+        return of_loop.resolve_decided(held["conn"], did, typed_by_person) if held["conn"] else of_loop.UNREAD
     return resolve
 
 
@@ -1993,7 +2000,7 @@ def cmd_loop(args):
         "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work)
-    resolve = _decided_resolver(conn)
+    resolve = _decided_resolver(conn, _load_quiet())
     if args.action == "show":
         print(f"{args.work} ({org}): {of_loop.target_line(loop, resolve)}; ladder {' > '.join(of_loop.rungs(loop))}")
         seg = (loop.get("target") or {}).get("segment")
@@ -2037,7 +2044,7 @@ def cmd_loop(args):
     owners = of_loop.owners_yes(loop, resolve)  # the owner's yes on the target's measure, found in the log
     unresolved = of_loop.decided(loop) if not owners else None
     why = (f" ({args.work}'s target names {unresolved} as the owner's yes, but this machine's log holds no answered ask "
-           "of the owner or prompt a person typed with that id)") if unresolved else ""
+           "of the owner or prompt typed in their conductor's session with that id)") if unresolved else ""
     if args.action == "hypothesis":
         if not args.text:
             raise OfError('usage: of loop hypothesis <work> "<change>" --predict "…" --cost "…" --voi low|med|high')
@@ -2083,7 +2090,7 @@ def cmd_loop(args):
                           '(docs/registry.md, Works, "The owner\'s measure")')
         if dec == "change_objective" and owners and not resolve(args.decided):
             raise OfError(f"--decided {args.decided} is not the owner's yes in this machine's log: an ask the owner "
-                          "answered, or a prompt a person typed (of asks --all; of prompts)")
+                          "answered, or a prompt typed in their conductor's session (of asks --all; of prompts)")
         if dec == "change_objective" and not owners and not (args.metric and (args.to_money or args.money)):
             raise OfError('change_objective names the new metric and its chain to money: --metric "…" --to-money "…" '
                           "(RFC 0005 §6)" + why)
