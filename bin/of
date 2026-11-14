@@ -2096,6 +2096,14 @@ def cmd_loop(args):
                           "(RFC 0005 §6)" + why)
         if args.rung and args.rung not in of_loop.rungs(loop):
             raise OfError(f"rung {args.rung!r} is not on {args.work}'s ladder")
+        if dec == "reopen":  # RFC 0005 §4.1: back to open, never recorded as keep
+            if not args.hypothesis or not (args.note or "").strip():
+                raise OfError(f'reopen names the hypothesis and what changed or whose word reopened it: of loop decision '
+                              f'{args.work} reopen --hypothesis <id> --note "…"')
+            hid = need_hypothesis(True)
+            st = next(h["status"] for h in reg["hypotheses"] if h["id"] == hid)
+            if st not in of_loop.REOPENS:
+                raise OfError(f"{hid} is {st}: reopen is for a parked, dropped or kept hypothesis")
         payload = {"work": args.work, "decision": dec, "hypothesis": need_hypothesis(dec in of_loop.STATUS_OF),
                    "rung": args.rung, "metric": args.metric if dec == "change_objective" else None,
                    "to_money": (args.to_money or args.money) if dec == "change_objective" else None,

@@ -143,6 +143,63 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual(of_loop.cost_hours("0"), 0.0)
 
 
+class ReopenTest(unittest.TestCase):
+    """RFC 0005 §4.1: reopen puts a parked, dropped or kept hypothesis back to open (hand-over 7b804b09 from
+    of_architect; a revived hypothesis had been recorded as keep on 2026-11-14)."""
+
+    def test_register_derives_open_after_a_reopen(self):
+        rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="h1", change="a", cost_h=1.0, voi="med"),
+                ev(2, "of.loop_run", 2, work="w", rung="day_pass", hypothesis="h1", accepted=False),
+                ev(3, "of.loop_decision", 3, work="w", decision="park", hypothesis="h1"),
+                ev(4, "of.loop_hypothesis", 4, work="w", hypothesis="h2", change="b", cost_h=1.0, voi="med"),
+                ev(5, "of.loop_decision", 5, work="w", decision="keep", hypothesis="h2")]
+        reg = of_loop.register(rows, "w")
+        self.assertEqual({h["id"]: h["status"] for h in reg["hypotheses"]}, {"h1": "parked", "h2": "kept"})
+        rows += [ev(6, "of.loop_decision", 6, work="w", decision="reopen", hypothesis="h1", note="the owner revived it"),
+                 ev(7, "of.loop_decision", 7, work="w", decision="reopen", hypothesis="h2", note="kept by mistake")]
+        hs = {h["id"]: h for h in of_loop.register(rows, "w")["hypotheses"]}
+        self.assertEqual({k: h["status"] for k, h in hs.items()}, {"h1": "open", "h2": "open"})  # no longer kept
+        self.assertFalse(hs["h1"]["unmet_open"])                                # the reopen answers the missed run
+        rows.append(ev(8, "of.loop_run", 8, work="w", rung="day_pass", hypothesis="h1", accepted=False))
+        h1 = next(h for h in of_loop.register(rows, "w")["hypotheses"] if h["id"] == "h1")
+        self.assertEqual((h1["status"], h1["unmet_open"]), ("testing", True))   # a new run after it is unanswered
+
+    def test_of_loop_decision_reopen(self):
+        import json
+        import sqlite3
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            env = dict(os.environ, OF_ORGS=cli_org(root, LOOP), OF_STATE=os.path.join(root, "state"))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            of = os.path.join(HERE, "..", "bin", "of")
+            run = lambda *a: subprocess.run([sys.executable, of, "loop", *a, "--from", "lab_doer"],  # noqa: E731
+                                            capture_output=True, text=True, env=env)
+            hid = run("hypothesis", "w-speed", "drop the floor", "--cost", "oracle, 0", "--voi", "high").stdout.split()[-1]
+            r = run("decision", "w-speed", "reopen", "--hypothesis", hid, "--note", "x")
+            self.assertNotEqual(r.returncode, 0)                                # open: nothing to reopen
+            self.assertIn("is open: reopen is for a parked, dropped or kept hypothesis", r.stderr)
+            run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--accepted", "no")
+            self.assertIn("is testing", run("decision", "w-speed", "reopen", "--hypothesis", hid, "--note", "x").stderr)
+            self.assertEqual(run("decision", "w-speed", "park", "--hypothesis", hid).returncode, 0)
+            for bad in (("--hypothesis", hid), ("--note", "the owner revived it"), ("--hypothesis", hid, "--note", " ")):
+                r = run("decision", "w-speed", "reopen", *bad)
+                self.assertNotEqual(r.returncode, 0, bad)
+                self.assertIn("reopen names the hypothesis and what changed", r.stderr)
+            r = run("decision", "w-speed", "reopen", "--hypothesis", hid, "--note", "the owner revived it")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            db = sqlite3.connect(os.path.join(root, "state", "of.db"))
+            dec = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_decision' ORDER BY rowid DESC "
+                                        "LIMIT 1").fetchone()[0])
+            self.assertEqual((dec["decision"], dec["hypothesis"], dec["note"]), ("reopen", hid, "the owner revived it"))
+            st = [json.loads(p)["status"] for (p,) in db.execute("SELECT payload FROM event WHERE name = "
+                                                                 "'of.loop_hypothesis' ORDER BY rowid")]
+            self.assertEqual(st, ["open", "testing", "parked", "open"])        # its status update, back to open
+            out = run("show", "w-speed").stdout
+            self.assertIn(f"{hid} open", out)
+            self.assertIn("decision", out)
+            self.assertIn("reopen", out)
+
+
 OWNED = dict(LOOP, target={"metric": "reaction from the input to the send, p99, ms", "better": "lower",
                            "decided": "01a1d957-c8b6", "segment": LOOP["target"]["segment"]},
              measures=[{"name": "triggers_covered", "to_target": "an uncovered trigger is a reaction never made"}])
