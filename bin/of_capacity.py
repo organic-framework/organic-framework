@@ -1782,6 +1782,32 @@ def _a_dialog(lines):
     return any(DIALOG_FOOTER in x for x in tail)
 
 
+def set_drafts_aside(config_dir, sid, work):
+    """Move the session's queued feedback drafts (Claude Code's SendFeedback tool, `<config>/feedback/drafts/*.json`
+    with this `source_session_id`) into the move's work dir, before /exit. Returns the files moved.
+
+    2026-11-14, a user organization's production keeper: with one draft queued, /exit first opened the drafts' review,
+    which this did not read; the move gave up, and two Esc presses by a person cancelled the exit. Claude Code reads
+    the drafts from disk when it exits: with the file set aside, the same session's next /exit went straight to the
+    scheduled tasks' dialog and the move finished. Nothing is deleted, and the drafts are never sent (OF writes
+    nothing to Anthropic); `feedbackDrafts: "off"` in a session's settings keeps new ones from being queued."""
+    src = os.path.join(config_dir, "feedback", "drafts")
+    out = []
+    for f in sorted(os.listdir(src)) if os.path.isdir(src) else []:
+        path = os.path.join(src, f)
+        try:
+            with open(path) as fh:
+                mine = json.load(fh).get("source_session_id") == sid
+        except (OSError, ValueError, AttributeError):
+            continue
+        if mine:
+            dest = os.path.join(work, "feedback-drafts")
+            os.makedirs(dest, mode=0o700, exist_ok=True)
+            os.replace(path, os.path.join(dest, f))
+            out.append(f)
+    return out
+
+
 def exit_session(pid, type_exit, read, key, allow_shells=False, wait=50, settle=8, step=1, log=print):
     """Type /exit and see it through by the screen; return once the process has exited.
 
@@ -2154,6 +2180,9 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         except Exception:
             held = False
     # 1. exit between turns, by the screen ("Background work is running": scheduled tasks, background shells)
+    drafts = set_drafts_aside(src, sid, work)
+    if drafts:
+        log(f"  feedback drafts set aside in {work}/feedback-drafts: {len(drafts)} (their review would open on /exit)")
     _inject(sid, "/exit", f"{what}: exit")
     if runtime == "herdr":
         type_exit = lambda: _herdr("agent", "prompt", pane, "/exit")  # noqa: E731

@@ -1745,6 +1745,23 @@ class LockDirs(unittest.TestCase):
                          [".claude", ".claude-c", ".claude-d"])
 
 
+class FeedbackDrafts(unittest.TestCase):
+    def test_the_sessions_drafts_go_aside_before_exit_others_stay(self):
+        cfg, work = tempfile.mkdtemp(), tempfile.mkdtemp()
+        d = os.path.join(cfg, "feedback", "drafts")
+        os.makedirs(d)
+        for name, sid in (("a.json", "s1"), ("b.json", "s2"), ("c.json", "s1")):
+            with open(os.path.join(d, name), "w") as fh:
+                json.dump({"draft_id": name, "source_session_id": sid, "status": "queued"}, fh)
+        with open(os.path.join(d, "broken.json"), "w") as fh:
+            fh.write("{")
+        self.assertEqual(of_capacity.set_drafts_aside(cfg, "s1", work), ["a.json", "c.json"])
+        self.assertEqual(sorted(os.listdir(d)), ["b.json", "broken.json"])  # another session's, and unreadable
+        self.assertEqual(sorted(os.listdir(os.path.join(work, "feedback-drafts"))), ["a.json", "c.json"])
+        self.assertEqual(of_capacity.set_drafts_aside(cfg, "s9", work), [])
+        self.assertEqual(of_capacity.set_drafts_aside(tempfile.mkdtemp(), "s1", work), [])  # no drafts folder
+
+
 class MoveBackups(unittest.TestCase):
     def test_backup_goes_after_six_hours_when_the_position_runs_notes_stay(self):
         root = tempfile.mkdtemp()
