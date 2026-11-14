@@ -13,7 +13,11 @@ What the pulse does with this module:
 - past SCRATCH_QUOTA (Acme's platform_owner through acme_org, 2026-11-11: "a quota, not only a warning"), lists
   the session in `scratch-quota.json` in the state folder, which the guard reads to refuse new writes into that
   folder (reads and deletions stay allowed) until the folder is back under SCRATCH_CAP, and tells the position;
-- files one card to the founder when free disk falls under CARD_BELOW, naming the largest folders, and closes it
+- tells an organization's structure keeper once, in its pane when it is idle, when a project folder's live sessions
+  together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
+  session's position and size; again only after the project fell under it;
+- files one card to the founder when free disk falls under CARD_BELOW, naming what takes the space (swap, OF's
+  event store, the temporary folders by project; 2026-11-14: swap swung free disk by about 9 GiB), and closes it
   itself once free disk is back above CARD_CLEAR.
 It never deletes anything: a scratch folder is its session's own work.
 """
@@ -31,6 +35,8 @@ from of_locale import tr
 GiB = 2 ** 30
 SCRATCH_CAP = 3 * GiB
 SCRATCH_QUOTA = 6 * GiB  # the hard line: the guard refuses new writes into a folder over it (docs/guard.md)
+PROJECT_CAP = 12 * GiB   # a project folder's live sessions together: its structure keeper is told
+VM_DIR = "/System/Volumes/VM"  # macOS's swap files, on the same disk as everything else
 SIZE_EVERY_S = 1800
 OVER_EVERY_S = 300       # a folder over the cap is re-sized every pulse: a runaway grows GiBs in 30 minutes
 SIZE_BUDGET_S = 45
@@ -66,6 +72,44 @@ def du(path, timeout=DU_TIMEOUT_S):
         return int(r.stdout.split()[0]) * 1024
     except (IndexError, ValueError):
         return None
+
+
+def project_of(path):
+    """The project folder a scratch folder sits in (Claude Code names it after the working directory, slashes as
+    dashes), without the home folder's part: '-<home>-acme-repo' -> 'acme-repo'."""
+    name = os.path.basename(os.path.dirname(path))
+    home = os.path.expanduser("~").replace("/", "-") + "-"
+    return name[len(home):] if name.startswith(home) else name.lstrip("-")
+
+
+def swap_bytes(vm_dir=VM_DIR):
+    """The size of macOS's swap files (a stat of each; they are root's, their folder is readable), or None."""
+    try:
+        return sum(os.path.getsize(f) for f in glob.glob(os.path.join(vm_dir, "swapfile*")))
+    except OSError:
+        return None
+
+
+def store_bytes():
+    """OF's event store with its write-ahead log, in bytes, or None."""
+    import of_store
+    try:
+        return sum(os.path.getsize(p) for p in (of_store.db_path(), of_store.db_path() + "-wal") if os.path.exists(p))
+    except OSError:
+        return None
+
+
+def projects(st):
+    """{project: {bytes, sessions: [(position, org, bytes)]}} from the pulse's memory of live sessions' folders."""
+    out = {}
+    for e in st.values():
+        for path, b in (e.get("sizes") or {}).items():
+            if b is None:
+                continue
+            pr = out.setdefault(project_of(path), {"bytes": 0, "sessions": []})
+            pr["bytes"] += b
+            pr["sessions"].append((e.get("position"), e.get("org"), b))
+    return out
 
 
 def quota_path():
@@ -113,14 +157,41 @@ def quota_note(name, paths, size):
             f"[to {name}, once while the folder stays over the quota]")
 
 
-def card_text(free, top):
-    from of_locale import tr
-    lines = "; ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top[:5]) or tr("sizes not measured yet")
+def project_note(keeper, project, total, sessions):
+    lines = "; ".join(f"{pos or '?'} {gib(b)} GiB" for pos, _, b in sorted(sessions, key=lambda x: -x[2])[:8])
+    return (f"Message from of_pulse (via of pulse, authority: none; scratch by project)\n"
+            f"The live sessions in the project folder {project} together hold {gib(total)} GiB of scratch, over the "
+            f"{gib(PROJECT_CAP)} GiB a project may take, though each may be under its own {gib(SCRATCH_QUOTA)} GiB "
+            f"quota: {lines}. As the structure keeper, ask the positions there to remove what no open task uses "
+            f"(finished worktrees, copies of data, build output), and close sessions that are done. OF deletes "
+            f"nothing.\n[to {keeper}, once while the project stays over {gib(PROJECT_CAP)} GiB]")
+
+
+def consumers(top_projects, swap=None, store=None):
+    """What takes this Mac's disk, as a person reads it, largest first: swap, OF's event store and the temporary
+    folders with their largest projects."""
+    parts = []
+    if swap:
+        parts.append((swap, tr("swap {gib} GiB (it grows when memory runs short: fewer live sessions shrink it)",
+                               gib=gib(swap))))
+    if store:
+        parts.append((store, tr("OF's event store {gib} GiB", gib=gib(store))))
+    total = sum(b for _, b in top_projects)
+    if total:
+        lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_projects[:4])
+        parts.append((total, tr("the agents' temporary folders {gib} GiB, most in {lines}", gib=gib(total),
+                                lines=lines)))
+    return "; ".join(t for _, t in sorted(parts, key=lambda x: -x[0])) or tr("sizes not measured yet")
+
+
+def card_text(free, top_projects, swap=None, store=None):
     return tr("This Mac has {free} GiB of free space left (under {below}). Below about 20 GiB the relay, OF's event "
-              "store and every session are at risk. The live sessions' scratch folders take the most: {lines}. The "
-              "pulse has asked the positions over {cap} GiB to clean their folders; it deletes nothing itself. The "
-              "card closes itself once more than {clear} GiB are free. What should be done?",
-              free=gib(free), below=gib(CARD_BELOW), lines=lines, cap=gib(SCRATCH_CAP), clear=gib(CARD_CLEAR))
+              "store and every session are at risk. What takes the space: {consumers}. The pulse has asked the "
+              "positions over {cap} GiB, and the structure keepers of projects over {project} GiB, to clean their "
+              "folders; it deletes nothing itself. The card closes itself once more than {clear} GiB are free. What "
+              "should be done?",
+              free=gib(free), below=gib(CARD_BELOW), consumers=consumers(top_projects, swap, store),
+              cap=gib(SCRATCH_CAP), project=gib(PROJECT_CAP), clear=gib(CARD_CLEAR))
 
 
 def _open_cards(conn):
@@ -133,28 +204,30 @@ def _open_cards(conn):
 
 
 def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=None, size=du, base=None,
-          conn=None, clock=time.monotonic):
-    """One pulse's pass. mem is the pulse's memory (key "scratch"). Returns the positions told this pass."""
+          conn=None, clock=time.monotonic, swap=swap_bytes, store=store_bytes, keeper=None):
+    """One pulse's pass. mem is the pulse's memory (keys "scratch", "scratch_projects"). Returns the positions told
+    this pass. KEEPER(positions, org) names an organization's structure keeper (of_pulse.structure_keeper)."""
     now = now or time.time()
     base = base or base_dir()
     free = shutil.disk_usage(os.path.expanduser("~")).free if free is None else free
     st = mem.setdefault("scratch", {})
     seen, measured, told, over = set(), [], [], {}
     start = clock()
-    for p, a in bind(positions, agents)[0]:
+    pairs = bind(positions, agents)[0]
+    for p, a in pairs:
         sid = (a.get("agent_session") or {}).get("value")
         paths = folders(sid, base)
         if not paths:
             continue
         seen.add(sid)
         e = st.setdefault(sid, {"at": None, "bytes": None, "told": False})
-        e["position"] = p["name"]
+        e["position"], e["org"] = p["name"], p.get("_org")
         every = OVER_EVERY_S if (e.get("bytes") or 0) >= SCRATCH_CAP else SIZE_EVERY_S
         due = e.get("at") is None or now - e["at"] >= every
         if due and clock() - start < SIZE_BUDGET_S:
             sizes = [size(x) for x in paths]
             if all(s is not None for s in sizes):
-                e.update(at=now, bytes=sum(sizes))
+                e.update(at=now, bytes=sum(sizes), sizes=dict(zip(paths, sizes)))
                 measured.append({"position": p["name"], "org": p.get("_org"), "session": sid, "bytes": e["bytes"]})
         b = e.get("bytes")
         if b is None:
@@ -189,20 +262,55 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
         st.pop(sid)  # the session ended: its folder is no longer a live position's
     if over or read_quota():
         _write_quota(over, now)
+    by_project = projects(st)
+    told += _tell_keepers(positions, pairs, mem, by_project, prompt, log, keeper)
+    top = sorted(((n, pr["bytes"]) for n, pr in by_project.items()), key=lambda x: -x[1])
+    sw, so = (swap() if swap else None), (store() if store else None)
     if measured:
-        of_events.emit("disk_usage", {"free_bytes": free, "scratch": measured, "base": base})
-    top = sorted(((e["position"], e["bytes"]) for e in st.values() if e.get("bytes")), key=lambda x: -x[1])
-    _card(mem, now, free, top, log, conn)
+        of_events.emit("disk_usage", {"free_bytes": free, "scratch": measured, "base": base, "swap_bytes": sw,
+                                      "store_bytes": so,
+                                      "projects": [{"project": n, "bytes": b} for n, b in top[:10]]})
+    _card(mem, now, free, top, log, conn, sw, so)
     return told
 
 
-def _card(mem, now, free, top, log, conn=None):
+def _tell_keepers(positions, pairs, mem, by_project, prompt, log, keeper=None):
+    """Tell each organization's structure keeper once per episode of a project folder over PROJECT_CAP."""
+    if keeper is None:
+        import of_pulse
+        keeper = of_pulse.structure_keeper
+    state = mem.setdefault("scratch_projects", {})
+    for name in [n for n in state if (by_project.get(n) or {}).get("bytes", 0) < PROJECT_CAP]:
+        state.pop(name)  # back under the cap: a new episode tells again
+    panes = {p["name"]: a for p, a in pairs}
+    told = []
+    for name, pr in by_project.items():
+        if pr["bytes"] < PROJECT_CAP or not prompt:
+            continue
+        done = state.setdefault(name, {"told": []})
+        for org in sorted({o for _, o, _ in pr["sessions"] if o}):
+            k = keeper(positions, org)
+            a = panes.get(k)
+            if not k or org in done["told"] or not a or a.get("agent_status") not in ("idle", "done"):
+                continue
+            prompt(a["pane_id"], project_note(k, name, pr["bytes"], pr["sessions"]), "of_pulse")
+            of_events.emit("nudge_sent", {"position": k, "from_position": "of_pulse", "to_position": k,
+                                          "about": f"project scratch {name} {gib(pr['bytes'])} GiB",
+                                          "pane": a["pane_id"], "kind": "scratch_project_over_cap"},
+                           position=k, org=org)
+            done["told"].append(org)
+            told.append(k)
+            log(f"told {k}: project {name} scratch {gib(pr['bytes'])} GiB")
+    return told
+
+
+def _card(mem, now, free, top, log, conn=None, swap=None, store=None):
     """One founder card per low-disk episode; closed by the pulse once free disk is back above CARD_CLEAR."""
     if free < CARD_BELOW and not mem.get("disk_card"):
         eid = of_events.emit("agent_question", {
             "detected_by": "declared", "source": CARD_SOURCE, "from_position": "of_platform", "to": "founder",
             "topic_key": "disk-low", "blocking": False,
-            "questions": [{"question": card_text(free, top),
+            "questions": [{"question": card_text(free, top, swap, store),
                            "options": [tr("ask the structure keepers to sort the folders out (recommended: they "
                                           "know what is still in use)"), tr("I will sort it out myself")]}]},
             position="of_platform")
