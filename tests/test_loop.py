@@ -374,10 +374,12 @@ class Yeses:
         self.path = os.path.join(root, "state", "of.db")
         self.conn = of_store.connect(self.path)
 
-        def add(name, payload, position="lab_doer", host=None):
+        def add(name, payload, position="lab_doer", host=None, ts=None):
             rec = of_events.record(name, payload, position=position)
             if host:  # written on another machine of the organization (the coordination feed)
                 rec["host.id"] = host
+            if ts:
+                rec["timestamp"] = ts
             of_store.add_event(self.conn, rec)
             return rec["of.event.id"]
         import time
@@ -388,9 +390,9 @@ class Yeses:
         self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"}, position="lab_conductor")
         self.elsewhere = add("human_prompt", {"origin": "human", "text": "typed in a doer's pane"})
         add("prompt_origin", {"event_id": self.corrected, "origin": "injected", "evidence": "turnOrigin"})
-        def answer(ask, words, by="owner", via="asks-ui", **more):
+        def answer(ask, words, by="owner", via="asks-ui", ts=None, **more):
             add("agent_question_answered", {"ask_id": ask, "ask_ids": [ask], "by": by, "answer": words,
-                                            **({"via": via} if via else {}), **more})
+                                            **({"via": via} if via else {}), **more}, ts=ts)
         opts = ["yes, p50 is the target", "no, keep p99"]
 
         def ask(q, work="w-speed", yes=1):
@@ -416,9 +418,9 @@ class Yeses:
         answer(self.flipped, "yes, p50 is the target")
         answer(self.flipped, "no, keep p99")                                  # the latest answer counts
         # amended asks (of ask --amend, docs/events.md of.ask_amended): resolved on the version the answer names
-        def amend(a, version, by="lab_doer", host=None, **changes):
+        def amend(a, version, by="lab_doer", host=None, ts=None, **changes):
             add("ask_amended", {"ask_id": a, "version": version, "changed": list(changes), **changes, "by": by},
-                host=host)
+                host=host, ts=ts)
         self.then_yes_moved = ask("p50, then the yes moved?")
         answer(self.then_yes_moved, "yes, p50 is the target", version=1)      # answered at version 1, option 1
         amend(self.then_yes_moved, 2, yes_option=2, text="p50, with the yes moved?")  # after it: the yes is option 2
@@ -436,6 +438,13 @@ class Yeses:
         self.stale_v1 = ask("p50 on staging?")
         amend(self.stale_v1, 2, text="p50 on production?")                    # then the answer given to version 1:
         answer(self.stale_v1, "yes, p50 is the target", version=1)            # recorded anyway, it counts for nothing
+        same = of_events.now_iso()  # one millisecond for an answer and an amend: the log's order decides
+        self.amend_after = ask("p50, amended in the answer's millisecond?")
+        answer(self.amend_after, "yes, p50 is the target", version=1, ts=same)
+        amend(self.amend_after, 2, ts=same, text="p50, amended after the answer?")  # written after it: not before it
+        self.amend_before = ask("p50, amended just before, in the same millisecond?")
+        amend(self.amend_before, 2, ts=same, text="p50 on production?")
+        answer(self.amend_before, "yes, p50 is the target", version=1, ts=same)  # to version 1: stale
         self.foreign = ask("p50, amended elsewhere?")
         amend(self.foreign, 2, host="another-machine", yes_option=2)          # another machine's: not an amend
         answer(self.foreign, "yes, p50 is the target")                        # so an unversioned answer stands
@@ -507,6 +516,8 @@ class OwnersMeasureTest(unittest.TestCase):
                              'is the target"')
             self.assertEqual(r(y.at_v2 + "#2"), ("ask", y.at_v2))               # the yes the version answered marks
             self.assertEqual(r(y.foreign + "#1"), ("ask", y.foreign))           # of_server on PR 181
+            self.assertEqual(r(y.amend_after + "#1"), ("ask", y.amend_after))   # of_platform on 9a24857
+            self.assertIsNone(r(y.amend_before + "#1"))
             self.assertEqual(r(y.at_v2 + "#2").words, 'asked "p50 at version 2?", chose option 2 "yes, p50 is the '
                              'target"')
             for no in (y.then_yes_moved + "#2", y.then_reworded + "#2", y.unversioned + "#1", y.at_v2 + "#1",
