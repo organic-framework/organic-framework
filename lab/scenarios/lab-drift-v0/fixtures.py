@@ -1000,21 +1000,32 @@ _UNTIED = [_lrun(1, "2026-11-06T09:00Z", "offline", "h1")] + \
           [_lrun(i, f"2026-11-06T1{i}:00Z", "offline", "h1", 18 - i, metric="latency_ms") for i in range(2, 6)]
 
 
+_TIED = [{"name": "latency_ms", "to_target": "a faster reaction wins more races"}]
+
+
 def _ldecide(i, ts, **pl):
     return ev(f"ld{i}", ts, "of.loop_decision", "s-bot_search", dict({"work": _LW, "hypothesis": "h1"}, **pl),
               position="bot_search")
 
 
+def _yes(case, *ids):
+    """The case's decided ids that resolve in the log as a person's yes (the harness's resolver; docs/registry.md Works, "Where it is read", from the PR 168 review)."""
+    return dict(case, yeses=list(ids))
+
+
 SCENARIOS += [
-    _loop_case("loop-objective-drift/positive-untied", _UNTIED, "positive", rule="ap.loop-objective-drift",
-               doc=_loop_doc(target=_DECIDED)),
-    _loop_case("loop-objective-drift/negative-tied-to-target", _UNTIED, "negative", rule="ap.loop-objective-drift",
-               doc=_loop_doc(target=_DECIDED, measures=[{"name": "latency_ms", "to_target": "a faster reaction wins more races"}])),
-    _loop_case("loop-objective-drift/positive-change-without-yes",
-               _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms")],
-               "positive", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)),
-    _loop_case("loop-objective-drift/negative-change-with-yes",
-               _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms",
-                                              decided="01a1d980-1111")],
-               "negative", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)),
+    _yes(_loop_case("loop-objective-drift/positive-untied", _UNTIED, "positive", rule="ap.loop-objective-drift",
+                    doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6"),
+    _yes(_loop_case("loop-objective-drift/negative-tied-to-target", _UNTIED, "negative", rule="ap.loop-objective-drift",
+                    doc=_loop_doc(target=_DECIDED, measures=_TIED)), "01a1d957-c8b6"),
+    _yes(_loop_case("loop-objective-drift/positive-change-without-yes",
+                    _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms")],
+                    "positive", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6"),
+    _yes(_loop_case("loop-objective-drift/negative-change-with-yes",
+                    _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms",
+                                                   decided="01a1d980-1111")],
+                    "negative", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6", "01a1d980-1111"),
+    # a decided id that is no person's yes in the log: the tied measure counts for nothing, and the runs are unpriced
+    _loop_case("loop-objective-drift/positive-decided-unresolved", _UNTIED, "positive", rule="ap.loop-objective-drift",
+               doc=_loop_doc(target=_DECIDED, measures=_TIED)),
 ]
