@@ -2179,7 +2179,9 @@ def cmd_registry(args):
         import of_grants
         grants_by_org = of_grants.load()
         for org, gid, ok, why in of_grants.check_all(grants_by_org, _grant_keys(), _now_iso()):
-            if not ok:
+            if not ok and of_grants.ended(why):  # its own expiry: a normal end, never a failed check
+                problems.append(f"{WARN}{org}:registry/grants.yaml: {gid}: {why}; it may leave the file")
+            elif not ok:
                 problems.append(f"{org}:registry/grants.yaml: {gid}: {why}")
         try:  # a deny ends only by a signed revocation: an issued grant gone from the file is a problem
             import of_events
@@ -2188,7 +2190,7 @@ def cmd_registry(args):
             events = [(n, o, json.loads(p) if isinstance(p, str) else (p or {})) for n, o, p in rows]
         except Exception:  # noqa: BLE001 - no local store: nothing to compare with
             events = []
-        for org, gid in of_grants.missing_issued(grants_by_org, events):
+        for org, gid in of_grants.missing_issued(grants_by_org, events, _now_iso()):
             problems.append(f"{org}:registry/grants.yaml: {gid}: issued (of.grant_issued) and never revoked, but "
                             "missing from the file")
         import of_credentials  # docs/registry.md, Credentials: ids, keepers, listed ids, one claim per path

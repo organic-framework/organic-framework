@@ -88,6 +88,19 @@ class ShapeTest(unittest.TestCase):
                   ("of.grant_issued", "t", {"grant_id": "g-3"}), ("of.grant_revoked", "t", {"grant_id": "g-3"})]
         self.assertEqual(of_grants.missing_issued({"t": [{"id": "g-1"}]}, events), [("t", "g-2")])
 
+    def test_a_grant_that_expired_is_a_normal_end(self):
+        """A user organization, 2026-11-14: 13 time-boxed grants expired at midnight; the check failed while they
+        stayed in the file ("expired"), and again once they left it ("missing from the file")."""
+        events = [("of.grant_issued", "t", {"grant_id": "g-1", "expires": "2026-11-13T23:59:59Z"}),
+                  ("of.grant_issued", "t", {"grant_id": "g-2", "expires": "2026-11-20T00:00:00Z"}),
+                  ("of.grant_issued", "t", {"grant_id": "g-3"})]
+        now = "2026-11-14T00:30:00Z"
+        self.assertEqual(of_grants.missing_issued({"t": []}, events, now), [("t", "g-2"), ("t", "g-3")])
+        self.assertEqual(of_grants.missing_issued({"t": []}, events), [("t", "g-1"), ("t", "g-2"), ("t", "g-3")])
+        self.assertTrue(of_grants.ended("expired"))
+        for why in ("revoked", "bad or missing signature", "issuer's grant g-9: expired", "counter exhausted"):
+            self.assertFalse(of_grants.ended(why), why)
+
 
 class KeptTest(KeyCase):
     def test_a_deny_ends_only_by_a_signed_revocation(self):
