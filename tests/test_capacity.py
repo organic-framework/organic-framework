@@ -1569,7 +1569,9 @@ class OwnerTextsInTheOwnersLanguage(unittest.TestCase):
             self.assertNotIn("{", a + b)  # every placeholder filled
         self.assertIn("wF:p12", ru[0].splitlines()[0])
         self.assertIn("of go aws", ru[0])
-        self.assertIn("/d (d@x, 60%)", ru[5])
+        self.assertIn("/d (d@x)", ru[5])
+        self.assertIn("60%", ru[5])
+        self.assertNotIn("d@x, 60%)", ru[5])  # a bare share by the account read as spent (2026-11-14)
         self.assertIn("slack", ru[2])
         self.assertNotIn("seven_day", ru[5] + en[5])  # the window's raw name never shows
         self.assertNotIn("five_hour", ru[6] + en[6])
