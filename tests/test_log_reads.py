@@ -78,9 +78,6 @@ ALLOWED = {
     ('of_spend.py', '_store_inputs', "SELECT ts, payload FROM event WHERE name = 'of.holder_change"): CAPACITY,
     ('of_spend.py', 'owner_groups', 'SELECT session_id, org, position, count(*), min(ts), max(ts)'): CAPACITY,
     ('of_store.py', 'stats', 'SELECT count(*) FROM event'): CONST,
-    ('of_studio.py', 'pr_state_rows', "of_model.load_events(of_store.connect(), names=('of.pr_state"): STUDIO,
-    ('of_studio.py', 'diff_rows', "of_model.load_events(of_store.connect(), names=('of.diff_app"): STUDIO,
-    ('of_studio.py', 'loop_rows', 'of_model.load_events(conn, names=of_loops.KINDS)'): STUDIO,
     ('of_studio_cli.py', 'cmd_corrections', "of_model.load_events(conn, names=('of.founder_correction',))"): STUDIO,
     ('of_tools.py', 'usage', 'SELECT session_id, position FROM event WHERE position IS NOT'): RARE,
 }
