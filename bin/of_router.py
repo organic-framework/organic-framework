@@ -16,11 +16,13 @@ The systems index (compiled globs per organization root) is cached with the regi
 import os
 import re
 
-VERSION = "rt-v6"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
+VERSION = "rt-v7"  # rt-v1: the first observe router; rt-v2: worktrees as their repository, Bash cwd unscoped;
 #                    rt-v3: a path outside every organization (scratchpads, harness memory) is outside;
 #                    rt-v4: a worktree resolves by its .git file (gitdir), whatever its folder is called;
 #                    rt-v5: a keeper-less system that is not live (unsupported, retired) is non_live:<lifecycle>;
-#                    rt-v6: a character class in a paths pattern ([a-f], [!x]) matches as in bin/of, not literally
+#                    rt-v6: a character class in a paths pattern ([a-f], [!x]) matches as in bin/of, not literally;
+#                    rt-v7: a root that is itself a repository matches patterns written with its name first
+#                    ("organic-framework/bin/..."; of_field-analyst, 2026-11-15: 536 verdicts all unowned)
 
 PATH_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path",
               "Read": "file_path", "Grep": "path", "Glob": "path"}
@@ -142,8 +144,12 @@ def resolve(path, index):
         if not (full == root or full.startswith(root + os.sep)):
             continue
         rel = unworktree(os.path.relpath(full, root), repos)
+        # a root may be the organization's folder of repositories ("storefront/crates/..." under it) or a repository
+        # itself, as orgs.yaml lists the OF team's two checkouts, while the registry writes paths with the
+        # repository's name first: try the path as the root's own repository's too
+        rels = (rel, os.path.basename(root) + ("" if rel == "." else "/" + rel))
         for rx in pats:
-            if re.match(rx, rel) and len(rx) > best_len:
+            if any(re.match(rx, x) for x in rels) and len(rx) > best_len:
                 best, best_len = (org, sid, keeper), len(rx)
     return best
 
