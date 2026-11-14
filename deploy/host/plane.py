@@ -15,8 +15,10 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
   listener, `of health run` every minute), every daemon's log made beforehand in root's /var/log/of, and one root
   watchdog per user (`python -I`, of_listen.watchdog) that restarts a stuck listener, its state in root's own
   /var/db/of-plane. It reads that user's two beat files by stat, never opening them (of_listen.watchdog).
-- `apply`, `start` and `deploy` refuse to run unless setup.check_code passes: the python, Homebrew and the release
-  checkout belong to root (or an admin who is no organization user) and no organization user may write them.
+- `apply` and `start` refuse to run unless setup.check_code passes: the python, Homebrew and the release checkout
+  belong to root (or an admin who is no organization user) and no organization user may write them. `deploy` first
+  runs the same trust check over this script's folder and the python running it (setup.interpreter_roots: its
+  prefix, its sys.path and its executable), and after the checkout over the checkout itself.
 - `deploy --commit HASH --smoke-as USER --org-user ...` (root): the read-only release checkout /opt/organic-framework
   at HASH, a full commit hash the public main contains. Root fetches from the public repository itself, never from
   an organization user's checkout, whose main may hold commits no one reviewed (of_secrets-review on PR 148). The tree
@@ -312,7 +314,7 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
     # first, what runs this: the script's folder and the python must be root's (or an admin's) and no organization
     # user's to write, before root does anything for it (of_review on PR 148)
     me = (self_check or (lambda: host.trust_problems(
-        [os.path.dirname(os.path.realpath(__file__)), os.path.realpath(sys.executable)],
+        [os.path.dirname(os.path.realpath(__file__)), *host.interpreter_roots()],  # the python's prefix and path too
         [*org_users, host.SERVICE_USER], run=run)))()
     if me:
         raise SystemExit("deploy: refused: what runs this script is not root's alone: " + "; ".join(me)[:400])
