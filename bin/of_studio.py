@@ -51,6 +51,16 @@ def _home_tilde(p):
     return "~" + p[len(h):] if p.startswith(h) else p
 
 
+def _view_rows(view, keep):
+    """Rows of one of of_studio's fold views (bin/of_studio_views.py), those `keep` accepts; None while this host's
+    listener has not built it, or where the module is not installed (of-server's image)."""
+    try:
+        import of_studio_views
+    except ImportError:
+        return None
+    return of_studio_views.rows_of(getattr(of_studio_views, view), keep)
+
+
 def org_rows(rows, org, others):
     """Events of one organization: tagged with it, or (untagged) whose cwd lies under its paths and under no other's."""
     mine = [_home_tilde(p) for p in org["paths"]]
@@ -726,7 +736,9 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=("of.pr_state",))]
-            else:
+            elif (rows := _view_rows("PR_STATES", lambda x: x.get("org") == self.org)) is not None:
+                pass   # the listener's view: each PR's latest state, which is all its readers take
+            else:   # the view is not built yet on this host
                 import of_store
                 rows = org_rows(of_model.load_events(of_store.connect(), names=("of.pr_state",)), self._org_cfg, self._others)
         except Exception:  # noqa: BLE001 — no store: the page's own rows
@@ -743,7 +755,9 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=of_loops.KINDS)]
-            else:
+            elif (rows := _view_rows("LOOP_EVENTS", lambda x: x.get("org") == self.org)) is not None:
+                pass   # the listener's view
+            else:   # the view is not built yet on this host
                 import of_store
                 conn = of_store.connect()
                 try:
@@ -842,7 +856,9 @@ class Data:
         try:
             if src is not None:
                 rows = [_normalize(r) for r in src.events(self.org, since_iso="2000-01-01T00:00:00Z", names=("of.diff_applied",))]
-            else:
+            elif (rows := _view_rows("DIFFS_APPLIED", lambda x: (x.get("payload") or {}).get("org") == self.org)) is not None:
+                pass   # the listener's view: the diff's id, kind and organization, which is all its readers take
+            else:   # the view is not built yet on this host
                 import of_store
                 rows = org_rows(of_model.load_events(of_store.connect(), names=("of.diff_applied",)), self._org_cfg, self._others)
         except Exception:  # noqa: BLE001 — no store: the page's own rows
