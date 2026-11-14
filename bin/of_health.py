@@ -363,8 +363,11 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None):
     os.replace(state_path() + ".tmp", state_path())
     if cards is None or cards:
         try:  # the person's card when their own work is hit (of_studio's, docs/health.md §3; hand-over f06e0eb7)
-            import of_studio_health
-            (cards or of_studio_health.cards)(state)
+            if cards:
+                cards(state)
+            else:  # filed in the OF team's organization when listed here, else the first one (of_review on PR 156)
+                import of_studio_health
+                of_studio_health.cards(state, org=of_studio_health.card_org())
         except Exception as e:  # noqa: BLE001 - the page and the events stand without it
             log(f"of health: cards: {type(e).__name__}: {e}")
     return state
