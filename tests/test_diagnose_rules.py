@@ -419,6 +419,32 @@ class RulesTest(unittest.TestCase):
         self.assertAlmostEqual(bc["hub"], 1.0)
         self.assertEqual(bc["a"], 0.0)
 
+    def test_unclear_mandate_leaves_out_organization_wide_brief_edits(self):
+        """v2: a rule pointed from five briefs within an hour is no position's mandate change; its own brief edits are."""
+        doc = self.owner_doc()
+        names = [p["name"] for p in doc["positions"]]
+
+        def mc(i, ts, pos, rev, **kw):
+            return ev(f"mc{i}", ts, "of.mandate_changed", None,
+                      dict({"position": pos, "mandate": {"path": f"briefs/{pos}.md", "revision": rev},
+                            "summary": "s", "status": "active", "throughput": "raise"}, **kw), position=pos, source="of")
+        base = [mc(f"b{k}", "2026-10-20T10:00Z", p, "r1") for k, p in enumerate(names)]
+        wide = [mc(f"w{k}{n}", f"2026-11-0{2 + 2 * n}T10:{k:02d}Z", p, f"r{2 + n}") for n in (0, 1) for k, p in enumerate(names)]
+        rows = base + wide
+        d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
+        self.assertEqual([i for i in d["issues"] if i["rule"] == "ap.unclear-mandate"], [])
+        # the same two edits on bot_search's brief alone: its mandate changed twice
+        own = base + [mc("o1", "2026-11-02T10:00Z", "bot_search", "r2"), mc("o2", "2026-11-04T10:00Z", "bot_search", "r3")]
+        d = of_diagnose.diagnose(of_model.build(doc, own, at=self.B), own, self.A, self.B)
+        self.assertEqual([(i["affected"], i["rule_version"]) for i in d["issues"] if i["rule"] == "ap.unclear-mandate"],
+                         [(["bot_search"], "ap.unclear-mandate@2")])
+        # an organization-wide edit that also moves a position's done_when: that field still counts
+        moved = [dict(r, payload=dict(r["payload"], mandate_exit={"done_when": f"d{r['event_id']}"}))
+                 if r["position"] == "bot_search" else r for r in base + wide]   # done_when counts from a non-empty value
+        d = of_diagnose.diagnose(of_model.build(doc, moved, at=self.B), moved, self.A, self.B)
+        got = [i for i in d["issues"] if i["rule"] == "ap.unclear-mandate"]
+        self.assertEqual([(i["affected"], i["evidence"]["org_wide_brief_edits_left_out"]) for i in got], [(["bot_search"], 2)])
+
     def test_unclear_mandate_and_churn(self):
         doc = self.owner_doc()
         snap = lambda i, ts, cls, pos="bot_search": ev(i, ts, "of.mandate_changed", None,
