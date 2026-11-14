@@ -595,11 +595,37 @@ def _wget_deny(args):
     return None
 
 
+def _strip_comments(text):
+    """The line without its comments, as bash reads them: `#` starts one only at the start of a word, outside quotes.
+    shlex took a `#` inside a word for one, so `cat a#b <secret>` read as `cat a` (G0.7, 2026-11-14)."""
+    out, i, n, single, double = [], 0, len(text), False, False
+    while i < n:
+        c = text[i]
+        if c == "\\" and not single and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == "'" and not double:
+            single = not single
+        elif c == '"' and not single:
+            double = not double
+        elif c == "#" and not single and not double and (i == 0 or text[i - 1] in " \t\r\n;&|()"):
+            j = text.find("\n", i)
+            if j < 0:
+                break
+            i = j
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _tokens(text):
     import shlex
-    lex = shlex.shlex(text.replace("\\\n", " "), posix=True, punctuation_chars="<>&")
+    lex = shlex.shlex(_strip_comments(text.replace("\\\n", " ")), posix=True, punctuation_chars="<>&")
     lex.whitespace = " \t\r\n"
     lex.whitespace_split = True
+    lex.commenters = ""
     return list(lex)
 
 
@@ -951,6 +977,10 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         return _prints("gcloud secrets versions access")
     # the cloud CLIs' cached sign-ins printed as tokens (G1.12 keeps their files; of_secrets-review and of_review on
     # organic-framework PR 178)
+    if head == "gcloud" and args[:2] == ["config", "config-helper"]:  # prints the cached access token (PR 178)
+        return _prints("gcloud config config-helper")
+    if _lang(head) and _py_module(args) == "awscli":  # `python3 -m awscli configure export-credentials`
+        head, args = "aws", args[args.index("awscli") + 1:] if "awscli" in args else []
     if head == "aws" and "configure" in args and "export-credentials" in args:
         return _prints("aws configure export-credentials")
     if head == "gcloud" and "auth" in args and any(a in ("print-access-token", "print-identity-token") for a in args):
@@ -3350,7 +3380,26 @@ _ENV_SETTERS = {"export", "env", "declare", "typeset", "local", "readonly"}
 _PKG_BINS = {"aws-cdk": "cdk", "awscli": "aws", "aws-sam-cli": "sam", "cdktf-cli": "cdktf"}
 
 
-_LOCAL_RUNNERS = {"watch", "find", "parallel", "su"}
+_PARALLEL_VALUE = {"-j", "--jobs", "-S", "--sshlogin", "-a", "--arg-file", "-I", "--colsep", "-N", "-n", "--delay",
+                   "--timeout", "--joblog", "--results", "--tmpdir", "-P", "--max-procs", "-L", "--max-lines", "-s",
+                   "--max-chars", "-E", "--eof", "--retries", "--load", "--memfree", "--tag-string", "--workdir", "--wd",
+                   "-d", "--delimiter"}
+# environment runners that run their command here (of_review on PR 178): head -> (its run subcommands, the options
+# that take a value); the command is what follows, or what follows `--`
+_ENV_RUNNERS = {
+    "uv": (("run",), {"--with", "--with-requirements", "--with-editable", "--from", "--python", "-p", "--project",
+                      "--directory", "--env-file", "--extra", "--group", "--package", "--index", "--index-url",
+                      "--default-index", "-w"}),
+    "poetry": (("run",), {"-C", "--directory", "-P", "--project"}), "pdm": (("run",), {"-p", "--project"}),
+    "hatch": (("run",), {"-e", "--env"}), "pipenv": (("run",), set()), "rye": (("run",), {"--pyproject"}),
+    "devbox": (("run",), {"-c", "--config", "-e", "--env"}), "direnv": (("exec",), set()),
+    "mise": (("exec", "x"), {"-C", "--cd", "-j", "--jobs"}), "asdf": (("exec",), set()),
+    "conda": (("run",), {"-n", "--name", "-p", "--prefix", "--cwd"}),
+    "mamba": (("run",), {"-n", "--name", "-p", "--prefix", "--cwd"}),
+    "micromamba": (("run",), {"-n", "--name", "-p", "--prefix", "--cwd"}),
+    "bundle": (("exec",), set()), "rbenv": (("exec",), set()), "pyenv": (("exec",), set()),
+}
+_LOCAL_RUNNERS = {"watch", "find", "parallel", "su", "nix", "nix-shell", *_ENV_RUNNERS}
 
 
 def _local_runner_command(head, args):
@@ -3370,9 +3419,37 @@ def _local_runner_command(head, args):
     if head == "parallel":
         k = 0
         while k < len(args) and args[k].startswith("-"):
-            k += 1
+            k += 2 if args[k] in _PARALLEL_VALUE else 1
         end = next((j for j in range(k, len(args)) if args[j] in (":::", "::::", ":::+")), len(args))
         return " ".join(args[k:end]) or None
+    if head in _ENV_RUNNERS:
+        subs, value = _ENV_RUNNERS[head]
+        k = 0
+        while k < len(args) and args[k].startswith("-"):  # options before the subcommand
+            k += 2 if args[k] in value else 1
+        if k >= len(args) or args[k] not in subs:
+            return None
+        rest = args[k + 1:]
+        if "--" in rest:
+            rest = rest[rest.index("--") + 1:]
+        else:
+            j = 0
+            if head == "direnv" and rest:  # `direnv exec DIR cmd …`
+                j = 1
+            while j < len(rest) and rest[j].startswith("-"):
+                j += 2 if rest[j] in value else 1
+            rest = rest[j:]
+        return " ".join(shlex.quote(a) for a in rest) or None
+    if head == "nix" and args[:1] in (["shell"], ["develop"]):  # `nix shell pkgs -c cmd …`
+        for k, a in enumerate(args):
+            if a in ("-c", "--command"):
+                return " ".join(shlex.quote(x) for x in args[k + 1:]) or None
+        return None
+    if head == "nix-shell":
+        for k, a in enumerate(args):
+            if a in ("--run", "--command") and k + 1 < len(args):
+                return args[k + 1]
+        return None
     if head == "su":
         for k, a in enumerate(args):
             if a in ("-c", "--command") and k + 1 < len(args):
@@ -3383,13 +3460,19 @@ def _local_runner_command(head, args):
 
 
 def _py_module(args):
-    """The module of `python -m MODULE` (also `-Im MODULE`, `-mMODULE`), or None."""
-    for k, a in enumerate(args):
+    """The module of `python -m MODULE` (also `-Im MODULE`, `-mMODULE`, after `-X utf8` or `-W ignore`), or None."""
+    k = 0
+    while k < len(args):
+        a = args[k]
         if not a.startswith("-") or a in ("-c", "-"):
             return None
+        if a in ("-X", "-W", "--check-hash-based-pycs"):  # their value is no module (of_review on PR 178)
+            k += 2
+            continue
         m = re.match(r"^-[A-Za-z]*m(\S*)$", a)
         if m:
             return m.group(1) or (args[k + 1] if k + 1 < len(args) else None)
+        k += 1
     return None
 
 
@@ -3398,12 +3481,15 @@ def _code_modules(code):
     `import_module('x')`; Node's `require('x')`, `import … from 'x'`, `import('x')`."""
     t = str(code or "")
     out = set()
+    # anywhere, also after `:` or inside a string run by exec (of_review on PR 178): `if 1: import boto3`
+    for m in re.finditer(r"\bimport\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*)", t):
+        out |= {w.strip() for w in m.group(1).split(",") if w.strip()}
     for m in re.finditer(r"(?:^|[;\n])\s*import\s+([^;\n#]+)", t):
         for part in m.group(1).split(","):
             w = part.strip().split()[0] if part.strip() else ""
             if w and not w.startswith(("'", '"', "{", "*")):
                 out.add(w)
-    for rx in (r"(?:^|[;\n])\s*from\s+([\w.]+)\s+import\b", r"__import__\s*\(\s*['\"]([^'\"]+)",
+    for rx in (r"\bfrom\s+([\w.]+)\s+import\b", r"__import__\s*\(\s*['\"]([^'\"]+)",
                r"import_module\s*\(\s*['\"]([^'\"]+)", r"\brequire\s*\(\s*['\"]([^'\"]+)",
                r"\bfrom\s+['\"]([^'\"]+)['\"]", r"\bimport\s*\(\s*['\"]([^'\"]+)", r"\bimport\s+['\"]([^'\"]+)"):
         out |= {m.group(1) for m in re.finditer(rx, t)}
