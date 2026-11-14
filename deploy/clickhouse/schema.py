@@ -57,11 +57,22 @@ REDACT_COLUMNS = {"event": ("event_id", "host_id", "name"), "transcript_record":
 FINANCE = "of.finance_fact"  # owner-only rows of the event table
 
 
-def user_sql(user, password_dir, on):
+def password(user, password_dir=None, read=None):
+    """USER's password as bytes, or None: through READ(user) when given (the agent host's setup reads it as root,
+    never through a link: organic-framework PR 144), else from PASSWORD_DIR/<user>.password."""
+    if read:
+        return read(user)
     path = os.path.join(password_dir, f"{user}.password") if password_dir else None
     if path and os.path.exists(path):
         with open(path, "rb") as fh:
-            pw = fh.read().strip()
+            return fh.read()
+    return None
+
+
+def user_sql(user, password_dir, on, read=None):
+    pw = password(user, password_dir, read)
+    if pw is not None:
+        pw = pw.strip()
         salt = secrets.token_hex(16)
         h = hashlib.sha256(pw + salt.encode()).hexdigest()
         return f"CREATE USER IF NOT EXISTS {user}{on} IDENTIFIED WITH sha256_hash BY '{h}' SALT '{salt}';"
@@ -74,25 +85,25 @@ def users(org_dbs, vault, unassigned):
         [f"{db}_read" for db in org_dbs]
 
 
-def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None):
-    if password_dir:
+def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=None):
+    if password_dir or read:
         # A missing file would leave its CREATE USER commented and the GRANT failing with
         # UNKNOWN_ROLE halfway through the script (found by the Lab, 2026-11-07): refuse up front.
-        missing = [u for u in users(org_dbs, vault, unassigned)
-                   if not os.path.exists(os.path.join(password_dir, f"{u}.password"))]
+        missing = [u for u in users(org_dbs, vault, unassigned) if password(u, password_dir, read) is None]
         if missing:
-            raise SystemExit(f"schema.py: no password file in {password_dir} for: {', '.join(missing)}")
+            raise SystemExit(f"schema.py: no password {'file in ' + password_dir if password_dir else 'read'} for: "
+                             f"{', '.join(missing)}")
     on = f" ON CLUSTER {cluster}" if cluster else ""
     out = []
     for db in [*org_dbs, vault, unassigned]:
         out.append(f"CREATE DATABASE IF NOT EXISTS {db}{on};")
         for t, body in TABLES.items():
             out.append(f"CREATE TABLE IF NOT EXISTS {db}.{t}{on}\n{body};")
-        out.append(user_sql(f"{db}_ingest", password_dir, on))
+        out.append(user_sql(f"{db}_ingest", password_dir, on, read))
         out.append(f"GRANT{on} INSERT ON {db}.* TO {db}_ingest;")
         # Redaction (docs/server.md): delete only, on the four tables, reading only the columns a
         # redaction's condition names. The ingest user stays insert-only.
-        out.append(user_sql(f"{db}_redact", password_dir, on))
+        out.append(user_sql(f"{db}_redact", password_dir, on, read))
         for t, cols in REDACT_COLUMNS.items():
             out.append(f"GRANT{on} SELECT({', '.join(cols)}), ALTER DELETE ON {db}.{t} TO {db}_redact;")
     for db in org_dbs:
@@ -106,7 +117,7 @@ def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None):
                            f" WHERE name != '{FINANCE}';")
                 continue
             out.append(f"CREATE VIEW IF NOT EXISTS {db}.v_{t}{on} SQL SECURITY DEFINER AS {sel} FROM {db}.{t};")
-        out.append(user_sql(f"{db}_read", password_dir, on))
+        out.append(user_sql(f"{db}_read", password_dir, on, read))
         out += [f"GRANT{on} SELECT ON {db}.v_{t} TO {db}_read;" for t in TABLES]
     return "\n\n".join(out) + "\n"
 

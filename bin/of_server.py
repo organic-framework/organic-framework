@@ -2195,51 +2195,91 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
                  silent="has not answered /v1/health")
 
 
-def host_watchdog(cfg, relays, now=None, restart=None, dump=None, log=None, domain="system"):
+HOST_WATCHDOG_DIR = "/var/db/of-host-watchdog"  # root's alone (deploy/host/setup.py makes it 700 root:wheel)
+_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
+
+
+def host_watchdog(cfg, relays, now=None, restart=None, dump=None, log=None, domain="system", state_dir=None,
+                  pid_of=None, uid_of=None):
     """The agent host's one root watchdog (deploy/host/setup.py): of-server, and each organization user's relay, each
-    a LaunchDaemon in `domain`. RELAYS: [(user, label, that user's OF state folder)]. Returns {name: result}."""
+    a LaunchDaemon in `domain`. RELAYS: [(user, label, that user's OF state folder)]. Returns {name: result}.
+
+    Root runs it, so it acts through no path anyone else controls (of_secrets-review and of_review on
+    organic-framework PR 144): its state is in STATE_DIR, a folder of root's alone; every pid is launchd's; each
+    heartbeat is read without following a link or blocking, as a regular file of that user's; one check that fails
+    never stops the next. It records no event: root's own store is read by nobody, and its log is the record."""
+    import pwd
     import of_relay_client
-    out = {"of-server": watch("of-server", LAUNCHD_LABEL,
-                              lambda: _health(cfg, timeout=WATCHDOG["probe_timeout"]) is not None,
-                              lambda: _read_pid(os.path.join(cfg["state_dir"], "server.pid")),
-                              os.path.join(cfg["state_dir"], "watchdog.json"), now=now, restart=restart, dump=dump,
-                              log=log, event="server_watchdog", silent="has not answered /v1/health", domain=domain)}
+    state_dir = _private_dir(state_dir or HOST_WATCHDOG_DIR)
+    pid_of = pid_of or (lambda label: of_relay_client.launchd_pid(label, domain))
+    uid_of = uid_of or (lambda user: pwd.getpwnam(user).pw_uid)
+    log = log or (lambda m: log_line(m, sys.stdout))
+    checks = [("of-server", None, "of-server", LAUNCHD_LABEL, "watchdog.json", "server_watchdog",
+               "has not answered /v1/health", lambda: _health(cfg, timeout=WATCHDOG["probe_timeout"]) is not None)]
     for user, label, state in relays:
         hb = os.path.join(state, of_relay_client.HEARTBEAT)
-        out[f"relay {user}"] = watch(
-            f"{user}'s relay", label, lambda hb=hb: of_relay_client.relay_healthy(now, path=hb)[0],
-            lambda label=label: of_relay_client.launchd_pid(label, domain),  # launchd's pid, never the heartbeat's
-            os.path.join(cfg["state_dir"], f"watchdog-relay-{user}.json"), now=now, restart=restart, dump=dump,
-            log=log, event="relay_watchdog", silent="has not moved its loops", domain=domain)
+        checks.append((f"relay {user}", user, f"{user}'s relay", label, f"watchdog-relay-{user}.json",
+                       "relay_watchdog", "has not moved its loops",
+                       lambda hb=hb, user=user: of_relay_client.relay_healthy(now, path=hb, uid=uid_of(user))[0]))
+    out = {}
+    for key, user, name, label, state_file, event, silent, probe in checks:
+        try:
+            if user is not None and not _USER.fullmatch(user):
+                raise ValueError(f"{user!r} is no user name")
+            out[key] = watch(name, label, probe, lambda label=label: pid_of(label), os.path.join(state_dir, state_file),
+                             now=now, restart=restart, dump=dump, log=log, event=event, silent=silent, domain=domain,
+                             record=False)
+        except Exception as e:  # noqa: BLE001 - one relay's failure must not stop the others' or the server's check
+            out[key] = "error"
+            log(f"{name}: the check failed: {type(e).__name__}: {e}"[:300])
     return out
 
 
+def _private_dir(path):
+    """PATH as a folder only this user writes: made 700 when absent; refused when it is a link, someone else's, or
+    writable by its group or others."""
+    import stat
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+        raise SystemExit(f"{path}: not a folder of this user's alone; the host watchdog keeps no state there")
+    return path
+
+
 def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=None, log=None, settings=None,
-          installed=None, event="server_watchdog", silent="has not answered", domain=None):
+          installed=None, event="server_watchdog", silent="has not answered", domain=None, record=True):
     """One watchdog check of a launchd-run process NAME (label LABEL). A process that is alive but fails PROBE
     through `failing_for` seconds of checks is restarted, at most once in `restart_gap`; first `kill -USR1` writes its
     threads' stacks to its log, so the next hang names its cause. A process with no live pid is left alone: a stop
     meant it, and launchd's KeepAlive restarts a crash. A gap between checks longer than twice `every` (a sleep, or
     the watchdog not running) starts the count again; the restart's time is kept before launchctl is called (of_review
     on organic-framework PR 112). Returns ok, failing, waiting, stopped, restarted, restart_failed or
-    not-under-launchd. `installed` tells whether the launchd job is there (None: assume it is)."""
+    not-under-launchd. `installed` tells whether the launchd job is there (None: assume it is). Its state file is
+    read and written without following a link (the host's root watchdog, organic-framework PR 144); `record` False
+    writes no event."""
     import signal
     s = dict(WATCHDOG, **(settings or {}))
     now = time.time() if now is None else now
     log = log or (lambda m: log_line(m, sys.stdout))
     try:
-        with open(state_path) as fh:
+        with os.fdopen(os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)) as fh:
             st = json.load(fh)
     except (OSError, ValueError):
         st = {}
+    st = st if isinstance(st, dict) else {}
     gap = None if st.get("last_check") is None else now - st["last_check"]
     st["last_check"] = now
 
     def save(result):
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        with open(state_path + ".tmp", "w") as fh:
+        tmp = state_path + ".tmp"
+        try:
+            os.unlink(tmp)  # whatever is there, a link included, is replaced, never written through
+        except FileNotFoundError:
+            pass
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "w") as fh:
             json.dump(st, fh)
-        os.replace(state_path + ".tmp", state_path)
+        os.replace(tmp, state_path)
         return result
 
     if probe():
@@ -2291,9 +2331,10 @@ def watch(name, label, probe, pid_of, state_path, now=None, restart=None, dump=N
     if error:
         log(f"the restart did not complete ({error}); the next attempt waits {s['restart_gap']} s")
     try:
-        of_events.emit(event, {"action": "restarted" if error is None else "restart_failed", "pid": pid,
-                               "failing_s": int(failing), "checks": st["fails"], "load1": load,
-                               **({"error": error} if error else {})})
+        if record:
+            of_events.emit(event, {"action": "restarted" if error is None else "restart_failed", "pid": pid,
+                                   "failing_s": int(failing), "checks": st["fails"], "load1": load,
+                                   **({"error": error} if error else {})})
     except Exception:  # noqa: BLE001 - the restart matters more than its record
         pass
     return save("restarted" if error is None else "restart_failed")
@@ -2327,6 +2368,7 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     hw = sub.add_parser("host-watchdog", help="one check of the agent host's server and relays (root, every minute)")
     hw.add_argument("--domain", default="system")
     hw.add_argument("--relay", action="append", default=[], help="USER:LABEL:STATE_DIR (repeat)")
+    hw.add_argument("--state-dir", default=HOST_WATCHDOG_DIR, help="the watchdog's own state, a folder of root's alone")
     rp = sub.add_parser("replay-dead", help="queue dead batches again (after fixing the cause)")
     rp.add_argument("--batch-id", action="append", help="only these batches (default: all dead)")
     iv = sub.add_parser("invite", help="a one-time enrollment code (printed once)")
@@ -2339,7 +2381,8 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     if a.cmd in (None, "run"):
         run(config=a.config)
     elif a.cmd == "host-watchdog":
-        host_watchdog(load_config(a.config), [tuple(r.split(":", 2)) for r in a.relay], domain=a.domain)
+        host_watchdog(load_config(a.config), [tuple(r.split(":", 2)) for r in a.relay], domain=a.domain,
+                      state_dir=a.state_dir)
     elif a.cmd == "writer":
         import fcntl
         import signal
