@@ -165,26 +165,57 @@ class DeployTest(unittest.TestCase):
             return subprocess.run(argv, **kw)
         return run
 
-    def deploy(self, commit=None, smoke_ok=True, problems=()):
+    def deploy(self, commit=None, smoke_ok=True, problems=(), final=()):
         commit = commit or self.git(self.src, "rev-parse", "main").strip()
         return plane.deploy(commit, "of", ["of"], run=self.run_with(smoke_ok), log=lambda m: None, root=self.root,
-                            source=self.src, trust=lambda: list(problems), self_check=lambda: list(self.me))
+                            source=self.src, trust=lambda: list(problems), self_check=lambda: list(self.me),
+                            final_check=lambda: list(final))
 
-    def test_main_is_deployed_and_a_failing_commit_rolled_back(self):
+    def head(self):
+        return self.git(self.root, "rev-parse", "HEAD").strip()
+
+    def test_each_deploy_a_new_tree_swapped_in_and_a_failing_one_never_in_place(self):
         v1 = self.git(self.src, "rev-parse", "HEAD").strip()
         self.assertEqual(self.deploy(), v1)
+        self.assertEqual(self.head(), v1)
         order = [("smoke" if a[0] == plane.SUDO and "smoke" in a else "compile") for a in self.ran
                  if (a[0] == plane.SUDO and "smoke" in a) or (a[0] == plane.PYTHON and "compileall" in a)]
         self.assertEqual(order, ["smoke", "compile"])            # the smoke check first, root compiles after
         self.assertTrue(any(a[0] == plane.PYTHON and a[1] == "-I" for a in self.ran))  # isolated, from /
         self.assertTrue(all(os.path.isabs(a[0]) for a in self.ran))           # every program by its full path
+        gits = [a for a in self.ran if a[0] == plane.GIT]
+        self.assertTrue(all(a[1:5] == plane.GIT_SAFE for a in gits))           # no hooks, no file system monitor
         self.commit("v2 broken")
         with self.assertRaises(SystemExit) as e:
             self.deploy(smoke_ok=False)
-        self.assertIn("back on", str(e.exception))
-        self.assertEqual(self.git(self.root, "rev-parse", "HEAD").strip(), v1)  # the commit before, still serving
+        self.assertIn("is unchanged", str(e.exception))
+        self.assertEqual(self.head(), v1)                                    # the tree in place, untouched
+        self.assertEqual([d for d in os.listdir(self.tmp.name) if ".new-" in d], [])  # the failed one removed
         v3 = self.commit("v3")
         self.assertEqual(self.deploy(), v3)
+        self.assertTrue(os.path.isdir(self.root + ".prev"))                  # the tree before, kept
+        with self.assertRaises(SystemExit) as e:
+            self.deploy(commit=v1, final=["the checkout is writable by of"])  # setup.check_code fails after the swap
+        self.assertIn("the tree before is back", str(e.exception))
+        self.assertEqual(self.head(), v3)
+
+    def test_root_runs_no_git_in_the_tree_in_place(self):
+        """of_server on PR 148: an existing checkout's .git can redirect the fetch (insteadOf) or run a hook as
+        root (post-checkout); root never runs git there."""
+        self.deploy()
+        marker = os.path.join(self.tmp.name, "hook-ran")
+        with open(os.path.join(self.root, ".git", "config"), "a") as fh:
+            fh.write(f'[url "{self.tmp.name}/evil"]\n\tinsteadOf = {self.src}\n[core]\n\thooksPath = hooks\n')
+        hooks = os.path.join(self.root, ".git", "hooks")
+        os.makedirs(hooks, exist_ok=True)
+        with open(os.path.join(hooks, "post-checkout"), "w") as fh:
+            fh.write(f"#!/bin/sh\ntouch {marker}\n")
+        os.chmod(os.path.join(hooks, "post-checkout"), 0o755)
+        v2 = self.commit("v2")
+        self.ran.clear()
+        self.assertEqual(self.deploy(), v2)
+        self.assertFalse(os.path.exists(marker))                             # no hook ran
+        self.assertFalse(any(a[0] == plane.GIT and self.root in a for a in self.ran))  # no git in the old tree
 
     def test_a_commit_not_on_the_public_main_is_refused(self):
         self.git(self.src, "checkout", "-q", "-b", "unreviewed")
@@ -194,6 +225,7 @@ class DeployTest(unittest.TestCase):
             self.deploy(commit=side)
         self.assertIn("is not on the public main", str(e.exception))
         self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # nothing run as root
+        self.assertFalse(os.path.exists(self.root))
 
     def test_no_python_as_root_before_the_trust_check_passes(self):
         with self.assertRaises(SystemExit) as e:
@@ -217,17 +249,19 @@ class DeployTest(unittest.TestCase):
             seen.append((argv[0], kw.get("env"), kw.get("cwd")))
             return real(argv, **kw)
         plane.deploy(self.git(self.src, "rev-parse", "main").strip(), "of", ["of"], run=run, log=lambda m: None,
-                     root=self.root, source=self.src, trust=lambda: [], self_check=lambda: [])
+                     root=self.root, source=self.src, trust=lambda: [], self_check=lambda: [], final_check=lambda: [])
         for prog, env, cwd in seen:
             if prog != plane.SUDO:
-                self.assertEqual((env, cwd), (plane.ROOT_ENV, "/"), prog)
+                self.assertEqual(cwd, "/", prog)
+                self.assertEqual(env["PATH"], plane.ROOT_ENV["PATH"], prog)
+                if prog == plane.GIT:
+                    self.assertEqual((env["GIT_CONFIG_NOSYSTEM"], env["GIT_CONFIG_GLOBAL"]), ("1", "/dev/null"))
 
     def test_only_a_full_hash(self):
         for bad in ("main", "v1.0", "abc123"):
             with self.assertRaises(SystemExit) as e:
                 self.deploy(commit=bad)
             self.assertIn("full commit hash", str(e.exception))
-
 
 if __name__ == "__main__":
     unittest.main()

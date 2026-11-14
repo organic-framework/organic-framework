@@ -8,8 +8,8 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
 - What is the user's is written by the user: `sudo -u <user>` runs this file's user_write() for ~/.config/of/orgs.yaml
   (its own organizations only), ~/.local/bin/of (a wrapper of the release checkout's bin/of) and one marked block in
   ~/.zshrc (that PATH and the shell function), so a link the user planted leads only where the user may write. The
-  user also installs PyYAML for itself when it is missing, and the hooks, the guard and the deny rules in each of its
-  Claude config dirs (`of hooks install`).
+  user also installs the hooks, the guard and the deny rules in each of its Claude config dirs (`of hooks install`).
+  PyYAML comes with Homebrew's python itself: setup.check_code refuses one without it (organic-framework PR 147).
 - What is root's root writes through setup.py's Files (one component at a time, O_NOFOLLOW, O_EXCL): the
   LaunchDaemons with UserName at ProcessType Standard, written and not loaded (the user's own herdr server, the
   listener, `of health run` every minute), every daemon's log made beforehand in root's /var/log/of, and one root
@@ -208,7 +208,8 @@ def daemons(user, user_home):
                                       log=lg("listen")), user),
         label("health", user): (plist(label("health", user), of + ["health", "run"], user, user_home, interval=60,
                                       log=lg("health")), user),
-        label("listen-watchdog", user): (plist(  # of_listen alone, which needs no PyYAML; -I: no env, no user site, no working folder
+        # of_listen alone, which needs no PyYAML; -I: no env, no user site, no working folder
+        label("listen-watchdog", user): (plist(
             label("listen-watchdog", user),
             [PYTHON, "-I", "-c", f"import sys; sys.path.insert(0, '{OF_ROOT}/bin'); import of_listen; "
                                        "print(of_listen.watchdog())"], None, None, interval=60,
@@ -228,7 +229,6 @@ def steps(org_users, claude_dirs, homes=None):
     for user, orgs in org_users.items():
         h = homes[user]
         out.append((user, "as the user: " + ", ".join(rel for rel, _, _ in user_files(orgs, h)) + ", ~/.zshrc block"))
-        out.append((user, "as the user: PyYAML for Homebrew's Python, if it is missing"))
         for d in claude_dirs[user]:
             cfg = d if os.path.isabs(d) else os.path.join(h, d)
             out.append((user, f"as the user: hooks, guard and deny rules in {cfg}"))
@@ -258,10 +258,6 @@ def apply(org_users, claude_dirs, run=subprocess.run, log=print, homes=None, fil
         if r.returncode != 0:
             raise SystemExit(f"{user}: its files: {(r.stderr or r.stdout).strip()[-400:]}")
         log(f"{user}: {', '.join(rel for rel, _, _ in spec['files'])}, ~/.zshrc block")
-        r = as_user(user, [SH, "-c", f"{PYTHON} -c 'import yaml' 2>/dev/null || "
-                                        f"{PYTHON} -m pip install --user --break-system-packages pyyaml"], run)
-        if r.returncode != 0:
-            raise SystemExit(f"{user}: PyYAML: {(r.stderr or r.stdout).strip()[-400:]}")
         for d in claude_dirs[user]:
             cfg = d if os.path.isabs(d) else os.path.join(h, d)
             r = as_user(user, [PYTHON, f"{OF_ROOT}/bin/of", "hooks", "install", "--guard", "--deny-secrets",
@@ -299,17 +295,23 @@ def load(org_users, unload=False, run=subprocess.run, log=print):
 PUBLIC = "https://github.com/organic-framework/organic-framework.git"  # reviewed code only: what of_release merged
 
 
+GIT_SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]  # root's git runs no hook, no monitor
+GIT_ENV = {**ROOT_ENV, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
+
+
 def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, root=None, source=PUBLIC,
-           trust=None, self_check=None):
-    """The release checkout at COMMIT, a full hash the public main contains: root fetches the public main itself,
-    never an organization user's checkout, whose main may hold commits no one reviewed, and checks out exactly that
-    hash (of_secrets-review and of_review on PR 148). In order: the checkout (git only), the tree made root's and
-    read-only, the trust check (setup.trust_problems over the python, Homebrew and the checkout), the smoke check run
-    by SMOKE_AS (an organization user, never root), and only then compileall as root (python -I, from /): root runs no
-    Homebrew python before the trust check passed, and none that imports from a folder someone else can write. A
-    failing step puts the commit before back. Programs by their full path, with a fixed PATH. Before all of it, the
-    script's own folder and its python pass the same trust check. Returns the commit."""
+           trust=None, self_check=None, final_check=None):
+    """The release checkout at COMMIT, a full hash the public main contains. Root never runs git in an existing
+    checkout, whose .git may redirect the fetch (insteadOf) or run a hook as root (of_server on PR 148): each deploy
+    is a new folder root makes, a fresh `git init`, a fetch of the public main and a checkout of exactly that hash,
+    with hooks and the file system monitor off and no system or global git config. In order: what runs this script
+    passes the trust check (its folder and setup.interpreter_roots); the new tree, made root's and read-only, passes
+    it; an organization user (SMOKE_AS, never root) runs the smoke check on it; root compiles its bin/ (python -I, from
+    /); the new tree is renamed into place, the old one kept as .prev; and setup.check_code, the rule apply and start
+    use, passes on it, or the old tree is renamed back. A failing step deletes the new tree and runs no git in it; the
+    tree in place is never touched by git. Programs by their full path, with a fixed PATH. Returns the commit."""
     import re
+    import shutil
     root = root or OF_ROOT
     # first, what runs this: the script's folder and the python must be root's (or an admin's) and no organization
     # user's to write, before root does anything for it (of_review on PR 148)
@@ -322,49 +324,61 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
         raise SystemExit("deploy: --commit takes a full commit hash (40 hex): root deploys a pinned commit")
     if not smoke_as:
         raise SystemExit("deploy: name the organization user who runs the smoke check (--smoke-as); root never does")
+    new, prev = f"{root}.new-{commit[:12]}", f"{root}.prev"
+    if os.path.lexists(new):
+        shutil.rmtree(new)  # root's own leftover from a deploy that stopped; rmtree removes a link, never follows it
+    os.mkdir(new, 0o755)
 
-    def git(*a, check=True):
-        r = run([GIT, "-C", root, *a], capture_output=True, text=True, cwd="/", env=ROOT_ENV)
-        if check and r.returncode != 0:
-            raise SystemExit(f"deploy: git {' '.join(a[:2])}: {(r.stderr or r.stdout).strip()[:300]}")
-        return r.stdout.strip()
-    if not os.path.isdir(os.path.join(root, ".git")):
-        r = run([GIT, "init", "-q", root], capture_output=True, text=True, cwd="/", env=ROOT_ENV)
+    def git(*a):
+        r = run([GIT, *GIT_SAFE, "-C", new, *a], capture_output=True, text=True, cwd="/", env=GIT_ENV)
         if r.returncode != 0:
-            raise SystemExit(f"deploy: git init: {(r.stderr or r.stdout).strip()[:300]}")
-        before = None
-    else:
-        before = git("rev-parse", "-q", "--verify", "HEAD", check=False) or None
+            fail(f"git {' '.join(a[:2])}: {(r.stderr or r.stdout).strip()[:300]}")
+        return r.stdout.strip()
+
+    def fail(why):
+        shutil.rmtree(new, ignore_errors=True)  # no git in a tree that failed: it is removed
+        raise SystemExit(f"deploy: {why} on {commit[:12]}; {root} is unchanged")
+    git("init", "-q")
     git("fetch", "-q", source, "main")
     public = git("rev-parse", "FETCH_HEAD")
-    if run([GIT, "-C", root, "merge-base", "--is-ancestor", commit, public], capture_output=True,
-           cwd="/", env=ROOT_ENV).returncode:
-        raise SystemExit(f"deploy: {commit[:12]} is not on the public main ({public[:12]}): only reviewed code is "
-                         "deployed")
-
-    def back(why):
-        if before:
-            git("checkout", "-q", "--detach", before)
-        raise SystemExit(f"deploy: {why} on {commit[:12]}; "
-                         f"{'back on ' + before[:12] if before else 'nothing was checked out before'}")
+    if run([GIT, *GIT_SAFE, "-C", new, "merge-base", "--is-ancestor", commit, public], capture_output=True, cwd="/",
+           env=GIT_ENV).returncode:
+        fail(f"{commit[:12]} is not on the public main ({public[:12]}): only reviewed code is deployed")
     git("checkout", "-q", "--detach", commit)
     if git("rev-parse", "HEAD") != commit:
-        back("the checkout is not the pinned commit")
-    run([CHOWN, "-R", "-P", "root:wheel", root], capture_output=True, cwd="/", env=ROOT_ENV)
-    run([CHMOD, "-R", "u+rwX,go+rX,go-w", root], capture_output=True, cwd="/", env=ROOT_ENV)
-    problems = (trust or (lambda: host.trust_problems(host.code_roots(), [*org_users, host.SERVICE_USER], run=run)))()
+        fail("the checkout is not the pinned commit")
+    run([CHOWN, "-R", "-P", "root:wheel", new], capture_output=True, cwd="/", env=ROOT_ENV)
+    run([CHMOD, "-R", "u+rwX,go+rX,go-w", new], capture_output=True, cwd="/", env=ROOT_ENV)
+    problems = (trust or (lambda: host.trust_problems([new], [*org_users, host.SERVICE_USER], run=run)))()
     if problems:
-        back("the trust check failed (" + "; ".join(problems)[:300] + ")")
-    # the user runs the smoke check, never root; git in root's checkout needs it named safe for that user
-    r = as_user(smoke_as, [PYTHON, os.path.join(root, "bin", "of"), "smoke", "--repo", root], run,
-                env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": root})
+        fail("the trust check failed (" + "; ".join(problems)[:300] + ")")
+    # the user runs the smoke check, never root; git in root's tree needs it named safe for that user
+    r = as_user(smoke_as, [PYTHON, os.path.join(new, "bin", "of"), "smoke", "--repo", new], run,
+                env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": new})
     if r.returncode != 0:
-        back("the smoke check failed (" + (r.stderr or r.stdout).strip()[-300:] + ")")
+        fail("the smoke check failed (" + (r.stderr or r.stdout).strip()[-300:] + ")")
     # the users cannot write a read-only checkout's bytecode cache: compile it here, after the trust check, isolated
-    run([PYTHON, "-I", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True, cwd="/",
+    run([PYTHON, "-I", "-m", "compileall", "-q", os.path.join(new, "bin")], capture_output=True, cwd="/",
         env=ROOT_ENV)
-    run([CHOWN, "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True, cwd="/", env=ROOT_ENV)
-    log(f"deploy: {root} at {commit[:12]}, on the public main {public[:12]} (trust and smoke checks ok)")
+    run([CHOWN, "-R", "-P", "root:wheel", os.path.join(new, "bin")], capture_output=True, cwd="/", env=ROOT_ENV)
+    if os.path.lexists(prev):
+        shutil.rmtree(prev)
+    had = os.path.lexists(root)
+    if had:
+        os.rename(root, prev)
+    os.rename(new, root)
+    final = (final_check or (lambda: host.check_code(list(org_users), run=run,
+                                                     here=os.path.join(root, "deploy", "host", "plane.py"))))()
+    if final:
+        failed = f"{root}.failed-{commit[:12]}"
+        os.rename(root, failed)
+        if had:
+            os.rename(prev, root)
+        shutil.rmtree(failed, ignore_errors=True)
+        raise SystemExit("deploy: setup.check_code failed on the new tree (" + "; ".join(final)[:300] + "); "
+                         f"{'the tree before is back' if had else 'nothing is in place'}")
+    log(f"deploy: {root} at {commit[:12]}, on the public main {public[:12]} (trust, smoke and code checks ok; the "
+        f"tree before is {prev if had else 'none'})")
     return commit
 
 
