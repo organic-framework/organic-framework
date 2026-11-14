@@ -23,7 +23,8 @@ EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop
 
 class HookBudgetTest(unittest.TestCase):
     def test_each_hook_within_its_budget(self):
-        with tempfile.TemporaryDirectory() as t:
+        # a hook may start the background ingest, which can still write into the scratch state as the test ends
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as t:
             env = dict(os.environ, OF_STATE=t, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
             for k in ("CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"):
                 env.pop(k, None)
