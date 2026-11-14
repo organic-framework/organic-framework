@@ -444,8 +444,8 @@ def shape_problems(grant):
             out.append('subject "*" is only for a deny')
         if grant.get("issuer") != "tenant":
             out.append('subject "*" is issued by the tenant only')
-        if not any(isinstance(scope.get(k), dict) for k in ("kubectl", "ssh", "commands")):
-            out.append('a subject "*" deny needs a scope the guard applies (kubectl, ssh or commands)')
+        if not any(isinstance(scope.get(k), dict) for k in ("kubectl", "ssh", "cli")):
+            out.append('a subject "*" deny needs a scope the guard applies (kubectl, ssh or cli)')
     if exc is not None and sub != "*":
         out.append('except is only for subject "*"')
     if exc is not None and not (isinstance(exc, list) and all(isinstance(x, str) and x for x in exc)):
@@ -474,12 +474,12 @@ def shape_problems(grant):
                 out.append('an allow_jump entry on a subject "*" deny names its positions')
         if scope.get("kubectl") is not None:
             out.append("a grant scopes kubectl or ssh, not both")
-    if sum(scope.get(x) is not None for x in ("kubectl", "ssh", "commands")) > 1 and scope.get("commands") is not None:
-        out.append("a grant scopes one of kubectl, ssh or commands")
-    cm = scope.get("commands")
-    if cm is not None:  # O4 (docs/registry.md, Scope commands): errs toward a match, so a deny only
+    if sum(scope.get(x) is not None for x in ("kubectl", "ssh", "cli")) > 1 and scope.get("cli") is not None:
+        out.append("a grant scopes one of kubectl, ssh or cli")
+    cm = scope.get("cli")  # O4; not the `commands` dimension, a list of shell patterns on an allow (RFC 0001 §5.7)
+    if cm is not None:  # O4 (docs/registry.md, Scope cli): errs toward a match, so a deny only
         if grant.get("effect") != "deny":
-            out.append("scope commands is only for a deny")
+            out.append("scope cli is only for a deny")
         out += commands_shape(cm, sub)
     k = scope.get("kubectl")
     if k is not None:
@@ -509,18 +509,18 @@ _MODULE = re.compile(r"^@?[A-Za-z0-9_][A-Za-z0-9_.\-/]*$")
 
 
 def commands_shape(cm, subject=None):
-    """Problems with a `commands` scope (docs/registry.md, Scope commands; of_architect's condition 6, msg
+    """Problems with a `cli` scope (docs/registry.md, Scope cli; of_architect's condition 6, msg
     01a1db57-17f9): names are bare command words, env variable names, code module names; each allow entry names its
     positions and what it lets through (options or argv)."""
     out = []
     if not isinstance(cm, dict) or not cm or set(cm) - {"names", "env", "code", "allow"}:
-        return ["scope commands takes names, env, code and allow"]
+        return ["scope cli takes names, env, code and allow"]
     for key, rx, what in (("names", _CMD_WORD, "bare command words"), ("env", _ENV_NAME, "variable names"),
                           ("code", _MODULE, "module names")):
         if key in cm and not (_str_list(cm[key]) and all(rx.match(x) for x in cm[key])):
-            out.append(f"scope commands.{key} is a list of {what}")
+            out.append(f"scope cli.{key} is a list of {what}")
     if not any(cm.get(k) for k in ("names", "env", "code")):
-        out.append("scope commands names at least one of names, env or code")
+        out.append("scope cli names at least one of names, env or code")
     al = cm.get("allow")
     if al is not None:
         names = set(cm.get("names") or [])
@@ -533,7 +533,7 @@ def commands_shape(cm, subject=None):
                 isinstance(o, str) and o.startswith("-") and _str_list(v) for o, v in e["options"].items())))
             and (e.get("argv") or e.get("options")) for e in al)
         if not good:
-            out.append("scope commands.allow is a list of {positions: [p], tool?: a listed name, argv?: [words], "
+            out.append("scope cli.allow is a list of {positions: [p], tool?: a listed name, argv?: [words], "
                        "options?: {--option: [values or globs]}}, each with argv or options")
     return out
 
@@ -545,13 +545,13 @@ def org_rule(grant):
             "reason": grant.get("note") or "", "subject": grant.get("subject"),
             "except": list(grant.get("except") or []), "expires": grant.get("expires"),
             "kubectl": (grant.get("scope") or {}).get("kubectl"), "ssh": (grant.get("scope") or {}).get("ssh"),
-            "commands": (grant.get("scope") or {}).get("commands")}
+            "cli": (grant.get("scope") or {}).get("cli")}
 
 
 def _is_rule(grant):
     scope = grant.get("scope") or {}
     return grant.get("effect") == "deny" and any(isinstance(scope.get(k), dict) for k in (
-        "kubectl", "ssh", "commands")) and not shape_problems(grant)
+        "kubectl", "ssh", "cli")) and not shape_problems(grant)
 
 
 def fold_kept(kept, grants, keys, now_iso):
