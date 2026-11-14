@@ -1866,7 +1866,9 @@ def _loop_card(d, w):
              + ('<code>measures</code> tie it to the target by neither <code>to_target</code> nor <code>to_money</code> '
                 '(objective drift, RFC 0005 §6): tie the metric to the target, or get the owner\'s yes on a new measure.</p>'
                 if own else '<code>measures</code> give it no price in money (objective drift, RFC 0005 §6).</p>')) if c["drift"] else ""
-    facts = [("Target", t.get("metric") or "not declared: the work's loop: in the registry names it")]
+    facts = [("Target", t.get("metric") or "not declared: the work's loop: in the registry names it"),
+             ("Observed at", t.get("observed_at") or "not named: the target's observed_at in the registry says where its "
+                                                     "reading is taken")]
     if own:
         said = f' ({t["decided_words"]})' if t.get("decided_words") else ""
         facts.append(("Decided", f"{own}{said}: the yes of the goal's owner on this measure, which is itself what the "
@@ -1895,7 +1897,7 @@ def _loop_card(d, w):
                     f'<td>{e(x["cost"] or "–")}</td><td>{e(x["latency"] or "–")}</td><td class="why">{e(x["accept"] or "–")}</td>'
                     f'<td>{x["runs_week"]} <span class="sub">({x["runs"]} in all)</span></td><td>{h(x["cycle_time_h"])}</td>'
                     f'<td>{"–" if x["wait_share"] is None else str(round(100 * x["wait_share"])) + "%"}</td>'
-                    f'<td class="why">{e(str(x["last_result"]) if x["last_result"] is not None else "–")}'
+                    f'<td class="why">{_last_result(x)}'
                     f'<div class="src">{e(st(x["last_at"])) if x["last_at"] else ""}</div></td></tr>')
     ck = c["checkpoint"]
     ck_line = ("No production rung on the ladder." if not spec["production"] else
@@ -1927,7 +1929,7 @@ def _loop_card(d, w):
 <p class="legend">{ck_line} Time to first money: {"not yet" if ttfm is None else f"{ttfm:g} d"}. Hit rate {e(rate)}.
 Gain per cycle {h(c["gain_per_cycle"])}, per kept cycle {h(c["gain_per_kept_cycle"])} (target units).
 WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wip"]["over"] else ""}.</p>
-{_checkpoints_html(c) if w.get("standing") else ""}<h3>The target per cycle</h3>{_loop_curve(c)}
+{_checkpoints_html(c) if w.get("standing") else ""}<h3>The target per cycle</h3>{_loop_curve(c)}{_not_observed(c)}
 <h3>Register <span class="sub">in test, then open hypotheses by value of information per runner-hour</span></h3>
 {f'<div class="scroll"><table><thead><tr><th>Id</th><th>Change</th><th>Predicted</th><th>Cost</th><th>VoI</th><th>Status</th></tr></thead><tbody>{reg_rows}</tbody></table></div>' if reg_rows else '<p class="quiet">No open hypothesis.</p>'}
 {f'<details><summary>Last kept and dropped</summary><table><tbody>{done_rows}</tbody></table></details>' if done_rows else ""}
@@ -1935,6 +1937,43 @@ WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wi
  · {h(cw["runner_h"])} runner-h · {"–" if cw["tokens"] is None else f'{cw["tokens"]:,.0f} fresh tokens'}
  · per kept cycle {"–" if cw["usd_per_kept_cycle"] is None else f'${cw["usd_per_kept_cycle"]:,.2f}'} and {h(cw["runner_h_per_kept_cycle"])} runner-h</p>
 {_money_reading(d, w, t) if own else ""}<h3>Decision log</h3>{f"<ul>{decisions}</ul>" if decisions else '<p class="quiet">No decision recorded.</p>'}"""
+
+
+NOT_OBSERVED_HEAD = ('<h3>Not observed <span class="sub">runs whose reading stands for an event elsewhere, and whose '
+                     'condition did not hold or is not known to hold: they decide nothing and stay out of the curve '
+                     '(docs/registry.md, Works, "Where a reading is taken")</span></h3>')
+FROM_PROXY = " · from the proxy: "
+
+
+def _last_result(x):
+    """A rung's last result; when its run is not observed, 'not observed at <at>' first and the result as the proxy's."""
+    import of_loops
+    res = x.get("last_result")
+    lr = x.get("last_run")
+    if lr and not of_loops.observed(lr):
+        return (f'<b>{e(of_loops.not_observed_text(lr))}</b>'
+                + (f'<div class="src">from the proxy: {e(str(res))}</div>' if res is not None else ""))
+    return e(str(res) if res is not None else "–")
+
+
+def _not_observed(c, k=10):
+    """The runs that are not observed (docs/registry.md, Works, "Where a reading is taken"), newest first: each as
+    'not observed at <at>' with its reading labelled as a proxy, never the number alone; the curve leaves them out."""
+    import of_loops
+    runs = [r for r in c.get("runs") or [] if not of_loops.observed(r)]
+    if not runs:
+        return ""
+    st = of_loops.stamp
+    out = sum(1 for r in runs if r.get("on_target") and r.get("value") is not None)
+    legend = (f'<p class="legend">{out} run{"s" if out != 1 else ""} on the target {"are" if out != 1 else "is"} not '
+              f'observed where {"their" if out != 1 else "its"} event happens, and the curve leaves '
+              f'{"them" if out != 1 else "it"} out.</p>') if out else ""
+    items = "".join(f'<li>{e(st(r.get("ended_at")))} <b>{e(r.get("rung") or "?")}</b>'
+                    f'{" " + e(r["hypothesis"]) if r.get("hypothesis") else ""}: {e(of_loops.not_observed_text(r))}'
+                    f'{FROM_PROXY + e(str(r["result"])[:200]) if r.get("result") else ""}</li>'
+                    for r in sorted(runs, key=lambda r: r.get("ended_at") or 0, reverse=True)[:k])
+    more = f'<p class="legend">{len(runs) - k} earlier ones are not listed.</p>' if len(runs) > k else ""
+    return f"{legend}{NOT_OBSERVED_HEAD}<ul>{items}</ul>{more}"
 
 
 def _money_reading(d, w, t):

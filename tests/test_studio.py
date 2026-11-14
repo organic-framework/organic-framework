@@ -1980,8 +1980,74 @@ class LoopTest(unittest.TestCase):
         self.assertNotIn("price in money", card)
         self.assertIn("measures latency_p50_ms, not the target", table)
 
+    # docs/registry.md, Works, "Where a reading is taken" (hand-over 18c240ff): a proxy measure and its runs
+    SEEN = dict(SPEC, target=dict(SPEC["target"], observed_at="the replay ledger"),
+                measures=SPEC["measures"] + [{"name": "latency_p50_ms", "observed_at": "our nodes receive log",
+                                              "proxy_for": {"at": "the block builder",
+                                                            "valid_when": "one of our nodes built the block"},
+                                              "to_money": "a ms buys races"}])
+    ELSEWHERE = {"for": "the block builder", "valid_when": "one of our nodes built the block"}
+
+    def seen_rows(self):
+        run = lambda i, ts, hid, rung, value, **kw: self.ev(i, ts, "of.loop_run",
+                                                            dict({"hypothesis": hid, "rung": rung, "value": value}, **kw))
+        return self.rows() + [
+            run(24, "2026-11-07T06:00Z", "h4", "day_pass", 330, observed_at="our nodes receive log",
+                proxy=dict(self.ELSEWHERE, held="held")),                       # limited to the data where it held
+            run(25, "2026-11-07T07:00Z", "h4", "day_pass", 400, observed_at="our nodes receive log", result="speed buys little",
+                proxy=dict(self.ELSEWHERE, held="not_held")),
+            run(26, "2026-11-07T08:00Z", "h5", "gate", 33, metric="latency_p50_ms", proxy={"held": "held"}),
+            run(27, "2026-11-07T09:00Z", "h5", "gate", 31, metric="latency_p50_ms", proxy={"held": "maybe"})]
+
+    def test_a_run_not_observed_in_the_projection(self):
+        import of_loops
+        c = self.card(self.seen_rows(), spec=self.SEEN)
+        self.assertEqual(c["target"]["observed_at"], "the replay ledger")
+        runs = {r["id"]: r for r in c["runs"]}
+        self.assertEqual((runs["el25"]["observed_at"], runs["el25"]["proxy"], runs["el25"]["result"]),
+                         ("our nodes receive log", dict(self.ELSEWHERE, held="not_held"), "speed buys little"))
+        self.assertIsNone(runs["el25"]["accepted"])
+        # a run the event does not mark takes its measure's point and proxy, held unknown; a target's run its point
+        self.assertEqual((runs["el20"]["observed_at"], runs["el20"]["proxy"]),
+                         ("our nodes receive log", dict(self.ELSEWHERE, held="unknown")))
+        self.assertEqual((runs["el11"]["observed_at"], runs["el11"]["proxy"]), ("the replay ledger", None))
+        self.assertEqual(runs["el26"]["proxy"], dict(self.ELSEWHERE, held="held"))      # its parts from the measure
+        self.assertEqual(runs["el27"]["proxy"]["held"], "unknown")                       # an unknown word is unknown
+        self.assertEqual([of_loops.observed(runs[i]) for i in ("el11", "el24", "el25", "el20", "el26", "el27")],
+                         [True, True, False, False, True, False])
+        # the curve of the target, and so its gains, plateau and checkpoints, leave out the run not observed
+        self.assertEqual([p[1] for p in c["curve"]], [211.7, 325.8, 326.0, 326.2, 326.4, 330])
+        self.assertEqual(max(x["best"] for x in c["trend"]["checkpoints"] if x["best"] is not None), 330)
+        self.assertEqual(of_loops.not_observed_text(runs["el25"]),
+                         "not observed at the block builder; its reading at our nodes receive log is a proxy (day pass USD "
+                         "400), valid only when one of our nodes built the block, which did not hold")
+        self.assertEqual(of_loops.not_observed_text(runs["el27"]),
+                         "not observed at the block builder; its reading at our nodes receive log is a proxy (latency_p50_ms "
+                         "31), valid only when one of our nodes built the block, which is not known to hold")
+        # a loop whose readings name no proxy keeps every run in its curve
+        c = self.card()
+        self.assertTrue(all(r["proxy"] is None for r in c["runs"]))
+        self.assertEqual(len(c["curve"]), 5)
+
+    def test_the_card_shows_not_observed(self):
+        card, _ = self.html(self.card(self.seen_rows(), spec=self.SEEN))
+        self.assertIn("<tr><th>Observed at</th><td>the replay ledger</td></tr>", card)
+        not_held = ("not observed at the block builder; its reading at our nodes receive log is a proxy (day pass USD 400), "
+                    "valid only when one of our nodes built the block, which did not hold")
+        # the rung's last result: not observed first, its result as the proxy's
+        self.assertIn(f'<td class="why"><b>{not_held}</b><div class="src">from the proxy: speed buys little</div>', card)
+        self.assertIn("<h3>Not observed", card)
+        self.assertIn(f"<b>day_pass</b> h4: {not_held} · from the proxy: speed buys little</li>", card)
+        self.assertIn("1 run on the target is not observed where its event happens, and the curve leaves it out.", card)
+        self.assertIn("(latency_p50_ms 31), valid only when one of our nodes built the block, which is not known to hold", card)
+        self.assertEqual(card.count("400"), card.count("(day pass USD 400)"))   # never the number alone
+        self.assertNotIn(">400<", card)                                          # nor on the curve's scale
+        self.assertIn(">330<", card)
+
     def test_a_loop_without_decided_keeps_its_card(self):
         card, table = self.html(self.card())
+        self.assertNotIn("Not observed", card)
+        self.assertIn("<tr><th>Observed at</th><td>not named: the target&#x27;s observed_at in the registry", card)
         self.assertIn("<tr><th>Money</th><td>USD per day</td></tr>", card)
         self.assertNotIn("<th>Decided</th>", card)
         self.assertIn("<h3>Cost this week</h3>", card)
