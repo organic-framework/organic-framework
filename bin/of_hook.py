@@ -568,7 +568,7 @@ def _injected(sid, prompt):
     m = re.search(r"<pasted_content[^>]*>(.*?)(?:</pasted_content[^>]*>|$)", prompt or "", re.S)
     if m:
         digests |= {hashlib.sha256(m.group(1).strip().encode()).hexdigest(), of_guard.typed_digest(m.group(1))}
-    now, my_pane = time.time(), os.environ.get("HERDR_PANE_ID")
+    now, my_pane, my_tmux = time.time(), os.environ.get("HERDR_PANE_ID"), os.environ.get("TMUX_PANE")
     for line in reversed(lines):
         try:
             j = json.loads(line)
@@ -576,8 +576,9 @@ def _injected(sid, prompt):
             continue
         if not isinstance(j, dict):
             continue
-        if (j.get("session") or j.get("pane")) and not ((sid and j.get("session") == sid)
-                                                       or (my_pane and j.get("pane") == my_pane)):
+        if (j.get("session") or j.get("pane") or j.get("tmux_pane")) and not (
+                (sid and j.get("session") == sid) or (my_pane and j.get("pane") == my_pane)
+                or (my_tmux and j.get("tmux_pane") == my_tmux)):
             continue
         window = j.get("window") or (INJECT_SESSION_S if sid and j.get("session") == sid else 60)
         if now - j.get("ts", 0) > window:
@@ -605,6 +606,20 @@ def _herdr_target(kind, ident):
         return None, None
 
 
+def _tmux_pane(target):
+    """tmux's own pane id (%N) for a send-keys target, or None when tmux does not answer in time."""
+    if re.match(r"^%\d+$", target or ""):
+        return target
+    import subprocess
+    try:
+        r = subprocess.run(["tmux", "display-message", "-p", "-t", target, "#{pane_id}"], capture_output=True,
+                           text=True, timeout=1.5)
+        out = (r.stdout or "").strip()
+        return out if r.returncode == 0 and re.match(r"^%\d+$", out) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _declare_typing(hook, sid):
     """G25 (docs/guard.md): declare what this Bash call types into a pane through herdr's CLI, so the receiving
     session records it as injected, never as its person's words. Text the guard reads is declared by its digest
@@ -615,7 +630,7 @@ def _declare_typing(hook, sid):
     if hook.get("tool_name") != "Bash":
         return
     cmd = (hook.get("tool_input") or {}).get("command") or ""
-    if "herdr" not in cmd:
+    if "herdr" not in cmd and "tmux" not in cmd:
         return
     decls = of_guard.typing_declarations(cmd)
     if not decls:
@@ -624,24 +639,29 @@ def _declare_typing(hook, sid):
     out = []
     for d in decls:
         kind, ident = d["target"]
-        if kind == "unknown" and not d["sha256"]:
-            note = (f"a command that types into a pane the guard cannot name ({d['kind']} to a variable), with text it "
-                    "cannot read", f"herdr {d['kind']}", "the receiving session would record it as its person's "
-                    "words: name the pane and the text literally, or declare it first with `of event injected_prompt "
-                    "--pane <id>` (docs/guard.md G25)")
-            if note not in of_guard._WARNINGS:
-                of_guard._WARNINGS.append(note)
-            continue
-        pane = session = None
+        pane = session = tmux = None
         if kind == "own":
             pane, session = os.environ.get("HERDR_PANE_ID"), sid
         elif kind in ("pane", "agent"):
             pane, session = _herdr_target(kind, ident)
             pane = pane or (ident if kind == "pane" else None)
+        elif kind == "tmux-own":
+            tmux, session = os.environ.get("TMUX_PANE"), sid
+        elif kind == "tmux":
+            tmux = _tmux_pane(ident)
+        if not (pane or session or tmux) and not d["sha256"]:
+            # pane-wide for every session for 60 s hid the founder's own prompts (condition 5); a target the guard
+            # cannot name, or herdr or tmux not answering, only warns (of_secrets-review on PR 170)
+            note = (f"a command that types into a pane the guard cannot name ({d['kind']}), with text it cannot read",
+                    d["kind"], "the receiving session would record it as its person's words: name the pane and the "
+                    "text literally, or declare it first with `of event injected_prompt --pane <id>` (docs/guard.md G25)")
+            if note not in of_guard._WARNINGS:
+                of_guard._WARNINGS.append(note)
+            continue
         out.append({"ts": time.time(), "by": "guard", "injector": me or f"session {str(sid or '')[:8]}",
                     "kind": d["kind"], "how": "sha256" if d["sha256"] else "pane", "sha256": d["sha256"],
                     "pane": pane, "session": session, "window": TYPING_WINDOW_S,
-                    **({"agent": ident} if kind == "agent" else {})})
+                    **({"agent": ident} if kind == "agent" else {}), **({"tmux_pane": tmux} if tmux else {})})
     if not out:
         return
     try:
@@ -953,11 +973,6 @@ def _guard(hook, sess):
     except Exception:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
         pass
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
-    if not hit:
-        try:  # G25: what this call types into a pane is declared before it runs
-            _declare_typing(hook, hook.get("session_id"))
-        except Exception:  # noqa: BLE001 - a declaration never costs the call
-            pass
     if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
     if not hit and _scratch_guard(hook, sess):
@@ -968,6 +983,11 @@ def _guard(hook, sess):
         return
     if not hit and _credential_guard(hook, sess):
         return
+    if not hit:
+        try:  # G25: what this call types into a pane is declared once every guard let it run (of_review on PR 170)
+            _declare_typing(hook, hook.get("session_id"))
+        except Exception:  # noqa: BLE001 - a declaration never costs the call
+            pass
     if not hit and _WARNINGS:  # allowed, noted for the agent and logged
         why, token, *note = _WARNINGS[0]  # a rule may carry its own note (G1.9); the bare-op one (G9) does not
         _add_context(f"Organic Framework guard warning: {why}. " + (note[0] + "." if note else

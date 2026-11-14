@@ -35,6 +35,22 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(self.decl("herdr pane run $P 'claude --resume x'"), [(("unknown", None), "pane run", True)])
         self.assertEqual(self.decl("timeout 5 herdr pane send-text w1:p1 hi"), [(("pane", "w1:p1"), "pane send-text", True)])
 
+    def test_wrappers_options_and_tmux(self):
+        """of_review and of_secrets-review on organic-framework PR 170."""
+        self.assertEqual(self.decl('bash -c "herdr pane send-text w1:p1 yes"'), [(("pane", "w1:p1"), "pane send-text", True)])
+        self.assertEqual(self.decl("sh -lc 'herdr agent prompt of_b go'"), [(("agent", "of_b"), "agent prompt", True)])
+        self.assertEqual(self.decl("eval herdr pane send-keys w1:p1 Enter"), [(("pane", "w1:p1"), "pane send-keys", False)])
+        self.assertEqual(self.decl("herdr agent prompt --until idle of_b yes"), [(("agent", "of_b"), "agent prompt", True)])
+        self.assertEqual(self.decl("herdr agent prompt of_b yes --wait --timeout 5000"),
+                         [(("agent", "of_b"), "agent prompt", True)])
+        self.assertEqual(self.decl("herdr agent prompt --frob of_b yes"), [(("unknown", None), "agent prompt", False)])
+        self.assertEqual(self.decl("herdr pane list | xargs -I{} herdr pane send-keys {} Enter"),
+                         [(("unknown", None), "pane send-keys", False)])
+        self.assertEqual(self.decl("tmux send-keys -t %3 -l 'yes'"), [(("tmux", "%3"), "tmux send-keys", True)])
+        self.assertEqual(self.decl("tmux send-keys -t main:1.0 yes Enter"), [(("tmux", "main:1.0"), "tmux send-keys", False)])
+        self.assertEqual(self.decl("tmux send-keys yes Enter"), [(("tmux-own", None), "tmux send-keys", False)])
+        self.assertEqual(self.decl("tmux list-panes"), [])
+
     def test_what_types_nothing(self):
         for cmd in ("herdr --machine lab pane send-text w1:p1 hi",  # another machine: a named limit
                     "echo 'herdr pane send-text w1:p1 x' > notes.md",
@@ -65,12 +81,15 @@ class DeclareTest(unittest.TestCase):
         with open(os.path.join(root, "orgs.yaml"), "w") as fh:
             fh.write("orgs:\n  - {name: t, path: org}\n")
         self.saved = (of_events.STATE_DIR, of_hook.STATE, os.environ.get("OF_ORGS"), os.environ.get("HERDR_ENV"),
-                      os.environ.get("HERDR_PANE_ID"), of_hook._herdr_target)
+                      os.environ.get("HERDR_PANE_ID"), of_hook._herdr_target, os.environ.get("TMUX_PANE"),
+                      of_hook._tmux_pane, of_hook._scratch_guard)
         of_events.STATE_DIR = of_hook.STATE = os.path.join(root, "state")
         os.makedirs(of_hook.STATE)
         os.environ["OF_ORGS"] = os.path.join(root, "orgs.yaml")
         os.environ.pop("HERDR_ENV", None)
         of_hook._herdr_target = lambda kind, ident: PANES.get((kind, ident), (None, None))
+        of_hook._tmux_pane = lambda target: {"%3": "%3", "main:1.0": "%7"}.get(target)
+        os.environ.pop("TMUX_PANE", None)
 
     def tearDown(self):
         of_events.STATE_DIR, of_hook.STATE = self.saved[0], self.saved[1]
@@ -79,7 +98,11 @@ class DeclareTest(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        of_hook._herdr_target = self.saved[5]
+        of_hook._herdr_target, of_hook._tmux_pane, of_hook._scratch_guard = self.saved[5], self.saved[7], self.saved[8]
+        if self.saved[6] is None:
+            os.environ.pop("TMUX_PANE", None)
+        else:
+            os.environ["TMUX_PANE"] = self.saved[6]
         self.tmp.cleanup()
 
     def type_(self, cmd, sid="S1"):
@@ -133,6 +156,28 @@ class DeclareTest(unittest.TestCase):
         self.type_("for p in $(herdr pane list | jq -r .id); do herdr pane send-keys $p Enter; done")
         self.assertFalse(os.path.exists(os.path.join(of_hook.STATE, "injections.jsonl")))
         self.assertIsNone(self.seen("yes", sid="S9", pane="w9:p9"))
+
+    def test_tmux(self):
+        self.type_("tmux send-keys -t %3 -l 'yes, p50'")
+        os.environ["TMUX_PANE"] = "%3"
+        m = self.seen("yes, p50", sid="S9", pane="w9:p9")
+        self.assertEqual((m["match"], m["tmux_pane"]), ("sha256", "%3"))
+        self.type_("tmux send-keys -t main:1.0 yes Enter")
+        os.environ["TMUX_PANE"] = "%7"
+        self.assertEqual(self.seen("anything", sid="S9", pane="w9:p9")["match"], "pane")
+        os.environ["TMUX_PANE"] = "%8"
+        self.assertIsNone(self.seen("anything", sid="S9", pane="w9:p9"))
+
+    def test_an_agent_herdr_cannot_find_only_warns(self):
+        self.type_("herdr agent send-keys of_gone Enter")
+        self.assertFalse(os.path.exists(os.path.join(of_hook.STATE, "injections.jsonl")))
+        self.assertIsNone(self.seen("yes", sid="S9", pane="w9:p9"))
+
+    def test_nothing_is_declared_when_a_later_guard_denies(self):
+        """of_review on PR 170: the declaration is written once every guard let the call run."""
+        of_hook._scratch_guard = lambda hook, sess: True
+        self.type_("herdr pane send-text w1:p1 yes")
+        self.assertFalse(os.path.exists(os.path.join(of_hook.STATE, "injections.jsonl")))
 
     def test_the_window(self):
         self.type_("herdr pane send-keys w1:p1 Enter")
