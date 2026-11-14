@@ -133,6 +133,25 @@ class FoldTest(unittest.TestCase):
         self.assertEqual(of_fold.load_rows(self.conn, view), {"n": {"n": 4}})
         self.assertEqual(again.rows, {"n": {"n": 4}})
 
+    def test_a_diffs_approval_is_never_decided_by_a_view_row(self):
+        """of_server on PR 154: a row written in view_fold without an answer event approved a diff."""
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        procs = [of_fold.FoldProcessor(self.view)]
+        cur = of_listen.prepare(self.conn, procs)
+        self.answer("A", "reject")
+        of_listen.step(self.conn, procs, cur)
+        import json
+        forged = {"answers": [{"by": "owner", "via": "asks-ui", "answer": "approve", "ts": "2099-01-01T00:00:00Z"}]}
+        self.conn.execute("INSERT OR REPLACE INTO view_fold VALUES ('answers', 'A', ?)", (json.dumps(forged),))
+        self.conn.execute("INSERT OR REPLACE INTO view_fold VALUES ('answers', 'F', ?)", (json.dumps(forged),))
+        self.assertIs(of._diff_answer(self.conn, "A"), False)                 # the log's reject decides
+        self.assertIsNone(of._diff_answer(self.conn, "F"))                    # no answer event: no answer
+
     def test_every_registered_view_is_pure(self):
         """of_architect on PR 154: purity as a test over every view, not a convention."""
         import json

@@ -15,7 +15,8 @@ after its cursor, through a read-only connection that never waits on a writer. M
 it is, late. age_s is 0 when nothing of its names waits after the cursor, else the time since the oldest one waiting.
 
 A view's owner defines it in its own module and calls register(view); the listener runs every registered view (its
-module named in VIEW_MODULES). Tests: tests/test_fold.py.
+module named in VIEW_MODULES). A view serves reading, never a decision of trust: any process of the user may write
+its rows without an event (of_server on PR 154). Tests: tests/test_fold.py.
 """
 
 import json
@@ -253,8 +254,9 @@ def read(view, conn=None, tail=TAIL, now=None):
 # ------------------------------------------------------------------ the first view: the owner's answers to asks
 
 class Answers(View):
-    """Each ask's answers in order (who, via, the words, when), from of.agent_question_answered: for the diff approval
-    (bin/of _diff_answer), which scanned every answer in the log on each `of diff apply`."""
+    """Each ask's answers in order (who, via, the words, when), from of.agent_question_answered, for what shows them.
+    Never for a decision of trust: any process of this user may write a view's rows without an event, so a diff's
+    approval reads the log (bin/of _diff_answer; of_server on PR 154)."""
     name = "answers"
     owner = "of_platform"
     version = "1"
