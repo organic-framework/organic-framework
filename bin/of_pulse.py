@@ -871,21 +871,15 @@ def run_escalations(positions, asks, now, conn, log=print, elsewhere=None):
     """Write of.ask_escalated and the founder's copy of the question (once per ask). An ask whose position is held on
     another machine is that machine's to escalate; the ids are fixed per ask, so two machines that both escalate one
     (a position held nowhere) write one escalation."""
-    import json as _j
-    done = None
-    try:  # the escalated view (bin/of_fold.py): a dedupe, never a decision of trust (the ids are fixed per ask)
-        import of_fold
-        r = of_fold.read("escalated")
-        if not r.late:
-            done = set(r.rows)
-    except Exception:  # noqa: BLE001
-        done = None
-    if done is None:  # no listener here, or it is behind: the escalations' own events, one name by its index
-        done = {(_j.loads(pl or "{}")).get("ask_id") for (pl,) in
-                conn.execute("SELECT payload FROM event WHERE name = 'of.ask_escalated'")}
+    # Whether an ask was escalated is read from the log by the escalation's own fixed id (its primary key), one lookup
+    # per candidate: never a view's row, which anyone of this user may write, and which then kept an ask from the
+    # founder (of_review on PR 167), and never a scan of every escalation (the read path).
+    def escalated(aid):
+        return conn.execute("SELECT 1 FROM event WHERE event_id = ?",
+                            (of_events.stable_id(aid, "escalated"),)).fetchone() is not None
     away = {n for _, n in (elsewhere or {})}
     n = 0
-    for a, rule, did in escalations(positions, asks, now, done):
+    for a, rule, did in [x for x in escalations(positions, asks, now) if not escalated(x[0]["event_id"])]:
         if a.get("position") in away:
             continue
         escalate(a, rule, did)

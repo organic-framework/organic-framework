@@ -281,25 +281,3 @@ class Answers(View):
 
 register(Answers())
 
-
-class Escalated(View):
-    """The asks escalated to the founder (of.ask_escalated): {ask id: {rule, delegation, ts}}, for the pulse, which
-    escalates each routed ask once. Not a decision of trust: an escalation's event id is fixed per ask, so one escalated
-    again is kept once in the log."""
-    name = "escalated"
-    owner = "of_platform"
-    version = "1"
-    names = ("of.ask_escalated",)
-    lag_ok_s = 600
-
-    def fold(self, rows, events):
-        changed = {}
-        for e in events:
-            p = e.get("payload") or {}
-            aid = p.get("ask_id")
-            if aid and aid not in rows and aid not in changed:
-                changed[aid] = {"rule": p.get("rule"), "delegation": p.get("delegation"), "ts": e.get("ts")}
-        return changed
-
-
-register(Escalated())

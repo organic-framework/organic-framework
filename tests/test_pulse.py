@@ -113,6 +113,31 @@ class RunTest(unittest.TestCase):
 
 
 
+class EscalatedOnceTest(unittest.TestCase):
+    def test_an_ask_escalated_already_is_found_by_its_fixed_id_never_a_view_or_a_scan(self):
+        """of_review on PR 167: a view row written by hand kept a routed ask from the founder. Whether an ask was
+        escalated is read from the log by the escalation's fixed id, one primary-key lookup per candidate."""
+        import of_store
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            rec = of_events.record("ask_escalated", {"ask_id": "A1", "rule": "money"}, position="p")
+            rec["of.event.id"] = of_events.stable_id("A1", "escalated")
+            of_store.add_event(conn, rec)
+            conn.execute("CREATE TABLE IF NOT EXISTS view_fold (view TEXT, key TEXT, row TEXT, PRIMARY KEY (view, key))")
+            conn.execute("INSERT INTO view_fold VALUES ('escalated', 'A2', '{}')")  # a forged row: means nothing
+            cands = [({"event_id": "A1", "position": "p"}, "money", "del"), ({"event_id": "A2", "position": "p"},
+                                                                             "money", "del")]
+            sent, seen = [], []
+            conn.set_trace_callback(seen.append)
+            with mock.patch.object(of_pulse, "escalations", lambda *a, **k: cands), \
+                    mock.patch.object(of_pulse, "escalate", lambda a, rule, did: sent.append(a["event_id"])):
+                self.assertEqual(of_pulse.run_escalations([], [], 0, conn, log=lambda m: None), 1)
+            self.assertEqual(sent, ["A2"])
+            self.assertFalse(any("name = 'of.ask_escalated'" in q for q in seen))   # no scan
+            conn.close()
+
+
 class PulseRowsTest(unittest.TestCase):
     def test_its_window_of_the_log_and_each_latest_declaration_never_the_whole_log(self):
         """The founder's goal of 2026-11-14 (prompt 01a1d68e-1d3e): the pulse read and projected the whole log, 7 to
