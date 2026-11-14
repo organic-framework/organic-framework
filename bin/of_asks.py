@@ -273,7 +273,8 @@ def project(rows, state=None):
                    "tags_declared": bool((r["payload"] or {}).get("tags_declared")),
                    "diff_id": (r["payload"] or {}).get("diff_id"),
                    "source": (r["payload"] or {}).get("source"), "escalated_from": src,
-                   "n_options": _n_options(r)}
+                   "n_options": _n_options(r), "host_id": r.get("host_id")}  # the machine that filed it: the one
+            # whose amends apply (of_server on PR 181)
             if (r["payload"] or {}).get("task"):
                 pl_ = r["payload"] or {}
                 ask.update(task=True, kind="task", steps=(pl_.get("steps") or "")[:4000], command=pl_.get("command"),
@@ -369,11 +370,15 @@ def project(rows, state=None):
 
 def amend(ask, r):
     """One of.ask_amended applied to its projected ask: its newest version, marked amended with what changed. Only by
-    the position that filed it, only while it is open with no answer (a task with no claim), and only a newer version;
-    its id and filing time (ts) stay, so its age, order and reminders do too."""
+    the position that filed it, from the machine that filed it (its host_id: the coordination feed brings every
+    machine's events, and `by` is the sender's word; of_server on PR 181), only while it is open with no answer (a
+    task with no claim), and only a newer version; its id and filing time (ts) stay, so its age, order and reminders
+    do too."""
     p = r["payload"] or {}
     if not ask or ask["state"] != "open" or ask.get("claimed_at") or not ask.get("position") \
             or (p.get("by") or r.get("position")) != ask["position"]:
+        return
+    if not ask.get("host_id") or r.get("host_id") != ask["host_id"]:
         return
     v = p.get("version")
     if not isinstance(v, int) or isinstance(v, bool) or v <= (ask.get("version") or 1):
@@ -400,32 +405,42 @@ def amend(ask, r):
         ask["choice_version"] = v
 
 
-def amendments(conn, ask_id, ts, position):
-    """[(ts, payload)] of the of.ask_amended events for one ask, by the position that filed it, oldest first. Reads one
-    name from the ask's filing time (the name index)."""
+def amendments(conn, ask_id, ts, position, host):
+    """[(ts, payload)] of the of.ask_amended events for one ask, by the position that filed it and from the machine
+    that filed it (HOST, the ask's own host_id), oldest first. Reads one name from the ask's filing time (the name
+    index)."""
     out = []
-    for ets, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.ask_amended' AND ts >= ? AND "
-                                "json_extract(payload, '$.ask_id') = ? ORDER BY ts, rowid", (ts or "", ask_id)):
+    if not (position and host):
+        return out
+    for ets, pl, h in conn.execute("SELECT ts, payload, host_id FROM event WHERE name = 'of.ask_amended' AND ts >= ? "
+                                   "AND json_extract(payload, '$.ask_id') = ? ORDER BY ts, rowid", (ts or "", ask_id)):
         try:
             p = json.loads(pl or "{}")
         except ValueError:
             continue
-        if position and p.get("by") == position:
+        if p.get("by") == position and h == host:
             out.append((ets, p))
     return out
 
 
-def at_version(conn, ask_id, payload, ts, position, version=None):
+def ask_host(conn, ask_id):
+    """The host_id of the machine that filed the ask (its own event's), or None."""
+    row = conn.execute("SELECT host_id FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    return row[0] if row else None
+
+
+def at_version(conn, ask_id, payload, ts, position, host, version=None):
     """The ask's payload (its of.agent_question's) as of `version`, the newest when None: its question, options,
     yes_option, tags, due, blocking and steps after each amend up to it, with `version` (1 when never amended),
     `amended` ({version, at, changed, all}) and `choice_version` (the last version that changed the options or the yes;
-    1 when none did). A loop's decided <ask id>#<n> resolves on the answered version's options (docs/events.md)."""
+    1 when none did). Only the amends of its own position and machine (HOST: the ask's host_id) count. A loop's
+    decided <ask id>#<n> resolves on the answered version's options (docs/events.md)."""
     out = dict(payload or {})
     qs = out.get("questions") if isinstance(out.get("questions"), list) else []
     q = dict(qs[0]) if qs and isinstance(qs[0], dict) else {}
     out.update(version=1, choice_version=1, amended=None)
     last = 1
-    for ets, p in amendments(conn, ask_id, ts, position) if conn is not None and ask_id else ():
+    for ets, p in amendments(conn, ask_id, ts, position, host) if conn is not None and ask_id else ():
         v = p.get("version")
         if not isinstance(v, int) or isinstance(v, bool) or v <= last or (version is not None and v > version):
             continue
@@ -597,8 +612,8 @@ def current_asks(conn=None, tail=TAIL, now=None):
             return {"asks": [], "cursor": 0, "age_s": None, "late": True}
         cursor = int(meta.get("rowid") or 0)
         rows, fetched = [], 0
-        for rid, e, ts, n, sid, pos, pl, org, src in conn.execute(
-                "SELECT rowid, event_id, ts, name, session_id, position, payload, org, source FROM event "
+        for rid, e, ts, n, sid, pos, pl, org, src, host in conn.execute(
+                "SELECT rowid, event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
                 f"WHERE rowid > ? AND name IN ({','.join('?' * len(READS))}) ORDER BY rowid LIMIT ?",
                 (cursor,) + READS + (tail + 1,)):
             fetched += 1
@@ -608,7 +623,7 @@ def current_asks(conn=None, tail=TAIL, now=None):
                 payload = {}
             if relevant(n, src, payload):
                 rows.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos,
-                             "payload": payload, "org": org, "rowid": rid})
+                             "payload": payload, "org": org, "rowid": rid, "host_id": host})
         # its age: 0 with nothing unapplied, else from the oldest event it has not applied (of_architect's point 1 on
         # the design, by of_platform's note on PR 133): a quiet view is current
         age = (seconds_since(rows[0]["ts"], now) or 0.0) if rows else 0.0
@@ -628,10 +643,10 @@ def current_asks(conn=None, tail=TAIL, now=None):
 
 
 def load(conn, since_iso=None):
-    sql = (f"SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
+    sql = (f"SELECT event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
            f"WHERE name IN ({','.join('?' * len(READS))}) " + ("AND ts >= ? " if since_iso else "") + "ORDER BY ts, rowid")
     out = []
-    for e, ts, n, s, pos, pl, org, src in conn.execute(sql, READS + ((since_iso,) if since_iso else ())):
+    for e, ts, n, s, pos, pl, org, src, host in conn.execute(sql, READS + ((since_iso,) if since_iso else ())):
         try:
             payload = json.loads(pl) if pl else {}
         except Exception:
@@ -639,7 +654,7 @@ def load(conn, since_iso=None):
         if not relevant(n, src, payload):
             continue
         out.append({"event_id": e, "ts": ts, "name": n, "session_id": s, "position": pos, "payload": payload,
-                    "org": org})
+                    "org": org, "host_id": host})
     return out
 
 

@@ -423,7 +423,7 @@ def _new_groups(conn, anchor, reopened=()):
     (view_asks holds every ask it projected, in any state), and the tasks reopened in the tail that the view holds
     closed; each projected alone: a declared ask or task is open from its own event."""
     import of_asks
-    cols = "SELECT event_id, ts, name, session_id, position, payload, org, source FROM event "
+    cols = "SELECT event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
     rows = conn.execute(cols + "WHERE name = 'of.agent_question' AND ts >= ? ORDER BY ts, rowid",
                         (_iso(anchor - NEW_H * 3600),)).fetchall()
     for tid in reopened:  # a task the view holds done, reopened since (of_herdr's note on PR 119)
@@ -445,7 +445,7 @@ def _new_groups(conn, anchor, reopened=()):
         seen_closed |= {e for (e,) in conn.execute(f"SELECT event_id FROM view_asks WHERE state != 'open' AND event_id "
                                                    f"IN ({','.join('?' * len(part))})", part)}
     again = {e for e in ids if any(e.endswith(t) for t in reopened)}
-    for e, ts, n, sid, pos, pl, org, src in rows:
+    for e, ts, n, sid, pos, pl, org, src, host in rows:
         if e in known or (e in seen_closed and e not in again):
             continue
         try:
@@ -454,7 +454,7 @@ def _new_groups(conn, anchor, reopened=()):
             continue
         if of_asks.relevant(n, src, payload):
             new.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": payload,
-                        "org": org})
+                        "org": org, "host_id": host})
     if not new:
         return []
     asks = [a for a in of_asks.project(new) if a["state"] == "open" and not (a.get("kind") or "").startswith(
@@ -463,29 +463,29 @@ def _new_groups(conn, anchor, reopened=()):
 
 
 def _amends(conn, anchor):
-    """{ask id: [(ts, payload)]} of the of.ask_amended in the log's last CLOSED_H, oldest first: the view shows a new
+    """{ask id: [(ts, payload, host_id)]} of the of.ask_amended in the log's last CLOSED_H, oldest first: the view shows a new
     version once the listener has taken it; the screen applies it at once (of ask --amend)."""
     out = {}
-    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.ask_amended' AND ts >= ? "
-                               "ORDER BY ts, rowid", (_iso(anchor - CLOSED_H * 3600),)):
+    for ts, pl, host in conn.execute("SELECT ts, payload, host_id FROM event WHERE name = 'of.ask_amended' AND "
+                                     "ts >= ? ORDER BY ts, rowid", (_iso(anchor - CLOSED_H * 3600),)):
         try:
             p = json.loads(pl or "{}")
         except ValueError:
             continue
         if p.get("ask_id"):
-            out.setdefault(p["ask_id"], []).append((ts, p))
+            out.setdefault(p["ask_id"], []).append((ts, p, host))
     return out
 
 
 def amended_group(g, rows):
     """The group with its first ask at its newest version (of_asks.amend on a copy; an older or foreign amend is
-    ignored there)."""
+    ignored there, and one from another machine than the ask's)."""
     import of_asks
     first = dict(g.get("first") or {})
     if not first:
         return g
-    for ts, p in rows:
-        of_asks.amend(first, {"payload": p, "ts": ts, "position": p.get("by")})
+    for ts, p, host in rows:
+        of_asks.amend(first, {"payload": p, "ts": ts, "position": p.get("by"), "host_id": host})
     if first.get("version") == (g.get("first") or {}).get("version"):
         return g
     return dict(g, first=first, text=first.get("text") or g.get("text"), kind=first.get("kind") or g.get("kind"))

@@ -331,7 +331,8 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
 def _shown_at(conn, ask, version):
     """When version `version` of the ask was filed (its amend's ts; the ask's own for the first)."""
     import of_asks
-    for ts, p in of_asks.amendments(conn, ask["event_id"], ask["ts"], ask.get("position")):
+    for ts, p in of_asks.amendments(conn, ask["event_id"], ask["ts"], ask.get("position"),
+                                     ask.get("host_id") or of_asks.ask_host(conn, ask["event_id"])):
         if p.get("version") == version:
             return ts
     return ask["ts"]

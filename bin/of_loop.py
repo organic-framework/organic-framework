@@ -131,10 +131,10 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
     import of_asks
     v = last.get("version")
     if not isinstance(v, int) or isinstance(v, bool):
-        if of_asks.amendments(conn, eid, ts, position):
+        if of_asks.amendments(conn, eid, ts, position, host):
             return None
         v = 1
-    p = of_asks.at_version(conn, eid, p, ts, position, version=v)
+    p = of_asks.at_version(conn, eid, p, ts, position, host, version=v)
     if p.get("work") != work:
         return None
     qs = p.get("questions") if isinstance(p.get("questions"), list) else []

@@ -46,9 +46,11 @@ class Store(unittest.TestCase):
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
-    def add(self, kind, payload, ts, position="of_a", session="S1"):
+    def add(self, kind, payload, ts, position="of_a", session="S1", host=None):
         rec = of_events.record(kind, payload, position=position, session=session, org="ofb")
         rec["timestamp"] = ts
+        if host:  # an event another machine of the organization wrote, pulled from the coordination feed
+            rec["host.id"] = host
         of_store.add_event(self.conn, rec)
         return rec["of.event.id"]
 
@@ -57,9 +59,9 @@ class Store(unittest.TestCase):
                                            "questions": [{"question": text, "options": list(options)}],
                                            "topic_key": "k1", **extra}, ts)
 
-    def amend(self, aid, version, ts, by="of_a", **changes):
+    def amend(self, aid, version, ts, by="of_a", host=None, **changes):
         return self.add("ask_amended", {"ask_id": aid, "version": version, "changed": list(changes), **changes,
-                                        "by": by}, ts, position=by)
+                                        "by": by}, ts, position=by, host=host)
 
     def asks(self):
         return {a["event_id"]: a for a in of_asks.project(of_asks.load(self.conn))}
@@ -88,6 +90,8 @@ class ProjectionTest(Store):
         self.amend(aid, 2, "2026-11-15T10:10:00Z", by="of_b", text="Someone else's words?")
         self.amend(aid, 1, "2026-11-15T10:11:00Z", text="Not a newer version?")
         self.amend(aid, True, "2026-11-15T10:12:00Z", text="A boolean is no version?")
+        self.amend(aid, 2, "2026-11-15T10:13:00Z", host="another-machine", text="From another machine?")  # by: the
+        # filer, written on a colleague's machine of the organization (of_server on PR 181)
         self.assertNotIn("version", self.asks()[aid])
         self.add("agent_question_answered", {"ask_id": aid, "ask_ids": [aid], "answer": "yes", "via": "asks-ui",
                                              "by": "owner"}, "2026-11-15T10:20:00Z")
@@ -107,17 +111,38 @@ class ProjectionTest(Store):
         self.amend(aid, 2, "2026-11-15T10:10:00Z", options=["no", "yes"], yes_option=2)
         self.amend(aid, 3, "2026-11-15T10:20:00Z", text="Deploy the relay now?")
         self.amend(aid, 4, "2026-11-15T10:30:00Z", by="of_b", text="Not its asker")
+        self.amend(aid, 4, "2026-11-15T10:31:00Z", host="another-machine", text="Not its machine")
         p0 = of_asks_answer.ask_details(self.conn, aid)[0]
         self.assertEqual((p0["version"], p0["choice_version"], of_asks_answer.options(p0), p0["yes_option"],
                           of_asks_answer.full_question(p0, "")), (3, 2, ["no", "yes"], 2, "Deploy the relay now?"))
         raw = json.loads(self.conn.execute("SELECT payload FROM event WHERE event_id = ?", (aid,)).fetchone()[0])
-        v1 = of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", version=1)
+        host = of_asks.ask_host(self.conn, aid)
+        self.assertEqual(host, of_events.machine_id())
+        v1 = of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", host, version=1)
         self.assertEqual((v1["version"], of_asks_answer.options(v1), v1["yes_option"], v1["amended"]),
                          (1, ["yes", "no"], 1, None))
-        v2 = of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", version=2)
+        v2 = of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", host, version=2)
+        self.assertEqual(of_asks.at_version(self.conn, aid, raw, "2026-11-15T10:00:00Z", "of_a", None)["version"], 1)
         self.assertEqual((of_asks_answer.full_question(v2, ""), v2["yes_option"]), ("Deploy the relay today?", 2))
         self.assertTrue(of_asks.stale_choice(None, 2) and of_asks.stale_choice(1, 2))
         self.assertFalse(of_asks.stale_choice(2, 2) or of_asks.stale_choice(3, 2) or of_asks.stale_choice(None, 1))
+
+    def test_an_amend_from_another_machine_is_ignored_everywhere(self):
+        """of_server on PR 181: the feed brings every machine's of.ask_amended, and `by` is the sender's word."""
+        aid = self.ask(yes_option=1, work="w")
+        self.amend(aid, 2, "2026-11-15T10:10:00Z", host="another-machine", options=["no", "yes"], yes_option=2,
+                   text="Rewritten elsewhere?")
+        a = self.asks()[aid]
+        self.assertEqual((a.get("version"), a["text"], a["host_id"]), (None, "Deploy the relay today?",
+                                                                       of_events.machine_id()))
+        p = of_asks_answer.ask_details(self.conn, aid)[0]
+        self.assertEqual((p["version"], of_asks_answer.options(p), p["yes_option"]), (1, ["yes", "no"], 1))
+        import of_asks_inbox
+        g = of_asks.group([a])[0]
+        self.assertIs(of_asks_inbox.amended_group(g, of_asks_inbox._amends(self.conn, of_asks_chat._epoch(
+            "2026-11-15T11:00:00Z"))[aid]), g)
+        self.amend(aid, 2, "2026-11-15T10:20:00Z", text="Deploy the relay tonight?")  # its own machine's: applies
+        self.assertEqual(self.asks()[aid]["text"], "Deploy the relay tonight?")
 
     def test_the_view_and_the_other_machines_take_it(self):
         self.assertTrue(of_asks.relevant("of.ask_amended", "of", {}))
@@ -320,6 +345,13 @@ class CliTest(unittest.TestCase):
         r = self.run_of("asks")
         self.assertIn("Lift the hold on the relay today?  [amended v3: blocking]", r.stdout)
         self.assertEqual(len(self.events("of.agent_question")), 1)  # one decision, one card
+        import sqlite3
+        db = sqlite3.connect(os.path.join(self.t.name, "state", "of.db"))
+        db.execute("UPDATE event SET host_id = 'another-machine' WHERE event_id = ?", (aid,))
+        db.commit()
+        db.close()
+        r = self.run_of("ask", "Lift it now?", "--amend", short, "--from", "of_a")
+        self.assertIn("was filed on another machine of the organization: amend it there", r.stderr)
         self.run_of("asks", "withdraw", short)
         r = self.run_of("ask", "Lift it now?", "--amend", short, "--from", "of_a")
         self.assertIn("is withdrawn: only an open ask with no answer is amended", r.stderr)

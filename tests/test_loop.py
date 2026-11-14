@@ -374,8 +374,10 @@ class Yeses:
         self.path = os.path.join(root, "state", "of.db")
         self.conn = of_store.connect(self.path)
 
-        def add(name, payload, position="lab_doer"):
+        def add(name, payload, position="lab_doer", host=None):
             rec = of_events.record(name, payload, position=position)
+            if host:  # written on another machine of the organization (the coordination feed)
+                rec["host.id"] = host
             of_store.add_event(self.conn, rec)
             return rec["of.event.id"]
         import time
@@ -414,8 +416,9 @@ class Yeses:
         answer(self.flipped, "yes, p50 is the target")
         answer(self.flipped, "no, keep p99")                                  # the latest answer counts
         # amended asks (of ask --amend, docs/events.md of.ask_amended): resolved on the version the answer names
-        def amend(a, version, by="lab_doer", **changes):
-            add("ask_amended", {"ask_id": a, "version": version, "changed": list(changes), **changes, "by": by})
+        def amend(a, version, by="lab_doer", host=None, **changes):
+            add("ask_amended", {"ask_id": a, "version": version, "changed": list(changes), **changes, "by": by},
+                host=host)
         self.then_yes_moved = ask("p50, then the yes moved?")
         answer(self.then_yes_moved, "yes, p50 is the target", version=1)      # answered at version 1, option 1
         amend(self.then_yes_moved, 2, yes_option=2, text="p50, with the yes moved?")  # after it: the yes is option 2
@@ -430,6 +433,9 @@ class Yeses:
         amend(self.at_v2, 2, options=["no, keep p99", "yes, p50 is the target"], yes_option=2)
         amend(self.at_v2, 3, yes_option=1, by="lab_other")                    # by another position: ignored
         answer(self.at_v2, "yes, p50 is the target", version=2)               # chose option 2 of version 2
+        self.foreign = ask("p50, amended elsewhere?")
+        amend(self.foreign, 2, host="another-machine", yes_option=2)          # another machine's: not an amend
+        answer(self.foreign, "yes, p50 is the target")                        # so an unversioned answer stands
         self.closed = add("agent_question", {"questions": [{"question": "p95?"}]})
         add("agent_question_answered", {"ask_id": self.closed, "ask_ids": [self.closed], "by": "lab_doer",
                                         "via": "status"})
@@ -497,6 +503,7 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertEqual(r(y.then_reworded + "#1").words, 'asked "p50, then reworded?", chose option 1 "yes, p50 '
                              'is the target"')
             self.assertEqual(r(y.at_v2 + "#2"), ("ask", y.at_v2))               # the yes the version answered marks
+            self.assertEqual(r(y.foreign + "#1"), ("ask", y.foreign))           # of_server on PR 181
             self.assertEqual(r(y.at_v2 + "#2").words, 'asked "p50 at version 2?", chose option 2 "yes, p50 is the '
                              'target"')
             for no in (y.then_yes_moved + "#2", y.then_reworded + "#2", y.unversioned + "#1", y.at_v2 + "#1"):

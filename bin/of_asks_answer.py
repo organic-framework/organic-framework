@@ -42,7 +42,8 @@ LATE_AFTER_S = 600         # a later delivery says when it was answered
 def ask_details(conn, ask_id):
     """(payload of the ask event, session id, position, ts). A declared ask's payload is its newest version (of ask
     --amend: of_asks.at_version), with `version`, `choice_version` and `amended`."""
-    row = conn.execute("SELECT payload, session_id, position, ts FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    row = conn.execute("SELECT payload, session_id, position, ts, host_id FROM event WHERE event_id = ?",
+                       (ask_id,)).fetchone()
     if not row:
         return {}, None, None, None
     try:
@@ -51,7 +52,7 @@ def ask_details(conn, ask_id):
         payload = {}
     if isinstance(payload, dict) and payload.get("detected_by") == "declared":
         import of_asks
-        payload = of_asks.at_version(conn, ask_id, payload, row[3], row[2])
+        payload = of_asks.at_version(conn, ask_id, payload, row[3], row[2], row[4])
     return payload, row[1], row[2], row[3]
 
 
@@ -498,7 +499,7 @@ def _answer(conn, item, text, positions, pane_of):
     try:
         again = recorded_already(conn, c["ids"], text)
         if not again:
-            record(c["ids"], text, c["position"], c["session"], version=shown or c.get("version"))
+            record(c["ids"], text, c["position"], c["session"], version=shown or 1)  # as the check reads it
     finally:
         lock.close()
     drop_draft(item)
@@ -620,8 +621,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
                                          receiver_conductor(positions, to))
                     + _late(ts, now, "the founder handed it"), "sender": "owner", "channel": None})
     units = {x["name"]: x.get("_unit") for x in positions}
-    for eid, ts, asker, payload in conn.execute(
-            "SELECT event_id, ts, position, payload FROM event WHERE name = 'of.agent_question' AND ts >= ? "
+    for eid, ts, asker, payload, host in conn.execute(
+            "SELECT event_id, ts, position, payload, host_id FROM event WHERE name = 'of.agent_question' AND ts >= ? "
             "AND json_extract(payload, '$.to') IS NOT NULL AND json_extract(payload, '$.to') != 'founder' "
             "ORDER BY ts", (since,)).fetchall():
         if eid not in open_ids or (of_asks.seconds_since(ts, now) or 0) < min_age:
@@ -634,7 +635,7 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         if not asker or to == asker or (only and to != only) or inbox_only(p) or \
                 delivered(conn, to, [routed_mark(eid)], ts):
             continue
-        p = of_asks.at_version(conn, eid, p, ts, asker)  # typed late: its newest version (of ask --amend)
+        p = of_asks.at_version(conn, eid, p, ts, asker, host)  # typed late: its newest version (of ask --amend)
         text = routed_frame(asker, units.get(asker), eid, full_question(p, ""), options(p), bool(p.get("blocking")))
         out.append({"key": f"routed:{eid}:{to}", "position": to, "marks": [routed_mark(eid)], "since": ts,
                     "text": text + _late(ts, now, f"{asker} asked"), "sender": asker, "channel": None})

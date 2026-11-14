@@ -274,9 +274,9 @@ class WorkspaceCountTest(unittest.TestCase):
         import of_asks_tui
         import sqlite3
         c = sqlite3.connect(":memory:")
-        c.execute("CREATE TABLE event (event_id, ts, name, session_id, position, payload, source, org)")
+        c.execute("CREATE TABLE event (event_id, ts, name, session_id, position, payload, source, org, host_id)")
         import json as _j
-        c.execute("INSERT INTO event VALUES ('e1','2026-11-05T10:00:00Z','of.agent_question','S','a',?, 'of', 'o')",
+        c.execute("INSERT INTO event VALUES ('e1','2026-11-05T10:00:00Z','of.agent_question','S','a',?, 'of', 'o', 'h')",
                   (_j.dumps({"detected_by": "declared", "questions": [{"question": "Merge now?"}]}),))
         data = of_asks_tui.load([{"name": "a"}, {"name": "z", "waiting_on": "owner", "summary": "needs a yes"}], c)
         self.assertEqual([(lbl, [i["who"] for i in its]) for lbl, its in data],
