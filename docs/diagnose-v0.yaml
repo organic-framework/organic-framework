@@ -150,12 +150,11 @@ rules:
       repeat_nudges: [a hand-over instead of nudges, escalate to the owner of both]   # no invented deadlines (founder, ask 53628150)
 
   unclear-mandate:
-    version: 2                   # v2 (2026-11-15): a brief edit made on org_wide_briefs_gte positions within an hour is an organization-wide rule edit, not a mandate change (diagnose.md 2.11); v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
-    labels_carry_from: [1]       # v2 only narrows what fires
+    version: 3                   # v3 (2026-11-15): no brief revision counts (diagnose.md 2.11); v2 (2026-11-15): organization-wide brief edits left out; v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
+    labels_carry_from: [1, 2]    # v2 and v3 only narrow what fires
     p: 0.5
     m_decide: 10
-    thresholds: {mandate_changes_gte: 2, wrong_priority_or_overengineered_verdicts_gte: 3, spec_failure_share_gte: 0.20, settle_days: 3, substantive_fields: [throughput, mandate, mandate_exit.done_when, status_reopened], ignore_added_fields: true,
-                 org_wide_briefs_gte: 5, org_wide_within_min: 60}
+    thresholds: {mandate_changes_gte: 2, wrong_priority_or_overengineered_verdicts_gte: 3, spec_failure_share_gte: 0.20, settle_days: 3, substantive_fields: [throughput, mandate_exit.done_when, status_reopened], ignore_added_fields: true}
     needs: [of.mandate_changed]   # verdict reason_class and MAST tags add signals when present
     delta_m: "owner corrections on the position x minutes_per_prompt"
     remedies: [rewrite the brief with done criteria, split if two jobs share one position]
