@@ -50,6 +50,17 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(self.decl("tmux send-keys -t main:1.0 yes Enter"), [(("tmux", "main:1.0"), "tmux send-keys", False)])
         self.assertEqual(self.decl("tmux send-keys yes Enter"), [(("tmux-own", None), "tmux send-keys", False)])
         self.assertEqual(self.decl("tmux list-panes"), [])
+        # of_review on PR 170: getopt clusters, and a command sequence
+        for cmd in ("tmux send-keys -lt %3 yes", "tmux send-keys -lt%3 yes"):
+            self.assertEqual(self.decl(cmd), [(("tmux", "%3"), "tmux send-keys", True)], cmd)
+        self.assertEqual(self.decl("tmux send-keys -Rt x yes"), [(("tmux", "x"), "tmux send-keys", False)])
+        bs = chr(92)
+        for sep in (" " + bs + "; ", " ';' "):
+            self.assertEqual(self.decl("tmux send-keys -t %3 yes" + sep + "send-keys -t %4 Enter"),
+                             [(("tmux", "%3"), "tmux send-keys", False), (("tmux", "%4"), "tmux send-keys", False)], sep)
+        self.assertEqual(self.decl("tmux send-keys -t %3 -l yes" + bs + "; send-keys -t %4 Enter"),
+                         [(("tmux", "%3"), "tmux send-keys", True), (("tmux", "%4"), "tmux send-keys", False)])
+        self.assertEqual(self.decl("tmux list-panes " + bs + "; send-keys -t %9 y"), [(("tmux", "%9"), "tmux send-keys", False)])
 
     def test_what_types_nothing(self):
         for cmd in ("herdr --machine lab pane send-text w1:p1 hi",  # another machine: a named limit
