@@ -3269,10 +3269,10 @@ def _ssh_rule_hit(match, call, resolve=None):
 
 def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=None):
     """[(rule, matched phrase)] for the rules of the caller's organization that apply to this tool call. A rule is
-    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher}, ssh: {hosts} or commands:
+    {id, mode: warn|deny, reason, subject?, except: [positions], kubectl: {matcher}, ssh: {hosts} or cli:
     {names, env, code, allow}} (of_grants.org_rule makes one from a deny grant); a position in `except` is out of it,
     and a rule whose subject names one position applies to that position only. Only Bash; the kubectl (O1), ssh (O3)
-    and commands (O4) matchers. An O4 match that only warns (a command word held in a variable) comes back with the
+    and cli (O4) matchers. An O4 match that only warns (a command word held in a variable) comes back with the
     rule in warn mode, whatever the grant says. RESOLVER (tests): config -> the alias resolver, ssh_resolver by
     default."""
     if tool != "Bash" or not rules:
@@ -3283,14 +3283,14 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
         sub = r.get("subject")
         if (position and position in (r.get("except") or [])) or (sub not in (None, "*") and sub != position):
             continue
-        if not any(isinstance(r.get(k), dict) for k in ("kubectl", "ssh", "commands")):
+        if not any(isinstance(r.get(k), dict) for k in ("kubectl", "ssh", "cli")):
             continue
         try:  # each rule alone: an error while one matches counts as its match, and never loses the others
             # (of_review and of_secrets-review on organic-framework PR 152: a RecursionError lost them all)
-            if isinstance(r.get("commands"), dict):
+            if isinstance(r.get("cli"), dict):
                 if findings is None:
                     findings = command_findings(cmd)
-                got = commands_rule_match(r["commands"], findings, position, cmd)
+                got = commands_rule_match(r["cli"], findings, position, cmd)
                 if got and got[1]:
                     r = dict(r, mode="warn")  # of_architect's condition 1: a variable word never denies
                 m = got[0] if got else None
@@ -3328,8 +3328,8 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
     return hits
 
 
-# ------------------------------------------------- O4: an organization's command deny (scope commands)
-# docs/registry.md, Scope commands (2026-11-14; a user organization's request, msg 01a1db4f-f9f0; of_architect's
+# ------------------------------------------------- O4: an organization's command-line deny (scope cli)
+# docs/registry.md, Scope cli (2026-11-14; a user organization's request, msg 01a1db4f-f9f0; of_architect's
 # conditions, msg 01a1db57-17f9). Unlike kubectl and ssh it reads every Bash call of the organization's positions, so a
 # command word held in a variable warns and never denies (condition 1), and a line the parser cannot read is a match
 # only when it names a listed command.

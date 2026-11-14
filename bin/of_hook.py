@@ -1189,7 +1189,7 @@ def _org_guard(hook, sess):
     cmd = str((hook.get("tool_input") or {}).get("command") or "")
     if hook.get("tool_name") != "Bash":
         return False
-    # kubectl (O1) and the ssh family (O3) match only inside their own commands; a commands scope (O4) reads every
+    # kubectl (O1) and the ssh family (O3) match only inside their own commands; a cli scope (O4) reads every
     # Bash call, so a line without them still goes on when the organization has one (its rules come from one JSON file)
     quick = "kubectl" in cmd or bool(of_guard._SSH_WORDS.search(cmd))
     sid = hook.get("session_id")
@@ -1201,7 +1201,7 @@ def _org_guard(hook, sess):
         if not org:
             return False
         rules, notes = of_grants.guard_rules(org, STATE, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
-        if not quick and not any(isinstance(r.get("commands"), dict) for r in rules):
+        if not quick and not any(isinstance(r.get("cli"), dict) for r in rules):
             return False
         hits = of_guard.org_rule_hits("Bash", hook.get("tool_input"), rules, name,
                                       {"KUBECONFIG": os.environ.get("KUBECONFIG")})

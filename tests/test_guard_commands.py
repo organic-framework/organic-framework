@@ -1,4 +1,4 @@
-"""O4 (docs/guard.md; docs/registry.md, Scope commands): an organization's signed deny on named commands, variables
+"""O4 (docs/guard.md; docs/registry.md, Scope cli): an organization's signed deny on named commands, variables
 set on the command line, and modules imported by interpreter code (a user organization's request, msg 01a1db4f-f9f0;
 of_architect's conditions, msg 01a1db57-17f9). G1.12: cloud CLIs' cached sign-ins are secret paths."""
 import contextlib
@@ -24,11 +24,11 @@ SCOPE = {"names": ["aws", "terraform", "tofu", "terragrunt", "cdk", "sam"],
          "allow": [{"positions": ["data_x"], "tool": "aws",
                     "options": {"--profile": ["r2-ro"], "--endpoint-url": ["https://*.r2.cloudflarestorage.com"]}}]}
 RULE = {"id": "g-aws", "mode": "deny", "reason": "AWS work goes through the platform owner.", "subject": "*",
-        "except": [], "commands": SCOPE}
+        "except": [], "cli": SCOPE}
 
 
 def cmd_grant(**kw):
-    g = {"id": "g-aws", "subject": "*", "except": [], "issuer": "tenant", "tier": "observe", "scope": {"commands": SCOPE},
+    g = {"id": "g-aws", "subject": "*", "except": [], "issuer": "tenant", "tier": "observe", "scope": {"cli": SCOPE},
          "effect": "deny", "critical": True, "expires": None, "counter": None,
          "provenance": {"kind": "standing", "chain": [], "source": "a user organization's security keeper"},
          "note": "AWS work goes through the platform owner until the access model is decided.", "revoked": None}
@@ -93,23 +93,27 @@ class MatchTest(unittest.TestCase):
 class ShapeTest(unittest.TestCase):
     def test_shape(self):
         self.assertEqual(of_grants.shape_problems(cmd_grant()), [])
-        self.assertIn("scope commands is only for a deny", of_grants.shape_problems(cmd_grant(effect="allow")))
+        self.assertIn("scope cli is only for a deny", of_grants.shape_problems(cmd_grant(effect="allow")))
         bad = dict(SCOPE, names=["aws s3"])
-        self.assertIn("scope commands.names is a list of bare command words",
-                      of_grants.shape_problems(cmd_grant(scope={"commands": bad})))
-        self.assertIn("scope commands.env is a list of variable names",
-                      of_grants.shape_problems(cmd_grant(scope={"commands": dict(SCOPE, env=["AWS-X"])})))
+        self.assertIn("scope cli.names is a list of bare command words",
+                      of_grants.shape_problems(cmd_grant(scope={"cli": bad})))
+        self.assertIn("scope cli.env is a list of variable names",
+                      of_grants.shape_problems(cmd_grant(scope={"cli": dict(SCOPE, env=["AWS-X"])})))
         no_pos = dict(SCOPE, allow=[{"tool": "aws", "options": {"--profile": ["x"]}}])
-        self.assertTrue(any("allow" in p for p in of_grants.shape_problems(cmd_grant(scope={"commands": no_pos}))))
+        self.assertTrue(any("allow" in p for p in of_grants.shape_problems(cmd_grant(scope={"cli": no_pos}))))
         blanket = dict(SCOPE, allow=[{"positions": ["p"]}])
-        self.assertTrue(any("allow" in p for p in of_grants.shape_problems(cmd_grant(scope={"commands": blanket}))))
-        both = {"commands": SCOPE, "ssh": {"hosts": ["gw"]}}
-        self.assertIn("a grant scopes one of kubectl, ssh or commands", of_grants.shape_problems(cmd_grant(scope=both)))
-        self.assertEqual(of_grants.org_rule(cmd_grant())["commands"], SCOPE)
+        self.assertTrue(any("allow" in p for p in of_grants.shape_problems(cmd_grant(scope={"cli": blanket}))))
+        both = {"cli": SCOPE, "ssh": {"hosts": ["gw"]}}
+        self.assertIn("a grant scopes one of kubectl, ssh or cli", of_grants.shape_problems(cmd_grant(scope=both)))
+        self.assertEqual(of_grants.org_rule(cmd_grant())["cli"], SCOPE)
+        # `commands`, a list of shell patterns on an allow (RFC 0001 §5.7), is another key and stays valid
+        allow = {"id": "g-2", "subject": "ops_keeper", "issuer": "tenant", "tier": "act_and_report", "effect": "allow",
+                 "scope": {"repos": ["~/acme/org"], "commands": ["git *"]}}
+        self.assertEqual([p for p in of_grants.shape_problems(allow) if "cli" in p or "commands" in p], [])
 
 
 class HookTest(KeyCase):
-    """The hook reads a commands rule for a line that names neither kubectl nor ssh (of_hook._org_guard)."""
+    """The hook reads a cli rule for a line that names neither kubectl nor ssh (of_hook._org_guard)."""
 
     def setUp(self):
         self.root = tempfile.TemporaryDirectory()
@@ -154,7 +158,7 @@ class HookTest(KeyCase):
                                           "tool_name": "Bash", "tool_input": {"command": cmd}})
         return out.getvalue(), of_hook.OUTPUT
 
-    def test_a_critical_commands_rule_denies_and_a_variable_word_warns(self):
+    def test_a_critical_cli_rule_denies_and_a_variable_word_warns(self):
         self.issue(cmd_grant())
         printed, _ = self.fire("aws s3 ls")
         ans = json.loads(printed)["hookSpecificOutput"]
@@ -167,7 +171,7 @@ class HookTest(KeyCase):
         self.assertEqual(self.fire(ok, sid="S2"), ("", None))
         self.assertEqual(self.fire("ls -la"), ("", None))
 
-    def test_no_commands_rule_no_reading(self):
+    def test_no_cli_rule_no_reading(self):
         self.assertEqual(self.fire("aws s3 ls"), ("", None))
 
 
