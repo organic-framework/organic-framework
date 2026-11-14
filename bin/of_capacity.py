@@ -3427,14 +3427,20 @@ def stuck_task(position, err):
               position=position, where=where)
 
 
-def watch(positions, ask, log=print, **kw):
+def watch(positions, ask, log=print, policy=None, **kw):
     """The `of pulse` hook: read capacity (probing at most every PROBE_EVERY_MIN minutes) and ask the
-    owner once per account, window and reset when a position's account passes a threshold."""
+    owner once per account, window and reset when a position's account passes a threshold. With the balancer
+    on (`auto`), only when no other account is under its thresholds: otherwise relief moves the positions
+    before the account stalls, and the ask had nothing left to decide (2026-11-14: the founder answered three
+    such asks with "is it everywhere?" and "no longer relevant?")."""
     rows = status(positions, **kw)
+    auto = (policy or load_policy()).get("auto")
     cache = load_cache()
     done = set(cache.get("_proposed") or [])
     asked = []
     for k, r, why, t in proposals(rows, done):
+        if auto and t and not over_threshold(t) and not exhausted(t):
+            continue  # not marked asked: should the room elsewhere run out within this window, it is asked then
         ask(ask_text(r, why, t))
         done.add(k)
         asked.append(k)
