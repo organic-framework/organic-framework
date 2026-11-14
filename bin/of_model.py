@@ -92,6 +92,13 @@ def _epoch_str(ts):
     return None
 
 
+def t_of(row):
+    """A row's time in seconds: load_events parses each row's ts once into `_t` (a page read it about 50 times a row,
+    2026-11-15); a row from elsewhere has its ts parsed."""
+    t = row.get("_t")
+    return epoch(row.get("ts")) if t is None else t
+
+
 def iso(sec):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sec))
 
@@ -427,7 +434,7 @@ def delegation_effective(rows):
         if r.get("name") == "of.diff_applied":
             pl = r.get("payload") or {}
             if pl.get("kind") == "delegate" and pl.get("id"):
-                out.setdefault(pl["id"], epoch(r.get("ts")))
+                out.setdefault(pl["id"], t_of(r))
     return out
 
 
@@ -608,7 +615,7 @@ def pr_attribution(events, positions, sessions):
             sess_pos.setdefault(r["session_id"], r["position"])
     out = {}
     for r in sorted((r for r in events if r.get("name") == "of.work_record"
-                     and (r.get("payload") or {}).get("source") == "pr-link"), key=lambda r: epoch(r.get("ts")) or 0):
+                     and (r.get("payload") or {}).get("source") == "pr-link"), key=lambda r: t_of(r) or 0):
         pl = r.get("payload") or {}
         pos = pl.get("position") if pl.get("position") in positions else None
         pos = pos or position_of(r, positions, sessions) or sess_pos.get(r.get("session_id"))
@@ -674,7 +681,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
     unmapped = bots = 0
     wr_by_system, wr_ids, wr_attributed = {}, [], 0
     for r in events:
-        t = epoch(r.get("ts"))
+        t = t_of(r)
         if t is None or t > at_s:
             continue
         name, pl = r.get("name"), r.get("payload") or {}
@@ -793,7 +800,11 @@ def loops_of(doc, events, at_s, resolve=None):
     resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver() bound to each
     work, which opens this machine's store only when some id is to be looked up."""
     works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
-    rows = [r for r in events if (epoch(r.get("ts")) or 0) <= at_s]
+    # only what a loop reads: its events, and the runner and monitor calls of its doers (of_loops.babysit); each work
+    # scanned the whole window twice before (3.5 s of a user organization's page, 2026-11-15)
+    rows = [r for r in events if (r.get("name") in LOOP_KINDS or r.get("name") == "of.mandate_check"
+                                  and (r.get("payload") or {}).get("command_class") in ("runner", "monitor"))
+            and (t_of(r) or 0) <= at_s]
     ids = {w for w, x in works.items() if isinstance(x, dict) and isinstance(x.get("loop"), dict)}
     ids |= {(r.get("payload") or {}).get("work") for r in rows if r.get("name") in LOOP_KINDS} - {None}
     if not ids:
@@ -1002,7 +1013,7 @@ def code_activity(model, rows, a, b, max_systems=None, areas_depth=None):
     records = unmapped = bots = 0
     latest_pr = {}
     for r in rows:
-        t = epoch(r.get("ts"))
+        t = t_of(r)
         if t is None or not a <= t < b:
             continue
         pl = r.get("payload") or {}
@@ -1131,7 +1142,7 @@ def load_events(conn, since=None, until=None, names=None):
             payload = json.loads(pl) if pl else {}
         except ValueError:
             payload = {}
-        out.append({"event_id": e, "ts": ts, "name": n, "session_id": s, "position": pos, "org": org,
+        out.append({"event_id": e, "ts": ts, "_t": epoch(ts), "name": n, "session_id": s, "position": pos, "org": org,
                     "cwd": cwd, "source": src, "harness": harness, "payload": payload})
     if not names or "of.human_prompt" in names:
         # a correction may come days after its prompt, never before it (`of db prompt-origins` writes it from the
@@ -1168,7 +1179,9 @@ def owner_prompt(row):
 # spec_part) is the contract between a rule and the run (bin/of_diagnose.py).
 
 def in_window(row, a, b):
-    t = epoch(row.get("ts"))
+    t = row.get("_t")   # t_of, inline: some 8 million calls a page
+    if t is None:
+        t = epoch(row.get("ts"))
     return t is not None and a <= t < b
 
 
@@ -1259,7 +1272,7 @@ def message_senders(model, rows, a, b, slack_s=5.0):
         if r["name"] == "of.agent_message_out":
             k = _prefix((r.get("payload") or {}).get("text"))
             if k:
-                outs.setdefault(k, []).append((epoch(r.get("ts")) or 0, r))
+                outs.setdefault(k, []).append((t_of(r) or 0, r))
     res = []
     for r in rows:
         if r["name"] != "of.agent_message_in" or not in_window(r, a, b) or not is_received(r):
@@ -1269,7 +1282,7 @@ def message_senders(model, rows, a, b, slack_s=5.0):
         m = _FROM_NAME.search(text)
         ma = _FROM_ATTR.search(text)
         fname = m.group(1) if m else str(pl.get("from") or (ma.group(1) if ma else ""))
-        t, p, how = epoch(r.get("ts")) or 0, None, None
+        t, p, how = t_of(r) or 0, None, None
         cands = [(abs(t - to), o) for to, o in outs.get(_prefix(_WRAPPED.sub("", text, count=1)), ()) if abs(t - to) <= slack_s]
         if cands:
             o = min(cands, key=lambda x: x[0])[1]
@@ -1330,7 +1343,7 @@ def peer_pairs(model, rows, a, b, slack_s=5.0):
         if r.get("name") == "of.agent_message_in" and is_received(r) and pl.get("from_kind") != "subagent":
             k = _prefix(_WRAPPED.sub("", str(pl.get("text") or ""), count=1))
             if k and who(r):
-                got.setdefault(k, []).append((epoch(r.get("ts")) or 0, who(r)))
+                got.setdefault(k, []).append((t_of(r) or 0, who(r)))
     # every relay message sent here, in the window or before it: one sent before `a` and delivered after it belongs to
     # the window it was sent in, never to this one through its delivery log (PR 96 review, of_review)
     sent_here = {(r.get("payload") or {}).get("msg_id") for r in rows
@@ -1353,7 +1366,7 @@ def peer_pairs(model, rows, a, b, slack_s=5.0):
         else:
             q = pl.get("to_position")
             if q not in positions:
-                t = epoch(r.get("ts")) or 0
+                t = t_of(r) or 0
                 c = [(abs(t - t2), q2) for t2, q2 in got.get(_prefix(pl.get("text")), ()) if abs(t - t2) <= slack_s]
                 q = min(c)[1] if c else None
         if p in positions and q in positions and p != q:
@@ -1388,7 +1401,7 @@ def interactions(model, rows, a, b, handovers=(), asks=()):
         if t is not None and a <= t < b and p in positions and q in positions and p != q:
             cell(p, q)["handovers"] += 1
     for k, q in asks:
-        t, p = epoch(k.get("ts")), k.get("position")
+        t, p = t_of(k), k.get("position")
         if t is not None and a <= t < b and p in positions and q in positions and p != q:
             cell(p, q)["asks"] += 1
     return out
@@ -1451,7 +1464,7 @@ def structure_input(model, rows, a, b, works=(), handovers=(), asks=()):
         x["units_out"] = sorted({unit[s] for s in x["receivers"]} - {x["unit"]})
         x["senders"], x["receivers"] = sorted(x["senders"]), sorted(x["receivers"])
     for k, acc in asks:
-        t, p = epoch(k.get("ts")), k.get("position")
+        t, p = t_of(k), k.get("position")
         if p in positions and t is not None and a <= t < b and acc == HUMAN:
             load[p]["asks_owner"] += 1
             load[p]["asks_owner_declared"] += str(k.get("kind") or "").startswith("question (declared)")   # `of ask`
@@ -1545,7 +1558,7 @@ def __getattr__(name):
     raise AttributeError(f"module 'of_model' has no attribute {name!r}")
 
 
-RULE_SURFACE = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS", "epoch", "iso", "in_window", "is_received",
+RULE_SURFACE = ("HUMAN", "BOT_AUTHOR", "MANAGEMENT_FUNCTIONS", "epoch", "t_of", "iso", "in_window", "is_received",
                 "received_labels", "owner_prompt", "session_index", "position_of", "session_positions",
                 "message_senders", "structure_keeper", "overlay", "pr_key", "pr_attribution",
                 "founder_messages", "message_categories", "asks_of", "little", "owner_measures", "inbound_queues",

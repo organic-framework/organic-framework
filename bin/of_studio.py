@@ -701,7 +701,7 @@ class Data:
     def rows_between(self, a, b):
         """The organization's rows in [a, b): the page's own when they cover it, else loaded (the review's baseline)."""
         if a >= getattr(self, "_rows_from", a):
-            return [r for r in self.rows if (of_model.epoch(r.get("ts")) or 0) < b]
+            return [r for r in self.rows if (of_model.t_of(r) or 0) < b]
         src = getattr(self, "_source", None)
         if src is not None:
             rows = of_asks.apply_prompt_origins([_normalize(r) for r in src.events(self.org, since_iso=of_model.iso(a), names=kinds())])
@@ -712,7 +712,7 @@ class Data:
             except Exception:  # noqa: BLE001 — no store
                 return []
             rows = org_rows(rows, self._org_cfg, self._others)
-        return [r for r in rows if (of_model.epoch(r.get("ts")) or 0) < b]
+        return [r for r in rows if (of_model.t_of(r) or 0) < b]
 
     def delegations_effective(self):
         """When each delegation took effect, from every of.diff_applied the store holds (not only the page's rows)."""
@@ -724,7 +724,7 @@ class Data:
         for r in self.diff_rows():
             i = (r.get("payload") or {}).get("id")
             if i:
-                out.setdefault(i, of_model.epoch(r.get("ts")))
+                out.setdefault(i, of_model.t_of(r))
         return out
 
     def pr_state_rows(self):
@@ -782,7 +782,7 @@ class Data:
         the page's window; with rows given (tests, callers with their own rows), those rows."""
         lo = of_model.iso(since) if since is not None else None
         mine = lambda: [r for r in self.rows if r.get("name") in names
-                        and (since is None or (of_model.epoch(r.get("ts")) or 0) >= since)]
+                        and (since is None or (of_model.t_of(r) or 0) >= since)]
         if not getattr(self, "_loaded", False):
             return mine()
         src = getattr(self, "_source", None)
@@ -806,7 +806,7 @@ class Data:
             a = self.now - days * DAY
             rows = self.history(("of.work_record",), since=a - DAY)
             rows += [r for r in (self.pr_state_rows() if getattr(self, "_loaded", False) else self.history(("of.pr_state",)))
-                     if (of_model.epoch(r.get("ts")) or 0) >= a]
+                     if (of_model.t_of(r) or 0) >= a]
             cache[days] = of_model.code_activity(self.full, rows, a, self.now)
         return cache[days]
 
@@ -857,7 +857,7 @@ class Data:
             rows = []
         have = {r.get("event_id") for r in rows}
         self._diff_rows = sorted(rows + [r for r in self.rows if r["name"] == "of.diff_applied" and r.get("event_id") not in have],
-                                 key=lambda r: of_model.epoch(r.get("ts")) or 0)
+                                 key=lambda r: of_model.t_of(r) or 0)
         return self._diff_rows
 
     def compute(self, full, unit=None):
@@ -1491,7 +1491,7 @@ def works_view_days(rows, a, b, excluded=()):
     """Distinct UTC days in [a, b) with an owner's of.studio_viewed {view: works} (of-server's /studio/ mount)."""
     return len({str(r["ts"])[:10] for r in rows if r.get("name") == "of.studio_viewed"
                 and (r.get("payload") or {}).get("view") == "works" and owner_view(r, excluded)
-                and a <= (of_model.epoch(r.get("ts")) or 0) < b})
+                and a <= (of_model.t_of(r) or 0) < b})
 
 
 def change_review(d, path, doc):

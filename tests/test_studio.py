@@ -1363,7 +1363,20 @@ class PromptOriginTest(unittest.TestCase):
             rows = of_model.load_events(conn, since="2026-11-06T09:00:00Z", until="2026-11-06T11:00:00Z",
                                         names=("of.human_prompt",))
             self.assertEqual([r["payload"]["origin"] for r in rows], ["human", "scheduled"])
+            self.assertEqual([r["_t"] for r in rows], [of_model.epoch(r["ts"]) for r in rows])   # parsed once
             conn.close()
+
+    def test_a_row_time_is_parsed_once(self):
+        # load_events keeps each row's time in _t; t_of and in_window read it, and parse ts only on a row without it
+        a, b = of_model.epoch("2026-11-06T09:00Z"), of_model.epoch("2026-11-06T11:00Z")
+        loaded = {"ts": "2026-11-06T08:00Z", "_t": of_model.epoch("2026-11-06T10:00Z")}
+        bare = {"ts": "2026-11-06T10:00Z"}
+        self.assertEqual((of_model.t_of(loaded), of_model.t_of(bare)), (a + 3600, a + 3600))
+        self.assertTrue(of_model.in_window(loaded, a, b))
+        self.assertTrue(of_model.in_window(bare, a, b))
+        self.assertFalse(of_model.in_window({"ts": "2026-11-06T08:00Z"}, a, b))
+        self.assertIsNone(of_model.t_of({}))
+        self.assertFalse(of_model.in_window({}, a, b))
 
 
 class MessageSplitTest(unittest.TestCase):
@@ -1483,7 +1496,7 @@ class RuleSurfaceTest(unittest.TestCase):
     """The detection rules are of_field-analyst's (bin/of_diagnose_rules.py); they read the model only through
     of_model.RULE_SURFACE. Changing a pinned parameter list here needs a note to of_field-analyst first."""
 
-    PINNED = {"epoch": "(ts)", "iso": "(sec)", "in_window": "(row, a, b)", "is_received": "(r)",
+    PINNED = {"epoch": "(ts)", "t_of": "(row)", "iso": "(sec)", "in_window": "(row, a, b)", "is_received": "(r)",
               "received_labels": "(r)", "owner_prompt": "(row)", "session_index": "(positions)",
               "position_of": "(row, positions, sessions)", "session_positions": "(model, rows)",
               "message_senders": "(model, rows, a, b, slack_s=5.0)", "structure_keeper": "(model)",

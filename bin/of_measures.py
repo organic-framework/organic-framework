@@ -20,7 +20,7 @@ import time
 
 import of_asks
 import of_model
-from of_model import epoch
+from of_model import epoch, t_of
 
 FA = "fa-2026-11-05"        # the baseline's rules, pinned (of_field-analyst)
 QV0 = "q-v0"                # the baseline's question rule, pinned
@@ -224,7 +224,7 @@ def _view_routed(model, rows, effective):
     sessions = of_model.session_index(positions)
     hit = []
     for ask in view["asks"]:
-        t0 = epoch(ask.get("ts"))
+        t0 = t_of(ask)
         if ask.get("state") == "not_a_question" or t0 is None:
             continue   # the judge's no: never in the owner's queue, at any time
         p = of_model.position_of(ask, positions, sessions)
@@ -301,7 +301,7 @@ def _asks_routed(model, rows, effective=None):
         named.append(r)
     # at equal timestamps annotations written by `of` go after primary events; otherwise the stable sort keeps the
     # store's order (a question emitted at a turn's end must stay after its own of.turn_end)
-    named.sort(key=lambda r: (epoch(r.get("ts")) or 0, r.get("source") == "of"))
+    named.sort(key=lambda r: (t_of(r) or 0, r.get("source") == "of"))
     out = []
     effective = of_model.delegation_effective(rows) if effective is None else effective   # pass it from untruncated rows
     asked = {r["event_id"]: r.get("payload") or {} for r in named if r.get("name") == "of.agent_question"}
@@ -316,7 +316,7 @@ def _asks_routed(model, rows, effective=None):
             ask = dict(ask, source="escalated", escalated_from=pl.get("escalated_from"), escalated_by=p,
                        position=pl.get("from_position") or p)   # the copy is written in the escalating session
         else:
-            acc = of_model.accountable_at(positions[p], epoch(ask.get("ts")), effective) if p in positions else of_model.HUMAN
+            acc = of_model.accountable_at(positions[p], t_of(ask), effective) if p in positions else of_model.HUMAN
         out.append((ask, acc))
     return out
 
@@ -335,7 +335,7 @@ def little(asks, a, b):
     hours = (b - a) / 3600.0
     area, arrivals, waits, censored = 0.0, 0, [], 0
     for k in asks:
-        t0 = epoch(k["ts"])
+        t0 = t_of(k)
         t1 = epoch(k.get("closed_at")) if k.get("closed_at") else None
         end = min(t1, b) if t1 is not None else b
         start = max(t0, a)
@@ -351,12 +351,12 @@ def little(asks, a, b):
     lam = arrivals / hours if hours else 0.0
     W = sum(waits) / len(waits) if waits else 0.0
     res = L - lam * W
-    carry = [k for k in asks if epoch(k["ts"]) < a and (not k.get("closed_at") or epoch(k["closed_at"]) > a)]
+    carry = [k for k in asks if t_of(k) < a and (not k.get("closed_at") or epoch(k["closed_at"]) > a)]
     carry_area = sum(min(epoch(k["closed_at"]) if k.get("closed_at") else b, b) - a for k in carry)
     return {"L": round(L, 3), "lambda_per_h": round(lam, 3), "W_h": round(W, 3), "residual": round(res, 3),
             "residual_rel": round(res / L, 3) if L else None, "arrivals": arrivals, "censored": censored,
             "carry_in": len(carry), "carry_in_L": round(carry_area / 3600.0 / hours, 3) if hours else 0.0,
-            "open_at_end": sum(1 for k in asks if epoch(k["ts"]) < b and (not k.get("closed_at") or epoch(k["closed_at"]) > b))}
+            "open_at_end": sum(1 for k in asks if t_of(k) < b and (not k.get("closed_at") or epoch(k["closed_at"]) > b))}
 
 
 _WINDOW_ASKS = collections.OrderedDict()
@@ -377,7 +377,7 @@ def _window_asks(model, rows, a, b):
     hit = _WINDOW_ASKS.get(key) if key else None
     if hit is None:
         hit = [k for k in of_asks.project(sorted([dict(r, position=of_model.position_of(r, positions, sessions)) for r in win],
-                                                 key=lambda r: epoch(r["ts"]))) if k["state"] != "not_a_question"]
+                                                 key=lambda r: t_of(r))) if k["state"] != "not_a_question"]
         if key:
             _WINDOW_ASKS[key] = hit
             while len(_WINDOW_ASKS) > ROUTED_KEEP:
@@ -391,21 +391,21 @@ def owner(model, rows, a, b, who=of_model.HUMAN, version=FA, dead_end_hours=24):
     positions = model["positions"]
     sessions = of_model.session_index(positions)
     eff = of_model.delegation_effective(rows)
-    asks = [k for k in asks_of(model, [r for r in rows if epoch(r.get("ts")) is not None and epoch(r["ts"]) < b], who, eff)]
+    asks = [k for k in asks_of(model, [r for r in rows if t_of(r) is not None and t_of(r) < b], who, eff)]
     out = {"owner": who, "from": of_model.iso(a), "to": of_model.iso(b)}
     out.update(little(asks, a, b))
-    answered = [k for k in asks if k["state"] == "answered" and a <= epoch(k["ts"]) < b]
-    mins = [(epoch(k["closed_at"]) - epoch(k["ts"])) / 60.0 for k in answered]
+    answered = [k for k in asks if k["state"] == "answered" and a <= t_of(k) < b]
+    mins = [(epoch(k["closed_at"]) - t_of(k)) / 60.0 for k in answered]
     out["answer_delay_min"] = {"p50": _r(quantile(mins, .5)), "p75": _r(quantile(mins, .75)), "p90": _r(quantile(mins, .9)),
                                "n": len(mins)}
     out["agent_hours_waited"] = round(sum(m for m in mins if m <= SLEEP_CAP_H * 60) / 60.0, 1)
     out["dead_end_asks"] = sorted(
-        [k["event_id"] for k in asks if epoch(k["ts"]) < b and (not k.get("closed_at") or epoch(k["closed_at"]) > b)
-         and b - epoch(k["ts"]) >= dead_end_hours * 3600]
+        [k["event_id"] for k in asks if t_of(k) < b and (not k.get("closed_at") or epoch(k["closed_at"]) > b)
+         and b - t_of(k) >= dead_end_hours * 3600]
         + [k["event_id"] for k in asks if k["state"] == "expired" and a <= epoch(k["closed_at"]) < b])
     # inbound concentration: this owner's share of all asks in the organization
     all_asks = _window_asks(model, rows, a, b)
-    mine = [k for k in asks if a <= epoch(k["ts"]) < b]
+    mine = [k for k in asks if a <= t_of(k) < b]
     non_t = [k for k in mine if positions.get(k.get("position"), {}).get("throughput") not in THROUGHPUT_WORK]
     # in-degree share: requests reaching the owner against all requests between positions (asks to the owner plus peer
     # requests received, rq-v0); asks reach only humans, so asks alone would make this 1 with one owner
@@ -413,7 +413,7 @@ def owner(model, rows, a, b, who=of_model.HUMAN, version=FA, dead_end_hours=24):
     out["inbound_concentration"] = round(len(mine) / (len(mine) + peer), 3) if (mine or peer) else None
     out["peer_requests"] = peer
     out["owner_share_of_human_asks"] = round(len(mine) / len(all_asks), 3) if all_asks else None
-    out["moved_on"] = sum(1 for k in asks if k["state"] == "moved_on" and a <= epoch(k["ts"]) < b)
+    out["moved_on"] = sum(1 for k in asks if k["state"] == "moved_on" and a <= t_of(k) < b)
     out["inbound_from_non_throughput"] = round(len(non_t) / len(mine), 3) if mine else None
     # the owner's messages (the tenant's human prompts are the founder's until people are mapped to machines)
     msgs = founder_messages([r for r in rows if in_window(r, a, b)], version) if who == of_model.HUMAN else []
@@ -457,8 +457,8 @@ def repeat_corrections(model, rows, b, weeks=6):
     labels = [iso_week(a + i * WEEK_S) for i in range(weeks)]
     per, rules, seen, first = {}, collections.defaultdict(collections.Counter), set(), None
     total = {w: {"n": 0, "repeats": 0} for w in labels}
-    for r in sorted((r for r in rows if r.get("name") == "of.founder_correction"), key=lambda r: epoch(r.get("ts")) or 0):
-        t, pl = epoch(r.get("ts")), r.get("payload") or {}
+    for r in sorted((r for r in rows if r.get("name") == "of.founder_correction"), key=lambda r: t_of(r) or 0):
+        t, pl = t_of(r), r.get("payload") or {}
         key = pl.get("prompt_id") or r.get("event_id")
         if t is None or t >= b or key in seen:
             continue
@@ -573,19 +573,19 @@ def delegation_series(model, rows, a, b, record, offsets, effective=None, tag_fi
     for r in rows:
         if r.get("position") in positions and r.get("session_id"):
             sp.setdefault(r["session_id"], r["position"])
-    upto = [r for r in rows if (epoch(r.get("ts")) or 0) < b]
+    upto = [r for r in rows if (t_of(r) or 0) < b]
     eff = of_model.delegation_effective(rows) if effective is None else effective
-    f_any = [k for k in asks_of(model, upto, of_model.HUMAN, eff) if a <= epoch(k["ts"]) < b]
+    f_any = [k for k in asks_of(model, upto, of_model.HUMAN, eff) if a <= t_of(k) < b]
     # blocking screens (blocked:*, recorded from 2026-11-06T13:00Z) are reported apart: a baseline before them could not
     # count them, so the founder's asks leave them out to compare like with like (of_field-analyst, 2026-11-07)
     f_all = [k for k in f_any if not str(k.get("kind") or "").startswith("blocked")]
     f_unit = [k for k in f_all if k.get("position") in unit]
     f_blocked = [k for k in f_any if k.get("position") in unit and str(k.get("kind") or "").startswith("blocked")]
-    o_unit = ([k for k in asks_of(model, upto, owner, eff) if k.get("position") in unit and a <= epoch(k["ts"]) < b]
+    o_unit = ([k for k in asks_of(model, upto, owner, eff) if k.get("position") in unit and a <= t_of(k) < b]
               if owner else [])
     pos_of = lambda m: m.get("position") if m.get("position") in positions else sp.get(m.get("session_id"))
     fm = [m for m in founder_messages([r for r in rows if in_window(r, a, b)]) if pos_of(m) in unit]
-    msgs = [(epoch(m["ts"]), bool(_cats(m, FA))) for m in fm]
+    msgs = [(t_of(m), bool(_cats(m, FA))) for m in fm]
     topic = incident_topics(fm, asks_of(model, upto, of_model.HUMAN, eff))
 
     byid = {r.get("event_id"): r for r in upto}
@@ -600,12 +600,12 @@ def delegation_series(model, rows, a, b, record, offsets, effective=None, tag_fi
         return c.get("position") == owner or sp.get(c.get("session_id")) == owner
 
     def side(asks, t, is_answer=None):
-        asks = [k for k in asks if epoch(k["ts"]) < t]
+        asks = [k for k in asks if t_of(k) < t]
         done = [k for k in asks if k.get("closed_at") and epoch(k["closed_at"]) <= t]
         ans = [k for k in done if k["state"] == "answered" and (is_answer is None or is_answer(k))]
-        mins = [(epoch(k["closed_at"]) - epoch(k["ts"])) / 60.0 for k in ans]
+        mins = [(epoch(k["closed_at"]) - t_of(k)) / 60.0 for k in ans]
         # a sum of durations splits at a change by cutting each wait there: its part before goes before
-        split = {of_model.iso(c): round(sum(max(0.0, min(epoch(k["closed_at"]), c) - epoch(k["ts"])) / 3600.0 for k, m in zip(ans, mins)
+        split = {of_model.iso(c): round(sum(max(0.0, min(epoch(k["closed_at"]), c) - t_of(k)) / 3600.0 for k, m in zip(ans, mins)
                                             if m <= SLEEP_CAP_H * 60), 1) for c in cuts}
         return {"asks": len(asks), "answered": len(ans), "moved_on": sum(k["state"] == "moved_on" for k in done),
                 "open_at_end": len(asks) - len(done),
@@ -622,14 +622,14 @@ def delegation_series(model, rows, a, b, record, offsets, effective=None, tag_fi
     for off in offsets:
         t = min(b, a + off)
         founder = side(f_unit, t)
-        founder["blocked_asks"] = sum(1 for k in f_blocked if epoch(k["ts"]) < t)
-        n_all = sum(1 for k in f_all if epoch(k["ts"]) < t)
+        founder["blocked_asks"] = sum(1 for k in f_blocked if t_of(k) < t)
+        n_all = sum(1 for k in f_all if t_of(k) < t)
         founder["unit_share_of_founder_asks"] = round(founder["asks"] / n_all, 3) if n_all else None
         founder["founder_asks_total"] = n_all
         mt = [pl for ts, pl in msgs if ts < t]
         founder["founder_messages_in_unit"] = len(mt)
         founder["plumbing_share_in_unit"] = round(sum(mt) / len(mt), 3) if mt else None
-        upto_t = [m for m in fm if epoch(m["ts"]) < t]
+        upto_t = [m for m in fm if t_of(m) < t]
         founder["founder_messages_split"] = {
             "to_unit_owner": sum(1 for m in upto_t if pos_of(m) == owner),
             "to_keepers": sum(1 for m in upto_t if pos_of(m) != owner),
@@ -972,7 +972,7 @@ def attention(model, rows, now, who=of_model.HUMAN, stall_after_s=STALL_AFTER_S)
             return "waiting_external", on
         return "waiting_peer", on
 
-    ordered = sorted(rows, key=lambda r: epoch(r.get("ts")) or 0)
+    ordered = sorted(rows, key=lambda r: t_of(r) or 0)
     # 1. declared asks (`of ask`: of.agent_question with source declared), keyed by topic_key; closed by
     #    of.agent_question_answered or of.ask_withdrawn naming the ask (event id) or its topic
     declared = {}
@@ -1012,7 +1012,7 @@ def attention(model, rows, now, who=of_model.HUMAN, stall_after_s=STALL_AFTER_S)
             kind, on = classify(pos, pl.get("waiting_on"))
             put(pos, kind, on, r["ts"], "of status", pl.get("reason"))
     # 3. open asks seen by the hooks or derived from history (declared ones are already in step 1)
-    hook_rows = [r for r in ordered if (epoch(r.get("ts")) or 0) <= now
+    hook_rows = [r for r in ordered if (t_of(r) or 0) <= now
                  and not (r["name"] == "of.agent_question"
                           and "declared" in ((r.get("payload") or {}).get("source"), (r.get("payload") or {}).get("detected_by")))]
     for k in asks_of(model, hook_rows, who):
@@ -1037,10 +1037,10 @@ def attention(model, rows, now, who=of_model.HUMAN, stall_after_s=STALL_AFTER_S)
         elif r["name"] != "of.pulse" and pos:
             last_seen[pos] = r["ts"]
     for pos, r in blocked.items():
-        if pos and (epoch(last_seen.get(pos)) or 0) <= (epoch(r["ts"]) or 0):
+        if pos and (epoch(last_seen.get(pos)) or 0) <= (t_of(r) or 0):
             put(pos, "waiting_owner", owner_of(pos), r["ts"], "herdr blocked", (r.get("payload") or {}).get("message"))
     for pos, r in stalls.items():
-        if (epoch(last_seen.get(pos)) or 0) > (epoch(r["ts"]) or 0):
+        if (epoch(last_seen.get(pos)) or 0) > (t_of(r) or 0):
             continue
         pl = r.get("payload") or {}
         why = pl.get("reason") or ""
@@ -1100,17 +1100,17 @@ def wait_intervals(model, rows, a, b, who=of_model.HUMAN):
     def owner_of(pos):
         return positions[pos]["accountable"] if pos in positions else of_model.HUMAN
 
-    for k in asks_of(model, [r for r in rows if epoch(r.get("ts")) is not None and epoch(r["ts"]) < b], who,
+    for k in asks_of(model, [r for r in rows if t_of(r) is not None and t_of(r) < b], who,
                      of_model.delegation_effective(rows)):
         closed = epoch(k["closed_at"]) if k.get("closed_at") else None
-        out.append((k.get("position") or "(unregistered)", "owner", epoch(k["ts"]),
+        out.append((k.get("position") or "(unregistered)", "owner", t_of(k),
                     closed if closed is not None and closed <= b else None, k.get("session_id"), k.get("event_id")))
     open_ = {}          # pos -> (pos, t0, cause, session, source); one open declared state per position
     pending = {}        # pos -> (t0, cause, session, source): episodes that end at the position's next sign of life
     last_pulse = {}     # pos -> ts of the previous pulse that listed it
     prev_pulse_ts = None
-    for r in sorted(rows, key=lambda r: epoch(r.get("ts")) or 0):
-        t = epoch(r.get("ts"))
+    for r in sorted(rows, key=lambda r: t_of(r) or 0):
+        t = t_of(r)
         if t is None or t >= b:
             continue
         pl, name, sid, eid = r.get("payload") or {}, r["name"], r.get("session_id"), r.get("event_id")
@@ -1211,7 +1211,7 @@ def inbound_queues(model, rows, a, b, old_after_s=QUEUE_OLD_S):
         pl = r.get("payload") or {}
         if org and pl.get("org") and pl["org"] != org:
             continue
-        t, pos = epoch(r.get("ts")), pl.get("position") or r.get("position")
+        t, pos = t_of(r), pl.get("position") or r.get("position")
         if t is None or t > b or not pos:
             continue
         ev[pos].append((t, int(pl.get("depth") or 0), epoch(pl.get("oldest_created_at"))))
@@ -1294,7 +1294,7 @@ def gate(model, rows, index, a, b, exclude_cwd=(), version=FA, qversion=QV0, age
     turns = collections.defaultdict(list)
     for r in rows:
         if r["name"] == "of.turn_end" and r.get("session_id"):
-            turns[r["session_id"]].append(epoch(r["ts"]) or 0)
+            turns[r["session_id"]].append(t_of(r) or 0)
     for v in turns.values():
         v.sort()
 
@@ -1306,12 +1306,12 @@ def gate(model, rows, index, a, b, exclude_cwd=(), version=FA, qversion=QV0, age
         ok = lab.get("value") if lab and "value" in lab else bool(lab)
         if not ok:
             return None
-        tq, tp = epoch(q["ts"]) or 0, epoch(p["ts"]) or 0
+        tq, tp = t_of(q) or 0, t_of(p) or 0
         if any(tq + TURN_SLACK_S < t < tp for t in turns.get(p.get("session_id"), ())):
             return None
         return q
     pairs = [(p, asked(p)) for p in F]
-    gaps = [(epoch(p["ts"]) - epoch(q["ts"])) / 60.0 for p, q in pairs if q]
+    gaps = [(t_of(p) - t_of(q)) / 60.0 for p, q in pairs if q]
     o["answers_to_agent_asks"] = len(gaps)
     o["answer_delay_min"] = {"p50": _r(quantile(gaps, .5)), "p75": _r(quantile(gaps, .75)), "p90": _r(quantile(gaps, .9))}
     o["answer_delay_over_60min"] = sum(1 for g in gaps if g > 60)
@@ -1466,7 +1466,7 @@ def agents_at_once(rows, a, b, bucket_s=FLOW_BUCKET_S):
     by_s = collections.defaultdict(list)
     for r in rows:
         if r.get("name") in ("of.human_prompt", "of.turn_end") and r.get("session_id"):
-            t = epoch(r.get("ts"))
+            t = t_of(r)
             if t is not None and a - FLOW_TURN_CAP_S <= t < b + FLOW_TURN_CAP_S:
                 by_s[r["session_id"]].append((t, r["name"] == "of.turn_end"))
     per = collections.defaultdict(set)
@@ -1492,10 +1492,10 @@ def settled_below(model, rows, a, b, who=of_model.HUMAN):
     """Asks that reached a unit owner below the head in [a, b), and how many of them were escalated to the head."""
     positions = model["positions"]
     owners = sorted({p.get("accountable") for p in positions.values()} - {who, None, ""})
-    upto = [r for r in rows if (epoch(r.get("ts")) or 0) < b]
+    upto = [r for r in rows if (t_of(r) or 0) < b]
     eff = of_model.delegation_effective(rows)
     asks = [k for o in owners for k in asks_of(model, upto, o, eff)
-            if a <= (epoch(k["ts"]) or 0) < b and k.get("source") != "escalated"]
+            if a <= (t_of(k) or 0) < b and k.get("source") != "escalated"]
     up = {k.get("escalated_from") for k in asks_of(model, upto, who, eff) if k.get("source") == "escalated"}
     n_up = sum(1 for k in asks if k.get("event_id") in up)
     return {"unit_owners": owners, "asks": len(asks), "escalated": n_up,
@@ -1549,7 +1549,7 @@ def flow(model, rows, a, b, who=of_model.HUMAN, own=None):
         gap = "; ".join(INPUT_WORDS.get(n, f"no {n}") for n in lack) if lack else (empty.get(key) if v is None else None)
         series.append({"key": key, "label": FLOW_LABELS[key], "value": None if lack else v, "gap": gap,
                        "needs": list(needs), **({"detail": detail[key]} if key in detail else {})})
-    seen_days = {(epoch(r.get("ts")) or 0) // 86400 for r in rows if in_window(r, a, b)}
+    seen_days = {(t_of(r) or 0) // 86400 for r in rows if in_window(r, a, b)}
     all_days = range(int(a // 86400), int((b - 1) // 86400) + 1)
     return {"method": FL, "who": who, "from": of_model.iso(a), "to": of_model.iso(b), "days": round(days, 2),
             "partial_days": [of_model.iso(d * 86400)[:10] for d in all_days if d * 86400 < a or (d + 1) * 86400 > b],

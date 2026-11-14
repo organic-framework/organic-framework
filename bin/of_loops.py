@@ -38,7 +38,7 @@ Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
 
 import statistics
 
-from of_model import epoch, iso
+from of_model import epoch, iso, t_of
 
 UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this machine's log cannot be read
 
@@ -228,13 +228,13 @@ def not_observed_text(run):
 
 def events(rows, work_id):
     return sorted((r for r in rows if r.get("name") in KINDS and (r.get("payload") or {}).get("work") == work_id),
-                  key=lambda r: epoch(r.get("ts")) or 0)
+                  key=lambda r: t_of(r) or 0)
 
 
 def _hypotheses(evs):
     hyp = {}
     for r in evs:
-        pl, t = r.get("payload") or {}, epoch(r.get("ts")) or 0
+        pl, t = r.get("payload") or {}, t_of(r) or 0
         if r["name"] == "of.loop_hypothesis":
             hid = str(pl.get("id") or pl.get("hypothesis") or str(r.get("event_id") or "")[-8:])
             t = epoch(pl.get("status_at")) or t   # of_platform: a status update carries its own time
@@ -272,7 +272,7 @@ def _runs(evs, spec, hyp):
         if r["name"] != "of.loop_run":
             continue
         pl = r.get("payload") or {}
-        end = epoch(pl.get("ended_at")) or epoch(r.get("ts")) or 0
+        end = epoch(pl.get("ended_at")) or t_of(r) or 0
         start = epoch(pl.get("started_at"))
         hid = str(pl.get("hypothesis") or "")
         # entering the rung: queued_at, else the end of this hypothesis' previous run, else when it was recorded
@@ -307,7 +307,7 @@ def _wip_series(hyp, evs):
     """Hypotheses in test over time, [(ts, n)]: +1 when a run starts an open one, -1 when it is decided or parked."""
     steps, state = [], {}
     for r in evs:
-        pl, t = r.get("payload") or {}, epoch(r.get("ts")) or 0
+        pl, t = r.get("payload") or {}, t_of(r) or 0
         hid = str((pl.get("id") or pl.get("hypothesis")) if r["name"] == "of.loop_hypothesis" else pl.get("hypothesis") or "")
         if not hid:
             continue
@@ -335,7 +335,7 @@ def babysit(rows, doers, a, b):
     for r in rows:
         if r.get("name") != "of.mandate_check":
             continue
-        pl, t = r.get("payload") or {}, epoch(r.get("ts")) or 0
+        pl, t = r.get("payload") or {}, t_of(r) or 0
         cls, who = pl.get("command_class"), r.get("position") or pl.get("position")
         if cls in ("runner", "monitor") and who in doers and a <= t < b:
             m = str(pl.get("model") or r.get("model") or "unknown")
@@ -380,7 +380,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
         first = min(r["ended"] for r in runs if r["rung"] == reached["rung"])
         highest = {"rung": reached["rung"], "at": first}
     start = min([h["recorded_at"] for h in hyp.values()] + [r["entered"] for r in runs] +
-                [epoch(r.get("ts")) or now for r in evs]) if evs else None
+                [t_of(r) or now for r in evs]) if evs else None
     prod = [r for r in runs if r["rung"] in spec["production"]]
     last_prod = max((r["ended"] for r in prod), default=None)
     since = last_prod if last_prod else start
@@ -413,7 +413,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
               if r["fresh_tokens"] is not None or r["tokens"] is not None]
     usd = [r["usd"] for r in wk_runs if r["usd"] is not None]
     testing = [h for h in hyp.values() if h.get("status") == "testing"]
-    decisions = [dict((r.get("payload") or {}), ts=epoch(r.get("ts"))) for r in evs if r["name"] == "of.loop_decision"]
+    decisions = [dict((r.get("payload") or {}), ts=t_of(r)) for r in evs if r["name"] == "of.loop_decision"]
     for x in decisions:   # only the registry cites the owner's yes: a decision's own decided never counts, and `of loop`
         # refuses a change of objective on a decided loop (docs/registry.md, Works, "The measure changes only ...")
         raw = x.get("decided").strip() if isinstance(x.get("decided"), str) and x["decided"].strip() else None

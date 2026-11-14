@@ -22,7 +22,7 @@ import time
 import of_model
 import of_measures
 
-epoch = of_model.epoch
+epoch, t_of = of_model.epoch, of_model.t_of
 DAY = 86400.0
 GIT_CACHE_S = 600        # repository reads (refs, logs) are reused for 10 minutes
 ACTIVE_DAYS = 3          # progress in the last 3 days: active (docs/works.md §3)
@@ -500,7 +500,7 @@ def evidence(model, rows, works, now, attention=None, issues=()):
         if r.get("name") in ("of.turn_end", "of.agent_message_out"):
             pos = of_model.position_of(r, positions, sessions)
             if pos:
-                last_turn[pos] = max(last_turn.get(pos, 0), epoch(r.get("ts")) or 0)
+                last_turn[pos] = max(last_turn.get(pos, 0), t_of(r) or 0)
     att = collections.defaultdict(list)
     # an ask declared with --work belongs to that work, whoever asked; one without it, to its asker's works
     ask_work = {r.get("event_id"): str((r.get("payload") or {})["work"]) for r in rows
