@@ -46,6 +46,16 @@ Tables (v1):
 
 Content addressing removes duplicates. A session copied into another config dir by an account move produces the same records, and they are stored once.
 
+### Merging another machine's store (2026-11-15)
+
+When positions move to another machine (the agent host move, organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §3, step B3), the target's store takes the source's rows after a cutover point, by the key that names each row on every machine: events by `event_id`, transcript records by `(session_id, record_uuid)`, snapshots by `(path, blob)`, session forks by session id, and hook and runtime records by their content, since their row ids are per machine (an event's `raw_ref` to one of them is rewritten to the target's id). The blobs those rows name come along; the ingest and ship cursors stay each machine's own.
+
+```sh
+python3 bin/of_merge_delta.py --source <copy of the source's of.db> --target ~/.local/state/of/of.db --since <cutover ISO> [--dry-run] [--json]
+```
+
+A re-run adds nothing. The asks and hand-overs from the delta appear in the projections at once, since they read the log; `of listen rebuild` re-derives the listener's views in time order after a large merge. Run it on the target machine against a copy of the source's file: selecting by time reads the source's tables whole. ClickHouse's copy of the same rows is a separate step (`bin/of_merge_delta.py` handles the local store only).
+
 ## Central store: ClickHouse
 
 - **Why ClickHouse.** The data is append-only, wide and large (about 1 GB a day of raw transcripts from one founder). The questions are aggregations over time, positions and organizations. ClickHouse's columnar compression and `MergeTree` fit this. `ReplacingMergeTree` keyed on the record id makes re-shipping idempotent.
