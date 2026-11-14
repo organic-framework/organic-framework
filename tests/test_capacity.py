@@ -2309,6 +2309,13 @@ class LoopCost(unittest.TestCase):
         with mock.patch.object(of_capacity.of_events, "emit", lambda k, p, **kw: seen.append((k, p))):
             self.assertEqual(of_capacity.loop_costs(conn, now), 0)
 
+    def test_only_runs_of_the_last_two_weeks_are_read(self):
+        from unittest import mock
+        conn, seen = self.store(), []
+        later = of_capacity._ts("2026-11-03T14:00:00Z") + of_capacity.LOOP_COST_WINDOW_S + 86400
+        with mock.patch.object(of_capacity.of_events, "emit", lambda k, p, **kw: seen.append(k)):
+            self.assertEqual(of_capacity.loop_costs(conn, later), 0)  # past the window: not read at all
+
     def test_a_recent_run_waits_for_its_records(self):
         from unittest import mock
         conn, seen = self.store(), []

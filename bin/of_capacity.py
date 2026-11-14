@@ -3264,6 +3264,7 @@ def babysit_measure(paths, since, until, babysit_model=BABYSIT_MODEL, policy=Non
 
 
 LOOP_COST_SETTLE_S = 3600  # a session's records reach the store at its Stop: cost a run an hour after it ends
+LOOP_COST_WINDOW_S = 14 * 86400  # runs ended in the last two weeks; an older one was costed by an earlier tick
 
 
 def loop_costs(conn, now, emit=None):
@@ -3271,11 +3272,14 @@ def loop_costs(conn, now, emit=None):
     from the run's start (started_at, else queued_at) to its end, each response once by message.id, subagents
     included, at list price. No start: usd None (unknown, never zero). Returns the number of costs written."""
     emit = emit or (lambda k, p: of_events.emit(k, p, position=actor()))
+    # a window, not the whole log (the founder, 2026-11-14, through of_conductor msg 01a1d68e-8ef9): a run is costed
+    # an hour after it ends, so its cost is never older than the run, and one window bounds both reads
+    since = _iso(now - LOOP_COST_WINDOW_S)
     done = {json.loads(p or "{}").get("run") for (p,) in conn.execute(
-        "SELECT payload FROM event WHERE name = 'of.loop_cost'")}
+        "SELECT payload FROM event WHERE name = 'of.loop_cost' AND ts >= ?", (since,))}
     n = 0
     for eid, ts, sid, pl in conn.execute("SELECT event_id, ts, session_id, payload FROM event WHERE name = 'of.loop_run' "
-                                         "ORDER BY ts").fetchall():
+                                         "AND ts >= ? ORDER BY ts", (since,)).fetchall():
         p = json.loads(pl or "{}")
         run = p.get("run") or eid
         end = p.get("ended_at") or ts
