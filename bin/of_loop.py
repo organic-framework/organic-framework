@@ -4,7 +4,7 @@ and the hypothesis register and decision log as events.
 - check_loop(loop, wid): the schema of RFC 0005 §4 (target, measures, ladder, checkpoint_days, wip_arms, babysit_model).
 - of.loop_hypothesis {work, hypothesis, change, predict, cost, cost_h, voi}: recorded before its test.
 - of.loop_run {work, rung, hypothesis, result, evidence, source}: recorded when a run on a rung ends.
-- of.loop_decision {work, decision, hypothesis, rung, money, decided, note}: keep, drop, park, step_up, step_back,
+- of.loop_decision {work, decision, hypothesis, rung, money, decided, note}: keep, drop, park, reopen, step_up, step_back,
   change_objective (which names its money metric, or on a target the owner decided, the owner's yes on the new one).
 - register(rows, work): the hypotheses with their derived status (open, testing, kept, dropped, parked), the next one
   first by value of information per runner-hour (an absent voi counts as med). No agent reports progress: status
@@ -21,8 +21,11 @@ import time
 
 RUNG_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 VOI = {"low": 1, "med": 2, "high": 3}
-DECISIONS = ("keep", "drop", "park", "step_up", "step_back", "change_objective")
-STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked"}
+DECISIONS = ("keep", "drop", "park", "reopen", "step_up", "step_back", "change_objective")
+# reopen puts a parked, dropped or kept hypothesis back to open, with a note naming what changed or whose word reopened
+# it (RFC 0005 §4.1; 2026-11-14: a revived hypothesis was recorded as keep, which reads as one that won)
+STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}
+REOPENS = ("parked", "dropped", "kept")  # the statuses reopen leaves; open and testing are open already
 MODELS = ("haiku", "sonnet", "opus", "fable")
 LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "babysit_model"}
 SEGMENT_KEYS = {"start", "end", "context"}  # the target's controlled segment (docs/registry.md, Works)
@@ -346,12 +349,14 @@ def register(rows, work):
             decs.append(dict(p, ts=r["ts"]))
             h = hyps.get(p.get("hypothesis"))
             if h and p.get("decision") in STATUS_OF:
-                h["status"], h["last"] = STATUS_OF[p["decision"]], r["ts"]
+                h["status"], h["last"], h["decided_at"] = STATUS_OF[p["decision"]], r["ts"], r["ts"]
     live = {"open": 0, "testing": 0}
     for h in hyps.values():  # accepted is the rung's accept criterion (docs/events.md), not the prediction: say only
         # that the latest run missed it while no decision closed the hypothesis (of_conductor, 2026-11-12: an open
         # hypothesis was read as a finding; of_review on PR 61)
-        h["unmet_open"] = h["status"] in live and (h.get("last_run") or {}).get("accepted") is False
+        lr = h.get("last_run") or {}  # a run before a reopen is answered by that decision
+        h["unmet_open"] = (h["status"] in live and lr.get("accepted") is False
+                           and lr.get("ts", "") > h.get("decided_at", ""))
 
     def key(h):  # an absent voi counts as med (docs/registry.md, Works, "The owner's measure"); money never enters it
         per = VOI.get(h["voi"] or "med", 1) / max(h.get("cost_h") or 0.0, 0.05)
