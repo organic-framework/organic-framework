@@ -2652,16 +2652,21 @@ def _ssh_opts(value):
 
 
 def _ssh_forward_target(spec):
-    """The host a -L or -R forward connects to: `[bind:]port:host:hostport` (or `host/hostport`), `[v6]` kept whole;
-    None for a socket path or a dynamic forward, which name no host."""
+    """The host a -L or -R forward connects to, read as OpenSSH's parse_fwd_field reads it: fields split on `:`, a
+    bracketed `[v6]` kept whole, a field holding `/` a socket path. `[bind:]port:host:hostport` and `/socket:host:port`
+    name the host before the last field; a last field that is a path, a dynamic forward or `port:/socket` name none;
+    the old `port/host/hostport` form names its middle (of_review on organic-framework PR 165: `-L /tmp/s:gw:22`, a
+    socket on one side and gw on the other, was missed)."""
     v = str(spec).strip()
-    if "/" in v and ":" not in v or v.startswith("/"):
-        return None
     parts = re.findall(r"\[[^\]]*\]|[^:]+", v)
     if len(parts) >= 3:
+        if "/" in parts[-1] or "/" in parts[-2]:
+            return None  # the far side is a socket path
         host = parts[-2]
-    elif len(parts) == 2 and "/" in parts[-1]:
-        host = parts[-1].split("/", 1)[0]
+    elif len(parts) == 2 and "/" in parts[-1] and not parts[-1].startswith("/"):
+        host = parts[-1].split("/", 1)[0]  # `2222 gw/22`, spaced and joined
+    elif len(parts) == 1 and v.count("/") >= 2 and not v.startswith("/"):
+        host = v.split("/")[-2]  # the old `[bind/]port/host/hostport` form
     else:
         return None
     return host.strip("[]") or None
@@ -2838,14 +2843,17 @@ def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
                     pat = os.path.join(base, pat)
                 for p in sorted(glob.glob(pat)):
                     out += _ssh_config_blocks(p, depth + 1, seen, opaque, base)
-        elif key in _SSH_FWD:  # read for allow_jump only; a Match block's counts for every host (of_secrets-review)
+        elif key in _SSH_FWD:  # a Match block's counts for every host (of_secrets-review); a forward's every value
             if block == "match":
-                out.append({"patterns": ["*"], key: val})
+                out.append({"patterns": ["*"], key: [val] if key in _SSH_FWD[:2] else val})
             else:
                 if block is None:
                     block = {"patterns": ["*"]}
                     out.append(block)
-                block.setdefault(key, val)
+                if key in _SSH_FWD[:2]:  # LocalForward and RemoteForward add up across lines and blocks
+                    block.setdefault(key, []).append(val)
+                else:
+                    block.setdefault(key, val)
         elif key in _SSH_SETS:
             if block == "match":
                 if opaque is not None and f"a Match block sets {key}" not in opaque:
@@ -2950,6 +2958,12 @@ def _ssh_reach(host, resolve, depth=0):
             out.append(("*", "its config's jump held in a variable"))
             continue
         out += [(n, f"{how} {h}" + (f", {note}" if note else "")) for n, note in _ssh_reach(h, resolve, depth + 1)]
+    for b in getattr(resolve, "blocks", []) or []:  # the forwards its config gives it, every matching block's
+        if _ssh_pattern_match(b["patterns"], host):    # (of_secrets-review on PR 165)
+            for spec in [x for k in _SSH_FWD[:2] for x in (b.get(k) or [])]:
+                target = _ssh_forward_target(":".join(spec.split(None, 1)) if " " in spec.strip() else spec)
+                if target:
+                    out.append((target.lower(), f"its config forwarding to {target}"))
     return out
 
 
