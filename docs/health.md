@@ -1,6 +1,6 @@
 # OF's own health: checks, one page, one card
 
-Status: **design**, 2026-11-14, `of_architect`; **built in part** the same day: each machine's checks, the state file, the events, `of health`, the smoke check and `of rollback` (`of_platform`, `bin/of_health.py`), and of-server's own checks (`of_server`). Studio's Health tab and the person's card are not built yet.
+Status: **design**, 2026-11-14, `of_architect`; **built in part** the same day: each machine's checks, the state file, the events, `of health`, the smoke check and `of rollback` (`of_platform`, `bin/of_health.py`), and of-server's own checks (`of_server`). Studio's Health tab and the person's card are built (`of_studio`, `bin/of_studio_health.py`, docs/studio.md §5.2a); the card starts once `of health run` calls it.
 
 **Basis.**
 - The founder, 2026-11-13 20:12Z (prompt `01a1d68a-5ab4`, in `of_conductor`'s session): "Let's look once more at the top-level architecture of Organic Framework's tools: where else something may fire, because we keep having an unstable problem."

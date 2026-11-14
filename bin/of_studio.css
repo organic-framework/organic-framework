@@ -126,3 +126,11 @@ tr.closed { opacity: .6; }
 div.breach { margin-bottom: 16px; }
 tr.crit td { background: var(--flag-bg); }
 .flag.breach { color: var(--panel); background: var(--flag); }
+/* the Health tab (bin/of_studio_health.py) */
+table.health td.state { white-space: nowrap; font-weight: 600; }
+table.health td.state.failed { color: var(--flag); } table.health td.state.degraded { color: var(--w); }
+table.health td.state.ok { color: var(--k); font-weight: 450; }
+table.health tr.failed td { background: var(--flag-bg); }
+table.health td.num { white-space: nowrap; }
+.yours { display: inline-block; font-size: 11px; padding: 0 6px; margin-left: 4px; border-radius: 999px; color: var(--mute); border: 1px solid var(--line); }
+table.health td.text { min-width: 260px; }

@@ -2212,6 +2212,112 @@ class AsksViewTest(unittest.TestCase):
         self.assertNotEqual(of_studio_cli.escalation_id("acme", x), of_studio_cli.escalation_id("beta", x))
 
 
+class HealthTabTest(unittest.TestCase):
+    """Studio's Health tab and the person's card (docs/health.md §3; of_architect's hand-over f06e0eb7): both read the
+    state `of health run` writes, never the log or the page cache."""
+
+    NOW = 1794700000.0
+
+    def state(self, **over):
+        import of_studio_health as H
+        at = H.iso(self.NOW - 30)
+        checks = {
+            "server.health": {"value": 0.17, "limit": [2.0, 20.0], "state": "ok", "owner": "of_server", "since": H.iso(self.NOW - 3600)},
+            "hooks.errors": {"value": 0.0, "limit": [0.01, 0.1], "state": "ok", "owner": "of_platform", "since": at,
+                             "detail": "394 calls in 10 min"},
+            "machine.memory": {"value": 0.898, "limit": [0.8, 0.95], "state": "degraded", "owner": "of_platform", "since": at},
+            "machine.disk": {"value": 65.4, "limit": [25.0, 20.0], "state": "ok", "owner": "of_platform", "since": at},
+            "view.age.asks": {"value": 1.0, "limit": [120.0, 600.0], "state": "ok", "owner": "of_platform", "since": at},
+            "commit.smoke": {"value": "13de5170a7ce", "limit": None, "state": "ok", "owner": "of_platform", "since": at},
+        }
+        checks.update(over)
+        return {"at": at, "checks": checks}
+
+    def test_the_tab_lists_every_check_failed_first(self):
+        import of_studio_health as H
+        st = self.state(**{"relay.oldest": {"check": "relay.oldest", "value": 4000.0, "limit_degraded": 600.0,
+                                            "limit_failed": 3600.0, "state": "failed", "owner": "of_server",
+                                            "since": H.iso(self.NOW - 720)}})
+        b = H.body(st, self.NOW)
+        self.assertIn("1 failed · 1 degraded · 5 ok", b)
+        order = [b.index(c) for c in ("relay.oldest", "machine.memory", "commit.smoke", "server.health")]
+        self.assertEqual(order, sorted(order))                                   # failed, degraded, then ok by name
+        for text in ("over 10 min / over 60 min", "66 min", "12 min", "89.8%", "65.4 GiB free", "under 25.0 GiB free",
+                     "0.17 s", "394 calls in 10 min", "of_server"):
+            self.assertIn(text, b)
+        self.assertNotIn("Not in this machine", b)
+        self.assertNotIn("stopped", b)
+        self.assertEqual(b.count('class="yours"'), 6)                            # five checks and the legend
+        self.assertIn("relay.oldest", H.body(self.state(), self.NOW).split("Not in this machine's state yet:")[1][:40])
+        old = H.body(self.state(), self.NOW + 600)
+        self.assertIn("stopped", old)
+        self.assertIn("10 min old", old)
+        self.assertIn("of health install", H.body({}, self.NOW))
+
+    def test_a_card_after_five_minutes_failed_that_closes_itself(self):
+        import tempfile
+        import of_studio_health as H
+        sent = []
+        emit = lambda name, payload, **kw: sent.append((name, payload, kw)) or f"ev{len(sent)}"
+        fail = lambda since: {"value": 0.25, "limit": [0.01, 0.1], "state": "failed", "owner": "of_platform",
+                              "since": H.iso(since)}
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "cards.json")
+            st = self.state(**{"hooks.errors": fail(self.NOW - 240), "machine.memory": dict(fail(self.NOW - 900), value=0.99)})
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [])              # 4 minutes: not yet; memory: owner only
+            st = self.state(**{"hooks.errors": fail(self.NOW - 301)})
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "hooks.errors", "ev1")])
+            self.assertEqual(H.cards(st, self.NOW + 60, emit, path), [])         # one card per episode
+            name, pl, kw = sent[0]
+            self.assertEqual((name, pl["source"], pl["to"], pl["from_position"], pl["topic_key"], kw["position"]),
+                             ("agent_question", "health", "owner", "of_studio", "health-hooks.errors", "of_studio"))
+            q = pl["questions"][0]["question"]
+            for text in ("hooks.errors", "for 5 min", "25.0%", "10.0%", "of_platform", "late or not at all", "closes itself"):
+                self.assertIn(text, q)
+            self.assertIn("leave it to of_platform", pl["questions"][0]["options"][0])
+            st = self.state(**{"hooks.errors": {"value": 0.0, "limit": [0.01, 0.1], "state": "ok", "owner": "of_platform",
+                                                "since": H.iso(self.NOW + 100)}})
+            self.assertEqual(H.cards(st, self.NOW + 120, emit, path), [("closed", "hooks.errors", "ev1")])
+            name, pl, _ = sent[-1]
+            self.assertEqual((name, pl["ask_id"], pl["ask_ids"], pl["via"]), ("agent_question_answered", "ev1", ["ev1"], "health"))
+            self.assertIn("hooks.errors is ok again", pl["note"])
+            self.assertEqual(H.cards(st, self.NOW + 180, emit, path), [])
+            # a check that leaves the state while its card is open: the card closes
+            st = self.state(**{"commit.smoke": {"value": "abc", "limit": None, "state": "failed", "owner": "of_platform",
+                                                "since": H.iso(self.NOW - 400)}})
+            nxt = f"ev{len(sent) + 1}"
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "commit.smoke", nxt)])
+            gone = self.state()
+            gone["checks"].pop("commit.smoke")
+            self.assertEqual([x[:2] for x in H.cards(gone, self.NOW + 60, emit, path)], [("closed", "commit.smoke")])
+            self.assertIn("no longer measured", sent[-1][1]["note"])
+
+    def test_the_tab_is_live_and_the_tenants(self):
+        import json
+        import tempfile
+        from unittest import mock
+        import of_studio_health as H
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "health.json")
+            with open(path, "w") as fh:
+                json.dump(self.state(), fh)
+            with mock.patch.object(H, "state_path", return_value=path), \
+                    mock.patch.object(of_studio, "cached_page", side_effect=AssertionError("never from the cache")), \
+                    mock.patch.object(of_studio, "Data", side_effect=AssertionError("no page data")):
+                status, ctype, body = of_studio.handle("GET", "/studio/health", "", {"tenant": True})
+                self.assertEqual(status, 200)
+                self.assertIn(b'<table class="health">', body)
+                self.assertIn(b"not from the page cache", body)
+                self.assertIn(b'class="tab on" href="/studio/health', body)
+                self.assertEqual(of_studio.handle("GET", "/studio/health", "", {"scope": "unit", "owner": "colleague"})[0], 403)
+                out = os.path.join(d, "page.html")
+                of_studio.write_file(out, view="health")
+                with open(out) as fh:
+                    self.assertIn("machine.memory", fh.read())
+        self.assertIn("health", of_studio.LIVE_VIEWS)
+        self.assertIn("health", dict(of_studio.VIEWS))
+
+
 class StructureInputTest(unittest.TestCase):
     """Who works with whom over a window, for a structure review (of_conductor msg 01a1d096-4ca3, 2026-11-12): messages
     once each, hand-overs and asks as pairs, rolled up to units with the line to one's owner apart; works that couple
