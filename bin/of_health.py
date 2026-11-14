@@ -268,8 +268,9 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
         put("server.health", None if s is None else round(s, 2), *LIMITS["server.health"])
     for name, lag in (listener_lags(now, ticks=_ticks()) if lags is None else lags).items():
         put(f"listener.lag.{name}", lag, *LISTENER_LAG, "above", "of_platform")
-    for name, (age, lag_ok) in (_view_ages(now) if views is None else views).items():
-        put(f"view.age.{name}", age, lag_ok, 5 * lag_ok, "above", "of_platform")
+    for name, reading in (_view_ages(now) if views is None else views).items():
+        age, lag_ok, owner = (tuple(reading) + ("of_platform",))[:3]  # the view's owner hears of it (health.md §2)
+        put(f"view.age.{name}", age, lag_ok, 5 * lag_ok, "above", owner)
     share, worst, p99, calls = hook_readings(now) if hooks is None else hooks
     put("hooks.errors", share, *LIMITS["hooks.errors"], detail=f"{calls} calls in 10 min")
     put("hooks.latency", worst, *LIMITS["hooks.latency"],
@@ -305,12 +306,12 @@ def _view_ages(now):
                     for v in of_listen.SERVES_READERS if v in lags})
     except Exception:  # noqa: BLE001
         pass
-    try:  # the fold views (bin/of_fold.py): each declares its lag_ok_s, and read() gives its age
+    try:  # the fold views (bin/of_fold.py): each declares its lag_ok_s and owner; age() reads no row of the view
         import of_fold
         for name, v in of_fold.views().items():
-            r = of_fold.read(v, now=now, tail=0)
-            if r.age_s is not None:
-                out[name] = (round(r.age_s, 1), float(v.lag_ok_s))
+            a, built = of_fold.age(v, now=now)
+            if built:
+                out[name] = (round(a, 1), float(v.lag_ok_s), v.owner)
     except Exception:  # noqa: BLE001
         pass
     return out

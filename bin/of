@@ -3501,6 +3501,15 @@ def cmd_listen(args):
         top = conn.execute("SELECT max(rowid) FROM event").fetchone()[0] or 0
         for name, ver, last, at in conn.execute("SELECT processor, version, last_rowid, updated_at FROM listener_cursor"):
             print(f"  {name}@{ver}: at event {last} of {top} ({top - last} behind), {at}")
+        try:  # the fold views: each one's age against its own lag_ok_s (the read path's 3.5)
+            import of_fold
+            for vname, v in of_fold.views().items():
+                a, built = of_fold.age(v)
+                print(f"  view {vname}@{v.version} ({v.owner}): " + (
+                    "not built yet" if not built else
+                    f"age {a:.0f} s, {'late' if a > v.lag_ok_s else 'current'} (lag_ok_s {v.lag_ok_s})"))
+        except Exception as e:  # noqa: BLE001
+            print(f"  fold views: {type(e).__name__}: {e}")
         return 0
     if args.action in ("run", "rebuild"):
         return of_listen.run(log=lambda m: print(m, flush=True), rebuild=args.action == "rebuild") or 0

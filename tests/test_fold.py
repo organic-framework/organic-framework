@@ -93,6 +93,76 @@ class FoldTest(unittest.TestCase):
         self.assertIn("LIMIT", q[0])
         self.assertIn("Z", r.rows)
 
+    def test_a_counting_view_takes_each_event_once(self):
+        """of_architect on PR 154: (1) the cursor that counts is the one committed with the rows: a batch fed again
+        after a restart is dropped; (2) memory changes only after the write commits: a failed write is handled again
+        onto the rows the store holds. Either way, the rows equal one fold of the batch."""
+        class Count(of_fold.View):
+            name, version, names = "count_test", "1", ("of.agent_question_answered",)
+
+            def fold(self, rows, events):
+                n = (rows.get("n") or {"n": 0})["n"] + len(events)
+                return {"n": {"n": n}}
+        view = Count()
+        for i in range(3):
+            self.answer(f"A{i}", "approve")
+        batch = of_listen.fetch(self.conn, 0)
+        p = of_fold.FoldProcessor(view)
+        of_listen.prepare(self.conn, [p])
+        p.handle(self.conn, batch)
+        again = of_fold.FoldProcessor(view)                                   # a restart; the listener's cursor lags
+        again.handle(self.conn, batch)
+        self.assertEqual(of_fold.load_rows(self.conn, view), {"n": {"n": 3}})
+        self.answer("B", "approve")
+        more = of_listen.fetch(self.conn, batch[-1]["rowid"])
+        real = of_fold.persist
+        calls = []
+
+        def failing(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise __import__("sqlite3").OperationalError("database is locked")
+            return real(*a, **k)
+        of_fold.persist = failing
+        try:
+            with self.assertRaises(Exception):
+                again.handle(self.conn, more)
+            again.handle(self.conn, more)                                     # handled again next pass
+        finally:
+            of_fold.persist = real
+        self.assertEqual(of_fold.load_rows(self.conn, view), {"n": {"n": 4}})
+        self.assertEqual(again.rows, {"n": {"n": 4}})
+
+    def test_every_registered_view_is_pure(self):
+        """of_architect on PR 154: purity as a test over every view, not a convention."""
+        import json
+        for name, view in of_fold.views().items():
+            events = [{"rowid": i + 1, "event_id": f"e{i}", "ts": f"2026-11-14T00:00:0{i}Z", "name": n,
+                       "session_id": "S", "position": "p", "source": "hook", "org": "o",
+                       "payload": {"ask_id": "A", "ask_ids": ["A"], "by": "owner", "via": "asks-ui", "answer": "y"}}
+                      for i, n in enumerate(view.names * 2)]
+            rows = {}
+            rows.update({k: v for k, v in view.fold({}, events[:1]).items() if v is not None})
+            before = json.dumps(rows, sort_keys=True, default=str)
+            view.fold(rows, events[1:])
+            self.assertEqual(json.dumps(rows, sort_keys=True, default=str), before, name)
+
+    def test_a_new_view_builds_from_its_own_names(self):
+        """of_review on PR 154: a new fold view built through the generic catch-up read every event of the log."""
+        for i in range(3):
+            self.answer(f"A{i}", "approve")
+        of_events.emit("turn_end", {"x": 1})                                  # not the view's
+        p = of_fold.FoldProcessor(self.view)
+        cur = of_listen.prepare(self.conn, [p])
+        fed = []
+        real = p.handle
+        p.handle = lambda conn, events, upto=None: fed.extend(events) or real(conn, events, upto)
+        of_listen.step(self.conn, [p], cur)
+        self.assertEqual({e["name"] for e in fed}, {"of.agent_question_answered"})
+        top = self.conn.execute("SELECT max(rowid) FROM event").fetchone()[0]
+        self.assertEqual(of_fold.meta(self.conn, self.view)["cursor"], top)  # its cursor at the end all the same
+        self.assertEqual(of_fold.age(self.view, conn=self.reader()), (0.0, True))
+
     def test_a_new_fold_view_keeps_the_listeners_heartbeat(self):
         """A fold view says its own readiness (read() is late until built): building one does not take the heartbeat
         from the views readers already trust."""
