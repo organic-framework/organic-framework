@@ -1804,6 +1804,77 @@ class LoopTest(unittest.TestCase):
         self.assertIn("the input reaches our entry point → the output leaves our exit", html)
         self.assertIn("the network after the send; a third party&#x27;s ordering rule (rival_ordering) (outside the segment", html)
 
+    # The owner's measure (docs/registry.md, Works; RFC 0005 §4.2 and §7; hand-over d27fba5b): a target with decided
+    OWN = dict(SPEC, target={"metric": "day pass USD", "better": "higher", "decided": "0a1b2c3d"},
+               measures=[{"name": "latency_p50_ms", "to_target": "a faster answer wins more day passes"},
+                         {"name": "rows_differing", "to_money": "0 rows: no lost candidate"}])
+
+    def change(self, **kw):
+        return self.ev(60, "2026-11-07T05:00Z", "of.loop_decision", dict({"decision": "change_objective", "metric": "p99_ms"}, **kw))
+
+    def test_the_owner_measure_in_the_projection(self):
+        c = self.card(self.rows() + [self.change(decided="0e9f8a7b")], spec=self.OWN)
+        self.assertEqual(c["target"]["decided"], "0a1b2c3d")
+        self.assertIsNone(c["target"]["money"])                                 # money is optional on it
+        self.assertEqual({m["name"]: (m["to_target"], m["to_money"]) for m in c["measures"]},
+                         {"latency_p50_ms": ("a faster answer wins more day passes", None),
+                          "rows_differing": (None, "0 rows: no lost candidate")})
+        self.assertEqual(c["drift"], [])                                        # runs on a to_target measure are tied
+        self.assertEqual([(x["kind"], x["metric"], x["decided"], x["to_money"]) for x in c["decisions_all"]],
+                         [("keep", None, None, None)] * 2 + [("drop", None, None, None), ("change_objective", "p99_ms", "0e9f8a7b", None)])
+        # without decided, to_target ties nothing and the loop behaves as before
+        plain = dict(self.OWN, target=dict(self.OWN["target"], decided=None, money="USD per day"))
+        self.assertEqual(self.card(spec=plain)["drift"], ["latency_p50_ms"])
+        self.assertIsNone(self.card(spec=plain)["target"]["decided"])
+        self.assertIsNone(self.card(spec=dict(self.OWN, target=dict(self.OWN["target"], decided="  ")))["target"]["decided"])
+        # a measure with neither chain still drifts on the owner's measure
+        far = dict(self.OWN, measures=[{"name": "latency_p50_ms"}])
+        self.assertEqual(self.card(spec=far)["drift"], ["latency_p50_ms"])
+        # the rules read the same through the model
+        doc = dict(DOC, works={"w1": {"title": "Search", "owner": "colleague", "doers": ["bot_search"], "loop": self.OWN}})
+        lp = of_model.loops(of_model.build(doc, self.rows() + [self.change(decided="0e9f8a7b")], at=self.NOW))["w1"]
+        self.assertEqual((lp["target"]["decided"], lp["measures"][0]["to_target"], lp["decisions_all"][-1]["decided"]),
+                         ("0a1b2c3d", "a faster answer wins more day passes", "0e9f8a7b"))
+
+    def html(self, c, w=None, spend=None):
+        class D:
+            org, now, unit = "acme", of_model.epoch(self.NOW), None
+
+            def loop_of(self, w):
+                return c
+        from unittest import mock
+        w = w or {"id": "w1", "title": "Search", "owner": "acme_throughput-owner", "goal": "g-speed"}
+        with mock.patch.object(of_studio, "goal_spend", return_value=spend):
+            return of_studio._loop_card(D(), w), of_studio._loops_table(D(), [(w, c)])
+
+    def test_the_card_on_the_owner_measure(self):
+        card, table = self.html(self.card(self.rows() + [self.change(decided="0e9f8a7b")], spec=self.OWN))
+        self.assertIn("<tr><th>Decided</th><td>0a1b2c3d: the yes of the goal&#x27;s owner on this measure", card)
+        self.assertNotIn("<th>Money</th>", card)
+        self.assertIn("Cost this week, and money as a reading", card)
+        self.assertIn("No money line given.", card)                             # its absence is no mark
+        self.assertNotIn('class="crit"', card)
+        self.assertNotIn("not the target", card + table)                        # tied by to_target: no drift mark
+        self.assertIn("change_objective</b>: p99_ms · the owner's yes 0e9f8a7b", card)
+        self.assertIn("the owner&#x27;s measure, decided 0a1b2c3d", table)
+        # a money line and the goal's spend are readings beside the cost
+        own = dict(self.OWN, target=dict(self.OWN["target"], money="USD per day"))
+        card, _ = self.html(self.card(spec=own), spend={"goals": {"g-speed": {"cost_usd": 1234.4, "fresh": 2.5e6, "responses": 9}}})
+        self.assertIn("Money: USD per day · the goal g-speed spent $1,234 this month (2.5M fresh tokens).", card)
+        # drift on the owner's measure asks to tie the metric or for the owner's yes, never for a price
+        card, table = self.html(self.card(spec=dict(self.OWN, measures=[{"name": "latency_p50_ms"}])))
+        self.assertIn("tie the metric to the target, or get the owner's yes on a new measure", card)
+        self.assertNotIn("price in money", card)
+        self.assertIn("measures latency_p50_ms, not the target", table)
+
+    def test_a_loop_without_decided_keeps_its_card(self):
+        card, table = self.html(self.card())
+        self.assertIn("<tr><th>Money</th><td>USD per day</td></tr>", card)
+        self.assertNotIn("<th>Decided</th>", card)
+        self.assertIn("<h3>Cost this week</h3>", card)
+        self.assertIn("give it no price in money", card)
+        self.assertNotIn("owner&#x27;s measure", card + table)
+
 
 class StandingWorkTest(unittest.TestCase):
     """A standing work (docs/registry.md, of_architect 2026-11-10): never derived as done; progress is the loop
