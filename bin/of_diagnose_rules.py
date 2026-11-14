@@ -884,15 +884,16 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
     """Part unpriced: runs that measure a metric neither the target's nor priced, or a change_objective without money.
     Part untied (v2, 2026-11-14; hand-over 95bf514e, docs/registry.md Works, "The owner's measure"): on a target that
     carries `decided`, the owner's yes on the measure, a run is tied when its metric is the target's or a measure with
-    `to_target` or `to_money`, and a change_objective needs its metric and the owner's yes on it (`decided`), as
-    `of loop decision` asks there (of_platform); the nudge asks to tie the metric or to get that yes, never for a price.
-    A loop without `decided` is judged as before. The projection gives `decided` only when it resolves in the log as a
-    person's yes (docs/registry.md Works, "Where it is read, and how it is checked"); an id that does not resolve
-    (`decided_unresolved`) leaves the loop one without it, and the issue names the id and why. Part context (v1, 2026-11-12; hand-over 9e2140b6): a run's metric, a
-    hypothesis's predicted effect or change, or a change_objective's metric matches a part of the target's
-    segment.context (a text or {name, what}), which is reported beside the target and is never a target, a measure or
-    a lever. Matching is of registry check's (PR 58): a name to a part's name exactly, prose by content words. One
-    issue per work; context wins the part."""
+    `to_target` or `to_money`. Any change_objective on it is out of bounds: the measure changes only when the structure
+    keeper rewrites the target in the registry on the owner's yes, and `of loop decision` refuses one there
+    (of_platform; PR 168 review). The nudge asks to tie the metric or to get the owner's yes on a new measure, never
+    for a price. A loop without `decided` is judged as before. The projection gives `decided` only when it resolves in
+    the log as a person's yes (docs/registry.md Works, "Where it is read, and how it is checked"); an id that does not
+    resolve (`decided_unresolved`) leaves the loop one without it, and the issue names the id and why. Part context
+    (v1, 2026-11-12; hand-over 9e2140b6): a run's metric, a hypothesis's predicted effect or change, or a
+    change_objective's metric matches a part of the target's segment.context (a text or {name, what}), which is
+    reported beside the target and is never a target, a measure or a lever. Matching is of registry check's (PR 58): a
+    name to a part's name exactly, prose by content words. One issue per work; context wins the part."""
     out = []
     for w, lp in _loops(model).items():
         tgt = lp.get("target") or {}
@@ -903,10 +904,9 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
         runs = [r for r in lp.get("runs") or [] if _ended_in(r, a, b)]
         unpriced = [r for r in runs if (r.get("metric") or target) != target and r.get("metric") not in tied]
 
-        def based(d):   # a change of objective names its new metric, and its money, or the owner's yes when decided
-            return d.get("metric") and d.get("decided" if decided else "to_money")
+        # a change of objective names its new metric and its money; on the owner's measure none is the loop's to record
         bad = [d for d in lp.get("decisions_all") or [] if d.get("kind") == "change_objective"
-               and a <= (d.get("ts") or 0) < b and not based(d)]
+               and a <= (d.get("ts") or 0) < b and (decided or not (d.get("metric") and d.get("to_money")))]
         drift = bad or (runs and len(unpriced) >= _t(spec, "unpriced_runs_gte", 3)
                         and len(unpriced) / len(runs) >= _t(spec, "unpriced_share_gte", 0.30))
         seg = tgt.get("segment") if isinstance(tgt.get("segment"), dict) else {}
@@ -932,7 +932,7 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
         metrics = collections.Counter(r.get("metric") for r in unpriced)
         if decided:   # the owner's measure: nothing here is about money
             ev = {"work": w, "target": target, "decided": decided, "untied": dict(metrics), "runs": len(runs),
-                  "change_objective_without_yes": len(bad)}
+                  "change_objective_on_owners_measure": len(bad)}
         else:
             ev = {"work": w, "target": target, "unpriced": dict(metrics), "runs": len(runs),
                   "change_objective_without_money": len(bad)}
@@ -941,9 +941,6 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
             ev.update(decided_unresolved=tgt["decided_unresolved"], decided_unresolved_why=tgt.get("decided_unresolved_why"))
             why_not = (f" (the target's decided {tgt['decided_unresolved']} does not count as the owner's yes: "
                        f"{_UNRESOLVED.get(tgt.get('decided_unresolved_why'), 'it does not resolve')})")
-        lost = [d.get("decided_unresolved") for d in bad if d.get("decided_unresolved")]
-        if lost:
-            ev["change_objective_unresolved"] = lost
         if hits:
             top = collections.Counter(x["part"] for x in hits).most_common(1)[0][0]
             n_r = sum(1 for x in hits if x["part"] == top and "run" in x)
@@ -960,7 +957,8 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
         top = metrics.most_common(1)[0][0] if metrics else (bad[0].get("metric") or "the new objective")
         if decided:
             what = (f"{len(unpriced)} of {len(runs)} runs measure {top}, which is not tied to the target {target}"
-                    if metrics else f"a change of objective to {top} has no yes from the owner")
+                    if metrics else f"a change of objective to {top} was recorded on the owner's measure, which changes "
+                                    f"only in the registry")
             out.append(issue(cat, "loop-objective-drift", [w], ev,
                              f"{w}: {what}: tie the metric to the target, or get the owner's yes on a new measure",
                              part="untied"))
@@ -974,7 +972,8 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
 
 
 # Why a target's decided does not count (of_loops' decided_unresolved_why, of_studio; docs/diagnose.md §4.1).
-_UNRESOLVED = {"not_found": "the log holds no answered ask of the owner or prompt a person typed with that id",
+_UNRESOLVED = {"not_found": "the log holds no person's yes with that id (an ask's yes option they chose, or their own "
+                            "prompt in their conductor's session)",
                "unread": "the event log could not be read to look it up",
                "not_looked_up": "it was not looked up in a log"}
 

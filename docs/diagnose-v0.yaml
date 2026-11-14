@@ -260,7 +260,7 @@ rules:
     remedies:
       unpriced: ["price the metric in the target's money (measures.to_money) before more work on it", return to the target metric]
       untied: ["tie the metric to the target the owner decided (measures.to_target), or return to the target metric",
-               "get the owner's yes on a new measure (of loop decision change_objective --metric --decided)"]
+               "get the owner's yes on a new measure: the structure keeper rewrites the target and its decided in the registry"]
       context: ["report the part beside the target, and move the work inside the segment: a lever on a time or a rule between its start and end",
                 "restate a hypothesis about the part to the owner as an inference, never a finding"]
 

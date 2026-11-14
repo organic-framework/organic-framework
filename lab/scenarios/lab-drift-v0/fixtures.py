@@ -1018,13 +1018,16 @@ SCENARIOS += [
                     doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6"),
     _yes(_loop_case("loop-objective-drift/negative-tied-to-target", _UNTIED, "negative", rule="ap.loop-objective-drift",
                     doc=_loop_doc(target=_DECIDED, measures=_TIED)), "01a1d957-c8b6"),
-    _yes(_loop_case("loop-objective-drift/positive-change-without-yes",
-                    _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms")],
-                    "positive", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6"),
-    _yes(_loop_case("loop-objective-drift/negative-change-with-yes",
+    # on the owner's measure no change of objective is the loop's to record, one naming a yes included (PR 168 review)
+    _yes(_loop_case("loop-objective-drift/positive-change-on-owners-measure",
                     _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms",
                                                    decided="01a1d980-1111")],
-                    "negative", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6", "01a1d980-1111"),
+                    "positive", rule="ap.loop-objective-drift", doc=_loop_doc(target=_DECIDED)), "01a1d957-c8b6", "01a1d980-1111"),
+    # the same change of objective with its money on a priced loop has its basis, as before
+    _loop_case("loop-objective-drift/negative-change-priced",
+               _climb(1, 6, "h1") + [_ldecide(1, "2026-11-07T09:00Z", decision="change_objective", metric="latency_ms",
+                                              to_money="USD per ms from the race arithmetic")],
+               "negative", rule="ap.loop-objective-drift"),
     # a decided id that is no person's yes in the log: the tied measure counts for nothing, and the runs are unpriced
     _loop_case("loop-objective-drift/positive-decided-unresolved", _UNTIED, "positive", rule="ap.loop-objective-drift",
                doc=_loop_doc(target=_DECIDED, measures=_TIED)),
