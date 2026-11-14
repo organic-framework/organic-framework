@@ -83,7 +83,8 @@ ingress:
 networkPolicy:
   enabled: true
   # Who may reach the server: the connector's or the ingress controller's pods, by namespace AND pod labels (both
-  # keys in one entry). An entry with a namespaceSelector alone is refused at render: it admits every pod there.
+  # keys in one entry). An entry with a namespaceSelector alone, or an empty podSelector, is refused at render: it
+  # admits every pod there.
   ingressFrom:
     - namespaceSelector:
         matchLabels:
@@ -100,8 +101,8 @@ networkPolicy:
         matchLabels:
           app: clickhouse
   clickhousePort: 8123
-  # The cluster's DNS pods (CoreDNS on k3s, EKS, kubeadm). A cluster that resolves through a node-local cache on a
-  # link-local address names it here as an ipBlock.
+  # The cluster's DNS pods (CoreDNS on k3s, EKS, kubeadm). A cluster that resolves through a node-local cache names
+  # its one link-local address here as an ipBlock /32 (for example 169.254.20.10/32), never the whole range.
   dnsTo:
     - namespaceSelector:
         matchLabels:
