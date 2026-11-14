@@ -722,7 +722,7 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
     return out
 
 
-# ------------------------------------------------------------------ development loops (RFC 0005 §6; diagnose.md 2.16-2.22)
+# ------------------------------------------------------------------ development loops (RFC 0005 §6; diagnose.md 2.16-2.22, 2.28)
 # Each reads the loop projection of diagnose.md §4.1, of_model.loops(model) (of_studio), per work; affected [<work>],
 # evidence.work routes the issue to the doer or the work's owner (the run). Times in the projection are epoch seconds.
 
@@ -796,6 +796,7 @@ def rule_loop_checkpoint(model, rows, a, b, cat, spec):
 
 
 def rule_loop_plateau(model, rows, a, b, cat, spec):
+    """v1 (2026-11-14): a run on a proxy not shown to hold is no cycle, as it stays out of the card's curve and plateau (diagnose.md §4.1; docs/registry.md, Works, "Where a reading is taken")."""
     out = []
     k, share = _t(spec, "cycles_gte", 3), _t(spec, "gain_share_lt", 0.01)
     for w, lp in _loops(model).items():
@@ -803,7 +804,7 @@ def rule_loop_plateau(model, rows, a, b, cat, spec):
         sign = -1 if (lp.get("target") or {}).get("better") == "lower" else 1
         pts = sorted(((r["ended_at"], r["value"]) for r in lp.get("runs") or []
                       if r.get("value") is not None and r.get("ended_at") is not None and r["ended_at"] < b
-                      and (r.get("metric") or target) == target), key=lambda p: p[0])
+                      and (r.get("metric") or target) == target and not _unheld(r)), key=lambda p: p[0])
         if len(pts) < k + 1 or pts[-1][0] < a:
             continue
         steps = []
@@ -991,6 +992,72 @@ def rule_loop_eval_bottleneck(model, rows, a, b, cat, spec):
             n, m = max(hot.items(), key=lambda kv: kv[1]["wait_share"])
             out.append(issue(cat, "loop-eval-bottleneck", [w], {"work": w, "rungs": hot},
                              f"{w}: runs on {n} waited {m['wait_share']:.0%} of their time: elevate the rung or use a cheaper one"))
+    return out
+
+
+_HELD = ("held", "not_held", "unknown")
+
+
+def _unheld(r):
+    """The run's proxy as the projection gives it (diagnose.md §4.1), when the run is a proxy not shown to hold (held
+    not_held or unknown); None when it is no proxy, or one whose condition held (taken where its event happens)."""
+    p = r.get("proxy")
+    if not isinstance(p, dict):
+        return None
+    held = str(p.get("held") or "unknown")
+    held = held if held in _HELD else "unknown"
+    return None if held == "held" else dict(p, held=held)
+
+
+def _reading(r):
+    p = _unheld(r) or {}
+    return {"run": r.get("id"), "rung": r.get("rung"), "hypothesis": r.get("hypothesis"), "metric": r.get("metric"),
+            "observed_at": r.get("observed_at"), "proxy_for": p.get("for"), "valid_when": p.get("valid_when"),
+            "held": p.get("held"), "accepted": r.get("accepted")}
+
+
+def rule_loop_observed_elsewhere(model, rows, a, b, cat, spec, parts=("decision", "accepted")):
+    """RFC 0005 §6, rule 8 (§4.3; docs/registry.md, Works, "Where a reading is taken"; hand-over e640ea57). A reading taken
+    anywhere else than its event is a proxy, and it decides nothing until its condition (valid_when) is shown to hold.
+    Part `decision`: a keep or a drop in the window on a hypothesis whose every run before it is a proxy not shown to hold
+    (held not_held or unknown), written past `of loop`'s refusal or before it existed. Part `accepted`: a run that ended
+    in the window on such a proxy carries `accepted`, which is never judged on it. One is enough. One issue per work;
+    `decision` names it when both fire. It reads runs[].proxy and runs[].observed_at, of_studio's projection of
+    of_platform's run fields; while no run of a declared loop carries either, it reports blocked."""
+    out, located = [], False
+    for w, lp in _loops(model).items():
+        runs = sorted(lp.get("runs") or [], key=lambda r: r.get("ended_at") or 0)
+        located = located or any((r.get("observed_at") or r.get("proxy")) and (r.get("ended_at") or 0) < b for r in runs)
+        decisions = []
+        for d in (lp.get("decisions_all") or []) if "decision" in parts else []:
+            t = d.get("ts") or 0
+            if d.get("kind") not in ("keep", "drop") or not d.get("hypothesis") or not a <= t < b:
+                continue
+            before = [r for r in runs if r.get("hypothesis") == d["hypothesis"] and (r.get("ended_at") or 0) <= t]
+            if before and all(_unheld(r) for r in before):
+                decisions.append({"decision": d["kind"], "hypothesis": d["hypothesis"], "ts": t,
+                                  "runs": [_reading(r) for r in before][-10:]})
+        accepted = [_reading(r) for r in runs if "accepted" in parts and _ended_in(r, a, b) and _unheld(r)
+                    and r.get("accepted") is not None]
+        if not decisions and not accepted:
+            continue
+        s = decisions[-1]["runs"][-1] if decisions else accepted[-1]
+        nudge = (f"{s['metric']} was read at {s['observed_at'] or 'a point the run does not name'}, and the event happens at "
+                 f"{s['proxy_for'] or 'a point the proxy does not name'}: report it as not observed there, or run it on the "
+                 f"data where {s['valid_when'] or 'its condition'} held")
+        if decisions:
+            d = decisions[-1]
+            more = f" ({len(decisions)} decisions)" if len(decisions) > 1 else ""
+            what = f"the {d['decision']} of hypothesis {d['hypothesis']} rests only on runs on a proxy not shown to hold{more}"
+        else:
+            n = len(accepted)
+            what = f"{n} run{'s' if n > 1 else ''} on a proxy not shown to hold carr{'y' if n > 1 else 'ies'} an accept"
+        ev = {"work": w, "observed_at": s["observed_at"], "proxy_for": s["proxy_for"], "valid_when": s["valid_when"],
+              "held": s["held"], "decisions": decisions[-10:], "accepted_runs": accepted[-20:]}
+        out.append(issue(cat, "loop-observed-elsewhere", [w], ev, f"{w}: {what}: {nudge}",
+                         part="decision" if decisions else "accepted"))
+    if not out and not located:
+        return [], ["of.loop_run.observed_at"]
     return out
 
 
@@ -1337,6 +1404,7 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "loop-cheapest-rung": rule_loop_cheapest_rung, "loop-checkpoint": rule_loop_checkpoint,
          "loop-plateau": rule_loop_plateau, "loop-wip": rule_loop_wip, "loop-babysit-model": rule_loop_babysit_model,
          "loop-objective-drift": rule_loop_objective_drift, "loop-eval-bottleneck": rule_loop_eval_bottleneck,
+         "loop-observed-elsewhere": rule_loop_observed_elsewhere,
          "unkept-system": rule_unkept_system, "off-map-work": rule_off_map_work,
          "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
          "unsourced-requirement": rule_unsourced_requirement}

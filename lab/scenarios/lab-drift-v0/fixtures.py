@@ -1032,3 +1032,58 @@ SCENARIOS += [
     _loop_case("loop-objective-drift/positive-decided-unresolved", _UNTIED, "positive", rule="ap.loop-objective-drift",
                doc=_loop_doc(target=_DECIDED, measures=_TIED)),
 ]
+
+
+# ---- loop-observed-elsewhere, diagnose.md 2.28 (of_field-analyst, v0 2026-11-14; hand-over e640ea57, docs/registry.md
+# Works, "Where a reading is taken"): race_margin_ms is read at our own nodes and stands for the time at the block's
+# builder, valid only when one of our own nodes built the block. One climb on the target, read where it happens, keeps the
+# other loop rules quiet; the case adds runs on the proxy (hypothesis h2), as of loop run writes them or past it.
+_SEEN_DOC = _loop_doc(target={"metric": "day_pass", "money": "USD per day", "stake": "65 USD a day",
+                              "observed_at": "the replay's revenue ledger"},
+                      measures=[{"name": "race_margin_ms", "observed_at": "our own nodes' receive time of the rival's transaction",
+                                 "proxy_for": {"at": "the block's builder", "valid_when": "one of our own nodes built the block"},
+                                 "to_money": "won races x margin"}])
+
+
+def _lseen(i, ts, hyp, held=None, accepted=None):
+    pl = {"work": _LW, "run": f"r{i}", "rung": "offline", "hypothesis": hyp, "metric": "race_margin_ms", "value": 4.0,
+          "ended_at": ts}
+    if held:
+        pl["proxy"] = {"for": "the block's builder", "valid_when": "one of our own nodes built the block", "held": held}
+    if accepted is not None:
+        pl["accepted"] = accepted
+    return ev(f"lr{i}", ts, "of.loop_run", "s-bot_search", pl, position="bot_search")
+
+
+SCENARIOS += [
+    _loop_case("loop-observed-elsewhere/positive-decision",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", "not_held"), _lseen(12, "2026-11-06T17:00Z", "h2"),
+                                     _ldecide(1, "2026-11-07T09:00Z", hypothesis="h2", decision="drop")],
+               "positive", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+    _loop_case("loop-observed-elsewhere/positive-accepted",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", "unknown", accepted=True)],
+               "positive", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+    # the run limited to the data where the condition held counts as taken where the event happens
+    _loop_case("loop-observed-elsewhere/negative-held",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", "held", accepted=True),
+                                     _ldecide(1, "2026-11-07T09:00Z", hypothesis="h2", decision="drop")],
+               "negative", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+    # a keep that also rests on runs on the target, read where it happens
+    _loop_case("loop-observed-elsewhere/negative-observed-run",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h1", "not_held"),
+                                     _ldecide(1, "2026-11-07T09:00Z", hypothesis="h1", decision="keep")],
+               "negative", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+    # a direct reading whose money chain rests on the proxy (chain_proxy_for, docs/registry.md, Works): its runs decide
+    _loop_case("loop-observed-elsewhere/negative-chain-proxy",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", accepted=True),
+                                     _ldecide(1, "2026-11-07T09:00Z", hypothesis="h2", decision="drop")],
+               "negative", rule="ap.loop-observed-elsewhere",
+               doc=_loop_doc(measures=[{"name": "race_margin_ms", "observed_at": "our own clocks, from the receipt to the send",
+                                        "to_money": "won races x margin",
+                                        "chain_proxy_for": {"at": "the block's builder",
+                                                            "valid_when": "one of our own nodes built the block"}}])),
+    # a proxy run as of loop run writes it: no accept, no decision on it
+    _loop_case("loop-observed-elsewhere/negative-proxy-reported",
+               _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", "not_held")],
+               "negative", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+]
