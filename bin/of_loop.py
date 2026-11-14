@@ -43,9 +43,11 @@ HUMAN_ANSWER = "owner"  # `by` of an answer a person gave: the popup, the owner'
 _ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,35}$")
 
 
-def resolve_decided(conn, did):
+def resolve_decided(conn, did, typed_by_person=None):
     """(kind, event id) of the owner's yes that DID names in the log, or None:
-    - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin;
+    - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
+      where only the person types: TYPED_BY_PERSON(position, host id) says so (bin/of: the session holding a
+      conductor, or this machine when its owner.yaml names its owner); without it, any such prompt;
     - 'ask': an ask (of.agent_question) with an answer by the owner (`by: owner`), not an agent's closure.
     DID is an event id or its prefix of at least its first two groups, or an ask's short id (its last 8 characters, as
     `of asks` prints it); one that names no event, or several, is None. Reads by the primary key, and by one indexed
@@ -54,7 +56,7 @@ def resolve_decided(conn, did):
     did = str(did or "").strip().lower()
     if not _ID.match(did) or (len(did) < 13 and not re.fullmatch(r"[0-9a-f]{8}", did)):
         return None
-    cols = "event_id, name, ts, payload"
+    cols = "event_id, name, ts, payload, position, host_id"
     found = {r[0]: r for r in conn.execute(f"SELECT {cols} FROM event WHERE event_id >= ? AND event_id < ? LIMIT 2",
                                            (did, did + "~"))}
     if re.fullmatch(r"[0-9a-f]{8}", did):
@@ -63,7 +65,7 @@ def resolve_decided(conn, did):
             if r[0].endswith(did)})
     if len(found) != 1:
         return None
-    eid, name, ts, pl = next(iter(found.values()))
+    eid, name, ts, pl, position, host = next(iter(found.values()))
     p = json.loads(pl or "{}")
     if name == "of.human_prompt":
         origin = p.get("origin")
@@ -72,7 +74,8 @@ def resolve_decided(conn, did):
             c = json.loads(cp or "{}")
             if c.get("event_id") == eid:
                 origin = c.get("origin")
-        return ("prompt", eid) if origin == "human" else None
+        where = typed_by_person is None or typed_by_person(position, host)
+        return ("prompt", eid) if origin == "human" and where else None
     if name == "of.agent_question":
         for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ?",
                                   (ts,)):
@@ -108,7 +111,7 @@ def check_loop(loop, wid, warn="warning: ", resolve=None):
         owners = None
     elif not found:
         out.append(f"{tag}: target.decided {owners!r} is not the owner's yes in this machine's log (an ask the owner "
-                   "answered, or a prompt a person typed): it lifts nothing until it is")
+                   "answered, or a prompt typed in their conductor's session): it lifts nothing until it is")
         owners = None
     if not isinstance(t, dict):
         out.append(f"{tag}: target is required (metric, and money unless the owner decided the measure)")
@@ -274,7 +277,7 @@ def target_line(loop, resolve):
         return line
     if not owners_yes(loop, resolve):
         return (line + f"; it names {d} as the owner's yes, but this machine's log holds no such yes (an ask the owner "
-                       "answered, or a prompt a person typed): unresolved, so it is not the owner's decision and the loop "
+                       "answered, or a prompt typed in their conductor's session): unresolved, so it is not the owner's decision and the loop "
                        "needs its chain to money")
     line += (f"; the owner decided this measure ({d}): its money is reported beside it"
              + (f" as a reading ({' '.join(str(t['money']).split())})" if isinstance(t.get("money"), str) and t["money"].strip() else "")

@@ -161,7 +161,8 @@ def cli_org(root, loop):
         yaml.safe_dump({"organization": "lab", "systems": {"s": {"name": "S", "kind": "target"}},
                         "positions": [{"name": "lab_doer", "system": "s", "role": "doer", "enrolled": True},
                                       {"name": "lab_owner", "system": "s", "role": "owner", "enrolled": True},
-                                      {"name": "lab_other", "system": "s", "role": "other", "enrolled": True}],
+                                      {"name": "lab_other", "system": "s", "role": "other", "enrolled": True},
+                                      {"name": "lab_conductor", "system": "s", "role": "conductor"}],
                         "works": {"w-speed": {"title": "Speed", "kind": "rfc", "owner": "lab_owner",
                                               "doers": ["lab_doer"], "loop": loop}}}, fh)
     orgs = os.path.join(root, "orgs.yaml")
@@ -180,15 +181,17 @@ class Yeses:
         self.path = os.path.join(root, "state", "of.db")
         self.conn = of_store.connect(self.path)
 
-        def add(name, payload):
-            rec = of_events.record(name, payload, position="lab_doer")
+        def add(name, payload, position="lab_doer"):
+            rec = of_events.record(name, payload, position=position)
             of_store.add_event(self.conn, rec)
             return rec["of.event.id"]
         import time
-        self.prompt = add("human_prompt", {"origin": "human", "text": "reaction time is the target, I accept the risk"})
+        self.prompt = add("human_prompt", {"origin": "human", "text": "reaction time is the target, I accept the risk"},
+                          position="lab_conductor")  # typed in the session holding the person's conductor
         time.sleep(0.005)  # alone in its millisecond: its first two groups name it only
-        self.injected = add("human_prompt", {"origin": "injected", "text": "a relayed message"})
-        self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"})
+        self.injected = add("human_prompt", {"origin": "injected", "text": "a relayed message"}, position="lab_conductor")
+        self.corrected = add("human_prompt", {"origin": "human", "text": "typed by a tool"}, position="lab_conductor")
+        self.elsewhere = add("human_prompt", {"origin": "human", "text": "typed in a doer's pane"})
         add("prompt_origin", {"event_id": self.corrected, "origin": "injected", "evidence": "turnOrigin"})
         self.ask = add("agent_question", {"questions": [{"question": "p50 instead of p99?"}]})
         add("agent_question_answered", {"ask_id": self.ask, "ask_ids": [self.ask], "by": "owner", "via": "asks-ui",
@@ -235,12 +238,14 @@ class OwnersMeasureTest(unittest.TestCase):
             y = Yeses(root)
             seen = []
             y.conn.set_trace_callback(seen.append)
-            r = lambda d: of_loop.resolve_decided(y.conn, d)  # noqa: E731
+            person = lambda pos, host: pos == "lab_conductor"  # noqa: E731
+            r = lambda d: of_loop.resolve_decided(y.conn, d, person)  # noqa: E731
             self.assertEqual(r(y.prompt), ("prompt", y.prompt))                 # a prompt a person typed
             self.assertEqual(r(y.prompt[:13]), ("prompt", y.prompt))            # by its first two groups
             self.assertEqual(r(y.ask), ("ask", y.ask))                          # an ask the owner answered
             self.assertEqual(r(y.ask[-8:]), ("ask", y.ask))                     # by its short id, as of asks prints it
-            for no in (y.injected, y.corrected, y.closed, y.open, y.closed[-8:], "01a1d999-0000", y.prompt[:8], "",
+            self.assertEqual(of_loop.resolve_decided(y.conn, y.elsewhere), ("prompt", y.elsewhere))  # no place rule
+            for no in (y.injected, y.corrected, y.elsewhere, y.closed, y.open, y.closed[-8:], "01a1d999-0000", y.prompt[:8], "",
                        None, "x' OR 1=1 --", "owner"):
                 self.assertIsNone(r(no), no)                                    # an agent's word or nothing never counts
             reads = [q for q in seen if "FROM event" in q]
@@ -310,7 +315,8 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)                                # (3) a chain to money is not the owner's yes
             self.assertIn("--decided", r.stderr)
             self.assertNotEqual(run("decision", "w-speed", "change_objective", "--decided", y.ask[-8:]).returncode, 0)
-            for no in ("01a1d999-0000", y.closed[-8:], y.injected):             # an id that names no yes of the owner
+            for no in ("01a1d999-0000", y.closed[-8:], y.injected, y.elsewhere):  # no yes of the owner, or not where
+                # only the person types (a doer's pane)
                 r = run("decision", "w-speed", "change_objective", "--metric", "p50 ms", "--decided", no)
                 self.assertNotEqual(r.returncode, 0, no)
                 self.assertIn("is not the owner's yes in this machine's log", r.stderr)
@@ -373,9 +379,9 @@ class OwnersMeasureTest(unittest.TestCase):
         loader.exec_module(of)
         with tempfile.TemporaryDirectory() as root:
             y = Yeses(root)
-            resolve = of._decided_resolver(y.conn)
             orgs = cli_org(root, owned(y.prompt))
             positions, _ = of.load_positions(orgs)
+            resolve = of._decided_resolver(y.conn, positions)
             by = {p["name"]: p for p in positions}
             self.assertEqual([(w, r) for w, r, _ in of.position_loops(by["lab_owner"], orgs)], [("w-speed", "owner")])
             for name, role in (("lab_owner", "owner"), ("lab_doer", "doer")):
