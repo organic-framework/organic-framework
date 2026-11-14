@@ -1333,11 +1333,14 @@ _TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|heade
 # G24 in code: what only a person does, written by code (a tripwire; docs/guard.md G24): the asks popup's and the
 # conductor chat's writers, the relay's typing as a person's channel, and an emit or record of the events that say a
 # person answered, typed, or approved (of_server's trust review of organic-framework PR 168)
+_PERSON_ACT_NAMES = r"['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved)['\"]"
 _PERSON_ACT_CODE = re.compile(
     r"\bof_asks_answer\b[\s\S]*?\b(?:record|not_a_question|answer_blocked|deliver)\s*\("
     r"|\bof_asks_chat\b[\s\S]*?\b(?:record|answer)\s*\("
     r"|\bherdr_deliver\s*\("
-    r"|\b(?:emit|record)\s*\(\s*['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved)['\"]")
+    r"|\bof_hook\b[\s\S]*?\b(?:main|handle)\s*\("  # the collector's entry, fed a prompt (of_review on PR 170)
+    r"|\b(?:emit|record)\s*\((?:\s*|[\s\S]{0,400}?\bkind\s*=\s*)" + _PERSON_ACT_NAMES +
+    r"|\badd_event\s*\([\s\S]*?" + _PERSON_ACT_NAMES + r"|" + _PERSON_ACT_NAMES + r"[\s\S]*?\badd_event\s*\(")
 _REMOVERS = {"rm", "unlink", "shred", "truncate", "mv"}
 _COPIERS = {"cp", "install", "rsync", "ln", "ditto"}
 _IN_PLACE = {"sed", "gsed", "perl", "ruby"}
@@ -1435,6 +1438,23 @@ PERSON_ACT_DENY = ("code that writes what only a person does: an answer to an as
                    "and messages another with `of send`")
 TOOL_TOKEN_DENY = ("a shared tool server's access token, which only Claude Code reads, through the helper it runs "
                    "itself when it connects (docs/guard.md G23; docs/tools.md §4a)")
+
+
+def _hook_entry(head, args):
+    """G24: the collector's own entry (`of hook <event>`, `bin/of_hook.py`) run from an agent's command line. Fed a
+    prompt for any session on stdin, it records that prompt as the person's (of_review on organic-framework PR 170).
+    Claude Code runs the hook itself, as its own child, which no Bash call is."""
+    head, words = _script_of(head, args)
+    if any(w in ("-h", "--help") for w in words):
+        return None
+    if not ((head == "of" and words[:1] == ["hook"]) or head == "of_hook.py"):
+        return None
+    if PERSON_ACT_MODE == "deny":
+        return PERSON_ACT_DENY, "of hook"
+    note = ("the collector's own entry run from a command line", "of hook", PERSON_ACT_NOTE)
+    if note not in _WARNINGS:  # 20 runs in 21 days, 17 of them probes in a temporary HOME: it warns first
+        _WARNINGS.append(note)
+    return None
 
 
 def _tool_token_deny(head, args):
@@ -2194,7 +2214,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     return hit
             hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
                 or _memory_deny(head, args) \
-                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) \
+                or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) or _hook_entry(head, args) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
                                                            **({"__lab_link": "1"} if lab_link else {})}) \
@@ -4144,3 +4164,86 @@ def authority_contacts(tool, tool_input):
             if h and authority_host(h):
                 out.append((h, tool))
     return list(dict.fromkeys(out))
+
+
+# G25: typing into a pane is declared, never taken for a person's words (of_server's trust review of
+# organic-framework PR 168; of_architect's conditions, msg 01a1d9ab-6b08). The hook gives origin human to any text
+# that reaches a pane undeclared, so text an agent's command types through herdr's CLI would count as the person's
+# prompt (closing their asks, a loop's decided yes). The guard declares it instead of denying it: 160 distinct agent
+# commands typed into other panes in 21 days, from about ten positions, live flows all. Text it can read is declared
+# by its digest; typing it cannot read (keys, a substitution, a variable) is declared for the whole target pane
+# ("doubt downgrades"). A declaration only downgrades a prompt to injected.
+_HERDR_TYPING = {("pane", "send-text"): "text", ("pane", "run"): "text", ("agent", "prompt"): "text",
+                 ("pane", "send-keys"): "keys", ("agent", "send-keys"): "keys"}
+_HERDR_REMOTE_OPTS = ("--machine", "--remote")  # typing on another machine: not declared here (docs/guard.md G25)
+_HERDR_PANE = re.compile(r"^w\w+:p\w+$")
+_OWN_PANE = re.compile(r"^\$\{?HERDR_PANE_ID\}?$")
+_BRACKETED_PASTE = re.compile(r"\x1b\[20[01]~")
+
+
+def typed_digest(text):
+    """The digest a declaration and the hook compare (of_architect's condition 2: normalized on both sides): bracketed
+    paste markers, CR and CRLF, and the trailing Enter or newline removed, then stripped."""
+    import hashlib
+    t = _BRACKETED_PASTE.sub("", str(text or "")).replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(t.encode()).hexdigest()
+
+
+def _unread(word):
+    return "$" in word or "__OFSUB__" in word or "`" in word
+
+
+def typing_declarations(cmd, depth=0):
+    """[{target, kind, sha256}] for each place a shell command types into a pane through herdr's CLI: target is
+    ('pane', id), ('agent', name or id), ('own', None) for $HERDR_PANE_ID, or ('unknown', None); sha256 is the
+    typed text's typed_digest, or None when the guard cannot read it (keys, a substitution, a variable). Pure: the
+    hook writes the declarations (of_hook._declare_typing), so a replay can call it."""
+    if depth > 4:
+        return []
+    out = []
+    try:
+        text, subs, docs, _ = _scan(cmd)
+        pipes = _split(text)
+    except (ValueError, IndexError, RecursionError):
+        return [{"target": ("unknown", None), "kind": "unparsed", "sha256": None}] if "herdr" in str(cmd) else []
+    for sub in subs:
+        out += typing_declarations(sub, depth + 1)
+    for _, body, opener in docs:
+        if _head(opener) in _SHELLS:
+            out += typing_declarations(body, depth + 1)
+    for pipe in pipes:
+        for kind, raw in pipe:
+            if kind == "sub":
+                out += typing_declarations(raw, depth + 1)
+                continue
+            try:
+                s = _simple(raw)
+            except (ValueError, IndexError):
+                s = None
+            if not s or s[0] != "herdr" or not isinstance(s[1], list):
+                continue
+            args = list(s[1])
+            remote = False
+            while args and args[0].startswith("--"):
+                opt = args.pop(0)
+                remote = remote or opt.split("=", 1)[0] in _HERDR_REMOTE_OPTS
+                if "=" not in opt and args:
+                    args.pop(0)
+            how = _HERDR_TYPING.get(tuple(args[:2]))
+            if not how or remote:
+                continue
+            rest = [a for a in args[2:] if not a.startswith("--")]
+            target = rest[0] if rest else ""
+            if _OWN_PANE.match(target):
+                tgt = ("own", None)
+            elif not target or _unread(target):
+                tgt = ("unknown", None)
+            elif args[0] == "pane" or _HERDR_PANE.match(target):
+                tgt = ("pane", target)
+            else:
+                tgt = ("agent", target)
+            payload = rest[1:]
+            readable = how == "text" and len(payload) == 1 and not _unread(payload[0]) and payload[0] != "-"
+            out.append({"target": tgt, "kind": " ".join(args[:2]),
+                        "sha256": typed_digest(payload[0]) if readable else None})
+    return out

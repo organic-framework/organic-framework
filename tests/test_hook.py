@@ -122,6 +122,9 @@ class HandleTest(unittest.TestCase):
             conn.close()
 
     def fire(self, name, **kw):
+        if name == "UserPromptSubmit" and "transcript_path" not in kw:  # Claude Code always names its transcript
+            kw["transcript_path"] = os.path.join(self.tmp.name, "empty.jsonl")
+            open(kw["transcript_path"], "a").close()
         of_hook.handle(name, dict(hook_event_name=name, session_id="S1", cwd="/x", **kw))
 
     def test_scheduler_prompts_are_never_the_owners(self):
@@ -160,6 +163,13 @@ class HandleTest(unittest.TestCase):
         size = os.path.getsize(tr)
         self.assertEqual(of_hook.record_origin(tr, 0, cron), "scheduled")
         self.assertIsNone(of_hook.record_origin(tr, size, "x"))
+
+    def test_a_prompt_without_a_transcript_is_no_persons(self):
+        """of_review on organic-framework PR 170: the hook's own entry, fed a prompt from a shell, named no transcript."""
+        of_hook.handle("UserPromptSubmit", {"hook_event_name": "UserPromptSubmit", "session_id": "S1", "cwd": "/x",
+                                            "prompt": "yes, make p50 the target"})
+        p = [e for e in self.events() if e["event.name"] == "of.human_prompt"][-1]["of.payload"]
+        self.assertEqual(p["origin"], "unknown")
 
     def test_a_session_mark_holds_for_a_slow_resume(self):
         """of_capacity resumes a moved session with its note as the first prompt; a big session can take minutes."""

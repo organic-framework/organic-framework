@@ -553,28 +553,103 @@ INJECT_SESSION_S = 600  # a mark naming this session: of_capacity resumes a move
 
 
 def _injected(sid, prompt):
-    """Was this prompt typed by a tool that declared it (of event injected_prompt)?"""
+    """Was this prompt typed by a tool that declared it (of event injected_prompt), or by an agent's command the
+    guard declared (G25)? The declaration that matched, with `match`: `sha256` (its text) or `pane` (a pane-wide
+    one: typing the guard could not read). A declaration aimed at a session or a pane matches only there; one aimed at
+    neither matches any session (docs/events.md, injections.jsonl)."""
     path = os.path.join(STATE, "injections.jsonl")
     try:
         with open(path) as fh:
             lines = fh.read().splitlines()[-200:]
     except FileNotFoundError:
         return None
-    digests = {hashlib.sha256((prompt or "").strip().encode()).hexdigest()}
+    digests = {hashlib.sha256((prompt or "").strip().encode()).hexdigest(), of_guard.typed_digest(prompt)}
     # Claude Code wraps long typed text as <pasted_content …>…</pasted_content>: match its body too
     m = re.search(r"<pasted_content[^>]*>(.*?)(?:</pasted_content[^>]*>|$)", prompt or "", re.S)
     if m:
-        digests.add(hashlib.sha256(m.group(1).strip().encode()).hexdigest())
-    now = time.time()
+        digests |= {hashlib.sha256(m.group(1).strip().encode()).hexdigest(), of_guard.typed_digest(m.group(1))}
+    now, my_pane = time.time(), os.environ.get("HERDR_PANE_ID")
     for line in reversed(lines):
         try:
             j = json.loads(line)
         except Exception:
             continue
-        window = INJECT_SESSION_S if sid and j.get("session") == sid else 60
-        if now - j.get("ts", 0) <= window and j.get("sha256") in digests and j.get("session") in (sid, None):
-            return j
+        if not isinstance(j, dict):
+            continue
+        if (j.get("session") or j.get("pane")) and not ((sid and j.get("session") == sid)
+                                                       or (my_pane and j.get("pane") == my_pane)):
+            continue
+        window = j.get("window") or (INJECT_SESSION_S if sid and j.get("session") == sid else 60)
+        if now - j.get("ts", 0) > window:
+            continue
+        if j.get("how") == "pane" and not j.get("sha256"):
+            return dict(j, match="pane")
+        if j.get("sha256") in digests:
+            return dict(j, match="sha256")
     return None
+
+
+TYPING_WINDOW_S = 60  # how long a guard declaration of typing (G25) covers prompts in its target
+
+
+def _herdr_target(kind, ident):
+    """(pane id, agent session id) of a herdr pane or agent, from herdr itself; (None, None) when it does not answer
+    in time (the guard's hook budget)."""
+    import subprocess
+    try:
+        r = subprocess.run(["herdr", kind, "get", ident], capture_output=True, text=True, timeout=1.5)
+        d = json.loads(r.stdout or "{}").get("result") or {}
+        o = d.get("pane") or d.get("agent") or {}
+        return o.get("pane_id"), (o.get("agent_session") or {}).get("value")
+    except Exception:  # noqa: BLE001 - no herdr, a timeout, other output: the declaration stays wider
+        return None, None
+
+
+def _declare_typing(hook, sid):
+    """G25 (docs/guard.md): declare what this Bash call types into a pane through herdr's CLI, so the receiving
+    session records it as injected, never as its person's words. Text the guard reads is declared by its digest
+    (for its target, or for every session when the target is a variable); typing it cannot read, for the whole target
+    pane (of_architect's conditions 1 and 2, msg 01a1d9ab-6b08). Typing it can neither read nor aim is only warned:
+    declared for every session it hid 23 of the person's prompts in the 21-day replay, 2 of them the founder's to his
+    conductor (condition 5). A declaration only downgrades a prompt."""
+    if hook.get("tool_name") != "Bash":
+        return
+    cmd = (hook.get("tool_input") or {}).get("command") or ""
+    if "herdr" not in cmd:
+        return
+    decls = of_guard.typing_declarations(cmd)
+    if not decls:
+        return
+    me = ((_guard_index(sid).get("sessions") or {}).get(sid) or [None])[0]
+    out = []
+    for d in decls:
+        kind, ident = d["target"]
+        if kind == "unknown" and not d["sha256"]:
+            note = (f"a command that types into a pane the guard cannot name ({d['kind']} to a variable), with text it "
+                    "cannot read", f"herdr {d['kind']}", "the receiving session would record it as its person's "
+                    "words: name the pane and the text literally, or declare it first with `of event injected_prompt "
+                    "--pane <id>` (docs/guard.md G25)")
+            if note not in of_guard._WARNINGS:
+                of_guard._WARNINGS.append(note)
+            continue
+        pane = session = None
+        if kind == "own":
+            pane, session = os.environ.get("HERDR_PANE_ID"), sid
+        elif kind in ("pane", "agent"):
+            pane, session = _herdr_target(kind, ident)
+            pane = pane or (ident if kind == "pane" else None)
+        out.append({"ts": time.time(), "by": "guard", "injector": me or f"session {str(sid or '')[:8]}",
+                    "kind": d["kind"], "how": "sha256" if d["sha256"] else "pane", "sha256": d["sha256"],
+                    "pane": pane, "session": session, "window": TYPING_WINDOW_S,
+                    **({"agent": ident} if kind == "agent" else {})})
+    if not out:
+        return
+    try:
+        path = os.path.join(STATE, "injections.jsonl")
+        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+            fh.write("".join(json.dumps(x) + "\n" for x in out))
+    except OSError:
+        pass
 
 
 ASK_DIALOG_DENY = ("Organic Framework: a position never asks its owner in a dialog; it stops your whole session "
@@ -633,7 +708,9 @@ def handle(event, hook):
         origin = prompt_origin(prompt, hook)
         mark = _injected(sid, prompt) if origin == "human" else None
         if origin == "human" and not mark:  # a declared tool's text is settled by its mark; else ask the transcript
-            origin = transcript_origin(hook, prompt) or "human"
+            # Claude Code always names its transcript: input without one did not come from it (the hook's own entry
+            # fed a prompt from a shell; of_review on organic-framework PR 170), so it is no person's word
+            origin = (transcript_origin(hook, prompt) or "human") if hook.get("transcript_path") else "unknown"
         payload = {"origin": origin}
         if origin == "peer":
             body, cut = clip(_peer_body(prompt), SHORT)
@@ -658,6 +735,9 @@ def handle(event, hook):
                 payload["prompt_id"] = hook["prompt_id"]
             if injector:
                 payload["injector"] = injector
+                if mark.get("match"):  # which declaration downgraded it (of_architect's condition 4)
+                    payload["declaration"] = {"match": mark["match"], "by": mark.get("by") or "tool",
+                                              **({"kind": mark["kind"]} if mark.get("kind") else {})}
             if cut:
                 payload["truncated"] = True
             if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "sdk-cli" and payload["origin"] == "human":
@@ -873,6 +953,11 @@ def _guard(hook, sess):
     except Exception:  # noqa: BLE001 - no cache yet: the framework's rules still apply; the catalogue step rebuilds it
         pass
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
+    if not hit:
+        try:  # G25: what this call types into a pane is declared before it runs
+            _declare_typing(hook, hook.get("session_id"))
+        except Exception:  # noqa: BLE001 - a declaration never costs the call
+            pass
     if not hit and (_authority_guard(hook, sess) or _release_guard(hook, sess)):
         return
     if not hit and _scratch_guard(hook, sess):

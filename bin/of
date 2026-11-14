@@ -5130,14 +5130,15 @@ def cmd_event(args):
     import of_events
     if args.kind == "injected_prompt":
         if args.text is None:
-            raise OfError("usage: of event injected_prompt --injector NAME [--session ID] --text TEXT")
+            raise OfError("usage: of event injected_prompt --injector NAME [--session ID] [--pane ID] --text TEXT")
         digest = hashlib.sha256(args.text.strip().encode()).hexdigest()
         of_events.emit("injected_prompt", {"injector": args.injector, "target_session": args.session,
-                                           "text_sha256": digest, "reason": args.reason})
+                                           "target_pane": args.pane, "text_sha256": digest, "reason": args.reason})
         path = os.path.join(of_events.STATE_DIR, "injections.jsonl")
         with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+            # --pane: matched only by the session in that herdr pane (docs/events.md, injections.jsonl)
             fh.write(json.dumps({"ts": time.time(), "session": args.session, "sha256": digest,
-                                 "injector": args.injector}) + "\n")
+                                 "injector": args.injector, **({"pane": args.pane} if args.pane else {})}) + "\n")
     elif args.kind == "published":
         if not (args.from_org and args.to_org and args.artifact):
             raise OfError("usage: of event published --from-org ORG --to-org ORG --artifact PATH[@REV] [--grant G] [--reason TEXT]")
@@ -6181,6 +6182,7 @@ def main(argv=None):
     e.add_argument("--grant")
     e.add_argument("--injector")
     e.add_argument("--session")
+    e.add_argument("--pane", help="injected_prompt: the herdr pane typed into (its session alone matches)")
     e.add_argument("--position")
     e.add_argument("--text")
     e.add_argument("--state")
