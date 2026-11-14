@@ -137,13 +137,17 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
 ### 2.5 Context overload — `ap.context-overload@0`
 
+*Built 2026-11-14 (`of_field-analyst`). It was specified on `of.correction`, an agent's correction of itself (`events.md`, backlog item 9), which was never recorded. It reads the owner's corrections instead, `of.founder_correction` (`of_platform`'s judge, RFC 0006 §2.4).*
+
 - **Signals:**
-  - compactions per active day (`of.compaction`);
-  - rereads of the same artifact;
-  - forgotten-fact errors: `of.correction` with kind `fact`, and owner prompts classified as re-explaining, within 2 hours after a compaction.
+  - compactions per active day (`of.compaction`); a day is active when the position's sessions recorded a hook or import event on it;
+  - rereads of the same artifact (not read yet);
+  - forgotten-fact errors: the owner's corrections of the position within 2 hours after one of its compactions, either of kind `fact` or repeating an earlier correction of the same rule (`repeat_of`: he explains again what it held before).
 - **Rule.** Over 7 days:
-  - compactions per active day ≥ max(4, 3 × the organization's median);
+  - compactions per active day ≥ max(4, 3 × the organization's median, over the positions active in the window);
   - and ≥ 2 forgotten-fact errors after compactions.
+- **Decider:** the structure keeper. Both remedies, a fresh holder and a split, are structure changes, as for chatty@2.
+- **Evidence:** the compactions, the active days and the rate, the organization's median and the floor it sets, and each correction with its kind, rule, `repeat_of` and the minutes since the compaction before it.
 - **Default remedy.**
   - A fresh holder with a written handover, if the load is history-bound (one long-lived session).
   - A split at a seam, if the working set itself is too big (many systems, many inbound edges: see §2.8).
@@ -219,13 +223,17 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
 ### 2.9 Missing verifier — `ap.missing-verifier@0`
 
+*Built 2026-11-14 (`of_field-analyst`) on the owner's corrections, `of.founder_correction`, for the reason given in 2.5.*
+
 - **Signals:**
-  - rework on a position's results: `reverts`/`fixes` relations on its WR, and `of.correction` on its claims;
-  - review evidence on the path: a review by another position or model, recorded as a work-record relation or a correction source.
+  - rework on a position's results: `reverts`/`fixes` relations on its WR (not recorded yet, `events.md` backlog item 10), and the owner's corrections of its results, those of kind `output` or `fact` (`correction_kinds`). Corrections of its method, scope or process are not rework on a result;
+  - review evidence on the path: a merged change of the position's in the window with at least one submitted review (`reviews` on its work record).
 - **Rule.** Over 7 days, all of:
   - (corrections + reverts) ÷ WR ≥ 0.2;
   - with ≥ 3 corrections;
   - and no review evidence on the position's path.
+- **What it cannot tell yet is a note, not an issue.** A position with ≥ 3 corrections of its results and no merged work has nothing to divide by. A position whose merged changes do not say whether they were reviewed cannot show the third condition: local commits carry no review count, nor do PRs imported before organic-framework 11aee30. When only some changes say, the issue counts only those.
+- **Decider:** the structure keeper. A review step and a verifier position are structure changes, as for chatty@2.
 - **Default remedy.** A verification step: a cross-model review before results go to the owner or to production. Or a verifier position for the class of result.
 - **ΔT basis:** rework avoided, plus decisions made on wrong facts avoided. *p* = 0.6. *m_decide* = 5 min.
 
@@ -599,9 +607,9 @@ score = *p* · (ΔT_direct + *v_c* · Δ*m_c* − *C_r*) / *m_decide*
 | 2.1, 2.2 | `rq-v0` (is a request) on `agent_message_in`; **`paste_source`** on `relay_paste` prompts, the session whose output was pasted, found at derive by matching the pasted text against other sessions' full assistant texts of the previous 24 h | `rq-v0`: of_classify (asked 2026-11-06), of_measures applies it meanwhile; `paste_source`: new, derive |
 | 2.3, 2.4, 2.6, 2.9, 2.10 (pair, organization) | WR attributed to positions; systems per WR | Both exist. Systems by paths come from `of import github`. Positions come from transcript PR links joined onto the merged PR, and, since 2026-11-10 (`of_platform`), from the `Position:` line of a PR body. On 2026-11-10 only 90 of the first user organization's 820 merged PRs in the window were attributed, so these rules were blocked |
 | 2.4, 2.8 | `blocked_on` with an end | backlog v1.1 item 7 |
-| 2.5 | `of.compaction` (v1); rereads; `of.correction` kind `fact` | v1; reread detection new; backlog item 9 |
+| 2.5 | `of.compaction` (v1); rereads; the owner's corrections | Compactions and `of.founder_correction` (RFC 0006 §2.4) exist, and the rule reads both from 2026-11-14. Reread detection: new |
 | 2.6 runtime | runtime writes as work records (deploys, host actions, settings) | `of.deployment` (backlog item 2); host actions: new |
-| 2.9 | `reverts`/`fixes` relations; review evidence | backlog item 10; review relation new |
+| 2.9 | `reverts`/`fixes` relations; review evidence; a denominator for positions whose results are answers, not merged work | Relations: backlog item 10. Review evidence: the review count on merged PRs (2.27's input); reviews of local commits and of answers: new |
 | 2.10 | reply and reference tracking on messages | new |
 | 2.11 | `of.mandate_changed` (v1.1); `reason_class` (item 11); MAST sampling | backlog; RFC §5.3.5 |
 | 2.12 | `mandate_functions` on positions | registry (`of_platform`, 2026-11-05); the stakeholder map as data is still new |
@@ -658,11 +666,11 @@ The columns:
 | owner-relay@1 | fired 3 | quiet | P/R 1.0, both halves; negatives: a busy pair (6 of 80), a unit owner's own unit | 3 tp, fire | — |
 | coordination-gap@1 | fired 4 | blocked (no work records, no `depends_on`) | P/R 1.0; reports blocked when a keeper is unobserved | 3 tp, fire | — |
 | over-coupled@3 | blocked (`wr.position`); 2026-11-10 with PRs attributed: 26 under v1, 6 under v2 | blocked | P/R 1.0; negatives: one-directional, a unit owner | — | — |
-| context-overload@0 | blocked (`of.correction`) | blocked | reports blocked (no `of.correction`) | — | not built |
+| context-overload@0 | 2026-11-14: quiet | 2026-11-14: quiet | P/R 1.0; negatives: every position compacting as often, an outlier corrected only on output and scope or long after a compaction; reports blocked without the owner's corrections | — | a real case; rereads |
 | fragmented-ownership@1 | blocked (`of.deployment`, `wr.position`) | blocked | code P/R 1.0; negatives: keeper named inside the windows, one window only | — | runtime part not built (no `of.deployment`) |
 | orphan-work@3 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
-| missing-verifier@0 | blocked (`of.correction`, `wr.position`) | blocked | reports blocked (no `of.correction`) | — | not built |
+| missing-verifier@0 | 2026-11-14: quiet; 1 note (a position that answers the owner, 7 corrections of its results, no merged work) | 2026-11-14: quiet; 1 note (`of_conductor`, 18 corrections of its results, no merged work) | P/R 1.0; negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed; reports blocked without the owner's corrections | — | a part for positions whose results are answers (both notes), with its denominator; reverts |
 | chatty@2 | fired 31 (pair 19, flood 5, nudges 7) | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges) | 2 tp (pair), fire | 19 pair issues to review |
 | unclear-mandate@1 | quiet | quiet | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding | — | — |
 | function-gap@0 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
@@ -685,7 +693,7 @@ The columns:
 
 The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live run above. Their real cases wait for the loop events of the search week (§4.1), derived from the runner records.
 
-`of.correction` is not recorded. Its likely source is the `correction` act of `oa-v1` (§7.2) once that is calibrated. Until then, context-overload and missing-verifier stay unbuilt.
+`of.correction` was never recorded. context-overload and missing-verifier read the owner's corrections, `of.founder_correction`, instead, and were built on 2026-11-14. With them every rule of the catalogue has a result in `lab-drift-v0`.
 
 ## 6. Implementation v0
 

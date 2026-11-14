@@ -370,8 +370,8 @@ SCENARIOS += [
 # a false positive, the negative is that case: a busy pair's status traffic and a unit owner's own unit (owner-relay@1),
 # an unobserved keeper (coordination-gap@1), a keeper named inside the windows (fragmented-ownership@1), a coordinator
 # by mandate (bottleneck-broker@1), schema adoption and onboarding (unclear-mandate@1), scratch paths and verdicts from
-# before rt-v4 (orphan-work cluster). context-overload and missing-verifier read of.correction, which is not recorded:
-# their check is that they report blocked.
+# before rt-v4 (orphan-work cluster). context-overload and missing-verifier read the owner's corrections
+# (of.founder_correction, from 2026-11-14); their own block below also checks that they report blocked without them.
 import datetime as _dt   # noqa: E402
 
 import of_model   # noqa: E402  (harness puts bin/ on the path)
@@ -763,14 +763,85 @@ SCENARIOS += [
 ]
 
 
-# ---- context-overload@0 and missing-verifier@0: not built, of.correction not recorded ----
-# Their other inputs are present (compactions; attributed work records); the check is that both report blocked.
+# ---- context-overload@0 and missing-verifier@0 (of_field-analyst, 2026-11-14): the owner's corrections ----
+# Both read of.founder_correction (docs/events.md), which replaced of.correction, never recorded. Without it both
+# report blocked, though their other inputs are present (compactions; attributed work records).
 SCENARIOS.append(_case(
     "blocked/no-corrections", _org_doc(),
     [ev(f"cx{k}", _at(_day("11-03", k % 2), 9 + k // 2), "of.compaction", "s-bot_search", {}, position="bot_search")
      for k in range(12)] +
     [_pr(f"mv{k}", _at(_day("11-02", k), 15), ["bot"], "bot_search", 8200 + k) for k in range(5)],
     ("ap.context-overload", ["bot_search"], "blocked"), ("ap.missing-verifier", ["bot_search"], "blocked")))
+
+
+def _cx(pos, days=("11-03", "11-04"), hours=range(6, 12)):
+    """Compactions of `pos`, one an hour, on each of `days`."""
+    return [ev(f"cx-{pos}-{d}-{h}", _at(d, h), "of.compaction", sid_of(pos), {"trigger": "auto"}, position=pos)
+            for d in days for h in hours]
+
+
+def _fc(i, ts, pos, kind, repeat_of=None):
+    """The owner's correction of `pos` as of_platform's judge records it."""
+    return ev(f"fc{i}", ts, "of.founder_correction", None,
+              {"position": pos, "kind": kind, "repeat_of": repeat_of, "rule": f"rule {i}", "prompt_id": f"hp{i}"}, source="of")
+
+
+def _calm(names=("bot_operator", "bot_nonce")):
+    """Positions active on three days with one compaction: a third of one a day."""
+    return turns(list(names)) + sum((_cx(n, days=("11-02",), hours=(8,)) for n in names), [])
+
+
+_LOST = [_fc(1, _at("11-03", 11, 30), "bot_search", "fact"), _fc(2, _at("11-04", 12), "bot_search", "method", "fc-old")]
+
+SCENARIOS += [
+    # six compactions a day against the others' third of one, and two corrections within two hours after one: a fact,
+    # and a rule the owner had given before
+    _case("context-overload/positive", _org_doc(), _calm() + _cx("bot_search") + _LOST,
+          ("ap.context-overload", ["bot_search"], "positive")),
+    # every position compacts as often (long sessions are the organization's way of working): no outlier
+    _case("context-overload/negative-everyone", _org_doc(),
+          turns(["bot_operator", "bot_nonce"]) + _cx("bot_operator") + _cx("bot_nonce") + _cx("bot_search") + _LOST,
+          ("ap.context-overload", ["bot_search"], "negative")),
+    # an outlier whose corrections are about its output and scope, or come long after a compaction
+    _case("context-overload/negative-unrelated", _org_doc(),
+          _calm() + _cx("bot_search") + [_fc(3, _at("11-03", 11, 30), "bot_search", "output"),
+                                         _fc(4, _at("11-04", 11, 45), "bot_search", "scope"),
+                                         _fc(5, _at("11-04", 18), "bot_search", "fact")],
+          ("ap.context-overload", ["bot_search"], "negative")),
+]
+
+
+def _rpr(i, ts, pos, reviews=0):
+    """A merged PR of `pos`; `reviews` None when its record does not say (a local commit, a PR before the count)."""
+    pl = {"source": "gh", "author": "founder-gh", "systems": ["bot"], "repo": "o/r", "number": 8300 + i}
+    if reviews is not None:
+        pl["reviews"] = reviews
+    return ev(f"rv{i}", ts, "of.work_record", sid_of(pos), pl, position=pos)
+
+
+_PRS = [_rpr(k, _at(_day("11-02", k), 15), "bot_search") for k in range(5)]
+_RESULTS = [_fc(10, _at("11-03"), "bot_search", "output"), _fc(11, _at("11-04"), "bot_search", "fact"),
+            _fc(12, _at("11-05"), "bot_search", "output")]
+
+SCENARIOS += [
+    # three corrections of its results against five merged PRs, none reviewed
+    _case("missing-verifier/positive", _org_doc(), _PRS + _RESULTS, ("ap.missing-verifier", ["bot_search"], "positive")),
+    # the same, but one PR had a review: there is a verifier on the path
+    _case("missing-verifier/negative-reviewed", _org_doc(), _PRS[:4] + [_rpr(9, _at("11-06", 15), "bot_search", 1)] + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+    # corrections of how it works (method, process), not of its results
+    _case("missing-verifier/negative-method", _org_doc(),
+          _PRS + [_fc(13 + k, _at(_day("11-03", k)), "bot_search", ("method", "process")[k % 2]) for k in range(4)],
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+    # three corrections against twenty merged PRs (15%)
+    _case("missing-verifier/negative-busy", _org_doc(),
+          [_rpr(20 + k, _at(_day("11-01", k % 7), 9 + k // 7), "bot_search") for k in range(20)] + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+    # merged work that does not say whether it was reviewed: a note, never an issue
+    _case("missing-verifier/negative-unknown-reviews", _org_doc(),
+          [_rpr(40 + k, _at(_day("11-02", k), 15), "bot_search", None) for k in range(5)] + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+]
 
 
 # chatty's default part divides by attributed merged PRs: with none attributed it reports blocked, not 12 per PR

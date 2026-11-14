@@ -73,11 +73,12 @@ rules:
     remedies: [merge if the working set fits one holder, publish the interface]
 
   context-overload:
-    version: 0
+    version: 0                   # built 2026-11-14 on of.founder_correction (of.correction was never recorded; diagnose.md 2.5)
     p: 0.5
     m_decide: 10
     thresholds: {compactions_per_active_day_gte: 4, median_multiple_gte: 3, forgotten_fact_errors_gte: 2, after_compaction_hours: 2}
-    needs: [of.compaction, of.correction]
+    needs: [of.compaction, of.founder_correction]   # a correction counts when its kind is fact or it repeats an earlier one
+    decider: structure_keeper    # its remedies, a fresh holder or a split, are structure changes (as chatty@2)
     delta_m: "owner re-explain prompts after compactions x minutes_per_prompt"
     remedies: [fresh holder with a written handover, split at a seam]
 
@@ -117,11 +118,12 @@ rules:
     remedies: [deputy or published interface for its most frequent request, split its interfaces]
 
   missing-verifier:
-    version: 0
+    version: 0                   # built 2026-11-14 on of.founder_correction (of.correction was never recorded; diagnose.md 2.9)
     p: 0.6
     m_decide: 5
-    thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3}
-    needs: [of.correction, of.work_record, wr.position]   # work-record relations (reverts, fixes) add code rework
+    thresholds: {rework_per_wr_gte: 0.20, corrections_gte: 3, correction_kinds: [output, fact]}
+    needs: [of.founder_correction, of.work_record, wr.position]   # work-record relations (reverts, fixes) will add code rework
+    decider: structure_keeper    # its remedies, a review step or a verifier position, are structure changes (as chatty@2)
     delta_m: "owner correction prompts on the position x minutes_per_prompt"
     remedies: [cross-model review before results reach the owner or production, verifier position]
 
