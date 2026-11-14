@@ -413,6 +413,23 @@ class Yeses:
         self.flipped = ask("p90?")
         answer(self.flipped, "yes, p50 is the target")
         answer(self.flipped, "no, keep p99")                                  # the latest answer counts
+        # amended asks (of ask --amend, docs/events.md of.ask_amended): resolved on the version the answer names
+        def amend(a, version, by="lab_doer", **changes):
+            add("ask_amended", {"ask_id": a, "version": version, "changed": list(changes), **changes, "by": by})
+        self.then_yes_moved = ask("p50, then the yes moved?")
+        answer(self.then_yes_moved, "yes, p50 is the target", version=1)      # answered at version 1, option 1
+        amend(self.then_yes_moved, 2, yes_option=2, text="p50, with the yes moved?")  # after it: the yes is option 2
+        self.then_reworded = ask("p50, then reworded?")
+        answer(self.then_reworded, "yes, p50 is the target", via="conductor", option=1, version=1)
+        amend(self.then_reworded, 2, options=["no, keep p99", "yes, p50 is the target"])  # option 1 is now the refusal
+        amend(self.then_reworded, 3, work="w-ops", text="Rotate the relay token?")  # work is not amendable: ignored
+        self.unversioned = ask("p50, answered with no version?")
+        amend(self.unversioned, 2, text="p50, answered with no version, reworded?")
+        answer(self.unversioned, "yes, p50 is the target")                    # no version on an amended ask: nothing
+        self.at_v2 = ask("p50 at version 2?", yes=None)
+        amend(self.at_v2, 2, options=["no, keep p99", "yes, p50 is the target"], yes_option=2)
+        amend(self.at_v2, 3, yes_option=1, by="lab_other")                    # by another position: ignored
+        answer(self.at_v2, "yes, p50 is the target", version=2)               # chose option 2 of version 2
         self.closed = add("agent_question", {"questions": [{"question": "p95?"}]})
         add("agent_question_answered", {"ask_id": self.closed, "ask_ids": [self.closed], "by": "lab_doer",
                                         "via": "status"})
@@ -471,6 +488,19 @@ class OwnersMeasureTest(unittest.TestCase):
             self.assertIsNone(of_loop.resolve_decided(y.conn, y.other + "#1", work="w-speed", goal_yes=y.other[-8:]))
             # a goal's own yes is not cited for a loop's target (docs/registry.md, Works)
             self.assertIsNone(of_loop.resolve_decided(y.conn, y.prompt, person, kinds=("ask",)))  # change_objective
+            # an amended ask resolves on the answered version: its yes, options, work and words (of_platform, message
+            # 01a1dbad-e794: an amend after the answer re-labels nothing)
+            self.assertEqual(r(y.then_yes_moved + "#1"), ("ask", y.then_yes_moved))
+            self.assertEqual(r(y.then_yes_moved + "#1").words,
+                             'asked "p50, then the yes moved?", chose option 1 "yes, p50 is the target"')
+            self.assertEqual(r(y.then_reworded + "#1"), ("ask", y.then_reworded))
+            self.assertEqual(r(y.then_reworded + "#1").words, 'asked "p50, then reworded?", chose option 1 "yes, p50 '
+                             'is the target"')
+            self.assertEqual(r(y.at_v2 + "#2"), ("ask", y.at_v2))               # the yes the version answered marks
+            self.assertEqual(r(y.at_v2 + "#2").words, 'asked "p50 at version 2?", chose option 2 "yes, p50 is the '
+                             'target"')
+            for no in (y.then_yes_moved + "#2", y.then_reworded + "#2", y.unversioned + "#1", y.at_v2 + "#1"):
+                self.assertIsNone(r(no), no)
             for no in (y.ask, y.bare + "#1", y.unmarked + "#1",                 # no option named; no person's channel;
                        y.refused + "#2",                                        # no yes marked; a refusal by its number
                        y.ask + "#2", y.refused + "#1", y.free + "#1",           # another option, a refusal, free text

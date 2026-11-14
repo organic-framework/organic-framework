@@ -78,7 +78,8 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
       agent's closure or `of asks answered`) chose exactly that option: its number (`option`, through the conductor's
       chat) or its text (the popup). A free-text answer, another option, a refusal or an ask of another work is no
       yes. This proves who chose which option, never that it is a yes on the measure: the structure keeper who cites
-      it in the registry checks the words (docs/registry.md, Works, "What the check proves"). GOAL_YES is accepted
+      it in the registry checks the words (docs/registry.md, Works, "What the check proves"). An amended ask resolves
+      on the version the answer names (of_asks.at_version): its work, options, yes and words. GOAL_YES is accepted
       and no longer read: a goal's own yes is not cited for a loop's target. Its words are the question and the chosen
       option;
     - 'prompt': an of.human_prompt with origin human, not corrected to another origin by of.prompt_origin, recorded
@@ -113,15 +114,8 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
                 origin = c.get("origin")
         where = typed_by_person is None or typed_by_person(position, host)
         return Yes("prompt", eid, _short(p.get("text"))) if origin == "human" and where else None
-    if name != "of.agent_question" or "ask" not in kinds or option is None:
+    if name != "of.agent_question" or "ask" not in kinds or option is None or work is None:
         return None
-    if work is None or p.get("work") != work:
-        return None
-    qs = p.get("questions") if isinstance(p.get("questions"), list) else []
-    q = qs[0] if qs and isinstance(qs[0], dict) else {}
-    opts = q.get("options") if isinstance(q.get("options"), list) else []
-    if not 1 <= option <= len(opts) or p.get("yes_option") != option:  # only the option filed as the yes (of ask
-        return None                                                   # --yes): a refusal never is, nor an unmarked ask
     last = None
     for (ap,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
                               "ORDER BY ts, rowid", (ts,)):
@@ -131,6 +125,23 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
             last = a
     if not last:
         return None
+    # the ask as the answered version had it (of ask --amend, docs/events.md of.ask_amended): its work, options, yes
+    # and words, so an amend after the answer re-labels nothing; an answer that names no version, on an ask that was
+    # amended, resolves to nothing (of_platform, message 01a1dbad-e794)
+    import of_asks
+    v = last.get("version")
+    if not isinstance(v, int) or isinstance(v, bool):
+        if of_asks.amendments(conn, eid, ts, position):
+            return None
+        v = 1
+    p = of_asks.at_version(conn, eid, p, ts, position, version=v)
+    if p.get("work") != work:
+        return None
+    qs = p.get("questions") if isinstance(p.get("questions"), list) else []
+    q = qs[0] if qs and isinstance(qs[0], dict) else {}
+    opts = q.get("options") if isinstance(q.get("options"), list) else []
+    if not 1 <= option <= len(opts) or p.get("yes_option") != option:  # only the option filed as the yes (of ask
+        return None                                                   # --yes): a refusal never is, nor an unmarked ask
     chosen = last.get("option") if isinstance(last.get("option"), int) else next(
         (i + 1 for i, o in enumerate(opts) if _option_text(o) == _option_text(last.get("answer") or "")), None)
     if chosen != option:
