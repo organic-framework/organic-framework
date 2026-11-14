@@ -234,7 +234,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   | Part | The position | Condition |
   |---|---|---|
   | `results` | merged work in the window | (corrections + reverts) ÷ WR ≥ 0.2, and no review evidence on its path |
-  | `answers` | merged no work in the window | corrections ÷ the owner's prompts in its sessions ≥ 0.05 (`answers_corrections_per_prompt_gte`). No review of an answer is recorded, so the part cannot read review evidence, and its summary says so |
+  | `answers` | merged no work in the window | corrections ÷ the owner's prompts in its sessions ≥ 0.05 (`answers_corrections_per_prompt_gte`). No review of an answer is recorded, so the part cannot read review evidence, and its summary says so. "Merged no work" is what the records show: a position whose repository is not imported, or whose PRs are not attributed, reads the same, and the summary says "no merged work of it is recorded". The part keys its issue on `answers:<position>`, so a label on it never decides the position's `results` issue (PR 179 review) |
 
   Part `answers` needs the work records too, to know that the position merged none. Its threshold is a hypothesis from the first week. It is set below the two positions v0 could only note (7% and 8%), so that their structure keepers label them, and those labels confirm or move it.
 - **One correction per prompt.** A prompt the judge read twice counts once (`prompt_id`), as in Studio's repeat-correction rate (PR 176 review).

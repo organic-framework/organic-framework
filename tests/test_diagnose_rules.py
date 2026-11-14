@@ -641,7 +641,18 @@ class CorrectionRulesTest(unittest.TestCase):
         e = got[0]["evidence"]
         self.assertEqual((e["corrections_n"], e["owner_prompts"], e["corrections_per_prompt"], e["merged"]), (3, 40, 0.075, 0))
         self.assertEqual(got[0]["summary"], "bot_search: 3 of the owner's corrections of its results in 40 of his prompts "
-                         "to it (8%); it merged no work, and no review of its answers is recorded")
+                         "to it (8%); no merged work of it is recorded in the window, nor any review of its answers")
+        # each part has its own issue id: a label on the answers issue leaves the position's results issue open, and
+        # the results issue keeps v0's id (PR 179 review)
+        self.assertEqual(got[0]["issue_id"], of_diagnose.issue_id("missing-verifier", ["answers:bot_search"]))
+        fp = ev("lab1", "2026-11-04T20:00Z", "of.issue_labelled", None,
+                {"issue_id": got[0]["issue_id"], "rule": "ap.missing-verifier", "rule_version": "ap.missing-verifier@1",
+                 "label": "false_positive"})
+        res, _ = self.found("missing-verifier", [fp] + [self.pr(i, "bot_search") for i in range(5)] + others + asked + fixes)
+        self.assertEqual([(i["part"], i["state"], i["issue_id"]) for i in res],
+                         [("results", "open", of_diagnose.issue_id("missing-verifier", ["bot_search"]))])
+        q, _ = self.found("missing-verifier", [fp] + others + asked + fixes)
+        self.assertEqual([i["state"] for i in q], ["dismissed"])
         self.assertIn("a second model reads it against its sources", got[0]["remedies"][0])
         # quiet: 3 in 100 prompts (3%); corrections of its method only; the same position once it merged work (part results)
         more = asked + [prompt(f"hq{k}", f"2026-11-04T{k % 12 + 8:02d}:{k // 12:02d}Z", "s-bot_search", "and now?")
