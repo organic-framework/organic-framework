@@ -286,9 +286,10 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   The thresholds are first guesses. Labels on these 11 issues set them.
 - **ΔT basis:** holder time and context freed on *raise* positions: typed-in turns removed × the cost of a turn. *p* = 0.6. *m_decide* = 5 min.
 
-### 2.11 Unclear mandate — `ap.unclear-mandate@1`
+### 2.11 Unclear mandate — `ap.unclear-mandate@2`
 
 *v1 (2026-11-06): only substantive changes count, and a position settles first.*
+*v2 (2026-11-15): an organization-wide brief edit is no position's mandate change. In the first user organization's week to 2026-11-15 the rule raised 33 issues from 203 brief revisions, with no summary changed. Most were rules pointed from many briefs at once: from 15 to 55 briefs in one commit, such as the rule against time estimates or the rule on readings taken where the event happens. A brief edit made on ≥ 5 positions within an hour (`org_wide_briefs_gte`, `org_wide_within_min`) no longer counts. The same snapshot's other fields, such as a moved `done_when`, still do. On the same week the rule raises 9 issues; the OF team's 1 stays. There are no labels yet: the 10 go to their deciders. Labels carry from v1: v2 only narrows what fires.*
 - *The v0 issue.* v0 fired on 4 positions, from the registry build-out of 2026-11-05/06.
   - The schema gained `mandate_exit` and `mandate_functions`, so every position "changed".
   - Summaries were reworded ("prod" → "production").
@@ -296,7 +297,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Signals:**
   - `of.mandate_changed` events with a **substantive** change:
     - `throughput` changes;
-    - the brief (`mandate`) changes;
+    - the brief (`mandate`) changes, unless the same edit reached ≥ 5 positions' briefs within an hour (v2);
     - `mandate_exit.done_when` changes from a non-empty value;
     - `status` goes from `done` back to `active`.
   - What does not count:
@@ -681,7 +682,7 @@ The columns:
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
 | missing-verifier@2 | 2026-11-14: fired 1 (`answers`: a position that answers the owner, 7 corrections of its results in 99 of his prompts) | 2026-11-14: fired 1 (`answers`: `of_conductor`, 18 in 226) | both parts P/R 1.0. `results` negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed, a repository whose verdicts were not read, a PR approved by another position's verdict comment. `answers` negatives: 3 in 100 prompts, corrections of method only. Reports blocked without the owner's corrections | — | the two `answers` issues to label with the structure keepers; reverts |
 | chatty@3 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair, 2026-11-06), fire under v3; 10 fp (pair, 2026-11-12), all below v3's floor; 2 true_but_not_now (flood, 2026-11-12), still raised | 19 pair issues to review |
-| unclear-mandate@1 | quiet | quiet | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding | — | — |
+| unclear-mandate@2 | quiet; 2026-11-15: 33 under v1, 9 under v2 | 2026-11-15: 1 | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding, a rule pointed from five briefs | — | the 10 issues to label with their deciders |
 | function-gap@0 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
 | lingering@0 | quiet | quiet | P/R 1.0 | — | — |

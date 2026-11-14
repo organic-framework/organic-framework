@@ -602,6 +602,30 @@ SCENARIOS += [
 ]
 
 
+# unclear-mandate@2 (2026-11-15): a rule pointed from five briefs within an hour is an organization-wide edit, not a
+# mandate change (the first user organization: 203 brief revisions, 33 issues in a week, no summary changed)
+def _wide_doc():
+    doc = _org_doc()
+    doc["positions"] += [dict(doc["positions"][1], name=n, holder={"session": f"s-{n}"}) for n in ("bot_a", "bot_b", "bot_c")]
+    return doc
+
+
+_FIVE = ("bot_operator", "bot_search", "bot_nonce", "bot_a", "bot_b")
+
+SCENARIOS += [
+    _case("unclear-mandate/negative-org-wide-briefs", _wide_doc(),
+          [_mc(f"uw0{k}", _at("10-20"), p) for k, p in enumerate(_FIVE)]
+          + [_mc(f"uw{n}{k}", _at(d, 10, k), p, mandate={"path": f"briefs/{p}.md", "revision": r})
+             for n, (d, r) in enumerate((("11-03", "r2"), ("11-05", "r3")), 1) for k, p in enumerate(_FIVE)],
+          ("ap.unclear-mandate", ["bot_search"], "negative")),
+    _case("unclear-mandate/positive-own-brief", _wide_doc(),
+          [_mc(f"uo0{k}", _at("10-20"), p) for k, p in enumerate(_FIVE)]
+          + [_mc("uo1", _at("11-03"), "bot_search", mandate={"path": "briefs/bot_search.md", "revision": "r2"}),
+             _mc("uo2", _at("11-05"), "bot_search", mandate={"path": "briefs/bot_search.md", "revision": "r3"})],
+          ("ap.unclear-mandate", ["bot_search"], "positive")),
+]
+
+
 # ---- ap.function-gap@0, affected [function:<f>] ----
 # Only the registry: `marketing` is covered by a parked position (positive) or an active one (negative).
 def _functions_doc(growth_status):
