@@ -3,10 +3,12 @@
 A catalogue or detector change that regresses a rule below the floor fails CI. The floor is loose (of_studio
 tightens it to the owner's chosen point); the fixtures currently score P/R 1.0 on every positively-labelled rule.
 
-EXPECTED is derived from the fixtures: every rule with a "positive" label (of_field-analyst, 2026-11-10: the
-fixtures now cover each built catalogue rule, 8f82f5c). A rule that gains a positive fixture is held to the floor
-automatically. The unbuilt rules (context-overload, missing-verifier) carry only "blocked" labels and are checked
-by test_expected_blocked_rules_report_blocked, not by the floor.
+EXPECTED is derived from the fixtures: every rule with a "positive" label. A rule that gains a positive fixture
+is held to the floor automatically, so the fixtures now cover every built catalogue rule (of_field-analyst,
+2026-11-10 and 2026-11-14). context-overload and missing-verifier, built on of.founder_correction
+(of_field-analyst, 2026-11-14), now carry positive labels and are held to the floor like the rest; the scenario
+without corrections still labels them "blocked", and test_expected_blocked_rules_report_blocked checks that a
+blocked-labelled rule reports blocked rather than running or firing.
 
 Run: python3 -m unittest tests.test_drift_v0
 """
