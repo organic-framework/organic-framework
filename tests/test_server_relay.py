@@ -117,6 +117,38 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(found and found[0]["last_location"] == "message:m1")
         self.assertTrue(all(d == "db_vault" for d, _ in self.events("of.secret_detected")))
 
+    def test_a_message_to_an_older_name_reaches_the_position(self):
+        """A user organization's issue 07ba3788a3c3: a message queued to a name that later became an alias stayed
+        queued, and its holder's take was refused not_holder (AGENTS.md: older names live only as aliases)."""
+        a = self.machine("a", ["zeta"])
+        self.call(a, "POST", "/v1/messages", {"msg_id": "old", "to": "zeta:zeta_old", "from": "zeta:zeta_new",
+                                              "text": "a note to the old name"})
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "zeta_new", "session_id": "S1",
+                                                         "kind": "agent", "aliases": ["zeta_old"]}]})
+        got = self.call(a, "GET", "/v1/messages?wait=0")["messages"]
+        self.assertEqual([(x["msg_id"], x["to"]) for x in got], [("old", "zeta:zeta_new")])   # readdressed
+        self.call(a, "POST", "/v1/messages", {"msg_id": "new", "to": "zeta:zeta_old", "from": "zeta:zeta_new",
+                                              "text": "sent after the alias"})
+        with self.app.store.conn() as c:
+            self.assertEqual(c.execute("SELECT to_position FROM messages WHERE msg_id = 'new'").fetchone()[0],
+                             "zeta_new")                                    # stored under the position
+
+    def test_an_alias_never_takes_a_presented_name_another_org_or_one_the_registry_lacks(self):
+        a, b = self.machine("a", ["zeta"]), self.machine("b", ["zeta", "ofb"])
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "live_keeper", "session_id": "S2",
+                                                         "kind": "agent"}]})
+        self.call(a, "POST", "/v1/messages", {"msg_id": "m-live", "to": "zeta:live_keeper", "from": "zeta:x_keeper",
+                                              "text": "for the live one"})
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "thief", "session_id": "S3",
+                                                         "kind": "agent", "aliases": ["live_keeper"]}]})
+        with self.app.store.conn() as c:
+            self.assertEqual(c.execute("SELECT to_position FROM messages WHERE msg_id = 'm-live'").fetchone()[0],
+                             "live_keeper")                                     # a presented name is never an alias
+        self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead",
+                                                         "kind": "agent", "aliases": ["ofb_dev"]}]})
+        with self.app.store.conn() as c:                                        # the registry lists no such alias
+            self.assertIsNone(c.execute("SELECT 1 FROM position_aliases WHERE alias = 'ofb_dev'").fetchone())
+
     def test_long_poll_wakes_on_new_message(self):
         a, b = self.machine("a", ["ofb"]), self.machine("b", ["ofb"])
         self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_dev"}]})

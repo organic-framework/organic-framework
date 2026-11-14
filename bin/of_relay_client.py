@@ -936,18 +936,21 @@ def local_holders(positions, bind, live_agents):
     for p, a in pairs:
         out[f"{p.get('_org')}:{p['name']}"] = {
             "org": p.get("_org"), "position": p["name"], "kind": "agent", "pane": a["pane_id"],
-            "session_id": (a.get("agent_session") or {}).get("value"), "state": a.get("agent_status")}
+            "session_id": (a.get("agent_session") or {}).get("value"), "state": a.get("agent_status"),
+            "aliases": [x for x in p.get("aliases") or [] if isinstance(x, str)]}
     for p in positions:
         h = p.get("holder") or {}
         if h.get("runtime") == "human" and h.get("machine") == of_events.machine_id():
             out[f"{p.get('_org')}:{p['name']}"] = {"org": p.get("_org"), "position": p["name"], "kind": "human",
-                                                    "pane": None, "session_id": None, "state": "human"}
+                                                    "pane": None, "session_id": None, "state": "human",
+                                                    "aliases": [x for x in p.get("aliases") or [] if isinstance(x, str)]}
     return out
 
 
 def holders_key(local):
     """Who holds what, without the busy state: a change here publishes presence at once."""
-    return sorted((k, h.get("session_id") or "", h.get("pane") or "", h.get("kind") or "") for k, h in local.items())
+    return sorted((k, h.get("session_id") or "", h.get("pane") or "", h.get("kind") or "", tuple(h.get("aliases") or ()))
+                  for k, h in local.items())
 
 
 def presence_bodies(local, servers, default, drains=None):
@@ -956,7 +959,7 @@ def presence_bodies(local, servers, default, drains=None):
     there are leased and delivered here instead of waiting for a presence that never comes."""
     out = {}
     for h in local.values():
-        body = {k: h.get(k) for k in ("org", "position", "session_id", "state", "pane", "kind")}
+        body = {k: h.get(k) for k in ("org", "position", "session_id", "state", "pane", "kind", "aliases")}
         main = servers.get(h["org"], default)
         out.setdefault(main, []).append(body)
         for url in (drains or {}).get(h["org"]) or []:

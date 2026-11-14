@@ -38,7 +38,22 @@ CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, msg_
   done_at TEXT, reason TEXT, priority TEXT DEFAULT 'normal');
 CREATE INDEX IF NOT EXISTS messages_to ON messages (to_org, to_position, state);
 CREATE INDEX IF NOT EXISTS messages_from ON messages (from_org, from_position, state);
+CREATE TABLE IF NOT EXISTS position_aliases (org TEXT, alias TEXT, position TEXT, machine_id TEXT, updated REAL,
+  PRIMARY KEY (org, alias));
 """
+ALIAS_TTL = 30 * 86400  # an alias a holder presented within this many seconds still readdresses a new message
+
+
+def registered_aliases(path, position):
+    """The aliases a registry file lists for a position, or None when the file is not there."""
+    import os
+    import yaml
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    return next((list(p.get("aliases") or []) for p in doc.get("positions") or [] if p.get("name") == position), [])
 
 
 def registered_holder(path, position):
@@ -146,10 +161,46 @@ class Relay:
         with self.app.store.tx() as c:
             c.execute("DELETE FROM presence WHERE machine_id = ?", (m["machine_id"],))
             c.executemany("INSERT OR REPLACE INTO presence VALUES (?,?,?,?,?,?,?,?)", rows)
+        self._aliases(m, holders)
         with self.cond:
             self.cond.notify_all()  # a holder appeared: waiting messages may now be deliverable
         return {"holders": len(rows), "ttl": PRESENCE_TTL, "queued": self._queued_counts(rows),
                 "unsent": self._unsent(rows)}
+
+    def _aliases(self, m, holders):
+        """A position's older names (its registry `aliases`, AGENTS.md: older names live only as aliases): a message
+        sent to one reaches the position. Each alias a holder presents is kept for its organization, and the
+        messages still queued to it are readdressed to the position; a new message to it is stored under the
+        position (post). A user organization's issue 07ba3788a3c3, 2026-11-14: a message to a name that had become
+        an alias stayed queued, and its holder's take was refused not_holder. An alias is taken only for an
+        organization this machine has joined, never over a name a holder presents now, and, when the server has
+        the organization's registry, only as that registry lists it."""
+        joined, now = self._machine_orgs(m), time.time()
+        files = self.app.cfg.get("positions_files") or {}
+        with self.app.store.tx() as c:
+            presented = {(o, p) for o, p in c.execute("SELECT org, position FROM presence WHERE updated > ?",
+                                                      (now - PRESENCE_TTL,))}
+            for h in holders:
+                org, pos, aliases = h.get("org"), h.get("position"), h.get("aliases")
+                if not isinstance(aliases, list) or not (m["tenant"] or org in joined):
+                    continue
+                listed = registered_aliases(files[org], pos) if org in files else None
+                for a in aliases:
+                    if not isinstance(a, str) or not POSITION_NAME.match(a) or a == pos or (org, a) in presented \
+                            or (listed is not None and a not in listed):
+                        continue
+                    c.execute("INSERT OR REPLACE INTO position_aliases VALUES (?, ?, ?, ?, ?)",
+                              (org, a, pos, m["machine_id"], now))
+                    c.execute("UPDATE messages SET to_position = ?, reason = COALESCE(reason, ?) WHERE to_org = ?"
+                              " AND to_position = ? AND state = 'queued'",
+                              (pos, f"sent to {a}, an alias of {pos}", org, a))
+
+    def _canonical(self, org, pos):
+        """The position an alias names, or the name itself."""
+        with self.app.store.conn() as c:
+            r = c.execute("SELECT position FROM position_aliases WHERE org = ? AND alias = ? AND updated > ?",
+                          (org, pos, time.time() - ALIAS_TTL)).fetchone()
+        return r[0] if r else pos
 
     UNSENT_ITEMS = 10
 
@@ -309,6 +360,7 @@ class Relay:
             return {"msg_id": msg_id, "state": old[1], "authority": old[2]}
         if not self._org_known(to_org):
             raise RelayError(404, "unknown_org", f"organization {to_org} is not served here")
+        to_pos = self._canonical(to_org, to_pos)  # an older name, kept as an alias, reaches the position
         joined = self._machine_orgs(m)
         if not m["tenant"] and to_org not in joined and from_org not in joined:
             raise RelayError(403, "forbidden", "this machine has joined neither the sender's nor the recipient's organization")

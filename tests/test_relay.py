@@ -578,6 +578,18 @@ class RelayTest(unittest.TestCase):
         self.assertEqual([h["position"] for h in bodies["http://local"]], ["of_a"])
         self.assertEqual(bodies["https://zeta"][0]["kind"], "human")
 
+    def test_a_positions_older_names_go_with_its_presence(self):
+        """The registry's `aliases` travel with presence, so the server readdresses a message sent to an older name
+        (a user organization's issue 07ba3788a3c3)."""
+        positions = [{"_org": "zeta", "name": "zeta_new", "aliases": ["zeta_old"],
+                      "holder": {"runtime": "human", "machine": of_events.machine_id()}}]
+        local = of_relay.local_holders(positions, lambda ps, live: ([], None, None), [])
+        self.assertEqual(local["zeta:zeta_new"]["aliases"], ["zeta_old"])
+        body = of_relay.presence_bodies(local, {}, "http://local")["http://local"][0]
+        self.assertEqual(body["aliases"], ["zeta_old"])
+        changed = dict(local, **{"zeta:zeta_new": dict(local["zeta:zeta_new"], aliases=[])})
+        self.assertNotEqual(of_relay.holders_key(local), of_relay.holders_key(changed))   # a change republishes
+
     def test_after_a_cutover_the_old_server_is_drained(self):
         """docs/server-several-machines.md §4.6: messages still queued on the old server for a moved organization
         are leased here too, while orgs.yaml says drain_from; removing it stops the drain at the next round."""
