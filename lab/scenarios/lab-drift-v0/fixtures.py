@@ -602,8 +602,9 @@ SCENARIOS += [
 ]
 
 
-# unclear-mandate@2 (2026-11-15): a rule pointed from five briefs within an hour is an organization-wide edit, not a
-# mandate change (the first user organization: 203 brief revisions, 33 issues in a week, no summary changed)
+# unclear-mandate@2 and @3 (2026-11-15): a brief edit alone is no mandate change, whether a rule pointed from five briefs
+# within an hour (the first user organization: 203 brief revisions, 33 issues in a week, no summary changed) or a
+# position's own brief gaining rules (of_architect's false_positive label on of_conductor)
 def _wide_doc():
     doc = _org_doc()
     doc["positions"] += [dict(doc["positions"][1], name=n, holder={"session": f"s-{n}"}) for n in ("bot_a", "bot_b", "bot_c")]
@@ -618,11 +619,11 @@ SCENARIOS += [
           + [_mc(f"uw{n}{k}", _at(d, 10, k), p, mandate={"path": f"briefs/{p}.md", "revision": r})
              for n, (d, r) in enumerate((("11-03", "r2"), ("11-05", "r3")), 1) for k, p in enumerate(_FIVE)],
           ("ap.unclear-mandate", ["bot_search"], "negative")),
-    _case("unclear-mandate/positive-own-brief", _wide_doc(),
+    _case("unclear-mandate/negative-own-brief", _wide_doc(),
           [_mc(f"uo0{k}", _at("10-20"), p) for k, p in enumerate(_FIVE)]
           + [_mc("uo1", _at("11-03"), "bot_search", mandate={"path": "briefs/bot_search.md", "revision": "r2"}),
              _mc("uo2", _at("11-05"), "bot_search", mandate={"path": "briefs/bot_search.md", "revision": "r3"})],
-          ("ap.unclear-mandate", ["bot_search"], "positive")),
+          ("ap.unclear-mandate", ["bot_search"], "negative")),
 ]
 
 

@@ -431,36 +431,16 @@ def mandate_changes(model, rows, a, b, fields=("summary", "throughput"), ignore_
 
 
 def rule_unclear_mandate(model, rows, a, b, cat, spec):
-    """v2 (2026-11-15): a brief edit made on `org_wide_briefs_gte` positions or more within `org_wide_within_min` is an
-    organization-wide rule edit (a rule pointed from every brief), not this position's mandate; its other fields
-    still count. In the first user organization's week to 2026-11-15, 203 brief revisions raised 33 issues with no
-    summary changed; such edits went into 15 to 55 briefs at once."""
+    """v3 (2026-11-15): a brief edit alone is no mandate change. A brief gains rules (the founder's corrections, rules
+    pointed from many briefs) while the mandate stays; its summary, contribution, exit and ownership show a change of
+    mandate (of_architect's false_positive label on of_conductor, 2026-11-15). v2 left out only organization-wide brief
+    edits; v3 reads no brief revision (`substantive_fields`)."""
     t = spec.get("thresholds") or {}
     out = []
     fields = tuple(t.get("substantive_fields") or ("summary", "throughput"))
-    changes = mandate_changes(model, rows, a, b, fields, bool(t.get("ignore_added_fields")), t.get("settle_days", 0))
-    gte, within = t.get("org_wide_briefs_gte"), t.get("org_wide_within_min", 60) * 60
-    left_out = collections.Counter()
-    if gte:
-        briefs = [(epoch(ts) or 0, p) for p, cs in changes.items() for ts, f in cs if "mandate" in f]
-
-        def wide(x):
-            return len({q for y, q in briefs if abs(y - x) <= within}) >= gte
-
-        kept = {}
-        for pos, cs in changes.items():
-            for ts, f in cs:
-                f2 = [g for g in f if not (g == "mandate" and wide(epoch(ts) or 0))]
-                left_out[pos] += len(f2) < len(f)
-                if f2:
-                    kept.setdefault(pos, []).append((ts, f2))
-        changes = kept
-    for pos, ch in changes.items():
+    for pos, ch in mandate_changes(model, rows, a, b, fields, bool(t.get("ignore_added_fields")), t.get("settle_days", 0)).items():
         if len(ch) >= t.get("mandate_changes_gte", 2):
-            ev = {"changes": [{"ts": ts, "fields": f} for ts, f in ch]}
-            if left_out[pos]:
-                ev["org_wide_brief_edits_left_out"] = left_out[pos]
-            out.append(issue(cat, "unclear-mandate", [pos], ev,
+            out.append(issue(cat, "unclear-mandate", [pos], {"changes": [{"ts": ts, "fields": f} for ts, f in ch]},
                              f"{pos}: mandate changed {len(ch)} times in the window ("
                              + ", ".join(sorted({x for _, f in ch for x in f})) + ")"))
     return out
