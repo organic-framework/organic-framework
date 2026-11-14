@@ -873,10 +873,12 @@ def rule_missing_verifier(model, rows, a, b, cat, spec, parts=("results", "answe
             ev = {"corrections": [_correction(c) for c in mine][-10:], "corrections_n": n, "owner_prompts": k,
                   "corrections_per_prompt": round(n / k, 3), "merged": 0, "reviews": "not recorded for answers",
                   "since": mine[0]["ts"]}
+            # its own key: a label on this part never decides the position's later `results` issue, which keeps v0's
+            # id and labels (PR 179 review)
             out.append(issue(cat, "missing-verifier", [pos], ev,
                              f"{pos}: {n} of the owner's corrections of its results in {k} of his prompts to it "
-                             f"({round(100 * n / k)}%); it merged no work, and no review of its answers is recorded",
-                             delta_m=n * mpp, part="answers"))
+                             f"({round(100 * n / k)}%); no merged work of it is recorded in the window, nor any review "
+                             f"of its answers", delta_m=n * mpp, part="answers", key=f"answers:{pos}"))
             continue
         if not w:
             notes.append(f"{pos}: {n} of the owner's corrections of its results, and no merged work to weigh them against")
