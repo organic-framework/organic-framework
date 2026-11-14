@@ -959,7 +959,8 @@ def prepare(conn, processors, rebuild=False):
             start = 0
             if getattr(p, "from_now", False):  # no view to build: a new cursor starts at the end of the log
                 start = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
-            elif not hasattr(p, "settle") and _has_meta(conn):  # a view without a shadow is half-built until caught up
+            elif not hasattr(p, "settle") and not getattr(p, "own_readiness", False) and _has_meta(conn):
+                # a view without a shadow is half-built until caught up (a fold view says its own: of_fold.read)
                 conn.execute("DELETE FROM listener_meta WHERE key = 'heartbeat'")
                 p.in_place = True
             p.reset(conn)
@@ -1278,6 +1279,11 @@ def run(stop=None, log=print, rebuild=False):
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
+    try:  # the fold views (bin/of_fold.py): one processor each, by its own cursor
+        import of_fold
+        processors += [of_fold.FoldProcessor(v) for v in of_fold.views().values()]
+    except Exception as e:  # noqa: BLE001 - a broken view never stops the listener
+        log(f"of listen: fold views: {type(e).__name__}: {e}")
     # Readers trust the views only while the heartbeat is fresh. A view rebuilt in place is half-built until
     # caught up, so prepare() drops the heartbeat for it (the asks popup showed "0 waiting", 2026-11-06); the
     # asks view builds in shadow tables instead and the old one keeps serving. Beat after the first catch-up.
