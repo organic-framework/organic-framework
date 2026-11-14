@@ -1276,6 +1276,8 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
                     bodies = presence_bodies(state["local"], servers, default, drains)
                     queued, unsent = {}, {}
                     for url in set(servers.values()) | {default} | set(bodies):
+                        ticks["presence"] = time.time()  # per server: two hung servers outlast STALE_S together
+                        write_heartbeat(ticks)
                         r = client_for(url).put_presence(bodies.get(url, []))
                         if isinstance(r, dict):
                             queued.update(r.get("queued") or {})
@@ -1323,6 +1325,9 @@ def run(load, client_for, servers, default, log=print, stop=None, deliverer=herd
             cursor, got = read_coord_cursor(), 0
             before = dict(cursor)
             for org in orgs:
+                # per organization: each pull is bounded (of_client's tries), but two of them on a hung server
+                # take longer than STALE_S together (of_review on organic-framework PR 142)
+                ticks[f"coord {url}"] = time.time()
                 try:
                     got += pull_coord(c, url, org, own, cursor, me)
                 except Exception as e:  # noqa: BLE001 - 403 (not joined there), a busy store, a restart
