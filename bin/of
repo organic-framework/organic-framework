@@ -2021,6 +2021,9 @@ def cmd_loop(args):
                 pr = " ".join(str(h["predict"]).split())
                 print(f"      prediction (not a result): {pr[:240] + ('…' if len(pr) > 240 else '')}")
             lr = h.get("last_run")
+            if lr and of_loop.blind(lr):  # a proxy that did not hold: never the number alone (docs/registry.md)
+                print(f"      latest run {lr['ts'][:16]} on {lr.get('rung') or '?'}: {of_loop.not_observed(lr)}")
+                lr = None
             if lr:  # what the run records, nothing more: accepted is the rung's accept criterion (docs/events.md)
                 verdict = {True: "accept criterion met", False: "accept criterion not met",
                            None: "no accept verdict recorded"}[lr.get("accepted")]
@@ -2071,6 +2074,25 @@ def cmd_loop(args):
             raise OfError("--value is a number in the metric's unit")
         if args.accepted not in (None, "yes", "no"):
             raise OfError("--accepted is yes or no (the rung's accept criterion met)")
+        metric = args.metric or (loop.get("target") or {}).get("metric")
+        observed_at, pf = of_loop.reading_of(loop, metric)  # docs/registry.md, Works, "Where a reading is taken"
+        if bool(args.proxy_for) != bool(args.valid_when):
+            raise OfError("--proxy-for <where the event happens> and --valid-when <when this reading equals the one "
+                          "there> go together")
+        if args.proxy_for:
+            pf = {"at": args.proxy_for, "valid_when": args.valid_when}
+        if args.proxy_held is not None and args.proxy_held not in of_loop.PROXY_HELD:
+            raise OfError("--proxy-held is held, not_held or unknown")
+        if args.proxy_held is not None and not pf:
+            raise OfError(f"--proxy-held: {metric!r} is read where its event happens (no proxy_for on its measure); "
+                          "a run that stands for an event elsewhere names it with --proxy-for and --valid-when")
+        proxy = {"for": pf["at"], "valid_when": pf["valid_when"], "held": args.proxy_held or "unknown"} if pf else None
+        accepted = None if args.accepted is None else args.accepted == "yes"
+        if proxy and proxy["held"] != "held" and accepted is not None:
+            print(f"  not recorded: --accepted; the reading at {observed_at or '?'} stands for {proxy['for']} only "
+                  f"when {proxy['valid_when']}, which is {proxy['held'].replace('_', ' ')} here, so the rung's accept "
+                  "is not judged on it")
+            accepted = None
         if args.run and any(r["name"] == "of.loop_run" and r["payload"].get("run") == args.run for r in rows):
             print(f"loop_run: {args.work} run {args.run} is already recorded; nothing written")  # a re-sync is harmless
             return 0
@@ -2078,8 +2100,8 @@ def cmd_loop(args):
         model = conn.execute("SELECT model FROM event WHERE session_id = ? AND model IS NOT NULL ORDER BY ts DESC LIMIT 1",
                              (sid,)).fetchone() if sid else None
         payload = {"work": args.work, "run": args.run or of_loop.hypothesis_id(args.work, f"run:{args.rung}"), "rung": args.rung,
-                   "hypothesis": need_hypothesis(False), "metric": args.metric or (loop.get("target") or {}).get("metric"),
-                   "value": value, "accepted": None if args.accepted is None else args.accepted == "yes",
+                   "hypothesis": need_hypothesis(False), "metric": metric, "observed_at": observed_at, "proxy": proxy,
+                   "value": value, "accepted": accepted,
                    "result": args.result, "evidence": args.evidence, "queued_at": args.queued_at,
                    "started_at": args.started_at, "ended_at": args.ended_at or of_events.now_iso(),
                    "runner_h": float(args.runner_h) if args.runner_h else None,
@@ -2100,6 +2122,13 @@ def cmd_loop(args):
                           "(RFC 0005 §6)" + why)
         if args.rung and args.rung not in of_loop.rungs(loop):
             raise OfError(f"rung {args.rung!r} is not on {args.work}'s ladder")
+        if dec in ("keep", "drop") and args.hypothesis:  # docs/registry.md, Works, "Where a reading is taken"
+            h = next(x for x in reg["hypotheses"] if x["id"] == need_hypothesis(True))
+            if h.get("blind"):
+                lr = h["last_run"]
+                raise OfError(f"{h['id']}: every run of it is a proxy that decides nothing. Its latest is "
+                              f"{of_loop.not_observed(lr)}. Record a run where the event happens, or on the data "
+                              f"where the condition held (--proxy-held held), or park it with a note")
         if dec == "reopen":  # RFC 0005 §4.1: back to open, never recorded as keep
             if not args.hypothesis or not (args.note or "").strip():
                 raise OfError(f'reopen names the hypothesis and what changed or whose word reopened it: of loop decision '
@@ -5782,6 +5811,11 @@ def main(argv=None):
     lp.add_argument("--to-money", help="change_objective: how the new metric becomes money")
     lp.add_argument("--metric", help="run: the metric measured (default the target's); change_objective: the new metric")
     lp.add_argument("--value", help="run: a number in the metric's unit")
+    lp.add_argument("--proxy-held", help="run: held | not_held | unknown (default): whether the metric's proxy_for "
+                    "condition held in the data the run used")
+    lp.add_argument("--proxy-for", help="run: where the event this reading stands for happens, when its measure does "
+                    "not say (with --valid-when)")
+    lp.add_argument("--valid-when", help="run: when this reading equals the one where the event happens")
     lp.add_argument("--accepted", help="run: yes | no (the rung's accept criterion met)")
     lp.add_argument("--runner-h", help="run: runner hours it used")
     lp.add_argument("--tokens", help="run: model tokens it used")

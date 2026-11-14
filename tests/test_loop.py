@@ -10,9 +10,11 @@ sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_loop  # noqa: E402
 
 LOOP = {"target": {"metric": "day pass, STOREFRONT per day", "money": "STOREFRONT per day of bot revenue", "throughput_class": "raise",
+                   "observed_at": "the day pass's own ledger",
                    "segment": {"start": "the block reaches our node", "end": "the order leaves our sender",
                                "context": ["network after the send", "the exchange's ordering rule"]}},
-        "measures": [{"name": "latency_p50_ms", "to_money": "STOREFRONT per ms from the race arithmetic"}],
+        "measures": [{"name": "latency_p50_ms", "to_money": "STOREFRONT per ms from the race arithmetic",
+                      "observed_at": "our sender's send log"}],
         "ladder": [{"rung": "oracle", "cost": "0", "accept": "0 differing rows"},
                    {"rung": "offline", "cost": "local CPU", "accept": "no candidate lost"},
                    {"rung": "day_pass", "cost": "6 runner-h", "accept": "> baseline + 1%"}],
@@ -80,10 +82,10 @@ class LoopCheckTest(unittest.TestCase):
                          ["w: loop: target.metric 'p50 of the network after our send, in ms' matches the context part "
                           "'the network after the send', outside the controlled segment"])
         self.assertEqual(check(seg, metric="network latency"), [])           # not every content word: no match
-        self.assertEqual(check(seg, measures=[{"name": "rival_ordering", "to_money": "x"}]),
+        self.assertEqual(check(seg, measures=[{"name": "rival_ordering", "to_money": "x", "observed_at": "x"}]),
                          ["w: loop: measure 'rival_ordering' is the context part 'rival_ordering', outside the "
                           "controlled segment"])
-        self.assertEqual(check(seg, measures=[{"name": "network after the send", "to_money": "x"}]), [])  # names only
+        self.assertEqual(check(seg, measures=[{"name": "network after the send", "to_money": "x", "observed_at": "x"}]), [])  # names only
         self.assertTrue(of_loop.context_matches("the change moves the third party's ordering rule", seg["context"][1],
                                                 prose=True))
         # of_field-analyst, 2026-11-12: a possessive's "s" and a plural must not block a match
@@ -200,9 +202,115 @@ class ReopenTest(unittest.TestCase):
             self.assertIn("reopen", out)
 
 
+PROXIED = dict(LOOP, measures=LOOP["measures"] + [
+    {"name": "race_margin_ms", "observed_at": "our nodes' receive time of the rival's transaction",
+     "proxy_for": {"at": "the block's builder", "valid_when": "one of our own nodes built the block"},
+     "to_money": "STOREFRONT per ms"}])
+
+
+class ReadingPointTest(unittest.TestCase):
+    """docs/registry.md, Works, "Where a reading is taken" (hand-over 52b9d314 from of_architect; the founder's prompt
+    01a1da18-f250: a reading at our own nodes was taken as the builder's)."""
+
+    def test_the_check_names_readings_without_a_point_and_proxies_without_their_condition(self):
+        self.assertEqual(of_loop.check_loop(PROXIED, "w"), [])
+        bare = dict(LOOP, target={k: v for k, v in LOOP["target"].items() if k != "observed_at"},
+                    measures=[{"name": "m", "to_money": "x"}])
+        out = of_loop.check_loop(bare, "w")
+        self.assertIn("warning: w: loop: target has no observed_at (where its reading is taken)", out)
+        self.assertIn("warning: w: loop: measure 'm' has no observed_at (where its reading is taken)", out)
+        for pf in ({"at": "the builder"}, {"valid_when": "ours built it"}, "the builder", {"at": " ", "valid_when": "x"}):
+            m = dict(PROXIED["measures"][1], proxy_for=pf)
+            out = of_loop.check_loop(dict(LOOP, measures=[m]), "w")
+            self.assertIn("w: loop: measure 'race_margin_ms': proxy_for needs at (where the event happens) and "
+                          "valid_when (when the reading equals the one there)", out, pf)
+        self.assertEqual(of_loop.reading_of(PROXIED, "race_margin_ms"),
+                         ("our nodes' receive time of the rival's transaction",
+                          {"at": "the block's builder", "valid_when": "one of our own nodes built the block"}))
+        self.assertEqual(of_loop.reading_of(PROXIED, LOOP["target"]["metric"]), ("the day pass's own ledger", None))
+
+    def test_of_loop_run_decision_and_show_on_a_proxy(self):
+        import json
+        import sqlite3
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            env = dict(os.environ, OF_ORGS=cli_org(root, PROXIED), OF_STATE=os.path.join(root, "state"))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            of = os.path.join(HERE, "..", "bin", "of")
+            run = lambda *a: subprocess.run([sys.executable, of, "loop", *a, "--from", "lab_doer"],  # noqa: E731
+                                            capture_output=True, text=True, env=env)
+            hid = run("hypothesis", "w-speed", "faster sender", "--cost", "oracle, 0", "--voi", "high").stdout.split()[-1]
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "race_margin_ms",
+                    "--value", "0.4", "--accepted", "yes")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("not recorded: --accepted", r.stdout)                 # no accept judged on such a reading
+            db = sqlite3.connect(os.path.join(root, "state", "of.db"))
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_run'").fetchone()[0])
+            self.assertEqual((p["observed_at"], p["proxy"]), ("our nodes' receive time of the rival's transaction",
+                             {"for": "the block's builder", "valid_when": "one of our own nodes built the block",
+                              "held": "unknown"}))
+            self.assertNotIn("accepted", p)
+            for dec in ("keep", "drop"):                                        # it decides nothing
+                r = run("decision", "w-speed", dec, "--hypothesis", hid)
+                self.assertNotEqual(r.returncode, 0, dec)
+                self.assertIn("every run of it is a proxy that decides nothing. Its latest is not observed at the "
+                              "block's builder; its reading at our nodes' receive time of the rival's transaction is a "
+                              "proxy (race_margin_ms 0.4), valid only when one of our own nodes built the block, which "
+                              "is not known to hold", r.stderr)
+            out = run("show", "w-speed").stdout
+            self.assertIn("not observed at the block's builder; its reading at our nodes' receive time", out)
+            self.assertNotIn("accept criterion", out)
+            run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "race_margin_ms",
+                "--proxy-held", "not_held")
+            self.assertNotEqual(run("decision", "w-speed", "keep", "--hypothesis", hid).returncode, 0)
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "race_margin_ms",
+                    "--value", "1.2", "--accepted", "yes", "--proxy-held", "held")  # on the blocks our nodes built
+            self.assertEqual(r.returncode, 0, r.stderr)
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_run' ORDER BY rowid DESC "
+                                      "LIMIT 1").fetchone()[0])
+            self.assertEqual((p["proxy"]["held"], p["accepted"]), ("held", True))
+            self.assertEqual(run("decision", "w-speed", "keep", "--hypothesis", hid).returncode, 0)  # now it may
+            h2 = run("hypothesis", "w-speed", "second", "--cost", "oracle, 0", "--voi", "low").stdout.split()[-1]
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", h2, "--proxy-for", "the builder",
+                    "--valid-when", "we built it")                              # a run that names its proxy itself
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(run("decision", "w-speed", "park", "--hypothesis", h2, "--note", "await builder data"
+                                 ).returncode, 0)                               # park stays open
+            for bad in (("--proxy-held", "held"),                              # the target is read where it happens
+                        ("--proxy-for", "the builder"), ("--valid-when", "x"),
+                        ("--metric", "race_margin_ms", "--proxy-held", "maybe")):
+                self.assertNotEqual(run("run", "w-speed", "--rung", "oracle", *bad).returncode, 0, bad)
+
+    def test_the_start_context_shows_such_runs_as_not_observed(self):
+        import of_context
+        import of_events
+        import of_store
+        with tempfile.TemporaryDirectory() as root:
+            conn = of_store.connect(os.path.join(root, "of.db"))
+            proxy = {"for": "the block's builder", "valid_when": "one of our own nodes built the block",
+                     "held": "unknown"}
+            for i, (hid, held) in enumerate((("h1", "unknown"), ("h2", "held"), ("h1", "unknown"))):
+                rec = of_events.record("loop_run", {"work": "w-speed", "hypothesis": hid, "rung": "oracle",
+                                                    "metric": "race_margin_ms", "value": 0.4 + i,
+                                                    "observed_at": "our nodes", "proxy": dict(proxy, held=held)})
+                of_store.add_event(conn, rec)
+            conn.commit()
+            runs = of_loop.blind_runs(conn, ["w-speed"])
+            self.assertEqual([(w, r["hypothesis"], r["value"]) for w, r, _ in runs], [("w-speed", "h1", 2.4)])
+            self.assertEqual(of_loop.blind_runs(conn, ["w-other"]), [])
+            lines = "\n".join(of_context.not_observed_runs(runs))
+            self.assertIn("## Loop runs not observed where their event happens", lines)
+            self.assertIn("not observed at the block's builder; its reading at our nodes is a proxy (race_margin_ms "
+                          "2.4), valid only when one of our own nodes built the block, which is not known to hold.", lines)
+            self.assertEqual(of_context.not_observed_runs([]), [])
+            conn.close()
+
+
 OWNED = dict(LOOP, target={"metric": "reaction from the input to the send, p99, ms", "better": "lower",
-                           "decided": "01a1d957-c8b6", "segment": LOOP["target"]["segment"]},
-             measures=[{"name": "triggers_covered", "to_target": "an uncovered trigger is a reaction never made"}])
+                           "decided": "01a1d957-c8b6", "segment": LOOP["target"]["segment"],
+                           "observed_at": "our sender's send log"},
+             measures=[{"name": "triggers_covered", "to_target": "an uncovered trigger is a reaction never made",
+                        "observed_at": "the trigger replay"}])
 
 
 def owned(decided):
@@ -293,7 +401,7 @@ class OwnersMeasureTest(unittest.TestCase):
         self.assertEqual(of_loop.check_loop(OWNED, "w", resolve=yes), [])
         self.assertEqual(of_loop.check_loop(OWNED, "w"), [])                    # a call that reads no log: as written
         reading = dict(OWNED, target=dict(OWNED["target"], money="win rate, as a reading"),
-                       measures=OWNED["measures"] + [{"name": "p50_ms", "to_money": "STOREFRONT per ms"}])
+                       measures=OWNED["measures"] + [{"name": "p50_ms", "to_money": "STOREFRONT per ms", "observed_at": "our sender"}])
         self.assertEqual(of_loop.check_loop(reading, "w", resolve=yes), [])     # money beside it, and to_money, still fine
         undecided = dict(OWNED, target={k: v for k, v in OWNED["target"].items() if k != "decided"})
         out = "\n".join(of_loop.check_loop(undecided, "w", resolve=yes))
