@@ -1486,6 +1486,24 @@ positions:
         self.assertEqual((sent, again, len(typed)), (1, 0, 1))
         self.assertIn(card[-8:], typed[0])
 
+    def test_a_candidate_no_judge_saw_is_closed_once_after_the_judges_window(self):
+        """of_studio, message 01a1d7ce-8f0e: two heuristic questions from 2026-11-02 (before the judge, no position)
+        stayed candidates for ever, and Studio counted them as open."""
+        old = self.add("agent_question", {"detected_by": "heuristic", "questions": [{"question": "Still waiting?"}]},
+                       position=None, session="M")
+        stale = list(self.asks().values())
+        quiet = dict(log=lambda m: None, start=lambda a: False, online=lambda: False)
+        self.oj.pulse_pass(self.conn, stale, [], [], None, now=time.time() + 3600, **quiet)
+        self.assertEqual(self.asks()[old]["state"], "candidate")  # inside the judge's window: the judge's to judge
+        later = time.time() + self.oj.MAX_AGE_H * 3600 + 60
+        self.oj.pulse_pass(self.conn, stale, [], [], None, now=later, **quiet)
+        self.oj.pulse_pass(self.conn, stale, [], [], None, now=later + 600, **quiet)  # a view that lags: still once
+        self.oj.pulse_pass(self.conn, list(self.asks().values()), [], [], None, now=later + 900, **quiet)
+        self.assertEqual(self.asks()[old]["state"], "not_a_question")
+        rows = [self.json.loads(p) for (p,) in self.conn.execute(
+            "SELECT payload FROM event WHERE name = 'of.agent_question_judged'")]
+        self.assertEqual([(r["ask_id"], r["verdict"], r["rule"]) for r in rows], [(old, "skipped", "never-judged")])
+
     def test_a_message_pulled_mid_turn_does_not_start_the_turn(self):
         self.add("human_prompt", {"origin": "human", "text": "почему никто не перенёс сессию?"})
         self.add("agent_message_in", {"from": "of_platform", "delivery": "pulled"})

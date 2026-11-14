@@ -730,6 +730,35 @@ def _resolve(conn, ref):
 
 # ------------------------------------------------------------------ the pulse's part
 
+UNJUDGED = "never-judged"
+
+
+def close_unjudged(conn, asks, now, log=print):
+    """Candidates past MAX_AGE_H that no judge saw (filed before the judge began on 2026-11-07, without a position, or
+    every try failed): never judged from here on, they would stay candidates for ever, and Studio counted two from
+    2026-11-02 as open (of_studio, message 01a1d7ce-8f0e). Each is closed once with a `skipped` verdict, by a fixed id
+    two machines share. The projection itself never closes by age. Returns how many."""
+    import of_asks
+    n = 0
+    for a in asks:
+        if a.get("state") != "candidate" or not (a.get("kind") or "").startswith("question (heuristic)"):
+            continue
+        age = of_asks.seconds_since(a["ts"], now)
+        if age is None or age <= MAX_AGE_H * 3600:
+            continue
+        if any(v in ("owner_question", "not_a_question", "skipped") for v in judged(conn, a["event_id"])):
+            continue
+        of_events.emit("agent_question_judged", {
+            "ask_id": a["event_id"], "verdict": "skipped", "rule": UNJUDGED, "judge": VERSION,
+            "reason": f"no judge saw it within {MAX_AGE_H} h of its filing, so none will: not an ask"},
+            position=a.get("position"), session=a.get("session_id"),
+            event_id=of_events.stable_id(a["event_id"], UNJUDGED))
+        n += 1
+    if n:
+        log(f"judge: {n} candidate(s) older than {MAX_AGE_H} h that no judge saw, closed as skipped")
+    return n
+
+
 def pulse_pass(conn, asks, positions, agents, bind, now=None, deliver=None, log=print, start=spawn, online=None):
     """Every pulse: start a judge for candidates nobody judged (the hook's marker was lost, the slots were busy, a
     model error), whatever happened to the session since; and tell agents about the pane cards OF filed for them that
@@ -737,6 +766,7 @@ def pulse_pass(conn, asks, positions, agents, bind, now=None, deliver=None, log=
     Returns (judges started, notes delivered)."""
     import of_asks
     now = now or time.time()
+    close_unjudged(conn, asks, now, log)
     started = 0
     todo = []
     for a in asks:
