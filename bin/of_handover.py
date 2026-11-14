@@ -256,16 +256,17 @@ def write_scopes(handovers, path=None):
     return len(keep)
 
 
-SCOPES_LIVE_S = 120  # the listener's timer thread touches listen.ticks twice a second; older: it is not running
+SCOPES_LIVE_S = 120  # the listener's main loop, which writes the scopes file, beats every 5 s; older: it is not running
 
 
 def read_scopes(path=None, now=None):
     """The listener's copy of the scoped hand-overs, or None when there is none or the listener is not running (its
-    listen.ticks not touched for SCOPES_LIVE_S), so a stopped listener's old copy is never read (of_review on PR 140)."""
+    listen.heartbeat, which the main loop that writes the file touches every 5 s, older than SCOPES_LIVE_S), so a stopped
+    listener's old copy is never read (of_review on PRs 140 and 141)."""
     import time
     import of_events
     try:
-        if (now or time.time()) - os.path.getmtime(os.path.join(of_events.STATE_DIR, "listen.ticks")) > SCOPES_LIVE_S:
+        if (now or time.time()) - os.path.getmtime(os.path.join(of_events.STATE_DIR, "listen.heartbeat")) > SCOPES_LIVE_S:
             return None
     except OSError:
         return None
