@@ -227,6 +227,9 @@ class CommentTest(unittest.TestCase):
         self.assertEqual(of_guard._tokens("echo a\\\n#b c"), ["echo", "a#b", "c"])
         self.assertEqual(of_guard._segments("echo a#b; cat c # d"), [["echo", "a#b"], ["cat", "c"]])
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "echo x; cat a#b " + key}))
+        # a # inside a word before a heredoc hid its interpreter from G8 (of_review on PR 178)
+        body = "print(open('/Users/alex/.ssh/" + "id_" + "rsa').read())"
+        self.assertTrue(of_guard.critical_deny("Bash", {"command": "echo a#b; python3 - <<'EOF'\n" + body + "\nEOF"}))
         self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + key + " # a note"}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo ok # cat " + key}))
         self.assertIsNone(of_guard.critical_deny("Bash", {"command": "echo '# cat' ok"}))
