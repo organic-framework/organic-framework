@@ -60,7 +60,8 @@ class GithubTest(unittest.TestCase):
     def test_a_pr_bodys_position_line_names_its_author(self):
         """of_field-analyst, 2026-11-10: 90 of 820 merged Acme PRs had a position (pr-links only)."""
         body = "Summary.\n\nPosition: storefront_search\nCo-Authored-By: Claude <noreply@anthropic.com>"
-        prs = {"M/storefront": [dict(PRS["M/storefront"][1], number=9, body=body, reviews=0),
+        said = [{"verdict": "approve", "position": "storefront_review"}]
+        prs = {"M/storefront": [dict(PRS["M/storefront"][1], number=9, body=body, reviews=0, verdicts=said),
                                dict(PRS["M/storefront"][1], number=10, body="Position: nobody_here"),
                                dict(PRS["M/storefront"][0], number=11, body="Position: disc_keeper")]}
         with tempfile.TemporaryDirectory() as root:
@@ -78,11 +79,38 @@ class GithubTest(unittest.TestCase):
                 self.assertIsNone(rows[10][0]["position"])  # a line naming no position of the organization
                 # ap.unsourced-requirement reads what a PR claimed and whether anyone reviewed it (of_field-analyst)
                 self.assertEqual((rows[9][0]["body"], rows[9][0]["reviews"]), (body, 0))
+                self.assertEqual(rows[9][0]["verdicts"], said)  # reviewed by a comment (of_field-analyst, 2026-11-14)
                 self.assertIsNone(rows[11][0]["reviews"])  # not read: unknown, never zero
                 self.assertEqual((rows[11][0]["systems"], rows[11][0]["system_basis"]), (["discovery"], "position"))
                 conn.close()
             finally:
                 of_events.STATE_DIR = saved
+
+    def test_review_verdicts_come_from_the_prs_comments(self):
+        """of_field-analyst, 2026-11-14: a framework PR is reviewed by a comment with a Verdict: line, and
+        ap.missing-verifier saw 0 reviews beside PR 174's verdict."""
+        self.assertEqual(of_github.verdicts([
+            {"body": "Review of PR 9.\n\nVerdict: changes\nPosition: of_review"},
+            {"body": "**Verdict:** approve\n\nPosition: of_server"},
+            {"body": "I agree with the verdict: approve it later"},                 # not a verdict line
+            {"body": "Verdict: changes\nfixed\nVerdict: approve"},                  # its last verdict line
+            None]),
+            [{"verdict": "changes", "position": "of_review"}, {"verdict": "approve", "position": "of_server"},
+             {"verdict": "approve", "position": None}])
+        answer = {"data": {"search": {"pageInfo": {"hasNextPage": False}, "nodes": [
+            {"number": 7, "body": "Position: a_b", "commits": {"nodes": []}, "reviews": {"totalCount": 0},
+             "comments": {"nodes": [{"body": "Verdict: approve\nPosition: of_review"}]}}]}}}
+        with tempfile.TemporaryDirectory() as d:
+            gh = os.path.join(d, "gh")
+            with open(gh, "w") as fh:
+                fh.write("#!/bin/sh\ncat " + json.dumps(os.path.join(d, "answer.json")) + "\n")
+            os.chmod(gh, 0o755)
+            with open(os.path.join(d, "answer.json"), "w") as fh:
+                json.dump(answer, fh)
+            details = {}
+            self.assertEqual(of_github.bodies("M/repo", "merged", gh=gh, details=details), {7: ["a_b"]})
+        self.assertEqual(details[7], {"body": "Position: a_b", "reviews": 0,
+                                      "verdicts": [{"verdict": "approve", "position": "of_review"}]})
 
     def test_shared_paths_fall_back_to_the_authors_system(self):
         with tempfile.TemporaryDirectory() as root:
