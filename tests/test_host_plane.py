@@ -137,6 +137,7 @@ class DeployTest(unittest.TestCase):
         self.commit("v1")
         self.root = os.path.join(self.tmp.name, "opt")
         self.ran = []
+        self.me = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -167,7 +168,7 @@ class DeployTest(unittest.TestCase):
     def deploy(self, commit=None, smoke_ok=True, problems=()):
         commit = commit or self.git(self.src, "rev-parse", "main").strip()
         return plane.deploy(commit, "of", ["of"], run=self.run_with(smoke_ok), log=lambda m: None, root=self.root,
-                            source=self.src, trust=lambda: list(problems))
+                            source=self.src, trust=lambda: list(problems), self_check=lambda: list(self.me))
 
     def test_main_is_deployed_and_a_failing_commit_rolled_back(self):
         v1 = self.git(self.src, "rev-parse", "HEAD").strip()
@@ -200,6 +201,26 @@ class DeployTest(unittest.TestCase):
         self.assertIn("the trust check failed", str(e.exception))
         self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # no compileall, no smoke
         self.assertFalse(any(a[0] == plane.SUDO and "smoke" in a for a in self.ran))
+
+    def test_the_script_and_its_python_are_checked_first(self):
+        self.me = ["of may write the folder of plane.py"]
+        with self.assertRaises(SystemExit) as e:
+            self.deploy()
+        self.assertIn("what runs this script is not root's alone", str(e.exception))
+        self.assertEqual(self.ran, [])                                      # nothing ran at all
+
+    def test_root_runs_with_a_fixed_path(self):
+        seen = []
+        real = self.run_with(True)
+
+        def run(argv, **kw):
+            seen.append((argv[0], kw.get("env"), kw.get("cwd")))
+            return real(argv, **kw)
+        plane.deploy(self.git(self.src, "rev-parse", "main").strip(), "of", ["of"], run=run, log=lambda m: None,
+                     root=self.root, source=self.src, trust=lambda: [], self_check=lambda: [])
+        for prog, env, cwd in seen:
+            if prog != plane.SUDO:
+                self.assertEqual((env, cwd), (plane.ROOT_ENV, "/"), prog)
 
     def test_only_a_full_hash(self):
         for bad in ("main", "v1.0", "abc123"):

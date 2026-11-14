@@ -57,6 +57,7 @@ WATCH_STATE = "/var/db/of-plane"          # root's alone: each root watchdog's s
 # root runs programs by their full path, never as PATH finds them (of_review on PR 148)
 GIT, SUDO, ENV, CHOWN, CHMOD, LAUNCHCTL, SH = ("/usr/bin/git", "/usr/bin/sudo", "/usr/bin/env", "/usr/sbin/chown",
                                               "/bin/chmod", "/bin/launchctl", "/bin/sh")
+ROOT_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/var/root", "LANG": "C"}  # root's runs: a fixed PATH
 MARK = "# >>> organic-framework plane (deploy/host/plane.py) >>>"
 END = "# <<< organic-framework plane <<<"
 SERVICES = ("herdr", "listen", "health", "listen-watchdog")
@@ -297,28 +298,36 @@ PUBLIC = "https://github.com/organic-framework/organic-framework.git"  # reviewe
 
 
 def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, root=None, source=PUBLIC,
-           trust=None):
+           trust=None, self_check=None):
     """The release checkout at COMMIT, a full hash the public main contains: root fetches the public main itself,
     never an organization user's checkout, whose main may hold commits no one reviewed, and checks out exactly that
     hash (of_secrets-review and of_review on PR 148). In order: the checkout (git only), the tree made root's and
     read-only, the trust check (setup.trust_problems over the python, Homebrew and the checkout), the smoke check run
     by SMOKE_AS (an organization user, never root), and only then compileall as root (python -I, from /): root runs no
     Homebrew python before the trust check passed, and none that imports from a folder someone else can write. A
-    failing step puts the commit before back. Programs by their full path. Returns the commit."""
+    failing step puts the commit before back. Programs by their full path, with a fixed PATH. Before all of it, the
+    script's own folder and its python pass the same trust check. Returns the commit."""
     import re
     root = root or OF_ROOT
+    # first, what runs this: the script's folder and the python must be root's (or an admin's) and no organization
+    # user's to write, before root does anything for it (of_review on PR 148)
+    me = (self_check or (lambda: host.trust_problems(
+        [os.path.dirname(os.path.realpath(__file__)), os.path.realpath(sys.executable)],
+        [*org_users, host.SERVICE_USER], run=run)))()
+    if me:
+        raise SystemExit("deploy: refused: what runs this script is not root's alone: " + "; ".join(me)[:400])
     if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
         raise SystemExit("deploy: --commit takes a full commit hash (40 hex): root deploys a pinned commit")
     if not smoke_as:
         raise SystemExit("deploy: name the organization user who runs the smoke check (--smoke-as); root never does")
 
     def git(*a, check=True):
-        r = run([GIT, "-C", root, *a], capture_output=True, text=True, cwd="/")
+        r = run([GIT, "-C", root, *a], capture_output=True, text=True, cwd="/", env=ROOT_ENV)
         if check and r.returncode != 0:
             raise SystemExit(f"deploy: git {' '.join(a[:2])}: {(r.stderr or r.stdout).strip()[:300]}")
         return r.stdout.strip()
     if not os.path.isdir(os.path.join(root, ".git")):
-        r = run([GIT, "init", "-q", root], capture_output=True, text=True, cwd="/")
+        r = run([GIT, "init", "-q", root], capture_output=True, text=True, cwd="/", env=ROOT_ENV)
         if r.returncode != 0:
             raise SystemExit(f"deploy: git init: {(r.stderr or r.stdout).strip()[:300]}")
         before = None
@@ -327,7 +336,7 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
     git("fetch", "-q", source, "main")
     public = git("rev-parse", "FETCH_HEAD")
     if run([GIT, "-C", root, "merge-base", "--is-ancestor", commit, public], capture_output=True,
-           cwd="/").returncode:
+           cwd="/", env=ROOT_ENV).returncode:
         raise SystemExit(f"deploy: {commit[:12]} is not on the public main ({public[:12]}): only reviewed code is "
                          "deployed")
 
@@ -339,8 +348,8 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
     git("checkout", "-q", "--detach", commit)
     if git("rev-parse", "HEAD") != commit:
         back("the checkout is not the pinned commit")
-    run([CHOWN, "-R", "-P", "root:wheel", root], capture_output=True, cwd="/")
-    run([CHMOD, "-R", "u+rwX,go+rX,go-w", root], capture_output=True, cwd="/")
+    run([CHOWN, "-R", "-P", "root:wheel", root], capture_output=True, cwd="/", env=ROOT_ENV)
+    run([CHMOD, "-R", "u+rwX,go+rX,go-w", root], capture_output=True, cwd="/", env=ROOT_ENV)
     problems = (trust or (lambda: host.trust_problems(host.code_roots(), [*org_users, host.SERVICE_USER], run=run)))()
     if problems:
         back("the trust check failed (" + "; ".join(problems)[:300] + ")")
@@ -350,8 +359,9 @@ def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, r
     if r.returncode != 0:
         back("the smoke check failed (" + (r.stderr or r.stdout).strip()[-300:] + ")")
     # the users cannot write a read-only checkout's bytecode cache: compile it here, after the trust check, isolated
-    run([PYTHON, "-I", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True, cwd="/")
-    run([CHOWN, "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True, cwd="/")
+    run([PYTHON, "-I", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True, cwd="/",
+        env=ROOT_ENV)
+    run([CHOWN, "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True, cwd="/", env=ROOT_ENV)
     log(f"deploy: {root} at {commit[:12]}, on the public main {public[:12]} (trust and smoke checks ok)")
     return commit
 
