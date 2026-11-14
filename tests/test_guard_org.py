@@ -236,12 +236,26 @@ class SshRuleTest(unittest.TestCase):
         said = of_guard.org_rule_hits("Bash", {"command": "ssh us"}, [boom, SECRETS], "x")
         self.assertIn("counted as a match", said[0][1])
 
+    def test_a_line_the_parser_cannot_read_counts_and_a_long_phrase_is_cut(self):
+        """PR 152's notes: a parse error meant no match while a matching error meant a match; a 5,000-character word
+        went whole into the deny message and the record."""
+        from unittest import mock
+        with mock.patch.object(of_guard, "ssh_calls", side_effect=ValueError("unbalanced")), \
+                mock.patch.object(of_guard, "kubectl_calls", side_effect=ValueError("unbalanced")):
+            got = of_guard.org_rule_hits("Bash", {"command": "ssh us; kubectl get secrets -n signer"},
+                                         [SSH, SECRETS], "x")
+            self.assertEqual([r["id"] for r, _ in got], ["shared-key", "signing-secrets"])
+            self.assertIn("counted as a match", got[0][1])
+            self.assertEqual(of_guard.org_rule_hits("Bash", {"command": "ls"}, [SSH, SECRETS], "x"), [])
+        said = self.hit("ssh " + "gw" + "x" * 5000)
+        self.assertLessEqual(len(said[0]), 300)
+
     def test_globs_meet(self):
         for a, b, want in (("agent-*-node", "agent-us-node", True), ("agent-*-node", "bastion-node", False),
                            ("*", "anything", True), ("gw*", "gw-*.lan", True), ("a?c", "abc", True),
                            ("a*c", "b*", False), ("192.0.2.*", "192.0.2.5", True), ("x*y", "*z", False),
                            ("a**b", "a*b", True), ("", "", True), ("", "*", True), ("*", "", True), ("?", "", False),
-                           ("a" * 3000 + "*", "b", True)):                             # past the limit
+                           ("a" * 300 + "*", "b", True)):                              # past the limit
             self.assertEqual(of_guard._globs_meet(a, b), want, (a, b))
 
     def test_what_does_not(self):
@@ -379,8 +393,10 @@ class OrgRuleTest(unittest.TestCase):
         self.assertIn("default kubeconfig", said)
         self.assertEqual(of_guard.org_rule_hits("Read", {"file_path": "/x"}, [KUBE_ADMIN]), [])
 
-    def test_a_parse_failure_matches_nothing(self):
-        self.assertEqual(hits('kubectl exec "runner-7 -- sh'), [])
+    def test_a_parse_failure_counts_as_a_match(self):
+        """It matched nothing until 2026-11-14; a matching error then counted as a match (PR 152), and both reviewers
+        asked the parser's errors to agree (25 of 31,216 distinct kubectl lines over 21 days)."""
+        self.assertEqual(hits('kubectl exec "runner-7 -- sh'), ["runner-exec", "kube-admin"])
 
 
 if __name__ == "__main__":
