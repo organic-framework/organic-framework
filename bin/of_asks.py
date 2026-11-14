@@ -411,21 +411,22 @@ def older_version(answered, ask):
     return isinstance(answered, int) and not isinstance(answered, bool) and answered < (ask.get("version") or 1)
 
 
-def amendments(conn, ask_id, ts, position, host):
+def amendments(conn, ask_id, ts, position, host, rowids=False):
     """[(ts, payload)] of the of.ask_amended events for one ask, by the position that filed it and from the machine
-    that filed it (HOST, the ask's own host_id), oldest first. Reads one name from the ask's filing time (the name
-    index)."""
+    that filed it (HOST, the ask's own host_id), in the projection's order (ts, then rowid); ROWIDS: [(ts, rowid,
+    payload)]. Reads one name from the ask's filing time (the name index)."""
     out = []
     if not (position and host):
         return out
-    for ets, pl, h in conn.execute("SELECT ts, payload, host_id FROM event WHERE name = 'of.ask_amended' AND ts >= ? "
-                                   "AND json_extract(payload, '$.ask_id') = ? ORDER BY ts, rowid", (ts or "", ask_id)):
+    for ets, rid, pl, h in conn.execute(
+            "SELECT ts, rowid, payload, host_id FROM event WHERE name = 'of.ask_amended' AND ts >= ? "
+            "AND json_extract(payload, '$.ask_id') = ? ORDER BY ts, rowid", (ts or "", ask_id)):
         try:
             p = json.loads(pl or "{}")
         except ValueError:
             continue
         if p.get("by") == position and h == host:
-            out.append((ets, p))
+            out.append((ets, rid, p) if rowids else (ets, p))
     return out
 
 

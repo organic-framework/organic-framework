@@ -117,13 +117,13 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
         return Yes("prompt", eid, _short(p.get("text"))) if origin == "human" and where else None
     if name != "of.agent_question" or "ask" not in kinds or option is None or work is None:
         return None
-    last = last_ts = None
-    for ats, ap in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? "
-                                "ORDER BY ts, rowid", (ts,)):
+    last = at = None
+    for ats, arid, ap in conn.execute("SELECT ts, rowid, payload FROM event WHERE name = 'of.agent_question_answered' "
+                                      "AND ts >= ? ORDER BY ts, rowid", (ts,)):
         a = json.loads(ap or "{}")
         if eid in (a.get("ask_ids") or [a.get("ask_id")]) and a.get("by") == HUMAN_ANSWER \
                 and a.get("via") in PERSON_CHANNELS:
-            last, last_ts = a, ats
+            last, at = a, (ats, arid)
     if not last:
         return None
     # an amended ask (of ask --amend, docs/events.md of.ask_amended) resolves only on an answer to its newest version
@@ -131,7 +131,9 @@ def resolve_decided(conn, did, typed_by_person=None, work=None, goal_yes=None, k
     # and words. An answer that names no version, on an amended ask, resolves to nothing (of_platform, message
     # 01a1dbad-e794); so does one to an older version (of_review on PR 181)
     import of_asks
-    before = [a for t, a in of_asks.amendments(conn, eid, ts, position, host) if t <= last_ts]
+    # before the answer in the projection's order, ts then rowid: an amend in the answer's millisecond, written after
+    # it, is not before it (of_platform on 9a24857: the Yeses store's amend and answer shared their ts)
+    before = [a for t, rid, a in of_asks.amendments(conn, eid, ts, position, host, rowids=True) if (t, rid) < at]
     newest = max([1] + [a["version"] for a in before if isinstance(a.get("version"), int)
                         and not isinstance(a.get("version"), bool)])
     v = last.get("version")
