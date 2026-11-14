@@ -2751,7 +2751,7 @@ def ssh_calls(cmd, depth=0):
             head, args = s[0], s[1]
             if head in _SSH_HEADS:
                 dests, config = _ssh_argv(head, args)
-                out.append({"head": head, "destinations": dests, "config": config})
+                out.append({"head": head, "destinations": dests, "config": config, "args": list(args)})
             elif head in _SHELLS - {"eval"} and "-c" in args[:-1]:
                 out += ssh_calls(args[args.index("-c") + 1], depth + 1)
             elif head == "eval":
@@ -2759,7 +2759,7 @@ def ssh_calls(cmd, depth=0):
     return out
 
 
-_SSH_SETS = ("hostname", "proxyjump", "proxycommand")  # where a call goes
+_SSH_SETS = ("hostname", "proxyjump", "proxycommand", "port")  # where a call goes
 
 
 def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
@@ -2919,12 +2919,191 @@ def _ssh_reach(host, resolve, depth=0):
     return out
 
 
-def ssh_rule_match(match, call, resolve=None):
+# allow_jump (2026-11-14; a user organization's platform owner allows one position one exact jump through a denied
+# gateway, msg 01a1d7d4-ed7a; of_architect's shape and four conditions, msg 01a1d7da-a30e): an entry
+# {via: [hosts], to: [host:port], positions: [p]} in the same signed ssh scope. A call stays out of the rule for p only
+# when every contact with a listed host is a jump from `via` to exactly one `to`, read strictly from the call's chain;
+# on any doubt the call stays in the rule, as for kubectl's allow_exec.
+_SSH_PORT_FLAG = {"ssh": "-p", "autossh": "-p", "scp": "-P", "sftp": "-P"}
+
+
+class _Doubt(Exception):
+    pass
+
+
+def _ssh_hop(word, default_port=None):
+    """(host, port or None) of a jump hop `[user@]host[:port]` or a `ssh://` URL; a variable is a doubt."""
+    if "$" in word or "__OFSUB__" in word or "`" in word:
+        raise _Doubt(word)
+    host = _ssh_host(word)
+    m = re.match(r"^(?:ssh://)?(?:[^@/]*@)?(\[[^\]]+\]|[^:/]+):(\d+)$", word.strip(), re.I)
+    return host, (m.group(2) if m else default_port)
+
+
+def _ssh_chain_of(head, args):
+    """{dests: [words], jumps: [words] or None, proxycommand: str or None, port: str or None} of one call, strictly:
+    a form the reader does not know (mosh, sshfs, -o HostName, a jump and a ProxyCommand together) is a doubt."""
+    if head not in ("ssh", "autossh", "scp", "sftp", "rsync"):
+        raise _Doubt(head)
+    vals = _SSH_OPT_VALUE.get(head, set())
+    out = {"dests": [], "jumps": None, "proxycommand": None, "port": None}
+
+    def option(flag, v):
+        if flag == "-J":
+            out["jumps"] = (out["jumps"] or []) + [h for h in str(v).split(",") if h.strip()]
+        elif flag == _SSH_PORT_FLAG.get(head):
+            out["port"] = str(v)
+        elif flag == "-o":
+            key, val = _ssh_opts(v)
+            if key == "proxyjump":
+                option("-J", val)
+            elif key == "proxycommand":
+                out["proxycommand"] = val
+            elif key == "port":
+                out["port"] = val
+            elif key == "hostname":
+                raise _Doubt("-o HostName")
+        elif flag in ("-e", "--rsh"):
+            words = str(v).split()
+            if not words or os.path.basename(words[0]) != "ssh":
+                raise _Doubt("rsync -e")
+            inner = _ssh_chain_of("ssh", words[1:] + ["__DEST__"])
+            out["jumps"], out["proxycommand"], out["port"] = inner["jumps"], inner["proxycommand"], inner["port"]
+    i, positional = 0, []
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            positional += args[i + 1:]
+            break
+        if a.startswith("--"):
+            if "=" in a:
+                option(*a.split("=", 1))
+            elif a in vals and i + 1 < len(args):
+                option(a, args[i + 1])
+                i += 1
+            i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for k in range(1, len(a)):
+                flag = "-" + a[k]
+                if flag in vals:
+                    if k + 1 < len(a):
+                        option(flag, a[k + 1:])
+                    elif i + 1 < len(args):
+                        option(flag, args[i + 1])
+                        i += 1
+                    break
+            i += 1
+            continue
+        positional.append(a)
+        if head in ("ssh", "autossh", "sftp"):
+            break
+        i += 1
+    if head in ("ssh", "autossh", "sftp"):
+        out["dests"] = positional[:1]
+    else:
+        out["dests"] = [p for p in positional if _ssh_remote(p) or "$" in p or "__OFSUB__" in p]
+    if out["jumps"] is not None and out["proxycommand"] is not None:
+        raise _Doubt("a jump and a ProxyCommand")
+    return out
+
+
+def _ssh_contacts(call, resolve):
+    """[(host, (next host, next port) for a jump, else None for a contact)] of every host one call reaches, read
+    strictly (raises _Doubt): the jumps of -J, -o ProxyJump or the folded config's ProxyJump, each to the hop right
+    after it, the last to the destination; a ProxyCommand only in its `ssh … -W <to> <via>` form (%h and %p the
+    destination); the destination itself a contact. A port is the hop's own `:port`, else the folded config's Port;
+    only the destination takes -p; else 22 (of_architect's conditions 1 and 2)."""
+    chain = _ssh_chain_of(call["head"], call.get("args") or [])
+    first = (lambda n, k: next((b[k] for b in getattr(resolve, "blocks", []) or []
+                                if b.get(k) and _ssh_pattern_match(b["patterns"], n)), None)) if resolve else \
+        (lambda n, k: None)
+    out = []
+    for dword in chain["dests"]:
+        dest, _ = _ssh_hop(dword)
+        dport = chain["port"] or first(dest, "port") or "22"
+        jumps, command = chain["jumps"], chain["proxycommand"]
+        if jumps is None and command is None:
+            jumps = [h for h in str(first(dest, "proxyjump") or "").split(",") if h.strip()] or None
+            command = first(dest, "proxycommand") if jumps is None else None
+        if jumps and str(jumps[0]).lower() == "none":
+            jumps = None
+        if jumps:
+            hops = [_ssh_hop(h) for h in jumps]
+            hops = [(h, p or first(h, "port") or "22") for h, p in hops] + [(dest, dport)]
+            out += [(hops[k][0], hops[k + 1]) for k in range(len(hops) - 1)]
+        elif command and command.lower() != "none":
+            words = command.split()
+            if not words or os.path.basename(words[0]) != "ssh":
+                raise _Doubt("a ProxyCommand that is not ssh -W")
+            sub = _ssh_chain_of("ssh", words[1:])
+            w = next((words[k + 1] for k in range(1, len(words) - 1) if words[k] == "-W"), None) or \
+                next((x[2:] for x in words[1:] if x.startswith("-W") and len(x) > 2), None)
+            if not w or not sub["dests"]:
+                raise _Doubt("a ProxyCommand without -W")
+            to_host, _, to_port = w.replace("%h", dest).replace("%p", dport).rpartition(":")
+            via = sub["dests"][0]
+            inner = [_ssh_hop(h) for h in sub["jumps"] or []]
+            via_host = _ssh_hop(via)[0]
+            hops = [(h, p or first(h, "port") or "22") for h, p in inner] + [
+                (via_host, sub["port"] or first(via_host, "port") or "22")]
+            out += [(hops[k][0], hops[k + 1]) for k in range(len(hops) - 1)]
+            out.append((hops[-1][0], (to_host.strip("[]").lower(), to_port)))
+        out.append((dest, None))
+    return out
+
+
+def _ssh_allowed(match, call, resolve, position):
+    """Does an allow_jump entry for POSITION cover every contact this call makes with a listed host? Any doubt: no."""
+    entries = [e for e in match.get("allow_jump") or [] if position and position in (e.get("positions") or [])]
+    if not entries:
+        return False
+    import fnmatch
+    globs = [str(h).lower() for h in match.get("hosts") or []]
+
+    def names(host):
+        n = [host.rstrip(".")]
+        hostname = resolve(host) if resolve else None
+        return n + ([hostname.rstrip(".")] if hostname else [])
+
+    def listed(host):
+        return any(fnmatch.fnmatchcase(n, g) for n in names(host) for g in globs)
+    try:
+        contacts = _ssh_contacts(call, resolve)
+    except _Doubt:
+        return False
+    for host, to in contacts:
+        if not listed(host):
+            continue
+        if to is None:
+            return False
+        if not any(any(fnmatch.fnmatchcase(n, str(v).lower()) for n in names(host) for v in e.get("via") or [])
+                   and any(_ssh_to_matches(t, to, names) for t in e.get("to") or []) for e in entries):
+            return False
+    return True
+
+
+def _ssh_to_matches(entry_to, to, names):
+    """An allow_jump `to` (`host:port`, the port 22 when left out) against a jump's next hop (host, port)."""
+    import fnmatch
+    host, _, port = str(entry_to).rpartition(":") if re.search(r":\d+$", str(entry_to)) else (str(entry_to), "", "22")
+    return port == str(to[1]) and any(fnmatch.fnmatchcase(n, host.strip("[]").lower()) for n in names(to[0]))
+
+
+def ssh_rule_match(match, call, resolve=None, position=None):
     """What an ssh matcher matched in one call, as a short phrase, or None. `match`: {hosts: [globs]}, compared
     case-insensitively with each destination the call reaches (`_ssh_argv`), as typed and through the ssh config: its
     HostName, and the ProxyJump and ProxyCommand its block sets (`_ssh_reach`). A destination held in a variable
     matches wherever its literal parts can fit a listed host. A config the guard cannot read through, or one whose
     Match block sets where a call goes, makes the call a match: a false positive over a miss."""
+    hit = _ssh_rule_hit(match, call, resolve)
+    if hit and match.get("allow_jump") and not getattr(resolve, "opaque", None) and \
+            _ssh_allowed(match, call, resolve, position):
+        return None  # every contact with a listed host is a jump this position is allowed (allow_jump)
+    return hit
+
+
+def _ssh_rule_hit(match, call, resolve=None):
     import fnmatch
     globs = [str(h).lower() for h in match.get("hosts") or []]
     opaque = getattr(resolve, "opaque", None)
@@ -2994,7 +3173,7 @@ def org_rule_hits(tool, tool_input, rules, position=None, env=None, resolver=Non
                             resolvers[c["config"]] = (resolver or ssh_resolver)(c["config"])
                         except Exception:  # noqa: BLE001 - an unreadable config folds nothing
                             resolvers[c["config"]] = None
-                    m = ssh_rule_match(r["ssh"], c, resolvers[c["config"]])
+                    m = ssh_rule_match(r["ssh"], c, resolvers[c["config"]], position)
                     if m:
                         break
         except Exception as e:  # noqa: BLE001

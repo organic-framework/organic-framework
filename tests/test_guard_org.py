@@ -270,6 +270,50 @@ class SshRuleTest(unittest.TestCase):
                              ["ssh to us-east (HostName 192.0.2.5)"])
 
 
+GATE = {"id": "gateways", "mode": "deny", "reason": "the shared agent key", "except": [],
+        "ssh": {"hosts": ["agent-gateway", "gw*"],
+                "allow_jump": [{"via": ["agent-gateway"], "to": ["192.0.2.70:22"], "positions": ["funding_keeper"]}]}}
+
+
+class AllowJumpTest(unittest.TestCase):
+    """allow_jump (a user organization's platform owner: one position, one exact jump through a denied gateway, msg
+    01a1d7d4-ed7a; of_architect's shape and four conditions, msg 01a1d7da-a30e)."""
+
+    def hit(self, cmd, position="funding_keeper", resolver=None):
+        return [m for _, m in of_guard.org_rule_hits(
+            "Bash", {"command": cmd}, [GATE], position, resolver=resolver or (lambda cfg: lambda n: None))]
+
+    def test_the_exact_jump_is_allowed_to_its_position_only(self):
+        for cmd in ("ssh -J agent-gateway 192.0.2.70", "ssh -o ProxyJump=agent-gateway 192.0.2.70",
+                    "ssh -J other,agent-gateway 192.0.2.70",
+                    "ssh -o 'ProxyCommand ssh -F /etc/agents.conf -W 192.0.2.70:22 agent-gateway' target",
+                    "ssh -o 'ProxyCommand ssh -W %h:%p agent-gateway' -p 22 192.0.2.70",
+                    "scp -J agent-gateway f 192.0.2.70:/tmp/", "rsync -av -e 'ssh -J agent-gateway' f 192.0.2.70:/tmp/"):
+            self.assertEqual(self.hit(cmd), [], cmd)
+            self.assertTrue(self.hit(cmd, position="other_keeper"), cmd)              # its position only
+
+    def test_anything_else_through_the_gateway_stays_in_the_rule(self):
+        for cmd in ("ssh agent-gateway", "ssh -J agent-gateway -p 2222 192.0.2.70",     # another port
+                    "ssh -J agent-gateway 192.0.2.71",                                  # another target
+                    "ssh -J agent-gateway,other 192.0.2.70",                            # agent-gateway to other
+                    "ssh -J agent-gateway $T",                                          # a variable: doubt
+                    "ssh -o 'ProxyCommand ssh agent-gateway nc %h %p' 192.0.2.70",      # not the -W form
+                    "ssh -L 8080:x:80 agent-gateway", "scp -P 2222 -J agent-gateway f 192.0.2.70:/tmp/",
+                    "ssh -J agent-gateway -o HostName=192.0.2.70 t",                   # -o HostName: doubt
+                    "ssh -J gw2 192.0.2.70", "mosh --ssh='ssh -J agent-gateway' 192.0.2.70"):
+            self.assertTrue(self.hit(cmd), cmd)
+
+    def test_a_jump_from_the_folded_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host target\n  HostName 192.0.2.70\n  ProxyJump agent-gateway\n"
+                         "Host elsewhere\n  HostName 192.0.2.71\n  ProxyJump agent-gateway\n")
+            self.assertEqual(self.hit(f"ssh -F {cfg} target", resolver=of_guard.ssh_resolver), [])
+            self.assertTrue(self.hit(f"ssh -F {cfg} elsewhere", resolver=of_guard.ssh_resolver))
+
+
 class OrgRuleTest(unittest.TestCase):
     def test_exec_into_a_runner_pod(self):
         self.assertEqual(hits("kubectl --kubeconfig /k/own.yaml exec -it runner-7 -- sh"),

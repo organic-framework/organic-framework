@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 
 TIERS = ("observe", "propose", "act_with_approval", "act_and_report")  # least to most autonomous
 DIMENSIONS = ("tools", "repos", "paths", "hosts", "systems", "commands", "to_org", "to_positions")
@@ -459,8 +460,18 @@ def shape_problems(grant):
     if sh is not None:  # O3 (docs/registry.md, Scope ssh): errs toward a match, so a deny only
         if grant.get("effect") != "deny":
             out.append("scope ssh is only for a deny")
-        if not isinstance(sh, dict) or set(sh) != {"hosts"} or not _str_list(sh.get("hosts")):
-            out.append("scope ssh takes only hosts, a list of host names or globs")
+        if not isinstance(sh, dict) or not set(sh) <= {"hosts", "allow_jump"} or not _str_list(sh.get("hosts")):
+            out.append("scope ssh takes hosts, a list of host names or globs, and allow_jump")
+        aj = sh.get("allow_jump") if isinstance(sh, dict) else None
+        if aj is not None:  # of_architect, msg 01a1d7da-a30e: the exception signed in the same grant, per position
+            if not (isinstance(aj, list) and aj and all(
+                    isinstance(e, dict) and not set(e) - {"via", "to", "positions"} and _str_list(e.get("via"))
+                    and _str_list(e.get("to")) and all(re.fullmatch(r"\[?[^\s:\]]+\]?(?::\d+)?|\[[^\]]+\]:\d+", t)
+                                                       for t in e["to"])
+                    and (e.get("positions") is None or _str_list(e.get("positions"))) for e in aj)):
+                out.append("scope ssh.allow_jump is a list of {via: [hosts], to: [host:port], positions: [p]}")
+            elif sub == "*" and not all(_str_list(e.get("positions")) for e in aj):
+                out.append('an allow_jump entry on a subject "*" deny names its positions')
         if scope.get("kubectl") is not None:
             out.append("a grant scopes kubectl or ssh, not both")
     k = scope.get("kubectl")

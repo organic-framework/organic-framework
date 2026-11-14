@@ -98,6 +98,18 @@ class ShapeTest(unittest.TestCase):
         self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": ["us"], "users": ["x"]}})))
         self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": ["us"]}, "kubectl": RUNNER})))
 
+    def test_allow_jump_on_a_subject_star_deny_names_its_positions(self):
+        entry = {"via": ["agent-gateway"], "to": ["192.0.2.70:22"]}
+        bare = rule_grant(scope={"ssh": {"hosts": ["agent-gateway"], "allow_jump": [entry]}})
+        self.assertIn('an allow_jump entry on a subject "*" deny names its positions', of_grants.shape_problems(bare))
+        ok = rule_grant(scope={"ssh": {"hosts": ["agent-gateway"], "allow_jump": [dict(entry, positions=["p"])]}})
+        self.assertEqual(of_grants.shape_problems(ok), [])
+        self.assertEqual(of_grants.org_rule(ok)["ssh"]["allow_jump"][0]["positions"], ["p"])
+        for bad in ([{"via": ["g"], "to": ["no port here:x"], "positions": ["p"]}], [{"via": ["g"], "positions": ["p"]}],
+                    [{"via": ["g"], "to": ["h:22"], "positions": ["p"], "extra": 1}], []):
+            self.assertTrue(of_grants.shape_problems(rule_grant(scope={"ssh": {"hosts": ["g"], "allow_jump": bad}})),
+                            bad)
+
     def test_a_kind_o1_cannot_fold_is_a_warning(self):
         g = rule_grant(scope={"kubectl": dict(RUNNER, kinds=["Secret", "secertss",
                                                               "externalsecrets.external-secrets.io"])})
