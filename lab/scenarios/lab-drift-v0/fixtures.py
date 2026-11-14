@@ -688,7 +688,7 @@ SCENARIOS += [
 # ---- ap.chatty default part: pair and organization ----
 # Pair: 36 messages one way (reciprocity 0, so over-coupled stays quiet) for 3 merged PRs; both sides observed.
 # No of.agent_message_in: bottleneck-broker and receiver_flood are blocked. v3 (2026-11-14) measures a pair per merged
-# PR only over >= 3 merged PRs: 12 messages over 1 PR is the labelled false positive (work that is not merged code).
+# PR only over >= 3 merged PRs: 12 messages over 1 PR has the shape of the labelled false positives (2026-11-12).
 def _one_way(i0, n, p, q, first="11-02", hour0=8):
     return [mout(f"{i0}-{k}", _at(_day(first, k % 5), hour0 + k // 5), sid_of(p), q, position=p) for k in range(n)]
 
@@ -698,7 +698,7 @@ SCENARIOS += [
           turns(["bot_search", "bot_operator"]) + _one_way("cp", 36, "bot_search", "bot_operator")
           + [_pr(f"cp-wr{k}", _at(_day("11-02", k), 16), ["bot"], "bot_search", 8101 + k) for k in range(3)],
           ("ap.chatty", ["bot_operator", "bot_search"], "positive")),
-    # 12 messages over 1 merged PR: 12 per PR, but the pair's work is not merged code (v3)
+    # 12 messages over 1 merged PR: 12 per PR, below v3's floor of 3 merged PRs (a note names the pair)
     _case("chatty-pair/negative-not-code", _org_doc(),
           turns(["bot_search", "bot_operator"]) + _one_way("cn", 12, "bot_search", "bot_operator")
           + [_pr("cn-wr", _at("11-03", 16), ["bot"], "bot_search", 8121)],
