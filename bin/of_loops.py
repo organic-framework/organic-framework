@@ -20,7 +20,8 @@ the person who owns the work's goal, is itself what the loop's changes are for. 
 chain to it by `to_target` instead of `to_money`, and a run on such a measure is tied to the target, not drift. The id
 counts only when it resolves in the log as a person's yes (of_platform's of_loop.resolve_decided; "Where it is read,
 and how it is checked"): project() takes a resolver for that, and without one, or when the id does not resolve, the
-target is one without `decided`, and `decided_unresolved` names the id with `decided_unresolved_why`.
+target is one without `decided`, and `decided_unresolved` names the id with `decided_unresolved_why`. A resolved
+id carries `decided_words`, what the person said, for the reader to check that it names the measure.
   checkpoint_trend(curve, ...)      the target per checkpoint_days period: a standing work's progress (docs/registry.md)
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
@@ -77,41 +78,79 @@ def decided_of(target):
     return d.strip() if isinstance(d, str) and d.strip() else None
 
 
-def log_resolver(conn=None):
-    """id -> the person's yes it names in this machine's log (of_loop.resolve_decided, of_platform), each id looked up
-    once, through a read-only connection opened on the first lookup; UNREAD when the store will not open, or this host
-    has no of_loop (of-server's image)."""
-    held, memo = {"conn": conn}, {}
+def log_resolver(conn=None, conductors=None):
+    """(id, work, goal_yes) -> the person's yes it names in this machine's log, as of_platform's of_loop.resolve_decided
+    finds it (docs/registry.md, Works, "Where it is read, and how it is checked"): an ask as `<ask id>#<option>`, filed
+    for WORK or the yes GOAL_YES (the decided of the goal the work serves) records, whose answer chose that option; or
+    a prompt a person typed in the session of a conductor (CONDUCTORS, by default every listed organization's
+    positions with role conductor, read when a prompt is first checked). Each lookup once, through a read-only
+    connection opened on the first; UNREAD when the store will not open, or this host has no of_loop (of-server's
+    image). for_work binds it to one work."""
+    import sqlite3
+    held, memo = {"conn": conn, "conductors": conductors}, {}
 
-    def resolve(did):
-        if did not in memo:
+    def typed_by_person(position, host):
+        if held["conductors"] is None:
+            held["conductors"] = conductor_positions()
+        return position in held["conductors"]
+
+    def resolve(did, work=None, goal_yes=None):
+        key = (did, work, goal_yes)
+        if key not in memo:
             try:
-                import sqlite3
                 import of_loop
                 if held["conn"] is None:
                     import of_fold
                     held["conn"] = of_fold.reader() or False
-                memo[did] = of_loop.resolve_decided(held["conn"], did) if held["conn"] else UNREAD
+                memo[key] = (of_loop.resolve_decided(held["conn"], did, typed_by_person, work, goal_yes)
+                             if held["conn"] else UNREAD)
             except (ImportError, sqlite3.Error, ValueError):
-                memo[did] = UNREAD
-        return memo[did]
+                memo[key] = UNREAD
+        return memo[key]
     return resolve
 
 
-def owners_yes(did, resolve):
-    """(the id when RESOLVE finds it in the log as a person's yes, else None; why it does not count, else None):
-    `unread` when the log could not be read, `not_found` when it holds no such yes, `not_looked_up` with no resolver."""
+def for_work(resolve, work, goal_yes=None):
+    """RESOLVE (id, work, goal's yes) bound to one work: id -> its yes. An ask counts only when filed for that work, or
+    as the yes its goal's decided records."""
+    return (lambda did: resolve(did, work, goal_yes)) if resolve else None
+
+
+def conductor_positions(orgs_file=None):
+    """The positions with role conductor in every organization this machine lists, from their registries' working
+    files: the sessions where only a person types (bin/of's _decided_resolver reads the same). Empty when the list
+    will not read."""
+    try:
+        import of_model
+        import of_studio
+        out = set()
+        for o in of_studio.orgs(orgs_file):
+            doc = of_model.registry_at(o["repo"])[0] or {}
+            out |= {str(x.get("name")) for x in doc.get("positions") or [] if isinstance(x, dict) and x.get("role") == "conductor"}
+        return out
+    except Exception:  # noqa: BLE001 - no list, or a registry that will not read: no prompt counts
+        return set()
+
+
+def owners_yes(did, resolve, asks_only=False):
+    """(the id when RESOLVE finds it in the log as a person's yes, else None; why it does not count, else None; the
+    cited words, else None): `unread` when the log could not be read, `not_found` when it holds no such yes,
+    `not_looked_up` with no resolver, `prompt` when ASKS_ONLY (a change of objective) and the yes is a prompt."""
     if not did:
-        return None, None
+        return None, None, None
     found = resolve(did) if resolve else None
     if found and found != UNREAD:
-        return did, None
-    return None, ("unread" if found == UNREAD else "not_found" if resolve else "not_looked_up")
+        if asks_only and isinstance(found, tuple) and found and found[0] == "prompt":
+            return None, "prompt", None
+        return did, None, getattr(found, "words", None) or None
+    return None, ("unread" if found == UNREAD else "not_found" if resolve else "not_looked_up"), None
 
 
 UNRESOLVED_WHY = {"unread": "this machine's event log could not be read to look it up",
-                  "not_found": "this machine's log holds no such yes (an ask the owner answered, or a prompt a person typed)",
-                  "not_looked_up": "it was not looked up in a log here"}
+                  "not_found": "this machine's log holds no such yes (an ask filed for this work, or as its goal's yes, "
+                               "cited with the option the owner chose, or a prompt typed in a conductor's session)",
+                  "not_looked_up": "it was not looked up in a log here",
+                  "prompt": "a change of objective takes the owner's answered ask, never a prompt"}
 
 
 def tied(spec):
@@ -135,7 +174,9 @@ def spec_of(raw, resolve=None):
     t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
     t["segment"] = _segment(target.get("segment"))
-    t["decided"], why = owners_yes(decided_of(target), resolve)
+    t["decided"], why, words = owners_yes(decided_of(target), resolve)
+    if words:   # the cited words beside the id: the ask's question and chosen option, or the prompt's first words
+        t["decided_words"] = words
     if why:   # the loop is one without decided, and says why (docs/registry.md, Works, "Where it is read")
         t["decided_unresolved"], t["decided_unresolved_why"] = decided_of(target), why
     return {"target": t,
@@ -329,9 +370,11 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
     usd = [r["usd"] for r in wk_runs if r["usd"] is not None]
     testing = [h for h in hyp.values() if h.get("status") == "testing"]
     decisions = [dict((r.get("payload") or {}), ts=epoch(r.get("ts"))) for r in evs if r["name"] == "of.loop_decision"]
-    for x in decisions:   # a change of objective's yes counts as the target's does; `of loop` refuses an unresolved one
+    for x in decisions:   # a change of objective's yes: an answered ask only, never a prompt; `of loop` refuses others
         raw = x.get("decided").strip() if isinstance(x.get("decided"), str) and x["decided"].strip() else None
-        x["decided"], why = owners_yes(raw, resolve)
+        x["decided"], why, words = owners_yes(raw, resolve, asks_only=True)
+        if words:
+            x["decided_words"] = words
         if why:
             x["decided_unresolved"], x["decided_unresolved_why"] = raw, why
     by_time = lambda hs, k: sorted(hs, key=lambda h: h.get(k) or h.get("updated_at") or 0, reverse=True)
@@ -354,7 +397,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
                   "fresh_tokens": r["fresh_tokens"]} for r in runs],
         "decisions_all": [{"ts": x["ts"], "kind": x.get("decision"), "hypothesis": x.get("hypothesis"), "metric": x.get("metric"),
                            "to_money": x.get("to_money") or x.get("money"), "decided": x["decided"],
-                           **({"decided_unresolved": x["decided_unresolved"]} if x.get("decided_unresolved") else {})}
+                           **{k: x[k] for k in ("decided_words", "decided_unresolved", "decided_unresolved_why") if x.get(k)}}
                           for x in sorted(decisions, key=lambda x: x["ts"] or 0)],
         "metrics": {"rungs": {x["rung"]: {"runs": x["runs"], "cycle_time": x["cycle_time_h"], "wait_share": x["wait_share"]}
                               for x in ladder},

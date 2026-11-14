@@ -790,8 +790,8 @@ LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_
 def loops_of(doc, events, at_s, resolve=None):
     """{work: the loop projection} for every registry work with a `loop:` or with loop events (RFC 0005; bin/of_loops.py),
     computed once for the loop card and the loop rules (docs/diagnose.md §4.1). A target's `decided` counts only when it
-    resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver(), which opens
-    this machine's store only when some id is to be looked up."""
+    resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver() bound to each
+    work and its goal's decided, which opens this machine's store only when some id is to be looked up."""
     works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
     rows = [r for r in events if (epoch(r.get("ts")) or 0) <= at_s]
     ids = {w for w, x in works.items() if isinstance(x, dict) and isinstance(x.get("loop"), dict)}
@@ -799,8 +799,12 @@ def loops_of(doc, events, at_s, resolve=None):
     if not ids:
         return {}
     import of_loops
-    resolve = resolve or of_loops.log_resolver()
-    return {w: of_loops.project(w, (works.get(w) or {}).get("loop"), rows, at_s, work=works.get(w) or {}, resolve=resolve)
+    base = None if resolve else of_loops.log_resolver()
+    goals = doc.get("goals") if isinstance(doc.get("goals"), dict) else {}
+    goal_yes = lambda w: ((goals.get(str(w.get("goal"))) or {}).get("decided")
+                          if isinstance(w, dict) and w.get("goal") and isinstance(goals.get(str(w.get("goal"))), dict) else None)
+    return {w: of_loops.project(w, (works.get(w) or {}).get("loop"), rows, at_s, work=works.get(w) or {},
+                                resolve=resolve or of_loops.for_work(base, w, goal_yes(works.get(w))))
             for w in sorted(ids)}
 
 

@@ -1828,7 +1828,10 @@ class LoopTest(unittest.TestCase):
                measures=[{"name": "latency_p50_ms", "to_target": "a faster answer wins more day passes"},
                          {"name": "rows_differing", "to_money": "0 rows: no lost candidate"}])
 
-    YES = staticmethod(lambda did: ("ask", did) if did in ("0a1b2c3d", "0e9f8a7b") else None)   # the log's answer
+    @staticmethod
+    def YES(did):   # the log's answer: of_loop.Yes, equal to (kind, id), with the cited words
+        import of_loop
+        return of_loop.Yes("ask", did, f'asked "p99 as the target?", chose option 1 "yes"') if did in ("0a1b2c3d", "0e9f8a7b") else None
 
     def change(self, **kw):
         return self.ev(60, "2026-11-07T05:00Z", "of.loop_decision", dict({"decision": "change_objective", "metric": "p99_ms"}, **kw))
@@ -1859,6 +1862,18 @@ class LoopTest(unittest.TestCase):
                                            resolve=self.YES))["w1"]
         self.assertEqual((lp["target"]["decided"], lp["measures"][0]["to_target"], lp["decisions_all"][-1]["decided"]),
                          ("0a1b2c3d", "a faster answer wins more day passes", "0e9f8a7b"))
+        self.assertEqual(lp["target"]["decided_words"], 'asked "p99 as the target?", chose option 1 "yes"')
+        # by default the model looks each id up in this machine's log, bound to the work and its goal's decided
+        import of_loops
+        from unittest import mock
+        seen = []
+        doc2 = dict(doc, goals={"g-speed": {"title": "Speed", "rank": 1, "measure": "p99", "decided": "01a1d957-aaaa#1"}},
+                    works={"w1": dict(doc["works"]["w1"], goal="g-speed")})
+        with mock.patch.object(of_loops, "log_resolver", return_value=lambda did, work=None, goal_yes=None: seen.append(
+                (did, work, goal_yes)) or self.YES(did)):
+            lp = of_model.loops(of_model.build(doc2, self.rows() + [self.change(decided="0e9f8a7b")], at=self.NOW))["w1"]
+        self.assertEqual(lp["target"]["decided"], "0a1b2c3d")
+        self.assertEqual(sorted(seen), [("0a1b2c3d", "w1", "01a1d957-aaaa#1"), ("0e9f8a7b", "w1", "01a1d957-aaaa#1")])
 
     def test_a_decided_that_does_not_resolve_counts_as_none(self):
         # docs/registry.md, Works, "Where it is read, and how it is checked": an id the log does not hold as a person's
@@ -1879,7 +1894,13 @@ class LoopTest(unittest.TestCase):
         self.assertIn("<tr><th>Money</th><td>USD per day</td></tr>", card)    # shown as a loop priced in money
         self.assertIn("<h3>Cost this week</h3>", card)
         self.assertIn("give it no price in money", card)
-        self.assertIn("p99_ms · names 0f0f0f0f as the owner's yes, which does not resolve", card)
+        self.assertIn("p99_ms · names 0f0f0f0f as the owner's yes, which does not count: this machine&#x27;s log holds no such yes", card)
+        # a change of objective takes an answered ask, never a prompt (docs/registry.md, Works)
+        import of_loop
+        c = self.card(rows, spec=self.OWN, resolve=lambda did: of_loop.Yes("prompt", did, "p99 it is"))
+        self.assertEqual(c["target"]["decided"], "0a1b2c3d")                    # the registry's target may cite a prompt
+        last = c["decisions_all"][-1]
+        self.assertEqual((last["decided"], last["decided_unresolved"], last["decided_unresolved_why"]), (None, "0f0f0f0f", "prompt"))
         self.assertIn("decided 0a1b2c3d does not resolve as the owner&#x27;s yes: priced in money", table)
 
     def test_the_log_resolver(self):
@@ -1890,16 +1911,39 @@ class LoopTest(unittest.TestCase):
         from tests.test_loop import Yeses
         with tempfile.TemporaryDirectory() as d:
             y = Yeses(d)
-            r = of_loops.log_resolver(y.conn)
-            self.assertEqual(r(y.ask), ("ask", y.ask))
-            self.assertEqual(r(y.prompt), ("prompt", y.prompt))
-            self.assertIsNone(r(y.closed))                                     # an agent's closure is no yes
+            r = of_loops.log_resolver(y.conn, conductors={"lab_conductor"})
+            got = of_loops.for_work(r, "w-speed")(y.ask + "#1")                # an ask filed for the work, its option chosen
+            self.assertEqual(got, ("ask", y.ask))
+            self.assertIn('chose option 1 "yes, p50 is the target"', got.words)
+            self.assertIsNone(r(y.ask + "#1"))                                 # bound to no work: no ask counts
+            self.assertIsNone(r(y.ask))                                        # an ask without its option
+            self.assertIsNone(of_loops.for_work(r, "w-speed")(y.refused + "#1"))   # the owner chose another option
+            self.assertIsNone(of_loops.for_work(r, "w-speed")(y.other + "#1"))     # another work's ask
+            self.assertEqual(of_loops.for_work(r, "w-ops", y.ask + "#1")(y.ask + "#1"), ("ask", y.ask))   # the goal's yes
+            self.assertEqual(r(y.prompt), ("prompt", y.prompt))                # typed in a conductor's session
+            self.assertIsNone(r(y.elsewhere))                                  # typed in a doer's pane
             self.assertIsNone(r(y.injected))
             with mock.patch("of_loop.resolve_decided", side_effect=AssertionError("looked up twice")):
-                self.assertEqual(r(y.ask), ("ask", y.ask))
+                self.assertEqual(r(y.prompt), ("prompt", y.prompt))
+            self.assertIsNone(of_loops.log_resolver(y.conn, conductors=set())(y.prompt))
             y.conn.close()
             with mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "missing", "of.db")}):
-                self.assertEqual(of_loops.log_resolver()(y.ask), of_loops.UNREAD)
+                self.assertEqual(of_loops.log_resolver()(y.prompt), of_loops.UNREAD)
+
+    def test_conductor_positions(self):
+        import tempfile
+        import yaml
+        import of_loops
+        with tempfile.TemporaryDirectory() as d:
+            for org, pos in (("a", [{"name": "a_conductor", "role": "conductor"}, {"name": "a_doer", "role": "doer"}]),
+                             ("b", [{"name": "b_conductor", "role": "conductor"}])):
+                os.makedirs(os.path.join(d, org, "registry"))
+                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org, "positions": pos}, fh)
+            with open(os.path.join(d, "orgs.yaml"), "w") as fh:
+                yaml.safe_dump({"orgs": [{"name": "a", "path": "a"}, {"name": "b", "path": "b"}]}, fh)
+            self.assertEqual(of_loops.conductor_positions(os.path.join(d, "orgs.yaml")), {"a_conductor", "b_conductor"})
+            self.assertEqual(of_loops.conductor_positions(os.path.join(d, "missing.yaml")), set())
 
     def html(self, c, w=None, spend=None):
         class D:
@@ -1914,13 +1958,14 @@ class LoopTest(unittest.TestCase):
 
     def test_the_card_on_the_owner_measure(self):
         card, table = self.html(self.card(self.rows() + [self.change(decided="0e9f8a7b")], spec=self.OWN, resolve=self.YES))
-        self.assertIn("<tr><th>Decided</th><td>0a1b2c3d: the yes of the goal&#x27;s owner on this measure", card)
+        self.assertIn("<tr><th>Decided</th><td>0a1b2c3d (asked &quot;p99 as the target?&quot;, chose option 1 &quot;yes&quot;): "
+                      "the yes of the goal&#x27;s owner on this measure", card)
         self.assertNotIn("<th>Money</th>", card)
         self.assertIn("Cost this week, and money as a reading", card)
         self.assertIn("No money line given.", card)                             # its absence is no mark
         self.assertNotIn('class="crit"', card)
         self.assertNotIn("not the target", card + table)                        # tied by to_target: no drift mark
-        self.assertIn("change_objective</b>: p99_ms · the owner's yes 0e9f8a7b", card)
+        self.assertIn("change_objective</b>: p99_ms · the owner's yes 0e9f8a7b (asked &quot;p99 as the target?&quot;, chose option 1", card)
         self.assertIn("the owner&#x27;s measure, decided 0a1b2c3d", table)
         # a money line and the goal's spend are readings beside the cost
         own = dict(self.OWN, target=dict(self.OWN["target"], money="USD per day"))
