@@ -24,6 +24,8 @@ ASKS = "the asks projection where no listener view exists yet (current_asks retu
 HANDOVER = "hand-overs (769 events) by the name index since f91fae4: milliseconds; a view when they grow"
 RARE = "one rare name by the name index (kind B): a small view in step 4 of the order"
 CONST = "a constant read: the last rowid"
+FALLBACK = ("the deliberate fallback where a fold view is late or missing: one name by the event_name_ts index "
+            "(of_architect on PR 154)")
 BYID = "one event by its rowid"
 OFFLINE = "an offline command (of db stats)"
 STUDIO = "of_studio's readers: its fold views (its steps 2 and 3, on the shared contract)"
@@ -31,7 +33,7 @@ CAPACITY = "of_capacity's readers: cursor views like a021f2f, or small names by 
 GITHUB = "the GitHub import, a timer every 30 minutes: by organization and name (kind D)"
 
 ALLOWED = {
-    ('of', '_diff_answer', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): RARE,
+    ('of', '_diff_answer', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): FALLBACK,
     ('of', 'cmd_handover', 'of_handover.load(conn)'): HANDOVER,
     ('of', 'cmd_pulse', 'of_handover.load(conn)'): HANDOVER,
     ('of', '_asks_now', 'of_asks.load(conn or of_store.connect())'): ASKS,

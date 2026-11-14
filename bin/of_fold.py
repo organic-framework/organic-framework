@@ -114,8 +114,11 @@ def reset(conn, view):
 
 
 class FoldProcessor:
-    """The listener's processor for one View: on each batch, the view's own events folded onto its rows (kept in
-    memory after the first load) and the changed rows and the cursor written together."""
+    """The listener's processor for one View. Its cursor is the one committed with its rows (view_fold_meta), never
+    the listener's own, which may lag a pass behind: an event at or below it is dropped, so every view takes each
+    event once, a counting one included (of_architect on PR 154). The rows in memory change only after the write
+    commits; a failed write drops them, to be loaded again. The listener fetches only the view's own names for it
+    (`fold_names`), so a new view builds from the events it reads, not the whole log (of_review on PR 154)."""
     tick_s = None
     own_readiness = True  # read() says when its view is not built yet: the listener's heartbeat need not wait for it
 
@@ -123,21 +126,58 @@ class FoldProcessor:
         self.view = view
         self.name = f"fold:{view.name}"
         self.version = view.version
-        self.rows = None
+        self.fold_names = tuple(view.names)
+        self.rows, self.cursor = None, 0
+
+    def _load(self, conn):
+        conn.executescript(DDL)  # once, before any transaction (executescript commits an open one)
+        self.rows = load_rows(conn, self.view)
+        m = meta(conn, self.view)
+        self.cursor = int(m["cursor"] or 0) if m and m["version"] == self.view.version else 0
 
     def reset(self, conn):
         reset(conn, self.view)
-        self.rows = {}
+        self.rows, self.cursor = {}, 0
 
-    def handle(self, conn, events):
-        conn.executescript(DDL)
+    def handle(self, conn, events, upto=None):
+        """Fold EVENTS (the view's own names, in log order) and move the cursor to UPTO, or past the last event."""
         if self.rows is None:
-            self.rows = load_rows(conn, self.view)
-        mine = [e for e in events if e.get("name") in self.view.names]
+            self._load(conn)
+        mine = [e for e in events if e.get("rowid", 0) > self.cursor and e.get("name") in self.fold_names]
+        cursor = max([self.cursor, upto or 0] + [e.get("rowid", 0) for e in events])
+        if not mine and cursor == self.cursor:
+            return False
         changed = self.view.fold(self.rows, mine) if mine else {}
+        try:
+            persist(conn, self.view, changed, cursor)
+        except Exception:
+            self.rows = None  # unknown what the store holds now: loaded again on the next pass
+            raise
         apply_changes(self.rows, changed)
-        persist(conn, self.view, changed, events[-1]["rowid"] if events else 0)
+        self.cursor = cursor
         return bool(changed)
+
+
+def age(view, conn=None, now=None):
+    """(age_s, built) of VIEW from its meta row and one LIMIT 1 query, without loading its rows (of health's reading;
+    of_architect on PR 154): 0 when nothing of its names waits after its cursor. (None, False) when never built."""
+    own = conn is None
+    conn = conn or reader()
+    if conn is None:
+        return None, False
+    try:
+        try:
+            m = meta(conn, view)
+        except Exception:  # noqa: BLE001
+            return None, False
+        if not m or m["version"] != view.version:
+            return None, False
+        row = conn.execute(f"SELECT ts FROM event WHERE rowid > ? AND name IN ({','.join('?' * len(view.names))}) "
+                           "ORDER BY rowid LIMIT 1", (int(m["cursor"] or 0), *view.names)).fetchone()
+        return (max(0.0, (now or time.time()) - (_epoch(row[0]) or time.time())) if row else 0.0), True
+    finally:
+        if own:
+            conn.close()
 
 
 # ------------------------------------------------------------------ the read side

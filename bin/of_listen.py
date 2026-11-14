@@ -935,11 +935,14 @@ except Exception:  # noqa: BLE001 - the listener runs without it rather than not
 
 # ---------------------------------------------------------------------- the loop
 
-def fetch(conn, after, limit=None, top=None):
+def fetch(conn, after, limit=None, top=None, names=None):
+    """The events after rowid AFTER, up to TOP, in log order; NAMES: only those (a fold view's own)."""
     out = []
+    only = f"AND name IN ({','.join('?' * len(names))}) " if names else ""
     for rowid, e, ts, n, s, pos, src, org, pl in conn.execute(
             "SELECT rowid, event_id, ts, name, session_id, position, source, org, payload FROM event WHERE rowid > ? "
-            "AND rowid <= ? ORDER BY rowid LIMIT ?", (after, top if top is not None else 2 ** 62, limit or BATCH)):
+            f"AND rowid <= ? {only}ORDER BY rowid LIMIT ?",
+            (after, top if top is not None else 2 ** 62, *(names or ()), limit or BATCH)):
         try:
             payload = json.loads(pl) if pl else {}
         except ValueError:
@@ -1017,8 +1020,17 @@ def _catch_up(conn, p, cursors, top, beat):
     while True:
         if beat:
             beat()
-        rows = fetch(conn, cursors[p.name], top=top)
+        names = getattr(p, "fold_names", None)  # a fold view reads only its own names
+        rows = fetch(conn, cursors[p.name], top=top, names=names)
         if not rows:
+            if names and cursors[p.name] < top:  # none of its names up to TOP: its cursor moves there all the same
+                changed |= bool(p.handle(conn, [], upto=top))
+                cursors[p.name] = top
+                try:
+                    conn.execute("UPDATE listener_cursor SET last_rowid = ?, updated_at = ? WHERE processor = ?",
+                                 (top, of_events.now_iso(), p.name))
+                except __import__("sqlite3").OperationalError:
+                    pass
             break
         t0 = time.time()
         changed |= bool(p.handle(conn, rows))  # a busy store raises here: the batch is handled again next pass
