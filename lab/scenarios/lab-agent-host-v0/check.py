@@ -199,7 +199,7 @@ def phase_restore(home, uid, bundle, src_home):
     tstray = src_home in non_msg
     ok &= emit("A3-rewrite", installed and msg_kept and cwd_rewritten and not tstray,
                f"installed={installed} msg_kept={msg_kept} cwd_rewritten={cwd_rewritten} nonmsg_stray={tstray}")
-    # A3-state-text (of_capacity 4a295eb): install rewrites the content of session-env, tasks and todos to the
+    # A3-state-text (of_capacity organic-framework PR 190): install rewrites the content of session-env, tasks and todos to the
     # new home; file-history stays byte for byte on purpose (its files are snapshots of edited files' contents
     # that /rewind writes back verbatim, and their path index lives in the already-rewritten transcript
     # file-history-snapshot records). Scratch is the session's own work and also travels as it is.
@@ -268,7 +268,7 @@ def copy_leg(src, dst):
     dest = f"{dst}@localhost:{USERS[dst][0]}/bundle"
     cmds = oc.copy_commands(os.path.join(src_home, "bundle"), key, to=dest)
     flat = " ".join(cmds[0] + cmds[1])
-    bg = oc.background()   # 4a295eb: per-platform; on this Linux VM a nice/ionice wrapper, never taskpolicy
+    bg = oc.background()   # organic-framework PR 190: per-platform; on this Linux VM a nice/ionice wrapper, never taskpolicy
     contract = ("IdentityAgent=none" in flat and "--chmod=go-rwx" in flat and "--bwlimit=" in flat
                 and key in flat and "--files-from=" in flat and cmds[0][:len(bg)] == bg
                 and "taskpolicy" not in bg and bg[0] == "nice")

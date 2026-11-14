@@ -92,11 +92,11 @@ nothing heavy on the Mac). The run is recorded in organic-framework-build `repor
   carried, `of_capacity` 2026-11-14). `of_capacity` verified the rewrite and install into a scratch home (539 of 540
   conversations byte for byte, 226 working folders moved, no resume); this rehearsal adds the cross-user rewrite with
   two real homes and uids, the guards, and the resume selection in both directions.
-- **Two `of_carry` findings, fixed and re-verified (2026-11-15):** `of_capacity` fixed both in 4a295eb — the copy
+- **Two `of_carry` findings, fixed and re-verified (2026-11-15):** `of_capacity` fixed both in organic-framework PR 190 — the copy
   wrapper is now `background()` (per platform: `taskpolicy -b`, else `nice`/`ionice`), and `install` rewrites the
   content of `session-env`, `tasks` and `todos` to the new home; `file-history` stays byte for byte on purpose (its
   files are edited-file snapshots `/rewind` writes back, keyed by the already-rewritten transcript records), and
-  scratch travels as the session's own work. A rerun on 4a295eb is green, with A2 taking the Linux wrapper and a new
+  scratch travels as the session's own work. A rerun on organic-framework PR 190 is green, with A2 taking the Linux wrapper and a new
   `A3-state-text` check asserting the three state folders follow the home while `file-history` is retained.
 - **B3 pending:** `of_server`'s event and record delta merge by id; B3-1 and B3-2 wait for it. Asked `of_server` for
   the ref and how it is invoked.
