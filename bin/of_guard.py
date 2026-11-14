@@ -2651,6 +2651,22 @@ def _ssh_opts(value):
     return (m.group(1).lower(), m.group(2).strip().strip("\"'")) if m else (str(value).lower(), "")
 
 
+def _ssh_forward_target(spec):
+    """The host a -L or -R forward connects to: `[bind:]port:host:hostport` (or `host/hostport`), `[v6]` kept whole;
+    None for a socket path or a dynamic forward, which name no host."""
+    v = str(spec).strip()
+    if "/" in v and ":" not in v or v.startswith("/"):
+        return None
+    parts = re.findall(r"\[[^\]]*\]|[^:]+", v)
+    if len(parts) >= 3:
+        host = parts[-2]
+    elif len(parts) == 2 and "/" in parts[-1]:
+        host = parts[-1].split("/", 1)[0]
+    else:
+        return None
+    return host.strip("[]") or None
+
+
 def _ssh_argv(head, args):
     """The destinations one ssh-family call reaches, as [(word as typed, how)]: its destination, every -J or
     ProxyJump hop, -o HostName, each word of -o ProxyCommand, -W's host, and for scp, rsync and sshfs every remote
@@ -2668,6 +2684,10 @@ def _ssh_argv(head, args):
             config = v
         elif flag == "-W":
             out.append((str(v).rsplit(":", 1)[0], "forwarding to"))
+        elif flag in ("-L", "-R") and head in ("ssh", "autossh"):  # a forward's target is reached: through it the
+            target = _ssh_forward_target(v)  # key logs in again (`-L 2222:<host>:22`, then `ssh -p 2222 localhost`;
+            if target:                       # of_secrets-review on organic-framework PR 157)
+                out.append((target, "forwarding to"))
         elif flag == "-o" or (head == "sshfs" and flag == "-o"):
             for part in (str(v).split(",") if head == "sshfs" else [v]):
                 key, val = _ssh_opts(part)
@@ -2675,6 +2695,8 @@ def _ssh_argv(head, args):
                     out.append((val, "with -o HostName"))
                 elif key == "proxyjump":
                     from_option("ProxyJump", val)
+                elif key in ("localforward", "remoteforward"):  # `[bind:]port host:hostport`, the -L form spaced
+                    from_option("-L", ":".join(val.split(None, 1)) if " " in val.strip() else val)
                 elif key == "proxycommand":
                     out.extend((w, "in its -o ProxyCommand") for w in val.split() if not w.startswith("-")
                                and w not in ("%h", "%p", "%r") and w.lower() != "none")

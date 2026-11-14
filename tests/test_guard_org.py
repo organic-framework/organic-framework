@@ -258,6 +258,18 @@ class SshRuleTest(unittest.TestCase):
                            ("a" * 300 + "*", "b", True)):                              # past the limit
             self.assertEqual(of_guard._globs_meet(a, b), want, (a, b))
 
+    def test_a_forwards_target_is_reached(self):
+        """of_secrets-review on PR 157: `ssh other -L 2222:us:22`, then `ssh -p 2222 localhost`, logs in to a denied host
+        through the forward."""
+        for cmd in ("ssh other -L 2222:us:22", "ssh -L 127.0.0.1:2222:gw1:22 other", "ssh -R 9000:us:22 other",
+                    "ssh -o LocalForward='2222 us:22' other", "ssh other -L [::1]:2222:192.0.2.5:22"):
+            self.assertTrue(self.hit(cmd), cmd)
+        for cmd in ("ssh other -L 8080:web.example.org:80", "ssh -D 1080 other", "ssh -L 8080:/tmp/sock other"):
+            self.assertEqual(self.hit(cmd), [], cmd)
+        self.assertEqual(of_guard._ssh_forward_target("2222:us:22"), "us")
+        self.assertEqual(of_guard._ssh_forward_target("[::1]:2222:[fe80::1]:22"), "fe80::1")
+        self.assertIsNone(of_guard._ssh_forward_target("1080"))
+
     def test_options_after_the_destination_are_read(self):
         """OpenSSH reads options after the host, up to the remote command (of_secrets-review on PR 157): a jump there
         reached a denied host unseen."""
