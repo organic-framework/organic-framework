@@ -253,7 +253,8 @@ class ReadingPointTest(unittest.TestCase):
             for dec in ("keep", "drop"):                                        # it decides nothing
                 r = run("decision", "w-speed", dec, "--hypothesis", hid)
                 self.assertNotEqual(r.returncode, 0, dec)
-                self.assertIn("every run of it is a proxy that decides nothing. Its latest is not observed at the "
+                self.assertIn("every run of it decides nothing (a proxy not shown to hold, or not located). Its "
+                              "latest is not observed at the "
                               "block's builder; its reading at our nodes' receive time of the rival's transaction is a "
                               "proxy (race_margin_ms 0.4), valid only when one of our own nodes built the block, which "
                               "is not known to hold", r.stderr)
@@ -331,6 +332,106 @@ class ReadingPointTest(unittest.TestCase):
             self.assertIn("not observed at the block's builder; its reading at our nodes is a proxy (race_margin_ms "
                           "2.4), valid only when one of our own nodes built the block, which is not known to hold.", lines)
             self.assertEqual(of_context.not_observed_runs([]), [])
+            conn.close()
+
+
+class LocatedRunTest(unittest.TestCase):
+    """docs/registry.md, Works, "A run names where its reading was taken" (hand-over ba0485aa from of_architect;
+    of_field-analyst's message 01a1dc77-50fc: on three of a user organization's loops no run named a declared measure
+    or the target, so none carried a reading point)."""
+
+    def test_the_check_takes_chain_proxy_for_on_a_target_and_never_proxy_for(self):
+        cp = {"at": "live profit", "valid_when": "the replay's outside equals the day's"}
+        ok = dict(LOOP, target=dict(LOOP["target"], chain_proxy_for=cp))
+        self.assertEqual(of_loop.check_loop(ok, "w"), [])
+        self.assertIn("its money line (STOREFRONT per day of bot revenue) is a proxy for live profit, valid only when "
+                      "the replay's outside equals the day's", of_loop.target_line(ok, None))
+        out = of_loop.check_loop(dict(LOOP, target=dict(LOOP["target"], proxy_for=cp)), "w")
+        self.assertIn("w: loop: target.proxy_for: the target is read inside its segment; a money line that stands for "
+                      "an event elsewhere is chain_proxy_for (at, valid_when)", out)
+        out = of_loop.check_loop(dict(LOOP, target=dict(LOOP["target"], chain_proxy_for={"at": "live"})), "w")
+        self.assertIn("w: loop: target.chain_proxy_for needs at (where the event its money line stands for happens) "
+                      "and valid_when", out)
+
+    def test_run_locate_decide_and_show(self):
+        import json
+        import sqlite3
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            env = dict(os.environ, OF_ORGS=cli_org(root, LOOP), OF_STATE=os.path.join(root, "state"))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            of = os.path.join(HERE, "..", "bin", "of")
+            run = lambda *a: subprocess.run([sys.executable, of, "loop", *a, "--from", "lab_doer"],  # noqa: E731
+                                            capture_output=True, text=True, env=env)
+            hid = run("hypothesis", "w-speed", "faster", "--cost", "oracle, 0", "--voi", "high").stdout.split()[-1]
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "win_rate", "--value", "0.3")
+            self.assertNotEqual(r.returncode, 0)                                # an undeclared metric names its point
+            self.assertIn("'win_rate' is neither the target's metric nor a declared measure's name", r.stderr)
+            for bad in (("--observed-at", "x"), ("--direct",), ("--observed-at", "x", "--direct", "--proxy-for", "y",
+                                                                "--valid-when", "z")):
+                self.assertNotEqual(run("run", "w-speed", "--rung", "oracle", "--metric", "win_rate", *bad).returncode,
+                                    0, bad)
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "win_rate", "--value", "0.3",
+                    "--observed-at", "the exchange's fills", "--direct", "--accepted", "yes")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            db = sqlite3.connect(os.path.join(root, "state", "of.db"))
+            last = lambda: json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_run' "  # noqa: E731
+                                                 "ORDER BY rowid DESC LIMIT 1").fetchone()[0])
+            p = last()
+            self.assertEqual((p["observed_at"], p["direct"], p["accepted"]), ("the exchange's fills", True, True))
+            self.assertNotIn("proxy", p)
+            h2 = run("hypothesis", "w-speed", "second", "--cost", "oracle, 0", "--voi", "low").stdout.split()[-1]
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", h2, "--metric", "edge_bps", "--value", "4",
+                    "--accepted", "yes", "--source", "cbx", "--run", "job-7")    # a runner's sync: recorded unlocated
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("not recorded: --accepted; no reading point is named for 'edge_bps'", r.stdout)
+            p = last()
+            self.assertEqual((p["run"], p.get("observed_at"), p.get("accepted")), ("job-7", None, None))
+            r = run("decision", "w-speed", "keep", "--hypothesis", h2)
+            self.assertNotEqual(r.returncode, 0)                                # it decides nothing
+            self.assertIn("not located: no reading point is named for edge_bps (4.0); it decides nothing until "
+                          "`of loop locate <work> --run job-7` names where it was taken", r.stderr)
+            self.assertIn("not located: no reading point is named for edge_bps", run("show", "w-speed").stdout)
+            for bad in (("--run", "job-7"), ("--run", "job-7", "--observed-at", "x"), ("--run", "nope",
+                        "--observed-at", "x", "--direct"), ("--observed-at", "x", "--direct")):
+                self.assertNotEqual(run("locate", "w-speed", *bad).returncode, 0, bad)
+            r = run("locate", "w-speed", "--run", "job-7", "--observed-at", "the replay's ledger", "--proxy-for",
+                    "live profit", "--valid-when", "the replay's outside equals the day's")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(last(), {"work": "w-speed", "run": "job-7", "observed_at": "the replay's ledger",
+                                      "proxy": {"for": "live profit", "valid_when": "the replay's outside equals the "
+                                                "day's", "held": "unknown"}})
+            self.assertEqual(db.execute("SELECT count(*) FROM event WHERE name = 'of.loop_run'").fetchone()[0], 3)
+            out = run("show", "w-speed").stdout                                 # located now: a proxy not shown to hold
+            self.assertIn("not observed at live profit; its reading at the replay's ledger is a proxy", out)
+            self.assertNotEqual(run("decision", "w-speed", "keep", "--hypothesis", h2).returncode, 0)
+            r = run("locate", "w-speed", "--run", "job-7", "--observed-at", "the exchange's fills", "--direct")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(run("decision", "w-speed", "keep", "--hypothesis", h2).returncode, 0)  # counts from now
+
+    def test_the_register_and_the_start_context_apply_a_locate(self):
+        import of_events
+        import of_store
+        rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="h1", change="a", cost_h=1.0, voi="med"),
+                ev(2, "of.loop_run", 2, work="w", run="r1", rung="oracle", hypothesis="h1", metric="edge_bps")]
+        h = of_loop.register(rows, "w", LOOP)["hypotheses"][0]
+        self.assertTrue(h["blind"])                                            # unlocated: decides nothing
+        self.assertFalse(of_loop.register(rows, "w")["hypotheses"][0]["blind"])  # without its loop: as recorded
+        rows.append(ev(3, "of.loop_run", 3, work="w", run="r1", observed_at="the fills", direct=True))
+        reg = of_loop.register(rows, "w", LOOP)
+        self.assertFalse(reg["hypotheses"][0]["blind"])
+        self.assertEqual((len(reg["runs"]), reg["hypotheses"][0]["runs"]), (1, 1))  # a locate is no new run
+        with tempfile.TemporaryDirectory() as root:
+            conn = of_store.connect(os.path.join(root, "of.db"))
+            of_store.add_event(conn, of_events.record("loop_run", {"work": "w-speed", "run": "r9", "hypothesis": "h9",
+                                                                   "rung": "oracle", "metric": "edge_bps"}))
+            conn.commit()
+            runs = of_loop.blind_runs(conn, {"w-speed": LOOP})
+            self.assertEqual([r["run"] for _, r, _ in runs], ["r9"])
+            of_store.add_event(conn, of_events.record("loop_run", {"work": "w-speed", "run": "r9",
+                                                                   "observed_at": "the fills", "direct": True}))
+            conn.commit()
+            self.assertEqual(of_loop.blind_runs(conn, {"w-speed": LOOP}), [])
             conn.close()
 
 
