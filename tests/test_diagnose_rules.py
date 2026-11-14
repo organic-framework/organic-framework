@@ -450,7 +450,19 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(row["parts_blocked"].get("default"), ["wr.position"])
         rows = act + msgs + [dict(pr, position="bot_search")]
         d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
-        self.assertIn(["bot_nonce", "bot_search"], [i["affected"] for i in d["issues"] if i["rule"] == "ap.chatty"])
+        # v3: 12 per PR over one merged PR is not measured (labelled false positives: work that is not merged code)
+        self.assertEqual([i for i in d["issues"] if i["rule"] == "ap.chatty"], [])
+        self.assertIn("1 busy pair not measured per merged PR: fewer than 3 merged PRs between them, so their work is "
+                      "not merged code", next(r for r in d["rules"] if r["rule"] == "ap.chatty")["notes"])
+        msgs += [ev(820 + i, "2026-11-02T10:30Z", "of.agent_message_out", "s-bot_search", {"to_position": "bot_nonce"})
+                 for i in range(24)]
+        prs = [ev(910 + k, f"2026-11-0{2 + k}T11:00Z", "of.work_record", None,
+                  {"source": "gh", "author": "founder-gh", "systems": ["bot"], "number": 910 + k}, position="bot_search")
+               for k in range(2)]
+        rows = act + msgs + [dict(pr, position="bot_search")] + prs
+        d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
+        self.assertEqual([(i["affected"], i["rule_version"], i["evidence"]) for i in d["issues"] if i["rule"] == "ap.chatty"],
+                         [(["bot_nonce", "bot_search"], "ap.chatty@3", {"messages": 36, "merged_prs": 3, "msgs_per_wr": 12.0})])
         # needs keyed by part: the per-PR part runs without the receiver parts' inputs, which report as blocked parts
         import copy
         cat = copy.deepcopy(of_diagnose.catalogue())

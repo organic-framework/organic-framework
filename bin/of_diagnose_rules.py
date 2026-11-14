@@ -518,14 +518,24 @@ def rule_chatty(model, rows, a, b, cat, spec, parts=("default", "receiver_flood"
     elif sum(prev_msgs.values()) and before and (cur - before) / before >= t.get("org_msgs_per_wr_rise_gte", 0.5):
         out.append(issue(cat, "chatty", ["(organization)"], {"msgs_per_wr": round(cur, 2), "before": round(before, 2)},
                          f"Messages per merged PR rose from {round(before, 1)} to {round(cur, 1)} against the previous window"))
+    # v3: a pair is measured per merged PR only when it merged `pair_merged_prs_gte` PRs in the window. Every false
+    # positive the first user organization's structure keeper labelled (10 of 10, 2026-11-12) was a pair whose work is
+    # not merged code (structure keeping, compliance, treasury, audit findings): at most one PR between them
+    few, wmin = 0, t.get("pair_merged_prs_gte", 3)
     for p, q in {tuple(sorted(k)) for k in pair_msgs}:
         if p not in seen or q not in seen:
             continue
         n = pair_msgs.get((p, q), 0) + pair_msgs.get((q, p), 0)
         w = pair_wr.get(p, 0) + pair_wr.get(q, 0)
         if n >= t.get("pair_msgs_per_wr_gte", 10) and n / max(1, w) >= t.get("pair_msgs_per_wr_gte", 10):
+            if w < wmin:
+                few += 1
+                continue
             out.append(issue(cat, "chatty", [p, q], {"messages": n, "merged_prs": w, "msgs_per_wr": round(n / max(1, w), 1)},
                              f"{p} and {q}: {n} messages for {w} merged PRs ({round(n / max(1, w), 1)} per PR)"))
+    if few:
+        notes.append(f"{few} busy pair{'s' if few > 1 else ''} not measured per merged PR: fewer than {wmin} merged PRs "
+                     f"between them, so their work is not merged code")
     return sorted(out, key=lambda i: -(i["evidence"].get("msgs_per_wr") or i["evidence"].get("peak_per_hour") or 0)), [], notes
 
 
