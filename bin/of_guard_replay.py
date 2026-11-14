@@ -95,7 +95,7 @@ def org_replay(rules, rows):
     out = {r["id"]: {"positions": collections.Counter(), "days": collections.Counter(), "excepted": 0,
                      "in_variable": 0} for r in rules}
     for pos, day, cmd in rows:
-        if "kubectl" not in cmd:
+        if "kubectl" not in cmd and not of_guard._SSH_WORDS.search(cmd):
             continue
         for r in rules:
             if r.get("subject") not in (None, "*") and r["subject"] != pos:
@@ -207,7 +207,8 @@ def main(argv=None):
         with open(a.rules) as fh:
             doc = yaml.safe_load(fh) or {}
         grants = [g for g in doc.get("grants") or []  # proposed or issued
-                  if g.get("effect") == "deny" and isinstance((g.get("scope") or {}).get("kubectl"), dict)
+                  if g.get("effect") == "deny" and (isinstance((g.get("scope") or {}).get("kubectl"), dict)
+                                                    or isinstance((g.get("scope") or {}).get("ssh"), dict))
                   and not g.get("revoked")]
         # by position in the file, so grants with no id or a shared id each get their own verdict (of_review and
         # of_secrets-review on organic-framework PR 107)
