@@ -16,6 +16,10 @@ What the pulse does with this module:
 - tells an organization's structure keeper once, in its pane when it is idle, when its own organization's live
   sessions in one project folder together pass PROJECT_CAP (2026-11-14, a user organization's structure keeper: 24 GiB in one project, every session under the quota), with each
   session's position and size; again only after the project fell under it;
+- sizes the Claude Code worktrees inside each organization's checkouts (`<path>/.claude/worktrees/*` and one level
+  down, from orgs.yaml `paths`) on the same cadence and budget, and tells an organization's structure keeper once
+  when its worktrees pass WORKTREE_CAP together (2026-11-14, of_capacity: ten such worktrees of about 1 GiB each took
+  free disk from 35.8 to 18.4 GB in five hours while every scratch folder stayed flat);
 - files one card to the founder when free disk falls under CARD_BELOW, naming what takes the space (swap, OF's
   event store, the live sessions' temporary folders by project; 2026-11-14: swap swung free disk by about 9 GiB), and closes it
   itself once free disk is back above CARD_CLEAR.
@@ -36,6 +40,7 @@ GiB = 2 ** 30
 SCRATCH_CAP = 3 * GiB
 SCRATCH_QUOTA = 6 * GiB  # the hard line: the guard refuses new writes into a folder over it (docs/guard.md)
 PROJECT_CAP = 12 * GiB   # a project folder's live sessions together: its structure keeper is told
+WORKTREE_CAP = 12 * GiB  # an organization's Claude Code worktrees inside its checkouts together
 VM_DIR = "/System/Volumes/VM"  # macOS's swap files, on the same disk as everything else
 SIZE_EVERY_S = 1800
 OVER_EVERY_S = 300       # a folder over the cap is re-sized every pulse: a runaway grows GiBs in 30 minutes
@@ -88,6 +93,29 @@ def project_of(path):
     if name == home:
         return "~"
     return name[len(home) + 1:] if name.startswith(home + "-") else name.lstrip("-")
+
+
+def home_label(path):
+    """PATH with the home folder as ~, so no login name is shown or shipped."""
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
+
+
+def worktree_dirs(org_paths):
+    """[(org, repository as ~/…, worktree folder)]: Claude Code's worktrees inside each organization's checkouts,
+    `<path>/.claude/worktrees/*` and `<path>/*/.claude/worktrees/*` for each of its orgs.yaml `paths`."""
+    out, seen = [], set()
+    for org, paths in sorted((org_paths or {}).items()):
+        for p in paths or []:
+            root = os.path.expanduser(str(p))
+            for wt_root in sorted(glob.glob(os.path.join(root, ".claude", "worktrees"))
+                                  + glob.glob(os.path.join(root, "*", ".claude", "worktrees"))):
+                repo = home_label(os.path.dirname(os.path.dirname(wt_root)))
+                for w in sorted(glob.glob(os.path.join(wt_root, "*"))):
+                    if os.path.isdir(w) and not os.path.islink(w) and w not in seen:
+                        seen.add(w)
+                        out.append((org, repo, w))
+    return out
 
 
 def swap_bytes(vm_dir=VM_DIR):
@@ -179,9 +207,21 @@ def project_note(keeper, project, total, sessions):
             f"[to {keeper}, once while they stay over {gib(PROJECT_CAP)} GiB]")
 
 
-def consumers(top_projects, swap=None, store=None):
-    """What takes this Mac's disk, as a person reads it, largest first: swap, OF's event store and the temporary
-    folders with their largest projects."""
+def worktree_note(keeper, total, trees):
+    """KEEPER's note: its own organization's worktrees [(repository, name, bytes)], which hold TOTAL together."""
+    lines = "; ".join(f"{repo}/.claude/worktrees/{name} {gib(b)} GiB"
+                      for repo, name, b in sorted(trees, key=lambda x: -x[2])[:10])
+    return (f"Message from of_pulse (via of pulse, authority: none; worktrees in the checkouts)\n"
+            f"Your organization's Claude Code worktrees inside its checkouts together hold {gib(total)} GiB, over the "
+            f"{gib(WORKTREE_CAP)} GiB they may take: {lines}. They live in the repositories, not in a session's scratch "
+            f"folder, so the per-session limits do not see them. As the structure keeper, ask the positions that made "
+            f"them to remove the ones no open task uses (git worktree remove <path>). OF deletes nothing.\n"
+            f"[to {keeper}, once while they stay over {gib(WORKTREE_CAP)} GiB]")
+
+
+def consumers(top_projects, swap=None, store=None, top_repos=()):
+    """What takes this Mac's disk, as a person reads it, largest first: swap, OF's event store, the live sessions'
+    temporary folders and the Claude Code worktrees inside the checkouts, each with its largest parts."""
     parts = []
     if swap:
         parts.append((swap, tr("swap {gib} GiB (it grows when memory runs short: fewer live sessions shrink it)",
@@ -193,16 +233,21 @@ def consumers(top_projects, swap=None, store=None):
         lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_projects[:4])
         parts.append((total, tr("the live sessions' temporary folders {gib} GiB, most in {lines}", gib=gib(total),
                                 lines=lines)))
+    wt = sum(b for _, b in top_repos)
+    if wt:
+        lines = ", ".join(tr("{name} {gib} GiB", name=n, gib=gib(b)) for n, b in top_repos[:4])
+        parts.append((wt, tr("Claude Code worktrees inside the checkouts {gib} GiB, most in {lines}", gib=gib(wt),
+                             lines=lines)))
     return "; ".join(t for _, t in sorted(parts, key=lambda x: -x[0])) or tr("sizes not measured yet")
 
 
-def card_text(free, top_projects, swap=None, store=None):
+def card_text(free, top_projects, swap=None, store=None, top_repos=()):
     return tr("This Mac has {free} GiB of free space left (under {below}). Below about 20 GiB the relay, OF's event "
               "store and every session are at risk. What takes the space: {consumers}. The pulse has asked the "
               "positions over {cap} GiB, and the structure keepers of projects over {project} GiB, to clean their "
               "folders; it deletes nothing itself. The card closes itself once more than {clear} GiB are free. What "
               "should be done?",
-              free=gib(free), below=gib(CARD_BELOW), consumers=consumers(top_projects, swap, store),
+              free=gib(free), below=gib(CARD_BELOW), consumers=consumers(top_projects, swap, store, top_repos),
               cap=gib(SCRATCH_CAP), project=gib(PROJECT_CAP), clear=gib(CARD_CLEAR))
 
 
@@ -216,9 +261,10 @@ def _open_cards(conn):
 
 
 def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=None, size=du, base=None,
-          conn=None, clock=time.monotonic, swap=swap_bytes, store=store_bytes, keeper=None):
+          conn=None, clock=time.monotonic, swap=swap_bytes, store=store_bytes, keeper=None, org_paths=None):
     """One pulse's pass. mem is the pulse's memory (keys "scratch", "scratch_projects"). Returns the positions told
-    this pass. KEEPER(positions, org) names an organization's structure keeper (of_pulse.structure_keeper)."""
+    this pass. KEEPER(positions, org) names an organization's structure keeper (of_pulse.structure_keeper); ORG_PATHS
+    ({org: [paths]}, orgs.yaml) is where the organizations' checkouts and their Claude Code worktrees are."""
     now = now or time.time()
     base = base or base_dir()
     free = shutil.disk_usage(os.path.expanduser("~")).free if free is None else free
@@ -274,15 +320,66 @@ def check(positions, agents, bind, mem, now=None, prompt=None, log=print, free=N
         st.pop(sid)  # the session ended: its folder is no longer a live position's
     if over or read_quota():
         _write_quota(over, now)
+    wt = mem.setdefault("worktrees", {})  # {worktree folder: {org, repo, at, bytes}}
+    found = worktree_dirs(org_paths) if org_paths else []
+    for gone in set(wt) - {w for _, _, w in found}:
+        wt.pop(gone)  # removed: no longer on disk
+    for org, repo, w in found:
+        e = wt.setdefault(w, {"at": None, "bytes": None})
+        e.update(org=org, repo=repo)
+        if (e["at"] is None or now - e["at"] >= SIZE_EVERY_S) and clock() - start < SIZE_BUDGET_S:
+            b = size(w)
+            if b is not None:
+                e.update(at=now, bytes=b)
     by_project = projects(st)
     told += _tell_keepers(positions, pairs, mem, by_project, prompt, log, keeper)
+    told += _tell_worktree_keepers(positions, pairs, mem, wt, prompt, log, keeper)
     top = sorted(((n, pr["bytes"]) for n, pr in by_project.items()), key=lambda x: -x[1])
+    repos = {}
+    for e in wt.values():
+        if e.get("bytes"):
+            repos[e["repo"]] = repos.get(e["repo"], 0) + e["bytes"]
+    top_repos = sorted(repos.items(), key=lambda x: -x[1])
     sw, so = (swap() if swap else None), (store() if store else None)
-    if measured:
+    if measured or any(e.get("at") == now for e in wt.values()):
         of_events.emit("disk_usage", {"free_bytes": free, "scratch": measured, "base": base, "swap_bytes": sw,
                                       "store_bytes": so,
-                                      "projects": [{"project": n, "bytes": b} for n, b in top[:10]]})
-    _card(mem, now, free, top, log, conn, sw, so)
+                                      "projects": [{"project": n, "bytes": b} for n, b in top[:10]],
+                                      "worktrees": [{"repo": n, "bytes": b} for n, b in top_repos[:10]]})
+    _card(mem, now, free, top, log, conn, sw, so, top_repos)
+    return told
+
+
+def _tell_worktree_keepers(positions, pairs, mem, wt, prompt, log, keeper=None):
+    """Tell an organization's structure keeper once per episode in which its worktrees inside its checkouts pass
+    WORKTREE_CAP, listing only its own."""
+    if keeper is None:
+        import of_pulse
+        keeper = of_pulse.structure_keeper
+    state = mem.setdefault("worktrees_told", {})  # org: True
+    by_org = {}
+    for path, e in wt.items():
+        if e.get("bytes"):
+            by_org.setdefault(e["org"], []).append((e["repo"], os.path.basename(path), e["bytes"]))
+    for org in [o for o in state if sum(b for _, _, b in by_org.get(o, [])) < WORKTREE_CAP]:
+        state.pop(org)  # back under the cap: a new episode tells again
+    panes = {p["name"]: a for p, a in pairs}
+    told = []
+    for org, trees in sorted(by_org.items()):
+        total = sum(b for _, _, b in trees)
+        if total < WORKTREE_CAP or not prompt or state.get(org):
+            continue
+        k = keeper(positions, org)
+        a = panes.get(k)
+        if not k or not a or a.get("agent_status") not in ("idle", "done"):
+            continue
+        prompt(a["pane_id"], worktree_note(k, total, trees), "of_pulse")
+        of_events.emit("nudge_sent", {"position": k, "from_position": "of_pulse", "to_position": k,
+                                      "about": f"worktrees in the checkouts {gib(total)} GiB",
+                                      "pane": a["pane_id"], "kind": "worktrees_over_cap"}, position=k, org=org)
+        state[org] = True
+        told.append(k)
+        log(f"told {k}: worktrees of {org} {gib(total)} GiB")
     return told
 
 
@@ -326,13 +423,13 @@ def _tell_keepers(positions, pairs, mem, by_project, prompt, log, keeper=None):
     return told
 
 
-def _card(mem, now, free, top, log, conn=None, swap=None, store=None):
+def _card(mem, now, free, top, log, conn=None, swap=None, store=None, top_repos=()):
     """One founder card per low-disk episode; closed by the pulse once free disk is back above CARD_CLEAR."""
     if free < CARD_BELOW and not mem.get("disk_card"):
         eid = of_events.emit("agent_question", {
             "detected_by": "declared", "source": CARD_SOURCE, "from_position": "of_platform", "to": "founder",
             "topic_key": "disk-low", "blocking": False,
-            "questions": [{"question": card_text(free, top, swap, store),
+            "questions": [{"question": card_text(free, top, swap, store, top_repos),
                            "options": [tr("ask the structure keepers to sort the folders out (recommended: they "
                                           "know what is still in use)"), tr("I will sort it out myself")]}]},
             position="of_platform")

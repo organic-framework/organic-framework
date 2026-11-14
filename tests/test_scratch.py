@@ -172,6 +172,41 @@ class ScratchTest(unittest.TestCase):
         self.assertIn("big 13.0 GiB", notes["p-tk"])
         self.assertNotIn("small", notes["p-tk"])                                # never another organization's positions
 
+    def test_worktrees_inside_the_checkouts_are_sized_and_their_keeper_told(self):
+        """2026-11-14, of_capacity: ten Claude Code worktrees inside a checkout took free disk from 35.8 to 18.4 GB
+        while every scratch folder stayed flat."""
+        repo = os.path.join(self.tmp.name, "orgs", "t-code", "repo")
+        for w in ("wt-a", "wt-b"):
+            os.makedirs(os.path.join(repo, ".claude", "worktrees", w))
+        os.makedirs(os.path.join(self.tmp.name, "orgs", "u-code", ".claude", "worktrees", "wt-u"))
+        org_paths = {"t": [os.path.join(self.tmp.name, "orgs", "t-code")],
+                     "u": [os.path.join(self.tmp.name, "orgs", "u-code")]}
+        self.sizes.update({"wt-a": 8 * GiB, "wt-b": 5 * GiB, "wt-u": 2 * GiB, "S-k": 0})
+        positions = POS + [{"name": "keeper", "_org": "t"}]
+        os.makedirs(os.path.join(self.base, "-Users-x-repo", "S-k"))
+        agents = [agent("big", "S-big", "busy"), agent("keeper", "S-k")]
+        typed, mem = [], {}
+        args = dict(now=1, free=19 * GiB, size=self.size, base=self.base, log=lambda m: None, swap=lambda: None,
+                    store=lambda: None, keeper=lambda ps, org: "keeper" if org == "t" else None, org_paths=org_paths,
+                    prompt=lambda pane, text, who: typed.append((pane, text)))
+        of_scratch.check(positions, agents, bind, mem, **args)
+        notes = [t for p, t in typed if p == "p-keeper"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("Your organization's Claude Code worktrees inside its checkouts together hold 13.0 GiB", notes[0])
+        self.assertIn("repo/.claude/worktrees/wt-a 8.0 GiB", notes[0])
+        self.assertNotIn("wt-u", notes[0])                                       # another organization's
+        q = [e for e in self.events("of.agent_question") if e.get("source") == "disk_check"][0]["questions"][0]
+        self.assertIn("Claude Code worktrees inside the checkouts 15.0 GiB", q["question"])
+        u = self.events("of.disk_usage")[-1]
+        self.assertEqual(sorted(w["bytes"] for w in u["worktrees"]), [2 * GiB, 13 * GiB])
+        of_scratch.check(positions, agents, bind, mem, **dict(args, now=2))
+        self.assertEqual(len([t for p, t in typed if p == "p-keeper"]), 1)       # once per episode
+        os.rmdir(os.path.join(repo, ".claude", "worktrees", "wt-a"))             # removed: under the cap again
+        of_scratch.check(positions, agents, bind, mem, **dict(args, now=3))
+        self.assertNotIn("t", mem["worktrees_told"])
+        self.assertEqual(sorted(os.path.basename(w) for w in mem["worktrees"]), ["wt-b", "wt-u"])
+        self.assertEqual(of_scratch.home_label(os.path.expanduser("~/acme/repo")), "~/acme/repo")
+
     def test_a_project_is_named_without_the_home_folder(self):
         from unittest import mock
         for home, folder, name in (("/Users/alex", "-Users-alex-acme-repo", "acme-repo"),
