@@ -773,7 +773,8 @@ class Data:
         import of_loops
         cache = self.__dict__.setdefault("_loop_cards", {})
         if w["id"] not in cache:
-            cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w)
+            cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w,
+                                              resolve=of_loops.log_resolver())
         return cache[w["id"]]
 
     def history(self, names, since=None):
@@ -1819,6 +1820,8 @@ def view_works(d, wid=None):
 
 OWNER_MEASURE = "the owner's measure, decided "   # docs/registry.md, Works, "The owner's measure"
 OWNER_YES = " · the owner's yes "
+UNRESOLVED = "decided %s does not resolve as the owner's yes: priced in money"
+NAMED_YES = " · names %s as the owner's yes, which does not resolve"
 
 
 def _loops_table(d, loops):
@@ -1828,7 +1831,8 @@ def _loops_table(d, loops):
         if not c:
             continue
         t = c["spec"]["target"]
-        src = (t.get("stake"), OWNER_MEASURE + t["decided"] if t.get("decided") else None)
+        src = (t.get("stake"), OWNER_MEASURE + t["decided"] if t.get("decided") else
+               UNRESOLVED % t["decided_unresolved"] if t.get("decided_unresolved") else None)
         marks = []
         if c["drift"]:
             marks.append(f'<span class="flag crit">measures {e(", ".join(c["drift"]))}, not the target</span>')
@@ -1868,6 +1872,10 @@ def _loop_card(d, w):
         facts.append(("Decided", f"{own}: the yes of the goal's owner on this measure, which is itself what the loop's "
                                  "changes are for; its money is a reading, shown with the cost below"))
     else:
+        if t.get("decided_unresolved"):   # docs/registry.md, Works, "Where it is read, and how it is checked"
+            facts.append(("Decided", f'{t["decided_unresolved"]}: does not count, since '
+                                     f'{of_loops.UNRESOLVED_WHY.get(t.get("decided_unresolved_why"), "it does not resolve")}; '
+                                     "the loop shows as one priced in money until it resolves"))
         facts.append(("Money", t.get("money") or "–"))
     facts += [("Stake", t.get("stake") or "–"), ("Class", t.get("throughput_class") or "–"),
               ("Started", st(c["start"])), ("Events", str(c["events"]))]
@@ -1907,6 +1915,7 @@ def _loop_card(d, w):
                         f'{" " + e(x["hypothesis"]) if x.get("hypothesis") else ""}{" → " + e(x["rung"]) if x.get("rung") else ""}'
                         f'{": " + e(x["metric"]) if x.get("metric") else ""}'
                         f'{OWNER_YES + e(str(x["decided"])) if x.get("decided") else ""}'
+                        f'{NAMED_YES % e(str(x["decided_unresolved"])) if x.get("decided_unresolved") else ""}'
                         f'{" · to money: " + e(str(x.get("to_money") or x.get("money"))) if x.get("to_money") or x.get("money") else ""}'
                         f'{" · " + e(str(x["note"])[:200]) if x.get("note") else ""}</li>'
                         for x in c["decisions"])
