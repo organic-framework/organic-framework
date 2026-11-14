@@ -367,10 +367,17 @@ class RulesTest(unittest.TestCase):
                   {"source": "gh", "author": "founder-gh", "systems": ["bot"], "repo": "o/r", "number": 400 + i}, position=w)
                for i, (day, w) in enumerate([(d, w) for d in ("2026-10-24", "2026-11-02")
                                             for w in ("bot_search", "bot_nonce", "k8s_keeper", "bot_operator")])]
-        rows = act + msgs + prs
+        # v4: a pair is measured over >= 3 merged PRs; the third one touches no system, so ownership is unchanged
+        third = ev(420, "2026-11-02T13:00Z", "of.work_record", "s-bot_search",
+                   {"source": "gh", "author": "founder-gh", "systems": [], "repo": "o/r", "number": 420}, position="bot_search")
+        two = act + msgs + prs
+        d = of_diagnose.diagnose(of_model.build(doc, two, at=self.B), two, self.A, self.B)
+        self.assertFalse([i for i in d["issues"] if i["rule"] == "ap.over-coupled"])  # 12 messages / 2 PRs: below the floor
+        rows = act + msgs + prs + [third]
         d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
         oc = [i for i in d["issues"] if i["rule"] == "ap.over-coupled"]
-        self.assertEqual([i["affected"] for i in oc], [["bot_nonce", "bot_search"]])   # 12 messages / 2 PRs, reciprocal
+        self.assertEqual([(i["affected"], i["rule_version"]) for i in oc],
+                         [(["bot_nonce", "bot_search"], "ap.over-coupled@4")])        # 12 messages / 3 PRs, reciprocal
         frag = [i for i in d["issues"] if i["rule"] == "ap.fragmented-ownership"]
         self.assertEqual(frag[0]["affected"], ["bot", "bot_operator"])                 # keeper wrote 25%, two windows
         self.assertEqual((frag[0]["part"], frag[0]["severity"]), ("code", "medium"))

@@ -337,6 +337,8 @@ def rule_over_coupled(model, rows, a, b, cat, spec):
         if skip_kinds & {positions[p].get("kind"), positions[q].get("kind")} or keeper in (p, q):
             continue   # a unit owner with its unit's positions, or the structure keeper: their mandate, not a split to merge
         pq, qp = msgs.get((p, q), 0), msgs.get((q, p), 0)
+        if wr.get(p, 0) + wr.get(q, 0) < t.get("pair_merged_prs_gte", 0):
+            continue   # v4: messages per merged PR measures only a pair that merges code (as chatty@3's pair part)
         ratio = (pq + qp) / max(1, wr.get(p, 0) + wr.get(q, 0))
         recip = min(pq, qp) / max(pq, qp) if max(pq, qp) else 0.0
         mutual = int(q in waits.get(p, ()) and p in waits.get(q, ()))
