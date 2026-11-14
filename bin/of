@@ -3544,8 +3544,8 @@ def rollback(repo, commit, by, run=subprocess.run, log=print):
     or the revert conflicts with a later commit. Returns the new commit."""
     import tempfile
 
-    def git(*a, cwd=repo, check=True, **kw):
-        r = run(["git", "-C", cwd, *a], capture_output=True, text=True, **kw)
+    def git(*a, cwd=repo, check=True, **kw):  # paths as written, never globs or magic (of_server on PR 145)
+        r = run(["git", "--literal-pathspecs", "-C", cwd, *a], capture_output=True, text=True, **kw)
         if check and r.returncode != 0:
             raise OfError(f"of rollback: git {' '.join(a[:3])}: {(r.stderr or r.stdout).strip()[:300]}")
         return r.stdout
@@ -3594,6 +3594,9 @@ def rollback(repo, commit, by, run=subprocess.run, log=print):
     for p in sorted(paths):
         if git("diff", head, "--name-only", "--", p).strip():  # edited in the last moment: never overwritten
             kept.append(p)
+            # its index entry follows main, the edit stays in the file: a plain commit of the old staged content
+            # would undo the revert for it (of_server and of_review on PR 145)
+            git("reset", "-q", new, "--", p)
             continue
         if p in there:
             git("checkout", new, "--", p)
