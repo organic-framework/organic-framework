@@ -219,6 +219,15 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("kubectl get --raw /api/v1/namespaces/ci/pods/p/log"))
         self.assertIsNone(deny("kubectl get --raw /api/v1/namespaces/ci/pods/p:9090/proxy/metrics"))
         self.assertIsNone(deny("kubectl get --raw /api/v1/nodes"))
+        # read as the API server reads it (of_review and of_secrets-review on organic-framework PR 151)
+        for path in ("/api/v1/namespaces/ci/%73ecrets/k", "/api/v1/namespaces/ci/secrets%2Fk",
+                     "/api/v1/watch/namespaces/ci/secrets", "//api/v1//namespaces/ci/./secrets/k",
+                     "/api/v1/namespaces/ci/pods/../secrets/k", "/API/V1/namespaces/ci/Secrets",
+                     "/api/v1/namespaces/ci/pods/p/status", "/api/v1/namespaces/ci/pods/p/ephemeralcontainers",
+                     "/api/v1/namespaces/ci/secrets?watch=1", "/api/v1/namespaces/ci/%2573ecrets"):
+            self.assertTrue(deny(f"kubectl get --raw '{path}'"), path)
+        self.assertIsNone(deny("kubectl get --raw /api/v1/proxy/namespaces/ci/pods/p:9090/metrics"))
+        self.assertIsNone(deny("kubectl get --raw /api/v1"))
         self.assertTrue(deny("kubectl get cm,secret -o yaml"))
         # of_architect, 13:47Z leak: for a Secret, every -o except name/default is denied; jsonpath/go-template
         # fall back to the whole object on error, so they are denied even when key-looking

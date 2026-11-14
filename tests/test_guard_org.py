@@ -113,6 +113,12 @@ class KindsRuleTest(unittest.TestCase):
         self.assertEqual(self.hit("kubectl get $KIND -n signer"), ["signing-secrets"])      # a false positive over a miss
         self.assertEqual(self.hit("kubectl get --raw /api/v1/namespaces/signer/secrets"), ["signing-secrets"])
         self.assertEqual(self.hit("kubectl get --raw /api/v1/namespaces/other/secrets"), [])
+        for path in ("/api/v1/namespaces/signer/%73ecrets/k", "/api/v1/namespaces/signer/secrets%2Fk",
+                     "/api/v1/watch/namespaces/signer/secrets"):
+            self.assertEqual(self.hit(f"kubectl get --raw {path}"), ["signing-secrets"], path)
+        for cmd in ('P=/api/v1/namespaces/signer/secrets/k; kubectl get --raw "$P"', 'kubectl get --raw "$P"'):
+            self.assertEqual(self.hit(cmd), ["signing-secrets"], cmd)               # unparsed: a match
+        self.assertEqual(self.hit("kubectl get --raw /healthz"), [])                 # names no object
 
     def test_every_namespace_and_none_named(self):
         self.assertEqual(self.hit("kubectl get secrets -A"), ["signing-secrets"])
