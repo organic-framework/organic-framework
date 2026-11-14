@@ -16,7 +16,7 @@ Much of a company's work is a **development loop**: change something, evaluate i
 
 This RFC makes the loop a first-class part of a work. It carries:
 - a target priced in money, or a measure its owner decided, with money reported beside it (§4.2);
-- a chain of measures that maps each evaluation to that target;
+- a chain of measures that maps each evaluation to that target, each naming where its reading is taken (§4.3);
 - an **evaluation ladder** whose rungs have a cost, a latency and an acceptance rule;
 - a **hypothesis register** that chooses the next experiment by information per cost;
 - a **decision log**.
@@ -43,6 +43,7 @@ From its structure keeper's analysis (a private report; work `acme-search-ladder
 | Theory of constraints (Goldratt), applied to the loop itself | Find the loop's bottleneck (usually evaluation), exploit it with cheap rungs first, subordinate the schedule to it, then elevate it |
 | Double-loop learning (Argyris) | Single loops tune inside the frame; a plateau calls for questioning the frame, with an outside review |
 | Goodhart's law | Each rung's metric must be money or a proxy proven against money; otherwise the loop optimizes the proxy. The warning is against a proxy an agent chose: when the owner decides the measure, the owner carries that risk, and money is reported beside it (§4.2) |
+| Construct validity (Shadish, Cook and Campbell, 2002); the drunkard's search (Kaplan, 1964) | A reading counts for the event it is used for only when it is taken where that event happens, or under a stated condition shown to hold. Otherwise it is a proxy, and it decides nothing (§4.3) |
 
 ## 4. The object: `loop:` on a work
 
@@ -56,6 +57,7 @@ works:
       target:
         metric: "day pass, revenue per day, replay day 1003"     # what success is measured in
         money: "bot revenue per day"                              # how it becomes money
+        observed_at: "the replay's revenue ledger"                # where the reading is taken (§4.3)
         stake: "about 65 a day over the route table"         # what is at stake, roughly
         throughput_class: raise
         segment:                                                  # what the organization controls (2026-11-12; docs/registry.md, Works)
@@ -64,6 +66,7 @@ works:
           context: ["the live market on the day", "rivals' routes"]   # held fixed by the replay; reported, never a target or a lever
       measures:                                                   # the chain from each rung to money
         - name: latency_p50_ms
+          observed_at: "the replay's clock, from the block's receipt to the route's send"
           to_money: "revenue per ms from the race arithmetic"        # required before a rung may optimize it
       ladder:                                                     # cheapest first
         - {rung: oracle, cost: "0", latency: "1 min", accept: "0 differing rows"}
@@ -94,12 +97,16 @@ works:
   ```
 
   It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events (cbx runs), `of loop` derives them instead of asking the doer.
-- **A decision is one `of.loop_decision` event:** keep, drop, park, reopen, step up a rung, step back (reframe), or change the objective. `reopen` puts a parked, dropped or kept hypothesis back to `open`, with a note that names what changed or whose word reopened it (`of loop` and its register, `of_platform`; the loop card, `of_studio`; organic-framework PR 168). Why: on 2026-11-14 a user organization's owner revived a parked hypothesis, and it was recorded as `keep` (loop decision `01a1d96b-3945`), which reads as a hypothesis that won and counts in the hit rate. A change of objective must name its money metric (§6). On a target the owner decided, a doer records none: the structure keeper rewrites the target in the registry on the owner's yes (§4.2).
+- **A decision is one `of.loop_decision` event:** keep, drop, park, reopen, step up a rung, step back (reframe), or change the objective. `reopen` puts a parked, dropped or kept hypothesis back to `open`, with a note that names what changed or whose word reopened it (`of loop` and its register, `of_platform`; the loop card, `of_studio`; organic-framework PR 168). Why: on 2026-11-14 a user organization's owner revived a parked hypothesis, and it was recorded as `keep` (loop decision `01a1d96b-3945`), which reads as a hypothesis that won and counts in the hit rate. A change of objective must name its money metric (§6). On a target the owner decided, a doer records none: the structure keeper rewrites the target in the registry on the owner's yes (§4.2). Keep and drop are refused on a hypothesis whose every run is a proxy that did not hold (§4.3).
 - **The next experiment is chosen by value of information per cost.** The register shows the open hypotheses in that order, so the doer and the owner see why the next one is next. The cost is the rung's runner-hours, the evaluation's time; it is never money or tokens.
 
 ### 4.2 The owner's measure (2026-11-14)
 
 The person who owns a work's goal may decide that the loop's target is itself what its changes are for (`target.decided`, the id of their yes; docs/registry.md, Works, "The owner's measure"). Then `money` is a reading, not a requirement; each measure chains to the target (`to_target`) or to money; `--voi` is optional and judged against the target; the measure changes only in the registry, where the structure keeper rewrites it on the owner's yes, and a doer records no change of objective; and no position asks the owner to price or prove that measure in money. The plateau question and every gate on an act (§6, decision rights) stay as they are. This came from a user organization whose owner chose a speed objective and accepted that the spend on it may bring no money gain.
+
+### 4.3 Where a reading is taken (2026-11-14)
+
+Every reading a loop records names where it was taken: `observed_at` on the target and on each measure, and on each run. A reading that reports an event happening somewhere else is a proxy: its measure carries `proxy_for`, with where the event happens and the condition under which the reading equals the one there (docs/registry.md, Works, "Where a reading is taken"). A run on a proxy records whether that condition held in its data. Until it held, the run records no `accept`, a keep or a drop cannot rest on it, and the card shows "not observed" where the event happens, with the proxy's reading labelled beside it. A run limited to the data where the condition held counts as taken there. The founder asked for this after a user organization's analysis took the time a rival's transaction reached its own nodes as the time it reached the block's builder, a third party, and concluded that speed buys little: "Here the model takes the available data and builds its reasoning on it, although that is not correct in general. The cause must be found and this behaviour fixed systemically" (2026-11-14, prompt `01a1da18-f250`).
 
 ## 5. Loop metrics: derived, never reported
 
@@ -130,6 +137,7 @@ Each rule is a diagnose anti-pattern with an owner and a test, `of_field-analyst
 | **Babysitting model** | Runner commands and monitors run on a model above `babysit_model` | To `of_capacity` and the doer: route babysitting to the cheaper model |
 | **Objective drift** | A run's metric is not the target and has no `to_money` in `measures` (on a target the owner decided, no `to_target` either; §4.2); or a run's metric or a hypothesis's predicted effect is a context part of the target's segment (2026-11-12) | "Price a ms in revenue before more speed work"; on a target the owner decided, "Tie this metric to the target, or get the owner's yes on a new measure", never a price; for a context part, "The live market on the day is outside the segment: report it, and act inside" |
 | **Evaluation bottleneck** | Wait share over 40% on one rung | To the owner: elevate the rung (more runners, a cheaper rung) |
+| **Observed elsewhere** (2026-11-14, §4.3) | A keep or a drop rests only on runs that are proxies whose condition did not hold or is unknown; or a run on such a proxy carries an `accept` | "`<metric>` was read at `<observed_at>`, and the event happens at `<at>`: report it as not observed there, or run it on the data where `<valid_when>` held" |
 
 Decision rights follow acc-v0:
 - the doer moves between offline rungs;
@@ -156,7 +164,7 @@ The card answers "how is it going" without a prompt.
 | 1 | Schema: `loop:` on a work, `loop.yaml`, and the checks | `of_architect` (schema), `of_platform` (check) |
 | 2 | `of loop hypothesis/run/decision`, the events, and derivation from runner records (cbx) where they exist | `of_platform` |
 | 3 | Loop metrics, and the loop card in Studio | `of_studio` |
-| 4 | The seven rules as diagnose anti-patterns, with fixtures | `of_field-analyst`, with `of_lab` for the drift harness |
+| 4 | The eight rules as diagnose anti-patterns, with fixtures | `of_field-analyst`, with `of_lab` for the drift harness |
 | 5 | Cost per cycle and babysitting-model routing | `of_capacity` |
 | 6 | The first loop: `acme-search-ladder`, its ladder and target from the structure keeper's analysis; reader `acme_throughput-owner` | `acme_org` with the search work's doer |
 
