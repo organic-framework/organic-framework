@@ -853,6 +853,26 @@ SCENARIOS += [
           ("ap.missing-verifier", ["bot_search"], "negative")),
 ]
 
+# Part answers (v1, mandate 5): a position with no merged work, against the owner's prompts in its sessions. Another
+# position's merged PRs keep the work records attributed; bot_search merges none.
+_ASKED = [prompt(f"aq{k}", _at(_day("11-02", k % 4), 8 + k // 4), sid_of("bot_search"), "check the pool") for k in range(40)]
+_THEIRS = [_rpr(60 + k, _at(_day("11-02", k), 17), "bot_operator", 1) for k in range(3)]
+
+SCENARIOS += [
+    # three corrections of its results in 40 of the owner's prompts (7.5%), no merged work
+    _case("missing-verifier/positive-answers", _org_doc(), _THEIRS + _ASKED + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "positive")),
+    # the same three in 100 prompts (3%)
+    _case("missing-verifier/negative-answers-rare", _org_doc(),
+          _THEIRS + _ASKED + [prompt(f"ar{k}", _at("11-06", 8 + k // 6, 5 * (k % 6)), sid_of("bot_search"), "and now?")
+                              for k in range(60)] + _RESULTS,
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+    # corrections of how it works, not of its answers
+    _case("missing-verifier/negative-answers-method", _org_doc(),
+          _THEIRS + _ASKED + [_fc(30 + k, _at(_day("11-03", k)), "bot_search", "method") for k in range(4)],
+          ("ap.missing-verifier", ["bot_search"], "negative")),
+]
+
 
 # chatty's default part divides by attributed merged PRs: with none attributed it reports blocked, not 12 per PR
 # (Acme, 2026-11-10: 90 of 820 attributed, 133 pair issues). No relayed messages or prompts: the other parts block.
