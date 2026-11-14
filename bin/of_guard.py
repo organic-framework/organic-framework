@@ -3023,6 +3023,12 @@ def _ssh_contacts(call, resolve):
     def real(host):  # the name ssh connects to: the folded config's HostName, else the name as typed
         hostname = resolve(host) if resolve else None
         return (hostname or host).rstrip(".").lower()
+
+    def plain(hop):  # a jump hop reached by its own jump (its config's ProxyJump or ProxyCommand) is a doubt: ssh
+        # connects to that one first, which this reading does not follow (of_review on PR 157)
+        if any(str(first(hop, k) or "none").lower() != "none" for k in ("proxyjump", "proxycommand")):
+            raise _Doubt(f"{hop} has its own jump")
+        return hop
     out = []
     for dword in chain["dests"]:
         dest, _ = _ssh_hop(dword)
@@ -3035,7 +3041,7 @@ def _ssh_contacts(call, resolve):
             jumps = None
         if jumps:
             hops = [_ssh_hop(h) for h in jumps]
-            hops = [(h, p or first(h, "port") or "22") for h, p in hops] + [(dest, dport)]
+            hops = [(plain(h), p or first(h, "port") or "22") for h, p in hops] + [(dest, dport)]
             out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
         elif command and command.lower() != "none":
             words = command.split()
@@ -3049,8 +3055,8 @@ def _ssh_contacts(call, resolve):
             to_host, _, to_port = w.replace("%h", real(dest)).replace("%p", dport).rpartition(":")
             via = sub["dests"][0]
             inner = [_ssh_hop(h) for h in sub["jumps"] or []]
-            via_host = _ssh_hop(via)[0]
-            hops = [(h, p or first(h, "port") or "22") for h, p in inner] + [
+            via_host = plain(_ssh_hop(via)[0])
+            hops = [(plain(h), p or first(h, "port") or "22") for h, p in inner] + [
                 (via_host, sub["port"] or first(via_host, "port") or "22")]
             out += [(hops[k][0], (real(hops[k + 1][0]), hops[k + 1][1])) for k in range(len(hops) - 1)]
             out.append((hops[-1][0], (to_host.strip("[]").lower(), to_port)))  # the gateway resolves a -W target

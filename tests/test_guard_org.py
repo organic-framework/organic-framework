@@ -339,7 +339,15 @@ class AllowJumpTest(unittest.TestCase):
             self.assertTrue(hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70"))           # really secret.internal
             self.assertEqual(hit(f"ssh -F {cfg} -J agent-gateway real"), [])             # really 192.0.2.70
             self.assertTrue(hit(f"ssh -F {cfg} -o 'ProxyCommand ssh -W %h:%p agent-gateway' 192.0.2.70"))
-        for fwd in ("-L 8080:192.0.2.9:80", "-R 9000:localhost:22", "-D 1080", "-W db:5432", "-O forward"):
+        with tempfile.TemporaryDirectory() as t:  # of_review on PR 157: a hop's own ProxyJump was never read
+            cfg = os.path.join(t, "config")
+            with open(cfg, "w") as fh:
+                fh.write("Host agent-gateway\n  ProxyJump gw9\n")
+            self.assertTrue(self.hit(f"ssh -F {cfg} -J agent-gateway 192.0.2.70", resolver=of_guard.ssh_resolver))
+            self.assertTrue(self.hit(f"ssh -F {cfg} -o 'ProxyCommand ssh -W %h:%p agent-gateway' 192.0.2.70",
+                                     resolver=of_guard.ssh_resolver))
+        for fwd in ("-L 8080:192.0.2.9:80", "-R 9000:localhost:22", "-D 1080", "-W db:5432", "-O forward",
+                    "-L 9000:agent-gateway:22"):
             self.assertTrue(self.hit(f"ssh -J agent-gateway {fwd} 192.0.2.70"), fwd)
 
 
