@@ -247,17 +247,20 @@ rules:
     remedies: [route runner commands and monitors to a subagent or session on babysit_model]
 
   loop-objective-drift:
-    version: 1                   # v1 (2026-11-12): part context, hand-over 9e2140b6 (docs/registry.md Works, segment)
-    p: {unpriced: 0.6, context: 0.6}
-    m_decide: {unpriced: 5, context: 5}
-    thresholds: {unpriced_runs_gte: 3, unpriced_share_gte: 0.30}   # a change_objective without a money metric, or one context hit, fires at once
+    version: 2                   # v1 (2026-11-12): part context, hand-over 9e2140b6 (docs/registry.md Works, segment)
+                                 # v2 (2026-11-14): part untied, the owner's measure, hand-over 95bf514e (docs/registry.md Works)
+    p: {unpriced: 0.6, untied: 0.6, context: 0.6}
+    m_decide: {unpriced: 5, untied: 5, context: 5}
+    thresholds: {unpriced_runs_gte: 3, unpriced_share_gte: 0.30}   # also untied's; a change_objective without its basis, or one context hit, fires at once
     needs: [registry.works.loop, of.loop_run]
     reads: [of.loop_hypothesis, of.loop_decision]
     decider: work_owner
     severity: medium
-    delta_m: "0; dT: runs spent on a proxy with no proven price, or on a part the organization does not control"
+    delta_m: "0; dT: runs spent on a proxy with no proven price or no tie to the owner's measure, or on a part the organization does not control"
     remedies:
       unpriced: ["price the metric in the target's money (measures.to_money) before more work on it", return to the target metric]
+      untied: ["tie the metric to the target the owner decided (measures.to_target), or return to the target metric",
+               "get the owner's yes on a new measure (of loop decision change_objective --metric --decided)"]
       context: ["report the part beside the target, and move the work inside the segment: a lever on a time or a rule between its start and end",
                 "restate a hypothesis about the part to the owner as an inference, never a finding"]
 

@@ -882,20 +882,29 @@ def _metric_matches(metric, part):
 
 def rule_loop_objective_drift(model, rows, a, b, cat, spec):
     """Part unpriced: runs that measure a metric neither the target's nor priced, or a change_objective without money.
-    Part context (v1, 2026-11-12; hand-over 9e2140b6, docs/registry.md Works): a run's metric, a hypothesis's
-    predicted effect or change, or a change_objective's metric matches a part of the target's segment.context (a text
-    or {name, what}), which is reported beside the target and is never a target, a measure or a lever. Matching is
-    of registry check's (PR 58): a name to a part's name exactly, prose by content words. One issue per work; context
-    wins the part."""
+    Part untied (v2, 2026-11-14; hand-over 95bf514e, docs/registry.md Works, "The owner's measure"): on a target that
+    carries `decided`, the owner's yes on the measure, a run is tied when its metric is the target's or a measure with
+    `to_target` or `to_money`, and a change_objective needs its metric and the owner's yes on it (`decided`), as
+    `of loop decision` asks there (of_platform); the nudge asks to tie the metric or to get that yes, never for a price.
+    A loop without `decided` is judged as before. Part context (v1, 2026-11-12; hand-over 9e2140b6): a run's metric, a
+    hypothesis's predicted effect or change, or a change_objective's metric matches a part of the target's
+    segment.context (a text or {name, what}), which is reported beside the target and is never a target, a measure or
+    a lever. Matching is of registry check's (PR 58): a name to a part's name exactly, prose by content words. One
+    issue per work; context wins the part."""
     out = []
     for w, lp in _loops(model).items():
         tgt = lp.get("target") or {}
         target = tgt.get("metric")
-        priced = {str(m.get("name")) for m in lp.get("measures") or [] if m.get("to_money")}
+        decided = tgt.get("decided") if isinstance(tgt.get("decided"), str) and tgt["decided"].strip() else None
+        chain = ("to_money", "to_target") if decided else ("to_money",)
+        tied = {str(m.get("name")) for m in lp.get("measures") or [] if any(m.get(k) for k in chain)}
         runs = [r for r in lp.get("runs") or [] if _ended_in(r, a, b)]
-        unpriced = [r for r in runs if (r.get("metric") or target) != target and r.get("metric") not in priced]
+        unpriced = [r for r in runs if (r.get("metric") or target) != target and r.get("metric") not in tied]
+
+        def based(d):   # a change of objective names its new metric, and its money, or the owner's yes when decided
+            return d.get("metric") and d.get("decided" if decided else "to_money")
         bad = [d for d in lp.get("decisions_all") or [] if d.get("kind") == "change_objective"
-               and a <= (d.get("ts") or 0) < b and not (d.get("metric") and d.get("to_money"))]
+               and a <= (d.get("ts") or 0) < b and not based(d)]
         drift = bad or (runs and len(unpriced) >= _t(spec, "unpriced_runs_gte", 3)
                         and len(unpriced) / len(runs) >= _t(spec, "unpriced_share_gte", 0.30))
         seg = tgt.get("segment") if isinstance(tgt.get("segment"), dict) else {}
@@ -919,8 +928,12 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
         if not (drift or hits):
             continue
         metrics = collections.Counter(r.get("metric") for r in unpriced)
-        ev = {"work": w, "target": target, "unpriced": dict(metrics), "runs": len(runs),
-              "change_objective_without_money": len(bad)}
+        if decided:   # the owner's measure: nothing here is about money
+            ev = {"work": w, "target": target, "decided": decided, "untied": dict(metrics), "runs": len(runs),
+                  "change_objective_without_yes": len(bad)}
+        else:
+            ev = {"work": w, "target": target, "unpriced": dict(metrics), "runs": len(runs),
+                  "change_objective_without_money": len(bad)}
         if hits:
             top = collections.Counter(x["part"] for x in hits).most_common(1)[0][0]
             n_r = sum(1 for x in hits if x["part"] == top and "run" in x)
@@ -935,6 +948,13 @@ def rule_loop_objective_drift(model, rows, a, b, cat, spec):
                              part="context"))
             continue
         top = metrics.most_common(1)[0][0] if metrics else (bad[0].get("metric") or "the new objective")
+        if decided:
+            what = (f"{len(unpriced)} of {len(runs)} runs measure {top}, which is not tied to the target {target}"
+                    if metrics else f"a change of objective to {top} has no yes from the owner")
+            out.append(issue(cat, "loop-objective-drift", [w], ev,
+                             f"{w}: {what}: tie the metric to the target, or get the owner's yes on a new measure",
+                             part="untied"))
+            continue
         money = tgt.get("money") or "money"
         out.append(issue(cat, "loop-objective-drift", [w], ev,
                          f"{w}: {len(unpriced)} of {len(runs)} runs measure {top}, which has no price: "
