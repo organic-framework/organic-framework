@@ -987,15 +987,17 @@ class AmendScreenTest(unittest.TestCase):
 
     def test_the_list_takes_an_amend_from_the_logs_tail(self):
         first = {"event_id": "A", "ts": "2026-11-15T10:00:00Z", "state": "open", "position": "of_a",
-                 "text": "Lift the hold?", "kind": "question (declared)", "n_options": 2}
+                 "text": "Lift the hold?", "kind": "question (declared)", "n_options": 2, "host_id": "h1"}
         g = {"first": first, "text": "Lift the hold?", "kind": "question (declared)", "ask_ids": ["A"], "who": ["of_a"]}
         row = ("2026-11-15T10:10:00Z", {"ask_id": "A", "version": 2, "changed": ["text", "blocking"],
-                                        "text": "Lift the hold now?", "blocking": True, "by": "of_a"})
+                                        "text": "Lift the hold now?", "blocking": True, "by": "of_a"}, "h1")
         new = I.amended_group(g, [row])
         self.assertEqual((new["text"], new["kind"], new["first"]["version"], I.version_of({"first": new["first"]})),
                          ("Lift the hold now?", "question (declared) blocking", 2, 2))
         self.assertEqual(first.get("version"), None)  # the view's own copy is not touched
-        self.assertIs(I.amended_group(g, [(row[0], dict(row[1], by="of_b"))]), g)  # only its asker amends it
+        self.assertIs(I.amended_group(g, [(row[0], dict(row[1], by="of_b"), "h1")]), g)  # only its asker amends it
+        self.assertIs(I.amended_group(g, [(row[0], row[1], "h2")]), g)  # and only from its own machine
+        self.assertIs(I.amended_group(dict(g, first=dict(first, host_id=None)), [row])["first"].get("version"), None)
         rows = I.card_rows({"question": "Lift the hold now?", "options": ["yes", "no"],
                             "amended": {"version": 2, "at": "2026-11-15T10:10:00Z", "changed": ["text", "blocking"]}},
                            new, 120)

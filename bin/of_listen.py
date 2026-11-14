@@ -90,7 +90,7 @@ class AsksProcessor(Processor):
     """The asks view: every ask with its state (of_asks.project), and the owner's queue grouped as
     the popup shows it. Tables view_asks and view_ask_groups."""
     name = "asks"
-    version = "23"  # 23: each row keeps its whole ask (column ask) and the fold its readers carry on (of_asks.FOLD_KEY): of_asks.current_asks; 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
+    version = "24"  # 24: a declared ask keeps the host_id of the machine that filed it, the one whose amends apply (of ask --amend; of_server on PR 181); 23: each row keeps its whole ask (column ask) and the fold its readers carry on (of_asks.FOLD_KEY): of_asks.current_asks; 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
     DDL = """
     CREATE TABLE IF NOT EXISTS view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, session_id TEXT,
       position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, closed_at TEXT, closed_by_kind TEXT,
@@ -177,7 +177,8 @@ class AsksProcessor(Processor):
         if not new:
             return False
         for r in new:
-            row = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position", "payload", "org")}
+            row = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position", "payload", "org",
+                                         "host_id")}
             if r["event_id"] in self.rows or r["name"] == "of.prompt_origin" or (row["ts"] or "") < self.fed:
                 # an event again under its id, a correction of an earlier prompt's origin, or a row older than
                 # what was projected (imported history): the carried projection no longer holds; all rows again
@@ -939,8 +940,9 @@ def fetch(conn, after, limit=None, top=None, names=None):
     """The events after rowid AFTER, up to TOP, in log order; NAMES: only those (a fold view's own)."""
     out = []
     only = f"AND name IN ({','.join('?' * len(names))}) " if names else ""
-    for rowid, e, ts, n, s, pos, src, org, pl in conn.execute(
-            "SELECT rowid, event_id, ts, name, session_id, position, source, org, payload FROM event WHERE rowid > ? "
+    for rowid, e, ts, n, s, pos, src, org, pl, host in conn.execute(
+            "SELECT rowid, event_id, ts, name, session_id, position, source, org, payload, host_id FROM event "
+            "WHERE rowid > ? "
             f"AND rowid <= ? {only}ORDER BY rowid LIMIT ?",
             (after, top if top is not None else 2 ** 62, *(names or ()), limit or BATCH)):
         try:
@@ -948,7 +950,7 @@ def fetch(conn, after, limit=None, top=None, names=None):
         except ValueError:
             payload = {}
         out.append({"rowid": rowid, "event_id": e, "ts": ts, "name": n, "session_id": s, "position": pos,
-                    "source": src, "org": org, "payload": payload})
+                    "source": src, "org": org, "payload": payload, "host_id": host})
     return out
 
 

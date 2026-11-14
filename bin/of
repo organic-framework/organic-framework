@@ -4514,6 +4514,9 @@ def _amend_ask(args, positions, me):
     if a.get("claimed_at"):
         raise OfError(f"--amend: the founder said done on task {short}: check the result (of status working "
                       f"--done-task {short}) or say what you still see (--reopen-task {short} --note …)")
+    if of_asks.ask_host(conn, a["event_id"]) != of_events.machine_id():
+        raise OfError(f"--amend: ask {short} was filed on another machine of the organization: amend it there (only the "
+                      "machine that holds a position acts on it; an amend from here would not apply)")
     payload, _session, _position, _ts = of_asks_answer.ask_details(conn, a["event_id"])  # its newest version
     if payload.get("detected_by") != "declared" or payload.get("from_position") not in (None, me["name"]):
         raise OfError(f"--amend: ask {short} was not filed by {me['name']} with of ask")
