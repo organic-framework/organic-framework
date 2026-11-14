@@ -191,9 +191,29 @@ POSITIONS_QUERY = """query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 50, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest { number body commits(last: 50) { nodes { commit { message } } }
-                                 reviews(states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) { totalCount } } }
+                                 reviews(states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) { totalCount }
+                                 comments(last: 100) { nodes { body } } } }
   }
 }"""
+
+
+VERDICT_LINE = re.compile(r"^\s*\**Verdict:\**\s*\**(approve|changes)\b", re.I | re.M)
+REVIEWER_LINE = re.compile(r"^\s*Position:\s*([a-z][a-z0-9_-]{0,31})\s*$", re.M)
+
+
+def verdicts(comments):
+    """[{verdict, position}] of a PR's comments that carry a review verdict, oldest first: a framework PR is reviewed
+    by a comment with a "Verdict: approve|changes" line and the reviewer's "Position:" line, never by a GitHub review
+    (of_field-analyst, 2026-11-14: ap.missing-verifier saw 0 reviews beside PR 174's verdict). A comment counts once,
+    by its last verdict line."""
+    out = []
+    for c in comments or []:
+        body = (c or {}).get("body") or ""
+        v = VERDICT_LINE.findall(body)
+        if v:
+            who = REVIEWER_LINE.findall(body)
+            out.append({"verdict": v[-1].lower(), "position": who[-1] if who else None})
+    return out
 
 
 def bodies(repo, state, search=None, gh="gh", pages=40, details=None):
@@ -201,7 +221,8 @@ def bodies(repo, state, search=None, gh="gh", pages=40, details=None):
     bodies or commits together with files cut GitHub's answer on a busy window (2026-11-10: storefront 10-28..10-30,
     "unexpected end of JSON input"), and agents write the trailer in their commits more often than in the PR body
     (#3093: none in the body, two in its commits). Best effort: what was read before a failure, never an error.
-    details: a dict to fill with {PR number: {body, reviews}} (the number of submitted reviews), for the work record
+    details: a dict to fill with {PR number: {body, reviews, verdicts}} (the number of submitted reviews, and the
+    review verdicts its comments carry, verdicts()), for the work record
     (of_field-analyst, 2026-11-11: ap.unsourced-requirement reads what a PR claimed and whether anyone reviewed it)."""
     q = f"repo:{repo} is:pr " + {"merged": "is:merged", "open": "is:open", "closed": "is:closed"}.get(state, "")
     q += f" {search}" if search else ""
@@ -225,7 +246,8 @@ def bodies(repo, state, search=None, gh="gh", pages=40, details=None):
             out[int(n["number"])] = [x for t in texts for x in POSITION_LINE.findall(t)]
             if details is not None:
                 details[int(n["number"])] = {"body": n.get("body") or "",
-                                             "reviews": (n.get("reviews") or {}).get("totalCount")}
+                                             "reviews": (n.get("reviews") or {}).get("totalCount"),
+                                             "verdicts": verdicts((n.get("comments") or {}).get("nodes"))}
         if not (data.get("pageInfo") or {}).get("hasNextPage"):
             break
         after = data["pageInfo"]["endCursor"]
@@ -366,7 +388,7 @@ def import_org(conn, org, systems, since, fetcher=fetch, log=print, position_sys
                        "merged_at": pr.get("mergedAt"), "head_ref": pr.get("headRefName"),
                        "title": of_hook.clip(pr.get("title") or "", 200)[0], "files": len(files),
                        "body": of_hook.clip(pr["body"], BODY_LIMIT)[0] if pr.get("body") else None,
-                       "reviews": pr.get("reviews"),
+                       "reviews": pr.get("reviews"), "verdicts": pr.get("verdicts"),
                        "paths": files[:300], "systems": sys_, "system_basis": basis,
                        "external": [s for s in sys_ if str(governed.get(s, "self")).startswith("external:")],
                        "position": who, "attribution": how,
