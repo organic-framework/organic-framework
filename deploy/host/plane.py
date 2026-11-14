@@ -13,15 +13,16 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
 - What is root's root writes through setup.py's Files (one component at a time, O_NOFOLLOW, O_EXCL): the
   LaunchDaemons with UserName at ProcessType Standard, written and not loaded (the user's own herdr server, the
   listener, `of health run` every minute), every daemon's log made beforehand in root's /var/log/of, and one root
-  watchdog per user (`python -E -s`, of_listen.watchdog) that restarts a stuck listener, its state in root's own
+  watchdog per user (`python -I`, of_listen.watchdog) that restarts a stuck listener, its state in root's own
   /var/db/of-plane. It reads that user's two beat files by stat, never opening them (of_listen.watchdog).
 - `apply`, `start` and `deploy` refuse to run unless setup.check_code passes: the python, Homebrew and the release
   checkout belong to root (or an admin who is no organization user) and no organization user may write them.
-- `deploy [--ref REF] --smoke-as USER --org-user ...` (root): the read-only release checkout /opt/organic-framework at
-  REF, main or a tag or commit the public main contains. Root fetches from the public repository itself, never from
+- `deploy --commit HASH --smoke-as USER --org-user ...` (root): the read-only release checkout /opt/organic-framework
+  at HASH, a full commit hash the public main contains. Root fetches from the public repository itself, never from
   an organization user's checkout, whose main may hold commits no one reviewed (of_secrets-review on PR 148). The tree
   is made root's, the trust check runs, USER (never root) runs the smoke check (bin/of smoke), and only then does
-  root compile bin/ with python -E -s; a failing step puts the commit before back.
+  root compile bin/ with python -I from /; a failing step puts the commit before back. Root runs every program by
+  its full path.
 - `start` / `stop` (root) load and unload the plane's daemons; `check` runs, as each user, `of registry check`, the
   guard's probe in each config dir and a look at its orgs.yaml, and asks launchd for the daemons.
 - `plan` (the default) prints what `apply` would do and changes nothing.
@@ -29,7 +30,7 @@ rules for root (organic-framework PR 144): root follows no link and runs no code
   sudo python3 deploy/host/plane.py plan  --org-user of:organic-framework-build=<of's home>/organic-framework-build
   sudo python3 deploy/host/plane.py apply --org-user of:organic-framework-build=<of's home>/organic-framework-build \\
                                           --org-user acme:acme=<acme's home>/acme-org --claude-dir acme:.claude-a
-  sudo python3 deploy/host/plane.py deploy --ref main --smoke-as of --org-user of:... --org-user acme:...
+  sudo python3 deploy/host/plane.py deploy --commit <full hash> --smoke-as of --org-user of:... --org-user acme:...
   sudo python3 deploy/host/plane.py start|stop|check --org-user ...
 
 The owner's remote view (B4: saved herdr machines `of@localhost` and `acme@localhost` under the admin user, for the
@@ -53,6 +54,9 @@ PATH = host.PATH
 DAEMONS = host.DAEMONS
 LOGS = host.LOGS
 WATCH_STATE = "/var/db/of-plane"          # root's alone: each root watchdog's state
+# root runs programs by their full path, never as PATH finds them (of_review on PR 148)
+GIT, SUDO, ENV, CHOWN, CHMOD, LAUNCHCTL, SH = ("/usr/bin/git", "/usr/bin/sudo", "/usr/bin/env", "/usr/sbin/chown",
+                                              "/bin/chmod", "/bin/launchctl", "/bin/sh")
 MARK = "# >>> organic-framework plane (deploy/host/plane.py) >>>"
 END = "# <<< organic-framework plane <<<"
 SERVICES = ("herdr", "listen", "health", "listen-watchdog")
@@ -146,7 +150,7 @@ def user_write(spec, home_dir=None):
 
 def as_user(user, argv, run=subprocess.run, stdin=None, env=None):
     extra = [f"{k}={v}" for k, v in (env or {}).items()]
-    return run(["sudo", "-u", user, "-H", "env", f"PATH={PATH}", "OF_AUTOMATION=1", "SSH_AUTH_SOCK=", *extra, *argv],
+    return run([SUDO, "-u", user, "-H", ENV, f"PATH={PATH}", "OF_AUTOMATION=1", "SSH_AUTH_SOCK=", *extra, *argv],
                capture_output=True, text=True, input=stdin)
 
 
@@ -201,9 +205,9 @@ def daemons(user, user_home):
                                       log=lg("listen")), user),
         label("health", user): (plist(label("health", user), of + ["health", "run"], user, user_home, interval=60,
                                       log=lg("health")), user),
-        label("listen-watchdog", user): (plist(  # of_listen alone, which needs no PyYAML; -E -s: no env, no user site
+        label("listen-watchdog", user): (plist(  # of_listen alone, which needs no PyYAML; -I: no env, no user site, no working folder
             label("listen-watchdog", user),
-            [PYTHON, "-E", "-s", "-c", f"import sys; sys.path.insert(0, '{OF_ROOT}/bin'); import of_listen; "
+            [PYTHON, "-I", "-c", f"import sys; sys.path.insert(0, '{OF_ROOT}/bin'); import of_listen; "
                                        "print(of_listen.watchdog())"], None, None, interval=60,
             env={"OF_STATE": state, "OF_LISTEN_TARGET": f"system/{label('listen', user)}",
                  "OF_LISTEN_WATCHDOG_STATE": os.path.join(WATCH_STATE, f"{user}-listen-watchdog.json")},
@@ -251,7 +255,7 @@ def apply(org_users, claude_dirs, run=subprocess.run, log=print, homes=None, fil
         if r.returncode != 0:
             raise SystemExit(f"{user}: its files: {(r.stderr or r.stdout).strip()[-400:]}")
         log(f"{user}: {', '.join(rel for rel, _, _ in spec['files'])}, ~/.zshrc block")
-        r = as_user(user, ["sh", "-c", f"{PYTHON} -c 'import yaml' 2>/dev/null || "
+        r = as_user(user, [SH, "-c", f"{PYTHON} -c 'import yaml' 2>/dev/null || "
                                         f"{PYTHON} -m pip install --user --break-system-packages pyyaml"], run)
         if r.returncode != 0:
             raise SystemExit(f"{user}: PyYAML: {(r.stderr or r.stdout).strip()[-400:]}")
@@ -279,9 +283,9 @@ def load(org_users, unload=False, run=subprocess.run, log=print):
         for svc in SERVICES:
             lbl = label(svc, user)
             path = os.path.join(DAEMONS, f"{lbl}.plist")
-            run(["launchctl", "bootout", f"system/{lbl}"], capture_output=True)
+            run([LAUNCHCTL, "bootout", f"system/{lbl}"], capture_output=True)
             if not unload:
-                r = run(["launchctl", "bootstrap", "system", path], capture_output=True, text=True)
+                r = run([LAUNCHCTL, "bootstrap", "system", path], capture_output=True, text=True)
                 log(f"{lbl}: {'loaded' if r.returncode == 0 else 'not loaded: ' + (r.stderr or '').strip()[:200]}")
             else:
                 log(f"{lbl}: unloaded")
@@ -292,26 +296,29 @@ def load(org_users, unload=False, run=subprocess.run, log=print):
 PUBLIC = "https://github.com/organic-framework/organic-framework.git"  # reviewed code only: what of_release merged
 
 
-def deploy(ref="main", smoke_as=None, org_users=(), run=subprocess.run, log=print, root=None, source=PUBLIC,
+def deploy(commit, smoke_as=None, org_users=(), run=subprocess.run, log=print, root=None, source=PUBLIC,
            trust=None):
-    """The release checkout at REF, which must be on the public main: root fetches from the public repository
-    itself, never from an organization user's checkout, whose main may hold commits no one reviewed (of_secrets-review
-    on PR 148). REF is main, or a tag or commit that the public main contains. In order: the checkout (git only), the
-    tree made root's and read-only, the trust check (setup.trust_problems over the python, Homebrew and the checkout),
-    the smoke check run by SMOKE_AS (an organization user, never root), and only then compileall as root (python -E
-    -s): root runs no Homebrew python before the trust check passed (of_secrets-review on PR 148). A failing step puts
-    the commit before back. Returns the commit."""
+    """The release checkout at COMMIT, a full hash the public main contains: root fetches the public main itself,
+    never an organization user's checkout, whose main may hold commits no one reviewed, and checks out exactly that
+    hash (of_secrets-review and of_review on PR 148). In order: the checkout (git only), the tree made root's and
+    read-only, the trust check (setup.trust_problems over the python, Homebrew and the checkout), the smoke check run
+    by SMOKE_AS (an organization user, never root), and only then compileall as root (python -I, from /): root runs no
+    Homebrew python before the trust check passed, and none that imports from a folder someone else can write. A
+    failing step puts the commit before back. Programs by their full path. Returns the commit."""
+    import re
     root = root or OF_ROOT
+    if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+        raise SystemExit("deploy: --commit takes a full commit hash (40 hex): root deploys a pinned commit")
     if not smoke_as:
         raise SystemExit("deploy: name the organization user who runs the smoke check (--smoke-as); root never does")
 
     def git(*a, check=True):
-        r = run(["git", "-C", root, *a], capture_output=True, text=True)
+        r = run([GIT, "-C", root, *a], capture_output=True, text=True, cwd="/")
         if check and r.returncode != 0:
             raise SystemExit(f"deploy: git {' '.join(a[:2])}: {(r.stderr or r.stdout).strip()[:300]}")
         return r.stdout.strip()
     if not os.path.isdir(os.path.join(root, ".git")):
-        r = run(["git", "init", "-q", root], capture_output=True, text=True)
+        r = run([GIT, "init", "-q", root], capture_output=True, text=True, cwd="/")
         if r.returncode != 0:
             raise SystemExit(f"deploy: git init: {(r.stderr or r.stdout).strip()[:300]}")
         before = None
@@ -319,23 +326,21 @@ def deploy(ref="main", smoke_as=None, org_users=(), run=subprocess.run, log=prin
         before = git("rev-parse", "-q", "--verify", "HEAD", check=False) or None
     git("fetch", "-q", source, "main")
     public = git("rev-parse", "FETCH_HEAD")
-    if ref == "main":
-        target = public
-    else:
-        git("fetch", "-q", source, ref)
-        target = git("rev-parse", "FETCH_HEAD^{commit}")
-        if run(["git", "-C", root, "merge-base", "--is-ancestor", target, public], capture_output=True).returncode:
-            raise SystemExit(f"deploy: {ref} ({target[:12]}) is not on the public main ({public[:12]}): only "
-                             "reviewed code is deployed")
+    if run([GIT, "-C", root, "merge-base", "--is-ancestor", commit, public], capture_output=True,
+           cwd="/").returncode:
+        raise SystemExit(f"deploy: {commit[:12]} is not on the public main ({public[:12]}): only reviewed code is "
+                         "deployed")
 
     def back(why):
         if before:
             git("checkout", "-q", "--detach", before)
-        raise SystemExit(f"deploy: {why} on {target[:12]}; "
+        raise SystemExit(f"deploy: {why} on {commit[:12]}; "
                          f"{'back on ' + before[:12] if before else 'nothing was checked out before'}")
-    git("checkout", "-q", "--detach", target)
-    run(["chown", "-R", "-P", "root:wheel", root], capture_output=True)
-    run(["chmod", "-R", "u+rwX,go+rX,go-w", root], capture_output=True)
+    git("checkout", "-q", "--detach", commit)
+    if git("rev-parse", "HEAD") != commit:
+        back("the checkout is not the pinned commit")
+    run([CHOWN, "-R", "-P", "root:wheel", root], capture_output=True, cwd="/")
+    run([CHMOD, "-R", "u+rwX,go+rX,go-w", root], capture_output=True, cwd="/")
     problems = (trust or (lambda: host.trust_problems(host.code_roots(), [*org_users, host.SERVICE_USER], run=run)))()
     if problems:
         back("the trust check failed (" + "; ".join(problems)[:300] + ")")
@@ -344,11 +349,11 @@ def deploy(ref="main", smoke_as=None, org_users=(), run=subprocess.run, log=prin
                 env={"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": root})
     if r.returncode != 0:
         back("the smoke check failed (" + (r.stderr or r.stdout).strip()[-300:] + ")")
-    # the users cannot write a read-only checkout's bytecode cache: compile it here, after the trust check
-    run([PYTHON, "-E", "-s", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True)
-    run(["chown", "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True)
-    log(f"deploy: {root} at {target[:12]}, on the public main {public[:12]} (trust and smoke checks ok)")
-    return target
+    # the users cannot write a read-only checkout's bytecode cache: compile it here, after the trust check, isolated
+    run([PYTHON, "-I", "-m", "compileall", "-q", os.path.join(root, "bin")], capture_output=True, cwd="/")
+    run([CHOWN, "-R", "-P", "root:wheel", os.path.join(root, "bin")], capture_output=True, cwd="/")
+    log(f"deploy: {root} at {commit[:12]}, on the public main {public[:12]} (trust and smoke checks ok)")
+    return commit
 
 
 # ------------------------------------------------------------------ check
@@ -373,13 +378,13 @@ def check(org_users, claude_dirs, run=subprocess.run, log=print, homes=None):
             ok &= good
             log(f"{user}: the guard in {cfg}: {'answers deny' if good else 'NOT working: ' + (r.stdout or r.stderr)[-200:]}")
         for svc in SERVICES:
-            r = run(["launchctl", "print", f"system/{label(svc, user)}"], capture_output=True, text=True)
+            r = run([LAUNCHCTL, "print", f"system/{label(svc, user)}"], capture_output=True, text=True)
             ok &= r.returncode == 0
             log(f"{user}: {label(svc, user)}: {'loaded' if r.returncode == 0 else 'NOT loaded'}")
         r = as_user(user, [HERDR, "status", "server"], run)
         ok &= r.returncode == 0
         log(f"{user}: herdr server: {'answers' if r.returncode == 0 else 'NOT answering'}")
-        r = as_user(user, ["sh", "-c", "grep -h '^  - name:' \"$HOME/.config/of/orgs.yaml\""], run)
+        r = as_user(user, [SH, "-c", "grep -h '^  - name:' \"$HOME/.config/of/orgs.yaml\""], run)
         listed = {ln.split(":", 1)[1].strip() for ln in (r.stdout or "").splitlines() if ":" in ln}
         foreign = listed & (others - mine)
         ok &= not foreign
@@ -392,13 +397,13 @@ def main(argv=None):
     ap.add_argument("action", nargs="?", default="plan", choices=["plan", "apply", "start", "stop", "check", "deploy"])
     ap.add_argument("--org-user", action="append", default=[], help="user:org=/absolute/repo (repeatable)")
     ap.add_argument("--claude-dir", action="append", default=[], help="user:dir (repeatable; ~/.claude by default)")
-    ap.add_argument("--ref", default="main", help="deploy: main, or a tag or commit on the public main")
+    ap.add_argument("--commit", help="deploy: the full hash of a commit on the public main")
     ap.add_argument("--smoke-as", help="deploy: the organization user who runs the smoke check")
     a = ap.parse_args(argv)
     if a.action == "deploy":
         if os.geteuid() != 0:
             raise SystemExit("deploy: run it as root (sudo)")
-        deploy(a.ref, a.smoke_as, list(parse_org_users(a.org_user)))
+        deploy(a.commit, a.smoke_as, list(parse_org_users(a.org_user)))
         return 0
     org_users = parse_org_users(a.org_user)
     if not org_users:

@@ -24,7 +24,7 @@ ORGS = {"of": [("organic-framework-build", "/srv/of/organic-framework-build")],
 
 def inner(argv):
     """The command a `sudo -u U -H env K=V ... cmd` runs, and its env."""
-    i = argv.index("env") + 1
+    i = argv.index(plane.ENV) + 1
     env = {}
     while "=" in argv[i] and not argv[i].startswith("/"):
         k, _, v = argv[i].partition("=")
@@ -82,7 +82,7 @@ class FilesTest(unittest.TestCase):
         w = plistlib.loads(text.encode())
         self.assertEqual(owner, "root")
         self.assertNotIn("UserName", w)  # root, so it can restart the user's system daemon
-        self.assertEqual(w["ProgramArguments"][1:3], ["-E", "-s"])
+        self.assertEqual(w["ProgramArguments"][1], "-I")  # no env, no user site, no working folder
         self.assertEqual(w["EnvironmentVariables"]["OF_STATE"], "/srv/of/.local/state/of")
         self.assertEqual(w["EnvironmentVariables"]["OF_LISTEN_TARGET"], "system/dev.organic-framework.listen.of")
         self.assertTrue(w["EnvironmentVariables"]["OF_LISTEN_WATCHDOG_STATE"].startswith(plane.WATCH_STATE + "/"))
@@ -98,7 +98,7 @@ class FilesTest(unittest.TestCase):
 
             def run(argv, **kw):
                 ran.append(argv)
-                if argv[0] == "sudo":
+                if argv[0] == plane.SUDO:
                     user, cmd, _ = inner(argv)
                     if "plane.user_write" in " ".join(cmd):
                         plane.user_write(json.loads(kw["input"]), home_dir=homes[user])
@@ -111,7 +111,7 @@ class FilesTest(unittest.TestCase):
                 for svc in plane.SERVICES:
                     self.assertTrue(os.path.exists(t + os.path.join(plane.DAEMONS, f"{plane.label(svc, u)}.plist")))
             self.assertEqual(len(os.listdir(t + host.LOGS)), 8)               # four logs per user, made beforehand
-            sudo = [a for a in ran if a[0] == "sudo"]
+            sudo = [a for a in ran if a[0] == plane.SUDO]
             self.assertTrue(all(a[1:4] in (["-u", "of", "-H"], ["-u", "acme", "-H"]) for a in sudo))
             hooks = [inner(a)[1] for a in sudo if "hooks" in a]
             self.assertEqual(len(hooks), 2)
@@ -155,26 +155,28 @@ class DeployTest(unittest.TestCase):
     def run_with(self, smoke_ok):
         def run(argv, **kw):
             self.ran.append(argv)
-            if argv[0] == "sudo":
+            if argv[0] == plane.SUDO:
                 user, cmd, _ = inner(argv)
                 if "smoke" in cmd:  # an organization user runs it, never root
                     return subprocess.CompletedProcess(argv, 0 if smoke_ok else 1, "smoke: ok", "smoke: FAILED")
-            if argv[0] in ("sudo", plane.PYTHON, "chown", "chmod"):
+            if argv[0] in (plane.SUDO, plane.PYTHON, plane.CHOWN, plane.CHMOD):
                 return subprocess.CompletedProcess(argv, 0, "", "")
             return subprocess.run(argv, **kw)
         return run
 
-    def deploy(self, ref="main", smoke_ok=True, problems=()):
-        return plane.deploy(ref, "of", ["of"], run=self.run_with(smoke_ok), log=lambda m: None, root=self.root,
+    def deploy(self, commit=None, smoke_ok=True, problems=()):
+        commit = commit or self.git(self.src, "rev-parse", "main").strip()
+        return plane.deploy(commit, "of", ["of"], run=self.run_with(smoke_ok), log=lambda m: None, root=self.root,
                             source=self.src, trust=lambda: list(problems))
 
     def test_main_is_deployed_and_a_failing_commit_rolled_back(self):
         v1 = self.git(self.src, "rev-parse", "HEAD").strip()
         self.assertEqual(self.deploy(), v1)
-        order = [("smoke" if a[0] == "sudo" and "smoke" in a else "compile") for a in self.ran
-                 if (a[0] == "sudo" and "smoke" in a) or (a[0] == plane.PYTHON and "compileall" in a)]
+        order = [("smoke" if a[0] == plane.SUDO and "smoke" in a else "compile") for a in self.ran
+                 if (a[0] == plane.SUDO and "smoke" in a) or (a[0] == plane.PYTHON and "compileall" in a)]
         self.assertEqual(order, ["smoke", "compile"])            # the smoke check first, root compiles after
-        self.assertTrue(any(a[0] == plane.PYTHON and a[1:3] == ["-E", "-s"] for a in self.ran))
+        self.assertTrue(any(a[0] == plane.PYTHON and a[1] == "-I" for a in self.ran))  # isolated, from /
+        self.assertTrue(all(os.path.isabs(a[0]) for a in self.ran))           # every program by its full path
         self.commit("v2 broken")
         with self.assertRaises(SystemExit) as e:
             self.deploy(smoke_ok=False)
@@ -188,7 +190,7 @@ class DeployTest(unittest.TestCase):
         side = self.commit("an agent's commit nobody reviewed")
         self.git(self.src, "checkout", "-q", "main")
         with self.assertRaises(SystemExit) as e:
-            self.deploy(ref=side)
+            self.deploy(commit=side)
         self.assertIn("is not on the public main", str(e.exception))
         self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # nothing run as root
 
@@ -197,7 +199,13 @@ class DeployTest(unittest.TestCase):
             self.deploy(problems=["of may write /opt/homebrew/bin"])
         self.assertIn("the trust check failed", str(e.exception))
         self.assertFalse(any(a[0] == plane.PYTHON for a in self.ran))      # no compileall, no smoke
-        self.assertFalse(any(a[0] == "sudo" and "smoke" in a for a in self.ran))
+        self.assertFalse(any(a[0] == plane.SUDO and "smoke" in a for a in self.ran))
+
+    def test_only_a_full_hash(self):
+        for bad in ("main", "v1.0", "abc123"):
+            with self.assertRaises(SystemExit) as e:
+                self.deploy(commit=bad)
+            self.assertIn("full commit hash", str(e.exception))
 
 
 if __name__ == "__main__":
