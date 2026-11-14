@@ -24,6 +24,7 @@ ASKS = "the asks projection where no listener view exists yet (current_asks retu
 HANDOVER = "hand-overs (769 events) by the name index since f91fae4: milliseconds; a view when they grow"
 RARE = "one rare name by the name index (kind B): a small view in step 4 of the order"
 CONST = "a constant read: the last rowid"
+VIEW_FALLBACK = "where its fold view is late or missing (no listener): one name by the event_name_ts index"
 FALLBACK = ("a trust decision (a diff's approval) reads the log, never a view anyone of this user may write: one "
             "name by the event_name_ts index (of_server on PR 154)")
 BYID = "one event by its rowid"
@@ -68,7 +69,7 @@ ALLOWED = {
     ('of_paste.py', 'pending', "SELECT json_extract(payload, '$.prompt_id') FROM event WHERE"): RARE,
     ('of_pulse.py', 'load_rows', 'SELECT event_id, ts, name, session_id, position, payload, or'): CONST,
     ('of_pulse.py', 'current_asks', 'of_asks.load(conn or of_store.connect())'): ASKS,
-    ('of_pulse.py', 'run_escalations', "SELECT payload FROM event WHERE name = 'of.ask_escalated'"): RARE,
+    ('of_pulse.py', 'run_escalations', "SELECT payload FROM event WHERE name = 'of.ask_escalated'"): VIEW_FALLBACK,
     ('of_pulse.py', 'studio_escalations', "SELECT payload FROM event WHERE name = 'of.agent_question' A"): RARE,
     ('of_pulse.py', 'studio_escalations', "SELECT event_id, position, payload FROM event WHERE name = '"): RARE,
     ('of_pulse.py', 'close_guard_asks', "SELECT event_id FROM event WHERE name = 'of.agent_question' "): RARE,
