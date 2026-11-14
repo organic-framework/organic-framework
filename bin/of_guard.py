@@ -454,9 +454,12 @@ def _scan(text, i=0, nested=False):
 def _segments(text):
     """Simple commands as token lists: split on ; & | ( ) and newlines outside quotes (quotes removed)."""
     import shlex
-    lex = shlex.shlex(text.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
+    # a backslash-newline joins the words, as bash reads it; a comment starts only at a word's start (G0.7;
+    # of_secrets-review on organic-framework PR 178)
+    lex = shlex.shlex(_strip_comments(text.replace("\\\n", "")), posix=True, punctuation_chars=";&|()<>\n")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
+    lex.commenters = ""
     segs, cur = [], []
     for tok in lex:
         if tok and set(tok) <= _SEPS:
@@ -624,7 +627,7 @@ def _strip_comments(text):
 
 def _tokens(text):
     import shlex
-    lex = shlex.shlex(_strip_comments(text.replace("\\\n", " ")), posix=True, punctuation_chars="<>&")
+    lex = shlex.shlex(_strip_comments(text.replace("\\\n", "")), posix=True, punctuation_chars="<>&")
     lex.whitespace = " \t\r\n"
     lex.whitespace_split = True
     lex.commenters = ""
