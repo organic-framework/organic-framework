@@ -1295,8 +1295,11 @@ def run(stop=None, log=print, rebuild=False):
     last = [0.0]
 
     def beat():
-        if whole and time.time() - last[0] >= HEARTBEAT_S:
-            heartbeat(conn)
+        if time.time() - last[0] >= HEARTBEAT_S:
+            if whole:
+                heartbeat(conn)
+            else:  # a view rebuilt in place is not one readers may trust yet, but the listener is alive: the
+                _touch(heartbeat_path())  # watchdog's file beats, so a long replay is never restarted (of_review, PR 145)
             last[0] = time.time()
     while True:  # the first catch-up: a busy store waits and continues from where it got (never a crash)
         try:

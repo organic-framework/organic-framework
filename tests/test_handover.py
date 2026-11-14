@@ -143,8 +143,8 @@ class ScopesTest(unittest.TestCase):
                 cur = of_listen.prepare(conn, procs)
                 of_listen.step(conn, procs, cur)
                 self.assertIsNone(of_handover.read_scopes())                   # no listener running here: the store
-                with open(os.path.join(t, "listen.ticks"), "w"):
-                    pass                                                       # its timer thread turns
+                with open(os.path.join(t, "listen.heartbeat"), "w"):
+                    pass                                                       # its main loop beats
                 self.assertEqual(of_handover.read_scopes(), {})                 # written at start, empty
                 hid = "01a1d6a6-0000-7000-8000-00000000aaaa"
                 for kind, pl in (("proposed", {"to": "of_b", "title": "t", "done_when": "d", "basis": "inference",
@@ -156,9 +156,9 @@ class ScopesTest(unittest.TestCase):
                 self.assertEqual(list(scoped), [hid])
                 self.assertEqual(of_handover.covering(scoped, "of_b", "feed", None), hid)
                 self.assertIsNone(of_handover.covering(scoped, "of_b", "other", None))
-                ticks = os.path.join(t, "listen.ticks")
+                beat = os.path.join(t, "listen.heartbeat")
                 old = os.path.getmtime(of_handover.scopes_path()) - of_handover.SCOPES_LIVE_S - 60
-                os.utime(ticks, (old, old))                                    # the listener stopped
+                os.utime(beat, (old, old))                                     # the listener stopped
                 self.assertIsNone(of_handover.read_scopes())                   # its old copy is not read
                 conn.close()
             finally:
