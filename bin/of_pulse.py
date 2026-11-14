@@ -872,8 +872,17 @@ def run_escalations(positions, asks, now, conn, log=print, elsewhere=None):
     another machine is that machine's to escalate; the ids are fixed per ask, so two machines that both escalate one
     (a position held nowhere) write one escalation."""
     import json as _j
-    done = {(_j.loads(pl or "{}")).get("ask_id") for (pl,) in
-            conn.execute("SELECT payload FROM event WHERE name = 'of.ask_escalated'")}
+    done = None
+    try:  # the escalated view (bin/of_fold.py): a dedupe, never a decision of trust (the ids are fixed per ask)
+        import of_fold
+        r = of_fold.read("escalated")
+        if not r.late:
+            done = set(r.rows)
+    except Exception:  # noqa: BLE001
+        done = None
+    if done is None:  # no listener here, or it is behind: the escalations' own events, one name by its index
+        done = {(_j.loads(pl or "{}")).get("ask_id") for (pl,) in
+                conn.execute("SELECT payload FROM event WHERE name = 'of.ask_escalated'")}
     away = {n for _, n in (elsewhere or {})}
     n = 0
     for a, rule, did in escalations(positions, asks, now, done):
