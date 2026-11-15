@@ -306,6 +306,25 @@ class MergeTest(unittest.TestCase):
                          ["of.agent_question_answered", "of.diff_applied", "of.diff_proposed"])
         self.assertEqual(counts["event"]["added"], 3)   # ORG's own delta still crosses
 
+    def test_the_targets_own_records_are_judged_by_the_target_alone(self):
+        """of_review on PR 195 (comment 6886751007): a target row went through the delta's session scope, so ORG's own ask
+        or diff on the target in a session the source lacks counted as another's, and its answer and application were
+        held. A session the target records with another organization's position is still not ORG's."""
+        cases = {"S1": True, "T9": True, None: True, "Z1": False}   # shared, target-only, none, the other's session
+        for i, (sid, crosses) in enumerate(cases.items()):
+            mine = ask(f"Our own question {i}?", "2026-11-15T11:50:00.000Z", session=sid)
+            diff = rec("diff_proposed", {"id": f"d-ofb-{i}", "kind": "spawn"}, "2026-11-15T11:51:00.000Z", session=sid)
+            other = ask("Their question?", "2026-11-15T11:49:00.000Z", position="zeta_ops", session="Z1", org="userorg")
+            self._add(self.dst_path, mine, diff, other)
+            closes = rec("agent_question_answered", {"ask_id": mine["of.event.id"], "by": "owner", "via": "asks-ui",
+                                                     "answer": "yes"}, f"2026-11-15T12:13:0{i}.000Z")
+            applied = rec("diff_applied", {"id": f"d-ofb-{i}"}, f"2026-11-15T12:14:0{i}.000Z")
+            self._add(self.src_path, closes, applied)
+            self.merge(person_act_ids=self.ids() + [closes["of.event.id"]])   # the owner's answer, named by its id
+            got, states = self._states()
+            self.assertEqual((closes["of.event.id"] in got, applied["of.event.id"] in got), (crosses, crosses), sid)
+            self.assertEqual(states[mine["of.event.id"]], "answered" if crosses else "open", sid)
+
     def test_an_id_two_organizations_make_in_the_delta_is_nobodys(self):
         """The target lacks both: the other organization's own proposal and an ORG row reusing its id came in one delta.
         Neither makes the id ORG's, so the ORG row and what files under it are held."""
