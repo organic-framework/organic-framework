@@ -806,7 +806,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
     }
 
 
-LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost")
+LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located")  # of_loops.KINDS
 
 
 def loops_of(doc, events, at_s, resolve=None):
