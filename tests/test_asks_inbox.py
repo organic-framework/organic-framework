@@ -104,7 +104,15 @@ class LogicTest(unittest.TestCase):
         self.assertEqual((m.hour, m.minute, m.date()), (9, 0, dt.date.fromtimestamp(now) + dt.timedelta(days=1)))
         w = dt.datetime.fromtimestamp(I.snooze_until("week", now))
         self.assertEqual((w.weekday(), w.hour), (0, 9))
-        self.assertTrue(0 < I.snooze_until("week", now) - now <= 7 * 86400 + 3600)
+        # the next Monday at 9:00, also from a Monday before 9:00: then 7 days and up to 9 hours ahead, which the
+        # bound of 7 days and 1 hour failed (of_field-analyst, message 01a1e125-cfc9); an hour more for a clock change
+        self.assertTrue(0 < I.snooze_until("week", now) - now <= 7 * 86400 + 10 * 3600)
+        monday = dt.date(2026, 11, 16)
+        for days in range(7):
+            for hour in (0, 8, 9, 10, 23):
+                t = dt.datetime.combine(monday + dt.timedelta(days=days), dt.time(hour, 30)).timestamp()
+                w = dt.datetime.fromtimestamp(I.snooze_until("week", t))
+                self.assertEqual((w.date(), w.hour, w.minute), (monday + dt.timedelta(days=7), 9, 0), (days, hour))
 
     def test_money_needs_a_second_press(self):
         self.assertTrue(I.needs_confirm(item("C", "Pay 90 USD to the operator?")))
