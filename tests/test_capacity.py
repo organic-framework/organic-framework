@@ -2638,7 +2638,7 @@ class PositionMemory(unittest.TestCase):
                 self.assertEqual(self.settings_of(cmd).get("env"), of_spawn.agent_env(), kw)
 
     def test_a_moved_session_keeps_the_agents_env_joined_with_its_tool_profiles(self):
-        # of_platform, 34a1682a (of_conductor's incident 01a1de68-8fec): every agent session starts with
+        # of_platform, PR 216 (of_conductor's incident 01a1de68-8fec): every agent session starts with
         # GIT_CEILING_DIRECTORIES at the home folder, so a stray .git there is never climbed into; a move kept only
         # AGENT_SETTINGS and dropped it
         with tempfile.TemporaryDirectory() as t:

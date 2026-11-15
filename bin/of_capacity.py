@@ -1078,7 +1078,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     import of_spawn
     t_argv, t_settings = tools or ([], {})
     # the agents' settings as at spawn: feedback drafts off (PR 185), env GIT_CEILING_DIRECTORIES (of_platform,
-    # 34a1682a), a tool profile's env joined to it
+    # PR 216), a tool profile's env joined to it
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None,
                                          list(deny) if deny else None, t_settings)
     parts += ["--settings", _q(of_spawn.settings_file(settings, sid, state_dir))]
