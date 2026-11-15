@@ -1290,6 +1290,8 @@ class SendClosedReceiverTest(unittest.TestCase):
            {"name": "of_paused", "_org": "ofb", "status": "parked", "holder": {"runtime": "claude-code"}},
            {"name": "of_paused-held", "_org": "ofb", "status": "parked", "holder": {"session": "S-P"}},
            {"name": "of_person", "_org": "ofb", "status": "parked", "holder": {"runtime": "human", "person": "alex"}},
+           {"name": "of_handed", "_org": "ofb", "status": "finished", "successor": "of_onboarding"},
+           {"name": "of_handed-twice", "_org": "ofb", "status": "finished", "successor": "of_research"},
            {"name": "acme_org", "_org": "acme", "role": "org", "holder": {"session": "S-K"}},
            {"name": "acme_done", "_org": "acme", "status": "finished", "holder": {"session": "S-D"}}]
 
@@ -1300,6 +1302,9 @@ class SendClosedReceiverTest(unittest.TestCase):
         self.assertIn("its name now belongs to of_onboarding", c("ofb:of_research-old"))
         self.assertIn("parked and nobody holds it", c("ofb:of_paused"))
         self.assertIn("ask acme:acme_org", c("acme:acme_done"))     # finished, even with a session on record
+        self.assertIn("its work went to ofb:of_onboarding, its successor: send there", c("ofb:of_handed"))
+        self.assertNotIn("ask ofb:of_architect", c("ofb:of_handed"))
+        self.assertIn("ask ofb:of_architect", c("ofb:of_handed-twice"))   # a finished successor leads nowhere
         for to in ("ofb:of_architect", "ofb:of_paused-held", "ofb:of_person", "other:someone"):
             self.assertIsNone(c(to), to)                            # active, parked but held, a person, unlisted
 
