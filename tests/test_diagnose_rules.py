@@ -1201,6 +1201,67 @@ class LoopRulesTest(unittest.TestCase):
         nowhere = self.doc(target={"metric": "day_pass", "money": "USD per day"})   # the target names no reading point
         self.assertEqual(self.found("loop-plateau", h + flat, doc=nowhere)[0], [])
 
+    def test_stalled_loop(self):
+        """2.29: a hypothesis in testing and no run, decision or stated wait for 4 h, at the window's end (8 h: the
+        conductor's level)."""
+        h = [self.hyp(1, "2026-11-07T09:00Z", "h1", status="testing")]
+        got, st = self.found("loop-stalled", h + [self.run_(1, "2026-11-07T10:00Z", "offline", "h1", 300)])
+        self.assertEqual(st["status"], "fired")
+        self.assertEqual([(i["affected"], i["part"], i["decider"], i["evidence"]["level"], i["evidence"]["hours"])
+                          for i in got], [([self.W], "silent", "work_owner", "conductor", 14.0)])
+        self.assertIn("no run, decision or stated wait for 14 h", got[0]["summary"])
+        self.assertIn(f"of loop wait {self.W}", got[0]["summary"])
+        self.assertEqual(self.found("loop-stalled", h + [self.run_(1, "2026-11-07T21:00Z", "offline", "h1", 300)])[0], [])
+        # only a hypothesis in testing makes a loop active: an open or decided one stalls nothing
+        self.assertEqual(self.found("loop-stalled", [self.hyp(1, "2026-11-07T09:00Z", "h1")])[0], [])
+        kept = h + [self.run_(1, "2026-11-07T10:00Z", "offline", "h1", 300), self.decide(1, "2026-11-07T11:00Z", "h1", "keep"),
+                    self.hyp(2, "2026-11-07T11:00Z", "h1", status="kept")]
+        self.assertEqual(self.found("loop-stalled", kept)[0], [])
+
+    def test_stalled_loop_longer_than_the_window(self):
+        """The worst case: the last event before the window's start is never a reason to block."""
+        old = [self.hyp(1, "2026-10-20T09:00Z", "h1", status="testing"), self.run_(1, "2026-10-20T10:00Z", "offline", "h1", 300)]
+        got, st = self.found("loop-stalled", old)
+        self.assertEqual(st["status"], "fired")
+        self.assertEqual([i["evidence"]["hours"] for i in got], [446.0])
+
+    def test_stalled_loop_a_decision_that_changes_nothing(self):
+        """A park of a hypothesis its last decision parked, with no run between, is no progress."""
+        rows = [self.hyp(1, "2026-11-07T08:00Z", "h1", status="testing"), self.hyp(2, "2026-11-07T08:00Z", "h2", status="testing"),
+                self.run_(1, "2026-11-07T09:00Z", "offline", "h1", 300), self.decide(1, "2026-11-07T10:00Z", "h2", "park"),
+                self.decide(2, "2026-11-07T21:00Z", "h2", "park")]
+        got, _ = self.found("loop-stalled", rows)
+        self.assertEqual([(i["evidence"]["hours"], i["evidence"]["last"]["kind"]) for i in got], [(14.0, "decision")])
+
+    def test_loop_stall_waits(self):
+        """loop_stall on a card: a stated wait holds the clock until its expect_at; the calendar holds nothing; a wait
+        re-declared on the same thing counts once; one with no expect_at holds nothing past its time."""
+        H, t0 = 3600, 1_700_000_000
+        card = {"work": "w", "owner": "o", "doers": ["d"], "hypotheses": [{"id": "h1", "status": "testing", "ts": t0}],
+                "runs": [{"id": "r1", "hypothesis": "h1", "ended_at": t0}], "decisions_all": []}
+        stall = R.loop_stall
+        self.assertEqual((stall(card, t0 + 5 * H) or {}).get("part"), "silent")
+        self.assertIsNone(stall(card, t0 + 3 * H))
+        runner = {"ts": t0 + H, "on": "runner", "ref": "job-7", "expect_at": t0 + 10 * H}
+        self.assertIsNone(stall(dict(card, waits=[runner]), t0 + 13 * H))
+        over = stall(dict(card, waits=[runner]), t0 + 15 * H)
+        self.assertEqual((over["part"], over["level"], over["hours"], over["since"]), ("wait_over", "owner", 5.0, t0 + 10 * H))
+        self.assertIn("job-7 expected by", R.stall_text(over))
+        again = dict(runner, ts=t0 + 11 * H, expect_at=t0 + 20 * H)   # the same job, re-declared: counts once
+        st = stall(dict(card, waits=[runner, again]), t0 + 15 * H)
+        self.assertEqual((st["part"], len(st["waits_not_counted"])), ("wait_over", 1))
+        other = dict(again, ref="job-8")   # a wait on something else holds the clock
+        self.assertIsNone(stall(dict(card, waits=[runner, other]), t0 + 15 * H))
+        week = {"ts": t0 + H, "on": "calendar", "ref": "locked week", "expect_at": t0 + 7 * 24 * H}
+        cal = stall(dict(card, waits=[week]), t0 + 9 * H)
+        self.assertEqual((cal["part"], cal["level"], cal["hours"]), ("calendar", "conductor", 9.0))
+        self.assertIn("no next step", R.stall_text(cal))
+        self.assertEqual(stall(dict(card, waits=[{"ts": t0 + H, "on": "position", "ref": "x"}]), t0 + 6 * H)["hours"], 5.0)
+        self.assertIsNone(stall(dict(card, waits=[runner], runs=card["runs"] + [{"id": "r2", "hypothesis": "h1",
+                                                                               "ended_at": t0 + 12 * H}]), t0 + 15 * H))
+        self.assertIsNone(stall(dict(card, state="parked"), t0 + 50 * H))
+        self.assertEqual(stall(card, t0 + 5 * H, {"stall_hours_gte": 6}), None)
+
 
 if __name__ == "__main__":
     unittest.main()

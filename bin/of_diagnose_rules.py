@@ -1334,6 +1334,129 @@ def rule_loop_observed_elsewhere(model, rows, a, b, cat, spec, parts=("decision"
     return out
 
 
+# diagnose.md 2.29: a loop with hypotheses in testing shows a run, a decision or a stated wait within hours. The clock
+# is one function, loop_stall, read by this rule, by the pulse (of_platform: the owner and the doers at the first
+# threshold, the conductor and the founder's digest at the second) and by Studio (of_studio), so they never disagree.
+STALL_DEFAULTS = {"stall_hours_gte": 4, "escalate_hours_gte": 8, "calendar_kinds": ["calendar", "holdout"]}
+_STALL_DONE = ("done", "parked")
+_STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}   # of_loops.STATUS_OF
+
+
+def _wait_key(x):
+    return (str(x.get("on") or ""), str(x.get("ref") or ""))
+
+
+def loop_stall(lp, now, thresholds=None):
+    """The stall of one loop card (of_model.loops, diagnose.md §4.1) at NOW (epoch seconds), or None while it shows
+    progress or a stated wait, or has no hypothesis in testing, or its work is done or parked.
+
+    Progress is a run that ended or a decision, nothing else: a report, a status note or an owner's check that finds the
+    loop unchanged never counts (the conductor's point 4). A wait declared after the last progress (`waits` in the
+    card: on, ref, expect_at, ts) holds the clock until its expect_at; one with no expect_at holds nothing past its own
+    time. A wait on the calendar (`calendar_kinds`: a locked week, a test of 14 days, a held-out date) holds nothing:
+    with nothing else in flight the work has no next step (point 3). A wait re-declared on the same thing (`on`, `ref`)
+    with no run or decision between counts once: two checks of an unchanged loop are no progress (point 4).
+
+    Returns {work, part: silent|wait_over|calendar, level: owner|conductor, hours, since, last, wait, waits_not_counted,
+    testing, owner, doers}: `since` is when the clock started, the key of an episode for whoever delivers it."""
+    t = dict(STALL_DEFAULTS, **(thresholds or {}))
+    if not lp or str(lp.get("state") or "") in _STALL_DONE:
+        return None
+    testing = sorted(h["id"] for h in lp.get("hypotheses") or [] if h.get("status") == "testing" and h.get("id"))
+    if not testing:
+        return None
+    prog = [(r["ended_at"], "run", r.get("id"), r.get("hypothesis")) for r in lp.get("runs") or []
+            if r.get("ended_at") is not None and r["ended_at"] <= now]
+    ran = {}   # hypothesis -> its runs' end times
+    for p in prog:
+        ran.setdefault(p[3], []).append(p[0])
+    status = {}   # hypothesis -> (the status its last decision set, when)
+    for d in sorted((d for d in lp.get("decisions_all") or [] if d.get("ts") is not None and d["ts"] <= now),
+                    key=lambda d: d["ts"]):
+        h, new = d.get("hypothesis"), _STATUS_OF.get(d.get("kind"))
+        prev = status.get(h)
+        # a keep, drop or park that leaves the hypothesis where its last decision put it, with no run between, changes
+        # nothing (2026-11-12 on the first user organization's bidding loop: a parked hypothesis parked again)
+        if new and h and prev and prev[0] == new and not any(prev[1] < x <= d["ts"] for x in ran.get(h, ())):
+            continue
+        if new and h:
+            status[h] = (new, d["ts"])
+        prog.append((d["ts"], "decision", d.get("kind"), h))
+    last = max(prog, key=lambda p: p[0]) if prog else None
+    since = last[0] if last else max([h.get("status_at") or h.get("ts") or 0 for h in lp.get("hypotheses") or []
+                                      if h.get("status") == "testing"] or [lp.get("start") or now])
+    cal = set(t["calendar_kinds"])
+    waits = sorted((x for x in lp.get("waits") or [] if x.get("ts") is not None and since <= x["ts"] <= now),
+                   key=lambda x: x["ts"])
+    counted, seen, not_counted = [], set(), []
+    for x in waits:
+        k = _wait_key(x)
+        if k in seen:
+            not_counted.append(x)
+            continue
+        seen.add(k)
+        counted.append(x)
+    live = [x for x in counted if x.get("on") not in cal]
+    holds = max([x.get("expect_at") or x["ts"] for x in live] or [since])
+    start = max(since, holds)
+    hours = (now - start) / 3600
+    if hours < t["stall_hours_gte"]:
+        return None
+    if live:
+        part, wait = "wait_over", max(live, key=lambda x: x.get("expect_at") or x["ts"])
+    elif counted:
+        part, wait = "calendar", counted[-1]
+    else:
+        part, wait = "silent", None
+    return {"work": lp.get("work"), "part": part, "level": "conductor" if hours >= t["escalate_hours_gte"] else "owner",
+            "hours": round(hours, 1), "since": start,
+            "last": {"kind": last[1], "at": last[0], "what": last[2], "hypothesis": last[3]} if last else None,
+            "wait": wait, "waits_not_counted": not_counted[-5:], "testing": testing,
+            "owner": lp.get("owner"), "doers": list(lp.get("doers") or [])}
+
+
+def stall_text(st):
+    """One line for the issue, the pulse's nudge and Studio: what stalled, since when, and what to do."""
+    def at(x):
+        return of_model.iso(x)[:16].replace("T", " ") + "Z" if x else "?"
+    w, last = st["work"], st.get("last")
+    lead = (f"{w}: no run, decision or stated wait for {st['hours']:g} h"
+            + (f" (last: {last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else "")
+            + f"; in testing: {', '.join(st['testing'][:5])}{' …' if len(st['testing']) > 5 else ''}")
+    x = st.get("wait") or {}
+    if st["part"] == "wait_over":
+        lead += f"; its wait on {x.get('on')} {x.get('ref') or ''} expected by {at(x.get('expect_at') or x.get('ts'))} passed".replace("  ", " ")
+    elif st["part"] == "calendar":
+        lead += (f"; it waits only on the calendar ({x.get('on')} {x.get('ref') or ''}".rstrip() +
+                 f", until {at(x.get('expect_at'))}), so the work has no next step meanwhile")
+    if st.get("waits_not_counted"):
+        lead += f"; {len(st['waits_not_counted'])} wait(s) re-declared on the same thing not counted"
+    return (lead + f": run it, decide it, or state what it waits on and by when (of loop wait {w} --on <what> "
+                   f"--until <time>)")
+
+
+def rule_loop_stalled(model, rows, a, b, cat, spec):
+    """diagnose.md 2.29, v0 (2026-11-16; basis: the founder's prompt 01a1e116-e3de, relayed by of_conductor in message
+    01a1e117-3301). A loop with a hypothesis in testing and no run, decision or stated wait for stall_hours_gte, at the
+    window's end. One issue per work; the part says whether nothing was stated, a stated wait passed, or the only wait
+    is the calendar. Loops with events but no `loop:` count too: a stall is one whether or not the ladder is declared."""
+    out, notes = [], []
+    th = spec.get("thresholds") or {}
+    for w, lp in _loops(model, declared=False).items():
+        st = loop_stall(lp, b, th)
+        if not st:
+            continue
+        if "waits" not in lp:
+            notes.append(f"{w}: the projection carries no stated waits yet (of.loop_wait), so none could hold the clock")
+        iso = of_model.iso   # the evidence carries ISO times, as every issue's `since` (the run ranks by it)
+        when = lambda x: x and dict(x, **{k: iso(x[k]) for k in ("at", "ts", "expect_at") if x.get(k)})
+        ev = {"work": w, "part": st["part"], "level": st["level"], "hours": st["hours"], "since": iso(st["since"]),
+              "last": when(st["last"]), "wait": when(st["wait"]), "waits_not_counted": [when(x) for x in st["waits_not_counted"]],
+              "testing": st["testing"]}
+        out.append(issue(cat, "loop-stalled", [w], ev, stall_text(st), part=st["part"]))
+    return out, [], notes
+
+
 # ------------------------------------------------------------------ structure coverage (diagnose.md 2.23-2.26)
 # Structure as well as behaviour (of_architect, 2026-11-10): these rules read the registry's coverage as Studio shows it,
 # model["coverage"] (studio.md 3.4) and model["cells"] (RFC 0007 §2.3), never a second computation, so Studio and the
@@ -1705,6 +1828,7 @@ RULES = {"orphan-work": rule_orphan_work, "coordination-gap": rule_coordination_
          "loop-plateau": rule_loop_plateau, "loop-wip": rule_loop_wip, "loop-babysit-model": rule_loop_babysit_model,
          "loop-objective-drift": rule_loop_objective_drift, "loop-eval-bottleneck": rule_loop_eval_bottleneck,
          "loop-observed-elsewhere": rule_loop_observed_elsewhere,
+         "loop-stalled": rule_loop_stalled,
          "unkept-system": rule_unkept_system, "off-map-work": rule_off_map_work,
          "cell-gap": rule_cell_gap, "cell-overlap": rule_cell_overlap,
          "unsourced-requirement": rule_unsourced_requirement,

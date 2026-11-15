@@ -313,6 +313,23 @@ rules:
       accepted: ["record no accept on a proxy not shown to hold: report it as not observed where the event happens",
                  "rerun it on the data where the proxy's condition held, which counts as taken there"]
 
+  loop-stalled:                  # diagnose.md 2.29; v0 (2026-11-16): the founder's prompt 01a1e116-e3de, relayed by of_conductor (message 01a1e117-3301)
+    version: 0
+    p: {silent: 0.6, wait_over: 0.6, calendar: 0.6}
+    m_decide: {silent: 2, wait_over: 2, calendar: 3}
+    # the hours are of_conductor's proposal on that prompt ("not even 2 days ... two days is also long"), unconfirmed;
+    # calendar_kinds: waits that hold no clock (a locked week, a test of 14 days, a held-out date)
+    thresholds: {stall_hours_gte: 4, escalate_hours_gte: 8, calendar_kinds: [calendar, holdout]}
+    needs: [registry.works.loop] # never an event in the window: a stall longer than the window is the worst case
+    reads: [of.loop_hypothesis, of.loop_run, of.loop_decision, of.loop_wait]
+    decider: work_owner          # the pulse tells the owner and the doers at stall_hours_gte, the conductor and the founder's digest at escalate_hours_gte
+    severity: {silent: medium, wait_over: medium, calendar: medium}
+    delta_m: "0; dT: the hours the work stood with nobody knowing why"
+    remedies:
+      silent: ["run the hypothesis in testing, decide it, or state what it waits on and by when (of loop wait)"]
+      wait_over: ["the stated wait passed: run, decide, or state the new wait and why the first one slipped"]
+      calendar: ["start a hypothesis on a cheaper rung meanwhile, or park the work by the owner's decision until the date"]
+
   # ---- structure coverage (diagnose.md 2.23-2.26; of_architect, 2026-11-10): the registry's coverage as Studio shows it
   # (model coverage and cells, one computation), routed to the organization's structure keeper, never to the owner.
   unkept-system:

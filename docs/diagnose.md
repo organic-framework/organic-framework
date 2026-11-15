@@ -488,6 +488,44 @@ Per rule:
 
 **Calibration.** The thresholds are RFC 0005 §6's, unconfirmed. Each rule gets synthetic fixtures in `lab-drift-v0` (a positive and a negative), and the search week as its first real case. A rule that fires on every loop, or on none, has a wrong threshold (§5).
 
+### 2.29 Stalled loop — `ap.loop-stalled@0`
+
+*v0 (2026-11-16), built: `bin/of_diagnose_rules.py` (`loop_stall`, `rule_loop_stalled`). Basis: the founder's prompt `01a1e116-e3de` of 2026-11-15, in English: "Well, not even 2 days; one should understand much more often what the problem is. Two days is also long." He answered `of_conductor`'s proposal of a rule at 2 days without a run; `of_conductor` relayed the ask in message `01a1e117-3301` with the hours below, which are its proposal, unconfirmed.* A user organization's bidding loop ran all its runs on 11-10 and 11-11. For four and a half days after that, it had no run and only bookkeeping decisions, and a report line every two hours saying that no rung had moved. Nobody caught it: not OF, not the conductor, not the work's owner.
+
+**Fires when** a loop has at least one hypothesis in `testing`, and for `stall_hours_gte` (4) hours it has shown no progress and no stated wait. Its work must not be `done` or `parked`. One issue per work, with `affected: [<work>]`.
+- **Progress** is a run that ended or a decision, and nothing else. A report, a status note, `of loop show` or an owner's check that finds the loop unchanged never counts. A keep, a drop or a park that leaves the hypothesis where its last decision put it, with no run in between, changes nothing and does not count either. On the bidding loop, a hypothesis parked on 11-10 was parked again on 11-12.
+- **A stated wait** (`of.loop_wait`: `on`, `ref`, `expect_at`) declared after the last progress holds the clock until its `expect_at`. A wait with no `expect_at` holds nothing past its own time. `on` is one of `runner`, `window` (such as a discovery window), `release` (a release slot), `holdout` (a held-out date), `ask` (a founder card, `ref` its id), `position` (`ref` its name) or `calendar`.
+- **A wait on the calendar holds nothing.** These are the kinds in `calendar_kinds`: `calendar` (a locked week, a test of 14 days) and `holdout`. With nothing else in flight, the work has no next step, and that is the finding. When something else is in flight, its runs and its other waits hold the clock themselves.
+- **A wait re-declared on the same thing** (the same `on` and `ref`) with no run or decision in between counts once. Two checks of an unchanged loop are no progress.
+
+**Parts.**
+- `silent`: nothing was stated after the last progress.
+- `wait_over`: the stated wait's `expect_at` passed.
+- `calendar`: the only wait stated is on the calendar.
+
+**Levels and delivery.** `loop_stall(card, now, thresholds)` is the one clock, and it returns the level:
+- `owner` from `stall_hours_gte` (4 h). The pulse (`of_platform`) tells the work's owner and doers.
+- `conductor` from `escalate_hours_gte` (8 h). The pulse puts it in the organization's conductor's pane and in the founder's digest.
+
+The pulse calls this function every 5 minutes with the catalogue's thresholds, and it keys an episode by the returned `since`, the time the clock started, so each level is told once per episode. Studio (`of_studio`) shows the same clock per work: the hours since the last run, and the current wait. The daily diagnosis lists the issue for the work owner, as for every loop rule. The pulse is what makes the rule live within hours.
+
+**Nudge** (`stall_text`, one line for the issue, the pulse and Studio), for example: "`<work>`: no run, decision or stated wait for 21.4 h (last: run `<id>` at 2026-11-15 00:07Z); in testing: `<ids>`: run it, decide it, or state what it waits on and by when (`of loop wait <work> --on <what> --until <time>`)". The last two parts add that the stated wait passed, or that the work waits only on the calendar.
+
+**Remedies.**
+- `silent`: run the hypothesis in testing, decide it, or state the wait.
+- `wait_over`: run, decide, or state the new wait and why the first one slipped.
+- `calendar`: start a hypothesis on a cheaper rung meanwhile, or have the owner park the work until the date.
+
+**Inputs.** The rule reads `hypotheses[].status`, `runs[].ended_at` and `decisions[]` (the card's `decisions_all`, §4.1), and two fields the projection does not carry yet: `waits[]` and `state` (§4.1, both asked of `of_studio`). It also needs `of loop wait`, the event `of.loop_wait`, asked of `of_platform`, with its schema for `of_architect`. Until those land, nothing can hold the clock: the rule notes this per issue, and a loop that legitimately waits still shows as stalled.
+
+**The first real case** (replay every 30 minutes over 2026-11-08..15 on the first user organization's loops, at 4 h and 8 h, with no waits stated, since none could be): 18 episodes on 5 works, 10 of which reached 8 h.
+- The bidding loop had 5 episodes, 3 of which reached 8 h; the longest was 61 h. The rule would first have fired at 11:53Z on 11-11, four hours after its last run.
+- Another loop had 8 episodes, 3 of which reached 8 h.
+- A third has stood for 21 h, at 2026-11-15 21:26Z, with three hypotheses in testing.
+- The OF team records no loop events.
+
+**Calibration.** The lab gets a positive and a negative fixture for each part. The hours are the conductor's numbers until the owner's labels move them (§5).
+
 ### 2.23–2.26 Structure coverage
 
 *v0 (2026-11-10), built. Decided by `of_architect` the same day (relay messages 01a1c62b and 01a1c62e), after the founder's root-cause review of why the first user organization's structure gaps raised no issue (`of_platform`): every rule until then diagnosed behaviour in a 7-day window against the registry, and none checked the registry's own coverage. A gap was seen only when work happened to pass through it.*
@@ -649,10 +687,12 @@ The loop rules read one projection per work, `model["loops"][<work>]`, through `
 | `measures[]` | `name`, `to_money` (empty means not priced), **`to_target`** (how it moves a target the owner decided; null when not given; 2.21 counts it only on such a target), and as the registry writes them **`observed_at`** and **`proxy_for`** {`at`, `valid_when`} ([`registry.md`](registry.md), Works, "Where a reading is taken") | `loop.measures` | `of_architect` | 2.21 |
 | `ladder[]` | Cheapest first: `rung`, `cost`, `latency`, `accept`, **`production`** (true for shadow and higher), **`since`** (when the rung became available; default the loop's start) | `loop.ladder` | `of_architect`; `production` and `since` are new | 2.16, 2.17, 2.22 |
 | `checkpoint_days`, `wip_arms`, `babysit_model` | Per work; defaults 3, 2, `sonnet` | `loop` | `of_architect` | 2.17, 2.19, 2.20 |
-| `hypotheses[]` | `id`, `ts`, `status` and `status_at`, the last of `open`, `testing`, `kept`, `dropped`, `parked`; **`predict`** and **`change`** (texts, null when the event gave none) | `of.loop_hypothesis` | `of_platform`; `predict` and `change` in `of_studio`'s projection since organic-framework PR 60 | 2.16, 2.19, 2.21 |
+| `hypotheses[]` | `id`, `ts`, `status` and `status_at`, the last of `open`, `testing`, `kept`, `dropped`, `parked`; **`predict`** and **`change`** (texts, null when the event gave none) | `of.loop_hypothesis` | `of_platform`; `predict` and `change` in `of_studio`'s projection since organic-framework PR 60 | 2.16, 2.19, 2.21, 2.29 |
 | `runs[]` | `id`, `rung`, `hypothesis` (may be empty), `metric`, `on_target`, **`value`** (a number in the metric's unit), **`accepted`** (the rung's `accept` met; `of loop run` writes none on a proxy not shown to hold, so one there is 2.28's part `accepted`), **`observed_at`** (where the reading was taken) and **`proxy`** (`{for, valid_when, held}`, `held` one of `held`, `not_held`, `unknown`; null when the reading is taken where its event happens), each from the event, a part it lacks from its metric's measure (`observed_at`, and `proxy_for`, which counts only when it names `at`), with `held` then `unknown`; any other `held` reads `unknown`, `result`, **`queued_at`**, `started_at`, `ended_at`, `position`, `session`, `model`. A run on a proxy not shown to hold is not observed: it stays out of `curve`, `plateau`, `trend` and the gains. From 2026-11-15: **`direct`** (the run stated that its reading is taken where its event happens), **`located_at`** (when `of loop locate` placed it, else null) and **`as_recorded`** (`observed_at`, `direct` and `proxy` as recorded, before the first locate). A run with no `observed_at` is unlocated and counts the same | `of.loop_run`, or derived from runner records (cbx) | `of_platform`; `value`, `accepted` and `queued_at` are new beside RFC §4.1's `result` text; `observed_at` and `proxy` in `of_studio`'s projection since its change of 2026-11-14 | 2.16–2.18, 2.21, 2.22, 2.28 |
-| `decisions[]` | `ts`, `kind` (`keep`, `drop`, `step_up`, `step_back`, `change_objective`), `hypothesis`, and for `change_objective` the new `metric` and its `to_money`. **`decided`** is always null: only the registry cites the owner's yes, and `of loop` refuses a change of objective on a decided loop. An event that names one keeps it in **`decided_unresolved`**, with `decided_unresolved_why` `decision` | `of.loop_decision` | `of_platform` | 2.21, 2.28 |
+| `decisions[]` | `ts`, `kind` (`keep`, `drop`, `park`, `reopen`, `step_up`, `step_back`, `change_objective`), `hypothesis`, and for `change_objective` the new `metric` and its `to_money`. **`decided`** is always null: only the registry cites the owner's yes, and `of loop` refuses a change of objective on a decided loop. An event that names one keeps it in **`decided_unresolved`**, with `decided_unresolved_why` `decision` | `of.loop_decision` | `of_platform` | 2.21, 2.28, 2.29 |
 | `metrics.rungs.<rung>` | `runs`, `cycle_time`, **`wait_share`** | RFC §5 | `of_studio` | 2.22 |
+| **`waits[]`** | Stated waits, in time order: `ts`, `on` (`runner`, `window`, `release`, `holdout`, `ask`, `position`, `calendar`), `ref`, **`expect_at`** (epoch seconds; null when not given), `hypothesis` (may be empty), `by`, `note`. Absent until projected | `of.loop_wait` (`of loop wait`) | `of_platform` (the event), `of_studio` (the projection); asked 2026-11-16 | 2.29 |
+| **`state`** | The work's `state` as the structure keeper sets it (`done`, `parked`; null otherwise) | registry `works.<w>.state` | `of_studio`; asked 2026-11-16 | 2.29 |
 | `metrics.wip` | Hypotheses in `testing` over time, as `[(ts, n)]` | RFC §5 | `of_studio` | 2.19 |
 | `metrics.production` | `last_at` (the last run on a production rung), `days_since` | RFC §5 | `of_studio` | 2.17 |
 | `metrics.babysit` | Per doer position: tool calls classed `runner` or `monitor`, by model | `of.mandate_check` with a new **`command_class`** (`runner`, `monitor`, `other`) and the event's `model` | `of_platform` (the class), `of_studio` (the count) | 2.20 |
