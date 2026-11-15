@@ -165,6 +165,8 @@ class UnsetTargetTest(unittest.TestCase):
                     "if [ -d /nope ] && [ -z \"$T\" ]; then :; else rm -rf $T/; fi",
                     "if ! [ -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
                     "if [ ! -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if [ -z \"$T\" -a -d /nope ]; then exit 1; fi; rm -rf $T/",
+                    "if test -z \"$T\" -a -d /nope; then exit 1; fi; rm -rf $T/",
                     "if ! [ -n \"$T\" ]; then rm -rf $T/; fi",
                     "if c; then T=/x; else return 1; fi; rm -rf $T/",      # return outside a function goes on
                     "if c; then T=/x; unset T; else T=/y; fi; rm -rf $T/",
