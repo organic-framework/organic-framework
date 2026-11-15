@@ -1005,6 +1005,29 @@ SCENARIOS += [
 ]
 
 
+# ---- the first user organization's labels of 2026-11-15 (chatty@4, unkept-system@1, off-map-work@1) ----
+SCENARIOS += [
+    # unkept-system@1: a subsystem with no unit of its own lies in its parent's unit
+    _case("unkept-system/negative-subsystem-in-parent-unit",
+          _with(_org_doc(), {"bot.send": {"kind": "target", "parent": "bot", "keeper": "bot_operator"}},
+                units={"core": {"owner": "bot_operator", "systems": ["bot"]}}), [],
+          ("ap.unkept-system", ["bot.send"], "negative")),
+    # off-map-work@1: a project whose own system another position keeps; its edits there are its map
+    _case("off-map-work/negative-own-system-kept-by-other",
+          _with(_org_doc(), {"bot.feed": {"kind": "target", "parent": "bot", "keeper": "bot_operator"}},
+                [{"name": "bot_feed", "system": "bot.feed", "role": "feed", "kind": "project", "owner": "bot_operator",
+                  "holder": {"session": "s-bot_feed"}}]),
+          _verdicts("of", 12, "owned_by:bot_operator", system="bot.feed", pos="bot_feed"),
+          ("ap.off-map-work", ["bot_feed"], "negative")),
+    # chatty@4: a unit owner and a position of its own unit, the delegation's dispatch channel (36 messages, 3 PRs)
+    _case("chatty-pair/negative-unit-owner-and-own-doer",
+          _with(_org_doc(), units={"core": {"owner": "bot_operator", "systems": ["bot"]}}),
+          turns(["bot_search", "bot_operator"]) + _one_way("cu4", 36, "bot_search", "bot_operator")
+          + [_pr(f"cu4-wr{k}", _at(_day("11-02", k), 16), ["bot"], "bot_search", 8501 + k) for k in range(3)],
+          ("ap.chatty", ["bot_operator", "bot_search"], "negative")),
+]
+
+
 # ---- ap.cell-gap@0 and ap.cell-overlap@0, affected [system, method:<kind>] or [system] ----
 # RFC 0007 cells: `needs` on systems, `owns` on positions; the model computes gaps and overlaps as Studio shows them.
 def _cell_doc(owns, needs=("build", "verify")):
@@ -1263,7 +1286,8 @@ def _lprose(i, ts, hyp):
 
 
 def _llocate(i, ts, run):
-    return ev(f"ll{i}", ts, "of.loop_run", "s-bot_search",
+    """`of loop locate`, which writes of.loop_run_located (docs/events.md)."""
+    return ev(f"ll{i}", ts, "of.loop_run_located", "s-bot_search",
               {"work": _LW, "run": run, "observed_at": "the bot's journal", "direct": True}, position="bot_search")
 
 

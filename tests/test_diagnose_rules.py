@@ -494,7 +494,7 @@ class RulesTest(unittest.TestCase):
         rows = act + msgs + [dict(pr, position="bot_search")] + prs
         d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
         self.assertEqual([(i["affected"], i["rule_version"], i["evidence"]) for i in d["issues"] if i["rule"] == "ap.chatty"],
-                         [(["bot_nonce", "bot_search"], "ap.chatty@3", {"messages": 36, "merged_prs": 3, "msgs_per_wr": 12.0})])
+                         [(["bot_nonce", "bot_search"], "ap.chatty@4", {"messages": 36, "merged_prs": 3, "msgs_per_wr": 12.0})])
         # needs keyed by part: the per-PR part runs without the receiver parts' inputs, which report as blocked parts
         import copy
         cat = copy.deepcopy(of_diagnose.catalogue())
@@ -506,6 +506,48 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(pair["remedies"], ["status surface"])          # an issue without a part reads `default`
         row = next(r for r in d["rules"] if r["rule"] == "ap.chatty")
         self.assertEqual(sorted(row["parts_blocked"]), ["receiver_flood", "repeat_nudges"])
+
+    def test_v4_label_fixes(self):
+        """chatty@4, unkept-system@1 and off-map-work@1: the first user organization's labels of 2026-11-15."""
+        doc = {"systems": {"bot": {"keeper": "bot_operator"}, "bot.core": {"parent": "bot", "keeper": "bot_core_keeper"},
+                           "k8s": {"keeper": "k8s_keeper"}, "acme": {"kind": "creating", "keeper": "acme_org"}},
+               "units": {"plat": {"owner": "plat_owner", "systems": ["k8s"]}, "trade": {"owner": "trade_owner", "systems": ["bot"]}},
+               "positions": [{"name": n, "system": s, "holder": {"session": f"s-{n}"}, **kw} for n, s, kw in (
+                   ("bot_operator", "bot", {}), ("bot_core_keeper", "bot.core", {}), ("k8s_keeper", "k8s", {}),
+                   ("acme_org", "acme", {}), ("plat_owner", "k8s", {"kind": "owner"}), ("trade_owner", "bot", {"kind": "owner"}),
+                   ("slots", "k8s", {"kind": "coordinator"}), ("bot_proj", "bot.core", {"kind": "project"}))]}
+        days = ("2026-10-30", "2026-11-01", "2026-11-03")
+        names = [p["name"] for p in doc["positions"]]
+        act = [dict(ev(f"{n}{d}", f"{d}T09:00Z", "of.turn_end", f"s-{n}", {}), source="hook") for n in names for d in days]
+
+        def msgs(i0, p, q, n=36):
+            return [ev(f"m{i0}{k}", "2026-11-02T10:00Z", "of.agent_message_out", f"s-{p}", {"to_position": q}, position=p)
+                    for k in range(n)]
+        prs = [ev(f"pr{k}", f"2026-11-0{2 + k % 2}T11:00Z", "of.work_record", None,
+                  {"source": "gh", "author": "dev", "systems": ["bot"], "number": 300 + k}, position=w)
+               for k, w in enumerate(["bot_core_keeper"] * 3 + ["k8s_keeper"] + ["bot_operator"] * 3)]   # pairs over 3 PRs (v3)
+        rows = act + prs + msgs(1, "trade_owner", "bot_core_keeper") + msgs(2, "plat_owner", "bot_core_keeper") \
+            + msgs(3, "slots", "bot_operator")
+        d = of_diagnose.diagnose(of_model.build(doc, rows, at=self.B), rows, self.A, self.B)
+        pairs = {tuple(i["affected"]): i for i in d["issues"] if i["rule"] == "ap.chatty" and not i.get("part")}
+        # a unit owner with its own unit's position (bot.core lies in trade through its parent): left out; across units: kept
+        self.assertNotIn(("bot_core_keeper", "trade_owner"), pairs)
+        self.assertIn(("bot_core_keeper", "plat_owner"), pairs)
+        # a coordinator's pair: the booking remedy
+        self.assertEqual(pairs[("bot_operator", "slots")]["remedies"][0],
+                         "a booking tool or queue for slots's shared capacity, so a slot is booked and released without a message")
+        # unkept-system@1: bot.core has no unit of its own, and is in trade through its parent
+        self.assertNotIn(["bot.core"], [i["affected"] for i in d["issues"] if i["rule"] == "ap.unkept-system" and i["part"] == "unit"])
+        self.assertIn(["acme"], [i["affected"] for i in d["issues"] if i["rule"] == "ap.unkept-system" and i["part"] == "unit"])
+        # off-map-work@1: a project's edits in its own system, kept by another, are its map
+        checks = [ev(f"mc{k}", f"2026-11-0{2 + k % 3}T12:00Z", "of.mandate_check", "s-bot_proj",
+                     {"verdict": "owned_by:bot_core_keeper", "system": "bot.core", "tool_name": "Edit", "router_version": "rt-v7",
+                      "path": "~/acme/bot/core/x.rs"}, position="bot_proj") for k in range(12)]
+        d = of_diagnose.diagnose(of_model.build(doc, act + checks, at=self.B), act + checks, self.A, self.B)
+        self.assertEqual([i for i in d["issues"] if i["rule"] == "ap.off-map-work"], [])
+        elsewhere = [dict(c, payload=dict(c["payload"], verdict="owned_by:k8s_keeper", system="k8s")) for c in checks]
+        d = of_diagnose.diagnose(of_model.build(doc, act + elsewhere, at=self.B), act + elsewhere, self.A, self.B)
+        self.assertEqual([i["affected"] for i in d["issues"] if i["rule"] == "ap.off-map-work"], [["bot_proj"]])
 
     def _queues(self, pos, days, depth=3, org="acme", i0=0):
         """One backlog episode a day for `days` days before B: depth `depth` from 08:00, oldest 07:00, empty at 10:00."""
@@ -1104,8 +1146,9 @@ class LoopRulesTest(unittest.TestCase):
                          "s4 lost contested $ (upper bound) was read: name it with of loop locate w-search --run r1 "
                          "--observed-at <where> and --direct or --proxy-for, or report it as not located")
 
-        def locate(i, ts, **pl):
-            return ev(f"loc{i}", ts, "of.loop_run", "s-search", dict({"work": self.W, "run": "r1"}, **pl), position="bot_search")
+        def locate(i, ts, **pl):   # of loop locate writes of.loop_run_located (docs/events.md)
+            return ev(f"loc{i}", ts, "of.loop_run_located", "s-search", dict({"work": self.W, "run": "r1"}, **pl),
+                      position="bot_search")
         # located after the drop: the drop is judged on what was known then
         late = locate(1, "2026-11-06T09:00Z", observed_at="the bot's journal", direct=True)
         got2, _ = self.found("loop-observed-elsewhere", h + runs + drop + [late])

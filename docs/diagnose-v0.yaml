@@ -138,12 +138,12 @@ rules:
       answers: ["a check before an answer reaches the owner: a second model reads it against its sources, and where each reading in it was taken", verifier position for the class of answers]
 
   chatty:
-    version: 3                   # v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs (diagnose.md 2.10); v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
-    labels_carry_from: [0, 1, 2] # v1 kept the organization and pair parts' issue ids; v2 changes only the decider; v3 only narrows what fires
+    version: 4                   # v4 (2026-11-15): from labels: no pair of a unit owner and its own unit's position; no nudges from of pulse itself; a coordinator's pairs and waits get a booking remedy (diagnose.md 2.10); v3 (2026-11-14): the pair part needs pair_merged_prs_gte merged PRs; v2 (2026-11-10): decided by the structure keeper; v1 (2026-11-07): the receiver's side, parts receiver_flood and repeat_nudges (of_studio b8242dd); counts only ended days whose merged PRs are imported (as churn)
+    labels_carry_from: [0, 1, 2, 3] # v1 kept the organization and pair parts' issue ids; v2 changes only the decider; v3 and v4 only narrow what fires (v4 also changes a remedy)
     decider: structure_keeper    # of_architect, 2026-11-10: its remedies are structure diffs; through of_platform's daily keeper digest
-    p: 0.6
+    p: 0.91   # 2026-11-15: 10 of 11 distinct labelled judgements true, after v4 (diagnose.md §5.2); was 0.6
     m_decide: 5
-    thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, pair_merged_prs_gte: 3, unused_after_hours: 24, observed_days_gte: 3,
+    thresholds: {org_msgs_per_wr_rise_gte: 0.50, pair_msgs_per_wr_gte: 10, pair_merged_prs_gte: 3, exclude_unit_owner_with_own_unit: true, unused_after_hours: 24, observed_days_gte: 3,
                  injected_turns_per_hour_gte: 20, flood_hours_gte: 3, nudges_per_pair_gte: 10}
     needs: {default: [of.agent_message_out, of.work_record, wr.position], receiver_flood: [of.agent_message_in], repeat_nudges: [of.human_prompt]}   # parts run on their own inputs (of_studio 44d4852)
     # default reads attributed merged PRs: without wr.position every busy pair has 0 PRs and fires (first user organization, 2026-11-10: 133)
@@ -152,6 +152,7 @@ rules:
       default: ["published interface: a booking tool, a status surface or a queue the coordinator reads"]
       receiver_flood: [batched delivery or a queue read between tasks, published interface for the top senders, split the receiver's interfaces]
       repeat_nudges: [a hand-over instead of nudges, escalate to the owner of both]   # no invented deadlines (founder, ask 53628150)
+      coordinator: ["a booking tool or queue for <coordinator>'s shared capacity, so a slot is booked and released without a message", "positions stop copying notices to <coordinator> unless it must act"]   # v4: a pair or a wait with a coordinator (kind coordinator); the first user organization's wrong_remedy labels, 2026-11-15
 
   unclear-mandate:
     version: 4                   # v4 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides); v3 (2026-11-15): no brief revision counts (diagnose.md 2.11); v2 (2026-11-15): organization-wide brief edits left out; v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
@@ -196,10 +197,10 @@ rules:
     remedies: [close, merge into the permanent owner, formalize with a new mandate]
 
   inbound-backlog:
-    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides), and p from labels (§5.2); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
     labels_carry_from: [0]       # v1 changes only the decider
     decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
-    p: 0.5
+    p: 0.95   # 2026-11-15: 5 of 5 distinct labelled judgements true, held under certainty (diagnose.md §5.2); was 0.5
     m_decide: 5
     thresholds: {queue_observed_days_gte: 3, old_after_min: 30, backlog_min_per_day_gte: 60, overload_days_gte: 3, depth_avg_gte: 2, unattended_days_gte: 2, exclude_kinds: [owner], merge_into: bottleneck-broker}
     severity: {overload: medium, unattended: high}
@@ -315,7 +316,8 @@ rules:
   # ---- structure coverage (diagnose.md 2.23-2.26; of_architect, 2026-11-10): the registry's coverage as Studio shows it
   # (model coverage and cells, one computation), routed to the organization's structure keeper, never to the owner.
   unkept-system:
-    version: 0
+    version: 1                   # v1 (2026-11-15): part unit, a subsystem is in its parent's unit (the first user organization's labels; diagnose.md 2.23)
+    labels_carry_from: [0]       # v1 only narrows what fires
     p: {keeper: 0.6, unit: 0.5}
     m_decide: {keeper: 5, unit: 3}
     thresholds: {}               # coverage flags no_keeper, keeper_unknown, keeper_<status>; units: a live system in no unit
@@ -328,8 +330,9 @@ rules:
       unit: [put the system in the unit whose owner answers for it, a new unit]
 
   off-map-work:
-    version: 0
-    p: 0.5
+    version: 1                   # v1 (2026-11-15): edits in the position's own system or its subsystems, kept by another, count as its own (the first user organization's label; diagnose.md 2.24)
+    labels_carry_from: [0]       # v1 only narrows what fires
+    p: 0.8   # 2026-11-15: 4 of 5 distinct labelled judgements true, after v1 (diagnose.md §5.2); was 0.5
     m_decide: 10
     thresholds: {edits_gte: 10, in_mandate_share_lt: 0.5, edit_tools: [Edit, Write, MultiEdit, NotebookEdit], min_router: 4}   # file edits in_mandate or owned_by another keeper; reads, Bash (unscoped), outside and unclaimed paths (orphan-work's cluster) are left out
     needs: [of.mandate_check]
