@@ -156,9 +156,9 @@ class DiffTest(unittest.TestCase):
         text = of_diff.set_fields(heads + inline + tail, "of_a", {"aliases": ["old_a", "new_c"]})
         self.assertIn("    aliases: [old_a, new_c]  # earlier names\n", text)
         self.assertEqual(yaml.safe_load(text)["positions"][0]["aliases"], ["old_a", "new_c"])
-        text = of_diff.set_fields(heads + "    aliases: [old_a, 'x # y']  # see [1] and #2\n" + tail, "of_a",
+        text = of_diff.set_fields(heads + "    aliases: [old_a, 'x # y']  # see #2 and [1]\n" + tail, "of_a",
                                   {"aliases": ["new_c"]})
-        self.assertIn("    aliases: [new_c]  # see [1] and #2\n", text)   # a `]` or `#` in the comment or an item
+        self.assertIn("    aliases: [new_c]  # see #2 and [1]\n", text)   # a `]` or `#` in the comment or an item
         for label, field in {"block": "    owns:  # cells\n    # head\n    - {system: bot}  # basis\n",
                              "indented block": "    owns:\n      - system: bot\n",
                              "inline": "    owns: [{system: bot}]  # cells [1]\n"}.items():
