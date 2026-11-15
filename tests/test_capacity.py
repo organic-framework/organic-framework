@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_capacity  # noqa: E402
 import of_locale  # noqa: E402
+import of_spawn  # noqa: E402
 
 # Production positions are configuration (capacity.yaml `hold`); the tests name a set.
 POLICY = dict(of_capacity.POLICY, hold=["k8s_keeper", "storefront-hosts_keeper", "forecasting_keeper", "storefront_operator"])
@@ -2605,7 +2606,7 @@ class PositionMemory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
                                              memory_dir="/s/memory/acme/net_keeper", state_dir=t)
-            self.assertEqual(self.settings_of(cmd), {"feedbackDrafts": "off",
+            self.assertEqual(self.settings_of(cmd), {"feedbackDrafts": "off", "env": of_spawn.agent_env(),
                                                      "autoMemoryDirectory": "/s/memory/acme/net_keeper"})
             self.assertEqual(of_capacity.flags_from_args(cmd)[3], "/s/memory/acme/net_keeper")
 
@@ -2617,14 +2618,14 @@ class PositionMemory(unittest.TestCase):
             cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "net_keeper", "/n.md",
                                              memory_dir="/s/m", deny=deny, state_dir=t)
             self.assertLess(len(cmd.encode()), 1024)
-            self.assertEqual({"feedbackDrafts": "off", "autoMemoryDirectory": "/s/m", "permissions": {"deny": deny}},
-                             self.settings_of(cmd))
+            self.assertEqual({"feedbackDrafts": "off", "env": of_spawn.agent_env(), "autoMemoryDirectory": "/s/m",
+                              "permissions": {"deny": deny}}, self.settings_of(cmd))
             path = shlex.split(cmd.split("--settings ", 1)[1])[0]
             self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             only = of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md", deny=["Read(/k/**)"],
                                               state_dir=t)
-            self.assertEqual({"feedbackDrafts": "off", "permissions": {"deny": ["Read(/k/**)"]}},
-                             self.settings_of(only))
+            self.assertEqual({"feedbackDrafts": "off", "env": of_spawn.agent_env(),
+                              "permissions": {"deny": ["Read(/k/**)"]}}, self.settings_of(only))
 
     def test_every_launch_keeps_feedback_drafts_off_as_spawn_does(self):
         # PR 185 (of_review): a session spawned with drafts off had them on again after its first move, and a
@@ -2634,6 +2635,19 @@ class PositionMemory(unittest.TestCase):
                        {"tools": (["--mcp-config", "/t.json"], {"allowedMcpServers": [{"serverName": "x"}]})}):
                 cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md", state_dir=t, **kw)
                 self.assertEqual(self.settings_of(cmd).get("feedbackDrafts"), "off", kw)
+                self.assertEqual(self.settings_of(cmd).get("env"), of_spawn.agent_env(), kw)
+
+    def test_a_moved_session_keeps_the_agents_env_joined_with_its_tool_profiles(self):
+        # of_platform, 34a1682a (of_conductor's incident 01a1de68-8fec): every agent session starts with
+        # GIT_CEILING_DIRECTORIES at the home folder, so a stray .git there is never climbed into; a move kept only
+        # AGENT_SETTINGS and dropped it
+        with tempfile.TemporaryDirectory() as t:
+            cmd = of_capacity.launch_command("/w", "/h/.claude-b", "S", "n", "/n.md", state_dir=t,
+                                             tools=([], {"env": {"X_TOOL": "1"}, "enabledPlugins": {"p@m": True}}))
+            got = self.settings_of(cmd)
+            self.assertEqual(got["env"], dict(of_spawn.agent_env(), X_TOOL="1"))
+            self.assertEqual(got["env"]["GIT_CEILING_DIRECTORIES"], os.path.expanduser("~"))
+            self.assertEqual(got["enabledPlugins"], {"p@m": True})
 
     def test_deny_for_follows_spawn_and_fails_open_to_the_guard(self):
         from unittest import mock
