@@ -593,6 +593,20 @@ class ForkTest(unittest.TestCase):
             self.assertIn(("C", "P", 2), of_store.detect_forks(conn))  # the same from either side
             own = conn.execute("SELECT session_id, record_uuid FROM transcript_own ORDER BY 1, 2").fetchall()
             self.assertEqual(own, [("C", "c1"), ("C2", "c2"), ("P", "u1"), ("P", "u2"), ("P", "u3")])
+            # of_review on PR 208: under the transaction cap each transaction may hold one record, and a fork's
+            # file begins with a title line no session shares; the mark still lands, with every shared record
+            from unittest import mock
+            title = json.dumps({"type": "custom-title", "customTitle": "a side question", "sessionId": "C3"}) + "\n"
+            child3 = os.path.join(d, "C3.jsonl")
+            with open(child3, "w") as fh:
+                fh.write(title + rec("C3", "u1", 1) + rec("C3", "u2", 2) + rec("C3", "c3", 6))
+            with mock.patch.object(of_store, "TX_CAP_S", 0), mock.patch.object(of_store, "TX_YIELD_S", 0):
+                of_store.ingest_file(conn, child3)
+            self.assertEqual(conn.execute("SELECT parent_session_id, shared FROM session_fork WHERE session_id = 'C3'")
+                             .fetchone(), ("P", 2))
+            own = conn.execute("SELECT record_uuid FROM transcript_own WHERE session_id = 'C3' AND record_uuid "
+                               "LIKE '%' AND type IN ('user', 'assistant')").fetchall()
+            self.assertEqual(own, [("c3",)])
             conn.close()
 
 

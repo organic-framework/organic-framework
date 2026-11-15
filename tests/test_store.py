@@ -68,10 +68,6 @@ class IngestCapTest(unittest.TestCase):
             conn.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LongLockLineTest(unittest.TestCase):
     """of_server, 2026-11-15: a scratch store's 155 s write lock was logged in the live hook-errors.log with no store
     named, and read as the live store's. The line names the database, and marks one that is not this machine's."""
@@ -105,3 +101,7 @@ class LongLockLineTest(unittest.TestCase):
                 other.close()
             finally:
                 of_events.STATE_DIR = saved
+
+
+if __name__ == "__main__":
+    unittest.main()
