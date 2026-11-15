@@ -237,6 +237,37 @@ class LongWaitTest(unittest.TestCase):
         self.assertIn("w1: of_doer stated a wait on holdout day 3 until", note)
         self.assertIn("(30 h), past the 8 h escalation threshold (the third day's data). It holds the stall clock", note)
         self.assertEqual(of_pulse.long_waits(waits, t0 + 31 * 3600, 8), [])                  # over: nothing to tell
+        self.assertIn("Tell the person you serve, who owns the work", of_pulse.long_wait_note("w1", got[0], 8, "conductor"))
+
+    def test_on_a_work_a_person_owns_the_long_wait_goes_to_the_conductor_once(self):
+        """of_architect, message 01a1e133-dbf4: while a stated wait holds the clock the 8 h level never fires, so on a
+        work whose owner's position a person holds the long wait reached nobody."""
+        import of_store
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            now = time.time()
+            for name, payload, at in (("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "status": "testing",
+                                                            "status_at": of_pulse._iso(now - 600)}, now - 600),
+                                      ("loop_wait", {"on": "holdout", "ref": "day 3", "by": "of_doer",
+                                                     "expect_at": of_pulse._iso(now + 30 * 3600)}, now - 300)):
+                rec = of_events.record(name, dict(payload, work="w1"), position="of_doer", session="SD")
+                rec["timestamp"] = of_pulse._iso(at)
+                of_store.add_event(conn, rec)
+            positions = [{"name": "of_founder", "_org": "ofb", "holder": {"runtime": "human"}},
+                         {"name": "of_doer", "_org": "ofb"}, {"name": "of_conductor", "_org": "ofb", "role": "conductor"}]
+            agents = [{"name": p["name"], "pane_id": "p-" + p["name"], "agent_status": "idle"} for p in positions]
+            bind = lambda ps, ags: ([(p, a) for p in ps for a in ags if a["name"] == p["name"]], [], [])  # noqa: E731
+            works = [("ofb", "w1", {"owner": "of_founder", "doers": ["of_doer"]}, None)]
+            typed, mem = [], {}
+            for _ in range(2):
+                with mock.patch.object(of_pulse.of_events, "emit", lambda *a, **k: None):
+                    of_pulse.loop_stalls(positions, agents, bind, mem, now, conn, works,
+                                         prompt=lambda pane, text, sender: typed.append((pane, text)) or (True, None),
+                                         log=lambda m: None)
+            self.assertEqual([p for p, _ in typed], ["p-of_conductor"])                  # once, never the person
+            self.assertIn("w1: of_doer stated a wait on holdout day 3", typed[0][1])
+            conn.close()
 
 
 class AttentionCopyTest(unittest.TestCase):
