@@ -834,11 +834,23 @@ def handle(event, hook):
             changed = True
             herdr_state("working")
     elif event == "PermissionRequest":
-        eid = write("permission_request", {"tool_name": tool, "summary": _summary(hook.get("tool_input"))}, hook, sess, index)
-        sess.update(open_ask=eid, blocked=True)
-        changed = True
-        if not subagent:
-            herdr_state("blocked", f"permission: {tool}")
+        payload = {"tool_name": tool, "summary": _summary(hook.get("tool_input"))}
+        try:
+            answered = _permission_answer(hook)  # G28: a session its owner started without prompts
+        except Exception:  # noqa: BLE001 - no answer: the dialog stays, as before
+            answered = None
+        if answered:
+            payload["answered"] = answered
+        eid = write("permission_request", payload, hook, sess, index)
+        if answered:  # settled at once: it opens no ask in the queue or the pulse
+            write("permission_resolved", {"reply_to": eid, "tool_name": tool,
+                                          "outcome": {"allow": "guard_allowed", "deny": "guard_denied"}[answered["behavior"]]},
+                  hook, sess, index)
+        if not answered:
+            sess.update(open_ask=eid, blocked=True)
+            changed = True
+            if not subagent:
+                herdr_state("blocked", f"permission: {tool}")
     elif event == "PermissionDenied":
         write("permission_denied", {"tool_name": tool, "summary": _summary(hook.get("tool_input")),
                                     "reply_to": sess.get("open_ask")}, hook, sess, index)
@@ -941,6 +953,65 @@ def _is_json(text):
 # rules: of_classify.SECRET_GLOBS), no echoing *_KEY variables, no keychain passwords.
 import of_guard  # noqa: E402  (the guard, bin/of_guard.py)
 from of_guard import _WARNINGS, critical_deny, prompt_secret_mention  # noqa: E402,F401
+
+
+_BYPASS_FLAG = re.compile(r"(?:^|\s)(?:--dangerously-skip-permissions|--permission-mode[ =]bypassPermissions)(?=\s|$)")
+
+
+def _launched_bypass(pid=None, depth=5):
+    """Was the Claude Code process above this hook started with prompts skipped (`--dangerously-skip-permissions`,
+    `--permission-mode bypassPermissions`)? The owner's choice for the session, which the session's current mode may
+    no longer show (2026-11-15: a session resumed after an account move came up in acceptEdits)."""
+    import subprocess
+    pid = pid or os.getppid()
+    for _ in range(depth):
+        try:
+            out = subprocess.run(["ps", "-o", "ppid=,command=", "-p", str(pid)], capture_output=True, text=True,
+                                 timeout=2).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return False
+        if not out:
+            return False
+        ppid, _, cmd = out.partition(" ")
+        cmd = cmd.strip()
+        first = os.path.basename(cmd.split()[0]) if cmd.split() else ""
+        if first == "claude" or re.search(r"(?:^|/)claude(?:\.exe)?(?:\s|$)", cmd) or "claude-code" in cmd:
+            return bool(_BYPASS_FLAG.search(cmd))
+        try:
+            pid = int(ppid)
+        except ValueError:
+            return False
+        if pid <= 1:
+            return False
+    return False
+
+
+def _permission_answer(hook):
+    """G28 (docs/guard.md): a permission dialog in a session its owner started without prompts is answered by the
+    guard. Claude Code still asks there about what it cannot check before it runs ("A case statement in this command
+    can't be checked before it runs"), and in an agent's pane nobody sees it: on 2026-11-14 such a dialog held a
+    position for 13 hours and reached the founder as a card (of_conductor, message 01a1de9f-17ee). The PreToolUse guard
+    already let this call through; the critical rules are checked again. A deny there denies here with its reason;
+    otherwise the call is allowed. A session started with prompts keeps its dialog for its person. Writes the answer
+    to stdout and returns what was answered, or None."""
+    global OUTPUT
+    mode = hook.get("permission_mode")
+    if hook.get("hook_event_name", "PermissionRequest") != "PermissionRequest":
+        return None
+    if mode != "bypassPermissions" and not _launched_bypass():
+        return None
+    hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
+    if hit:
+        decision = {"behavior": "deny", "message": f"Organic Framework critical deny: {hit[0]}."}
+        answered = {"by": "guard", "behavior": "deny", "reason": hit[0][:200], "mode": mode}
+    else:
+        decision = {"behavior": "allow"}
+        answered = {"by": "guard", "behavior": "allow", "mode": mode}
+    OUTPUT = {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
+    sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
+    sys.stdout.flush()
+    OUTPUT = None
+    return answered
 
 
 def _guard_index(sid=None):
