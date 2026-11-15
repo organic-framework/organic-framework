@@ -411,6 +411,31 @@ class LocatedRunTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(run("decision", "w-speed", "keep", "--hypothesis", h2).returncode, 0)  # counts from now
 
+    def test_wait_states_what_the_loop_waits_on_and_by_when(self):
+        """docs/diagnose.md 2.29 (of_field-analyst, message 01a1e125-c044): a stated wait holds the stall clock."""
+        import json
+        import sqlite3
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            env = dict(os.environ, OF_ORGS=cli_org(root, LOOP), OF_STATE=os.path.join(root, "state"))
+            env.pop("CLAUDE_CODE_SESSION_ID", None)
+            of = os.path.join(HERE, "..", "bin", "of")
+            run = lambda *a: subprocess.run([sys.executable, of, "loop", *a, "--from", "lab_doer"],  # noqa: E731
+                                            capture_output=True, text=True, env=env)
+            hid = run("hypothesis", "w-speed", "faster", "--cost", "oracle, 0", "--voi", "high").stdout.split()[-1]
+            for bad in (("--on", "lunch", "--until", "+2h"), ("--on", "runner"), ("--on", "runner", "--until", "soon")):
+                self.assertNotEqual(run("wait", "w-speed", *bad).returncode, 0, bad)
+            r = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "2026-11-16T15:00Z",
+                    "--hypothesis", hid, "--note", "queued behind the nightly replay")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            db = sqlite3.connect(os.path.join(root, "state", "of.db"))
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait'").fetchone()[0])
+            self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "expect_at": "2026-11-16T15:00:00Z",
+                                 "hypothesis": hid, "note": "queued behind the nightly replay", "by": "lab_doer"})
+            self.assertIn("waits on runner job-7 until 2026-11-16 15:00Z", run("show", "w-speed").stdout)
+            w = of_loop.waits([{"name": "of.loop_wait", "ts": "2026-11-16T10:00:00.000Z", "payload": p}], "w-speed")
+            self.assertEqual((w[0]["on"], w[0]["expect_at"] - w[0]["ts"]), ("runner", 5 * 3600))
+
     def test_the_register_and_the_start_context_apply_a_locate(self):
         import of_events
         import of_store

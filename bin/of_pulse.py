@@ -1093,6 +1093,93 @@ def handover_windows(positions, agents, bind, handovers, now, mem, prompt, offer
             log(f"nudged {to} on hand-over {h['id'][-8:]}")
 
 
+LOOP_EVENTS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located",
+               "of.loop_wait")
+
+
+def _conductor_of(positions, org):
+    return next((p["name"] for p in positions if p.get("_org") == org and p.get("status", "active") == "active"
+                 and (p.get("role") == "conductor" or p["name"].endswith("_conductor"))), None)
+
+
+def stall_note(text, to):
+    """What a stalled loop's receiver reads (docs/diagnose.md 2.29): the clock's line, and who it is told to."""
+    return ("Message from of_pulse (via of pulse, authority: none; a stalled loop, docs/diagnose.md 2.29)\n" + text
+            + ("\nTell the person you serve, in their language and plain words, within this turn; the work's owner and "
+               "doers were told at the first threshold.\n[to you as the organization's conductor, once per episode]"
+               if to == "conductor" else f"\n[to you as the work's {to}, once per episode]"))
+
+
+def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thresholds=None, log=print,
+                elsewhere=None):
+    """docs/diagnose.md 2.29: a loop with a hypothesis in testing shows a run, a decision or a stated wait within hours.
+    Each pulse reads every loop's card (of_loops.project, with its stated waits and the work's state) and asks the one
+    clock, of_diagnose_rules.loop_stall. At level owner the work's owner and doers are told, at level conductor the
+    organization's conductor (the founder's window), each once per episode: an episode is keyed by the clock's `since`,
+    and ends when the clock does. A receiver busy, away or held on another machine is tried at the next pulse; nothing
+    is typed into a person. works: [(org, work id, the registry's entry, its loop or None)]. Returns the number told."""
+    import of_diagnose_rules
+    import of_loop
+    import of_loops
+    marks = ",".join("?" * len(LOOP_EVENTS))
+    by_work = {}
+    for eid, name, ts, pos, sid, pl in conn.execute(
+            f"SELECT event_id, name, ts, position, session_id, payload FROM event WHERE name IN ({marks}) ORDER BY ts",
+            LOOP_EVENTS):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        by_work.setdefault(p.get("work"), []).append({"event_id": eid, "name": name, "ts": ts, "position": pos,
+                                                       "session_id": sid, "payload": p})
+    live = {p["name"]: a for p, a in bind(positions, agents)[0]}
+    held = {(p.get("_org"), p["name"]) for p in positions if (p.get("holder") or {}).get("runtime") != "human"}
+    away = {n for _, n in (elsewhere or {})}
+    episodes = mem.setdefault("loop_stalls", {})
+    current, told = set(), 0
+    for org, wid, work, loop in works:
+        rows = by_work.get(wid) or []
+        if not loop and not rows:
+            continue
+        card = of_loops.project(wid, loop, rows, now, work=work)
+        if not card:
+            continue
+        card.setdefault("waits", of_loop.waits(rows, wid))   # until the card carries them (of_studio, asked 2026-11-16)
+        card.setdefault("state", work.get("state"))
+        st = of_diagnose_rules.loop_stall(card, now, thresholds)
+        if not st:
+            continue
+        key = f"{org}/{wid}"
+        current.add(key)
+        ep = episodes.get(key)
+        if not ep or ep.get("since") != st["since"]:
+            ep = episodes[key] = {"since": st["since"], "told": [], "conductor": False}
+        text = of_diagnose_rules.stall_text(st)
+        want = [(x, "owner" if x == st.get("owner") else "doer") for x in dict.fromkeys([st.get("owner")] + st["doers"])
+                if x and (org, x) in held and x not in ep["told"]]
+        cond = _conductor_of(positions, org) if st["level"] == "conductor" and not ep["conductor"] else None
+        for name, role in want + ([(cond, "conductor")] if cond else []):
+            a = live.get(name) or {}
+            if not prompt or name in away or not a.get("pane_id") or a.get("agent_status") not in ("idle", "done"):
+                continue  # busy, away or held elsewhere: the next pulse tries again
+            res = prompt(a["pane_id"], stall_note(text, role), "of_pulse")
+            ok = res[0] if isinstance(res, tuple) else (res is None or res is True)
+            if ok is not True:
+                continue
+            of_events.emit("nudge_sent", {"position": name, "from_position": "of_pulse", "to_position": name,
+                                          "about": text, "pane": a["pane_id"], "kind": "loop_stalled", "work": wid,
+                                          "level": role, "since": _iso(st["since"])}, position=name, org=org)
+            if role == "conductor":
+                ep["conductor"] = True
+            else:
+                ep["told"].append(name)
+            told += 1
+            log(f"told {name}: {wid} stalled {st['hours']:g} h")
+    for k in [k for k in episodes if k not in current]:
+        del episodes[k]   # progress or a stated wait ended the episode
+    return told
+
+
 def herdr_prompt(pane, text, sender):
     """Type a nudge into an idle peer's pane, declared as an injected prompt first."""
     import of_relay_client

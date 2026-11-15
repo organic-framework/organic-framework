@@ -167,6 +167,61 @@ class PulseRowsTest(unittest.TestCase):
             conn.close()
 
 
+class LoopStallTest(unittest.TestCase):
+    """docs/diagnose.md 2.29 (the founder's prompt 01a1e116-e3de, relayed by of_conductor in message 01a1e117-3301): a
+    loop in testing shows a run, a decision or a stated wait within hours; the pulse tells the owner and the doers at
+    the first threshold and the organization's conductor at the second, each once per episode."""
+
+    def test_owner_and_doers_then_the_conductor_once_and_a_stated_wait_holds_the_clock(self):
+        import of_store
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            t0 = 1_800_000_000
+
+            def add(name, payload, at):
+                rec = of_events.record(name, dict(payload, work="w1"), position="of_doer", session="SD")
+                rec["timestamp"] = of_pulse._iso(at)
+                of_store.add_event(conn, rec)
+            add("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "change": "c", "status": "open"}, t0)
+            add("loop_run", {"run": "r1", "rung": "lab", "hypothesis": "h1", "ended_at": of_pulse._iso(t0 + 600)},
+                t0 + 600)
+            add("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "status": "testing",
+                                    "status_at": of_pulse._iso(t0 + 600)}, t0 + 600)
+            positions = [{"name": n, "_org": "ofb"} for n in ("of_own", "of_doer", "of_conductor", "of_other")] + \
+                [{"name": "of_person", "_org": "ofb", "holder": {"runtime": "human"}}]
+            positions[2]["role"] = "conductor"
+            agents = [{"name": p["name"], "pane_id": "p-" + p["name"], "agent_status": "idle"} for p in positions]
+            bind = lambda ps, ags: ([(p, a) for p in ps for a in ags if a["name"] == p["name"]], [], [])  # noqa: E731
+            works = [("ofb", "w1", {"owner": "of_own", "doers": ["of_doer", "of_person"]}, None),
+                     ("ofb", "w2", {"owner": "of_other"}, None)]          # no loop and no events: no card
+            typed, emitted, mem = [], [], {}
+
+            def run(at):
+                with mock.patch.object(of_pulse.of_events, "emit", lambda *a, **k: emitted.append(a)):
+                    return of_pulse.loop_stalls(positions, agents, bind, mem, at, conn, works,
+                                                prompt=lambda pane, text, sender: typed.append((pane, text)) or (True, None),
+                                                log=lambda m: None)
+            self.assertEqual(run(t0 + 600 + 3 * 3600), 0)                     # 3 h: nothing yet
+            self.assertEqual(run(t0 + 600 + 5 * 3600), 2)                     # 4 h: the owner and the doer
+            self.assertEqual([p for p, _ in typed], ["p-of_own", "p-of_doer"])  # never the person, never another work
+            self.assertIn("w1: no run, decision or stated wait for 5 h", typed[0][1])
+            self.assertIn("[to you as the work's owner, once per episode]", typed[0][1])
+            self.assertEqual(run(t0 + 600 + 6 * 3600), 0)                     # once per episode
+            self.assertEqual(run(t0 + 600 + 9 * 3600), 1)                     # 8 h: the conductor, once
+            self.assertEqual(typed[-1][0], "p-of_conductor")
+            self.assertIn("Tell the person you serve", typed[-1][1])
+            self.assertEqual(run(t0 + 600 + 10 * 3600), 0)
+            self.assertEqual({e[1]["kind"] for e in emitted}, {"loop_stalled"})
+            add("loop_wait", {"on": "runner", "ref": "job-7", "expect_at": of_pulse._iso(t0 + 600 + 14 * 3600)},
+                t0 + 600 + 10 * 3600)
+            self.assertEqual(run(t0 + 600 + 11 * 3600), 0)                    # the stated wait holds the clock
+            self.assertEqual(mem["loop_stalls"], {})                          # and ends the episode
+            self.assertEqual(run(t0 + 600 + 19 * 3600), 2)                    # past it: a new episode, the owner first
+            self.assertIn("its wait on runner job-7 expected by", typed[-1][1])
+            conn.close()
+
+
 class AttentionCopyTest(unittest.TestCase):
     """of who reads the last pulse's projection instead of projecting the whole log (of_conductor msg 01a1d663-4530,
     2026-11-13: 14 s of CPU and 941 MB a call)."""

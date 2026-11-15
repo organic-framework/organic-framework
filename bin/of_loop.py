@@ -6,6 +6,8 @@ and the hypothesis register and decision log as events.
 - of.loop_run {work, rung, hypothesis, result, evidence, source}: recorded when a run on a rung ends.
 - of.loop_decision {work, decision, hypothesis, rung, money, decided, note}: keep, drop, park, reopen, step_up, step_back,
   change_objective (which names its money metric, or on a target the owner decided, the owner's yes on the new one).
+- of.loop_wait {work, on, ref, expect_at, hypothesis, note, by}: a stated wait (`of loop wait`), what the loop waits on
+  and by when; it holds the stall clock until expect_at (docs/diagnose.md 2.29), never on the calendar.
 - register(rows, work): the hypotheses with their derived status (open, testing, kept, dropped, parked), the next one
   first by value of information per runner-hour (an absent voi counts as med). No agent reports progress: status
   comes from runs and decisions.
@@ -15,6 +17,7 @@ and the hypothesis register and decision log as events.
   owner for a money proof.
 """
 
+import calendar
 import hashlib
 import re
 import time
@@ -31,6 +34,31 @@ LOOP_KEYS = {"target", "measures", "ladder", "checkpoint_days", "wip_arms", "bab
 SEGMENT_KEYS = {"start", "end", "context"}  # the target's controlled segment (docs/registry.md, Works)
 CONTEXT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 THROUGHPUT = ("raise", "sustain", "expense", "measure", "coordinate")
+# what a stated wait is on (docs/diagnose.md 2.29): a runner's job, a window (a discovery window), a release slot, a
+# held-out date, a founder card (ref: its id), a position (ref: its name), the calendar
+WAIT_ON = ("runner", "window", "release", "holdout", "ask", "position", "calendar")
+WAITED = "of.loop_wait"
+
+
+def _epoch(iso):
+    """Seconds of an ISO UTC time, or None."""
+    try:
+        return calendar.timegm(time.strptime(str(iso)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+
+
+def waits(rows, work):
+    """A work's stated waits in time order (of.loop_wait), as the stall clock reads them (of_diagnose_rules.loop_stall,
+    the card's `waits`): ts and expect_at in epoch seconds, on, ref, hypothesis, by, note."""
+    out = []
+    for r in sorted(rows, key=lambda x: x["ts"]):
+        p = r.get("payload") or {}
+        if r["name"] != WAITED or p.get("work") != work:
+            continue
+        out.append({"ts": _epoch(r["ts"]), "on": p.get("on"), "ref": p.get("ref"), "expect_at": _epoch(p.get("expect_at")),
+                    "hypothesis": p.get("hypothesis"), "by": p.get("by"), "note": p.get("note")})
+    return out
 
 
 def decided(loop):
@@ -585,4 +613,4 @@ def register(rows, work, loop=None):
     def key(h):  # an absent voi counts as med (docs/registry.md, Works, "The owner's measure"); money never enters it
         per = VOI.get(h["voi"] or "med", 1) / max(h.get("cost_h") or 0.0, 0.05)
         return (h["status"] not in live, -per, h["since"])
-    return {"hypotheses": sorted(hyps.values(), key=key), "runs": runs, "decisions": decs}
+    return {"hypotheses": sorted(hyps.values(), key=key), "runs": runs, "decisions": decs, "waits": waits(rows, work)}
