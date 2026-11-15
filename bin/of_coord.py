@@ -20,6 +20,9 @@ EVENTS = frozenset({
     "of.holder_changed", "of.holder_bound", "of.holder_unbound", "of.mandate_changed",
     # owners' labels and structural diffs
     "of.issue_labelled", "of.diff_approved", "of.diff_applied",
+    # development loops: each machine's pulse tells the owner, the doers and the conductor it holds of a stalled loop
+    # (docs/diagnose.md 2.29), so it needs the loop's events wherever they were recorded (of_platform, 2026-11-16)
+    "of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located", "of.loop_wait",
 })
 PREFIXES = ("of.handover_", "of.diff_")
 
