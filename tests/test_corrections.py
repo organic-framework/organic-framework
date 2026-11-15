@@ -156,6 +156,16 @@ class CorrectionsTest(Store):
         # by rule, structural gaps first (of_field-analyst): unkept-system before off-map-work before cell-gap
         self.assertLess(text.index("unkept-system: 1, 0 new"), text.index("off-map-work: 1, 0 new"))
         self.assertLess(text.index("off-map-work: 1"), text.index("cell-gap: 1"))
+        # of_field-analyst, 2026-11-15: a labelled issue (still open until remedied) is never asked for a label again
+        open_["acme"] += [{"issue_id": f"lab{n}", "rule_version": "ap.chatty@4", "part": None, "summary": "chatty pair",
+                           "label": kind} for n, kind in enumerate(["true_positive"] * 2 + ["wrong_remedy"])]
+        text = of_corrections.structure_text(open_["acme"], {"aaa111", "bbb222", "ccc333"}, "acme", "acme_org")
+        self.assertNotIn("(lab0)", text)
+        self.assertNotIn("chatty:", text)                                        # not among the rules' lines
+        self.assertIn("3 you labelled are still open until remedied, no new label needed: 2 true_positive, "
+                      "1 wrong_remedy (of model issues --org acme --for acme_org)", text)
+        self.assertIn("3 still open from earlier digests", text)                 # the unlabelled count is unchanged
+        self.assertIsNone(of_corrections.structure_text(open_["acme"][3:], set(), "acme", "acme_org"))  # labelled only
         failed = lambda o: None  # noqa: E731  the computation failed: nothing said about structure
         self.assertEqual(of_corrections.send_digests(self.conn, positions, now=T0 + 2 * 86400, send=send,
                                                      issues_of=failed), 0)
