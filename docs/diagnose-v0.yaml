@@ -197,8 +197,8 @@ rules:
     remedies: [close, merge into the permanent owner, formalize with a new mandate]
 
   inbound-backlog:
-    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides), and p from labels (§5.2); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
-    labels_carry_from: [0]       # v1 changes only the decider
+    version: 2                   # v2 (2026-11-15): a queue under a position's alias is that position's (diagnose.md 2.15); v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides), and p from labels (§5.2); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    labels_carry_from: [0, 1]    # v1 changes only the decider; v2 reads an alias's queue as its position's
     decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.95   # 2026-11-15: 5 of 5 distinct labelled judgements true, held under certainty (diagnose.md §5.2); was 0.5
     m_decide: 5

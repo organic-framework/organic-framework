@@ -731,6 +731,23 @@ SCENARIOS += [
 ]
 
 
+def _aliased_doc():
+    doc = _org_doc()
+    doc["positions"][1] = dict(doc["positions"][1], aliases=["bot_finder"])   # bot_search, held, once named bot_finder
+    return doc
+
+
+SCENARIOS += [
+    # inbound-backlog@2: the same two days' wait, queued under a held position's older name, is that position's
+    # (the first user organization's labels of 2026-11-15: two aliases of one keeper read as "not in the registry")
+    _case("inbound-backlog/negative-alias", _aliased_doc(),
+          [x for k, d in enumerate(("11-03", "11-04")) for x in (_q(f"ia{k}a", _at(d), "bot_finder", 1, _at(d, 9)),
+                                                                 _q(f"ia{k}b", _at(d, 12), "bot_finder", 0))]
+          + _drained("iao", "bot_operator", ("11-05",)),
+          ("ap.inbound-backlog", ["bot_finder"], "negative")),
+]
+
+
 # ---- ap.chatty default part: pair and organization ----
 # Pair: 36 messages one way (reciprocity 0, so over-coupled stays quiet) for 3 merged PRs; both sides observed.
 # No of.agent_message_in: bottleneck-broker and receiver_flood are blocked. v3 (2026-11-14) measures a pair per merged

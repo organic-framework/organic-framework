@@ -594,6 +594,19 @@ class RulesTest(unittest.TestCase):
         # the owner kind is excluded (owner-router's case)
         rows = self._queues("colleague", three, depth=400)
         self.assertEqual(R.rule_inbound_backlog(m, rows, a, b, cat, spec), [])
+        # v2: a queue under an alias is its position's (the first user organization's labels, 2026-11-15): never
+        # "not in the registry"; with the position's own queue it adds up, under the position's own issue
+        aliased = dict(doc, positions=[dict(p, aliases=["bot_op_old"]) if p["name"] == "bot_operator" else p
+                                       for p in doc["positions"]])
+        ma = of_model.build(aliased, [], at=b, org="acme")
+        rows = self._queues("bot_operator", three) + self._queues("bot_op_old", three[:2], depth=1, i0=50)
+        self.assertEqual(R.rule_inbound_backlog(ma, rows, a, b, cat, spec), [])
+        self.assertEqual([(i["affected"], i["part"]) for i in R.rule_inbound_backlog(m, rows, a, b, cat, spec)],
+                         [(["bot_op_old"], "unattended")])          # without the alias: the old reading
+        rows = self._queues("bot_operator", three, depth=200) + self._queues("bot_op_old", three, depth=200, i0=50)
+        res = R.rule_inbound_backlog(ma, rows, a, b, cat, spec)
+        self.assertEqual([(i["affected"], i["part"], i["evidence"]["aliases"], i["evidence"]["backlog_h"]) for i in res],
+                         [(["bot_operator"], "overload", ["bot_op_old"], 12.0)])
 
     def test_scratch_areas(self):
         for a in ("private/tmp/claude-501", "/tmp/x", "~/work/scratchpad/notes", "var/folders/ab/T"):
