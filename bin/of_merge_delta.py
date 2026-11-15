@@ -106,9 +106,9 @@ class MergeError(Exception):
     pass
 
 
-# Ingest's own cap and yield (of_store, of_platform 2026-11-14): a hook waits on the store's lock 0.15 s.
-TX_CAP_S = 0.25
-TX_YIELD_S = 0.02
+# Ingest's own cap and yield (of_store): a hook waits on the store's lock 0.15 s.
+TX_CAP_S = of_store.TX_CAP_S
+TX_YIELD_S = of_store.TX_YIELD_S
 
 
 class _Writer:
@@ -131,7 +131,7 @@ class _Writer:
             self.conn.execute("COMMIT")
             self.longest = max(self.longest, time.monotonic() - self.t0)
             self.count += 1
-            of_store.warn_long(self.t0)
+            of_store.warn_long(self.t0, "merge write transaction", self.conn)  # its line names the target
             self.t0 = None
 
     def rollback(self):

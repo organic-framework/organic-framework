@@ -410,6 +410,18 @@ class MergeTest(unittest.TestCase):
         self.assertGreater(counts["transactions"]["count"], len(got))   # a commit before each yield, and at each end
         self.assertEqual(counts["event"]["added"], 3)
 
+    def test_a_long_transactions_line_names_the_target(self):
+        """of_platform, msg 01a1dca1-23f5: the lock-hold line in the live state folder's hook-errors.log named no
+        database, so a scratch target's lines read as the live store's. The merge passes its connection."""
+        held = []
+
+        def warn(t0, what="write transaction", conn=None):
+            held.append((what, conn and os.path.realpath(conn.execute("PRAGMA database_list").fetchone()[2])))
+        with mock.patch.object(of_store, "warn_long", warn):
+            self.merge(person_act_ids=self.ids())
+        self.assertTrue(held)
+        self.assertEqual(set(held), {("merge write transaction", os.path.realpath(self.dst_path))})
+
     def test_a_merge_cut_short_is_finished_by_running_it_again(self):
         n = {"yields": 0}
 
