@@ -1729,6 +1729,25 @@ class PermissionMode(unittest.TestCase):
                                                    sleep=lambda s: None), "auto")
         self.assertEqual(pressed, ["shift+tab"])
 
+    def test_after_start_an_undrawn_footer_is_waited_for_never_cycled_blind(self):
+        # 2026-11-14 20:34Z: a session resumed with --dangerously-skip-permissions recorded its first prompt in
+        # bypass and was in auto a second later. Its input box was drawn before the footer's mode line, that read as
+        # "default", and shift+tab cycled it out of bypass; a permission dialog then held it 13 hours
+        def run(screens):
+            pressed, seq = [], list(screens)
+
+            def herdr(*a):
+                if a[:2] == ("pane", "send-keys"):
+                    pressed.append(a[3])
+                    return None
+                return "\n".join(seq.pop(0) if len(seq) > 1 else seq[0])
+            return of_capacity.check_bypass_after_start("w1:p1", log=lambda m: None, wait=0.05, step=0.01,
+                                                        herdr=herdr), pressed
+        self.assertEqual(run([self.BOX, self.BOX, self.screen("bypass")]), ("bypass", []))
+        self.assertEqual(run([self.BOX]), ("default", []))  # never drawn: the next balance run looks again
+        mode, pressed = run([self.BOX, self.screen("auto"), self.screen("auto"), self.screen("bypass")])
+        self.assertEqual((mode, pressed), ("bypass", ["shift+tab"]))  # a named mode is still turned back
+
     def test_resume_keeps_bypass_for_a_session_turned_to_auto(self):
         import tempfile
         f = os.path.join(tempfile.mkdtemp(), "t.jsonl")

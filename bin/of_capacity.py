@@ -1540,10 +1540,12 @@ def check_bypass_after_start(pane, log=print, wait=20, step=2, herdr=None):
         end = time.time() + wait
         while True:
             mode = perm_mode(read())
-            if mode is not None or time.time() >= end:
+            # "default" is also an input box drawn before its footer's mode line: wait for a named mode, never press
+            # on it (2026-11-14: shift+tab on such a read cycled a resumed session out of bypass into auto)
+            if mode not in (None, "default") or time.time() >= end:
                 break
             time.sleep(step)
-        if mode in (None, "bypass"):
+        if mode in (None, "bypass", "default"):
             return mode
         after = ensure_bypass(read, lambda k: herdr("pane", "send-keys", pane, k), log=log)
         log(f"  permission mode after start: {mode} -> {after}")
