@@ -1323,3 +1323,39 @@ SCENARIOS += [
                _climb(1, 6, "h1") + [_lprose(11, "2026-11-06T16:00Z", "h2"), _llocate(1, "2026-11-06T18:00Z", "r11"), _DROP_H2],
                "negative", rule="ap.loop-observed-elsewhere"),
 ]
+
+
+# ---- loop-stalled, diagnose.md 2.29 (of_field-analyst, v0 2026-11-16; the founder's prompt 01a1e116-e3de, relayed by
+# of_conductor, message 01a1e117-3301): a hypothesis in testing, and no run, decision or stated wait for 4 h at the
+# window's end (2026-11-08T00:00Z). Stated waits (of.loop_wait) are not in the projection yet: their parts are tested on
+# a card in tests/test_diagnose_rules.py until of_studio projects them.
+def _ltesting(i, ts, hid):
+    return ev(f"lt{i}", ts, "of.loop_hypothesis", "s-bot_search",
+              {"work": _LW, "id": hid, "change": hid, "status": "testing"}, position="bot_search")
+
+
+SCENARIOS += [
+    _loop_case("loop-stalled/positive-silent",
+               [_ltesting(1, "2026-11-07T09:00Z", "h1"), _lrun(1, "2026-11-07T10:00Z", "offline", "h1")],
+               "positive", rule="ap.loop-stalled"),
+    # the case's shape: a park of a hypothesis already parked, with no run between, is no progress
+    _loop_case("loop-stalled/positive-repeated-park",
+               [_ltesting(1, "2026-11-07T08:00Z", "h1"), _lrun(1, "2026-11-07T09:00Z", "offline", "h1"),
+                _ldecide(1, "2026-11-07T10:00Z", hypothesis="h2", decision="park"),
+                _ldecide(2, "2026-11-07T22:00Z", hypothesis="h2", decision="park")],
+               "positive", rule="ap.loop-stalled"),
+    # older than the window: the worst case is never blocked
+    _loop_case("loop-stalled/positive-before-the-window",
+               [_ltesting(1, "2026-10-25T09:00Z", "h1"), _lrun(1, "2026-10-25T10:00Z", "offline", "h1")],
+               "positive", rule="ap.loop-stalled"),
+    _loop_case("loop-stalled/negative-recent-run",
+               [_ltesting(1, "2026-11-07T09:00Z", "h1"), _lrun(1, "2026-11-07T21:00Z", "offline", "h1")],
+               "negative", rule="ap.loop-stalled"),
+    _loop_case("loop-stalled/negative-recent-decision",
+               [_ltesting(1, "2026-11-07T09:00Z", "h1"), _ltesting(2, "2026-11-07T09:00Z", "h2"),
+                _lrun(1, "2026-11-07T10:00Z", "offline", "h1"), _ldecide(1, "2026-11-07T22:00Z", hypothesis="h2", decision="drop")],
+               "negative", rule="ap.loop-stalled"),
+    _loop_case("loop-stalled/negative-nothing-in-testing",
+               [_lhyp(1, "2026-11-05T09:00Z", "h1", "an open hypothesis waits for its first run")],
+               "negative", rule="ap.loop-stalled"),
+]
