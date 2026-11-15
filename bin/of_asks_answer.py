@@ -674,7 +674,10 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         to = of_asks.bare_to(p.get("to"), org)  # `--to <org>:<position>` was stored verbatim before 2026-11-15
         if not asker or to == asker or inbox_only(p):
             continue
-        ours = by_org.get(org) or {}
+        # OF's own routing (of_blocked.TO: a limit or login screen of any organization's position goes to of_capacity)
+        # names its receiver by its bare name in OF's team, and a blocked asker could not act on a note: it keeps the
+        # delivery by name (of_review on PR 226)
+        ours = {} if p.get("detected_by") == "blocked" else (by_org.get(org) or {})
         target = ours.get(to) or next((x for x in ours.values() if to in (x.get("aliases") or [])), None)
         if ours and (target is None or target.get("status") == "finished"):
             # it reaches no position: the asker is told once, never skipped unseen (of_server, message 01a1e0a3-b569:

@@ -724,6 +724,20 @@ class RedeliverTest(AnswerTest):
                                       + d["text"]}, "2026-11-01T10:21:00Z", session="SU", position="of_unit")
         self.assertEqual([d["key"] for d in pend()], [f"routed:{renamed}:of_owner"])
 
+    def test_a_user_organizations_login_screen_still_reaches_of_capacity(self):
+        """of_review on PR 226: of_blocked.TO routes a login screen of any organization's position to of_capacity by
+        its bare name; it must reach of_capacity, never turn into a note to the stuck asker."""
+        rec = of_events.record("agent_question", {"detected_by": "blocked", "blocked_type": "login", "to": "of_capacity",
+                                                  "pane": "wE:pP", "questions": [{"question": "login?"}]},
+                               position="shop_keeper", session="SK", org="acme")
+        rec["timestamp"] = "2026-11-01T10:00:00Z"
+        of_store.add_event(self.conn, rec)
+        aid = rec["of.event.id"]
+        positions = self.positions() + [{"name": "of_capacity", "_org": "ofb"}, {"name": "shop_keeper", "_org": "acme"}]
+        got = of_asks_answer.pending(self.conn, of_asks.project(of_asks.load(self.conn)), positions,
+                                     self.now("2026-11-01T10:20:00Z"))
+        self.assertEqual([d["key"] for d in got], [f"routed:{aid}:of_capacity"])
+
     def test_a_limit_screen_for_of_capacity_goes_to_its_inbox_and_a_login_is_typed(self):
         """of_capacity, 2026-11-09: its balancer acts on every limit within 5 minutes; a typed limit ask only woke it."""
         def blocked(kind, at, **extra):
