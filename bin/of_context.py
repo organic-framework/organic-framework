@@ -121,5 +121,8 @@ def build(position, positions, loops=None, resolve=None, runs=None):
     if team:
         lines += ["", "## Your team (message them with `of send <name> \"…\"`; ask the founder only with `of ask`)"]
         lines += [f"- `{x['name']}` ({x.get('role')}): {x.get('summary') or ''}" for x in team]
+    lines += ["", "Your scratchpad sits under /private/tmp, which macOS's tmp_cleaner empties every night of files not "
+                  "accessed, modified or changed for 3 days: a script a cron, monitor or watch runs lives in a path "
+                  "that persists, and a watch that cannot run prints FAIL (a user organization, 2026-11-14)."]
     lines += ["", "At the end of every turn: `of status working|waiting --on founder|<position>|idle|done`."]
     return "\n".join(lines)
