@@ -1260,6 +1260,14 @@ class LoopRulesTest(unittest.TestCase):
         self.assertIsNone(stall(dict(card, waits=[runner], runs=card["runs"] + [{"id": "r2", "hypothesis": "h1",
                                                                                "ended_at": t0 + 12 * H}]), t0 + 15 * H))
         self.assertIsNone(stall(dict(card, state="parked"), t0 + 50 * H))
+        # an ask wait also ends at the answer or withdrawal, when that comes first; the clock counts again from it
+        ask = {"ts": t0 + H, "on": "ask", "ref": "01a1e0aa-1111", "expect_at": t0 + 20 * H}
+        self.assertIsNone(stall(dict(card, waits=[ask]), t0 + 15 * H))
+        answered = stall(dict(card, waits=[dict(ask, ended_at=t0 + 6 * H)]), t0 + 15 * H)
+        self.assertEqual((answered["part"], answered["hours"], answered["since"]), ("wait_over", 9.0, t0 + 6 * H))
+        self.assertIn("ended at", R.stall_text(answered))
+        self.assertIsNone(stall(dict(card, waits=[dict(ask, ended_at=t0 + 12 * H)]), t0 + 15 * H))
+        self.assertIsNone(stall(dict(card, waits=[dict(ask, ended_at=t0 + 30 * H)]), t0 + 15 * H))   # not answered yet at NOW
         self.assertEqual(stall(card, t0 + 5 * H, {"stall_hours_gte": 6}), None)
 
 

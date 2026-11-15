@@ -318,7 +318,7 @@ rules:
     p: {silent: 0.6, wait_over: 0.6, calendar: 0.6}
     m_decide: {silent: 2, wait_over: 2, calendar: 3}
     # the hours are of_conductor's proposal on that prompt ("not even 2 days ... two days is also long"), unconfirmed;
-    # calendar_kinds: waits that hold no clock (a locked week, a test of 14 days, a held-out date)
+    # calendar_kinds: waits that hold no clock (a date the design fixes, such as a locked week or a test of 14 days; held-out data not there yet)
     thresholds: {stall_hours_gte: 4, escalate_hours_gte: 8, calendar_kinds: [calendar, holdout]}
     needs: [registry.works.loop] # never an event in the window: a stall longer than the window is the worst case
     reads: [of.loop_hypothesis, of.loop_run, of.loop_decision, of.loop_wait]
