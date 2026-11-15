@@ -247,11 +247,12 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** A verification step: a cross-model review before results go to the owner or to production. Or a verifier position for the class of result. For part `answers`: a check before an answer reaches the owner, in which a second model reads it against its sources and against where each reading in it was taken (AGENTS.md, a conclusion rests on readings taken where its event happens). Or a verifier position for the class of answers.
 - **ΔT basis:** rework avoided, plus decisions made on wrong facts avoided. *p* = 0.6. *m_decide* = 5 min.
 
-### 2.10 Chatty coordination — `ap.chatty@3`
+### 2.10 Chatty coordination — `ap.chatty@4`
 
 *v1 (2026-11-07), at the founder's request through `of_architect` and `of_lab`: the receiver's side. v0 saw chatter only as messages per merged PR, from the sender's side. v1 adds two parts: a position whose turns are mostly started by typed-in text, and a waiter whose wait is pushed again and again by nudges. Built by `of_studio` (2026-11-07). The pair and organization part keep their issue ids, so owner labels on @0 still apply to them.*
 *v2 (2026-11-10): decided by the structure keeper, not the owner, through `of_platform`'s daily keeper digest (`of_architect`'s decision). Its remedies, a published interface, a queue or a hand-over, are structure diffs the owner approves. With PRs attributed it raised 56 issues in the first user organization that would otherwise have reached its owner. Labels carry over: only the decider changed.*
 *v3 (2026-11-14), the relay-era recalibration: the pair part measures a pair per merged PR only when the pair merged ≥ 3 PRs in the window (`pair_merged_prs_gte`). Its basis is the first user organization's chatty labels. On 2026-11-12 its structure keeper labelled 12 issues. Ten were pair issues, all false positives. By the keeper's notes, the work of each of those pairs is not merged code: the structure keeper's registry and brief commits in the organization's repository; compliance and legal registers and questions to counsel; a treasury keeper's wallet and signer policy; an auditor's findings handed to their owners by message. In the week to 2026-11-12 each of those pairs had at most one merged PR. The other two were `receiver_flood` issues on a unit owner and a keeper, each the single interface of its unit, labelled true but not now with the split deferred. v3 does not change that part, and both are still raised, snoozed by their label. The only true-positive pair labels are older: two from 2026-11-06, under chatty@0, each on a coordinator and a code position. In the week to 2026-11-12 those pairs merged 29 and 21 PRs, at 10.7 and 36.9 messages per PR, and v3 still raises both. So the threshold stays at 10 per PR on relay-era counts, and only the floor is new. Below the floor, v3 is also silent on a pair of code positions that exchanges many messages and merges nothing. So the rule's notes name every pair below the floor with its messages and merged PRs, and such a pair stays in sight (PR 176 review). On 2026-11-14 v3 takes the organization's open pair issues from 43 to 19. Labels carry over: v3 only narrows what fires.*
+*v4 (2026-11-15), from the first user organization's labels of that day (its structure keeper, 37 issues). 13 pair issues between a unit owner and a position of its own unit were false positives: "the delegation's dispatch channel ... count decisions or leave owner-to-doer pairs inside a delegation out". v4 leaves such a pair out (`exclude_unit_owner_with_own_unit`, the unit followed through parents), and keeps a unit owner's pair with another unit's position. One `repeat_nudges` issue had of pulse's own notices as its waiter, and v4 leaves out a waiter no registry names. 13 pair and nudge issues with the runner-slot coordinator were `wrong_remedy`: "the remedy is a booking tool or queue, not a boundary change". So a pair or a wait with a position of kind `coordinator` carries the remedies under `coordinator`: a booking tool or queue, and no notices copied to it unless it must act. *p* becomes 0.91 from the labels (§5.2). Labels carry over: v4 only narrows what fires, and changes a remedy.*
 
 *Counting rule (no version bump: it fixes the input, not the rule): only days that have ended and whose merged PRs are imported count, for the parts that read WR and for §2.13. Otherwise, today's missing PRs inflate msgs per WR.*
 
@@ -495,7 +496,7 @@ The decision:
 - **Routing.** Every issue of the family goes to the organization's structure keeper, who brings a diff. Never straight to the owner: the owner approves the diff.
 - **Systems kept outside stand as decided.** `governed_by: external:<who>` counts as kept (§2.7 v2). RFC 0007 §2.2 now makes such a fact count only with the owner's ask id under `confirmed:`, and `of registry check` warns on it, so a false claim is caught there.
 
-**2.23 A live system nobody keeps — `ap.unkept-system@0`.** Two parts:
+**2.23 A live system nobody keeps — `ap.unkept-system@1`.** Two parts. *v1 (2026-11-15): in part `unit`, a subsystem with no unit of its own lies in its nearest parent's unit. The first user organization's structure keeper labelled 6 issues false positive the same day: "A subsystem is in its parent's unit ... The rule should follow parent."*
 
 | Part | Fires when | Remedy |
 |---|---|---|
@@ -507,7 +508,7 @@ The decision:
 - *p* = 0.6 (`keeper`), 0.5 (`unit`); *m_decide* = 5 and 3 min. Severity medium and low.
 - **Calibration** (2026-11-10): in the first user organization it fires once, on a delivery system, live and kept by nobody with 4 merged PRs (under §2.7 v2's 5). Three other systems are kept outside, and a fourth is the supersystem of systems that are all kept and all in units. On the OF team it is quiet.
 
-**2.24 Work off the map — `ap.off-map-work@0`.** A position whose file edits mostly land in systems that other positions keep.
+**2.24 Work off the map — `ap.off-map-work@1`.** A position whose file edits mostly land in systems that other positions keep. *v1 (2026-11-15): an edit in the position's own system, or in a subsystem of it, counts as its own even when another position keeps that system. The first user organization's structure keeper labelled a project working in its own system, kept by its keeper, a false positive: "the rule should count a project's own system as its map".*
 - **Signal:** the mandate router's verdicts (`of.mandate_check`, from `rt-v4`) on file edits (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) in the window: `in_mandate` against `owned_by:<keeper>`.
 - **Left out:**
   - reads, since reading others' code is normal;
@@ -685,7 +686,7 @@ The columns:
 | orphan-work@4 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
 | missing-verifier@2 | 2026-11-14: fired 1 (`answers`: a position that answers the owner, 7 corrections of its results in 99 of his prompts) | 2026-11-14: fired 1 (`answers`: `of_conductor`, 18 in 226) | both parts P/R 1.0. `results` negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed, a repository whose verdicts were not read, a PR approved by another position's verdict comment. `answers` negatives: 3 in 100 prompts, corrections of method only. Reports blocked without the owner's corrections | — | the two `answers` issues to label with the structure keepers; reverts |
-| chatty@3 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair, 2026-11-06), fire under v3; 10 fp (pair, 2026-11-12), all below v3's floor; 2 true_but_not_now (flood, 2026-11-12), still raised | 19 pair issues to review |
+| chatty@4 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair, 2026-11-06), fire under v3; 10 fp (pair, 2026-11-12), all below v3's floor; 2 true_but_not_now (flood, 2026-11-12), still raised | 19 pair issues to review |
 | unclear-mandate@4 | quiet; 2026-11-15: 33 under v1, 9 under v2, 2 under v3 | 2026-11-15: 1 under v2 (judged a false positive by its decider), 0 under v3 | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding, a rule pointed from five briefs, a position's own brief gaining rules | 1 false positive in its decider's message (`01a1dc76-ed6e`), not yet recorded as a label: moved v3 | that label; the 2 issues to label |
 | function-gap@1 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
@@ -699,8 +700,8 @@ The columns:
 | loop-objective-drift@2 | 2026-11-15, 18 loops: fired 4, quiet 2, blocked 12; partly from runs whose metric names no declared measure | no declared loop | P/R 1.0 (6 tp: unpriced, untied runs, a change of objective on the owner's measure, a `decided` that does not resolve, context by a hypothesis, context by a named run; negatives: priced, a measure tied to the owner's target, a change of objective with its money on a priced loop, a lever inside the segment, a name near the part's name, no segment) | — | the 4 issues to label with their work owners; runs that name their measure |
 | loop-eval-bottleneck@0 | 2026-11-15, 18 loops: fired 2, quiet 4, blocked 12 | no declared loop | P/R 1.0 | — | the 2 issues to label with their work owners |
 | loop-observed-elsewhere@1 | 2026-11-15, 18 loops: fired 4, quiet 14 (under v0: quiet 3, blocked 15). The 4 are keeps and drops, or accepts, resting only on runs nobody located, the founder's case of 2026-11-14 among them | no declared loop | P/R 1.0 (4 tp: a drop on proxies not shown to hold, an accept on such a proxy, a drop on unlocated runs, a drop on a run located only after it; negatives: a run on the data where the condition held, a keep that also rests on runs on the target, a proxy reported with no accept, a direct reading whose money chain rests on a proxy, a run located before the drop) | — | the 4 issues to label with their doers |
-| unkept-system@0 | fired 1 (delivery), 2026-11-10 | quiet | both parts P/R 1.0; negatives: external keeper, unsupported, a supersystem (keeper and unit) | — | — |
-| off-map-work@0 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |
+| unkept-system@1 | fired 1 (delivery), 2026-11-10 | quiet | both parts P/R 1.0; negatives: external keeper, unsupported, a supersystem (keeper and unit) | — | — |
+| off-map-work@1 | fired 7, 2026-11-10 | quiet | P/R 1.0; negative: reads and shells | — | the 7 U1 issues to label with its structure keeper |
 | cell-gap@0 | blocked (no `needs` yet) | blocked | all three parts P/R 1.0; reports blocked without cells | — | U1's cells |
 | cell-overlap@0 | blocked (no `owns` yet) | blocked | P/R 1.0; reports blocked without cells | — | U1's cells |
 | unsourced-requirement@0 | fired 2, 2026-11-11 | quiet | both parts P/R 1.0; negatives: a quoted source, the hedge kept in the done_when, a returned hand-over, spec words; reports blocked without hand-overs | — | the 2 U1 issues to label with its structure keeper |
@@ -708,6 +709,24 @@ The columns:
 The loop rules (2.16–2.22) were added and built on 2026-11-07, after the live run above. On 2026-11-15 each ran on each of the first user organization's 18 declared loops alone (this position's mandate 5); its results per loop are in that organization's records. Twelve loops had no run ending in the window. On three loops no run's metric names a declared measure or the target's metric. Those runs inherit neither `observed_at` nor `proxy` from their measure, and 2.21 reads them as unpriced or untied. Among them is the loop of the founder's prompt of 2026-11-14 (01a1da18-f250), whose measures carry `proxy_for` at the block's builder. `of_architect` decided the same day that a run names where its reading was taken, and an unlocated run decides nothing ([`registry.md`](registry.md), Works); 2.28 v1 reads that, and raises those loops.
 
 `of.correction` was never recorded. context-overload and missing-verifier read the owner's corrections, `of.founder_correction`, instead, and were built on 2026-11-14. With them every rule of the catalogue has a result in `lab-drift-v0`.
+
+### 5.2 Priors from labels (2026-11-15)
+
+This position's mandate 5 sets each rule's *p* and *m_decide* from its deciders' labels, or names the rule as having too few. The rules:
+- **The labels.** Each issue counts by its latest label. Issues the rule's current version no longer raises are left out (the classes fixed by unclear-mandate@3, chatty@3 and @4, unkept-system@1 and off-map-work@1).
+- ***p*** is the share of the labelled judgements that are not `false_positive`: `true_positive`, `true_but_not_now` and `wrong_remedy` (a true diagnosis with the wrong remedy) all count as true. It is held at 0.95 or under.
+- **Distinct judgements.** A decider often labels many issues of one cause with one note, such as 34 cell-gap issues on systems whose cells nobody has mapped yet. So the count is of distinct judgements (organization, label, note), and *p* is set only from 5 of them.
+- ***m_decide*** stays as it was for every rule: a label records no decision time.
+
+| Rule | Labelled issues | Distinct judgements (false positives) | *p* |
+|---|---|---|---|
+| chatty@4 | 37 | 11 (1) | 0.6 → 0.91 |
+| inbound-backlog@1 | 5 | 5 (0) | 0.5 → 0.95 |
+| off-map-work@1 | 9 | 5 (1) | 0.5 → 0.8 |
+| cell-gap@0, over-coupled@4, function-gap@1, coordination-gap@2, orphan-work@4, unkept-system@1, missing-verifier@2, owner-router@1, owner-relay@1, unsourced-requirement@0, loop-objective-drift@2, loop-checkpoint@0, loop-eval-bottleneck@0 | 1 to 34 each | under 5 each | too few labels: unchanged |
+| the other rules | none | — | too few labels: unchanged |
+
+Two false positives point at the registry, not the rule: function-gap's "goals" (`of_architect`'s brief proposes the team's goals; the function belongs in its `mandate_functions`), and off-map-work's alert rules (`obs_keeper`'s mandate covers every platform system's alerts, which no registry field says). One points at a rule of the organization: loop-objective-drift's `unpriced` part on a latency measure of a speed work, which the founder's rule in that organization says needs no price (a speed cut is justified by the latency it buys). It is one judgement, so it moves nothing yet.
 
 ## 6. Implementation v0
 

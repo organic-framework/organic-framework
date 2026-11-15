@@ -529,17 +529,22 @@ def rule_chatty(model, rows, a, b, cat, spec, parts=("default", "receiver_flood"
     # merged code (structure keeping, compliance, treasury, audit findings), with at most one PR between them. The
     # notes name each pair below the floor with its counts, so a busy pair that merges nothing stays in sight
     few, wmin = [], t.get("pair_merged_prs_gte", 3)
+    owns = {u.get("owner"): uid for uid, u in (model.get("org_units") or {}).items() if u.get("owner")}
     for p, q in {tuple(sorted(k)) for k in pair_msgs}:
         if p not in seen or q not in seen:
             continue
+        if t.get("exclude_unit_owner_with_own_unit") and any(
+                x in owns and position_unit(model, y) == owns[x] for x, y in ((p, q), (q, p))):
+            continue   # v4: a unit owner and a position of its own unit, the delegation's dispatch channel
         n = pair_msgs.get((p, q), 0) + pair_msgs.get((q, p), 0)
         w = pair_wr.get(p, 0) + pair_wr.get(q, 0)
         if n >= t.get("pair_msgs_per_wr_gte", 10) and n / max(1, w) >= t.get("pair_msgs_per_wr_gte", 10):
             if w < wmin:
                 few.append((n, w, p, q))
                 continue
-            out.append(issue(cat, "chatty", [p, q], {"messages": n, "merged_prs": w, "msgs_per_wr": round(n / max(1, w), 1)},
-                             f"{p} and {q}: {n} messages for {w} merged PRs ({round(n / max(1, w), 1)} per PR)"))
+            out.append(_booking(model, cat, issue(cat, "chatty", [p, q], {"messages": n, "merged_prs": w,
+                                                                       "msgs_per_wr": round(n / max(1, w), 1)},
+                             f"{p} and {q}: {n} messages for {w} merged PRs ({round(n / max(1, w), 1)} per PR)")))
     if few:
         notes.append(f"{len(few)} busy pair{'s' if len(few) > 1 else ''} not measured per merged PR, with fewer than {wmin} "
                      f"merged PRs between them: " + "; ".join(f"{p} and {q}, {n} messages, {w} PR{'' if w == 1 else 's'}"
@@ -617,12 +622,28 @@ def _chatty_injected(model, rows, a, b, cat, t, parts=("receiver_flood", "repeat
                              f"{recv}: typed-in messages and nudges started {total} turns; {len(flood)} hours with "
                              f"{rate} or more (peak {flood[0][0]} at {flood[0][1][11:13]}:00Z)",
                              part="receiver_flood", key=f"flood:{recv}"))
+    positions = model["positions"]
     for (waiter, recv), n in (nudges.items() if "repeat_nudges" in parts else ()):
+        if waiter not in positions:
+            continue   # v4: of pulse's own notices (a sender no registry names) are no wait between positions
         if n >= t.get("nudges_per_pair_gte", 10):
-            out.append(issue(cat, "chatty", [waiter, recv], {"nudges": n, "waiter": waiter, "nudged": recv},
-                             f"of pulse nudged {recv} {n} times for {waiter}", part="repeat_nudges",
-                             key=f"nudges:{waiter}->{recv}"))
+            out.append(_booking(model, cat, issue(cat, "chatty", [waiter, recv], {"nudges": n, "waiter": waiter, "nudged": recv},
+                                                   f"of pulse nudged {recv} {n} times for {waiter}", part="repeat_nudges",
+                                                   key=f"nudges:{waiter}->{recv}")))
     return out
+
+
+def _booking(model, cat, i):
+    """v4: a pair or a wait with a coordinator of shared capacity (kind coordinator, such as runner slots) carries
+    booking traffic: its remedy is a booking tool or queue, not a boundary change or a hand-over (the first user
+    organization's structure keeper, wrong_remedy labels of 2026-11-15)."""
+    who = [x for x in i["affected"] if (model["positions"].get(x) or {}).get("kind") == "coordinator"]
+    rem = ((cat.get("rules") or {}).get("chatty") or {}).get("remedies")
+    rem = rem.get("coordinator") if isinstance(rem, dict) else None
+    if who and rem:
+        i["remedies"] = [r.replace("<coordinator>", who[0]) for r in rem]
+        i["evidence"]["coordinator"] = who[0]
+    return i
 
 
 def betweenness(edges):
@@ -1288,6 +1309,28 @@ def _covered_by_parts(systems, sid, covered, seen=()):
     return bool(parts) and all(x in covered or _covered_by_parts(systems, x, covered, seen + (sid,)) for x in parts)
 
 
+def _ancestors(systems, sid):
+    """The system and its parents, nearest first (registry `parent`)."""
+    out, seen = [], set()
+    while sid and sid not in seen:
+        out.append(sid)
+        seen.add(sid)
+        sid = (systems.get(sid) or {}).get("parent")
+    return out
+
+
+def system_unit(model, sid):
+    """The delegated or plain unit a system lies in: its own, else its nearest parent's (a subsystem is in its
+    parent's unit; the first user organization's structure keeper, label of 2026-11-15 on unkept-system)."""
+    unit_of = {x: uid for uid, u in (model.get("org_units") or {}).items() for x in u.get("systems") or []}
+    return next((unit_of[x] for x in _ancestors(model["systems"], sid) if x in unit_of), None)
+
+
+def position_unit(model, pos):
+    p = model["positions"].get(pos) or {}
+    return p.get("unit") or system_unit(model, p.get("system"))
+
+
 def rule_unkept_system(model, rows, a, b, cat, spec):
     """Part keeper: a live system Studio flags no_keeper, keeper_unknown or keeper_<status> (coverage.flags), whether or
     not work passes through it. Part unit: in an organization with units, a live system in no unit that is not kept
@@ -1303,6 +1346,8 @@ def rule_unkept_system(model, rows, a, b, cat, spec):
         for sid, s in sorted(systems.items()):
             if sid in unit_of or not is_live(s) or kept_outside(s) or _covered_by_parts(systems, sid, set(unit_of)):
                 continue
+            if system_unit(model, sid):
+                continue   # v1 (2026-11-15): a subsystem is in its parent's unit
             unit_issues.append(issue(cat, "unkept-system", [sid], {"system": sid, "name": s.get("name"), "keeper": s.get("keeper"),
                                                                   "units": sorted(units)},
                                      f"{sid} is live and in no unit: no unit owner or delegation covers it",
@@ -1357,6 +1402,9 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
         if not pos:
             continue
         v, x = str(pl.get("verdict") or ""), per[pos]
+        home = (positions.get(pos) or {}).get("system")
+        if v.startswith("owned_by:") and home and home in _ancestors(model["systems"], pl.get("system")):
+            v = "in_mandate"   # v1 (2026-11-15): a project's edits in its own system, kept by another, are its map
         if v == "in_mandate":
             x["in_mandate"] += 1
         elif v.startswith("owned_by:"):
