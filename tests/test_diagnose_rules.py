@@ -421,7 +421,7 @@ class RulesTest(unittest.TestCase):
 
     def test_unclear_mandate_reads_no_brief_revision(self):
         """v3: a brief edit alone is no mandate change, whether a rule pointed from five briefs within an hour (v2's
-        case) or a position's own brief gaining rules (of_architect's label on of_conductor, 2026-11-15); a moved
+        case) or a position's own brief gaining rules (of_architect's judgement on of_conductor, relay message 01a1dc76-ed6e, 2026-11-15); a moved
         done_when still is."""
         doc = self.owner_doc()
         names = [p["name"] for p in doc["positions"]]
