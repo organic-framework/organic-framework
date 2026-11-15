@@ -3070,6 +3070,30 @@ def _resolve_address(name, positions):
                   + nearest(p["name"] for p in positions if not sep or p["_org"] == org))
 
 
+def _closed_receiver(to, positions):
+    """Why nobody will read a message to TO, or None: its registry status is finished, or parked with no holder (no
+    session and no person). Such a message used to queue unread for days (of_architect, msg 01a1dc9d-3976: issue
+    b1e411890566, 11 messages to a finished position from three senders since 2026-11-08). The refusal names who took
+    its name (an alias of an active position) and the organization's structure keeper."""
+    org, _, name = to.partition(":")
+    p = next((x for x in positions if x.get("_org") == org and x.get("name") == name), None)
+    if p is None:
+        return None
+    status, holder = p.get("status") or "active", p.get("holder") or {}
+    held = session_of(p) or holder.get("person") or holder.get("runtime") == "human"
+    if status != "finished" and not (status == "parked" and not held):
+        return None
+    import of_pulse
+    live = [x for x in positions if x.get("_org") == org and x.get("status") not in ("finished", "parked")]
+    took = [x["name"] for x in live if name in [str(a) for a in x.get("aliases") or []]]
+    keeper = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
+    why = "finished" if status == "finished" else "parked and nobody holds it"
+    return (f"not sent: {to} is {why} (its registry status), so nobody reads its queue"
+            + (f"; its name now belongs to {', '.join(took)}" if took else "")
+            + (f"; ask {org}:{keeper}, its organization's structure keeper, who holds its work now" if keeper and
+               keeper != name else ""))
+
+
 def pick_grants(grants_by_org, position, to_org, now=None, to_position=None):
     """Ids of the allow grants whose subject is `position`, whose scope's to_org covers `to_org` and, when the
     scope names to_positions (patterns of '<org>:<position>', fnmatch, as the relay checks them), covers
@@ -3101,6 +3125,9 @@ def cmd_send(args):
     import of_ship
     positions = _load_quiet()
     to = _resolve_address(args.to, positions)
+    closed = _closed_receiver(to, positions)
+    if closed:
+        raise OfError(closed)
     sender = args.sender
     if not sender:
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
