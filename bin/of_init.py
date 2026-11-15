@@ -33,7 +33,10 @@ MARK = " hook "  # how an of hook command is recognized: "<of> hook <Event>"
 # cheaper than a stalled turn.
 HOOK_TIMEOUT = 5
 DECIDING_TIMEOUT = 30
-DECIDING_EVENTS = ("PreToolUse", "UserPromptSubmit")
+# PermissionRequest decides too since guard G28 (it answers a Bash dialog in a session started without prompts,
+# docs/guard.md G28): killed at 5 s under load, it would leave the dialog in place exactly when the machine is busy
+# (of_secrets-review on organic-framework PR 221, through of_server).
+DECIDING_EVENTS = ("PreToolUse", "UserPromptSubmit", "PermissionRequest")
 
 
 class NoTTY(Exception):

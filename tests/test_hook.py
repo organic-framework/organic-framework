@@ -880,6 +880,7 @@ class GuardProbeTest(unittest.TestCase):
         self.assertEqual(limits[("PreToolUse", of_init.GUARD_MCP_MATCHER)], 30)
         self.assertEqual(limits[("PreToolUse", "AskUserQuestion")], 30)
         self.assertEqual(limits[("UserPromptSubmit", None)], 30)                # the mention guard decides too
+        self.assertEqual(limits[("PermissionRequest", None)], 30)               # G28 answers a dialog (PR 221)
         self.assertEqual(limits[("Stop", None)], 5)                             # a recording hook keeps 5 s
         waited = []
         def run(*a, **kw):
