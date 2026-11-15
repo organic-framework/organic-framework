@@ -1365,13 +1365,27 @@ def propose_registry(registry_file, name, account, workplace=None, out_dir=None)
 
 
 class MoveError(Exception):
-    def __init__(self, msg, untrusted=None, stuck=None, cancelled_wait=False):
+    def __init__(self, msg, untrusted=None, stuck=None, cancelled_wait=False, retry_next_run=False):
         super().__init__(msg)
         self.untrusted = untrusted  # a folder no config trusts: the owner decides (of ask), never the tool
         self.stuck = stuck  # a pane the tool could not put back as it was: someone must look at it now
         # the move pressed Esc on the session's limit wait and then failed: the session no longer continues by
         # itself when its window reopens, so the balancer tries again on its next run, not after FAILED_RETRY_S
         self.cancelled_wait = cancelled_wait
+        self.retry_next_run = retry_next_run  # what stopped it passes in seconds (a paste about to be sent)
+
+
+# Claude Code shows a long paste as one placeholder line until Enter sends it. The relay types a message as such a
+# paste and presses Enter a moment later (of_relay_client); a move that reads the box in between sees a draft.
+PASTE_ONLY = _re.compile(r"\[Pasted text #\d+(?: \+\d+ lines)?\]")
+
+
+def draft_error(name, pane, draft, cancelled_wait=False):
+    """The move's refusal for a box that holds text. A box holding only a paste placeholder is retried on the next
+    run: 2026-11-15, a move read the box between the relay's paste of a message and its Enter, and the stopped
+    session sat out FAILED_RETRY_S on a spent account. Anything else may be a person's words and waits as before."""
+    return MoveError(f"{name}: the input box in {pane} holds a draft: {draft[:80]!r}", cancelled_wait=cancelled_wait,
+                     retry_next_run=bool(PASTE_ONLY.fullmatch(draft.strip())))
 
 
 AFTER_ESC_READS = 5      # reads, 2 s apart, for the input box to come back after the limit wait is cancelled
@@ -1380,8 +1394,9 @@ FAILED_RETRY_S = 1800    # a failed move is not retried before this, except one 
 
 def failed_hold_s(e):
     """How long the balancer leaves a session alone after its move failed with MoveError `e`: not every pulse, but a
-    session whose limit wait the move cancelled is tried again on the next run (it no longer continues by itself)."""
-    return 6 * 3600 if e.untrusted else 0 if e.cancelled_wait else FAILED_RETRY_S
+    session whose limit wait the move cancelled is tried again on the next run (it no longer continues by itself), and
+    so is one whose obstacle passes in seconds."""
+    return 6 * 3600 if e.untrusted else 0 if e.cancelled_wait or e.retry_next_run else FAILED_RETRY_S
 
 
 # ------------------------------------------------------------ folder trust
@@ -2103,7 +2118,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     if draft is None:
         raise MoveError(f"{name}: no input box visible in {pane} (a dialog?)", cancelled_wait=cancelled_wait)
     if draft:
-        raise MoveError(f"{name}: the input box in {pane} holds a draft: {draft[:80]!r}", cancelled_wait=cancelled_wait)
+        raise draft_error(name, pane, draft, cancelled_wait)
     used, there = connectors_used(transcript), connectors_seen(target)
     missing = sorted(used - there) if there is not None else []
     plugs = sorted(x.split(":", 1)[1]
@@ -4459,6 +4474,15 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     return moves
 
 
+def run_dirs(rows):
+    """The accounts whose sessions a balancer run reads: all but a logged-out one (logged_in False). A probe with no
+    reading (logged_in None: a timeout, a dropped link) is no evidence the account is gone; blocked_until takes it as
+    refusing work, so its stopped sessions are rescued and nothing is moved onto it. 2026-11-15: an account's week
+    ran out and its probes timed out for half an hour; the run left its sessions out, so a dozen stood stopped there
+    while another account accepted work."""
+    return [r["config_dir"] for r in rows if r.get("logged_in") is not False]
+
+
 def stall_report(rows, sessions, positions, stopped, moves, now):
     """After a run: the holders still stopped on a limit on an account that does not accept work, while another
     account does, with why each is still there. Empty when the invariant holds (or no account accepts work)."""
@@ -4841,7 +4865,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         log("balance: another run is in progress")
         return []
     rows = status(positions, now=now)
-    dirs = [r["config_dir"] for r in rows if r.get("logged_in")]
+    dirs = run_dirs(rows)
     try:  # agent sessions stay in bypass (founder, 2026-11-08)
         heal_permission_modes(log=log, dirs=dirs, dry_run=dry_run)
     except Exception as e:
