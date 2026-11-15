@@ -99,6 +99,13 @@ works:
 
   It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events (cbx runs), `of loop` derives them instead of asking the doer.
 - **A decision is one `of.loop_decision` event:** keep, drop, park, reopen, step up a rung, step back (reframe), or change the objective. `reopen` puts a parked, dropped or kept hypothesis back to `open`, with a note that names what changed or whose word reopened it (`of loop` and its register, `of_platform`; the loop card, `of_studio`; organic-framework PR 168). Why: on 2026-11-14 a user organization's owner revived a parked hypothesis, and it was recorded as `keep` (loop decision `01a1d96b-3945`), which reads as a hypothesis that won and counts in the hit rate. A change of objective must name its money metric (§6). On a target the owner decided, a doer records none: the structure keeper rewrites the target in the registry on the owner's yes (§4.2). Keep and drop are refused on a hypothesis that has runs, all of them proxies not shown to hold (§4.3).
+- **A stated wait is one `of.loop_wait` event** (2026-11-16):
+
+  ```
+  of loop wait <work> --on runner|window|release|holdout|ask|position|calendar --ref "<what>" --until <time>
+  ```
+
+  A doer states one whenever a loop with a hypothesis in testing will show no run and no decision within the stall threshold (4 h; §6, "Stalled loop"). It states it when it knows, not when nudged. A wait is not progress: it changes no status and counts in no loop metric. It holds the stall clock until its time, and a wait on the calendar or on a held-out date holds nothing. The schema and its checks are in docs/registry.md, Works, "A stated wait". Why: a user organization's bidding loop ran all its runs on 11-10 and 11-11, then stood four and a half days with only bookkeeping decisions and a report line every two hours that no rung had moved, and nobody caught it. The founder: "Well, not even 2 days; one probably needs to understand more often what the problem is. Two days is also long" (2026-11-15, prompt `01a1e116-e3de`).
 - **The next experiment is chosen by value of information per cost.** The register shows the open hypotheses in that order, so the doer and the owner see why the next one is next. The cost is the rung's runner-hours, the evaluation's time; it is never money or tokens.
 
 ### 4.2 The owner's measure (2026-11-14)
@@ -155,6 +162,7 @@ Each rule is a diagnose anti-pattern with an owner and a test, `of_field-analyst
 | **Babysitting model** | Runner commands and monitors run on a model above `babysit_model` | To `of_capacity` and the doer: route babysitting to the cheaper model |
 | **Objective drift** | A run's metric is not the target and has no `to_money` in `measures` (on a target the owner decided, no `to_target` either; §4.2); or a run's metric or a hypothesis's predicted effect is a context part of the target's segment (2026-11-12) | "Price a ms in revenue before more speed work"; on a target the owner decided, "Tie this metric to the target, or get the owner's yes on a new measure", never a price; for a context part, "The live market on the day is outside the segment: report it, and act inside" |
 | **Evaluation bottleneck** | Wait share over 40% on one rung | To the owner: elevate the rung (more runners, a cheaper rung) |
+| **Stalled loop** (2026-11-16, §4.1; docs/diagnose.md 2.29) | A hypothesis in testing, and no run, no decision and no stated wait for 4 h, told to the owner and the doers; from 8 h, to the conductor and the founder's digest | "`<work>`: no run, decision or stated wait for 21.4 h: run it, decide it, or state what it waits on and by when (`of loop wait`)" |
 | **Observed elsewhere** (2026-11-14, §4.3) | A keep or a drop rests only on runs that are proxies not shown to hold; or a run on such a proxy carries an `accept` | "`<metric>` was read at `<observed_at>`, and the event happens at `<at>`: report it as not observed there, or run it on the data where `<valid_when>` held" |
 
 Decision rights follow acc-v0:
@@ -186,6 +194,7 @@ The card answers "how is it going" without a prompt.
 | 5 | Cost per cycle and babysitting-model routing | `of_capacity` |
 | 6 | The first loop: `acme-search-ladder`, its ladder and target from the structure keeper's analysis; reader `acme_throughput-owner` | `acme_org` with the search work's doer |
 | 7 | Cohorts, promotion and rung fidelity (§4.4): `of loop` and its events; the card's cohort table and fidelity. Built after a work has halved a cohort with the existing commands | `of_platform`; `of_studio` |
+| 8 | The stated wait (§4.1) and the stalled-loop rule (§6): `of loop wait` and `of.loop_wait`, the doers' start context, the pulse's delivery at 4 h and 8 h; the projection's `waits[]` and the card's clock; the rule, built (2026-11-16, `of_field-analyst`) | `of_platform`; `of_studio`; `of_field-analyst` |
 
 ## 9. Open questions
 
