@@ -712,7 +712,7 @@ class DiagnoseTest(unittest.TestCase):
         status = [{"rule": "ap.inbound-backlog", "issues": 2, "status": "fired"}]
         out = of_diagnose.merge_into(cat, [broker, ib, other], status)
         self.assertEqual([i["rule"] for i in out], ["ap.bottleneck-broker", "ap.inbound-backlog"])
-        self.assertEqual(out[0]["evidence"]["merged"]["ap.inbound-backlog@0"], {"backlog_h": 6.0, "part": "overload"})
+        self.assertEqual(out[0]["evidence"]["merged"][ib["rule_version"]], {"backlog_h": 6.0, "part": "overload"})
         self.assertEqual((status[0]["issues"], status[0]["status"]), (1, "fired"))
 
     def test_kinds_needed_cover_the_catalogue(self):
@@ -937,7 +937,8 @@ class DelegationTest(unittest.TestCase):
         m = of_model.build(self.DOC, [], at=self.NOW)
         cat = of_diagnose.catalogue()
         inside = of_diagnose.route_to_unit(m, of_diagnose.issue(cat, "orphan-work", ["k8s"], {}, "x", part="keeperless"))
-        across = of_diagnose.route_to_unit(m, of_diagnose.issue(cat, "coordination-gap", ["k8s", "bot"], {}, "y"))
+        across = of_diagnose.route_to_unit(m, dict(of_diagnose.issue(cat, "coordination-gap", ["k8s", "bot"], {}, "y"),
+                                                   decider="owner"))   # the decider as the test's, not the catalogue's
         self.assertEqual((inside["decider"], inside["decider_position"], inside["unit"]), ("unit_owner", "plat_owner", "platform"))
         self.assertEqual(across["decider"], "owner")
         # unit_owner_or_structure_keeper: the unit owner inside a delegated unit, else the structure keeper
