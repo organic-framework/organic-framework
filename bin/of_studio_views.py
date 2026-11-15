@@ -14,7 +14,8 @@ readers use it as they used the log's rows.
 
 import of_fold
 
-LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located")  # of_loops.KINDS
+LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", "of.loop_run_located",
+              "of.loop_wait")  # of_loops.KINDS
 
 
 def as_row(e, payload=None):
@@ -68,7 +69,7 @@ class LoopEvents(of_fold.View):
     """Key: the event id. Row: the loop event as it is (they are small: 288 on 2026-11-14)."""
     name = "loop_events"
     owner = "of_studio"
-    version = "2"   # 2: of.loop_run_located (2026-11-15), folded from the start
+    version = "3"   # 2: of.loop_run_located (2026-11-15); 3: of.loop_wait (2026-11-16); each folded from the start
     names = LOOP_KINDS
     lag_ok_s = 600
 

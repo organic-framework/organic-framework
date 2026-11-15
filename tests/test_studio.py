@@ -1682,6 +1682,23 @@ class PageCacheTest(unittest.TestCase):
         self.assertIsNone(of_studio.cached_page("waits", {"org": "acme"}))                 # not written yet
 
 
+class NamesTest(unittest.TestCase):
+    """A function defined twice at the top of a module silently replaces the first, and every caller of the first then
+    gets the second (2026-11-16: a loop card's helper took the name of the Waits tab's and of the inbox's)."""
+    FILES = ("of_studio", "of_studio_cli", "of_model", "of_measures", "of_works", "of_loops", "of_studio_health",
+             "of_studio_views", "of_diagnose")
+
+    def test_no_top_level_name_is_defined_twice(self):
+        import ast
+        import collections
+        for f in self.FILES:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", f + ".py")
+            with open(path, encoding="utf-8") as fh:
+                body = ast.parse(fh.read()).body
+            n = collections.Counter(x.name for x in body if isinstance(x, (ast.FunctionDef, ast.ClassDef)))
+            self.assertEqual({k: v for k, v in n.items() if v > 1}, {}, f)
+
+
 class LoopTest(unittest.TestCase):
     """RFC 0005: the loop metrics, derived from of.loop_* events, and the loop card."""
     NOW = "2026-11-08T00:00Z"
@@ -2167,6 +2184,121 @@ class LoopTest(unittest.TestCase):
         card, _ = self.html(self.card(spec=own, resolve=self.YES))
         self.assertIn("Money: USD per day (a proxy: it stands for live profit, valid only when the replay holds the outside "
                       "fixed).", card)
+
+    # docs/diagnose.md 2.29 (ap.loop-stalled; of_field-analyst, message 01a1e125-c75b): the card carries the stated
+    # waits and the work's state, and Studio shows per work the hours since the last run, the current wait, and the
+    # stall from the rule's own clock
+    def wait(self, i, ts, **kw):   # of loop wait (of.loop_wait)
+        return self.ev(i, ts, "of.loop_wait", dict({"on": "runner", "ref": "job-7", "by": "bot_search"}, **kw))
+
+    def test_the_stall_clock_per_work(self):
+        import of_diagnose, of_diagnose_rules
+        now = of_model.epoch(self.NOW)
+        th = of_diagnose.catalogue()["rules"]["loop-stalled"]["thresholds"]
+        c = self.card()                                       # last run 2026-11-07 04:00, h5 in testing, nothing stated
+        self.assertEqual((c["waits"], c["state"]), ([], None))
+        k = of_studio._loop_clock(c, now)
+        st = of_diagnose_rules.loop_stall(c, now, th)
+        self.assertEqual((k["last_run"], k["hours"]), (of_model.epoch("2026-11-07T04:00Z"), 20.0))
+        self.assertEqual((k["clock"], k["stall"]), (of_diagnose_rules.loop_clock(c, now, th), st))   # one clock with
+        self.assertEqual(k["text"], of_diagnose_rules.stall_text(st))                                  # the rule
+        self.assertEqual((st["part"], st["level"], st["testing"]), ("silent", "conductor", ["h5"]))
+        card, table = self.html(c)
+        self.assertIn("<tr><th>Last run</th><td>2026-11-07 04:00 UTC, 20 h ago</td></tr>", card)
+        self.assertIn("<tr><th>Waits on</th><td>nothing stated since the last run or decision, 20 h ago (run el22 at "
+                      "2026-11-07 04:00 UTC)</td></tr>", card)
+        self.assertIn(f'<span class="flag breach">stalled</span> {of_studio.e(k["text"])} ', card)
+        self.assertIn("last run 20 h ago", table)
+        self.assertIn('<span class="flag breach">stalled 20 h</span>', table)
+        # a wait stated after the last run holds the clock until its expect_at
+        held = self.card(self.rows() + [self.wait(40, "2026-11-07T20:00Z", expect_at="2026-11-08T06:00:00Z",
+                                                  note="day pass queued")])
+        self.assertEqual(held["waits"], [{"ts": of_model.epoch("2026-11-07T20:00Z"), "on": "runner", "ref": "job-7",
+                                          "expect_at": of_model.epoch("2026-11-08T06:00Z"), "ended_at": None,
+                                          "hypothesis": None, "by": "bot_search", "note": "day pass queued"}])
+        k = of_studio._loop_clock(held, now)
+        self.assertEqual((k["stall"], k["clock"]["part"], k["clock"]["hours"]), (None, "held", -6.0))
+        card, table = self.html(held)
+        self.assertIn("<tr><th>Waits on</th><td>runner job-7, expected by 2026-11-08 06:00 UTC, 6 h left (stated "
+                      "2026-11-07 20:00 UTC by bot_search: day pass queued)</td></tr>", card)
+        self.assertIn("last run 20 h ago · waits on runner job-7 until 2026-11-08 06:00 (6 h left)", table)
+        self.assertNotIn("stalled", card + table)
+        # its expect_at passed: the clock runs again from then, at the owner's level under 8 h
+        over = self.card(self.rows() + [self.wait(40, "2026-11-07T18:00Z", expect_at="2026-11-07T19:00:00Z")])
+        k = of_studio._loop_clock(over, now)
+        self.assertEqual((k["stall"]["part"], k["stall"]["level"], k["stall"]["hours"]), ("wait_over", "owner", 5.0))
+        card, table = self.html(over)
+        self.assertIn("runner job-7, expected by 2026-11-07 19:00 UTC: passed 5 h ago (stated", card)
+        self.assertIn("its wait on runner job-7 passed at 2026-11-07 19:00", table)
+        self.assertIn('<span class="flag">stalled 5 h</span>', table)
+        # a wait stated before the last progress holds nothing; below the threshold, the hours since that progress
+        self.assertIsNone(of_studio._loop_clock(self.card(self.rows() + [self.wait(40, "2026-11-07T01:00Z",
+                                                                                   expect_at="2026-11-09T00:00:00Z")]), now)["clock"]["wait"])
+        early = self.card(self.rows() + [self.ev(41, "2026-11-07T22:00Z", "of.loop_run", {"hypothesis": "h5", "rung": "gate",
+                                                                                         "value": 33, "metric": "latency_p50_ms"})])
+        card, table = self.html(early)
+        self.assertIn("<td>nothing stated since the last run or decision, 2 h ago (run el41 at 2026-11-07 22:00 UTC)</td>", card)
+        self.assertIn("last run 2 h ago · 2 h since the last run or decision", table)
+        self.assertNotIn("stalled", card + table)
+        # a wait on an ask ends when the ask stops waiting, if before its expect_at (docs/registry.md, Works, "A stated
+        # wait"; of_architect, message 01a1e12a-e961): the asks view says when, matched by id or a unique prefix
+        import of_loops
+        aid = "01a1e0aa-1111-7000-8000-000000000001"
+        answered = [{"event_id": aid, "state": "answered", "closed_at": "2026-11-07T19:00:00Z"}]
+        on_ask = self.rows() + [self.wait(40, "2026-11-07T18:00Z", on="ask", ref=aid, expect_at="2026-11-08T06:00:00Z")]
+        c = of_loops.project("w1", self.SPEC, on_ask, now, asks=of_loops.ask_ends(asks=answered))
+        self.assertEqual(c["waits"][0]["ended_at"], of_model.epoch("2026-11-07T19:00Z"))
+        k = of_studio._loop_clock(c, now)                                     # the clock counts again from the answer
+        self.assertEqual((k["stall"]["part"], k["stall"]["hours"]), ("wait_over", 5.0))
+        card, table = self.html(c)
+        self.assertIn("ask 01a1e0aa-1111-7000-8000-000000000001: ended at 2026-11-07 19:00 UTC, when the ask was answered or "
+                      "withdrawn: the clock counts again from then, 5 h ago (stated", card)
+        self.assertIn("its wait on ask 01a1e0aa-1111-7000-8000-000000000001 ended at 2026-11-07 19:00", table)
+        end = lambda asks, ref=aid: of_loops.ask_ends(asks=asks)(ref)
+        self.assertEqual(end(answered, "01a1e0aa"), of_model.epoch("2026-11-07T19:00Z"))    # a prefix, as of asks takes it
+        self.assertIsNone(end(answered, "01a1e0a"))                                          # too short to name one
+        self.assertIsNone(end(answered + [{"event_id": "01a1e0aa-2222", "state": "withdrawn",
+                                           "closed_at": "2026-11-07T19:30:00Z"}], "01a1e0aa"))  # two match: none
+        self.assertIsNone(end([dict(answered[0], state="open", closed_at=None)]))
+        self.assertIsNone(end([dict(answered[0], state="escalated")]))      # it waits on the founder's copy now
+        self.assertEqual(end([dict(answered[0], state="answered_upstream", settled_at="2026-11-07T22:00:00Z")]),
+                         of_model.epoch("2026-11-07T22:00Z"))                # settled through that copy
+        # not before its expect_at, or not by now: it has not ended early
+        for closed in ("2026-11-08T07:00:00Z", "2026-11-08T01:00:00Z"):
+            late = [dict(answered[0], closed_at=closed)]
+            self.assertIsNone(of_loops.project("w1", self.SPEC, on_ask, now, asks=of_loops.ask_ends(asks=late))
+                              ["waits"][0]["ended_at"])
+        self.assertIsNone(self.card(on_ask)["waits"][0]["ended_at"])         # no asks given: none has ended
+        # the calendar holds nothing
+        cal = self.card(self.rows() + [self.wait(40, "2026-11-07T20:00Z", on="calendar", ref="locked week",
+                                                 expect_at="2026-11-20T00:00:00Z")])
+        k = of_studio._loop_clock(cal, now)
+        self.assertEqual(k["stall"]["part"], "calendar")
+        card, table = self.html(cal)
+        self.assertIn("<td>calendar locked week, until 2026-11-20 00:00 UTC: on the calendar, which holds no clock (stated", card)
+        self.assertIn("waits only on the calendar (calendar)", table)
+        # a work its keeper parked or finished stops the clock: the registry's state, or Studio's row's status
+        import of_loops
+        for work, state in (({"state": "parked"}, "parked"), ({"status": "finished", "state": "quiet"}, "done"),
+                            ({"state": "active"}, None)):
+            c = of_loops.project("w1", self.SPEC, self.rows(), now, work=work)
+            self.assertEqual(c["state"], state)
+            self.assertEqual(of_studio._loop_clock(c, now)["clock"] is None, state is not None)
+        idle = [r for r in self.rows() if (r["payload"].get("id") or r["payload"].get("hypothesis")) != "h5"]
+        self.assertIn("<tr><th>Waits on</th><td>no hypothesis in testing, so the stall clock does not run</td></tr>",
+                      self.html(self.card(idle))[0])
+        self.assertIn("<tr><th>State</th><td>parked, as its structure keeper set it: the stall clock stops</td></tr>",
+                      self.html(of_loops.project("w1", self.SPEC, self.rows(), now, work={"state": "parked"}))[0])
+        # the model's projection, which the rule reads, carries both; the page and the listener's view load the waits
+        rows = self.rows() + [self.wait(40, "2026-11-07T20:00Z", expect_at="2026-11-08T06:00:00Z")]
+        doc = dict(DOC, works={"w1": {"title": "Search", "owner": "colleague", "doers": ["bot_search"], "loop": self.SPEC,
+                                      "state": "parked"}})
+        lp = of_model.loops(of_model.build(doc, rows, at=self.NOW))["w1"]
+        self.assertEqual((len(lp["waits"]), lp["state"]), (1, "parked"))
+        import of_studio_views
+        self.assertIn("of.loop_wait", of_studio.kinds())
+        self.assertEqual(set(of_studio_views.LOOP_KINDS), set(of_loops.KINDS))
+        self.assertEqual(set(of_model.LOOP_KINDS), set(of_loops.KINDS))
 
     def test_a_loop_without_decided_keeps_its_card(self):
         card, table = self.html(self.card())
