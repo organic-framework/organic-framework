@@ -248,6 +248,18 @@ def swap_share(run=subprocess.run):
         return None
 
 
+HOME_GIT_DETAIL = ("a git repository in the home folder: every git call under home outside a repository of its own "
+                   "(an agent's session in a folder of repositories, Claude Code's periodic git ls-files) resolves to "
+                   "it and walks the whole home folder, with macOS privacy prompts for Desktop and Documents; move it "
+                   "aside (2026-11-15: an agent's command ran cd with an empty variable, then git init)")
+
+
+def home_git(home=None):
+    """The path of a .git in the home folder itself, or None."""
+    p = os.path.join(home or os.path.expanduser("~"), ".git")
+    return p if os.path.lexists(p) else None
+
+
 def free_disk_gib(path=None):
     return round(shutil.disk_usage(path or os.path.expanduser("~")).free / 2 ** 30, 1)
 
@@ -255,7 +267,7 @@ def free_disk_gib(path=None):
 # ------------------------------------------------------------------ one run
 
 def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, smoke=None, views=None,
-            served=None):
+            served=None, homegit=False):
     """{check: {value, limit, state, owner, detail?}} for this machine. Each reading can be given (tests)."""
     now = time.time() if now is None else now
     out = {}
@@ -279,6 +291,9 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
     if sw is not None:  # no reading is no finding: the machine's own tools failed, not its memory
         put("machine.memory", sw, *LIMITS["machine.memory"])
     put("machine.disk", free_disk_gib() if disk is None else disk, *LIMITS["machine.disk"])
+    hg = home_git() if homegit is False else homegit  # a path, or None
+    out["machine.home_git"] = {"value": hg or "none", "limit": None, "state": "failed" if hg else "ok",
+                               "owner": "of_platform", **({"detail": HOME_GIT_DETAIL} if hg else {})}
     for check, r in (server_checks() if served is None else served).items():  # of-server's own, as it serves them
         out.setdefault(check, r)  # this machine's server.health (its answer time here) stays where both have one
     sm = _smoke_reading() if smoke is None else smoke

@@ -59,10 +59,11 @@ class ScopeTest(unittest.TestCase):
                                           memory=flag, state_dir=base)
             argv = shlex.split(cmd)
             with open(argv[argv.index("--settings") + 1]) as fh:  # a settings file: the line stays short (of_spawn)
-                self.assertEqual(json.load(fh), dict(of_spawn.AGENT_SETTINGS, autoMemoryDirectory=d))
+                self.assertEqual(json.load(fh), dict(of_spawn.AGENT_SETTINGS, env=of_spawn.agent_env(),
+                                                     autoMemoryDirectory=d))
             bare = shlex.split(of_spawn.launch_command("/w", "/u/.c", "sid", "n", "/u/.claude", state_dir=base))
             with open(bare[bare.index("--settings") + 1]) as fh:               # no memory: the agents' settings only
-                self.assertEqual(json.load(fh), of_spawn.AGENT_SETTINGS)
+                self.assertEqual(json.load(fh), dict(of_spawn.AGENT_SETTINGS, env=of_spawn.agent_env()))
 
     def test_the_index_warns_before_the_cut(self):
         with tempfile.TemporaryDirectory() as d:

@@ -29,6 +29,7 @@ The checks never run on the listener's loop, because the listener is one of the 
 | `hooks.latency` | the hooks' p99 time per event kind, in the last 10 min | over 1 s | over 5 s | `of health run` | `of_platform` |
 | `machine.memory` | swap used, out of swap | over 80% | over 95% | `of health run` | `of_platform` |
 | `machine.disk` | free disk | under 25 GiB | under 20 GiB (the pulse's card) | `of health run` | `of_platform` |
+| `machine.home_git` | a `.git` in the home folder itself | – | present (every git call under home outside a repository of its own walks the whole home folder; 2026-11-15) | `of health run` | `of_platform` |
 | `commit.smoke` | the working copy's newest commit passes the smoke check (§4) | — | it does not | the commit's hook, and `of health run` for the newest commit | `of_platform` |
 
 A limit here is the starting value. Its owner tunes it in this table with the evidence, never in the code alone.

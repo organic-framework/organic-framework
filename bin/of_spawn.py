@@ -103,19 +103,30 @@ def deny_rules(position, org, cat, named=None, roots=None):
 # SendFeedback tool queues drafts for a person to review, nobody reviews them in an agent's pane, and a queued draft
 # makes /exit open the drafts' review first; on 2026-11-14 22:50Z that held up a production keeper's move off a spent
 # account (of_capacity's proposal; the setting is Claude Code's own: notify, quiet or off).
+# env GIT_CEILING_DIRECTORIES = the home folder: git never climbs into the home folder looking for a repository, so a
+# stray ~/.git (2026-11-15: an agent's cd with an empty variable, then git init) cannot make every git call under home
+# walk the whole home folder; a repository below home is found as before.
 AGENT_SETTINGS = {"feedbackDrafts": "off"}
+
+
+def agent_env():
+    """The environment every agent session starts with (settings `env`): GIT_CEILING_DIRECTORIES, the home folder."""
+    return {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~")}
 
 
 def session_settings(memory=None, deny=None, extra=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
     deny rules, and extra keys such as the tool profile's allowedMcpServers and enabledPlugins (of_tools.launch_parts,
     docs/tools.md §4)."""
-    s = dict(AGENT_SETTINGS)
+    s = dict(AGENT_SETTINGS, env=agent_env())
     s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
     for k, v in (extra or {}).items():
-        s[k] = v
+        if k == "env" and isinstance(v, dict):
+            s["env"] = dict(s.get("env") or {}, **v)  # a tool profile's env joins the agents' own
+        else:
+            s[k] = v
     return json.dumps(s) if s else None
 
 
