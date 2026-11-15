@@ -117,6 +117,22 @@ class UnsetTargetTest(unittest.TestCase):
         self.assertIsNone(self.verdict("T=/tmp/x; T=$T bash -c 'rm -rf $T'"))
         self.assertIsNone(self.verdict("export T=/tmp/x; bash -c 'rm -rf $T'"))
 
+    def test_the_second_reviews_shapes(self):
+        """of_secrets-review and of_review on organic-framework PR 218."""
+        for cmd in ("cd $T && rm -rf *", "cd $T; rm -rf ./*", "cd $T && rm -rf .[!.]* *",   # the working folder after
+                    "set -u; rm -rf \"${T:-}\"/*", "set -u; rm -rf \"${T-}\"/",         # an empty default under -u
+                    "rm -rf ${T:-$HOME}", "rm -rf ${T:-~}",                              # a default that is home
+                    ". ./env.sh; rm -rf \"$T\"/", "eval x; rm -rf $T/"):                  # a sourced file may not set it
+            got = self.verdict(cmd)
+            self.assertEqual(got and got[0], "deny", cmd)
+        self.assertIn("of the working folder after a cd", self.verdict("cd $T && rm -rf *")[1])
+        for cmd in ("cd -- $W && git init", "pushd -- $W && git init"):
+            self.assertEqual(self.verdict(cmd)[0], "deny", cmd)
+        for cmd in ("[ -z \"$T\" ] || rm -rf \"$T\"/", "[ -n \"$T\" ] || exit 1; rm -rf \"$T\"/",
+                    "test -z \"$T\" && exit; rm -rf $T/", "T=$(false) && rm -rf $T/", ". ./env.sh; cd \"$D\"",
+                    "cd /tmp/x && rm -rf *"):
+            self.assertIsNone(self.verdict(cmd), cmd)
+
     def test_a_mode_switch_turns_a_warning_into_a_deny(self):
         saved = of_guard.UNSET_TARGET_MODE
         of_guard.UNSET_TARGET_MODE = dict(saved, cd="deny")
@@ -156,6 +172,18 @@ class HomeRepoTest(unittest.TestCase):
             self.assertIsNotNone(hit, (cmd, cwd))
             self.assertEqual(hit[0], of_guard.HOME_REPO_DENY)
             self.assertTrue(of_guard.owns_advice(hit[0]))
+
+    def test_a_git_directory_at_the_home_folder_is_denied(self):
+        """of_review on PR 218: each of these made git below the home folder resolve to it."""
+        for cmd in ("git init --bare ~/.git", "git clone --bare https://example.org/r.git ~/.git",
+                    "git clone --mirror https://example.org/r.git ~/.git", "git --git-dir=$HOME/.git init",
+                    "git --git-dir ~/.git init", "GIT_DIR=~/.git git init", "git init --separate-git-dir ~/.git /tmp/x",
+                    "git init --separate-git-dir=$HOME/.git /tmp/x"):
+            hit = self.deny(cmd)
+            self.assertIsNotNone(hit, cmd)
+            self.assertTrue(hit[0].startswith(of_guard.HOME_REPO_DENY), (cmd, hit))
+        self.assertIsNone(self.deny("git init --bare ~/src/r.git"))
+        self.assertIsNone(self.deny("git --git-dir ~/src/.git status"))
 
     def test_a_repository_under_the_home_folder_is_allowed(self):
         for cmd in ("git init", "git init -q proj", "cd ~/src && git init", "git clone https://example.org/r.git",

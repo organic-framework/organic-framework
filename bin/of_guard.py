@@ -2398,13 +2398,30 @@ def _loose(word, known, empty, nounset):
         if mod[:2] in (":?",) or mod[:1] == "?":
             continue
         op = mod[:2] if mod[:2] in (":-", ":=") else mod[:1] if mod[:1] in ("-", "=") else None
+        defaulted = False
         if op is not None:
             default = mod[len(op):]
             if _EXPANSION.sub("", default) or (default and not _loose(default, known, empty, nounset)):
                 continue  # a default with a literal part, or of names that are set: never empty
-        if name in empty or (name not in known and not nounset):
+            defaulted = True  # ${T:-} is how a line gets past `set -u`: it stays loose (of_secrets-review, PR 218)
+        if name in empty or (name not in known and (not nounset or defaulted)):
             out.append(name)
     return out
+
+
+def _with_defaults(word, known):
+    """WORD with each ${NAME:-x}, ${NAME-x}, ${NAME:=x} or ${NAME=x} of a name not KNOWN replaced by its default x:
+    `rm -rf ${T:-$HOME}` removes the home folder when T is unset (of_review on PR 218)."""
+    def one(m):
+        name, op, default = m.group(1), m.group(2), m.group(3)
+        return m.group(0) if name in known else default
+    return re.sub(r"\$\{([A-Za-z_]\w*)(:?[-=])([^}]*)\}", one, word)
+
+
+def _whole_folder(word):
+    """Does WORD, relative, name everything in the working folder (`*`, `.`, `./*`, `.[!.]*`, `.*`)?"""
+    w = word[2:] if word.startswith("./") else word
+    return w in ("", ".", "./", "..", "../") or w.startswith(("*", "?", "[", ".*", ".[", ".?"))
 
 
 def _resolve_dir(word, here, values):
@@ -2432,6 +2449,27 @@ def _home_repo(where, loose):
         return (HOME_REPO_DENY + f"; here an earlier cd goes to the home folder when {', '.join(sorted(set(loose)))} "
                 "is unset: write ${NAME:?} (G27)")
     return HOME_REPO_DENY
+
+
+def _home_git(path):
+    """Is PATH the home folder's git directory (`<home>/.git`), or the home folder itself?"""
+    if path is None or path == MAYBE_HOME:
+        return path == MAYBE_HOME
+    try:
+        return _is_home(path) or os.path.realpath(path) == os.path.join(
+            os.path.realpath(os.path.expanduser("~")), ".git")
+    except (OSError, ValueError):
+        return False
+
+
+def _opt_word(args, name):
+    """The value of option NAME (`--name v` or `--name=v`) in ARGS, or None."""
+    for k, a in enumerate(args):
+        if a == name and k + 1 < len(args):
+            return args[k + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
 
 
 def _is_home(path):
@@ -2496,8 +2534,8 @@ def _collapses(word, names):
     w = re.sub(r"^(?:\$\{HOME\}|\$HOME)(?=/|$)", "~", w)
     if not w:
         return False   # no path at all (`rm -rf $T`), or an empty one (`rm -rf "$T"`): nothing is removed
-    if re.fullmatch(r"(?:\./?)?\*?|\.\.?/?|\./\*", w):
-        return True    # *, ., ./*: everything in the working folder
+    if _whole_folder(w):
+        return True    # *, ., ./*, .[!.]*: everything in the working folder
     w = re.sub(r"(?:/\*|/\.?)+$", "", w) or "/"   # a folder's contents count as the folder
     if "$" in w or "__OFSUB" in w or "*" in w:
         return False
@@ -2509,8 +2547,8 @@ def _collapses(word, names):
         os.path.expanduser("~") == p or os.path.expanduser("~").startswith(p.rstrip("/") + "/")
 
 
-def _target_hit(what, names, subject):
-    if what == "rm -r" and _collapses(subject, names):
+def _target_hit(what, names, subject, home=None, after_cd=()):
+    if what == "rm -r" and (home if home is not None else _collapses(subject, names)):
         what = "rm -r home"
     reason = UNSET_TARGET_DENY.format(what="rm -r" if what == "rm -r home" else what,
                                       names=", ".join(sorted(set(names))))
@@ -2518,6 +2556,8 @@ def _target_hit(what, names, subject):
         reason = reason.replace("may be unset or empty when it runs", "may be unset or empty when it runs, and then "
                                 "names the root, the home folder or a folder above it, or everything in the working "
                                 "folder", 1)
+    if after_cd:
+        reason = reason.replace("whose target rests on", "of the working folder after a cd whose target rests on", 1)
     mode = UNSET_TARGET_MODE.get(what, "deny") if isinstance(UNSET_TARGET_MODE, dict) else UNSET_TARGET_MODE
     if mode == "deny":
         return reason, subject
@@ -2563,7 +2603,7 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
         if ops[i] in (None, ";", "\n", "&"):
             term = ops[i]
     base, chain, empty, values, exported = set(known), set(), set(empty), dict(values), set(exported)
-    loose_cd = []
+    loose_cd, prev_test, opaque = [], None, False
     blocks = []   # what held when each open then/do block began: it holds until its fi, else or done
     for i, pipe in enumerate(pipes):
         first = pipe[0][1].split(None, 1)[0] if pipe[0][0] == "cmd" and pipe[0][1].strip() else ""
@@ -2582,7 +2622,10 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
         now = base | chain | set().union(*blocks)
         counts = head_of_list or op == "&&"            # what this pipeline sets holds for the rest of its && chain
         persists = head_of_list and ends[i] != "&" and len(pipe) == 1   # ... and for the lines after it
-        sets, asserts, unsets, checked, loops = {}, set(), set(), set(), set()
+        sets, asserts, unsets, checked, loops, negs, is_test, exits = {}, set(), set(), set(), set(), set(), False, False
+        if op == "||" and prev_test:
+            chain = set(prev_test[1])      # `[ -z "$T" ] || …`: runs only when T is not empty
+            now = base | chain | set().union(*blocks)
         for kind, stext in pipe:
             if kind == "sub":
                 hit = _targets(stext, here, now, empty, values, nounset, exported, depth + 1, bodies)
@@ -2613,9 +2656,10 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             head, args = s[0], s[1]
             pre = _assignments(stext)      # `T=x cmd $T`: the shell expands $T before T=x applies
             if head in ("cd", "pushd"):
-                pos = [a for a in args if not re.match(r"^-[LPe@]+$", a)]
+                pos = args[args.index("--") + 1:] if "--" in args else \
+                    [a for a in args if not re.match(r"^-[LPe@]+$", a)]
                 word = pos[0] if pos else "~"
-                bad = _loose(word, now, empty, nounset)
+                bad = _loose(word, now, empty, nounset or opaque)
                 if bad:
                     hit = _target_hit("cd", bad, word)
                     if hit:
@@ -2624,20 +2668,30 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                 loose_cd = bad
             elif head == "rm" and _recursive(args):
                 for a in _positionals(args, ()):
-                    bad = _loose(a, now, empty, nounset)
-                    if bad:
-                        hit = _target_hit("rm -r", bad, a)
+                    bad = _loose(a, now, empty, nounset or opaque)
+                    strict = _loose(a, now, empty, nounset) if opaque else bad   # a sourced file may not set it
+                    filled = _with_defaults(a, now)
+                    home = bool(strict or bad or filled != a) and _collapses(filled, sorted(set(strict) | set(bad)))
+                    if not bad and not home and here == MAYBE_HOME and _whole_folder(a):
+                        return _target_hit("rm -r", loose_cd, a, home=True, after_cd=loose_cd)
+                    if bad or home:
+                        hit = _target_hit("rm -r", sorted(set(bad) | set(strict)) or
+                                          [m.group(1) for m in re.finditer(r"\$\{([A-Za-z_]\w*)", a)], a, home=home)
                         if hit:
                             return hit
                         break
             elif head == "git":
                 dirs, sub_cmd, rest = _git_targets(args)
                 words = [w for _, w in dirs]
+                sep = _opt_word(rest, "--separate-git-dir")
+                gitdirs = [w for o, w in dirs if o == "--git-dir"] + ([pre["GIT_DIR"]] if pre.get("GIT_DIR") else []) + \
+                    ([sep] if sep else [])
+                words += gitdirs[len([o for o, _ in dirs if o == "--git-dir"]):]
                 if sub_cmd == "init":
                     words += _positionals(rest, _GIT_INIT_VALUE)[:1]
                 elif sub_cmd == "clone":
                     words += _positionals(rest, _GIT_CLONE_VALUE)[1:2]
-                bad = sorted({n for w in words for n in _loose(w, now, empty, nounset)})
+                bad = sorted({n for w in words for n in _loose(w, now, empty, nounset or opaque)})
                 if bad:
                     hit = _target_hit("git", bad, " ".join(words))
                     if hit:
@@ -2646,15 +2700,18 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                 for o, w in dirs:
                     if o == "-C":
                         where = _resolve_dir(w, where, values) if w else where
+                if sub_cmd in ("init", "clone", "commit") and \
+                        any(_home_git(_resolve_dir(w, where, values)) for w in gitdirs):   # its git directory there
+                    return _home_repo(where, loose_cd), f"git {sub_cmd}"
                 if sub_cmd == "init":
                     pos = _positionals(rest, _GIT_INIT_VALUE)
                     target = _resolve_dir(pos[0], where, values) if pos else where
-                    if _is_home(target):
+                    if _is_home(target) or ("--bare" in rest and _home_git(target)):
                         return _home_repo(where, loose_cd), "git init"
                 elif sub_cmd == "clone":
                     pos = _positionals(rest, _GIT_CLONE_VALUE)
                     target = _resolve_dir(pos[1], where, values) if len(pos) > 1 else None
-                    if _is_home(target):
+                    if _is_home(target) or ({"--bare", "--mirror"} & set(rest) and _home_git(target)):
                         return _home_repo(where, loose_cd), "git clone"
                 elif sub_cmd == "commit" and where is not None:
                     if (_is_home(where) and (where != MAYBE_HOME or os.path.isdir(os.path.expanduser("~/.git")))) or \
@@ -2675,13 +2732,19 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                     if re.match(r"^[A-Za-z_]\w*$", a):
                         loops.add(a)       # set in this pipeline's shell, a loop body included
             elif head in (".", "source", "eval") and counts:
-                nounset = True             # it may set any name: only one set empty on the line stays loose
+                opaque = True              # it may set any name: cd and git trust it, an rm -r that would collapse does not
+            elif head in ("exit", "return"):
+                exits = True
             elif head in ("[", "[[", "test"):
+                is_test = True
                 ws = [a for a in args if a not in ("]", "]]")]
                 for k, a in enumerate(ws):
                     if (a in _TEST_SET and k + 1 < len(ws)) or len(ws) == 1:
                         target = ws[k + 1] if len(ws) > 1 else a
                         asserts |= {mm.group(1) or mm.group(3) for mm in _EXPANSION.finditer(target)}
+                        break
+                    if a == "-z" and k + 1 < len(ws):
+                        negs |= {mm.group(1) or mm.group(3) for mm in _EXPANSION.finditer(ws[k + 1])}
                         break
             elif head == "set" and any(a == "-u" or re.match(r"^-[a-zA-Z]*u", a) for a in args) or \
                     (head == "set" and "nounset" in args):
@@ -2726,6 +2789,9 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                 base.add(name)
         if counts or len(pipe) > 1:
             chain |= asserts
+        if exits and prev_test and ends[i] != "&":   # `[ -n "$T" ] || exit 1;` and `[ -z "$T" ] && exit;`: past it, T is set
+            base |= prev_test[0] if op == "||" else prev_test[1] if op == "&&" else set()
+        prev_test = (asserts, negs) if is_test and len(pipe) == 1 else None
     return None
 
 
