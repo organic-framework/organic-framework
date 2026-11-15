@@ -70,3 +70,38 @@ class IngestCapTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LongLockLineTest(unittest.TestCase):
+    """of_server, 2026-11-15: a scratch store's 155 s write lock was logged in the live hook-errors.log with no store
+    named, and read as the live store's. The line names the database, and marks one that is not this machine's."""
+
+    def test_the_line_names_the_store_it_held(self):
+        import tempfile
+        import time
+        from unittest import mock
+        import of_events
+        import of_store
+        with tempfile.TemporaryDirectory() as root:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = root
+            try:
+                os.makedirs(os.path.join(root, "scratch"))
+                live = of_store.connect(os.path.join(root, "of.db"))
+                other = of_store.connect(os.path.join(root, "scratch", "merge.db"))
+                real = os.path.realpath(root)                                    # SQLite names the file by its real path
+                with mock.patch.dict(os.environ, {"OF_DB": os.path.join(root, "of.db")}):
+                    for conn in (live, other):
+                        of_store.warn_long(time.monotonic() - of_store.LONG_TX_S - 1, conn=conn)
+                    of_store.warn_long(time.monotonic() - of_store.LONG_TX_S - 1)
+                with open(os.path.join(root, "hook-errors.log")) as fh:
+                    lines = fh.read().splitlines()
+                self.assertIn("held the write lock", lines[0])
+                self.assertIn(f" in {os.path.join(real, 'of.db')}: ", lines[0])
+                self.assertNotIn("not this machine's store", lines[0])
+                self.assertIn(f" in {os.path.join(real, 'scratch', 'merge.db')} (not this machine's store): ", lines[1])
+                self.assertRegex(lines[2], r"held the write lock [\d.]+ s: ")                # no store given: as before
+                live.close()
+                other.close()
+            finally:
+                of_events.STATE_DIR = saved

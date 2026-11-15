@@ -212,15 +212,28 @@ def write_tx(conn):
         raise
     finally:
         _TX.conn = prev
-        warn_long(t0)
+        warn_long(t0, conn=conn)
 
 
 LONG_TX_S = 5.0
 
 
-def warn_long(t0, what="write transaction"):
-    """A write transaction that held the store's lock over LONG_TX_S: one line with its caller in
-    hook-errors.log, so the next lock-holder is visible at once (of_architect, 2026-11-06)."""
+def store_label(conn):
+    """The database file CONN writes, as ~/…, marked when it is not this machine's own store (db_path()): a lock
+    line once named no store, and a scratch store's 155 s read as the live one's (of_server, 2026-11-15)."""
+    try:
+        f = next((r[2] for r in conn.execute("PRAGMA database_list") if r[1] == "main"), "") or ""
+    except Exception:  # noqa: BLE001
+        return "an unnamed store"
+    home = os.path.expanduser("~")
+    label = "~" + f[len(home):] if f.startswith(home + os.sep) else (f or "an in-memory store")
+    live = bool(f) and os.path.realpath(f) == os.path.realpath(db_path())
+    return label if live else f"{label} (not this machine's store)"
+
+
+def warn_long(t0, what="write transaction", conn=None):
+    """A write transaction that held the store's lock over LONG_TX_S: one line with its caller and, given CONN, the
+    database it held in hook-errors.log, so the next lock-holder is visible at once (of_architect, 2026-11-06)."""
     took = time.monotonic() - t0
     if took < LONG_TX_S:
         return
@@ -228,8 +241,9 @@ def warn_long(t0, what="write transaction"):
         import traceback
         caller = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
                              for f in traceback.extract_stack()[-6:-2][::-1])
+        where = f" in {store_label(conn)}" if conn is not None else ""
         with open(os.path.join(of_events.STATE_DIR, "hook-errors.log"), "a") as fh:
-            fh.write(f"{of_events.now_iso()} store {what} held the write lock {took:.1f} s: {caller}\n")
+            fh.write(f"{of_events.now_iso()} store {what} held the write lock {took:.1f} s{where}: {caller}\n")
     except Exception:  # noqa: BLE001
         pass
 
@@ -696,7 +710,7 @@ def ingest_file(conn, path, harness="claude-code", max_bytes=None, on_record=Non
                 raise
             finally:
                 _TX.conn = prev
-                warn_long(t0, "ingest chunk")
+                warn_long(t0, "ingest chunk", conn)
             time.sleep(TX_YIELD_S)  # a hook waiting on the lock takes it now
             if done:
                 break
