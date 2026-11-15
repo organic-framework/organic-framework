@@ -433,7 +433,7 @@ def mandate_changes(model, rows, a, b, fields=("summary", "throughput"), ignore_
 def rule_unclear_mandate(model, rows, a, b, cat, spec):
     """v3 (2026-11-15): a brief edit alone is no mandate change. A brief gains rules (the founder's corrections, rules
     pointed from many briefs) while the mandate stays; its summary, contribution, exit and ownership show a change of
-    mandate (of_architect's false_positive label on of_conductor, 2026-11-15). v2 left out only organization-wide brief
+    mandate (of_architect's judgement of a false positive on of_conductor, relay message 01a1dc76-ed6e, 2026-11-15). v2 left out only organization-wide brief
     edits; v3 reads no brief revision (`substantive_fields`)."""
     t = spec.get("thresholds") or {}
     out = []

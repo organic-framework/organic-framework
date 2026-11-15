@@ -604,7 +604,7 @@ SCENARIOS += [
 
 # unclear-mandate@2 and @3 (2026-11-15): a brief edit alone is no mandate change, whether a rule pointed from five briefs
 # within an hour (the first user organization: 203 brief revisions, 33 issues in a week, no summary changed) or a
-# position's own brief gaining rules (of_architect's false_positive label on of_conductor)
+# position's own brief gaining rules (of_architect judged it a false positive on of_conductor, relay message 01a1dc76-ed6e)
 def _wide_doc():
     doc = _org_doc()
     doc["positions"] += [dict(doc["positions"][1], name=n, holder={"session": f"s-{n}"}) for n in ("bot_a", "bot_b", "bot_c")]
