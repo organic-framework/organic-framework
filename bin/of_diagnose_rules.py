@@ -1335,8 +1335,9 @@ def rule_loop_observed_elsewhere(model, rows, a, b, cat, spec, parts=("decision"
 
 
 # diagnose.md 2.29: a loop with hypotheses in testing shows a run, a decision or a stated wait within hours. The clock
-# is one function, loop_stall, read by this rule, by the pulse (of_platform: the owner and the doers at the first
-# threshold, the conductor and the founder's digest at the second) and by Studio (of_studio), so they never disagree.
+# is one function, loop_clock, read through loop_stall by this rule and by the pulse (of_platform: the owner and the
+# doers at the first threshold, the organization's conductor, the founder's window, at the second) and at any reading by
+# Studio (of_studio), so they never disagree.
 STALL_DEFAULTS = {"stall_hours_gte": 4, "escalate_hours_gte": 8, "calendar_kinds": ["calendar", "holdout"]}
 _STALL_DONE = ("done", "parked")
 _STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}   # of_loops.STATUS_OF
@@ -1358,8 +1359,15 @@ def _wait_end(x, now):
 
 
 def loop_stall(lp, now, thresholds=None):
-    """The stall of one loop card (of_model.loops, diagnose.md §4.1) at NOW (epoch seconds), or None while it shows
-    progress or a stated wait, or has no hypothesis in testing, or its work is done or parked.
+    """The stall of one loop card at NOW: loop_clock's reading when it is at or past stall_hours_gte, else None."""
+    c = loop_clock(lp, now, thresholds)
+    return c if c and c["level"] else None
+
+
+def loop_clock(lp, now, thresholds=None):
+    """The stall clock of one loop card (of_model.loops, diagnose.md §4.1) at NOW (epoch seconds), at any reading
+    (asked by of_studio for Studio's card, message 01a1e130-0a14), or None when the loop has no hypothesis in testing or
+    its work is done or parked.
 
     Progress is a run that ended or a decision, nothing else: a report, a status note or an owner's check that finds the
     loop unchanged never counts (the conductor's point 4). A wait declared after the last progress (`waits` in the
@@ -1371,8 +1379,10 @@ def loop_stall(lp, now, thresholds=None):
     does not exist yet) holds nothing: with nothing else in flight the work has no next step (point 3). A wait re-declared on the same thing (`on`, `ref`)
     with no run or decision between counts once: two checks of an unchanged loop are no progress (point 4).
 
-    Returns {work, part: silent|wait_over|calendar, level: owner|conductor, hours, since, last, wait, waits_not_counted,
-    testing, owner, doers}: `since` is when the clock started, the key of an episode for whoever delivers it."""
+    Returns {work, part: held|silent|wait_over|calendar, level: None|owner|conductor, hours, since, last, wait,
+    waits_not_counted, testing, owner, doers}. `since` is when the clock starts (or started), the key of an episode for
+    whoever delivers it. While a stated wait holds the clock, part is `held`, `wait` is the wait holding it, `since` its
+    end, and `hours` is negative: the hours left. Below stall_hours_gte, `level` is None."""
     t = dict(STALL_DEFAULTS, **(thresholds or {}))
     if not lp or str(lp.get("state") or "") in _STALL_DONE:
         return None
@@ -1414,9 +1424,9 @@ def loop_stall(lp, now, thresholds=None):
     holds = max([_wait_end(x, now) for x in live] or [since])
     start = max(since, holds)
     hours = (now - start) / 3600
-    if hours < t["stall_hours_gte"]:
-        return None
-    if live:
+    if start > now:
+        part, wait = "held", max(live, key=lambda x: _wait_end(x, now))
+    elif live:
         part, wait = "wait_over", max(live, key=lambda x: _wait_end(x, now))
         if _ended_early(wait, now):
             wait = dict(wait, ended_early=_ended_early(wait, now))
@@ -1424,7 +1434,8 @@ def loop_stall(lp, now, thresholds=None):
         part, wait = "calendar", counted[-1]
     else:
         part, wait = "silent", None
-    return {"work": lp.get("work"), "part": part, "level": "conductor" if hours >= t["escalate_hours_gte"] else "owner",
+    level = ("conductor" if hours >= t["escalate_hours_gte"] else "owner") if hours >= t["stall_hours_gte"] else None
+    return {"work": lp.get("work"), "part": part, "level": level,
             "hours": round(hours, 1), "since": start,
             "last": {"kind": last[1], "at": last[0], "what": last[2], "hypothesis": last[3]} if last else None,
             "wait": wait, "waits_not_counted": not_counted[-5:], "testing": testing,
@@ -1432,10 +1443,17 @@ def loop_stall(lp, now, thresholds=None):
 
 
 def stall_text(st):
-    """One line for the issue, the pulse's nudge and Studio: what stalled, since when, and what to do."""
+    """One line for the issue, the pulse's nudge and Studio: what stalled, since when, and what to do; for a clock
+    below its threshold (loop_clock), what holds it or the hours since the last progress."""
     def at(x):
         return of_model.iso(x)[:16].replace("T", " ") + "Z" if x else "?"
     w, last = st["work"], st.get("last")
+    if st["part"] == "held":
+        x = st["wait"]
+        return f"{w}: waits on {x.get('on')} {x.get('ref') or ''} until {at(st['since'])} ({-st['hours']:g} h left)".replace("  ", " ")
+    if not st.get("level"):
+        return (f"{w}: {st['hours']:g} h since the last run or decision"
+                + (f" ({last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else ""))
     lead = (f"{w}: no run, decision or stated wait for {st['hours']:g} h"
             + (f" (last: {last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else "")
             + f"; in testing: {', '.join(st['testing'][:5])}{' …' if len(st['testing']) > 5 else ''}")

@@ -1270,6 +1270,26 @@ class LoopRulesTest(unittest.TestCase):
         self.assertIsNone(stall(dict(card, waits=[dict(ask, ended_at=t0 + 30 * H)]), t0 + 15 * H))   # not answered yet at NOW
         self.assertEqual(stall(card, t0 + 5 * H, {"stall_hours_gte": 6}), None)
 
+    def test_loop_clock_at_any_reading(self):
+        """loop_clock (for Studio): the same reading below the threshold, `held` with the hours left while a wait holds;
+        loop_stall is it from stall_hours_gte."""
+        H, t0 = 3600, 1_700_000_000
+        card = {"work": "w", "hypotheses": [{"id": "h1", "status": "testing", "ts": t0}],
+                "runs": [{"id": "r1", "hypothesis": "h1", "ended_at": t0}], "decisions_all": []}
+        c = R.loop_clock(card, t0 + 2 * H)
+        self.assertEqual((c["part"], c["level"], c["hours"], c["since"]), ("silent", None, 2.0, t0))
+        self.assertEqual(R.stall_text(c), "w: 2 h since the last run or decision (run r1 at "
+                         + of_model.iso(t0)[:16].replace("T", " ") + "Z)")
+        self.assertIsNone(R.loop_stall(card, t0 + 2 * H))
+        runner = {"ts": t0 + H, "on": "runner", "ref": "job-7", "expect_at": t0 + 10 * H}
+        held = R.loop_clock(dict(card, waits=[runner]), t0 + 7 * H)
+        self.assertEqual((held["part"], held["level"], held["hours"], held["since"], held["wait"]["ref"]),
+                         ("held", None, -3.0, t0 + 10 * H, "job-7"))
+        self.assertIn("waits on runner job-7 until", R.stall_text(held))
+        self.assertIn("(3 h left)", R.stall_text(held))
+        self.assertEqual(R.loop_clock(card, t0 + 5 * H), R.loop_stall(card, t0 + 5 * H))
+        self.assertIsNone(R.loop_clock(dict(card, hypotheses=[{"id": "h1", "status": "kept"}]), t0 + 5 * H))
+
 
 if __name__ == "__main__":
     unittest.main()
