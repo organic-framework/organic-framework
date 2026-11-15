@@ -158,7 +158,17 @@ class UnsetTargetTest(unittest.TestCase):
             self.assertIsNone(self.verdict(cmd), cmd)
         for cmd in ("if [ -n \"$T\" ]; then if b; then :; elif c; then :; fi; fi; rm -rf $T/",
                     "if c; then T=/a; elif d; then :; else T=/c; fi; rm -rf $T/",
-                    "if c; then T=/a; fi; rm -rf $T/"):
+                    "if c; then T=/a; fi; rm -rf $T/",
+                    # of_secrets-review on PR 223: a compound or negated condition says nothing where it failed
+                    "if [ -d /nope ] && [ -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if c && [ -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if [ -d /nope ] && [ -z \"$T\" ]; then :; else rm -rf $T/; fi",
+                    "if ! [ -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if [ ! -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if ! [ -n \"$T\" ]; then rm -rf $T/; fi",
+                    "if c; then T=/x; else return 1; fi; rm -rf $T/",      # return outside a function goes on
+                    "if c; then T=/x; unset T; else T=/y; fi; rm -rf $T/",
+                    "if c; then T=/x; else T=/y; fi & rm -rf $T/"):
             self.assertEqual((self.verdict(cmd) or ("",))[0], "deny", cmd)
 
     def test_a_mode_switch_turns_a_warning_into_a_deny(self):
