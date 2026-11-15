@@ -265,6 +265,63 @@ class MergeTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def _states(self):
+        conn = of_store.connect(self.dst_path)
+        try:
+            got = {r[0] for r in conn.execute("SELECT event_id FROM event")}
+            return got, {x["event_id"]: x["state"] for x in of_asks.project(of_asks.load(conn))}
+        finally:
+            conn.close()
+
+    def _add(self, path, *recs):
+        conn = of_store.connect(path)
+        try:
+            for r in recs:
+                of_store.add_event(conn, r)
+        finally:
+            conn.close()
+
+    def test_an_id_the_target_holds_is_decided_by_its_row(self):
+        """of_review on PR 195 (comment 6886650610): a delta proposal labelled ORG that reuses another organization's diff
+        or ask id made that record ORG's, so its application or answer crossed and closed their card."""
+        diff = rec("diff_proposed", {"id": "d-user-1", "kind": "spawn"}, "2026-11-15T11:40:00.000Z",
+                   position="zeta_ops", session="Z1", org="userorg")
+        card = ask("Apply d-user-1?", "2026-11-15T11:41:00.000Z", position="zeta_ops", session="Z1", org="userorg")
+        card["of.payload"]["diff_id"] = "d-user-1"
+        theirs = ask("Rotate their key?", "2026-11-15T11:50:00.000Z", position="zeta_ops", session="Z1", org="userorg")
+        self._add(self.dst_path, diff, card, theirs)
+        forged_diff = rec("diff_proposed", {"id": "d-user-1", "kind": "spawn"}, "2026-11-15T12:13:00.000Z")
+        applied = rec("diff_applied", {"id": "d-user-1"}, "2026-11-15T12:14:00.000Z")
+        forged_ask = ask("anything", "2026-11-15T12:12:00.000Z")
+        forged_ask["of.event.id"] = theirs["of.event.id"]
+        closes = rec("agent_question_answered", {"ask_id": theirs["of.event.id"], "by": "self", "answer": "moved on"},
+                     "2026-11-15T12:13:30.000Z")
+        self._add(self.src_path, forged_diff, applied, forged_ask, closes)
+        counts = self.merge(person_act_ids=self.ids())
+        got, states = self._states()
+        for what, r in (("the forged proposal", forged_diff), ("its application", applied), ("the answer", closes)):
+            self.assertNotIn(r["of.event.id"], got, what)
+        self.assertEqual((states[card["of.event.id"]], states[theirs["of.event.id"]]), ("open", "open"))
+        self.assertEqual(sorted(x["name"] for x in counts["held_refs"]),
+                         ["of.agent_question_answered", "of.diff_applied", "of.diff_proposed"])
+        self.assertEqual(counts["event"]["added"], 3)   # ORG's own delta still crosses
+
+    def test_an_id_two_organizations_make_in_the_delta_is_nobodys(self):
+        """The target lacks both: the other organization's own proposal and an ORG row reusing its id came in one delta.
+        Neither makes the id ORG's, so the ORG row and what files under it are held."""
+        real = rec("diff_proposed", {"id": "d-user-2", "kind": "spawn"}, "2026-11-15T12:10:10.000Z",
+                   position="zeta_ops", session="Z1", org="userorg")
+        forged = rec("diff_proposed", {"id": "d-user-2", "kind": "spawn"}, "2026-11-15T12:13:00.000Z")
+        applied = rec("diff_applied", {"id": "d-user-2"}, "2026-11-15T12:14:00.000Z")
+        mine = rec("diff_proposed", {"id": "d-ofb-1", "kind": "spawn"}, "2026-11-15T12:15:00.000Z")
+        mine_applied = rec("diff_applied", {"id": "d-ofb-1"}, "2026-11-15T12:16:00.000Z")
+        self._add(self.src_path, real, forged, applied, mine, mine_applied)
+        counts = self.merge(person_act_ids=self.ids())
+        got, _ = self._states()
+        self.assertFalse({real["of.event.id"], forged["of.event.id"], applied["of.event.id"]} & got)
+        self.assertTrue({mine["of.event.id"], mine_applied["of.event.id"]} <= got)   # an id only ORG makes crosses
+        self.assertEqual(sorted(x["name"] for x in counts["held_refs"]), ["of.diff_applied", "of.diff_proposed"])
+
     def test_a_blob_whose_bytes_are_not_its_hash_is_refused(self):
         """of_secrets-review on PR 195: a poisoned blob would land, and keep the real one out for good."""
         src = of_store.connect(self.src_path)
