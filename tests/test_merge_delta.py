@@ -5,9 +5,12 @@ another's by id; a re-run adds nothing; the delta's asks and hand-overs appear i
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -106,7 +109,7 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(first["transcript_record"]["added"], 2)   # u-1 and u-2: not S1's history, none of S0's
         self.assertEqual(first["hook_record"]["added"], 1)
         again = self.merge(person_act_ids=self.ids())
-        self.assertEqual(sum(c["added"] for t, c in again.items() if t not in ("person_acts", "held_refs")), 0, again)
+        self.assertEqual(sum(again[t]["added"] for t in of_merge_delta.TABLES), 0, again)
         self.assertEqual(again["person_acts"], [])
         everything = self.merge(since=None, person_act_ids=self.ids())   # no --since: the whole store, still idempotent
         self.assertEqual(everything["event"]["added"], 1)   # S0's session start, before the cutover
@@ -298,6 +301,58 @@ class MergeTest(unittest.TestCase):
             of_merge_delta.merge(self.dst_path, self.dst_path, org="ofb", orgs_file=self.orgs)
         with self.assertRaises(of_merge_delta.MergeError):
             of_merge_delta.merge(os.path.join(self.tmp.name, "nowhere.db"), self.dst_path, org="ofb", orgs_file=self.orgs)
+
+    def test_the_live_store_is_never_the_source(self):
+        with mock.patch.dict(os.environ, {"OF_DB": self.src_path}):
+            with self.assertRaisesRegex(of_merge_delta.MergeError, "live store"):
+                self.merge()
+
+    def yields(self, on_yield):
+        """Every row past the cap: of_merge_delta's clock and sleep, with ON_YIELD run at each yield."""
+        fake = mock.Mock(monotonic=time.monotonic, sleep=lambda s: on_yield())
+        return mock.patch.multiple(of_merge_delta, TX_CAP_S=-1, time=fake)
+
+    def test_a_hook_takes_the_lock_at_every_yield(self):
+        """of_platform, msg 01a1dc95-cee1: a merge held a store's write lock 154.7 s in one transaction while every
+        hook waits 0.15 s. Each yield must leave the lock free: a writer that waits 0 s gets it."""
+        got = []
+
+        def hook():
+            c = sqlite3.connect(self.dst_path, timeout=0, isolation_level=None)
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                c.execute("ROLLBACK")
+                got.append(True)
+            except sqlite3.OperationalError:
+                got.append(False)
+            finally:
+                c.close()
+        with self.yields(hook):
+            counts = self.merge(person_act_ids=self.ids())
+        self.assertGreaterEqual(len(got), 3, counts)
+        self.assertTrue(all(got), got)
+        self.assertGreater(counts["transactions"]["count"], len(got))   # a commit before each yield, and at each end
+        self.assertEqual(counts["event"]["added"], 3)
+
+    def test_a_merge_cut_short_is_finished_by_running_it_again(self):
+        n = {"yields": 0}
+
+        def crash():
+            n["yields"] += 1
+            if n["yields"] == 3:
+                raise KeyboardInterrupt
+        with self.yields(crash), self.assertRaises(KeyboardInterrupt):
+            self.merge(person_act_ids=self.ids())
+        self.merge(person_act_ids=self.ids())
+        conn = of_store.connect(self.dst_path)
+        try:
+            got = [conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                   for t in ("event", "transcript_record", "hook_record")]
+        finally:
+            conn.close()
+        self.assertEqual(got, [1 + 3, 2, 3 + 1])   # what one whole merge leaves
+        again = self.merge(person_act_ids=self.ids())
+        self.assertEqual(sum(again[t]["added"] for t in of_merge_delta.TABLES), 0, again)
 
     def test_cli(self):
         import contextlib
