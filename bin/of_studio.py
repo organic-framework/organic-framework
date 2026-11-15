@@ -576,7 +576,12 @@ def delegation_review(d, model, rec):
 
 def kinds():
     import of_asks
-    return tuple(sorted(set(STUDIO_KINDS) | set(of_diagnose.kinds_needed()) | set(getattr(of_asks, "READS", ()))))
+    try:   # every loop event, a locate too (of-server's image has no of_loops: the view and the catalogue's names serve)
+        import of_loops
+        loop = set(of_loops.KINDS)
+    except ImportError:
+        loop = set()
+    return tuple(sorted(set(STUDIO_KINDS) | set(of_diagnose.kinds_needed()) | set(getattr(of_asks, "READS", ())) | loop))
 
 
 def _normalize(r):

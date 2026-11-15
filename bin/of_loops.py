@@ -14,6 +14,8 @@ checkpoint_days, wip_arms). The register and the log are events (§4.1, of_platf
   (of_platform's names, docs/events.md: a run's id is `run`; a hypothesis update carries `status` and `status_at`)
   of.loop_cost        {work, run, session, from, to, usd, fresh_tokens, responses, by_model}: of_capacity, about an hour
                       after a run ends, the recording session's spend in the run's window; usd null = unknown
+  of.loop_run_located {work, run, observed_at, direct: true | proxy: {for, valid_when, held}, by, note}: `of loop locate`,
+                      where an earlier run's reading was taken; applied to that run from its own time, never a run
 
   project(work_id, spec, rows, now)  the loop card's data: ladder, register, curve, cost, decisions and the §5 metrics
 
@@ -34,8 +36,8 @@ that its reading is taken where its event happens. A run whose proxy did not hol
 observed: it stays out of the curve of the target (and so out of the gains, the plateau and the checkpoints) and shows
 as "not observed at <at>", its reading labelled as a proxy (not_observed_text). A run with no reading point at all is
 unlocated (2026-11-15): it counts the same and shows as "not located" (not_located_text). `of loop locate` places a
-run later, by a later of.loop_run of the same run id; the run then reads as located from that time (`located_at`), and
-`as_recorded` keeps what it held before. A target's or a measure's `chain_proxy_for` labels its money line or chain
+run later, by an of.loop_run_located naming its run id; the run then reads as located from that time (`located_at`),
+and `as_recorded` keeps what it held before. A target's or a measure's `chain_proxy_for` labels its money line or chain
 as a proxy (chain_label).
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
@@ -47,7 +49,8 @@ from of_model import epoch, iso, t_of
 
 UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this machine's log cannot be read
 
-KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost")
+LOCATED = "of.loop_run_located"   # of_loop.LOCATED: `of loop locate` names where an earlier run's reading was taken
+KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", LOCATED)
 DAY = 86400
 VOI = {"low": 1, "med": 2, "medium": 2, "high": 3}
 STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}   # of_loop.STATUS_OF: reopen puts a
@@ -299,12 +302,12 @@ def _runs(evs, spec, hyp):
     measures = {str(m["name"]): m for m in spec["measures"]}
     by_id = {}
     for r in evs:
-        if r["name"] != "of.loop_run":
-            continue
         pl = r.get("payload") or {}
-        if pl.get("run") and str(pl["run"]) in by_id and not pl.get("rung"):   # of loop locate: a later event of the
-            # same run that carries only where it was read (docs/events.md); a run always names its rung
-            _locate(by_id[str(pl["run"])], pl, t_of(r), measures)
+        if r["name"] == LOCATED:   # of loop locate: never a run itself; it places the run it names from its own time
+            if str(pl.get("run") or "") in by_id:   # (docs/events.md, of.loop_run_located)
+                _locate(by_id[str(pl["run"])], pl, t_of(r), measures)
+            continue
+        if r["name"] != "of.loop_run":
             continue
         end = epoch(pl.get("ended_at")) or t_of(r) or 0
         start = epoch(pl.get("started_at"))

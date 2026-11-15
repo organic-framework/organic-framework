@@ -2083,8 +2083,8 @@ class LoopTest(unittest.TestCase):
         self.assertIn(">330<", card)
 
     # docs/registry.md, Works, "A run names where its reading was taken" (hand-over 3b45a2a1)
-    def locate(self, i, ts, run, **kw):
-        return self.ev(i, ts, "of.loop_run", dict({"run": run}, **kw))
+    def locate(self, i, ts, run, **kw):   # of loop locate (docs/events.md, of.loop_run_located)
+        return self.ev(i, ts, "of.loop_run_located", dict({"run": run, "by": "bot_search"}, **kw))
 
     def test_a_run_not_located_and_located_later(self):
         import of_loops
@@ -2097,8 +2097,13 @@ class LoopTest(unittest.TestCase):
         c = self.card(rows)
         runs = {r["id"]: r for r in c["runs"]}
         self.assertEqual(len(c["runs"]), len(self.card()["runs"]) + 1)          # a locate adds no run
-        dup = self.ev(27, "2026-11-07T12:00Z", "of.loop_run", {"run": "el22", "rung": "gate", "hypothesis": "h5", "value": 34})
-        self.assertEqual(len(self.card(rows + [dup])["runs"]), len(c["runs"]) + 1)   # a run names its rung: no locate
+        stray = self.locate(27, "2026-11-07T12:00Z", "no-such-run", observed_at="x", direct=True)
+        self.assertEqual(self.card(rows + [stray])["runs"], c["runs"])              # a locate of no recorded run: nothing
+        # the model's projection, which the rules read, applies it too
+        doc = dict(DOC, works={"w1": {"title": "Search", "owner": "colleague", "doers": ["bot_search"], "loop": self.SPEC}})
+        built = {r["id"]: r for r in of_model.loops(of_model.build(doc, rows, at=self.NOW))["w1"]["runs"]}
+        self.assertEqual((built["el22"]["observed_at"], built["el22"]["direct"]), ("our clocks", True))
+        self.assertIn("of.loop_run_located", of_studio.kinds())                     # the page loads it
         # a metric neither the target's nor a declared measure's, stating no point: not located
         self.assertEqual((runs["el20"]["observed_at"], runs["el20"]["direct"], runs["el20"]["proxy"], runs["el20"]["located_at"]),
                          (None, False, None, None))
