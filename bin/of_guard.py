@@ -2372,6 +2372,7 @@ UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git":
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
 OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target")
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
+_LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)
 _GIT_GLOBAL_VALUE = {"-c", "--exec-path", "--namespace", "--config-env", "--super-prefix", "--list-cmds"}
 _GIT_INIT_VALUE = {"--template", "--separate-git-dir", "-b", "--initial-branch", "--object-format", "--ref-format"}
@@ -2621,7 +2622,9 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             chain = set()
         now = base | chain | set().union(*blocks)
         counts = head_of_list or op == "&&"            # what this pipeline sets holds for the rest of its && chain
-        persists = head_of_list and ends[i] != "&" and len(pipe) == 1   # ... and for the lines after it
+        # ... and for the lines after it; inside a then, do or else block, until the block ends (a block may not run)
+        persists = (head_of_list or first in ("then", "do", "else")) and ends[i] != "&" and len(pipe) == 1
+        keep = blocks[-1] if blocks else base
         sets, asserts, unsets, checked, loops, negs, is_test, exits = {}, set(), set(), set(), set(), set(), False, False
         if op == "||" and prev_test:
             chain = set(prev_test[1])      # `[ -z "$T" ] || …`: runs only when T is not empty
@@ -2649,7 +2652,7 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                 continue
             s = _simple(stext)
             if not s:
-                sets.update(_assignments(stext))
+                sets.update(_assignments(_LEAD_KEYWORDS.sub("", stext)))   # `do T=x;`: the words after do
                 continue
             if s[0] == "<read":
                 continue
@@ -2773,12 +2776,12 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             if counts:
                 chain.add(name)
             if persists:
-                base.add(name)
+                keep.add(name)
         for name, val in sets.items():
             if val == "" or (val and not _EXPANSION.sub("", val) and _loose(val, now, empty, nounset)):
                 empty.add(name)       # set empty, or to what may be empty
-                base.discard(name)
-                chain.discard(name)
+                for held in (base, chain, *blocks):
+                    held.discard(name)
                 continue
             empty.discard(name)
             if "$" not in val and "__OFSUB" not in val and "`" not in val:
@@ -2786,11 +2789,11 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             if counts:
                 chain.add(name)
             if persists:
-                base.add(name)
+                keep.add(name)
         if counts or len(pipe) > 1:
             chain |= asserts
         if exits and prev_test and ends[i] != "&":   # `[ -n "$T" ] || exit 1;` and `[ -z "$T" ] && exit;`: past it, T is set
-            base |= prev_test[0] if op == "||" else prev_test[1] if op == "&&" else set()
+            keep |= prev_test[0] if op == "||" else prev_test[1] if op == "&&" else set()
         prev_test = (asserts, negs) if is_test and len(pipe) == 1 else None
     return None
 
