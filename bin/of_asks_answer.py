@@ -303,6 +303,21 @@ def routed_mark(ask_id):
     return f"delegated to you; ask {ask_id[-8:]}"
 
 
+def unrouted_mark(ask_id):
+    return f"ask {ask_id[-8:]} reaches no position"
+
+
+def unrouted_note(ask_id, to, target=None):
+    """Typed to the asker of a routed ask whose receiver is no active position of its organization: another
+    organization's prefix, a typo, a finished position. `target`: the finished position, when it is one."""
+    why = "a finished position" if target else "no position of your organization"
+    succ = f" (its successor is {target['successor']})" if target and target.get("successor") else ""
+    return (f"(OF: your {unrouted_mark(ask_id)}: it is routed to '{to}', {why}{succ}, so it was typed in to no one, "
+            "and only its unit's escalation rule would bring it to the founder. Withdraw it (of asks withdraw "
+            f"{ask_id[-8:]}) and ask again with --to set to the bare name of an active position of your organization, "
+            "or to founder.)")
+
+
 def handed_mark(ask_id):
     return f"handed to you; ask {ask_id[-8:]}"
 
@@ -643,6 +658,9 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
                                          receiver_conductor(positions, to))
                     + _late(ts, now, "the founder handed it"), "sender": "owner", "channel": None})
     units = {x["name"]: x.get("_unit") for x in positions}
+    by_org = {}
+    for x in positions:
+        by_org.setdefault(x.get("_org"), {})[x["name"]] = x
     for eid, ts, asker, payload, host, org in conn.execute(
             "SELECT event_id, ts, position, payload, host_id, org FROM event WHERE name = 'of.agent_question' AND ts >= ? "
             "AND json_extract(payload, '$.to') IS NOT NULL AND json_extract(payload, '$.to') != 'founder' "
@@ -654,10 +672,22 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         except ValueError:
             continue
         to = of_asks.bare_to(p.get("to"), org)  # `--to <org>:<position>` was stored verbatim before 2026-11-15
-        if ":" in to:
-            continue  # another organization's position: never typed in from here
-        if not asker or to == asker or (only and to != only) or inbox_only(p) or \
-                delivered(conn, to, [routed_mark(eid)], ts):
+        if not asker or to == asker or inbox_only(p):
+            continue
+        ours = by_org.get(org) or {}
+        target = ours.get(to) or next((x for x in ours.values() if to in (x.get("aliases") or [])), None)
+        if ours and (target is None or target.get("status") == "finished"):
+            # it reaches no position: the asker is told once, never skipped unseen (of_server, message 01a1e0a3-b569:
+            # three asks routed to another organization's prefix waited 18 hours with no word to anyone)
+            if (not only or asker == only) and not delivered(conn, asker, [unrouted_mark(eid)], ts):
+                out.append({"key": f"unrouted:{eid}:{asker}", "position": asker, "marks": [unrouted_mark(eid)],
+                            "since": ts, "text": unrouted_note(eid, to, target), "sender": "of", "channel": None})
+            continue
+        if target:
+            to = target["name"]  # an old name in `aliases` reaches the position that holds it now
+        elif ":" in to:
+            continue  # no registry read: another organization's position is never typed in from here
+        if (only and to != only) or delivered(conn, to, [routed_mark(eid)], ts):
             continue
         p = of_asks.at_version(conn, eid, p, ts, asker, host)  # typed late: its newest version (of ask --amend)
         text = routed_frame(asker, units.get(asker), eid, full_question(p, ""), options(p), bool(p.get("blocking")))
@@ -668,14 +698,15 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
     for a in asks:
         if a.get("escalated_from"):
             by_src.setdefault(a["escalated_from"], []).append(a)
-    for eid, ts, payload in conn.execute(
-            "SELECT event_id, ts, payload FROM event WHERE name = 'of.ask_escalated' AND ts >= ? ORDER BY ts",
+    for eid, ts, payload, org in conn.execute(
+            "SELECT event_id, ts, payload, org FROM event WHERE name = 'of.ask_escalated' AND ts >= ? ORDER BY ts",
             (since,)).fetchall():
         try:
             p = json.loads(payload or "{}")
         except ValueError:
             continue
-        src, owner, rule = p.get("ask_id"), p.get("from_owner"), p.get("rule")
+        # from_owner is the routed ask's `to`, stored with its organization's prefix before 2026-11-15
+        src, owner, rule = p.get("ask_id"), p.get("from_owner") and of_asks.bare_to(p["from_owner"], org), p.get("rule")
         related = by_src.get(src) or []
         if not src or not owner or rule == "by_owner" or (only and owner != only) \
                 or (of_asks.seconds_since(ts, now) or 0) < min_age \
