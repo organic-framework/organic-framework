@@ -700,6 +700,8 @@ class RedeliverTest(AnswerTest):
             return self.add("agent_question", {"detected_by": "declared", "to": to,
                                                "questions": [{"question": "Pause?"}]}, at, session="SU",
                             position="of_unit")
+        routed("owner", "2026-11-01T09:59:58Z")                  # the person's queue, like founder: no note
+        routed("ofb:owner", "2026-11-01T09:59:59Z")
         other = routed("acme:of_owner", "2026-11-01T10:00:00Z")
         typo = routed("of_ownr", "2026-11-01T10:00:01Z")
         done = routed("of_old", "2026-11-01T10:00:02Z")
