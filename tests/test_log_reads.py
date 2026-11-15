@@ -28,11 +28,15 @@ FALLBACK = ("a trust decision (a diff's approval) reads the log, never a view an
             "name by the event_name_ts index (of_server on PR 154)")
 BYID = "one event by its rowid"
 OFFLINE = "an offline command (of db stats)"
+MERGE = ("the host move's store merge (B3, bin/of_merge_delta.py): offline, on the target, against a copy of the "
+         "source's store, once per move (docs/storage.md)")
 STUDIO = "of_studio's readers: its fold views (its steps 2 and 3, on the shared contract)"
 CAPACITY = "of_capacity's readers: cursor views like a021f2f, or small names by the index"
 GITHUB = "the GitHub import, a timer every 30 minutes: by organization and name (kind D)"
 
 ALLOWED = {
+    ('of_merge_delta.py', 'org_scope', 'SELECT DISTINCT session_id, position FROM event WHERE sessio'): MERGE,
+    ('of_merge_delta.py', 'merge', 'SELECT event_id, position FROM event WHERE name = ? AND org '): MERGE,
     ('of', '_diff_answer', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): FALLBACK,
     ('of', 'cmd_handover', 'of_handover.load(conn)'): HANDOVER,
     ('of', 'cmd_pulse', 'of_handover.load(conn)'): HANDOVER,
