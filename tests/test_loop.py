@@ -344,8 +344,8 @@ class LocatedRunTest(unittest.TestCase):
         cp = {"at": "live profit", "valid_when": "the replay's outside equals the day's"}
         ok = dict(LOOP, target=dict(LOOP["target"], chain_proxy_for=cp))
         self.assertEqual(of_loop.check_loop(ok, "w"), [])
-        self.assertIn("its money line (STOREFRONT per day of bot revenue) is a proxy for live profit, valid only when "
-                      "the replay's outside equals the day's", of_loop.target_line(ok, None))
+        self.assertIn("its money line STOREFRONT per day of bot revenue (a proxy: it stands for live profit, valid "
+                      "only when the replay's outside equals the day's)", of_loop.target_line(ok, None))
         out = of_loop.check_loop(dict(LOOP, target=dict(LOOP["target"], proxy_for=cp)), "w")
         self.assertIn("w: loop: target.proxy_for: the target is read inside its segment; a money line that stands for "
                       "an event elsewhere is chain_proxy_for (at, valid_when)", out)
@@ -389,9 +389,9 @@ class LocatedRunTest(unittest.TestCase):
             self.assertEqual((p["run"], p.get("observed_at"), p.get("accepted")), ("job-7", None, None))
             r = run("decision", "w-speed", "keep", "--hypothesis", h2)
             self.assertNotEqual(r.returncode, 0)                                # it decides nothing
-            self.assertIn("not located: no reading point is named for edge_bps (4.0); it decides nothing until "
-                          "`of loop locate <work> --run job-7` names where it was taken", r.stderr)
-            self.assertIn("not located: no reading point is named for edge_bps", run("show", "w-speed").stdout)
+            self.assertIn("not located: nobody named where its reading (edge_bps 4.0) was taken, so it counts as a "
+                          "proxy not shown to hold (of loop locate <work> --run job-7 names it)", r.stderr)
+            self.assertIn("not located: nobody named where its reading (edge_bps 4.0)", run("show", "w-speed").stdout)
             for bad in (("--run", "job-7"), ("--run", "job-7", "--observed-at", "x"), ("--run", "nope",
                         "--observed-at", "x", "--direct"), ("--observed-at", "x", "--direct")):
                 self.assertNotEqual(run("locate", "w-speed", *bad).returncode, 0, bad)

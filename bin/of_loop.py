@@ -370,8 +370,8 @@ def target_line(loop, resolve):
     line = f"target {t.get('metric')}" + (f" ({t['better']} is better)" if t.get("better") in ("higher", "lower") else "")
     cp = t.get("chain_proxy_for")
     if isinstance(cp, dict) and cp.get("at") and cp.get("valid_when"):
-        line += (f"; its money line{' (' + ' '.join(str(t['money']).split()) + ')' if t.get('money') else ''} is a "
-                 f"proxy for {cp['at']}, valid only when {cp['valid_when']}")
+        line += (f"; its money line{' ' + ' '.join(str(t['money']).split()) if t.get('money') else ''} (a proxy: "
+                 f"it stands for {cp['at']}, valid only when {cp['valid_when']})")  # Studio's card's label
     d = decided(loop)
     if not d:
         return line
@@ -459,9 +459,9 @@ def not_observed(run):
     an unlocated one as 'not located'."""
     value = run.get("value")
     if run.get("located") is False:
-        return (f"not located: no reading point is named for {run.get('metric')}"
-                + (f" ({value})" if value is not None else "")
-                + f"; it decides nothing until `of loop locate <work> --run {run.get('run')}` names where it was taken")
+        reading = f"{run.get('metric')} {value}" if value is not None else f"{run.get('metric')}"
+        return (f"not located: nobody named where its reading ({reading}) was taken, so it counts as a proxy not "
+                f"shown to hold (of loop locate <work> --run {run.get('run')} names it)")  # as Studio's card says it
     pr = run.get("proxy") or {}
     held = {"not_held": "did not hold", "unknown": "is not known to hold"}.get(pr.get("held"), "is not known to hold")
     return (f"not observed at {pr.get('for')}; its reading at {run.get('observed_at') or '?'} is a proxy"
