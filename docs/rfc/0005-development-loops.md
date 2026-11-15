@@ -44,6 +44,7 @@ From its structure keeper's analysis (a private report; work `acme-search-ladder
 | Double-loop learning (Argyris) | Single loops tune inside the frame; a plateau calls for questioning the frame, with an outside review |
 | Goodhart's law | Each rung's metric must be money or a proxy proven against money; otherwise the loop optimizes the proxy. The warning is against a proxy an agent chose: when the owner decides the measure, the owner carries that risk, and money is reported beside it (§4.2) |
 | Construct validity (Shadish, Cook and Campbell, 2002); the drunkard's search (Kaplan, 1964) | A reading counts for the event it is used for only when it is taken where that event happens, or under a stated condition shown to hold. Otherwise it is a proxy, and it decides nothing (§4.3) |
+| Successive halving (Jamieson and Talwalkar, 2016); Hyperband (Li et al., 2018) | Many variants of one change: run them all on the cheapest rung, promote the best fraction, repeat. It picks the right winners only as far as each rung ranks the variants as the next one does (§4.4) |
 
 ## 4. The object: `loop:` on a work
 
@@ -108,6 +109,23 @@ The person who owns a work's goal may decide that the loop's target is itself wh
 
 Every reading a loop records names where it was taken: `observed_at` on the target and on each measure, and on each run. A reading that reports an event happening somewhere else is a proxy: its measure carries `proxy_for`, with where the event happens and the condition under which the reading equals the one there (docs/registry.md, Works, "Where a reading is taken"). A run on a proxy records whether that condition held in its data: `held`, `not_held` or `unknown`. Unless it held, the proxy is not shown to hold: the run records no `accept`, a keep or a drop cannot rest on it alone, and `of loop show` reads "not observed" where the event happens, with the proxy's reading labelled beside it (the loop card: to build). A run limited to the data where the condition held counts as taken there. A run whose metric names neither the target nor a declared measure states its reading point itself, as taken where its event happens or as a proxy; a run with none decides nothing (2026-11-15). A measure read where its event happens, whose money chain or an attached value rests on a reading elsewhere, carries `chain_proxy_for` instead: its runs decide as direct readings, and only its money line is labelled a proxy (to build). The founder asked for this after a user organization's analysis took the time a rival's transaction reached its own nodes as the time it reached the block's builder, a third party, and concluded that speed buys little: "Here the model takes the available data and builds its reasoning on it, although that is not correct in general. The cause must be found and this behaviour fixed systemically" (2026-11-14, prompt `01a1da18-f250`).
 
+### 4.4 Cohorts and promotion by halving (2026-11-15; design, to build)
+
+Several hypotheses may already be in flight on one work, up to its `wip_arms`. When a work tries many variants of one change at once, they compare fairly only on the same inputs, and the expensive rungs should go to the few that win the cheap ones: successive halving. The founder asked for "5 or 7 different parallel acceleration methods, so that it improves in parallel and different hypotheses are tested", one such system per part of a user organization's system (2026-11-15, prompt `01a1e09d-566d`).
+
+- **A cohort** is a set of hypotheses run on one rung on the same inputs: the same corpus, base binary and window. Each run names it with `of loop run … --cohort <id> --inputs "<what they share>"`. The first run opens the cohort, and a later run whose inputs differ is refused. Its members count toward `wip_arms` as before.
+- **A promotion** is one decision over a cohort: `of loop decision <work> promote --cohort <id> --top <k>`.
+  - The k best by the rung's measure, in the target's direction, step up. The others are parked with "halved at <rung>, rank i of n".
+  - It is refused while a member has no run on that rung, or only an unlocated one (§4.3).
+  - A halved hypothesis is parked, never dropped. Losing on a cheaper rung refutes nothing unless that rung's reading is shown to stand for the next rung's; then the doer drops it as before.
+  - Halving counts in no hit rate.
+- **Rung fidelity is derived:** the rank agreement (Kendall's τ) between a rung and the next one, over the hypotheses that ran on both. The loop card shows it, so the doer and the owner see whether halving on that rung picks the winners the next rung would.
+  - A rung's ranking is a proxy for the next rung's. A promotion may rest on it, since a proxy may suggest a test.
+  - A drop may not rest on it until it is shown to hold.
+- **Until this is built**, a doer halves with the commands that exist: runs on one rung, then `step_up` for the winners and `park` with that note for the rest.
+
+Why: in that organization's design review (2026-11-15, `of_architect`), the cheap rungs did not rank as live did. A runner's quote time was about 16 times the live one, and a bench case 20 to 30 times smaller than production. Halving on them would, in the draft's own words, "select the wrong winners faster".
+
 ## 5. Loop metrics: derived, never reported
 
 As for works (`docs/works.md` §3), no agent writes "60%". From the events:
@@ -167,6 +185,7 @@ The card answers "how is it going" without a prompt.
 | 4 | The eight rules as diagnose anti-patterns, with fixtures | `of_field-analyst`, with `of_lab` for the drift harness |
 | 5 | Cost per cycle and babysitting-model routing | `of_capacity` |
 | 6 | The first loop: `acme-search-ladder`, its ladder and target from the structure keeper's analysis; reader `acme_throughput-owner` | `acme_org` with the search work's doer |
+| 7 | Cohorts, promotion and rung fidelity (§4.4): `of loop` and its events; the card's cohort table and fidelity. Built after a work has halved a cohort with the existing commands | `of_platform`; `of_studio` |
 
 ## 9. Open questions
 
