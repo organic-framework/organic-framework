@@ -779,7 +779,8 @@ class Data:
         cache = self.__dict__.setdefault("_loop_cards", {})
         if w["id"] not in cache:
             cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w,
-                                              resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]))
+                                              resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]),
+                                              asks=of_loops.ask_ends())
         return cache[w["id"]]
 
     def history(self, names, since=None):
@@ -1846,10 +1847,14 @@ def _loops_table(d, loops):
             marks.append('<span class="flag">plateau</span>')
         if c["wip"]["over"]:
             marks.append('<span class="flag">over the WIP limit</span>')
+        k = _loop_clock(c, d.now)
+        if k["stall"]:
+            marks.append(f'<span class="flag{STALL_LEVEL.get(k["stall"]["level"], "")}">stalled {k["stall"]["hours"]:g} h</span>')
         trs.append(f'<tr><td><a href="{e(link("works", d.org, w=w["id"]))}">{e(w["title"])}</a>'
                    f'<div class="src"><code>{e(w["id"])}</code> · owner {e(w.get("owner") or "–")}</div></td>'
                    f'<td>{e(t.get("metric") or "no target declared")}<div class="src">{e(" · ".join(x for x in src if x))}</div></td>'
-                   f'<td>{e(of_loops.summary(c, d.now) or "")} {"".join(marks)}</td></tr>')
+                   f'<td>{e(" · ".join(x for x in (of_loops.summary(c, d.now), _clock_line(k)) if x))} '
+                   f'{"".join(marks)}</td></tr>')
     if not trs:
         return ""
     return ('<h2 class="lead">Development loops <span class="sub">one row per work with a loop (RFC 0005); every number is derived '
@@ -1886,6 +1891,14 @@ def _loop_card(d, w):
         facts.append(("Money", _money_line(t) or "–"))
     facts += [("Stake", t.get("stake") or "–"), ("Class", t.get("throughput_class") or "–"),
               ("Started", st(c["start"])), ("Events", str(c["events"]))]
+    k = _loop_clock(c, d.now)
+    facts += [("Last run", f'{st(k["last_run"])} UTC, {k["hours"]:g} h ago' if k["last_run"] else "no run yet"),
+              ("Waits on", _loop_wait_text(k, c))]
+    if c.get("state"):
+        facts.append(("State", f'{c["state"]}, as its structure keeper set it: the stall clock stops'))
+    if k["stall"]:
+        drift += (f'<p><span class="flag{STALL_LEVEL.get(k["stall"]["level"], "")}">stalled</span> {e(k["text"])} '
+                  f'<span class="sub">{e(STALL_WHO.get(k["stall"]["level"], ""))}</span></p>')
     seg = t.get("segment")
     if seg:   # docs/registry.md: the segment the organization controls, and the parts outside it reported beside it
         facts[1:1] = [("Segment", f'{seg.get("start") or "?"} → {seg.get("end") or "?"}'),
@@ -1942,6 +1955,90 @@ WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wi
  · {h(cw["runner_h"])} runner-h · {"–" if cw["tokens"] is None else f'{cw["tokens"]:,.0f} fresh tokens'}
  · per kept cycle {"–" if cw["usd_per_kept_cycle"] is None else f'${cw["usd_per_kept_cycle"]:,.2f}'} and {h(cw["runner_h_per_kept_cycle"])} runner-h</p>
 {_money_reading(d, w, t) if own else ""}<h3>Decision log</h3>{f"<ul>{decisions}</ul>" if decisions else '<p class="quiet">No decision recorded.</p>'}"""
+
+
+STALL_LEVEL = {"conductor": " breach"}   # the flag's class by the clock's level
+STALL_WHO = {"owner": "(docs/diagnose.md 2.29: the pulse tells the work's owner and doers)",
+             "conductor": "(docs/diagnose.md 2.29: the pulse tells the organization's conductor)"}
+ASK_ENDED = "when the ask was answered or withdrawn: the clock counts again from then"
+NOT_RUNNING = "no hypothesis in testing, so the stall clock does not run"
+NO_TIME = ": no time given, so it held no clock past when it was stated"
+
+
+def _loop_clock(c, now):
+    """docs/diagnose.md 2.29 as Studio shows it per work: the last run and the hours since, and the stall clock at this
+    reading, the one the rule and the pulse read (of_diagnose_rules.loop_clock with the catalogue's thresholds): the
+    wait holding it and the hours left, or the hours since the last progress, and past stall_hours_gte the stall and
+    its line (stall_text). The clock is None with no hypothesis in testing, or on a work done or parked."""
+    import of_diagnose_rules
+    ends = [r["ended_at"] for r in c.get("runs") or [] if r.get("ended_at") is not None and r["ended_at"] <= now]
+    last = max(ends) if ends else None
+    try:
+        th = ((of_diagnose.catalogue().get("rules") or {}).get("loop-stalled") or {}).get("thresholds") or {}
+    except Exception:  # noqa: BLE001 — no catalogue here: the rule's own defaults
+        th = {}
+    clock = of_diagnose_rules.loop_clock(c, now, th)
+    stall = clock if clock and clock.get("level") else None
+    return {"last_run": last, "hours": round((now - last) / 3600, 1) if last else None, "clock": clock, "stall": stall,
+            "text": of_diagnose_rules.stall_text(stall) if stall else None}
+
+
+def _wait_on(x):
+    return " ".join(str(v) for v in (x.get("on"), x.get("ref")) if v) or "something not named"
+
+
+def _stated(x):
+    import of_loops
+    who = f" by {x['by']}" if x.get("by") else ""
+    note = f": {str(x['note'])[:200]}" if x.get("note") else ""
+    return f" (stated {of_loops.stamp(x['ts'])} UTC{who}{note})"
+
+
+def _loop_wait_text(k, c):
+    """The card's "Waits on", from the clock: the wait holding it and the hours left; a wait that passed, ended at its
+    ask's answer, or waits only on the calendar; or, with none stated since the last progress, the hours since it."""
+    import of_loops
+    st, stamp = k["clock"], of_loops.stamp
+    if not st:
+        return "–" if c.get("state") else NOT_RUNNING
+    x = st.get("wait") or {}
+    if st["part"] == "held":
+        return f"{_wait_on(x)}, expected by {stamp(st['since'])} UTC, {-st['hours']:g} h left{_stated(x)}"
+    if st["part"] == "wait_over" and x.get("ended_early"):
+        return f"{_wait_on(x)}: ended at {stamp(x['ended_early'])} UTC, {ASK_ENDED}, {st['hours']:g} h ago{_stated(x)}"
+    if st["part"] == "wait_over":
+        return (f"{_wait_on(x)}, expected by {stamp(x['expect_at'])} UTC: passed {st['hours']:g} h ago" if x.get("expect_at")
+                else _wait_on(x) + NO_TIME) + _stated(x)
+    if st["part"] == "calendar":
+        until = f", until {stamp(x['expect_at'])} UTC" if x.get("expect_at") else ""
+        return f"{_wait_on(x)}{until}: on the calendar, which holds no clock{_stated(x)}"
+    last = st.get("last")
+    if not last:
+        return f"nothing stated since the hypothesis went into testing, {st['hours']:g} h ago"
+    what = f"{last['kind']} {last['what']}" if last.get("what") else last["kind"]
+    return f"nothing stated since the last run or decision, {st['hours']:g} h ago ({what} at {stamp(last['at'])} UTC)"
+
+
+def _clock_line(k):
+    """The Works table's part of the clock: hours since the last run, and the wait holding the clock or the hours since
+    the last progress (a stalled loop's mark carries its hours)."""
+    import of_loops
+    out = [f'last run {k["hours"]:g} h ago' if k["last_run"] else "no run yet"]
+    st, stamp = k["clock"], of_loops.stamp
+    x = (st or {}).get("wait") or {}
+    if not st:
+        pass
+    elif st["part"] == "held":
+        out.append(f"waits on {_wait_on(x)} until {stamp(st['since'])} ({-st['hours']:g} h left)")
+    elif st["part"] == "wait_over" and x.get("ended_early"):
+        out.append(f"its wait on {_wait_on(x)} ended at {stamp(x['ended_early'])}")
+    elif st["part"] == "wait_over":
+        out.append(f"its wait on {_wait_on(x)} passed at {stamp(st['since'])}")
+    elif st["part"] == "calendar":
+        out.append(f"waits only on the calendar ({x.get('on')})")
+    elif not st.get("level"):
+        out.append(f"{st['hours']:g} h since the last run or decision")
+    return " · ".join(out)
 
 
 NOT_OBSERVED_HEAD = ('<h3>Not observed <span class="sub">runs whose reading stands for an event elsewhere, and whose '

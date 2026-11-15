@@ -50,7 +50,9 @@ from of_model import epoch, iso, t_of
 UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this machine's log cannot be read
 
 LOCATED = "of.loop_run_located"   # of_loop.LOCATED: `of loop locate` names where an earlier run's reading was taken
-KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", LOCATED)
+WAIT = "of.loop_wait"   # `of loop wait`: what a loop waits on and by when; it holds the stall clock (docs/diagnose.md 2.29)
+KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", LOCATED, WAIT)
+CLOSED = {"done": "done", "parked": "parked", "finished": "done"}   # the work's state the stall clock stops at
 LOCATE_KEYS = ("observed_at", "direct", "proxy")   # of_loop.LOCATE_KEYS
 
 
@@ -135,6 +137,44 @@ def log_resolver(conn=None, conductors=None):
                 memo[key] = UNREAD
         return memo[key]
     return resolve
+
+
+ASK_WAITING = ("open", "candidate", "escalated")   # of_asks' states of an ask that still waits on an answer
+ASK_SETTLED = ("answered_upstream", "settled_in_unit")   # an escalated ask settled through its founder copy (of_asks.settle)
+
+
+def ask_end(a):
+    """When ask A stopped waiting, epoch seconds, else None: answered, withdrawn or otherwise closed (closed_at), or an
+    escalated routed ask once its founder copy settled it (settled_at; its closed_at is the escalation, of_asks.settle)."""
+    if a.get("state") in ASK_SETTLED:
+        return epoch(a.get("settled_at"))
+    if a.get("state") in ASK_WAITING:
+        return None
+    return epoch(a.get("closed_at"))
+
+
+def ask_ends(conn=None, asks=None):
+    """ref -> ask_end of the ask it names (its id, or a unique prefix or suffix of 8 characters or more, as `of asks`
+    matches one), else None; for a wait on an ask (docs/registry.md, Works, "A stated wait"). The asks come from the
+    listener's view and its tail (of_asks.current_asks), read once, on the first wait on an ask; ASKS: given (tests)."""
+    held = {"asks": asks}
+
+    def end(ref):
+        ref = str(ref or "").strip()
+        if not ref:
+            return None
+        if held["asks"] is None:
+            try:
+                import of_asks
+                held["asks"] = of_asks.current_asks(conn)["asks"]
+            except Exception:  # noqa: BLE001 — no store or no asks view here: no ask has ended
+                held["asks"] = []
+        hit = [a for a in held["asks"] if a.get("event_id") == ref]
+        if not hit and len(ref) >= 8:
+            hit = [a for a in held["asks"] if str(a.get("event_id") or "").startswith(ref)
+                   or str(a.get("event_id") or "").endswith(ref)]
+        return ask_end(hit[0]) if len(hit) == 1 else None
+    return end
 
 
 def for_work(resolve, work):
@@ -343,6 +383,33 @@ def _runs(evs, spec, hyp):
     return out
 
 
+def _waits(evs, now, asks=None):
+    """The stated waits, in time order (docs/diagnose.md §4.1, `waits[]`): what the loop waits on, its ref, and the
+    time it is expected by, read from the event as ISO or epoch seconds (null when not given). A wait on an ask ends
+    when that ask stops waiting, if before its expect_at and by NOW (`ended_at`; docs/registry.md, Works, "A stated
+    wait"): ASKS (ask_ends) says when; without it none has ended."""
+    out = []
+    for r in evs:
+        if r["name"] != WAIT:
+            continue
+        pl = r.get("payload") or {}
+        x = {"ts": t_of(r), "on": pl.get("on"), "ref": pl.get("ref"), "expect_at": epoch(pl.get("expect_at")),
+             "ended_at": None, "hypothesis": pl.get("hypothesis") or None,
+             "by": pl.get("by") or pl.get("position") or r.get("position"), "note": pl.get("note")}
+        end = asks(x["ref"]) if asks and x["on"] == "ask" else None
+        if end is not None and end <= now and (x["expect_at"] is None or end < x["expect_at"]):
+            x["ended_at"] = end
+        out.append(x)
+    return out
+
+
+def work_state(work):
+    """The work's state as its structure keeper set it, done or parked, else None (docs/diagnose.md §4.1, `state`):
+    the registry's `state`, or Studio's row, whose `status` carries it as finished or parked."""
+    work = work or {}
+    return CLOSED.get(str(work.get("state") or "")) or CLOSED.get(str(work.get("status") or ""))
+
+
 def _locate(run, pl, at, measures):
     """A locate update (docs/registry.md, Works, "An unlocated run decides nothing"): the run's reading point and
     direct or proxy as it states them, from its own time AT. What the run held before the first one stays in
@@ -406,11 +473,11 @@ def babysit(rows, doers, a, b):
     return out
 
 
-def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
+def project(work_id, spec, rows, now, days=7, work=None, resolve=None, asks=None):
     """The loop card and the rules' projection (docs/diagnose.md §4.1). Every number comes from the events; a missing
     input shows as None, never as zero. work: the registry's entry, for its owner and doers. resolve: id -> the
     person's yes in the log (log_resolver), for the target's `decided` and a change of objective's; without it neither
-    counts."""
+    counts. asks: ref -> when that ask stopped waiting (ask_ends), for a wait on an ask; without it none has ended."""
     spec = spec_of(spec, resolve) if spec and "rungs" not in spec else spec
     evs = events(rows, work_id)
     if not spec and not evs:
@@ -488,7 +555,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
     doers = [str(x) for x in work.get("doers") or []]
     loop_start = start or now
     return {
-        "work": work_id, "owner": work.get("owner"), "doers": doers,
+        "work": work_id, "owner": work.get("owner"), "doers": doers, "state": work_state(work), "waits": _waits(evs, now, asks),
         "declared": bool(spec["rungs"]) or bool(spec["target"].get("metric")), "spec": spec,
         "target": spec["target"], "measures": spec["measures"],
         "ladder_spec": [{"rung": str(x["rung"]), "cost": x.get("cost"), "latency": x.get("latency"), "accept": x.get("accept"),

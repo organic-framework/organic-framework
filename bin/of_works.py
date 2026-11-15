@@ -586,7 +586,7 @@ def loop_card(model, rows, w, now):
     if w.get("loop") and not (card or {}).get("declared"):   # the model saw the events but not this list's spec
         import of_loops
         card = of_loops.project(w["id"], w["loop"], rows, now, work=w,
-                                resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]))
+                                resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]), asks=of_loops.ask_ends())
     return card
 
 
