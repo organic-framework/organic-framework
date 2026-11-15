@@ -247,7 +247,7 @@ def project(rows, state=None):
             pl_ = r["payload"] or {}
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
                    "kind": f"blocked:{pl_.get('blocked_type')}", "text": _text(r), "state": "open", "closed_by": None,
-                   "closed_at": None, "to": pl_.get("to") or "founder", "tags": [], "pane": pl_.get("pane"),
+                   "closed_at": None, "to": bare_to(pl_.get("to"), r.get("org")), "tags": [], "pane": pl_.get("pane"),
                    "n_options": len(pl_.get("options") or [])}
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
@@ -270,7 +270,7 @@ def project(rows, state=None):
                     old.update(state="superseded", closed_by=r["event_id"], closed_at=r["ts"])
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
                    "kind": _kind(r), "text": _text(r), "state": "open", "closed_by": None, "closed_at": None,
-                   "topic_key": key, "to": (r["payload"] or {}).get("to") or "founder",
+                   "topic_key": key, "to": bare_to((r["payload"] or {}).get("to"), r.get("org")),
                    "tags": (r["payload"] or {}).get("tags") or [], "due": (r["payload"] or {}).get("due"),
                    "tags_declared": bool((r["payload"] or {}).get("tags_declared")),
                    "diff_id": (r["payload"] or {}).get("diff_id"),
@@ -705,6 +705,17 @@ def group(asks, threshold=0.6):
 
 
 OWNER_ADDRESSES = ("founder", "owner", None)
+
+
+def bare_to(to, org):
+    """An ask's receiver as a bare name: `of ask --to <org>:<position>` was stored verbatim before 2026-11-15, and every
+    reader matches the bare name (delivery, of asks --to-me, --escalates); the asker's own organization's prefix is
+    dropped. None or empty is the founder."""
+    if not to:
+        return "founder"
+    t = str(to)
+    pre, sep, name = t.partition(":")
+    return name if sep and org and pre == org else t
 
 
 def for_owner(asks):

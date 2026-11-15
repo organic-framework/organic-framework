@@ -643,8 +643,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
                                          receiver_conductor(positions, to))
                     + _late(ts, now, "the founder handed it"), "sender": "owner", "channel": None})
     units = {x["name"]: x.get("_unit") for x in positions}
-    for eid, ts, asker, payload, host in conn.execute(
-            "SELECT event_id, ts, position, payload, host_id FROM event WHERE name = 'of.agent_question' AND ts >= ? "
+    for eid, ts, asker, payload, host, org in conn.execute(
+            "SELECT event_id, ts, position, payload, host_id, org FROM event WHERE name = 'of.agent_question' AND ts >= ? "
             "AND json_extract(payload, '$.to') IS NOT NULL AND json_extract(payload, '$.to') != 'founder' "
             "ORDER BY ts", (since,)).fetchall():
         if eid not in open_ids or (of_asks.seconds_since(ts, now) or 0) < min_age:
@@ -653,7 +653,9 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             p = json.loads(payload or "{}")
         except ValueError:
             continue
-        to = p.get("to")
+        to = of_asks.bare_to(p.get("to"), org)  # `--to <org>:<position>` was stored verbatim before 2026-11-15
+        if ":" in to:
+            continue  # another organization's position: never typed in from here
         if not asker or to == asker or (only and to != only) or inbox_only(p) or \
                 delivered(conn, to, [routed_mark(eid)], ts):
             continue

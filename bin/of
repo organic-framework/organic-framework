@@ -2475,6 +2475,8 @@ def cmd_asks(args):
         return of_judge.run([x for x in [args.id, *(args.reason or [])] if x], args.pending, args.pane, args.dry_run)
     if args.action == "deliver":  # the listener, at the end of a position's turn (of_asks_answer.redeliver_pass)
         return _asks_deliver(args.id)
+    if getattr(args, "to_me", False):  # a unit owner's own queue: a lost delivery is caught by its receiver
+        return _asks_to_me(args)
     if getattr(args, "panel", False):  # the small panel of the questions, always in sight (bin/of_asks_panel.py)
         import of_asks_panel
         return of_asks_panel.main(os.path.realpath(__file__), _load_quiet)
@@ -3545,7 +3547,7 @@ def cmd_ask(args):
             else of_classify.tags_of(text, systems=[me["system"]] if me.get("system") else None)
     except ValueError as e:
         raise OfError(str(e))
-    to, esc_rule, rerouted = route_ask(me, args.to, tags)
+    to, esc_rule, rerouted = route_ask(me, _ask_to(me, positions, args.to), tags)
     src = _escalates(me, args.escalates) if args.escalates else None
     if src and to != "founder":
         raise OfError(f"--escalates: your asks go to {to}, not to the founder; answer {src['position']} yourself "
@@ -4576,6 +4578,29 @@ def _asker_session(me, sender=None):
     return session_of(me) if sender else (os.environ.get("CLAUDE_CODE_SESSION_ID") or session_of(me))
 
 
+def _ask_to(me, positions, to):
+    """--to as the bare name of a position of the asker's own organization (or founder, owner): a receiver named with
+    its organization's prefix was stored verbatim, and the routed question was never typed in nor found by its
+    receiver (a user organization's structure keeper, 2026-11-15: five such asks, three escalated unseen). Another
+    organization, or a name that is no position here, is refused."""
+    if not to:
+        return to
+    t, mine = str(to).strip(), {me.get("_orgid"), me.get("_org")} - {None}
+    if ":" in t:
+        org, _, t = t.partition(":")
+        if org not in mine:
+            raise OfError(f"--to {to}: an ask goes to a position of your own organization ({', '.join(sorted(mine))}); "
+                          "reach another organization's position with of send")
+    if t in ("founder", "owner"):
+        return t
+    own = [p for p in positions if p.get("_org") == me.get("_org")]
+    hit = next((p["name"] for p in own if t == p["name"] or t in [str(a) for a in p.get("aliases") or []]), None)
+    if not hit:
+        raise OfError(f"--to {to}: no position of {', '.join(sorted(mine))} by that name (founder, owner, or a position "
+                      "name)")
+    return hit
+
+
 def route_ask(me, to_arg, tags):
     """(to, escalate rule, rerouted) for an ask. In a delegated unit `--to founder` goes to the unit owner, unless a
     declared tag matches the delegation's reporting.escalate_when (money, irreversible, security_incident, a matching
@@ -4589,6 +4614,26 @@ def route_ask(me, to_arg, tags):
     declared = [t for t in tags or [] if t.get("source") != "guessed"]
     hit = next((r for r in rules if of_pulse.tag_match(r, declared)), None)
     return ("founder", hit, False) if hit else (default, None, True)
+
+
+def _asks_to_me(args):
+    """`of asks --to-me`: the open asks routed to the calling position (a unit owner's queue), oldest first, with how to
+    answer each (a user organization's unit owner, 2026-11-15: a routed ask that was never typed in reached the founder
+    as an escalation, and the unit owner had grepped of asks --all for it)."""
+    import of_asks
+    me = _me(_load_quiet(), getattr(args, "sender", None))
+    mine = [a for a in _asks_now() if a.get("to") == me["name"] and a["state"] in ("open", "escalated")]
+    if not mine:
+        print(f"no open asks routed to {me['name']}")
+        return 0
+    print(f"{len(mine)} open ask(s) routed to {me['name']}, oldest first:")
+    for a in sorted(mine, key=lambda x: x["ts"]):
+        text = " ".join(str(a.get("text") or "").split())
+        print(f"  {a['event_id'][-8:]}  {of_asks.age(a['ts']):>5}  {a['state']:<9} from {a.get('position') or '?':<24} "
+              f"{text[:150] + ('…' if len(text) > 150 else '')}")
+    print("answer one with of send <its asker> --reply-to <id> \"…\", or rewrite it for the founder with "
+          "of ask --escalates <id>")
+    return 0
 
 
 def _escalates(me, ident):
@@ -6194,6 +6239,7 @@ def main(argv=None):
     ak.add_argument("id", nargs="?")
     ak.add_argument("reason", nargs="*")
     ak.add_argument("--all", action="store_true", help="also answered, denied, superseded and expired asks")
+    ak.add_argument("--to-me", action="store_true", help="the open asks routed to the calling position (a unit owner)")
     ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a): the queue and the "
                     "selected card side by side, streams, wrap-around keys (bin/of_asks_inbox.py)")
     ak.add_argument("--classic", action="store_true", help="with --watch: the earlier one-column popup")
