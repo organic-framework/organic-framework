@@ -1371,7 +1371,9 @@ class JudgeTest(unittest.TestCase):
                 # of_review on PR 230: a second question on the diff's own line is the owner's too
                 for line in (f"Approve {sd}, or should I roll back the migration first?",
                              f"Одобри {sd}, или сначала откатить миграцию?",
-                             f"Approve {sd}? Or roll back first?", f"Одобришь {sd} или сначала откатить миграцию?"):
+                             f"Approve {sd}? Or roll back first?", f"Одобришь {sd} или сначала откатить миграцию?",
+                             f"Approve {sd} and should I restart the DB too?",
+                             f"Одобри {sd} и перезапустить ли базу?", f"Одобри {sd}, а также перезапустить ли базу?"):
                     self.assertIsNone(of_judge.only_proposed_diffs(conn, line), line)
                 self.assertEqual(of_judge.only_proposed_diffs(conn, f"Approve {sd} (tier medium)?"), [sd])
                 self.assertIsNone(of_judge.only_proposed_diffs(conn, f"Waiting on {sd}, a question about 1Password"))
