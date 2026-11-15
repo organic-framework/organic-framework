@@ -31,6 +31,21 @@ MIN_ROUTER_UNOWNED = 4   # an 'unowned' verdict counts from rt-v4: before it, li
                          # (<repo>-wt/<name>, <repo>-wt-<name>, .worktrees/<other name>) were judged unowned (2026-11-07)
 
 
+ROOT_REPO_ROUTER = 7   # rt-v7 (of_platform's change of 2026-11-15): a root that is itself a repository matches paths
+# written with its name; before it, such paths were judged unowned
+
+
+def misread_root(pl, repos):
+    """An 'unowned' verdict from before rt-v7 on a path whose first folder under the home is a repository the map
+    claims (REPOS): the router then misjudged an organization path that is itself a repository (of_field-analyst,
+    2026-11-15: 591 of 591 such verdicts in one organization's window, none of 480 in the other)."""
+    if router_version(pl) >= ROOT_REPO_ROUTER:
+        return False
+    p, home = str(pl.get("path") or ""), os.path.expanduser("~")
+    rest = p[2:] if p.startswith("~/") else p[len(home) + 1:] if p.startswith(home + os.sep) else ""
+    return bool(rest) and rest.split("/", 1)[0] in repos
+
+
 def router_version(pl):
     """The mandate router's version of a verdict: 'rt-v2' -> 2; absent -> 1 (rt-v1)."""
     m = re.match(r"rt-v(\d+)$", str(pl.get("router_version") or "rt-v1"))
@@ -749,7 +764,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
                 mc[v] += 1   # unscoped: a shell at a repository root names no system; not a finding
             elif v.startswith("non_live:"):
                 mc["non_live"] += 1   # work on an unsupported or retired system: shown, not a finding (registry.md)
-            if v == "unowned" and router_version(pl) >= MIN_ROUTER_UNOWNED:
+            if v == "unowned" and router_version(pl) >= MIN_ROUTER_UNOWNED and not misread_root(pl, map_repos):
                 area = sysid or area_of(pl.get("path"), repos=map_repos)
                 orphan.setdefault(area, {})
                 orphan[area][who] = orphan[area].get(who, 0) + 1

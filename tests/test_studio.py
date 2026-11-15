@@ -203,6 +203,16 @@ class ModelTest(unittest.TestCase):
         c = built["mandate"]["bot_search"]
         self.assertEqual((c["unowned"], c["unscoped"]), (2, 1))
         self.assertEqual(built["orphan_work"], {})   # an orphan area needs rt-v4: earlier routers misjudged linked worktrees
+        # before rt-v7 the router judged a path under a root that is itself a repository unowned: the map's repositories
+        rv = lambda v: {"router_version": f"rt-v{v}"}
+        home = os.path.expanduser("~")
+        rows = [ev(5, "2026-11-04T10:00Z", "of.mandate_check", "s-search", dict({"verdict": "unowned", "tool_name": "Edit",
+                                                                                  "path": path}, **rv(v)))
+                for path, v in (("~/arb/notes/x.md", 6), (home + "/arb/notes/y.md", 6), ("~/arb/notes/z.md", 7),
+                                ("~/acme/scratch/x.py", 6))]
+        built = of_model.build(DOC, rows, at="2026-11-05T00:00Z")
+        self.assertEqual(built["map_repos"], ["arb", "infra"])
+        self.assertEqual(built["orphan_work"], {"~/arb/notes": {"bot_search": 1}, "~/acme/scratch": {"bot_search": 1}})
 
     def test_overlay_statuses(self):
         wr = [ev(1, "2026-11-04T10:00Z", "of.work_record", "s-op", {"author": "founder-gh", "systems": ["bot", "k8s"]}),
@@ -930,6 +940,19 @@ class DelegationTest(unittest.TestCase):
         across = of_diagnose.route_to_unit(m, of_diagnose.issue(cat, "coordination-gap", ["k8s", "bot"], {}, "y"))
         self.assertEqual((inside["decider"], inside["decider_position"], inside["unit"]), ("unit_owner", "plat_owner", "platform"))
         self.assertEqual(across["decider"], "owner")
+        # unit_owner_or_structure_keeper: the unit owner inside a delegated unit, else the structure keeper
+        either = lambda affected, **kw: of_diagnose.route_to_unit(
+            m, dict(of_diagnose.issue(cat, "coordination-gap", affected, {}, "z"), decider=of_diagnose.EITHER, **kw), "acme_org")
+        got = either(["k8s"])
+        self.assertEqual((got["decider"], got["decider_position"], got["unit"]), ("unit_owner", "plat_owner", "platform"))
+        got = either(["k8s", "bot"])
+        self.assertEqual((got["decider"], got["decider_position"]), ("structure_keeper", "acme_org"))
+        self.assertNotIn("unit", got)
+        got = either(["k8s"], critical=True)                                    # a critical one is not routed
+        self.assertEqual((got["decider"], got["decider_position"]), ("structure_keeper", "acme_org"))
+        got = of_diagnose.route_to_unit(m, dict(of_diagnose.issue(cat, "coordination-gap", ["k8s", "bot"], {}, "z"),
+                                                decider=of_diagnose.EITHER))
+        self.assertEqual(got["decider_position"], of_model.structure_keeper(m))   # no keeper given: the model's
 
     def test_founder_sees_the_delegated_unit_as_one_row(self):
         dd = of_studio.Data.__new__(of_studio.Data)

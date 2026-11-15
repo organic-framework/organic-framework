@@ -169,10 +169,19 @@ def mark_unconfirmed(model, i):
     return i
 
 
-def route_to_unit(model, i):
+EITHER = "unit_owner_or_structure_keeper"   # a catalogue decider: the unit owner inside a delegated unit, else the
+# structure keeper (of_architect moved six rules' issues from the founder to the keeper, msg 01a1dc76-ed6e, 2026-11-15)
+
+
+def route_to_unit(model, i, keeper=None):
     """An owner-decided issue that lies wholly inside one delegated unit is the unit owner's to decide (the delegator
-    sees it rolled up, and gets it only through the unit's escalate_when)."""
-    if i.get("decider") != "owner" or i.get("critical"):
+    sees it rolled up, and gets it only through the unit's escalate_when). A rule whose decider is
+    `unit_owner_or_structure_keeper` routes the same way, a critical one excepted; an issue it does not route becomes
+    the structure keeper's (KEEPER, else the model's)."""
+    either = i.get("decider") == EITHER
+    if either and i.get("critical"):
+        return _to_keeper(model, i, keeper)
+    if i.get("decider") not in ("owner", EITHER) or i.get("critical"):
         return i
     units = {uid: unit_members(model, uid) for uid, u in (model.get("org_units") or {}).items() if u.get("delegation")}
     for uid, (systems, positions) in units.items():
@@ -180,7 +189,12 @@ def route_to_unit(model, i):
         if i["affected"] and all(x in inside for x in i["affected"]):
             owner = model["org_units"][uid]["owner"]
             i.update(decider="unit_owner", decider_position=owner, unit=uid)
-            break
+            return i
+    return _to_keeper(model, i, keeper) if either else i
+
+
+def _to_keeper(model, i, keeper=None):
+    i.update(decider="structure_keeper", decider_position=keeper or structure_keeper(model))
     return i
 
 
@@ -226,7 +240,7 @@ def diagnose(model, rows, a, b, cat=None, context=None):
             found = [apply_label(i, labs.get(i["issue_id"]), b, carry) for i in res]
             for i in found:
                 i["decider_position"] = decider_position(model, i, keeper)
-                route_to_unit(model, i)
+                route_to_unit(model, i, keeper)
                 mark_unconfirmed(model, i)
             row["issues"] = sum(i["state"] == "open" for i in found)
             row["status"] = "fired" if row["issues"] else ("blocked" if extra else "quiet")
