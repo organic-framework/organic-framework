@@ -672,8 +672,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         except ValueError:
             continue
         to = of_asks.bare_to(p.get("to"), org)  # `--to <org>:<position>` was stored verbatim before 2026-11-15
-        if not asker or to == asker or inbox_only(p):
-            continue
+        if not asker or to == asker or inbox_only(p) or to in of_asks.OWNER_ADDRESSES:
+            continue  # `owner`, like `founder`, is the person's queue, never a position (of_studio, msg 01a1e13d-1487)
         # OF's own routing (of_blocked.TO: a limit or login screen of any organization's position goes to of_capacity)
         # names its receiver by its bare name in OF's team, and a blocked asker could not act on a note: it keeps the
         # delivery by name (of_review on PR 226)

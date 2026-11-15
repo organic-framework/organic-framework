@@ -222,6 +222,44 @@ class LoopStallTest(unittest.TestCase):
             conn.close()
 
 
+class AskWaitTest(unittest.TestCase):
+    def test_a_wait_on_an_ask_ends_when_the_ask_is_answered(self):
+        """of_studio, message 01a1e13d-1487: the pulse reads an ask's answer as the end of a wait on it, as Studio and
+        the daily diagnosis do (docs/registry.md, Works, "A stated wait")."""
+        import of_loops
+        import of_store
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            t0 = 1_800_000_000
+            for name, payload, at in (("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "status": "testing",
+                                                            "status_at": of_pulse._iso(t0)}, t0),
+                                      ("loop_wait", {"on": "ask", "ref": "A1" * 8, "by": "of_doer",
+                                                     "expect_at": of_pulse._iso(t0 + 7 * 3600)}, t0 + 60)):
+                rec = of_events.record(name, dict(payload, work="w1"), position="of_doer", session="SD")
+                rec["timestamp"] = of_pulse._iso(at)
+                of_store.add_event(conn, rec)
+            positions = [{"name": "of_own", "_org": "ofb"}, {"name": "of_doer", "_org": "ofb"}]
+            agents = [{"name": p["name"], "pane_id": "p-" + p["name"], "agent_status": "idle"} for p in positions]
+            bind = lambda ps, ags: ([(p, a) for p in ps for a in ags if a["name"] == p["name"]], [], [])  # noqa: E731
+            works = [("ofb", "w1", {"owner": "of_own", "doers": ["of_doer"]}, None)]
+
+            real = of_loops.ask_ends
+
+            def run(asks):
+                typed = []
+                with mock.patch.object(of_pulse.of_events, "emit", lambda *a, **k: None), \
+                        mock.patch.object(of_loops, "ask_ends", lambda conn=None: real(asks=asks)):
+                    of_pulse.loop_stalls(positions, agents, bind, {}, t0 + 6 * 3600, conn, works,
+                                         prompt=lambda pane, text, sender: typed.append(pane) or (True, None),
+                                         log=lambda m: None)
+                return typed
+            self.assertEqual(run([{"event_id": "A1" * 8, "state": "open"}]), [])          # still waiting: it holds
+            answered = [{"event_id": "A1" * 8, "state": "answered", "closed_at": of_pulse._iso(t0 + 3600)}]
+            self.assertEqual(run(answered), ["p-of_own", "p-of_doer"])                    # 5 h since the answer
+            conn.close()
+
+
 class LongWaitTest(unittest.TestCase):
     def test_a_wait_past_the_escalation_threshold_reaches_the_owner_once_when_stated(self):
         """docs/registry.md, Works, "A stated wait" (of_architect, message 01a1e12a-e6e3): a long wait would otherwise

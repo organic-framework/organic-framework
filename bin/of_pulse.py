@@ -1119,8 +1119,8 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
     and ends when the clock does. A receiver busy, away or held on another machine is tried at the next pulse; nothing
     is typed into a person. works: [(org, work id, the registry's entry, its loop or None)]. Returns the number told."""
     import of_diagnose_rules
-    import of_loop
     import of_loops
+    ends = of_loops.ask_ends(conn)
     marks = ",".join("?" * len(LOOP_EVENTS))
     by_work = {}
     for eid, name, ts, pos, sid, pl in conn.execute(
@@ -1143,11 +1143,11 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
         rows = by_work.get(wid) or []
         if not loop and not rows:
             continue
-        card = of_loops.project(wid, loop, rows, now, work=work)
+        # a wait on an ask ends when that ask is answered or withdrawn (ask_ends reads the asks view once, on the first
+        # wait on an ask), as Studio and the daily diagnosis read it (of_studio, message 01a1e13d-1487)
+        card = of_loops.project(wid, loop, rows, now, work=work, asks=ends)
         if not card:
             continue
-        card.setdefault("waits", of_loop.waits(rows, wid))   # until the card carries them (of_studio, asked 2026-11-16)
-        card.setdefault("state", work.get("state"))
         owner = work.get("owner")
         # a long wait is told when it is stated (docs/registry.md, Works, "A stated wait"): to the work's owner, or, when
         # a person holds the owner's position (or there is none), where the 8 h level goes, the organization's
