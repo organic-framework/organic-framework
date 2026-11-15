@@ -3261,42 +3261,104 @@ class IssuesAcrossOrgsTest(unittest.TestCase):
         self.assertTrue(table.startswith("ORG"))
         self.assertIn("rules for team:", table)
 
-    def test_label_finds_the_issue_in_any_org(self):
+    def _of(self):
         import importlib.machinery
         import importlib.util
-        import json
-        import subprocess
-        from unittest import mock
-        import of_events
         loader = importlib.machinery.SourceFileLoader("of_cli_issues", os.path.join(os.path.dirname(__file__), "..", "bin", "of"))
         of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_issues", loader))
         loader.exec_module(of)
-        listed = {"issues": [self.issue("43b590d385f6", "team"), self.issue("6081a150e82b", "acme"),
-                             self.issue("6081a150e82b", "team")]}
+        return of
+
+    @staticmethod
+    def label_args(iid=None, org=None, label="true_positive", rule_version=None, file=None):
+        import argparse
+        return argparse.Namespace(action="label", id=iid, label=label, note=None, rule_version=rule_version,
+                                  json=False, sender=None, org=org, file=file)
+
+    def test_label_finds_the_issue_in_any_org(self):
+        from unittest import mock
+        import of_events
+        import of_studio_cli
+        of = self._of()
+        listed = [self.issue("43b590d385f6", "team"), self.issue("6081a150e82b", "acme"), self.issue("6081a150e82b", "team")]
         calls = []
 
-        def run(cmd, **kw):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(listed), stderr="")
-
-        def args(iid, org=None):
-            import argparse
-            return argparse.Namespace(action="label", id=iid, label="true_positive", note=None, rule_version=None,
-                                      json=False, sender=None, org=org)
+        def lookup(org, ids=(), log=None, run=True):
+            calls.append((org, list(ids), run))
+            return [i for i in listed if org == "all" or i["org"] == org], "render"
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
-        with mock.patch.object(of.subprocess, "run", run), mock.patch.object(of_events, "emit") as emit, \
+        with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
                 mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"):
-            of.cmd_issues(args("43b590"))
-            self.assertEqual(calls[-1][-2:], ["--org", "all"])
+            of.cmd_issues(self.label_args("43b590"))
+            self.assertEqual(calls[-1], ("all", ["43b590"], True))
             self.assertEqual(emit.call_args.kwargs["org"], "team")                 # the owner's label lands in the issue's org
             self.assertEqual(emit.call_args.args[1]["by"], "owner")
             with self.assertRaises(of.OfError) as e:
-                of.cmd_issues(args("6081a150e82b"))
+                of.cmd_issues(self.label_args("6081a150e82b"))
             self.assertIn("add --org", str(e.exception))
-            listed["issues"] = [i for i in listed["issues"] if i["org"] == "acme"]   # what `--org acme` returns
-            of.cmd_issues(args("6081a150e82b", "acme"))
-            self.assertEqual(calls[-1][-2:], ["--org", "acme"])
+            of.cmd_issues(self.label_args("6081a150e82b", "acme"))
+            self.assertEqual(calls[-1][0], "acme")
             self.assertEqual(emit.call_args.kwargs["org"], "acme")
+            # an issue no longer open, named in full with its rule version and org: no diagnose run, the label written
+            of.cmd_issues(self.label_args("ffff0000aaaa", "acme", "false_positive", "ap.coordination-gap@1"))
+            self.assertEqual(calls[-1], ("acme", [], False))
+            self.assertEqual(emit.call_args.args[1], {"issue_id": "ffff0000aaaa", "rule": "ap.coordination-gap",
+                                                      "rule_version": "ap.coordination-gap@1", "label": "false_positive",
+                                                      "by": "owner"})
+
+    def test_label_a_batch_from_a_file(self):
+        import tempfile
+        from unittest import mock
+        import of_events
+        import of_studio_cli
+        of = self._of()
+        listed = [self.issue("43b590d385f6", "team"), self.issue("6081a150e82b", "team")]
+        calls = []
+
+        def lookup(org, ids=(), log=None, run=True):
+            calls.append((org, list(ids), run))
+            return listed, "render"
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+            fh.write("# the week's labels\n43b590 true_positive\n\n6081a1 wrong_remedy the keeper owns it\n"
+                     "ffff0000aaaa false_positive ap.coordination-gap@1 left the list\n0000 true_positive\n")
+        with mock.patch.object(of_studio_cli, "issues_for_label", lookup), mock.patch.object(of_events, "emit") as emit, \
+                mock.patch.dict(os.environ, env, clear=True), mock.patch("builtins.print"):
+            rc = of.cmd_issues(self.label_args(org="team", file=fh.name, label=None))
+        os.unlink(fh.name)
+        self.assertEqual(calls, [("team", ["43b590", "6081a1", "0000"], True)])   # one lookup for the whole file
+        got = [c.args[1] for c in emit.call_args_list]
+        self.assertEqual([(x["issue_id"], x["label"], x.get("note")) for x in got],
+                         [("43b590d385f6", "true_positive", None), ("6081a150e82b", "wrong_remedy", "the keeper owns it"),
+                          ("ffff0000aaaa", "false_positive", "left the list")])
+        self.assertEqual(got[2]["rule_version"], "ap.coordination-gap@1")
+        self.assertEqual(rc, 1)                                                   # 0000 matched nothing: said, not silent
+        with self.assertRaises(of.OfError):
+            of._label_entries(self.label_args("43b590", file="x"))               # an issue or a file, not both
+
+    def test_the_render_keeps_the_open_issues_for_labelling(self):
+        import tempfile
+        from unittest import mock
+        import of_studio_cli
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(of_studio, "_pages_dir", lambda: tmp), \
+                mock.patch.object(of_studio, "orgs", lambda *a: [{"name": "team"}, {"name": "acme"}]):
+            class D:
+                org, now = "team", time.time()
+                diagnosis = {"issues": [dict(self.issue("43b590d385f6", "team"), state="open"),
+                                        dict(self.issue("1111", "team"), state="labelled")]}
+            self.assertEqual(of_studio.write_issues(D()), 1)
+            self.assertEqual([i["issue_id"] for i in of_studio.read_issues(["team"])], ["43b590d385f6"])
+            self.assertIsNone(of_studio.read_issues(["team", "acme"]))           # one organization has no file
+            self.assertIsNone(of_studio.read_issues(["team"], now=D.now + of_studio.ESCALATIONS_FRESH_S + 1))
+            ran = []
+            with mock.patch.object(of_studio_cli, "_rows", lambda since: []), \
+                    mock.patch.object(of_studio_cli, "_open_issues", lambda a, n, rows, b: ran.append(n) or (n, [], {})):
+                self.assertEqual(of_studio_cli.issues_for_label("team", ["43b5"])[1], "render")
+                self.assertEqual(ran, [])
+                self.assertEqual(of_studio_cli.issues_for_label("team", ["9999"])[1], "run")   # an id it does not hold
+                self.assertEqual(of_studio_cli.issues_for_label("all", ["43b5"])[1], "run")    # acme has no render
+                self.assertEqual(ran, ["team", "team", "acme"])
+                self.assertEqual(of_studio_cli.issues_for_label("all", [], run=False), ([], "none"))
 
 
 class FlowMeasureTest(unittest.TestCase):

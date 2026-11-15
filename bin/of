@@ -4206,43 +4206,95 @@ ISSUE_LABELS = ("true_positive", "false_positive", "true_but_not_now", "wrong_re
 
 
 def cmd_issues(args):
-    """`of issues [list]` shows of_studio's diagnosed issues; `of issues label <id> <label>` writes the
-    owner's label, the only stored kind of the catalogue (docs/diagnose.md): of.issue_labelled."""
+    """`of issues [list]` shows of_studio's diagnosed issues; `of issues label <id> <label>`, or `--file F` with one
+    label a line, writes the owner's label, the only stored kind of the catalogue (docs/diagnose.md): of.issue_labelled.
+    The ids are matched against the issues of the last page render when it is fresh (of_studio_cli.issues_for_label),
+    else against one diagnose run here."""
     import of_events
     if args.action == "list":
         import of_studio_cli
         return of_studio_cli.main(["model", "issues", "--org", args.org or "all"] + (["--json"] if args.json else []))
-    if not args.id or args.label not in ISSUE_LABELS:
-        raise OfError(f"usage: of issues label <issue id> {'|'.join(ISSUE_LABELS)} [--note \"…\"]")
-    # every organization's issues: an id from one organization's keeper digest labels without --org (2026-11-11)
-    r = subprocess.run([sys.executable, os.path.realpath(__file__), "model", "issues", "--json", "--org", args.org or "all"],
-                       capture_output=True, text=True, timeout=300)
-    try:
-        issues = json.loads(r.stdout)["issues"]
-    except (ValueError, KeyError):
-        raise OfError(f"cannot read the diagnosed issues: {(r.stderr or r.stdout).strip()[:200]}")
-    hits = [i for i in issues if i["issue_id"] == args.id or i["issue_id"].startswith(args.id)]
-    if len({i.get("org") for i in hits}) > 1:
-        raise OfError(f"{args.id!r} is open in {', '.join(sorted({i['org'] for i in hits}))}: add --org <organization>")
-    if len(hits) != 1 and not (args.rule_version and args.id):
-        raise OfError(f"no single open issue matches {args.id!r}" + ("" if hits else
-                      "; for an issue no longer open pass --rule-version ap.<rule>@<n>, the full id and --org"))
-    i = hits[0] if len(hits) == 1 else {"issue_id": args.id, "rule_version": args.rule_version,
-                                         "rule": args.rule_version.split("@")[0], "org": args.org}
+    import of_studio_cli
+    entries = _label_entries(args)
+    # every organization's issues: an id from one organization's keeper digest labels without --org (2026-11-11); an
+    # issue no longer open, named by its full id with --rule-version and --org, needs none (a user organization's
+    # structure keeper, 2026-11-15: each label ran the whole diagnose, and calls cut at a two-minute limit left nothing)
+    need = [x[0] for x in entries if not (x[3] and args.org)]
+    issues, _ = of_studio_cli.issues_for_label(args.org or "all", need, run=bool(need),
+                                               log=lambda m: print(m, file=sys.stderr, flush=True))
     # who labels: the owner (a shell that is no agent's session) or a position the owner delegates (--from)
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if args.sender or sid:
         by = _me(_load_quiet(), args.sender)["name"]
     else:
         by = "owner"
-    payload = {"issue_id": i["issue_id"], "rule": i.get("rule"), "rule_version": i.get("rule_version"),
-               "label": args.label, "by": by}
-    if args.note:
-        payload["note"] = of_hook_mask(args.note)
-    # the issue's organization: the owner's label has no position to resolve it from, and its model must see it
-    of_events.emit("issue_labelled", payload, position=None if by == "owner" else by, org=i.get("org"))
-    print(f"labelled {i['issue_id']} ({i.get('rule_version')}{', ' + i['org'] if i.get('org') else ''}): {args.label} by {by}")
-    return 0
+    failed = 0
+    for iid, label, note, rv in entries:
+        try:
+            i = _label_target(issues, iid, rv, args.org)
+        except OfError as exc:
+            if len(entries) == 1:
+                raise
+            print(f"not labelled {iid}: {exc}", file=sys.stderr)
+            failed += 1
+            continue
+        payload = {"issue_id": i["issue_id"], "rule": i.get("rule"), "rule_version": i.get("rule_version"),
+                   "label": label, "by": by}
+        if note:
+            payload["note"] = of_hook_mask(note)
+        # the issue's organization: the owner's label has no position to resolve it from, and its model must see it
+        of_events.emit("issue_labelled", payload, position=None if by == "owner" else by, org=i.get("org"))
+        print(f"labelled {i['issue_id']} ({i.get('rule_version')}{', ' + i['org'] if i.get('org') else ''}): {label} by {by}")
+    if failed:
+        print(f"{failed} of {len(entries)} not labelled", file=sys.stderr)
+    return 1 if failed else 0
+
+
+LABEL_LINE = re.compile(r"ap\.[\w.-]+@\d+$")
+
+
+def _label_entries(args):
+    """[(issue id, label, note, rule version)]: the one the command line names, or each line of --file, written as
+    `<issue id> <label> [ap.<rule>@<n>] [note]`; a blank line or one starting with # is skipped."""
+    usage = f"<issue id> {'|'.join(ISSUE_LABELS)} [ap.<rule>@<n>] [note]"
+    if not args.file:
+        if not args.id or args.label not in ISSUE_LABELS:
+            raise OfError(f"usage: of issues label <issue id> {'|'.join(ISSUE_LABELS)} [--note \"…\"] | --file F")
+        return [(args.id, args.label, args.note, args.rule_version)]
+    if args.id or args.label:
+        raise OfError("of issues label: give an issue and its label, or --file, not both")
+    out = []
+    try:
+        fh = open(args.file)
+    except OSError as exc:
+        raise OfError(f"of issues label --file: {exc.strerror}: {args.file}")
+    with fh:
+        for n, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or parts[1] not in ISSUE_LABELS:
+                raise OfError(f"{args.file}:{n}: expected {usage}")
+            rest = parts[2:]
+            rv = rest.pop(0) if rest and LABEL_LINE.match(rest[0]) else None
+            out.append((parts[0], parts[1], " ".join(rest) or None, rv))
+    if not out:
+        raise OfError(f"{args.file}: no label in it; each line is {usage}")
+    return out
+
+
+def _label_target(issues, iid, rule_version, org):
+    """The open issue IID names (its id or a prefix), or, for one no longer open, the issue as RULE_VERSION and ORG
+    name it."""
+    hits = [i for i in issues if i["issue_id"] == iid or i["issue_id"].startswith(iid)]
+    if len({i.get("org") for i in hits}) > 1:
+        raise OfError(f"{iid!r} is open in {', '.join(sorted({i['org'] for i in hits}))}: add --org <organization>")
+    if len(hits) != 1 and not (rule_version and iid):
+        raise OfError(f"no single open issue matches {iid!r}" + ("" if hits else
+                      "; for an issue no longer open pass --rule-version ap.<rule>@<n>, the full id and --org"))
+    return hits[0] if len(hits) == 1 else {"issue_id": iid, "rule_version": rule_version,
+                                           "rule": rule_version.split("@")[0], "org": org}
 
 
 # ------------------------------------------------------------------- hand-overs
@@ -6247,7 +6299,7 @@ def main(argv=None):
     df.add_argument("--ask", help="propose: the owner's question in his language, standing on its own "
                     "(default: built from the English hypothesis); options stay approve|reject")
     df.set_defaults(fn=cmd_diff)
-    iss = sub.add_parser("issues", help="diagnosed issues (of_studio): of issues [list]; of issues label <id> <label> [--note]")
+    iss = sub.add_parser("issues", help="diagnosed issues (of_studio): of issues [list]; of issues label <id> <label> [--note] | --file F")
     iss.add_argument("action", nargs="?", default="list", choices=["list", "label"])
     iss.add_argument("id", nargs="?")
     iss.add_argument("label", nargs="?", choices=list(ISSUE_LABELS))
@@ -6256,6 +6308,7 @@ def main(argv=None):
     iss.add_argument("--org", help="one organization (default: every organization in orgs.yaml)")
     iss.add_argument("--json", action="store_true")
     iss.add_argument("--from", dest="sender", help="a position the owner delegated labelling to")
+    iss.add_argument("--file", help="label several issues: one '<issue id> <label> [ap.<rule>@<n>] [note]' a line")
     iss.set_defaults(fn=cmd_issues)
     ho = sub.add_parser("handover", help="hand-overs between positions: of handover propose <to> \"title\" --done-when …; "
                                          "accept|decline|block|deliver|verify|reject|close|return|withdraw <id>; list")
