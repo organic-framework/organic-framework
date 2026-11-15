@@ -529,12 +529,15 @@ def rule_chatty(model, rows, a, b, cat, spec, parts=("default", "receiver_flood"
     # merged code (structure keeping, compliance, treasury, audit findings), with at most one PR between them. The
     # notes name each pair below the floor with its counts, so a busy pair that merges nothing stays in sight
     few, wmin = [], t.get("pair_merged_prs_gte", 3)
-    owns = {u.get("owner"): uid for uid, u in (model.get("org_units") or {}).items() if u.get("owner")}
+    owns = collections.defaultdict(set)   # a unit owner -> every unit it owns (one may own several; PR 201 review)
+    for uid, u in (model.get("org_units") or {}).items():
+        if u.get("owner"):
+            owns[u["owner"]].add(uid)
     for p, q in {tuple(sorted(k)) for k in pair_msgs}:
         if p not in seen or q not in seen:
             continue
         if t.get("exclude_unit_owner_with_own_unit") and any(
-                x in owns and position_unit(model, y) == owns[x] for x, y in ((p, q), (q, p))):
+                position_unit(model, y) in owns.get(x, ()) for x, y in ((p, q), (q, p))):
             continue   # v4: a unit owner and a position of its own unit, the delegation's dispatch channel
         n = pair_msgs.get((p, q), 0) + pair_msgs.get((q, p), 0)
         w = pair_wr.get(p, 0) + pair_wr.get(q, 0)

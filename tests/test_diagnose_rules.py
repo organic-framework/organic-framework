@@ -533,6 +533,15 @@ class RulesTest(unittest.TestCase):
         # a unit owner with its own unit's position (bot.core lies in trade through its parent): left out; across units: kept
         self.assertNotIn(("bot_core_keeper", "trade_owner"), pairs)
         self.assertIn(("bot_core_keeper", "plat_owner"), pairs)
+        # an owner of two units: a pair with a position of either is left out (PR 201 review)
+        two = dict(doc, units={**doc["units"], "plat": dict(doc["units"]["plat"], owner="trade_owner"),
+                               "core": {"owner": "trade_owner", "systems": ["acme"]}})
+        rows2 = rows + msgs(4, "trade_owner", "k8s_keeper") + [   # k8s_keeper's pair over 3 PRs, so only the owner rule stops it
+            ev(f"pk{k}", "2026-11-03T12:00Z", "of.work_record", None,
+               {"source": "gh", "author": "dev", "systems": ["k8s"], "number": 400 + k}, position="k8s_keeper") for k in range(2)]
+        d2 = of_diagnose.diagnose(of_model.build(two, rows2, at=self.B), rows2, self.A, self.B)
+        pairs2 = {tuple(i["affected"]) for i in d2["issues"] if i["rule"] == "ap.chatty" and not i.get("part")}
+        self.assertFalse({("bot_core_keeper", "trade_owner"), ("k8s_keeper", "trade_owner")} & pairs2)
         # a coordinator's pair: the booking remedy
         self.assertEqual(pairs[("bot_operator", "slots")]["remedies"][0],
                          "a booking tool or queue for slots's shared capacity, so a slot is booked and released without a message")
