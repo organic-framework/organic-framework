@@ -36,7 +36,7 @@ GITHUB = "the GitHub import, a timer every 30 minutes: by organization and name 
 
 ALLOWED = {
     ('of_merge_delta.py', 'org_scope', 'SELECT DISTINCT session_id, position FROM event WHERE sessio'): MERGE,
-    ('of_merge_delta.py', 'merge', 'SELECT event_id, position, payload FROM event WHERE name = ?'): MERGE,
+    ('of_merge_delta.py', 'merge', 'SELECT event_id, position, session_id, org, payload FROM eve'): MERGE,
     ('of', '_diff_answer', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): FALLBACK,
     ('of', 'cmd_handover', 'of_handover.load(conn)'): HANDOVER,
     ('of', 'cmd_pulse', 'of_handover.load(conn)'): HANDOVER,

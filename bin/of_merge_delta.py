@@ -399,35 +399,46 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
     have = [c for c in EVENT_COLS if c in _cols(src, "event")]
     rows = src.execute(f"SELECT {', '.join(have)} FROM event" + (" WHERE ts >= ?" if since else "")
                        + " ORDER BY ts, rowid", (since,) if since else ()).fetchall()
-    # ORG's asks and hand-overs: those the target holds as ORG's, and those this delta brings in scope
-    # ORG's asks, hand-overs and diffs: those the target holds as ORG's, and those this delta brings in scope; ORG's
-    # works: its registry's
+    # Whose each ask, hand-over and diff is. An id the target holds is decided by the target's own row, as org_scope
+    # decides a session the target knows: a delta row that claims it never makes it ORG's (of_review on organic-framework
+    # PR 195: a delta proposal reusing another organization's ask or diff id let that record's answer or application
+    # cross and close it). An id the target lacks is ORG's when only ORG's rows of the delta make it; one that another
+    # row of the delta also makes is contested, and nobody's. ORG's works: its registry's.
     own = {"ask": set(), "handover": set(), "diff": set(), "work": set(works)}
+    theirs = {"ask": set(), "handover": set(), "diff": set()}
     makers = {"of.agent_question": "ask", "of.handover_proposed": "handover", "of.diff_proposed": "diff"}
-    for name, kind in makers.items():
-        for eid, pos, pl in dst.execute("SELECT event_id, position, payload FROM event WHERE name = ? AND org = ?",
-                                        (name, org)):
-            if not pos or pos in positions:
-                own[kind].add(eid)
-                if kind == "diff":  # a diff is named by its own id, which its proposal carries
-                    try:
-                        did = (json.loads(pl or "{}") or {}).get("id")
-                    except ValueError:
-                        did = None
-                    if isinstance(did, str):
-                        own["diff"].add(did)
+
+    def made(name, eid, payload):
+        """(kind, ids) a proposal makes: its event id, and a diff's or a hand-over's own id from its payload."""
+        kind, ids = makers[name], {eid}
+        if kind in ("diff", "handover"):
+            try:
+                pl = json.loads(payload or "{}")
+            except ValueError:
+                pl = {}
+            if isinstance(pl, dict) and isinstance(pl.get("id"), str) and pl["id"]:
+                ids.add(pl["id"])
+        return kind, ids
+
+    for name in makers:
+        for eid, pos, sid, eorg, pl in dst.execute("SELECT event_id, position, session_id, org, payload FROM event "
+                                                   "WHERE name = ?", (name,)):
+            kind, ids = made(name, eid, pl)
+            mine = in_scope({"position": pos, "session_id": sid, "org": eorg})
+            (own if mine else theirs)[kind].update(ids)
+    claims = {k: {} for k in theirs}
     for row in rows:
         d = dict(zip(have, row))
-        if d.get("name") in makers and in_scope(d):
-            kind = makers[d["name"]]
-            own[kind].add(d["event_id"])
-            if kind == "diff":
-                try:
-                    did = (json.loads(d.get("payload") or "{}") or {}).get("id")
-                except ValueError:
-                    did = None
-                if isinstance(did, str):
-                    own["diff"].add(did)
+        if d.get("name") in makers:
+            kind, ids = made(d["name"], d["event_id"], d.get("payload"))
+            for i in ids:
+                claims[kind].setdefault(i, set()).add(in_scope(d))
+    for kind, got in claims.items():
+        for i, who in got.items():
+            if i not in own[kind] and i not in theirs[kind]:   # the target's row decides an id it holds
+                (own if who == {True} else theirs)[kind].add(i)
+    for kind in theirs:
+        own[kind] -= theirs[kind]   # held as ORG's and as another's in the target: nobody's
 
     def events():
         for row in rows:
@@ -444,7 +455,11 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
             except ValueError:
                 payload = {}
             payload = payload if isinstance(payload, dict) else {}
-            foreign = sorted({i for kind, ids in refs(d.get("name") or "", payload) for i in ids - own[kind]})
+            foreign = {i for kind, ids in refs(d.get("name") or "", payload) for i in ids - own[kind]}
+            if d.get("name") in makers:   # a proposal that reuses an id not ORG's would file itself under that record
+                kind, ids = made(d["name"], d["event_id"], d.get("payload"))
+                foreign |= ids - own[kind]
+            foreign = sorted(foreign)
             if foreign:  # it would change, or file itself under, a record that is not ORG's
                 counts["event"]["held"] += 1
                 held_refs.append({"name": d["name"], "event_id": d["event_id"], "position": d.get("position"),
