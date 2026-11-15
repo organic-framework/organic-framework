@@ -157,6 +157,37 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(positions, [])  # no commit to stand in: skipped, as before
             self.assertIn("its positions are skipped", "\n".join(problems))
 
+    def test_a_successor_is_an_active_position_of_the_organization(self):
+        """docs/registry.md, positions, successor (hand-over f453d71d from of_architect, 2026-11-15)."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_new, system: acme, role: n, status: active}
+                  - {name: acme_old, system: acme, role: o, status: finished, successor: acme_new}
+                  - {name: acme_gone, system: acme, role: g, status: finished, successor: acme_nobody}
+                  - {name: acme_self, system: acme, role: s, status: parked, successor: acme_self}
+                  - {name: acme_chain, system: acme, role: c, status: finished, successor: acme_old}
+                  - {name: acme_live, system: acme, role: l, status: active, successor: acme_new}
+                  - {name: acme_other, system: acme, role: x, status: finished, successor: build_y}
+                """)
+            self.write(root, "build/registry/positions.yaml", """
+                positions:
+                  - {name: build_y, system: b, role: y, status: active}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/org}\n  - {name: build, path: %s/build}\n"
+                       % (root, root))
+            orgs = os.path.join(root, "conf/orgs.yaml")
+            deep = "\n".join(of.load_positions(orgs, deep=True)[1])
+            quick = "\n".join(of.load_positions(orgs)[1])
+            self.assertNotIn("acme_old: successor", deep)                       # a finished position, an active one
+            self.assertIn("acme_gone: successor 'acme_nobody' is no position of this organization", quick)
+            self.assertIn("acme_other: successor 'build_y' is no position of this organization", quick)  # another org's
+            self.assertIn("acme_self: successor names the position itself", quick)
+            self.assertIn("warning: acme:registry/positions.yaml: acme_chain: successor acme_old is itself finished",
+                          deep)
+            self.assertIn("acme_live: a successor on an active position", deep)
+            self.assertNotIn("successor acme_old is itself finished", quick)    # warnings: of registry check only
+
     def test_org_agents_reads_the_entry(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "orgs.yaml")

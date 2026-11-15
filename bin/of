@@ -232,6 +232,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                 else:
                     seen[key] = name
             positions.append(p)
+    problems += [pr for pr in check_successors(positions) if deep or not pr.startswith(WARN)]
     for org, path, _ in org_registries(orgs_file) if deep else ():  # the systems map: `of registry check` only
         if os.path.exists(path) and org not in BROKEN:
             with open(path) as fh:
@@ -382,7 +383,35 @@ def check_mandate_fields(p):
 
 
 STRING_FIELDS = ("name", "system", "role", "kind", "owner", "summary", "status", "waiting_on", "note",
-                 "mandate", "throughput", "serves")
+                 "mandate", "throughput", "serves", "successor")
+
+
+def check_successors(positions):
+    """A position's `successor` (docs/registry.md, positions; of_architect, 2026-11-15): the active position of the
+    same organization that took over a finished or parked position's work, which `of send` names when it refuses a
+    message to it (docs/guard.md R11). One that is no position of the organization, or the position itself, is a
+    problem; one that is itself finished or parked is a warning (a chain leads the sender nowhere), and so is a
+    successor on an active position."""
+    out = []
+    by = {(p.get("_org"), p.get("name")): p for p in positions}
+    for p in positions:
+        s = p.get("successor")
+        if s is None:
+            continue
+        tag = f"{p.get('_file') or p.get('_org')}: {p['name']}"
+        if not isinstance(s, str) or (p.get("_org"), s) not in by:
+            out.append(f"{tag}: successor {s!r} is no position of this organization (its canonical name)")
+            continue
+        if s == p["name"]:
+            out.append(f"{tag}: successor names the position itself")
+            continue
+        if by[(p["_org"], s)].get("status") in ("finished", "parked"):
+            out.append(f"{WARN}{tag}: successor {s} is itself {by[(p['_org'], s)]['status']}: a chain of successors "
+                       "leads the sender nowhere; name the active position that does the work now")
+        if (p.get("status") or "active") == "active":
+            out.append(f"{WARN}{tag}: a successor on an active position: it is for a finished position, or a parked "
+                       "one with no holder")
+    return out
 
 
 def yaml_traps(p, path=""):
