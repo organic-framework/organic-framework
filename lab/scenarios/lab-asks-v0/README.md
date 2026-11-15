@@ -76,6 +76,13 @@ wait on the owner. A first run, before the last two changes, gave 0.81 and 0.86.
 are the of_asks readings that acme_org has not checked yet.
 `pipeline --ids asks-117`: lost at the gate with the detectors; with `--gate all`, on the list in 5 runs of 5.
 
+j-v5 (2026-11-16): a message that names only structural diffs already proposed (`sd-…`) and asks the owner nothing
+else is cleared before the model (rule `proposed-diff`), and a diff's open card is listed among the asks the message
+names. A diff is decided on its own card, and an answer to any other card approves nothing; a user organization's
+structure keeper reported the duplicate (message `01a1e0f6-0eab`): a pane card asking the founder to approve a diff
+he had approved on its card 74 s before. The model's prompt is j-v4's, and none of the 117 cases names a diff id, so
+j-v4's scores stand for j-v5. Replayed on the 70 pane cards filed to 2026-11-16, the rule clears one: that duplicate.
+
 Haiku's verdicts vary between runs by a few cases; compare versions on more than one run.
 
 ## What the misses show

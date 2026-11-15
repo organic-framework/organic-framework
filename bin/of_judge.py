@@ -35,7 +35,7 @@ import time
 
 import of_events
 
-VERSION = "j-v4"  # j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
+VERSION = "j-v5"  # j-v5: a message naming only proposed structural diffs is cleared, and a diff's open card is listed as named; j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
 MODEL = "haiku"
 TIMEOUT_S = 60
 SLOTS = 2                 # judges running at once on this machine (each is a short `claude -p`)
@@ -430,11 +430,50 @@ def founders_open(conn):
 
 
 def named_asks(asks, text, position=None):
-    """[(ask id, text, position)] of the open founder asks in `asks` that the message names by an 8-character id,
-    filed by another position."""
-    ids = set(ASK_ID.findall(text or ""))
+    """[(ask id, text, position)] of the open founder asks in `asks` that the message names by an 8-character id, or
+    by the structural diff its card approves (`diff_id`, j-v5), filed by another position."""
+    ids, diffs = set(ASK_ID.findall(text or "")), diff_ids(text)
     return [(a["event_id"], a.get("text") or "", a.get("position")) for a in asks
-            if a.get("position") != position and ids & _short(a["event_id"])]
+            if a.get("position") != position and (ids & _short(a["event_id"]) or a.get("diff_id") in diffs)]
+
+
+# A structural diff is decided on its own card (`of diff propose` files it, with `diff_id`) or by `of diff approve`;
+# an answer to any other card approves nothing (bin/of _diff_approved_by_answer). A user organization's structure
+# keeper, message 01a1e0f6-0eab (2026-11-15): an architect closed its turn with "it starts when you approve diff
+# sd-…" 74 s after the founder had approved that diff on its card, the judge filed the line as a second card, and he
+# answered that one too.
+DIFF_ID = re.compile(r"(?<![0-9A-Za-z_-])sd-[a-z0-9][a-z0-9._-]{2,80}")  # bin/of_diff.check_format
+
+
+def diff_ids(text):
+    """The structural diff ids a message names, as written and with a closing ".", "-" or "_" cut."""
+    found = DIFF_ID.findall(text or "")
+    return set(found) | {m.rstrip("._-") for m in found}
+
+
+def proposed_diffs(conn, now=None, until=None):
+    """{diff id: its card's id} of the diffs proposed in the last KNOWN_DAYS days (until: at or before that time, for
+    a replay), each by its newest proposal."""
+    since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime((now or time.time()) - KNOWN_DAYS * 86400))
+    rows = conn.execute("SELECT payload FROM event WHERE name = 'of.diff_proposed' AND ts >= ?"
+                        + (" AND ts <= ?" if until else "") + " ORDER BY ts, rowid",
+                        (since, until) if until else (since,))
+    return {p["id"]: p.get("ask_id") for p in (json.loads(pl or "{}") for (pl,) in rows) if p.get("id")}
+
+
+def only_proposed_diffs(conn, text, now=None, until=None):
+    """The proposed diffs a closing message names, when it asks the owner nothing else; else None (j-v5). Each is
+    decided on its own card in any state: open, he decides there; answered, he decided; a pane card would ask him again
+    and approve nothing. A "?" may stand only on the lines that name one of them or its card; without those lines the
+    message asks the owner nothing (says_more)."""
+    known = proposed_diffs(conn, now, until)
+    named = sorted(d for d in diff_ids(text) if d in known)
+    if not named:
+        return None
+    ids = set(named) | {x for d in named if known[d] for x in _short(known[d])}
+    if any("?" in ln for ln in (text or "").splitlines() if not any(i in ln for i in ids)) or says_more(text, ids):
+        return None
+    return named
 
 
 def _short(event_id):
@@ -609,9 +648,13 @@ def judge_one(conn, c, runner=subprocess.run, deliver=None, log=print, now=None)
     elif (named := only_filed_ids(conn, c.get("text") or "", now)):
         v = {"verdict": "not_a_question", "rule": "filed-ids",
              "reason": f"it names only asks already filed ({', '.join(named)}) and asks nothing new"}
+    elif (diffs := only_proposed_diffs(conn, c.get("text") or "", now)):
+        v = {"verdict": "not_a_question", "rule": "proposed-diff",
+             "reason": f"it names only structural diffs already proposed ({', '.join(diffs)}), each decided on its own "
+                       "card, and asks nothing else"}
     else:
         named = named_asks(open_founder_asks(conn), c.get("text") or "", c.get("position")) \
-            if ASK_ID.search(c.get("text") or "") else []
+            if ASK_ID.search(c.get("text") or "") or DIFF_ID.search(c.get("text") or "") else []
         v = judge_text(user_prompt(c.get("text") or "", c.get("position"), c.get("origin"), c.get("peer"),
                                    filed(conn, c["position"]) if c.get("position") else (), named),
                        config_dir=c.get("config_dir"), runner=runner)
