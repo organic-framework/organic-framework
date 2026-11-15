@@ -1280,6 +1280,42 @@ class SendAddressTest(unittest.TestCase):
             r("acme:of_platform")                                 # a position of another organization
 
 
+class SendClosedReceiverTest(unittest.TestCase):
+    """of_architect, msg 01a1dc9d-3976 (issue b1e411890566): messages queued for days to a finished position nobody held.
+    A send to a finished position, or a parked one with no holder, is refused with who took its name and the keeper."""
+    POS = [{"name": "of_architect", "_org": "ofb", "role": "architect", "holder": {"session": "S-A"}},
+           {"name": "of_research", "_org": "ofb", "status": "finished", "holder": {"runtime": "claude-code"}},
+           {"name": "of_onboarding", "_org": "ofb", "aliases": ["of_research-old"], "holder": {"session": "S-O"}},
+           {"name": "of_research-old", "_org": "ofb", "status": "finished"},
+           {"name": "of_paused", "_org": "ofb", "status": "parked", "holder": {"runtime": "claude-code"}},
+           {"name": "of_paused-held", "_org": "ofb", "status": "parked", "holder": {"session": "S-P"}},
+           {"name": "of_person", "_org": "ofb", "status": "parked", "holder": {"runtime": "human", "person": "alex"}},
+           {"name": "acme_org", "_org": "acme", "role": "org", "holder": {"session": "S-K"}},
+           {"name": "acme_done", "_org": "acme", "status": "finished", "holder": {"session": "S-D"}}]
+
+    def test_who_is_refused_and_why(self):
+        c = lambda to: of._closed_receiver(to, self.POS)
+        self.assertIn("ofb:of_research is finished", c("ofb:of_research"))
+        self.assertIn("ask ofb:of_architect", c("ofb:of_research"))
+        self.assertIn("its name now belongs to of_onboarding", c("ofb:of_research-old"))
+        self.assertIn("parked and nobody holds it", c("ofb:of_paused"))
+        self.assertIn("ask acme:acme_org", c("acme:acme_done"))     # finished, even with a session on record
+        for to in ("ofb:of_architect", "ofb:of_paused-held", "ofb:of_person", "other:someone"):
+            self.assertIsNone(c(to), to)                            # active, parked but held, a person, unlisted
+
+    def test_send_refuses_before_reaching_a_server(self):
+        import types
+        saved = of._load_quiet
+        of._load_quiet = lambda: self.POS
+        try:
+            with self.assertRaises(of.OfError) as e:
+                of.cmd_send(types.SimpleNamespace(to="of_research", sender="ofb:of_architect", text="hi",
+                                                  reply_to=None, grant=None, fyi=True, urgent=False))
+        finally:
+            of._load_quiet = saved
+        self.assertTrue(str(e.exception).startswith("not sent: ofb:of_research is finished"), e.exception)
+
+
 class InboxMineFromTest(unittest.TestCase):
     """of_lab, 2026-11-07: in a shared lab registry --mine could not tell the position, and refused --from."""
     POS = [{"name": "lab_owner", "_org": "lab", "holder": {"runtime": "claude-code", "session": "S-OWN"}},
