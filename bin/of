@@ -6009,6 +6009,7 @@ def cmd_capacity(args):
                 note = fh.read()
         try:
             r = of_capacity.move(p, args.to, dry_run=args.dry_run, allow_shells=args.allow_shells, place=place,
+                                 positions=positions,
                                  extra_note=note, in_place=args.in_place, model=args.model, why=args.reason,
                                  restart=args.restart,
                                  assume_empty_input=args.assume_empty_input,

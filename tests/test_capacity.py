@@ -2801,6 +2801,32 @@ class DryRunPastTheLimitWait(unittest.TestCase):
         self.assertEqual(of_capacity.failed_hold_s(of_capacity.draft_error("p", "w1:p1", "words", True)), 0)
 
 
+class ReportRoute(unittest.TestCase):
+    """2026-11-15, a user organization's structure keeper (message 01a1de9c-570e): a move note told a position of
+    another organization to `of send of_capacity`, which resolves inside its own organization and has no grant to
+    reach the capacity position. Framework matters come through the structure keeper (AGENTS.md)."""
+    POS = [{"name": "of_capacity", "role": "capacity", "_org": "of-team"},
+           {"name": "acme_org", "role": "org", "_org": "acme"},
+           {"name": "acme_keeper", "role": "keeper", "_org": "acme"},
+           {"name": "solo_keeper", "role": "keeper", "_org": "solo"}]
+    POL = {"position": "of-team:of_capacity"}
+
+    def route(self, name, positions=None, policy=None):
+        p = next(x for x in self.POS if x["name"] == name)
+        return of_capacity.report_route(p, self.POS if positions is None else positions,
+                                        self.POL if policy is None else policy)
+
+    def test_a_position_of_another_organization_tells_its_structure_keeper(self):
+        self.assertEqual(self.route("acme_keeper"), "acme_org (of send acme_org), who relays it to of_capacity")
+        # the keeper itself, or an organization with none: the capacity position by its organization
+        self.assertEqual(self.route("acme_org"), "of_capacity (of send of-team:of_capacity)")
+        self.assertEqual(self.route("solo_keeper"), "of_capacity (of send of-team:of_capacity)")
+
+    def test_a_position_of_the_capacity_positions_organization_tells_it_directly(self):
+        self.assertEqual(self.route("of_capacity"), "of_capacity (of send of_capacity)")
+        self.assertEqual(self.route("acme_keeper", policy={}), "of_capacity (of send of_capacity)")  # none set
+
+
 class HoldAfterMove(unittest.TestCase):
     """2026-11-11: a move by hand (to the account that can read a shared artifact) must not be undone by fill."""
 
