@@ -338,6 +338,35 @@ class DelegationAskTest(unittest.TestCase):
             "ask.blocking", "money", "prod_change{affects: [storefront]}"]}))
         money = [{"tag": "money", "source": "declared"}]
         self.assertEqual(of.route_ask(sec, "founder", []), ("acme_platform-owner", None, True))
+        # --to normalized (a user organization's structure keeper, 2026-11-15): the own organization's prefix dropped,
+        # an alias read as its canonical name, another organization or an unknown name refused
+        me = dict(positions[0], _org="acme", _orgid="acme")
+        team = [dict(p, _org="acme") for p in positions[:2]] + [{"name": "acme_new", "_org": "acme",
+                                                                 "aliases": ["acme_old"]}]
+        self.assertEqual(of._ask_to(me, team, "acme:acme_platform-owner"), "acme_platform-owner")
+        self.assertEqual(of._ask_to(me, team, "acme_old"), "acme_new")
+        self.assertEqual((of._ask_to(me, team, "founder"), of._ask_to(me, team, None)), ("founder", None))
+        for bad in ("other:acme_platform-owner", "acme_nobody", "acme:acme_nobody"):
+            with self.assertRaises(of.OfError, msg=bad):
+                of._ask_to(me, team, bad)
+        # of asks --to-me: the receiver's own queue of open asks routed to it
+        import contextlib
+        import io
+        from unittest import mock
+        asks = [{"event_id": "01a1-aaaa1111", "ts": "2026-11-15T08:48:00Z", "to": "acme_platform-owner", "state": "open",
+                 "position": "acme_follower", "text": "Pause the follower tonight?"},
+                {"event_id": "01a1-bbbb2222", "ts": "2026-11-15T08:49:00Z", "to": "founder", "state": "open",
+                 "position": "acme_follower", "text": "not routed to it"},
+                {"event_id": "01a1-cccc3333", "ts": "2026-11-15T08:50:00Z", "to": "acme_platform-owner",
+                 "state": "answered", "position": "acme_follower", "text": "answered already"}]
+        out = io.StringIO()
+        with mock.patch.object(of, "_asks_now", lambda: asks), mock.patch.object(of, "_load_quiet", lambda: team), \
+                mock.patch.object(of, "_me", lambda ps, sender=None: team[1]), contextlib.redirect_stdout(out):
+            of._asks_to_me(type("A", (), {"sender": None})())
+        self.assertIn("1 open ask(s) routed to acme_platform-owner", out.getvalue())
+        self.assertIn("aaaa1111", out.getvalue())
+        self.assertNotIn("bbbb2222", out.getvalue())
+        self.assertNotIn("cccc3333", out.getvalue())
         self.assertEqual(of.route_ask(sec, "founder", money), ("founder", "money", False))
         self.assertEqual(of.route_ask(sec, "founder", [{"tag": "money", "source": "guessed"}]),
                          ("acme_platform-owner", None, True))  # a guessed tag never skips the unit owner

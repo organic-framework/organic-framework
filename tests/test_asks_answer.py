@@ -679,6 +679,20 @@ class RedeliverTest(AnswerTest):
         self.conn.execute("DELETE FROM event WHERE name = 'of.human_prompt'")
         self.assertEqual(of_asks_answer.pending(self.conn, closed, self.positions(), now), [])
 
+    def test_a_routed_question_with_its_organizations_prefix_is_delivered(self):
+        """A user organization's structure keeper, 2026-11-15: `of ask --to <org>:<unit owner>` was stored verbatim, and
+        none of five such asks was typed in; three escalated to the founder unseen by the unit owner."""
+        q = {"detected_by": "declared", "to": "ofb:of_owner", "blocking": False,
+             "questions": [{"question": "Pause the follower tonight?", "options": ["yes", "no"]}]}
+        self.add("agent_question", q, "2026-11-01T10:00:00Z", session="SU", position="of_unit")
+        other = dict(q, to="acme:of_owner")                                        # another organization's: kept
+        self.add("agent_question", other, "2026-11-01T10:00:01Z", session="SU", position="of_unit")
+        asks = of_asks.project(of_asks.load(self.conn))
+        self.assertEqual([a["to"] for a in asks], ["of_owner", "acme:of_owner"])
+        got = of_asks_answer.pending(self.conn, asks, self.positions(), self.now("2026-11-01T10:20:00Z"))
+        self.assertEqual([(d["position"], d["sender"]) for d in got], [("of_owner", "of_unit")])
+        self.assertEqual((of_asks.bare_to(None, "ofb"), of_asks.bare_to("founder", "ofb")), ("founder", "founder"))
+
     def test_a_limit_screen_for_of_capacity_goes_to_its_inbox_and_a_login_is_typed(self):
         """of_capacity, 2026-11-09: its balancer acts on every limit within 5 minutes; a typed limit ask only woke it."""
         def blocked(kind, at, **extra):
