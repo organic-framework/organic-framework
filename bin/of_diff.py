@@ -198,14 +198,104 @@ def set_fields(text, name, fields):
 
         def part(ln):
             return ln.startswith("      ") or (block and re.match(r"^    - ", ln) is not None)
+        def between(ln):  # a blank line, or a comment inside the entry (at the key's indent or deeper)
+            return ln.strip() == "" or (ln.startswith("    ") and ln.strip().startswith("#"))
+
+        def next_part(j):  # blank lines and comments belong to the field when one of its lines follows them
+            while j < e and between(lines[j]) and not part(lines[j]):
+                j += 1
+            return j < e and part(lines[j])
         k = at + 1
-        while k < e and (part(lines[k]) or (lines[k].strip() == "" and k + 1 < e and part(lines[k + 1]))):
+        while k < e and (part(lines[k]) or (between(lines[k]) and next_part(k))):
             k += 1
         repl = _render_field(key, value) if value is not None else []
         if at == s:  # the field sits on the `  - ` line itself (only name does)
             raise ValueError("the name of a position is changed by a rename diff, not here")
+        if isinstance(value, list):  # in the list's own style, its unchanged items as written (hand-over 74d2f4e4)
+            repl = (_merge_block_list(lines[at], lines[at + 1:k], value) if block else
+                    _inline_list(key, lines[at:k], value)) or repl
         lines[at:k] = repl
     return "\n".join(lines)
+
+
+def _flow(value):
+    """One line of YAML flow style, or None when a value holds a line break (written as a block instead)."""
+    def multiline(v):
+        return (isinstance(v, str) and "\n" in v) or (isinstance(v, dict) and any(map(multiline, v.values()))) or \
+            (isinstance(v, list) and any(map(multiline, v)))
+    if multiline(value):
+        return None
+    return yaml.dump(value, Dumper=_Dumper, default_flow_style=True, sort_keys=False, allow_unicode=True,
+                     width=10 ** 9).strip()
+
+
+def _merge_block_list(key_line, body, value):
+    """A block list's new lines: the key line as written (its comment kept); each new item whose value an old item
+    has keeps that item's lines, its trailing and own-line comments included; a changed or new item is written fresh
+    at the items' indent, as a one-line flow mapping when the old mappings were; a removed item's lines go with it.
+    None when the old items cannot be read (then the field is written fresh)."""
+    def comment(ln):
+        return not ln.strip() or ln.strip().startswith("#")
+    starts = [ln for ln in body if re.match(r"^ *- ", ln)]
+    if not starts:
+        return None
+    ind = len(starts[0]) - len(starts[0].lstrip(" "))
+    head, items, lead = [], [], []
+    for ln in body:
+        if re.match(rf"^ {{{ind}}}- ", ln):
+            items.append({"lines": lead + [ln], "own": len(lead)})
+            lead = []
+        elif comment(ln):
+            lead.append(ln)
+        elif items:
+            items[-1]["lines"] += lead + [ln]
+            lead = []
+        else:
+            return None  # content before the first item: not a list as expected
+        if not items:
+            head, lead = head + lead, []
+    if items:
+        items[-1]["lines"] += lead
+    while items and items[-1]["lines"] and not items[-1]["lines"][-1].strip():
+        items[-1]["lines"].pop()  # a blank line after the list stays where it is
+    for it in items:
+        content = [ln[ind:] for ln in it["lines"][it["own"]:]]
+        try:
+            got = yaml.safe_load("\n".join(content))
+        except yaml.YAMLError:
+            return None
+        if not isinstance(got, list) or len(got) != 1:
+            return None
+        it["value"], it["used"] = got[0], False
+    dicts = [it for it in items if isinstance(it["value"], dict)]
+    flow = bool(dicts) and all(re.match(r"^ *- *\{", it["lines"][it["own"]]) for it in dicts)
+    out = [key_line] + head
+    for v in value:
+        old = next((it for it in items if not it["used"] and it["value"] == v), None)
+        if old:
+            old["used"] = True
+            out += old["lines"]
+            continue
+        one = _flow(v) if flow and isinstance(v, dict) else None
+        fresh = [f"- {one}"] if one else yaml.dump([v], Dumper=_Dumper, sort_keys=False, allow_unicode=True,
+                                                    width=110, default_flow_style=False).rstrip("\n").split("\n")
+        out += [" " * ind + ln for ln in fresh]
+    return out
+
+
+def _inline_list(key, field, value):
+    """A list written inline (`owns: [a, b]  # note`) stays inline, its comment kept. None otherwise."""
+    if len(field) != 1:
+        return None
+    m = re.match(rf"^(\s*{re.escape(key)}:\s*)(\[.*\])(\s+#.*)?$", field[0])
+    one = _flow(value)
+    if not m or one is None:
+        return None
+    try:
+        yaml.safe_load(m.group(2))
+    except yaml.YAMLError:
+        return None  # the hash was inside the list: not a comment
+    return [f"{m.group(1)}{one}{m.group(3) or ''}"]
 
 
 def _top_span(lines, key):

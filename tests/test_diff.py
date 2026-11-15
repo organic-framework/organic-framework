@@ -119,6 +119,44 @@ class DiffTest(unittest.TestCase):
             self.assertEqual(yaml.safe_load(text)["positions"][0]["aliases"], ["new_a"], label)
             self.assertNotIn("old_b", text, label)
 
+    def test_set_keeps_the_lines_and_comments_of_unchanged_list_items(self):
+        """Hand-over 74d2f4e4 (a user organization's structure keeper, message 01a1e0df-1413): an unchanged owns item
+        lost the comment holding its basis when the list was set."""
+        heads = "positions:\n  - name: of_a\n    system: of\n"
+        tail = "    summary: s\n  - name: of_b\n    system: of\n"
+        kept = {"system": "bot", "method": "keep", "decides": True}
+        changed = {"system": "feed", "method": "watch", "decides": True}
+        added = {"system": "ledger", "method": "keep", "decides": False}
+        new_owns = [kept, changed, added]
+        for ind in ("    ", "      "):
+            block = (f"    owns:  # cells\n"
+                     f"{ind}# bot: the founder's yes\n"
+                     f"{ind}- system: bot\n{ind}  method: keep\n{ind}  decides: true   # of_x msg 01a1e0df-1413\n"
+                     f"{ind}- system: feed\n{ind}  method: watch\n{ind}  decides: false  # was watch only\n"
+                     f"{ind}# gone: closed on 11-15\n"
+                     f"{ind}- system: gone\n{ind}  method: keep\n")
+            text = of_diff.set_fields(heads + block + tail, "of_a", {"owns": new_owns})
+            doc = yaml.safe_load(text)
+            self.assertEqual(doc["positions"][0]["owns"], new_owns, ind)
+            self.assertEqual(doc["positions"][0]["summary"], "s", ind)
+            self.assertIn("    owns:  # cells\n", text)
+            self.assertIn(f"{ind}# bot: the founder's yes\n{ind}- system: bot\n{ind}  method: keep\n"
+                          f"{ind}  decides: true   # of_x msg 01a1e0df-1413\n", text)          # kept as written
+            self.assertNotIn("was watch only", text)                                         # changed: written fresh
+            self.assertNotIn("gone", text)                                                   # removed with its comment
+            self.assertIn(f"{ind}- system: ledger\n{ind}  method: keep\n{ind}  decides: false\n", text)  # at the indent
+            flow = (f"    owns:\n{ind}- {{system: bot, method: keep, decides: true}}  # of_x msg 01a1e0df-1413\n"
+                    f"{ind}- {{system: feed, method: watch, decides: false}}  # was\n")
+            text = of_diff.set_fields(heads + flow + tail, "of_a", {"owns": new_owns})
+            self.assertEqual(yaml.safe_load(text)["positions"][0]["owns"], new_owns, ind)
+            self.assertIn(f"{ind}- {{system: bot, method: keep, decides: true}}  # of_x msg 01a1e0df-1413\n", text)
+            self.assertIn(f"{ind}- {{system: ledger, method: keep, decides: false}}\n", text)  # flow, as the others
+            self.assertNotIn("# was", text)
+        inline = "    aliases: [old_a, old_b]  # earlier names\n"
+        text = of_diff.set_fields(heads + inline + tail, "of_a", {"aliases": ["old_a", "new_c"]})
+        self.assertIn("    aliases: [old_a, new_c]  # earlier names\n", text)
+        self.assertEqual(yaml.safe_load(text)["positions"][0]["aliases"], ["old_a", "new_c"])
+
     def test_swap_holder(self):
         h = {"runtime": "claude-code", "session": "s-new", "workplace": "herdr local, tab a"}
         new, problems = of_diff.preview(diff("swap_holder", {"op": "set", "name": "of_a", "fields": {"holder": h}}), REG)
