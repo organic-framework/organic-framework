@@ -144,6 +144,23 @@ class UnsetTargetTest(unittest.TestCase):
         for cmd in ("if c; then T=/tmp/x; fi; rm -rf $T/", "for i in; do T=/tmp/x; done; rm -rf $T/"):
             self.assertEqual((self.verdict(cmd) or ("",))[0], "deny", cmd)
 
+    def test_what_every_branch_sets_holds_after_fi(self):
+        """of_review and of_secrets-review on PR 223: a name set on every branch that goes on holds after fi; a branch
+        ending in exit goes on nowhere; with no else, the failed condition's branch counts; elif opens no block of
+        its own, so an outer block never outlives its fi."""
+        for cmd in ("if c; then T=/a/x; else T=/b/x; fi; rm -rf $T/",
+                    "if c\nthen\n  T=/a/x\nelse\n  T=/b/x\nfi\nrm -rf $T/",
+                    "if c; then T=/a/x; else exit 1; fi; rm -rf $T/",
+                    "if c; then T=/a; elif d; then T=/b; else T=/c; fi; rm -rf $T/",
+                    "if [ -z \"$T\" ]; then exit 1; fi; rm -rf $T/",
+                    "if [ -n \"$T\" ]; then :; else exit 1; fi; rm -rf $T/",
+                    "if T=/tmp/x; then rm -rf $T/; fi"):
+            self.assertIsNone(self.verdict(cmd), cmd)
+        for cmd in ("if [ -n \"$T\" ]; then if b; then :; elif c; then :; fi; fi; rm -rf $T/",
+                    "if c; then T=/a; elif d; then :; else T=/c; fi; rm -rf $T/",
+                    "if c; then T=/a; fi; rm -rf $T/"):
+            self.assertEqual((self.verdict(cmd) or ("",))[0], "deny", cmd)
+
     def test_a_mode_switch_turns_a_warning_into_a_deny(self):
         saved = of_guard.UNSET_TARGET_MODE
         of_guard.UNSET_TARGET_MODE = dict(saved, cd="deny")
