@@ -2358,6 +2358,19 @@ class LoopCost(unittest.TestCase):
         with mock.patch.object(of_capacity.of_events, "emit", lambda k, p, **kw: seen.append(k)):
             self.assertEqual(of_capacity.loop_costs(conn, later), 0)  # past the window: not read at all
 
+    def test_a_locate_of_a_run_costed_before_the_window_is_not_a_run(self):
+        # PR 199 (of_review): `of loop locate` wrote a later of.loop_run with the same run id and no rung; read as a
+        # run, a locate of a run costed before the window got a second, empty of.loop_cost.
+        from unittest import mock
+        conn, seen = self.store(), []
+        later = of_capacity._ts("2026-11-03T14:00:00Z") + of_capacity.LOOP_COST_WINDOW_S + 86400
+        locate = {"work": "w", "run": "r1", "observed_at": "proxy", "proxy": True}
+        conn.execute("INSERT INTO event VALUES ('e3', ?, 'of.loop_run', 's1', 'doer', ?)",
+                     (of_capacity._iso(later - 7200), json.dumps(locate)))
+        with mock.patch.object(of_capacity.of_events, "emit", lambda k, p, **kw: seen.append(k)):
+            self.assertEqual(of_capacity.loop_costs(conn, later), 0)
+        self.assertEqual(seen, [])
+
     def test_a_recent_run_waits_for_its_records(self):
         from unittest import mock
         conn, seen = self.store(), []
