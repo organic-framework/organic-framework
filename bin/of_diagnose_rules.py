@@ -1346,15 +1346,29 @@ def _wait_key(x):
     return (str(x.get("on") or ""), str(x.get("ref") or ""))
 
 
+def _ended_early(x, now):
+    """The answer or withdrawal that ended an `ask` wait before its expect_at (the projection's `ended_at`), or None."""
+    e, until = x.get("ended_at"), x.get("expect_at") or x["ts"]
+    return max(e, x["ts"]) if e is not None and e <= now and e < until else None
+
+
+def _wait_end(x, now):
+    """Until when a stated wait holds the clock: its expect_at, or the earlier end of an `ask` wait."""
+    return _ended_early(x, now) or x.get("expect_at") or x["ts"]
+
+
 def loop_stall(lp, now, thresholds=None):
     """The stall of one loop card (of_model.loops, diagnose.md §4.1) at NOW (epoch seconds), or None while it shows
     progress or a stated wait, or has no hypothesis in testing, or its work is done or parked.
 
     Progress is a run that ended or a decision, nothing else: a report, a status note or an owner's check that finds the
     loop unchanged never counts (the conductor's point 4). A wait declared after the last progress (`waits` in the
-    card: on, ref, expect_at, ts) holds the clock until its expect_at; one with no expect_at holds nothing past its own
-    time. A wait on the calendar (`calendar_kinds`: a locked week, a test of 14 days, a held-out date) holds nothing:
-    with nothing else in flight the work has no next step (point 3). A wait re-declared on the same thing (`on`, `ref`)
+    card: on, ref, expect_at, ended_at, ts) holds the clock until its end: its expect_at, or for a wait on an `ask` the
+    answer or withdrawal (`ended_at`) when that came first, from which the clock counts again (of_architect, message
+    01a1e12a-e502; docs/registry.md, Works, "A stated wait"). `of loop wait` requires --until, so an event with no
+    expect_at comes only from another tool, and it holds nothing past its own time. A wait on the calendar
+    (`calendar_kinds`: a date the work's design fixes, such as a locked week or a test of 14 days, and held-out data that
+    does not exist yet) holds nothing: with nothing else in flight the work has no next step (point 3). A wait re-declared on the same thing (`on`, `ref`)
     with no run or decision between counts once: two checks of an unchanged loop are no progress (point 4).
 
     Returns {work, part: silent|wait_over|calendar, level: owner|conductor, hours, since, last, wait, waits_not_counted,
@@ -1397,13 +1411,15 @@ def loop_stall(lp, now, thresholds=None):
         seen.add(k)
         counted.append(x)
     live = [x for x in counted if x.get("on") not in cal]
-    holds = max([x.get("expect_at") or x["ts"] for x in live] or [since])
+    holds = max([_wait_end(x, now) for x in live] or [since])
     start = max(since, holds)
     hours = (now - start) / 3600
     if hours < t["stall_hours_gte"]:
         return None
     if live:
-        part, wait = "wait_over", max(live, key=lambda x: x.get("expect_at") or x["ts"])
+        part, wait = "wait_over", max(live, key=lambda x: _wait_end(x, now))
+        if _ended_early(wait, now):
+            wait = dict(wait, ended_early=_ended_early(wait, now))
     elif counted:
         part, wait = "calendar", counted[-1]
     else:
@@ -1424,7 +1440,9 @@ def stall_text(st):
             + (f" (last: {last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else "")
             + f"; in testing: {', '.join(st['testing'][:5])}{' …' if len(st['testing']) > 5 else ''}")
     x = st.get("wait") or {}
-    if st["part"] == "wait_over":
+    if st["part"] == "wait_over" and x.get("ended_early"):
+        lead += f"; its wait on {x.get('on')} {x.get('ref') or ''} ended at {at(x['ended_early'])}, when it was answered or withdrawn".replace("  ", " ")
+    elif st["part"] == "wait_over":
         lead += f"; its wait on {x.get('on')} {x.get('ref') or ''} expected by {at(x.get('expect_at') or x.get('ts'))} passed".replace("  ", " ")
     elif st["part"] == "calendar":
         lead += (f"; it waits only on the calendar ({x.get('on')} {x.get('ref') or ''}".rstrip() +
@@ -1449,7 +1467,7 @@ def rule_loop_stalled(model, rows, a, b, cat, spec):
         if "waits" not in lp:
             notes.append(f"{w}: the projection carries no stated waits yet (of.loop_wait), so none could hold the clock")
         iso = of_model.iso   # the evidence carries ISO times, as every issue's `since` (the run ranks by it)
-        when = lambda x: x and dict(x, **{k: iso(x[k]) for k in ("at", "ts", "expect_at") if x.get(k)})
+        when = lambda x: x and dict(x, **{k: iso(x[k]) for k in ("at", "ts", "expect_at", "ended_at", "ended_early") if x.get(k)})
         ev = {"work": w, "part": st["part"], "level": st["level"], "hours": st["hours"], "since": iso(st["since"]),
               "last": when(st["last"]), "wait": when(st["wait"]), "waits_not_counted": [when(x) for x in st["waits_not_counted"]],
               "testing": st["testing"]}
