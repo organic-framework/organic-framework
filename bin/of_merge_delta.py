@@ -218,6 +218,12 @@ def registry_positions(orgs_file, org):
     raise MergeError(f"the target's {orgs_file} does not list {org}: its registry decides which positions cross")
 
 
+def _session_positions(dst, sid):
+    """The positions the target records for session SID."""
+    return {r[0] for r in dst.execute("SELECT DISTINCT position FROM event WHERE session_id = ? AND position IS NOT "
+                                      "NULL AND position != ''", (sid,))}
+
+
 def org_scope(src, dst, org, positions):
     """ORG's sessions: one the target already knows as a session of ORG's positions, or one it does not know at all
     whose every event in the source names one of ORG's positions. A session the target knows as another organization's
@@ -228,8 +234,7 @@ def org_scope(src, dst, org, positions):
     sessions = set()
     for sid, poss in cand.items():
         named = {p for p in poss if p}
-        known = {r[0] for r in dst.execute("SELECT DISTINCT position FROM event WHERE session_id = ? AND position IS NOT "
-                                           "NULL AND position != ''", (sid,))}
+        known = _session_positions(dst, sid)
         if known:
             if known <= positions:
                 sessions.add(sid)
@@ -399,10 +404,10 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
     have = [c for c in EVENT_COLS if c in _cols(src, "event")]
     rows = src.execute(f"SELECT {', '.join(have)} FROM event" + (" WHERE ts >= ?" if since else "")
                        + " ORDER BY ts, rowid", (since,) if since else ()).fetchall()
-    # Whose each ask, hand-over and diff is. An id the target holds is decided by the target's own row, as org_scope
-    # decides a session the target knows: a delta row that claims it never makes it ORG's (of_review on organic-framework
-    # PR 195: a delta proposal reusing another organization's ask or diff id let that record's answer or application
-    # cross and close it). An id the target lacks is ORG's when only ORG's rows of the delta make it; one that another
+    # Whose each ask, hand-over and diff is. An id the target holds is decided by the target's own row, judged by the
+    # target alone: a delta row that claims it never makes it ORG's (of_review on organic-framework PR 195: a delta
+    # proposal reusing another organization's ask or diff id let that record's answer or application cross and close
+    # it; and a row of ORG's in a session the source lacks must stay ORG's). An id the target lacks is ORG's when only ORG's rows of the delta make it; one that another
     # row of the delta also makes is contested, and nobody's. ORG's works: its registry's.
     own = {"ask": set(), "handover": set(), "diff": set(), "work": set(works)}
     theirs = {"ask": set(), "handover": set(), "diff": set()}
@@ -420,12 +425,25 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
                 ids.add(pl["id"])
         return kind, ids
 
+    known = {}
+
+    def target_mine(pos, sid, eorg):
+        """A target row is ORG's by what the target records: no position or one of ORG's, no session or one the target
+        records only with ORG's positions, and ORG's label (or none, with such a position or session)."""
+        if pos and pos not in positions:
+            return False
+        if sid and sid not in known:
+            known[sid] = _session_positions(dst, sid)
+        seen = known.get(sid, set()) if sid else set()
+        if seen - positions:
+            return False
+        return eorg == org or (not eorg and bool(pos or seen))
+
     for name in makers:
         for eid, pos, sid, eorg, pl in dst.execute("SELECT event_id, position, session_id, org, payload FROM event "
                                                    "WHERE name = ?", (name,)):
             kind, ids = made(name, eid, pl)
-            mine = in_scope({"position": pos, "session_id": sid, "org": eorg})
-            (own if mine else theirs)[kind].update(ids)
+            (own if target_mine(pos, sid, eorg) else theirs)[kind].update(ids)
     claims = {k: {} for k in theirs}
     for row in rows:
         d = dict(zip(have, row))
