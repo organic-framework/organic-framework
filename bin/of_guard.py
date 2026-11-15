@@ -2790,7 +2790,8 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                         asserts |= {mm.group(1) or mm.group(3) for mm in _EXPANSION.finditer(target)}
                         break
                     if a == "-z" and k + 1 < len(ws):
-                        negs |= {mm.group(1) or mm.group(3) for mm in _EXPANSION.finditer(ws[k + 1])}
+                        if "-a" not in ws:   # `[ -z "$T" -a -d x ]` also fails with T empty (of_secrets-review, PR 223)
+                            negs |= {mm.group(1) or mm.group(3) for mm in _EXPANSION.finditer(ws[k + 1])}
                         break
             elif head == "set" and any(a == "-u" or re.match(r"^-[a-zA-Z]*u", a) for a in args) or \
                     (head == "set" and "nounset" in args):
