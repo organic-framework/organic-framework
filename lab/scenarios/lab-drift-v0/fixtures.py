@@ -294,6 +294,10 @@ def _loop_doc(**over):
                        {"rung": "day_pass", "latency": "4 h"}, {"rung": "shadow", "production": True}],
             "checkpoint_days": 3, "wip_arms": 2, "babysit_model": "sonnet"}
     spec.update(over)
+    # every loop names where its target and measures are read (`of registry check` warns without it): from 2.28 v1 a
+    # run with no reading point is unlocated and decides nothing (hand-over 7b8db7d4). An override keeps its own.
+    spec["target"] = dict({"observed_at": "the replay's revenue ledger"}, **spec["target"])
+    spec["measures"] = [dict({"observed_at": "the bot's journal"}, **m) for m in spec["measures"]]
     return {"organization": "acme",
             "systems": {"bot": {"kind": "target", "keeper": "bot_operator", "repos": ["arb"]}},
             "positions": [{"name": "bot_operator", "system": "bot", "role": "keeper", "kind": "keeper", "owner": "founder",
@@ -303,9 +307,12 @@ def _loop_doc(**over):
             "works": {_LW: {"owner": "bot_operator", "doers": ["bot_search"], "loop": spec}}}
 
 
-def _lrun(i, ts, rung, hyp, value=None, metric=None, queued=None, started=None):
+def _lrun(i, ts, rung, hyp, value=None, metric=None, queued=None, started=None, observed_at=None):
     pl = {"work": _LW, "run": f"r{i}", "rung": rung, "hypothesis": hyp, "value": value, "accepted": True, "ended_at": ts}
-    pl.update({k: v for k, v in (("metric", metric), ("queued_at", queued), ("started_at", started)) if v})
+    pl.update({k: v for k, v in (("metric", metric), ("queued_at", queued), ("started_at", started),
+                                 ("observed_at", observed_at)) if v})
+    if observed_at:
+        pl["direct"] = True   # a metric no measure declares states its reading point (docs/registry.md, Works)
     return ev(f"lr{i}", ts, "of.loop_run", "s-bot_search", pl, position="bot_search")
 
 
@@ -1134,10 +1141,12 @@ SCENARIOS += [
                _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-net", "a faster RPC path cuts the network after the send by 20 ms")],
                "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
     _loop_case("loop-objective-drift/positive-context-named-run",   # PR 58: a metric that is a name matches the part's name
-               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering")],
+               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering",
+                                                  observed_at="the bot's journal")],
                "positive", rule="ap.loop-objective-drift", doc=_SEG_DOC),
     _loop_case("loop-objective-drift/negative-context-name-near",   # a name close to the part's name is not the name
-               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering_rank")],
+               _climb(1, 6, "h1") + [_lrun(9, "2026-11-07T10:00Z", "offline", "h1", 14, metric="rival_ordering_rank",
+                                                  observed_at="the bot's journal")],
                "negative", rule="ap.loop-objective-drift", doc=_SEG_DOC),
     _loop_case("loop-objective-drift/negative-context-inside",
                _climb(1, 6, "h1") + [_lhyp(1, "2026-11-06T09:00Z", "h-in",
@@ -1242,4 +1251,34 @@ SCENARIOS += [
     _loop_case("loop-observed-elsewhere/negative-proxy-reported",
                _climb(1, 6, "h1") + [_lseen(11, "2026-11-06T16:00Z", "h2", "not_held")],
                "negative", rule="ap.loop-observed-elsewhere", doc=_SEEN_DOC),
+]
+
+
+# 2.28 v1 (2026-11-15, hand-over 7b8db7d4): an unlocated run decides nothing; `of loop locate` counts from its own time.
+# A metric in prose names no declared measure, so the run has no reading point unless it states one.
+def _lprose(i, ts, hyp):
+    return ev(f"lr{i}", ts, "of.loop_run", "s-bot_search",
+              {"work": _LW, "run": f"r{i}", "rung": "offline", "hypothesis": hyp, "metric": "s4 lost contested $ (upper bound)",
+               "value": 120.0, "ended_at": ts}, position="bot_search")
+
+
+def _llocate(i, ts, run):
+    return ev(f"ll{i}", ts, "of.loop_run", "s-bot_search",
+              {"work": _LW, "run": run, "observed_at": "the bot's journal", "direct": True}, position="bot_search")
+
+
+_DROP_H2 = _ldecide(1, "2026-11-07T09:00Z", hypothesis="h2", decision="drop")
+
+SCENARIOS += [
+    _loop_case("loop-observed-elsewhere/positive-unlocated",
+               _climb(1, 6, "h1") + [_lprose(11, "2026-11-06T16:00Z", "h2"), _lprose(12, "2026-11-06T17:00Z", "h2"), _DROP_H2],
+               "positive", rule="ap.loop-observed-elsewhere"),
+    # located after the drop: the drop is judged on what was known when it was made
+    _loop_case("loop-observed-elsewhere/positive-located-late",
+               _climb(1, 6, "h1") + [_lprose(11, "2026-11-06T16:00Z", "h2"), _DROP_H2, _llocate(1, "2026-11-07T12:00Z", "r11")],
+               "positive", rule="ap.loop-observed-elsewhere"),
+    # located before the drop, as a reading taken where its event happens
+    _loop_case("loop-observed-elsewhere/negative-located-first",
+               _climb(1, 6, "h1") + [_lprose(11, "2026-11-06T16:00Z", "h2"), _llocate(1, "2026-11-06T18:00Z", "r11"), _DROP_H2],
+               "negative", rule="ap.loop-observed-elsewhere"),
 ]

@@ -747,7 +747,8 @@ class LoopRulesTest(unittest.TestCase):
     W = "w-search"
 
     def doc(self, **loop):
-        spec = {"target": {"metric": "day_pass", "money": "USD per day", "stake": "650 USD a day"},
+        spec = {"target": {"metric": "day_pass", "money": "USD per day", "stake": "650 USD a day",
+                           "observed_at": "the replay's revenue ledger"},   # a run on it is located (2.28 v1, 2.18 v2)
                 "measures": [{"name": "latency_ms"}],
                 "ladder": [{"rung": "offline", "latency": "5 min"}, {"rung": "gate", "latency": "40 min"},
                            {"rung": "day_pass", "latency": "4 h"}, {"rung": "shadow", "production": True}],
@@ -839,7 +840,7 @@ class LoopRulesTest(unittest.TestCase):
                    for i, (d, v, held) in enumerate(((3, 211.7, "held"), (4, 325.8, "held"), (5, 325.8, "not_held"),
                                                       (6, 326.0, "unknown"), (7, 325.9, "held")), 1)]
         self.assertEqual(self.found("loop-plateau", proxied)[0], [])
-        self.assertEqual(self.found("loop-plateau", flat)[0][0]["rule_version"], "ap.loop-plateau@1")
+        self.assertEqual(self.found("loop-plateau", flat)[0][0]["rule_version"], "ap.loop-plateau@2")
 
     def test_wip_limit(self):
         three = [self.run_(i, "2026-11-05T10:00Z", "offline", f"h{i}", 1) for i in (1, 2, 3)]
@@ -1021,7 +1022,7 @@ class LoopRulesTest(unittest.TestCase):
         runs = [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held"), self.seen(2, "2026-11-05T12:00Z", "h-speed", "not_held")]
         got, st = self.observed(h + runs + [self.decide(1, "2026-11-05T13:00Z", "h-speed", "drop")])
         self.assertEqual([(i["part"], i["rule_version"], i["decider"]) for i in got],
-                         [("decision", "ap.loop-observed-elsewhere@0", "doer")])
+                         [("decision", "ap.loop-observed-elsewhere@1", "doer")])
         self.assertEqual(st["status"], "fired")
         self.assertEqual(got[0]["summary"],
                          "w-search: the drop of hypothesis h-speed rests only on runs on a proxy not shown to hold: "
@@ -1087,16 +1088,53 @@ class LoopRulesTest(unittest.TestCase):
                       [self.seen(1, "2026-11-04T12:00Z", "h-speed", "not_held")]):
             self.assertEqual(self.observed(h + quiet)[0], [])
 
-    def test_observed_elsewhere_blocked_until_runs_say_where(self):
-        # runs and measures that name no point and no proxy: the rule cannot tell, and says so
+    def test_observed_elsewhere_unlocated_runs(self):
+        """v1 (hand-over 7b8db7d4; docs/registry.md, Works, "An unlocated run decides nothing"): a run whose metric names
+        no measure that declares a reading point, and which states none, counts as a proxy not shown to hold. A later
+        `of loop locate` counts from its own time."""
         h = [self.hyp(1, "2026-11-04T09:00Z", "h1")]
-        old = h + [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 300), self.decide(1, "2026-11-05T13:00Z", "h1", "drop")]
-        got, st = self.found("loop-observed-elsewhere", old)
-        self.assertEqual((got, st["status"], st["missing"]), ([], "blocked", ["of.loop_run.observed_at"]))
-        # the same once the run names where it was read, and it is no proxy: quiet
-        named = h + [self.seen(1, "2026-11-04T12:00Z", "h1", metric="day_pass", observed_at="the replay's revenue ledger"),
-                     self.decide(1, "2026-11-05T13:00Z", "h1", "drop")]
-        self.assertEqual(self.found("loop-observed-elsewhere", named)[1]["status"], "quiet")
+        prose = "s4 lost contested $ (upper bound)"   # a metric in prose: no declared measure, no reading point
+        runs = [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 300, metric=prose, accepted=None)]
+        drop = [self.decide(1, "2026-11-05T13:00Z", "h1", "drop")]
+        got, st = self.found("loop-observed-elsewhere", h + runs + drop)
+        self.assertEqual([(i["part"], i["rule_version"], i["evidence"]["held"]) for i in got],
+                         [("decision", "ap.loop-observed-elsewhere@1", "not located")])
+        self.assertEqual(got[0]["summary"],
+                         "w-search: the drop of hypothesis h1 rests only on runs that nobody located: nobody named where "
+                         "s4 lost contested $ (upper bound) was read: name it with of loop locate w-search --run r1 "
+                         "--observed-at <where> and --direct or --proxy-for, or report it as not located")
+
+        def locate(i, ts, **pl):
+            return ev(f"loc{i}", ts, "of.loop_run", "s-search", dict({"work": self.W, "run": "r1"}, **pl), position="bot_search")
+        # located after the drop: the drop is judged on what was known then
+        late = locate(1, "2026-11-06T09:00Z", observed_at="the bot's journal", direct=True)
+        got2, _ = self.found("loop-observed-elsewhere", h + runs + drop + [late])
+        self.assertEqual([(i["evidence"]["held"], bool(i["evidence"]["decisions"][0]["runs"][0]["located_at"])) for i in got2],
+                         [("not located", True)])
+        # located before it, as a direct reading: quiet; as a proxy whose condition is unknown: a proxy not shown to hold
+        early = locate(2, "2026-11-05T09:00Z", observed_at="the bot's journal", direct=True)
+        q, st = self.found("loop-observed-elsewhere", h + runs + [early] + drop)
+        self.assertEqual((q, st["status"]), ([], "quiet"))
+        proxied = locate(3, "2026-11-05T09:00Z", observed_at="our own nodes",
+                         proxy={"for": "the block's builder", "valid_when": "one of our own nodes built the block"})
+        got3, _ = self.found("loop-observed-elsewhere", h + runs + [proxied] + drop)
+        self.assertEqual([i["evidence"]["held"] for i in got3], ["unknown"])
+        self.assertIn("rests only on runs on a proxy not shown to hold", got3[0]["summary"])
+        # a run on the target takes the target's reading point: located, quiet; no rule reports blocked for location
+        on_target = h + [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 300, accepted=None)] + drop
+        self.assertEqual(self.found("loop-observed-elsewhere", on_target)[1]["status"], "quiet")
+        # an unlocated run carrying an accept (a runner's sync records it so): part accepted
+        acc, _ = self.found("loop-observed-elsewhere", h + [self.run_(1, "2026-11-04T12:00Z", "offline", "h1", 300, metric=prose)])
+        self.assertEqual([(i["part"], i["summary"].split(":")[1].strip()) for i in acc],
+                         [("accepted", "1 run that nobody located carries an accept")])
+
+    def test_plateau_leaves_out_unlocated_runs(self):
+        """2.18 v2: an unlocated run is no cycle, as the card keeps it out of the curve."""
+        h = [self.hyp(1, "2026-11-01T09:00Z", "h1")]
+        flat = [self.run_(i, f"2026-11-0{2 + i}T12:00Z", "offline", "h1", 300 + 0.1 * i) for i in range(4)]
+        self.assertEqual(len(self.found("loop-plateau", h + flat)[0]), 1)
+        nowhere = self.doc(target={"metric": "day_pass", "money": "USD per day"})   # the target names no reading point
+        self.assertEqual(self.found("loop-plateau", h + flat, doc=nowhere)[0], [])
 
 
 if __name__ == "__main__":

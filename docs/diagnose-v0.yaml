@@ -232,7 +232,8 @@ rules:
     remedies: ["nudge: what goes to shadow next", put the best kept hypothesis behind a flag in shadow on one site]
 
   loop-plateau:
-    version: 1                   # v1 (2026-11-14): a run on a proxy not shown to hold is no cycle (diagnose.md 2.18, 2.28)
+    version: 2                   # v2 (2026-11-15): nor is an unlocated run (hand-over 7b8db7d4); v1 (2026-11-14): a run on a proxy not shown to hold is no cycle (diagnose.md 2.18, 2.28)
+    labels_carry_from: [1]       # v2 only narrows what fires
     p: 0.6
     m_decide: 10
     thresholds: {cycles_gte: 3, gain_share_lt: 0.01}
@@ -294,11 +295,12 @@ rules:
     remedies: [elevate the rung (more runners), move hypotheses to a cheaper rung, schedule work around the rung]
 
   loop-observed-elsewhere:       # diagnose.md 2.28; v0 (2026-11-14): hand-over e640ea57 (RFC 0005 §4.3, §6 rule 8)
-    version: 0
+    version: 1                   # v1 (2026-11-15): an unlocated run decides nothing either; a locate counts from its own time (hand-over 7b8db7d4)
+    labels_carry_from: [0]       # a proxy not shown to hold is judged as in v0
     p: {decision: 0.6, accepted: 0.6}
     m_decide: {decision: 5, accepted: 2}
-    thresholds: {}               # one keep or drop resting only on such proxies, or one accepted run on one, fires at once
-    needs:                       # and runs[].proxy or runs[].observed_at on a run of a declared loop: blocked without
+    thresholds: {}               # one keep or drop resting only on runs that decide nothing, or one accepted run among them, fires at once
+    needs:                       # from v1 an unlocated run is judged, never a reason to block
       decision: [registry.works.loop, of.loop_decision]
       accepted: [registry.works.loop, of.loop_run]
     decider: doer
