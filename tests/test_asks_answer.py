@@ -690,8 +690,39 @@ class RedeliverTest(AnswerTest):
         asks = of_asks.project(of_asks.load(self.conn))
         self.assertEqual([a["to"] for a in asks], ["of_owner", "acme:of_owner"])
         got = of_asks_answer.pending(self.conn, asks, self.positions(), self.now("2026-11-01T10:20:00Z"))
-        self.assertEqual([(d["position"], d["sender"]) for d in got], [("of_owner", "of_unit")])
+        self.assertEqual([(d["position"], d["sender"]) for d in got], [("of_owner", "of_unit"), ("of_unit", "of")])
         self.assertEqual((of_asks.bare_to(None, "ofb"), of_asks.bare_to("founder", "ofb")), ("founder", "founder"))
+
+    def test_an_ask_routed_to_no_position_is_told_to_its_asker_once(self):
+        """of_server, message 01a1e0a3-b569: three asks routed to another organization's prefix were skipped on every
+        pass for 18 hours, with no record and no word to anyone; only the 2 h escalation reached the founder."""
+        def routed(to, at):
+            return self.add("agent_question", {"detected_by": "declared", "to": to,
+                                               "questions": [{"question": "Pause?"}]}, at, session="SU",
+                            position="of_unit")
+        other = routed("acme:of_owner", "2026-11-01T10:00:00Z")
+        typo = routed("of_ownr", "2026-11-01T10:00:01Z")
+        done = routed("of_old", "2026-11-01T10:00:02Z")
+        renamed = routed("of_boss", "2026-11-01T10:00:03Z")
+        positions = self.positions() + [{"name": "of_old", "_org": "ofb", "status": "finished",
+                                         "successor": "of_owner"}]
+        positions[2] = dict(positions[2], aliases=["of_boss"])
+        now = self.now("2026-11-01T10:20:00Z")
+        pend = lambda: of_asks_answer.pending(self.conn, of_asks.project(of_asks.load(self.conn)), positions, now)  # noqa: E731
+        got = pend()
+        self.assertEqual([d["key"] for d in got], [f"unrouted:{other}:of_unit", f"unrouted:{typo}:of_unit",
+                                                   f"unrouted:{done}:of_unit", f"routed:{renamed}:of_owner"])
+        self.assertIn("'acme:of_owner', no position of your organization", got[0]["text"])
+        self.assertIn(f"of asks withdraw {other[-8:]}", got[0]["text"])
+        self.assertIn("a finished position (its successor is of_owner)", got[2]["text"])
+        self.assertEqual({d["sender"] for d in got[:3]}, {"of"})
+        self.assertEqual([d["key"] for d in of_asks_answer.pending(
+            self.conn, of_asks.project(of_asks.load(self.conn)), positions, now, only="of_owner")],
+            [f"routed:{renamed}:of_owner"])
+        for d in got[:3]:  # typed once: the asker's record of it ends the note
+            self.add("human_prompt", {"origin": "injected", "text": "Message from of (via of, authority: none)\n"
+                                      + d["text"]}, "2026-11-01T10:21:00Z", session="SU", position="of_unit")
+        self.assertEqual([d["key"] for d in pend()], [f"routed:{renamed}:of_owner"])
 
     def test_a_limit_screen_for_of_capacity_goes_to_its_inbox_and_a_login_is_typed(self):
         """of_capacity, 2026-11-09: its balancer acts on every limit within 5 minutes; a typed limit ask only woke it."""
@@ -935,6 +966,17 @@ class RedeliverTest(AnswerTest):
         self.add("human_prompt", {"origin": "injected", "text": got[0]["text"]}, "2026-11-01T12:05:00Z",
                  session="SO", position="of_owner")
         self.assertEqual(pend(), [])
+
+    def test_an_escalation_with_the_old_prefixed_owner_still_tells_the_unit_owner(self):
+        """of_server, message 01a1e0a3-b569: from_owner copies the routed ask's `to`, stored with its organization's
+        prefix before 2026-11-15, and such a note was skipped as another organization's."""
+        aid = self.routed()
+        self.add("ask_escalated", {"ask_id": aid, "from_owner": "ofb:of_owner", "to": "founder",
+                                   "rule": "ask_unanswered > 2h"}, "2026-11-01T12:00:00Z", session=None,
+                 position="of_unit")
+        got = of_asks_answer.pending(self.conn, of_asks.project(of_asks.load(self.conn)), self.positions(),
+                                     self.now("2026-11-01T12:10:00Z"))
+        self.assertEqual([(d["key"].split(":")[0], d["position"]) for d in got], [("escalated", "of_owner")])
 
     def test_no_note_after_a_rewrite_or_an_answer_and_the_full_question_when_unseen(self):
         aid = self.routed()
