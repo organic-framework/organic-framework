@@ -36,7 +36,12 @@ class GithubTest(unittest.TestCase):
                 for _ in range(2):  # idempotent
                     n = of_github.import_org(conn, "acme", SYSTEMS, "2026-10-25",
                                              fetcher=lambda repo, since: PRS.get(repo, []), log=lambda m: None)
+                    if not _:  # the second run rewrites nothing unchanged and never scans the search table
+                        seen = []
+                        conn.set_trace_callback(seen.append)
                 self.assertEqual(n, 3)
+                conn.set_trace_callback(None)
+                self.assertFalse([q for q in seen if q.startswith(("DELETE", "INSERT"))], seen[:5])
                 rows = [json.loads(r[0]) for r in conn.execute(
                     "SELECT payload FROM event WHERE name = 'of.work_record' ORDER BY ts")]
                 rows = [r for r in rows if r.get("source") == "gh"]

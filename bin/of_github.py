@@ -371,7 +371,7 @@ def import_org(conn, org, systems, since, fetcher=fetch, log=print, position_sys
     by_repo = systems_by_repo(systems)
     links = pr_links(conn)
     governed = {sid: g for cands in by_repo.values() for sid, _, g in cands}
-    n = 0
+    n = same = 0
     for repo in sorted(by_repo):
         prs = fetcher(repo, since)
         local_dir = repo.split("/")[-1]
@@ -399,10 +399,20 @@ def import_org(conn, org, systems, since, fetcher=fetch, log=print, position_sys
                                    extra={"of.resolution": f"registry@{of_events.now_iso()[:10]}"})
             rec["of.event.id"] = str(uuid.uuid5(NS, f"{repo.lower()}#{pr['number']}:gh"))
             rec["timestamp"] = pr.get("mergedAt") or rec["timestamp"]
-            conn.execute("DELETE FROM event_fts WHERE event_id = ?", (rec["of.event.id"],))
-            conn.execute("DELETE FROM event WHERE event_id = ?", (rec["of.event.id"],))
-            of_store.add_event(conn, rec)
             n += 1
+            # a re-read PR replaces its own record only when it changed, and its search row only when it has one: each
+            # run re-read every PR since the last merge, and the search table's delete by event_id scans the whole
+            # index (0.3 s a record on 2026-11-15) inside a write, so every 30 minutes the hooks spooled for minutes
+            old = conn.execute("SELECT ts, payload FROM event WHERE event_id = ?", (rec["of.event.id"],)).fetchone()
+            was = json.loads(old[1] or "{}") if old else None
+            if old and old[0] == rec["timestamp"] and was == json.loads(json.dumps(payload, ensure_ascii=False)):
+                same += 1
+                continue
+            if old and of_store._texts(was, []):
+                conn.execute("DELETE FROM event_fts WHERE event_id = ?", (rec["of.event.id"],))
+            if old:
+                conn.execute("DELETE FROM event WHERE event_id = ?", (rec["of.event.id"],))
+            of_store.add_event(conn, rec)
         log(f"  {repo}: {len(prs)} merged PRs")
         if open_fetcher:
             try:  # PR states are extra: a failure here never stops the merged records of the next repository
@@ -411,7 +421,7 @@ def import_org(conn, org, systems, since, fetcher=fetch, log=print, position_sys
                 log(f"  {repo}: {k} PR state changes")
             except Exception as e:  # noqa: BLE001
                 log(f"  {repo}: PR states skipped: {type(e).__name__}: {str(e)[:200]}")
-    log(f"{n} work records for {org}")
+    log(f"{n} work records for {org}" + (f" ({same} unchanged, not rewritten)" if same else ""))
     return n
 
 
