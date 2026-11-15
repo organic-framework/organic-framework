@@ -1878,7 +1878,7 @@ def _loop_card(d, w):
             facts.append(("Decided", f'{t["decided_unresolved"]}: does not count, since '
                                      f'{of_loops.UNRESOLVED_WHY.get(t.get("decided_unresolved_why"), "it does not resolve")}; '
                                      "the loop shows as one priced in money until it resolves"))
-        facts.append(("Money", t.get("money") or "–"))
+        facts.append(("Money", _money_line(t) or "–"))
     facts += [("Stake", t.get("stake") or "–"), ("Class", t.get("throughput_class") or "–"),
               ("Started", st(c["start"])), ("Events", str(c["events"]))]
     seg = t.get("segment")
@@ -1923,7 +1923,7 @@ def _loop_card(d, w):
     rate = "–" if c["hit_rate"] is None else f'{round(100 * c["hit_rate"])}% ({c["kept"]} of {c["decided"]} decided)'
     return f"""<h2 class="lead">Development loop <span class="sub">RFC 0005 §7; derived from the loop's events, never reported</span></h2>
 {drift}<table class="facts"><tbody>{"".join(f"<tr><th>{e(k)}</th><td>{e(v)}</td></tr>" for k, v in facts)}</tbody></table>
-<h3>Ladder <span class="sub">cheapest first; the highest rung reached is marked{": " + e(hi["rung"]) + " since " + e(st(hi["at"])) if hi else ""}</span></h3>
+{_measures(c)}<h3>Ladder <span class="sub">cheapest first; the highest rung reached is marked{": " + e(hi["rung"]) + " since " + e(st(hi["at"])) if hi else ""}</span></h3>
 <div class="scroll"><table><thead><tr><th>Rung</th><th>Cost</th><th>Latency</th><th>Accept</th><th>Runs this week</th><th>Cycle time, h</th>
 <th>Wait share</th><th>Last result</th></tr></thead><tbody>{"".join(rows) or '<tr><td colspan="8" class="quiet">No ladder and no runs.</td></tr>'}</tbody></table></div>
 <p class="legend">{ck_line} Time to first money: {"not yet" if ttfm is None else f"{ttfm:g} d"}. Hit rate {e(rate)}.
@@ -1940,9 +1940,45 @@ WIP: {c["wip"]["testing"]} in test, limit {c["wip"]["limit"]}{" (over)" if c["wi
 
 
 NOT_OBSERVED_HEAD = ('<h3>Not observed <span class="sub">runs whose reading stands for an event elsewhere, and whose '
-                     'condition did not hold or is not known to hold: they decide nothing and stay out of the curve '
-                     '(docs/registry.md, Works, "Where a reading is taken")</span></h3>')
+                     'condition did not hold or is not known to hold, or whose reading nobody located: they decide '
+                     'nothing and stay out of the curve (docs/registry.md, Works, "Where a reading is taken")</span></h3>')
+PROXY_FOR = "a proxy for %s, valid only when %s"
+
+
+def _money_line(t):
+    """The target's money line, labelled as a proxy under chain_proxy_for as a measure's chain is."""
+    import of_loops
+    if not t.get("money"):
+        return None
+    lab = of_loops.chain_label(t.get("chain_proxy_for"))
+    return f'{t["money"]} ({lab})' if lab else str(t["money"])
+
+
+def _measures(c):
+    """The loop's measures: where each is read, a proxy_for named as a proxy, and its chain to money or to the
+    target, labelled as a proxy under chain_proxy_for (docs/registry.md, Works, "Where a reading is taken")."""
+    import of_loops
+    rows = []
+    for m in c.get("measures") or []:
+        pf = m.get("proxy_for") if isinstance(m.get("proxy_for"), dict) else None
+        read = e(m.get("observed_at") or "not named")
+        if pf:
+            read += (f'<div class="src">{e(PROXY_FOR % (pf.get("at") or "a point not named", pf.get("valid_when") or "a condition not named"))}'
+                     '</div>')
+        chain = "; ".join(f"{k}: {m[f]}" for k, f in (("to money", "to_money"), ("to the target", "to_target")) if m.get(f))
+        lab = of_loops.chain_label(m.get("chain_proxy_for"))
+        rows.append(f'<tr><td><code>{e(m.get("name"))}</code></td><td class="why">{read}</td>'
+                    f'<td class="why">{e(chain or "–")}{f"<div class=src>{e(lab)}</div>" if lab else ""}</td></tr>')
+    if not rows:
+        return ""
+    return ('<h3>Measures <span class="sub">where each is read, and how it reaches money or the target</span></h3>'
+            '<div class="scroll"><table><thead><tr><th>Measure</th><th>Read at</th><th>Chain</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
 FROM_PROXY = " · from the proxy: "
+LOCATED = " · located "
+LOCATE_HOW = ("A run is located when its metric is the target's or a declared measure's with an observed_at, or when "
+              "it states where it was read: of loop run --observed-at with --direct or --proxy-for, or of loop locate "
+              "for a run already recorded.")
 
 
 def _last_result(x):
@@ -1951,7 +1987,7 @@ def _last_result(x):
     res = x.get("last_result")
     lr = x.get("last_run")
     if lr and not of_loops.observed(lr):
-        return (f'<b>{e(of_loops.not_observed_text(lr))}</b>'
+        return (f'<b>{e(of_loops.unseen_text(lr))}</b>'
                 + (f'<div class="src">from the proxy: {e(str(res))}</div>' if res is not None else ""))
     return e(str(res) if res is not None else "–")
 
@@ -1969,10 +2005,13 @@ def _not_observed(c, k=10):
               f'observed where {"their" if out != 1 else "its"} event happens, and the curve leaves '
               f'{"them" if out != 1 else "it"} out.</p>') if out else ""
     items = "".join(f'<li>{e(st(r.get("ended_at")))} <b>{e(r.get("rung") or "?")}</b>'
-                    f'{" " + e(r["hypothesis"]) if r.get("hypothesis") else ""}: {e(of_loops.not_observed_text(r))}'
+                    f'{" " + e(r["hypothesis"]) if r.get("hypothesis") else ""}: {e(of_loops.unseen_text(r))}'
+                    f'{LOCATED + e(st(r["located_at"])) if r.get("located_at") else ""}'
                     f'{FROM_PROXY + e(str(r["result"])[:200]) if r.get("result") else ""}</li>'
                     for r in sorted(runs, key=lambda r: r.get("ended_at") or 0, reverse=True)[:k])
     more = f'<p class="legend">{len(runs) - k} earlier ones are not listed.</p>' if len(runs) > k else ""
+    if any(not r.get("observed_at") for r in runs):
+        more += f'<p class="legend">{e(LOCATE_HOW)}</p>'
     return f"{legend}{NOT_OBSERVED_HEAD}<ul>{items}</ul>{more}"
 
 
@@ -1980,7 +2019,7 @@ def _money_reading(d, w, t):
     """On the owner's measure (docs/registry.md, Works; RFC 0005 §4.2): the target's money line, if any, and the spend
     this month of the goal the work serves, both readings beside the cost; nothing waits on them, and no money is no
     mark."""
-    parts = [f'Money: {e(t["money"])}' if t.get("money") else "No money line given"]
+    parts = [f'Money: {e(_money_line(t))}' if t.get("money") else "No money line given"]
     gid = w.get("goal")
     sp = goal_spend(d) if gid and getattr(d, "org", None) else None
     tot = ((sp or {}).get("goals") or {}).get(gid) if gid else None
@@ -2036,13 +2075,13 @@ def _loop_curve(c, w=560, hgt=120):
     pl = c["plateau"]
     band = (f'<rect x="{sx(pl["from"]) - 4:.1f}" y="4" width="{sx(pl["to"]) - sx(pl["from"]) + 8:.1f}" height="{hgt - 20}" '
             f'class="{"plateau" if pl["flat"] else "window"}" fill="currentColor" fill-opacity="0.08"/>') if pl else ""
-    dots = "".join(f'<circle cx="{sx(p[0]):.1f}" cy="{sy(p[1]):.1f}" r="3"><title>{e(p[2])} {p[1]:g} · {e(p[3] or "")}</title></circle>'
+    dots = "".join(f'<circle fill="currentColor" cx="{sx(p[0]):.1f}" cy="{sy(p[1]):.1f}" r="3"><title>{e(p[2])} {p[1]:g} · {e(p[3] or "")}</title></circle>'
                    for p in pts)
-    label = (f'<text x="{w - 10}" y="14" text-anchor="end" font-size="11">plateau window: '
+    label = (f'<text fill="currentColor" x="{w - 10}" y="14" text-anchor="end" font-size="11">plateau window: '
              f'{"flat, a step back is due" if pl["flat"] else "moving"}</text>') if pl else ""
     return (f'<svg viewBox="0 0 {w} {hgt}" width="{w}" height="{hgt}" role="img" aria-label="the target per cycle">{band}'
             f'<polyline points="{line}" fill="none" stroke="currentColor" stroke-width="1.5"/>{dots}{label}'
-            f'<text x="2" y="{sy(v1) + 4:.1f}" font-size="11">{v1:g}</text><text x="2" y="{sy(v0) + 4:.1f}" font-size="11">{v0:g}</text></svg>')
+            f'<text fill="currentColor" x="2" y="{sy(v1) + 4:.1f}" font-size="11">{v1:g}</text><text fill="currentColor" x="2" y="{sy(v0) + 4:.1f}" font-size="11">{v0:g}</text></svg>')
 
 
 # ------------------------------------------------------------------ goals (docs/registry.md, Goals)

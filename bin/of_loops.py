@@ -29,9 +29,14 @@ id carries `decided_words`, what the person said, for the reader to check that i
 Where a reading is taken (docs/registry.md, Works; RFC 0005 §4.3, 2026-11-14): a run carries `observed_at`, the point
 where its value was read, and `proxy` when that reading stands for an event that happens elsewhere, with `held`, whether
 the condition that makes it equal to the reading there held in the data the run used. A run the event does not mark
-takes both from its metric's measure (`observed_at`, `proxy_for`), its `held` then unknown. A run whose proxy did not
-hold, or is not known to hold, is not observed: it stays out of the curve of the target (and so out of the gains, the
-plateau and the checkpoints) and shows as "not observed at <at>", its reading labelled as a proxy (not_observed_text).
+takes both from its metric's measure (`observed_at`, `proxy_for`), its `held` then unknown; `direct` says it stated
+that its reading is taken where its event happens. A run whose proxy did not hold, or is not known to hold, is not
+observed: it stays out of the curve of the target (and so out of the gains, the plateau and the checkpoints) and shows
+as "not observed at <at>", its reading labelled as a proxy (not_observed_text). A run with no reading point at all is
+unlocated (2026-11-15): it counts the same and shows as "not located" (not_located_text). `of loop locate` places a
+run later, by a later of.loop_run of the same run id; the run then reads as located from that time (`located_at`), and
+`as_recorded` keeps what it held before. A target's or a measure's `chain_proxy_for` labels its money line or chain
+as a proxy (chain_label).
 
 Pure functions over typed rows; no herdr, no network. docs/studio.md §5.6.
 """
@@ -179,7 +184,7 @@ def spec_of(raw, resolve=None):
     prod = {str(r["rung"]) for r in ladder if r.get("production")}
     if not prod and "shadow" in names:   # RFC 0005 §4: a production rung is shadow or higher
         prod = set(names[names.index("shadow"):])
-    t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class", "observed_at")}
+    t = {k: target.get(k) for k in ("metric", "money", "stake", "throughput_class", "observed_at", "chain_proxy_for")}
     t["better"] = "lower" if str(target.get("better") or "").lower() == "lower" else "higher"
     t["segment"] = _segment(target.get("segment"))
     t["decided"], why, words = owners_yes(decided_of(target), resolve)
@@ -210,9 +215,33 @@ def proxy_of(raw, decl=None):
 
 
 def observed(run):
-    """Whether RUN's reading counts as taken where its event happens: no proxy, or one whose condition held."""
+    """Whether RUN's reading counts as taken where its event happens: it names where it was read (observed_at), and
+    it is no proxy, or one whose condition held. A run with no reading point is unlocated, and counts as a proxy not
+    shown to hold (docs/registry.md, Works, "An unlocated run decides nothing")."""
     p = (run or {}).get("proxy")
-    return not p or p.get("held") == "held"
+    return bool((run or {}).get("observed_at")) and (not p or p.get("held") == "held")
+
+
+def not_located_text(run):
+    """How an unlocated run reads, as `of loop show` reads it: 'not located', with its reading labelled as one nobody
+    placed, never the number alone."""
+    val = run.get("value")
+    reading = f'{run.get("metric") or "?"} {val:g}' if isinstance(val, (int, float)) else f'{run.get("metric") or "?"}'
+    return f"not located: nobody named where its reading ({reading}) was taken, so it counts as a proxy not shown to hold"
+
+
+def unseen_text(run):
+    """A run that is not observed: 'not located' when it names no reading point, else 'not observed at <at>'."""
+    return not_observed_text(run) if run.get("observed_at") else not_located_text(run)
+
+
+def chain_label(cp):
+    """A money line or chain under chain_proxy_for {at, valid_when}: labelled as a proxy, or None without one
+    (docs/registry.md, Works, "A direct reading with a proxy chain", "The target's money may rest on a proxy")."""
+    if not isinstance(cp, dict) or not (cp.get("at") or cp.get("valid_when")):
+        return None
+    return (f'a proxy: it stands for {cp.get("at") or "a point not named"}, valid only when '
+            f'{cp.get("valid_when") or "a condition not named"}')
 
 
 def not_observed_text(run):
@@ -268,10 +297,15 @@ def _runs(evs, spec, hyp):
     costs = {str((r.get("payload") or {}).get("run")): r.get("payload") or {} for r in evs if r["name"] == "of.loop_cost"}
     target = (spec["target"].get("metric") or "").strip()
     measures = {str(m["name"]): m for m in spec["measures"]}
+    by_id = {}
     for r in evs:
         if r["name"] != "of.loop_run":
             continue
         pl = r.get("payload") or {}
+        if pl.get("run") and str(pl["run"]) in by_id and not pl.get("rung"):   # of loop locate: a later event of the
+            # same run that carries only where it was read (docs/events.md); a run always names its rung
+            _locate(by_id[str(pl["run"])], pl, t_of(r), measures)
+            continue
         end = epoch(pl.get("ended_at")) or t_of(r) or 0
         start = epoch(pl.get("started_at"))
         hid = str(pl.get("hypothesis") or "")
@@ -279,8 +313,9 @@ def _runs(evs, spec, hyp):
         entered = epoch(pl.get("queued_at")) or last_end.get(hid) or (hyp.get(hid) or {}).get("recorded_at") or start or end
         metric = str(pl.get("metric") or target)
         decl = {"observed_at": spec["target"].get("observed_at")} if metric == target else measures.get(metric) or {}
-        out.append({"observed_at": pl.get("observed_at") or decl.get("observed_at"),
-                    "proxy": proxy_of(pl.get("proxy"), decl.get("proxy_for")),
+        direct = pl.get("direct") is True   # --direct: the reading is taken where its event happens
+        out.append({"observed_at": pl.get("observed_at") or decl.get("observed_at"), "direct": direct,
+                    "proxy": None if direct else proxy_of(pl.get("proxy"), decl.get("proxy_for")), "located_at": None,
                     "rung": str(pl.get("rung") or "?"), "hypothesis": hid or None, "result": pl.get("result"),
                     "value": _num(pl.get("value")), "metric": metric, "on_target": metric == target,
                     "entered": min(entered, end), "started": start, "ended": end, "runner_h": _num(pl.get("runner_h")) or 0.0,
@@ -290,9 +325,25 @@ def _runs(evs, spec, hyp):
                     "session": r.get("session_id"), "model": pl.get("model") or r.get("model")})
         c = costs.get(str(out[-1]["event_id"]))
         out[-1].update(usd=_num((c or {}).get("usd")), fresh_tokens=_num((c or {}).get("fresh_tokens")), costed=c is not None)
+        by_id[str(out[-1]["event_id"])] = out[-1]
         if hid:
             last_end[hid] = end
     return out
+
+
+def _locate(run, pl, at, measures):
+    """A locate update (docs/registry.md, Works, "An unlocated run decides nothing"): the run's reading point and
+    direct or proxy as it states them, from its own time AT. What the run held before the first one stays in
+    `as_recorded`, so a decision made earlier is judged on what was known then."""
+    run.setdefault("as_recorded", {k: run[k] for k in ("observed_at", "direct", "proxy")})
+    if pl.get("observed_at"):
+        run["observed_at"] = pl["observed_at"]
+    if pl.get("direct") is True:
+        run["direct"], run["proxy"] = True, None
+    elif isinstance(pl.get("proxy"), dict):
+        run["direct"] = False
+        run["proxy"] = proxy_of(pl["proxy"], (measures.get(run["metric"]) or {}).get("proxy_for"))
+    run["located_at"] = at
 
 
 def _priority(h):
@@ -372,7 +423,7 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
                        "cycle_time_h": round(statistics.median(cyc), 2) if cyc else None,
                        "wait_share": round(sum(w for w, _ in waited) / sum(t for _, t in waited), 3) if waited else None,
                        "last_result": rr[-1]["result"] if rr else None, "last_at": rr[-1]["ended"] if rr else None,
-                       "last_run": {k: rr[-1][k] for k in ("metric", "value", "observed_at", "proxy")} if rr else None})
+                       "last_run": {k: rr[-1][k] for k in ("metric", "value", "observed_at", "proxy", "direct")} if rr else None})
     rank = {n: i for i, n in enumerate(spec["rungs"])}   # only the ladder orders rungs: one it does not name ranks lowest
     reached = max(runs, key=lambda r: (rank.get(r["rung"], -1), -r["ended"])) if runs else None
     highest = None
@@ -436,7 +487,8 @@ def project(work_id, spec, rows, now, days=7, work=None, resolve=None):
                         "change": h.get("change"), "predict": h.get("predict")} for h in hyp.values()],
         "runs": [{"id": r["event_id"], "rung": r["rung"], "hypothesis": r["hypothesis"], "metric": r["metric"], "value": r["value"],
                   "accepted": r["accepted"], "on_target": r["on_target"], "observed_at": r["observed_at"], "proxy": r["proxy"],
-                  "result": r["result"],
+                  "direct": r["direct"], "located_at": r["located_at"],
+                  **({"as_recorded": r["as_recorded"]} if "as_recorded" in r else {}), "result": r["result"],
                   "queued_at": r["queued_at"], "started_at": r["started"], "ended_at": r["ended"],
                   "position": r["position"], "session": r["session"], "model": r["model"], "usd": r["usd"],
                   "fresh_tokens": r["fresh_tokens"]} for r in runs],
