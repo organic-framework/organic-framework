@@ -166,6 +166,13 @@ class CorrectionsTest(Store):
                       "1 wrong_remedy (of model issues --org acme --for acme_org)", text)
         self.assertIn("3 still open from earlier digests", text)                 # the unlabelled count is unchanged
         self.assertIsNone(of_corrections.structure_text(open_["acme"][3:], set(), "acme", "acme_org"))  # labelled only
+        # of_review on PR 212: a true_but_not_now whose 7-day snooze ended keeps its label and asks again
+        ended = {"issue_id": "snz1", "rule_version": "ap.orphan-work@1", "part": None, "summary": "bin: no keeper",
+                 "label": "true_but_not_now"}
+        text = of_corrections.structure_text(open_["acme"][3:] + [ended], set(), "acme", "acme_org")
+        self.assertIn("- [ap.orphan-work@1] bin: no keeper (snz1)", text)
+        self.assertIn("orphan-work: 1", text)
+        self.assertIn("3 you labelled are still open until remedied", text)
         failed = lambda o: None  # noqa: E731  the computation failed: nothing said about structure
         self.assertEqual(of_corrections.send_digests(self.conn, positions, now=T0 + 2 * 86400, send=send,
                                                      issues_of=failed), 0)
