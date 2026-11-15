@@ -4,12 +4,14 @@
 host takes the laptop's delta for the OF team, at S4 for a user organization, and B1's reverse brings the host's delta
 back. On the host each organization runs as its own OS user with its own store, so a merge is one organization's.
 
-  python3 bin/of_merge_delta.py --source SRC/of.db --target DST/of.db --org ORG [--since ISO]
-      [--person-acts-from HOST_ID,…] [--dry-run] [--json]
+  python3 bin/of_merge_delta.py --source SRC/of.db --target DST/of.db --org ORG [--orgs ORGS.yaml] [--since ISO]
+      [--person-acts EVENT_ID,…] [--dry-run] [--json]
 
 What it merges, each by the key that names it on every machine, for ORG only:
-- events by `event_id` (UUIDv7, or a fixed id from of_events.stable_id) whose `org` is ORG, and those with no org that
-  belong to one of ORG's positions or sessions (as the source's own events show them), with their full-text index;
+- events by `event_id` (UUIDv7, or a fixed id from of_events.stable_id): ORG's, whose position, when they name one,
+  is one of ORG's in the target's own registry (--orgs), never the source's label; and whose session, when they name
+  one, is ORG's: the target knows it as a session of ORG's positions, or does not know it and the source names only
+  ORG's positions for it. With their full-text index;
 - transcript records of ORG's sessions by (session_id, record_uuid): with --since those dated at or after it and the
   undated ones that lie after the first such record in their file; session forks of those sessions;
 - hook records of ORG's sessions by their content (time, kind, session, blob), since their row ids are per machine; an
@@ -19,13 +21,16 @@ What it merges, each by the key that names it on every machine, for ORG only:
 Not merged: another organization's rows (counted as such); machine-level rows that name no organization's session
 (runtime records, snapshots, the pulse, capacity and disk records); the ingest and ship cursors; `meta`.
 
-**Acts of a person** (PERSON_ACTS: the owner's answers, human prompts, prompt-origin corrections, diff approvals,
-hand-over accepts and verifies, consents) are what the trust paths read as a person's own. The source is a store any
-process of its OS user can write, so they are listed by name, id, position and host, and merged only when their host
-is one --person-acts-from names: the owner's own machine, as whoever runs the merge knows it (of_secrets-review and
-of_review on organic-framework PR 195). The rest are held; a later run that names their host merges them. Every other
-event name crosses: the history the projections, Studio and the analyses read, none of which a trust path takes as a
-person's act. Grants carry their own signature, which every reader checks again.
+**Every field of a source row is its writer's word**: on B1's reverse the source is a store an organization's OS user
+writes (of_secrets-review and of_review on organic-framework PR 195). So:
+- **an event that changes an ask's or a hand-over's state by its id** (an answer, a withdrawal, a snooze, an amend, a
+  hand-over step) crosses only when that record is ORG's on the target or in this delta; the rest are held and listed;
+- **acts of a person** (PERSON_ACTS: the owner's answers, withdrawals, snoozes, hand-offs and labels, human prompts,
+  prompt-origin corrections, diff approvals, hand-over accepts and verifies, consents), what the trust paths read as a
+  person's own, are listed by name, id, position and host, and merged only by the event ids --person-acts names, which
+  whoever runs the merge read in the listing and checked. A host id is the source's own claim and decides nothing.
+Every other event name crosses: the history the projections, Studio and the analyses read. Grants carry their own
+signature, which every reader checks again.
 
 With --since, only rows at or after that time; without it, every row of ORG. A re-run adds nothing. The source is
 opened read-only; the target is written one table per transaction. Run it where the target is, on a copy of the
@@ -53,7 +58,13 @@ TRANSCRIPT_COLS = ("source_path", "line_offset", "blob_sha256", "session_id", "r
                    "cache_write_tokens", "harness", "message_id", "cache_write_5m_tokens", "cache_write_1h_tokens")
 HOOK_KEY = ("received_at", "hook_event", "session_id", "blob_sha256")
 PERSON_ACTS = ("of.agent_question_answered", "of.human_prompt", "of.prompt_origin", "of.diff_approved",
-               "of.handover_accepted", "of.handover_verified", "of.consent")
+               "of.handover_accepted", "of.handover_verified", "of.consent", "of.ask_withdrawn", "of.ask_snoozed",
+               "of.ask_handed", "of.question_labelled", "of.issue_labelled")
+# events that change an ask's or a hand-over's state by its id, whoever wrote them: they cross only when the record
+# they name is ORG's (of_review on organic-framework PR 195: a withdrawal labelled with one organization closed
+# another's ask)
+ASK_REFS = ("of.agent_question_answered", "of.agent_question_judged", "of.ask_withdrawn", "of.ask_snoozed",
+            "of.ask_handed", "of.ask_escalated", "of.ask_amended", "of.question_labelled", "of.escalation_due")
 TABLES = ("blob", "hook_record", "transcript_record", "session_fork", "event")
 
 
@@ -61,11 +72,21 @@ def person_act(name, payload):
     """Is this event an act the target's trust paths would take as a person's own?"""
     if name not in PERSON_ACTS:
         return False
-    if name == "of.agent_question_answered":
-        return payload.get("by") == "owner"
     if name == "of.human_prompt":
         return payload.get("origin") in ("human", "paste")
+    if "by" in payload:  # an answer, a withdrawal, a label: the owner's, not an agent's own closure
+        return payload.get("by") == "owner"
     return True
+
+
+def refs(name, payload):
+    """(kind, ids) of the records an event changes by id: ('ask', …) or ('handover', …), else None."""
+    if name in ASK_REFS:
+        ids = [payload.get("ask_id")] + list(payload.get("ask_ids") or [])
+        return "ask", {i for i in ids if isinstance(i, str) and i}
+    if name.startswith("of.handover_") and name != "of.handover_proposed":
+        return "handover", {payload["id"]} if isinstance(payload.get("id"), str) else set()
+    return None
 
 
 class MergeError(Exception):
@@ -111,31 +132,73 @@ def _blob(src, dst, sha, dry, counts):
     return True
 
 
-def org_scope(src, org):
-    """(positions, sessions) of ORG as the source's own events show them."""
-    positions, sessions = set(), set()
-    for pos, sid in src.execute("SELECT DISTINCT position, session_id FROM event WHERE org = ?", (org,)):
-        if pos:
-            positions.add(pos)
-        if sid:
+def registry_positions(orgs_file, org):
+    """ORG's position names and aliases from the target's own registry (its orgs.yaml): the source's labels never
+    decide them (of_review on organic-framework PR 195: an event labelled with one organization named another's
+    position, and crossed as that position's)."""
+    import yaml
+    try:
+        with open(orgs_file) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except OSError as e:
+        raise MergeError(f"the target's organizations list {orgs_file}: {e.strerror}")
+    base = os.path.dirname(os.path.abspath(orgs_file))
+    for o in doc.get("orgs") or []:
+        root = os.path.join(base, os.path.expanduser(str(o.get("path") or "")))
+        if (o.get("name") or os.path.basename(root)) != org or not o.get("path"):
+            continue
+        try:
+            with open(os.path.join(root, "registry", "positions.yaml")) as fh:
+                reg = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as e:
+            raise MergeError(f"{org}'s registry on the target: {e}")
+        names = set()
+        for p in reg.get("positions") or []:
+            if isinstance(p, dict) and p.get("name"):
+                names.add(p["name"])
+                names.update(a for a in p.get("aliases") or [] if isinstance(a, str))
+        return names
+    raise MergeError(f"the target's {orgs_file} does not list {org}: its registry decides which positions cross")
+
+
+def org_scope(src, dst, org, positions):
+    """ORG's sessions: one the target already knows as a session of ORG's positions, or one it does not know at all
+    whose every event in the source names one of ORG's positions. A session the target knows as another organization's
+    never comes into scope, whatever the source says."""
+    cand = {}
+    for sid, pos in src.execute("SELECT DISTINCT session_id, position FROM event WHERE session_id IS NOT NULL"):
+        cand.setdefault(sid, set()).add(pos or None)
+    sessions = set()
+    for sid, poss in cand.items():
+        named = {p for p in poss if p}
+        known = {r[0] for r in dst.execute("SELECT DISTINCT position FROM event WHERE session_id = ? AND position IS NOT "
+                                           "NULL AND position != ''", (sid,))}
+        if known:
+            if known <= positions:
+                sessions.add(sid)
+        elif named and named <= positions:
             sessions.add(sid)
-    return positions, sessions
+    return sessions
 
 
-def merge(source, target, org, since=None, dry_run=False, person_acts_from=()):
-    """{table: {seen, added, refused, other_org, held}, person_acts: [...]} after merging ORG's rows of SOURCE's store
-    into TARGET's (paths to of.db). person_acts lists the delta's acts of a person the target lacked, `held` unless
-    their host is in PERSON_ACTS_FROM."""
+def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), orgs_file=None):
+    """{table: {seen, added, refused, other_org, held}, person_acts: [...], held_refs: [...]} after merging ORG's rows of
+    SOURCE's store into TARGET's (paths to of.db). ORG's positions come from the target's ORGS_FILE registry.
+    person_acts lists the delta's acts of a person the target lacked, `held` unless its event id is in PERSON_ACT_IDS
+    (ids whoever runs it read in the listing: a host id is the source's own claim). held_refs lists events held because
+    they change an ask or a hand-over that is not ORG's."""
     if not org:
         raise MergeError("--org names the organization whose rows move: a store holds every organization's")
     if os.path.realpath(source) == os.path.realpath(target):
         raise MergeError("the source and the target are the same store")
+    positions = registry_positions(orgs_file or os.environ.get("OF_ORGS")
+                                   or os.path.expanduser("~/.config/of/orgs.yaml"), org)
     src = _source(source)
     dst = of_store.connect(target)  # the target's schema, migrated as every OF store is
-    positions, sessions = org_scope(src, org)
-    trusted = {h for h in person_acts_from or () if h}
+    sessions = org_scope(src, dst, org, positions)
+    trusted = {i for i in person_act_ids or () if i}
     counts = {t: {"seen": 0, "added": 0, "refused": 0, "other_org": 0, "held": 0} for t in TABLES}
-    acts, hook_map = [], {}
+    acts, held_refs, hook_map = [], [], {}
 
     def tx(fn):
         if dry_run:
@@ -254,16 +317,35 @@ def merge(source, target, org, since=None, dry_run=False, person_acts_from=()):
     if _has(src, "session_fork") and _has(dst, "session_fork"):
         tx(forks)
 
+    def in_scope(d):
+        """ORG's event: no position, or one of ORG's (from the target's registry); ORG's label, or none with one of
+        ORG's sessions; and a session, when it names one, in ORG's scope."""
+        pos, sid = d.get("position") or None, d.get("session_id") or None
+        if pos and pos not in positions:
+            return False
+        if sid and sid not in sessions:
+            return False
+        return d.get("org") == org or (not d.get("org") and bool(pos or sid))
+
+    have = [c for c in EVENT_COLS if c in _cols(src, "event")]
+    rows = src.execute(f"SELECT {', '.join(have)} FROM event" + (" WHERE ts >= ?" if since else "")
+                       + " ORDER BY ts, rowid", (since,) if since else ()).fetchall()
+    # ORG's asks and hand-overs: those the target holds as ORG's, and those this delta brings in scope
+    own = {"ask": set(), "handover": set()}
+    for kind, name in (("ask", "of.agent_question"), ("handover", "of.handover_proposed")):
+        for eid, pos in dst.execute("SELECT event_id, position FROM event WHERE name = ? AND org = ?", (name, org)):
+            if not pos or pos in positions:
+                own[kind].add(eid)
+    for row in rows:
+        d = dict(zip(have, row))
+        if d.get("name") in ("of.agent_question", "of.handover_proposed") and in_scope(d):
+            own["ask" if d["name"] == "of.agent_question" else "handover"].add(d["event_id"])
+
     def events():
-        have = [c for c in EVENT_COLS if c in _cols(src, "event")]
-        rows = src.execute(f"SELECT {', '.join(have)} FROM event" + (" WHERE ts >= ?" if since else "")
-                           + " ORDER BY ts, rowid", (since,) if since else ()).fetchall()
         for row in rows:
             d = dict(zip(have, row))
             counts["event"]["seen"] += 1
-            mine = d.get("org") == org or (not d.get("org") and (d.get("position") in positions
-                                                                 or d.get("session_id") in sessions))
-            if not mine:
+            if not in_scope(d):
                 counts["event"]["other_org"] += 1
                 continue
             if dst.execute("SELECT 1 FROM event WHERE event_id = ?", (d["event_id"],)).fetchone():
@@ -272,8 +354,15 @@ def merge(source, target, org, since=None, dry_run=False, person_acts_from=()):
                 payload = json.loads(d.get("payload") or "{}")
             except ValueError:
                 payload = {}
-            if person_act(d.get("name"), payload if isinstance(payload, dict) else {}):
-                held = d.get("host_id") not in trusted
+            payload = payload if isinstance(payload, dict) else {}
+            r = refs(d.get("name") or "", payload)
+            if r and not r[1] <= own[r[0]]:  # it would change a record that is not ORG's
+                counts["event"]["held"] += 1
+                held_refs.append({"name": d["name"], "event_id": d["event_id"], "position": d.get("position"),
+                                  "names": sorted(r[1] - own[r[0]])})
+                continue
+            if person_act(d.get("name"), payload):
+                held = d["event_id"] not in trusted
                 acts.append({"name": d["name"], "event_id": d["event_id"], "ts": d.get("ts"),
                              "position": d.get("position"), "host_id": d.get("host_id"),
                              "via": payload.get("via"), "origin": payload.get("origin"),
@@ -296,6 +385,7 @@ def merge(source, target, org, since=None, dry_run=False, person_acts_from=()):
     src.close()
     dst.close()
     counts["person_acts"] = acts
+    counts["held_refs"] = held_refs
     return counts
 
 
@@ -305,15 +395,17 @@ def main(argv=None):
     ap.add_argument("--target", required=True, help="the store to merge into: this machine's of.db")
     ap.add_argument("--org", required=True, help="the organization whose rows move (its id, as the store writes it)")
     ap.add_argument("--since", help="only rows at or after this time (ISO, as the store writes it): the cutover point")
-    ap.add_argument("--person-acts-from", default="", help="host ids, comma-separated, whose acts of a person merge: "
-                    "the owner's own machine; every other act of a person is listed and held")
+    ap.add_argument("--orgs", help="the target's organizations list (default: OF_ORGS or ~/.config/of/orgs.yaml); "
+                    "ORG's registry there decides which positions cross")
+    ap.add_argument("--person-acts", default="", help="event ids, comma-separated, of acts of a person to merge, as the "
+                    "listing showed them and you checked them; every other act of a person is held")
     ap.add_argument("--dry-run", action="store_true", help="count what would be added, list the acts of a person; "
                     "write nothing")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
         counts = merge(a.source, a.target, a.org, a.since, a.dry_run,
-                       [h.strip() for h in a.person_acts_from.split(",") if h.strip()])
+                       [i.strip() for i in a.person_acts.split(",") if i.strip()], a.orgs)
     except MergeError as e:
         print(f"of_merge_delta: {e}", file=sys.stderr)
         return 2
@@ -321,14 +413,18 @@ def main(argv=None):
         print(json.dumps(counts))
         return 0
     acts = counts.pop("person_acts")
+    refs_held = counts.pop("held_refs")
     for t, c in counts.items():
         print(f"{t:18} seen {c['seen']:>8}  {'would add' if a.dry_run else 'added'} {c['added']:>8}"
               + (f"  another organization's {c['other_org']}" if c.get("other_org") else "")
               + (f"  refused {c['refused']} (bytes not their hash)" if c.get("refused") else "")
               + (f"  held {c['held']} (acts of a person)" if c.get("held") else ""))
+    for x in refs_held[:200]:
+        print(f"  held   {x['name']:30} {x['event_id']}  names another organization's or an unknown record: "
+              f"{', '.join(str(n)[-8:] for n in x['names'])}")
     held = [x for x in acts if x["held"]]
     print(f"\nacts of a person in the delta: {len(acts)}, held {len(held)}"
-          + (" (name their host with --person-acts-from once you have checked it is the owner's own machine)"
+          + (" (check each, then name its event id with --person-acts; a host id is the source's own claim)"
              if held else ""))
     for x in acts[:500]:
         print(f"  {'held ' if x['held'] else 'merge'}  {x['ts']}  {x['name']:30} {x['event_id']}  position "
