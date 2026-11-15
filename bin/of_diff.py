@@ -236,6 +236,9 @@ def _merge_block_list(key_line, body, value):
     None when the old items cannot be read (then the field is written fresh)."""
     def comment(ln):
         return not ln.strip() or ln.strip().startswith("#")
+    if not value:  # a key line alone reads back as null: the empty list is written inline, the key's comment kept
+        m = re.match(r"^(\s*[^\s:#][^:#]*:)(\s+#.*)?\s*$", key_line)
+        return [f"{m.group(1)} []{m.group(2) or ''}"] if m else None
     starts = [ln for ln in body if re.match(r"^ *- ", ln)]
     if not starts:
         return None
@@ -287,15 +290,25 @@ def _inline_list(key, field, value):
     """A list written inline (`owns: [a, b]  # note`) stays inline, its comment kept. None otherwise."""
     if len(field) != 1:
         return None
-    m = re.match(rf"^(\s*{re.escape(key)}:\s*)(\[.*\])(\s+#.*)?$", field[0])
+    m = re.match(rf"^(\s*{re.escape(key)}:\s*)(\[.*)$", field[0])
     one = _flow(value)
     if not m or one is None:
         return None
-    try:
-        yaml.safe_load(m.group(2))
-    except yaml.YAMLError:
-        return None  # the hash was inside the list: not a comment
-    return [f"{m.group(1)}{one}{m.group(3) or ''}"]
+    rest = m.group(2)
+
+    def load(t):
+        try:
+            return yaml.safe_load(t)
+        except yaml.YAMLError:
+            return None
+    whole = load(rest)
+    if not isinstance(whole, list):
+        return None
+    # the comment starts at the first ` #` after which the list alone reads as the whole line does; a `]` or `#` in
+    # the comment or in a quoted item is not taken for the list's end (of_review on PR 228)
+    cut = next((c.start() for c in re.finditer(r"\s+#", rest)
+                if rest[:c.start()].rstrip().endswith("]") and load(rest[:c.start()]) == whole), len(rest))
+    return [f"{m.group(1)}{one}{rest[cut:]}"]
 
 
 def _top_span(lines, key):

@@ -156,6 +156,18 @@ class DiffTest(unittest.TestCase):
         text = of_diff.set_fields(heads + inline + tail, "of_a", {"aliases": ["old_a", "new_c"]})
         self.assertIn("    aliases: [old_a, new_c]  # earlier names\n", text)
         self.assertEqual(yaml.safe_load(text)["positions"][0]["aliases"], ["old_a", "new_c"])
+        text = of_diff.set_fields(heads + "    aliases: [old_a, 'x # y']  # see [1] and #2\n" + tail, "of_a",
+                                  {"aliases": ["new_c"]})
+        self.assertIn("    aliases: [new_c]  # see [1] and #2\n", text)   # a `]` or `#` in the comment or an item
+        for label, field in {"block": "    owns:  # cells\n    # head\n    - {system: bot}  # basis\n",
+                             "indented block": "    owns:\n      - system: bot\n",
+                             "inline": "    owns: [{system: bot}]  # cells [1]\n"}.items():
+            text = of_diff.set_fields(heads + field + tail, "of_a", {"owns": []})   # of_review on PR 228
+            self.assertEqual(yaml.safe_load(text)["positions"][0]["owns"], [], label)
+            self.assertEqual(yaml.safe_load(text)["positions"][0]["summary"], "s", label)
+            self.assertNotIn("bot", text, label)
+        self.assertIn("    owns: []  # cells\n", of_diff.set_fields(
+            heads + "    owns:  # cells\n      - system: bot\n" + tail, "of_a", {"owns": []}))
 
     def test_swap_holder(self):
         h = {"runtime": "claude-code", "session": "s-new", "workplace": "herdr local, tab a"}
