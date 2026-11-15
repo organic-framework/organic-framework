@@ -93,6 +93,32 @@ class DiffTest(unittest.TestCase):
                                                               "fields": {"holder": {}}}), REG)
         self.assertIn("may set only", "\n".join(problems))
 
+    def test_set_replaces_a_list_whole_whatever_its_items_indent(self):
+        """Hand-over 77d4f357 (a user organization's structure keeper, message 01a1ded1-07ab): a block list written at
+        the key's own indent kept its old items after the new list."""
+        new_owns = [{"system": "bot", "method": "keep", "decides": True}, {"system": "feed", "method": "watch",
+                                                                          "decides": False}]
+        heads = "positions:\n  - name: of_a\n    system: of\n"
+        tail = "    summary: s\n  - name: of_b\n    system: of\n"
+        variants = {
+            "at the key's indent, block": "    owns:\n    - system: old\n      method: m\n      decides: true  # was\n",
+            "at the key's indent, flow": "    owns:\n    - {system: old, method: m, decides: true}  # comment\n",
+            "indented, flow": "    owns:\n      - {system: old, method: m, decides: true}  # comment\n",
+            "indented, block": "    owns:  # cells\n      - system: old\n        method: m\n        decides: true\n",
+            "inline flow": "    owns: [{system: old, method: m, decides: true}]\n"}
+        for label, owns in variants.items():
+            text = of_diff.set_fields(heads + owns + tail, "of_a", {"owns": new_owns})
+            doc = yaml.safe_load(text)
+            self.assertEqual(doc["positions"][0]["owns"], new_owns, label)        # reads back as written
+            self.assertEqual(doc["positions"][0]["summary"], "s", label)          # the field after it stays
+            self.assertEqual(doc["positions"][1]["name"], "of_b", label)          # the next position stays
+            self.assertNotIn("old", text, label)
+        for label, al in {"at the key's indent": "    aliases:\n    - old_a  # earlier name\n    - old_b\n",
+                          "indented": "    aliases:\n      - old_a\n      - old_b\n"}.items():
+            text = of_diff.set_fields(heads + al + tail, "of_a", {"aliases": ["new_a"]})
+            self.assertEqual(yaml.safe_load(text)["positions"][0]["aliases"], ["new_a"], label)
+            self.assertNotIn("old_b", text, label)
+
     def test_swap_holder(self):
         h = {"runtime": "claude-code", "session": "s-new", "workplace": "herdr local, tab a"}
         new, problems = of_diff.preview(diff("swap_holder", {"op": "set", "name": "of_a", "fields": {"holder": h}}), REG)

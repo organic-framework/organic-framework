@@ -191,9 +191,15 @@ def set_fields(text, name, fields):
         if at is None:
             lines[s + 1:s + 1] = _render_field(key, value) if value is not None else []
             continue
+        # a block value (nothing after `key:` but a comment) may list its items at the key's own indent, which YAML
+        # allows ("    owns:" then "    - {...}"); those are the field's too (a user organization's structure keeper,
+        # 2026-11-15: setting owns kept the old item after the new list, and the read-back failed)
+        block = re.match(rf"^{re.escape(key)}:\s*(#.*)?$", lines[at][4:]) is not None
+
+        def part(ln):
+            return ln.startswith("      ") or (block and re.match(r"^    - ", ln) is not None)
         k = at + 1
-        while k < e and (lines[k].startswith("      ") or (lines[k].strip() == "" and k + 1 < e
-                                                               and lines[k + 1].startswith("      "))):
+        while k < e and (part(lines[k]) or (lines[k].strip() == "" and k + 1 < e and part(lines[k + 1]))):
             k += 1
         repl = _render_field(key, value) if value is not None else []
         if at == s:  # the field sits on the `  - ` line itself (only name does)
