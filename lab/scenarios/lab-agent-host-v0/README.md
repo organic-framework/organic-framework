@@ -61,7 +61,7 @@ rewrite and install into a scratch home with no resume (docs/capacity.md, "Carry
 | A4 | **resume (forward)** | the restore selects the session for resume as `of` | `restore` selects the carried session (account matched), and writes `plan.local.json` with the entry's `config_dir`, `cwd` and `memory_dir` rewritten to `of`'s home and its `pane` cleared (never another machine's pane id). The actual boot and the `of.capacity_carry_restored` / `of.holder_changed` events are the host's S2 part (see "Lab OS and fidelity"); the lab injects a `restore_fn` and asserts the selection and this local plan. |
 | A5 | **resume (reverse)** | carry the session back to `alex` and restore | the rollback direction selects and rewrites under `alex` the same way; the copy that stayed running on the source is never stopped by the carry. |
 | A6 | account guard | restore a session whose target config dir is signed in to another account | the session is **not** resumed and the restore names it (the owner signs in or chooses the account first). |
-| B3 | delta merge | `python3 -m unittest tests.test_merge_delta` in the framework tree, as the target user, no account or herdr | `of_server`'s merge suite passes in the lab. It covers the merge by id and an idempotent re-run (B3-1); the delta's ask and hand-over in the target's projections, which `of asks` / `of handover list` read (B3-2); acts of a person held unless their source is named; another organization's rows not crossing; a blob whose bytes are not its hash refused; and the ClickHouse ship (the merged rows fall after the ship cursor, so the target's own shipper sends them, deduped by the ClickHouse keys). The merge CLI was still under review on 2026-11-15, so the lab gates on the suite rather than a moving flag set; a CLI-surface check is re-added once it settles. |
+| B3 | delta merge | `python3 -m unittest tests.test_merge_delta` in the framework tree, as the target user, no account or herdr | `of_server`'s merge suite passes in the lab. It covers the merge by id and an idempotent re-run (B3-1); the delta's ask and hand-over in the target's projections, which `of asks` / `of handover list` read (B3-2); acts of a person held unless named by event id in `--person-acts` (as `--dry-run` lists them); another organization's rows not crossing; a blob whose bytes are not its hash refused; and the ClickHouse ship (the merged rows fall after the ship cursor, so the target's own shipper sends them, deduped by the ClickHouse keys). The merge CLI was revised repeatedly on review (it settled with PR 195), so the lab gates on `of_server`'s suite, which tracks it, rather than pinning a moving flag set; the suite's own projection test covers B3-2. |
 
 A sign-in note: until the target config dir is signed in to the account the session ran on, restore does not resume
 it (A6 asserts the guard). A folder-trust note, for the S2 boot: a rewritten folder must be trusted in the target
@@ -101,11 +101,10 @@ nothing heavy on the Mac). The run is recorded in organic-framework-build `repor
 - **B3 event-store merge green (2026-11-15):** `of_server`'s merge (`bin/of_merge_delta.py`) and its ClickHouse ship
   are proven in the lab by `of_server`'s own suite (`tests/test_merge_delta.py`), run as the target user with no
   account or herdr: it passes here. The suite covers the merge by id and the idempotent re-run, the delta in the
-  target's projections, acts of a person held unless their source is named, another organization's rows not crossing,
-  a blob whose bytes are not its hash refused, and the target shipping the merged rows itself. The merge CLI was
-  revised several times on review that day, so the lab gates on the suite rather than a moving flag set; `of_release`
-  holds the scenario's B3 PR until PR 195 merges, after which a CLI-surface check (`of asks` / `of handover list` over
-  a merged store) is re-added. A full end-to-end ClickHouse count (an `of-server` and a ClickHouse in the VM) is out
+  target's projections, acts of a person held unless named by event id in `--person-acts`, another organization's rows
+  not crossing, a blob whose bytes are not its hash refused, and the target shipping the merged rows itself. The merge
+  CLI was revised several times on review that day (it settled with PR 195), so the lab gates on the suite, which
+  tracks the CLI, rather than a moving flag set. A full end-to-end ClickHouse count (an `of-server` and a ClickHouse in the VM) is out
   of lab scope, like the S2 boot (`AGENTS.md` keeps heavy jobs off the laptop). One lab note sent to `of_server`:
   `of handover list` loads the machine's org list before it reads the store, so the target user needs a minimal
   `orgs.yaml`, while `of asks` needs none.

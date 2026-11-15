@@ -247,17 +247,16 @@ def phase_b3(home):
     target OS user, with no account or herdr. `of_server`'s own suite (tests/test_merge_delta.py) is the
     authoritative proof and tracks the merge API through its review; the lab's part is that it runs green here. It
     covers B3-1 (one organization's delta merged by id, an idempotent re-run), B3-2 (the delta's ask and hand-over in
-    the target's projections, which `of asks` / `of handover list` read), acts of a person held unless their source
-    is named, another organization's rows not crossing, a blob whose bytes are not its hash refused, and the
-    ClickHouse ship (the merged rows fall after the target's ship cursor, so the target's own shipper sends them,
-    deduped by the ClickHouse keys).
+    the target's projections, which `of asks` / `of handover list` read), acts of a person held unless named by event
+    id in `--person-acts` (as `--dry-run` lists them), another organization's rows not crossing, a blob whose bytes
+    are not its hash refused, and the ClickHouse ship (the merged rows fall after the target's ship cursor, so the
+    target's own shipper sends them, deduped by the ClickHouse keys).
 
-    The merge CLI itself was still under active review on 2026-11-15 (the ref was revised several times), so this
-    phase gates on `of_server`'s suite rather than pinning the lab to a flag set that was still moving; a CLI-surface
-    check (`of asks` / `of handover list` over a merged store, `OF_DB` → the target store) is to be re-added once the
-    merge settles (`of_release` holds the scenario's B3 PR until PR 195 merges). A full end-to-end ClickHouse count
-    (an `of-server` and a ClickHouse in the VM) stays out of lab scope, like the S2 boot: `AGENTS.md` keeps heavy
-    jobs off the laptop, and the suite's ship test already checks what the target sends."""
+    The merge CLI itself was revised several times on review on 2026-11-15 (it settled with PR 195), so this phase
+    gates on `of_server`'s suite, which tracks the CLI, rather than pinning the lab to a flag set that was still
+    moving. A full end-to-end ClickHouse count (an `of-server` and a ClickHouse in the VM) stays out of lab scope,
+    like the S2 boot: `AGENTS.md` keeps heavy jobs off the laptop, and the suite's ship test already checks what the
+    target sends."""
     import re as _re
     repo = os.path.dirname(TREE)   # the framework tree's root in the VM
     r = subprocess.run([sys.executable, "-m", "unittest", "tests.test_merge_delta"],
