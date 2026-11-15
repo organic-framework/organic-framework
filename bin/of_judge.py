@@ -464,16 +464,30 @@ def proposed_diffs(conn, now=None, until=None):
 def only_proposed_diffs(conn, text, now=None, until=None):
     """The proposed diffs a closing message names, when it asks the owner nothing else; else None (j-v5). Each is
     decided on its own card in any state: open, he decides there; answered, he decided; a pane card would ask him again
-    and approve nothing. A "?" may stand only on the lines that name one of them or its card; without those lines the
-    message asks the owner nothing (says_more)."""
+    and approve nothing. A "?" may stand only in a clause that names one of them or its card, and no other clause
+    asks the owner for anything (asks_beside); without the lines that name them the message asks him nothing
+    (says_more)."""
     known = proposed_diffs(conn, now, until)
     named = sorted(d for d in diff_ids(text) if d in known)
     if not named:
         return None
     ids = set(named) | {x for d in named if known[d] for x in _short(known[d])}
-    if any("?" in ln for ln in (text or "").splitlines() if not any(i in ln for i in ids)) or says_more(text, ids):
+    if any(asks_beside(ln, ids) for ln in (text or "").splitlines()) or says_more(text, ids):
         return None
     return named
+
+
+# A clause ends at a sentence's end, at "," or ";", or before "or"
+_CLAUSE = re.compile(r"(?<=[?!.])\s+|[,;]|\s(?=(?:or|или|либо)\s)", re.I)
+
+
+def asks_beside(line, ids):
+    """Does a line ask something in a clause that names none of these ids: a "?" there, or a request to the owner
+    (q-v5)? of_review on PR 230: "Approve sd-…, or should I roll back the migration first?" was cleared with the
+    diff, and its second question never reached the owner."""
+    import of_classify
+    return any("?" in cl or of_classify._request_v5(cl) for cl in _CLAUSE.split(line or "")
+               if not any(i in cl for i in ids))
 
 
 def _short(event_id):
