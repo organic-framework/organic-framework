@@ -2555,6 +2555,10 @@ def cmd_asks(args):
                       and a["state"] == "open"]
             if copies:
                 g = {"ask_ids": [a["event_id"] for a in copies], "who": [f"the founder's copy of {src[0]['position']}"]}
+            elif len(src) == 1:  # no copy open (answered, withdrawn): the escalated ask itself, else nothing closed it
+                # (a user organization's structure keeper, message 01a1deb0-a318: its unit owner tried seven, each "no
+                # open ask matches")
+                g = {"ask_ids": [src[0]["event_id"]], "who": [f"{src[0]['position']} (escalated, no founder copy open)"]}
         if not g:
             raise OfError(f"no open ask matches {args.id!r}")
         # who answers: the founder in his own terminal is "owner"; an agent (a unit owner answering a routed

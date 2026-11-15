@@ -11,6 +11,11 @@ opens it when the agent waits on its owner, or closes it as not_a_question (foun
 - denied:     `of.permission_denied`;
 - superseded: a newer ask in the same session before an answer; OF's escalated copy of a routed ask once the unit
               owner files its rewrite (`of ask --escalates <id>`, `escalated_from` on both);
+- escalated:  `of.ask_escalated`: a routed ask sent on to the founder (by `of pulse` on its delegation's escalate_when,
+              or by its unit owner, `of ask --escalates <id>`); it waits on his copy (`escalated_from`);
+- answered_upstream: an escalated ask once a founder copy of it (OF's copy or the unit owner's rewrite) is answered,
+              or done as a task, or an answer names the ask itself while no copy of it is open (`of asks answered
+              <id>` by its unit owner); its escalation stays its closure (answered_upstream());
 - expired:    `of.session_end` while open;
 - withdrawn:  `of.ask_withdrawn` written by the owner (`of asks withdraw <id>`).
 - amended:    not a closure: `of.ask_amended` (`of ask --amend <id>`), by the position that filed the ask, while it is
@@ -168,6 +173,12 @@ def project(rows, state=None):
                 if ask and older_version(p_.get("version"), ask):
                     continue  # an answer to a version since amended, recorded anyway (a race): it closes nothing;
                     # the newest version stays open on the card (docs/events.md, of.ask_amended)
+                if ask and ask["state"] == "escalated" and st == "answered" and not any(
+                        c.get("escalated_from") == ask["event_id"] and c["state"] == "open" for c in asks):
+                    # named itself, with no founder copy open (of asks answered by its unit owner, of status
+                    # --answered by its asker): settled upstream; with a copy open the founder's card decides
+                    ask.update(state="answered_upstream", answered_by=r["event_id"], answered_at=r["ts"])
+                    continue
                 if ask and ask["state"] == "open" and ask.get("task"):
                     # a task is work for the owner, not a question: an answer is his claim that it is done; it
                     # stays open until the asker checks the result (of status --done-task) or withdraws it
@@ -176,6 +187,8 @@ def project(rows, state=None):
                     continue
                 if ask and ask["state"] in ("open", "candidate"):  # a candidate too: the popup's n, of asks answered
                     ask.update(state=st, closed_by=r["event_id"], closed_at=r["ts"])
+                    if st == "answered":
+                        answered_upstream(ask, by_id, r)
                     if open_by_session.get(ask["session_id"]) is ask:
                         open_by_session.pop(ask["session_id"], None)
             continue
@@ -188,6 +201,7 @@ def project(rows, state=None):
                                                                    or ask["event_id"].startswith(tid)):
                     if p_.get("done_task"):
                         ask.update(state="done", closed_by=r["event_id"], closed_at=r["ts"])
+                        answered_upstream(ask, by_id, r)
                     else:
                         ask.update(claimed_at=None, claim=None, reopened=(p_.get("note") or "")[:300],
                                    reopened_at=r["ts"])  # an answer from a chat must be later (of_asks_chat)
@@ -329,6 +343,7 @@ def project(rows, state=None):
                 targets = plain if len(plain) == 1 else []
             for ask in targets:
                 ask.update(state="answered", closed_by=r["event_id"], closed_at=r["ts"])
+                answered_upstream(ask, by_id, r)
             if m and cur and not cur["event_id"].endswith(m.group(1)):
                 continue  # a popup answer names another ask: the session's open question stays open
         if name == "of.agent_message_in":
@@ -404,6 +419,20 @@ def amend(ask, r):
     before = (ask.get("amended") or {}).get("all") or []
     ask["version"] = v
     ask["amended"] = {"version": v, "at": r["ts"], "changed": ch, "all": [c for c in AMENDABLE if c in ch or c in before]}
+
+
+def answered_upstream(copy, by_id, r):
+    """A founder copy of a routed ask (`escalated_from`: OF's copy or the unit owner's rewrite) was answered, or done as
+    a task, by event `r`: the routed ask, while escalated, is answered upstream, naming the copy and its answer
+    (answered_via, answered_by, answered_at), so its unit owner's queue (of asks --to-me) keeps only real work (a user
+    organization's structure keeper, via of_platform, message 01a1deaf-47e0: 22 routed asks listed as escalated, the
+    founder had answered a copy of 18). It keeps its escalation as its closure (closed_by, closed_at): the time it left
+    the unit owner's queue, which the unit owner's measures read, so the founder's answer never counts as the unit
+    owner's. A withdrawn copy settles nothing: a unit owner withdraws its rewrite to file another."""
+    src = by_id.get(copy.get("escalated_from")) if copy.get("escalated_from") else None
+    if src and src is not copy and src["state"] == "escalated":
+        src.update(state="answered_upstream", answered_via=copy["event_id"], answered_by=r["event_id"],
+                   answered_at=r["ts"])
 
 
 def older_version(answered, ask):
