@@ -6,6 +6,7 @@ import shlex
 import tempfile
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -134,6 +135,20 @@ class SpawnPlanTest(unittest.TestCase):
         self.assertIn(("pane", "run", "wF:p2", pl["command"]), calls)
         self.assertEqual(typed, [("wF:p2", pl["brief"], "S-1")])   # into the new pane, for the new session
         self.assertFalse(any(a[:2] == ("pane", "run") and a[2] == "wF:p1" for a in calls))  # never the caller's pane
+        # a user organization's keeper, message 01a1e0f1-c913: herdr did not see the agent for a moment after the session came up
+        typed.clear()
+        answers = [(False, "herdr agent wait failed (rc 1): agent_not_running: agent is no longer running")] * 2 + \
+            [(True, None)]
+        with mock.patch.object(of_spawn.time, "sleep", lambda s: None):
+            of_spawn.run(pl, herdr, deliver=lambda pane, text, sid: (typed.append(pane), answers.pop(0))[1],
+                         rename=lambda pane, name, sid: "named", wait_session=lambda sid, t: {"pane_id": "wF:p2"},
+                         log=lambda m: None)
+        self.assertEqual(typed, ["wF:p2"] * 3)
+        with self.assertRaises(of_spawn.SpawnError):  # any other failure stops at once, as before
+            of_spawn.run(pl, herdr, deliver=lambda pane, text, sid: (typed.append(pane), (False, "a dialog"))[1],
+                         rename=lambda pane, name, sid: "named", wait_session=lambda sid, t: {"pane_id": "wF:p2"},
+                         log=lambda m: None)
+        self.assertEqual(len(typed), 4)
 
 
 CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
