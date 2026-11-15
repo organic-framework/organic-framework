@@ -49,10 +49,11 @@ class MergeTest(unittest.TestCase):
         self.dst_path = os.path.join(self.tmp.name, "host", "of.db")
         src, dst = of_store.connect(self.src_path), of_store.connect(self.dst_path)
         # the target's own organizations list and registries decide whose positions cross
-        for org, names in (("ofb", ["acme_ops", "acme_db"]), ("userorg", ["zeta_ops"])):
+        for org, names, work in (("ofb", ["acme_ops", "acme_db"], "w-ofb"), ("userorg", ["zeta_ops"], "w-user")):
             os.makedirs(os.path.join(self.tmp.name, org, "registry"))
             with open(os.path.join(self.tmp.name, org, "registry", "positions.yaml"), "w") as fh:
-                fh.write("positions:\n" + "".join(f"  - {{name: {n}}}\n" for n in names))
+                fh.write("positions:\n" + "".join(f"  - {{name: {n}}}\n" for n in names)
+                         + f"works:\n  {work}: {{kind: project}}\n")
         self.orgs = os.path.join(self.tmp.name, "orgs.yaml")
         with open(self.orgs, "w") as fh:
             fh.write("orgs:\n  - {name: ofb, path: ofb}\n  - {name: userorg, path: userorg}\n")
@@ -232,6 +233,34 @@ class MergeTest(unittest.TestCase):
             conn.close()
         with self.assertRaises(of_merge_delta.MergeError):   # an organization the target does not list
             self.merge(org="nobody")
+
+    def test_another_organizations_diff_and_work_hold(self):
+        """of_review on PR 195: of.diff_applied labelled with one organization closed another's diff card; a loop's
+        step files itself under a work, which must be the organization's."""
+        dst = of_store.connect(self.dst_path)
+        theirs = rec("diff_proposed", {"id": "d-user-1", "kind": "spawn"}, "2026-11-15T11:40:00.000Z",
+                     position="zeta_ops", session="Z1", org="userorg")
+        of_store.add_event(dst, theirs)
+        dst.close()
+        src = of_store.connect(self.src_path)
+        applied = rec("diff_applied", {"id": "d-user-1"}, "2026-11-15T12:14:00.000Z")
+        mine = rec("diff_proposed", {"id": "d-ofb-1", "kind": "spawn"}, "2026-11-15T12:15:00.000Z")
+        mine_applied = rec("diff_applied", {"id": "d-ofb-1"}, "2026-11-15T12:16:00.000Z")
+        their_step = rec("loop_hypothesis", {"work": "w-user", "id": "h1"}, "2026-11-15T12:17:00.000Z")
+        our_step = rec("loop_hypothesis", {"work": "w-ofb", "id": "h2"}, "2026-11-15T12:18:00.000Z")
+        for r in (applied, mine, mine_applied, their_step, our_step):
+            of_store.add_event(src, r)
+        src.close()
+        counts = self.merge(person_act_ids=self.ids())
+        self.assertEqual(sorted(x["event_id"] for x in counts["held_refs"]),
+                         sorted([applied["of.event.id"], their_step["of.event.id"]]))
+        conn = of_store.connect(self.dst_path)
+        try:
+            got = {r[0] for r in conn.execute("SELECT event_id FROM event")}
+            self.assertTrue({mine["of.event.id"], mine_applied["of.event.id"], our_step["of.event.id"]} <= got)
+            self.assertFalse({applied["of.event.id"], their_step["of.event.id"]} & got)
+        finally:
+            conn.close()
 
     def test_a_blob_whose_bytes_are_not_its_hash_is_refused(self):
         """of_secrets-review on PR 195: a poisoned blob would land, and keep the real one out for good."""

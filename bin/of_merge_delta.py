@@ -23,8 +23,10 @@ Not merged: another organization's rows (counted as such); machine-level rows th
 
 **Every field of a source row is its writer's word**: on B1's reverse the source is a store an organization's OS user
 writes (of_secrets-review and of_review on organic-framework PR 195). So:
-- **an event that changes an ask's or a hand-over's state by its id** (an answer, a withdrawal, a snooze, an amend, a
-  hand-over step) crosses only when that record is ORG's on the target or in this delta; the rest are held and listed;
+- **an event that changes a record by its id, or files itself under one** (an answer, a withdrawal, a snooze, an amend
+  of an ask; a hand-over step; a diff's approval or application, which closes its card; a loop's step, an ask or a
+  record filed for a work) crosses only when that record is ORG's: an ask, hand-over or diff on the target or in this
+  delta, a work in ORG's registry; the rest are held and listed;
 - **acts of a person** (PERSON_ACTS: the owner's answers, withdrawals, snoozes, hand-offs and labels, human prompts,
   prompt-origin corrections, diff approvals, hand-over accepts and verifies, consents), what the trust paths read as a
   person's own, are listed by name, id, position and host, and merged only by the event ids --person-acts names, which
@@ -80,13 +82,23 @@ def person_act(name, payload):
 
 
 def refs(name, payload):
-    """(kind, ids) of the records an event changes by id: ('ask', …) or ('handover', …), else None."""
+    """[(kind, ids)] of the records an event changes or files itself under by id: an ask, a hand-over, a diff (its card
+    closes on `of.diff_applied`; of_review on organic-framework PR 195), or a work of the registry (a loop's
+    hypotheses, runs and decisions, an ask filed for a work, a work record)."""
+    out = []
     if name in ASK_REFS:
         ids = [payload.get("ask_id")] + list(payload.get("ask_ids") or [])
-        return "ask", {i for i in ids if isinstance(i, str) and i}
+        out.append(("ask", {i for i in ids if isinstance(i, str) and i}))
     if name.startswith("of.handover_") and name != "of.handover_proposed":
-        return "handover", {payload["id"]} if isinstance(payload.get("id"), str) else set()
-    return None
+        out.append(("handover", {payload["id"]} if isinstance(payload.get("id"), str) else set()))
+    if name.startswith("of.diff_") and name != "of.diff_proposed":
+        ids = {payload.get("id"), payload.get("diff_id")}
+        out.append(("diff", {i for i in ids if isinstance(i, str) and i}))
+    works = ([payload["work"]] if isinstance(payload.get("work"), str) and payload["work"] else []) + \
+        [w for w in payload.get("works") or [] if isinstance(w, str) and w]
+    if works:
+        out.append(("work", set(works)))
+    return out
 
 
 class MergeError(Exception):
@@ -133,9 +145,9 @@ def _blob(src, dst, sha, dry, counts):
 
 
 def registry_positions(orgs_file, org):
-    """ORG's position names and aliases from the target's own registry (its orgs.yaml): the source's labels never
-    decide them (of_review on organic-framework PR 195: an event labelled with one organization named another's
-    position, and crossed as that position's)."""
+    """(ORG's position names and aliases, ORG's work ids) from the target's own registry (its orgs.yaml): the source's
+    labels never decide them (of_review on organic-framework PR 195: an event labelled with one organization named
+    another's position, and crossed as that position's)."""
     import yaml
     try:
         with open(orgs_file) as fh:
@@ -157,7 +169,8 @@ def registry_positions(orgs_file, org):
             if isinstance(p, dict) and p.get("name"):
                 names.add(p["name"])
                 names.update(a for a in p.get("aliases") or [] if isinstance(a, str))
-        return names
+        works = reg.get("works") if isinstance(reg.get("works"), dict) else {}
+        return names, {str(w) for w in works}
     raise MergeError(f"the target's {orgs_file} does not list {org}: its registry decides which positions cross")
 
 
@@ -191,8 +204,8 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
         raise MergeError("--org names the organization whose rows move: a store holds every organization's")
     if os.path.realpath(source) == os.path.realpath(target):
         raise MergeError("the source and the target are the same store")
-    positions = registry_positions(orgs_file or os.environ.get("OF_ORGS")
-                                   or os.path.expanduser("~/.config/of/orgs.yaml"), org)
+    positions, works = registry_positions(orgs_file or os.environ.get("OF_ORGS")
+                                          or os.path.expanduser("~/.config/of/orgs.yaml"), org)
     src = _source(source)
     dst = of_store.connect(target)  # the target's schema, migrated as every OF store is
     sessions = org_scope(src, dst, org, positions)
@@ -331,15 +344,34 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
     rows = src.execute(f"SELECT {', '.join(have)} FROM event" + (" WHERE ts >= ?" if since else "")
                        + " ORDER BY ts, rowid", (since,) if since else ()).fetchall()
     # ORG's asks and hand-overs: those the target holds as ORG's, and those this delta brings in scope
-    own = {"ask": set(), "handover": set()}
-    for kind, name in (("ask", "of.agent_question"), ("handover", "of.handover_proposed")):
-        for eid, pos in dst.execute("SELECT event_id, position FROM event WHERE name = ? AND org = ?", (name, org)):
+    # ORG's asks, hand-overs and diffs: those the target holds as ORG's, and those this delta brings in scope; ORG's
+    # works: its registry's
+    own = {"ask": set(), "handover": set(), "diff": set(), "work": set(works)}
+    makers = {"of.agent_question": "ask", "of.handover_proposed": "handover", "of.diff_proposed": "diff"}
+    for name, kind in makers.items():
+        for eid, pos, pl in dst.execute("SELECT event_id, position, payload FROM event WHERE name = ? AND org = ?",
+                                        (name, org)):
             if not pos or pos in positions:
                 own[kind].add(eid)
+                if kind == "diff":  # a diff is named by its own id, which its proposal carries
+                    try:
+                        did = (json.loads(pl or "{}") or {}).get("id")
+                    except ValueError:
+                        did = None
+                    if isinstance(did, str):
+                        own["diff"].add(did)
     for row in rows:
         d = dict(zip(have, row))
-        if d.get("name") in ("of.agent_question", "of.handover_proposed") and in_scope(d):
-            own["ask" if d["name"] == "of.agent_question" else "handover"].add(d["event_id"])
+        if d.get("name") in makers and in_scope(d):
+            kind = makers[d["name"]]
+            own[kind].add(d["event_id"])
+            if kind == "diff":
+                try:
+                    did = (json.loads(d.get("payload") or "{}") or {}).get("id")
+                except ValueError:
+                    did = None
+                if isinstance(did, str):
+                    own["diff"].add(did)
 
     def events():
         for row in rows:
@@ -355,11 +387,11 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
             except ValueError:
                 payload = {}
             payload = payload if isinstance(payload, dict) else {}
-            r = refs(d.get("name") or "", payload)
-            if r and not r[1] <= own[r[0]]:  # it would change a record that is not ORG's
+            foreign = sorted({i for kind, ids in refs(d.get("name") or "", payload) for i in ids - own[kind]})
+            if foreign:  # it would change, or file itself under, a record that is not ORG's
                 counts["event"]["held"] += 1
                 held_refs.append({"name": d["name"], "event_id": d["event_id"], "position": d.get("position"),
-                                  "names": sorted(r[1] - own[r[0]])})
+                                  "names": foreign})
                 continue
             if person_act(d.get("name"), payload):
                 held = d["event_id"] not in trusted
