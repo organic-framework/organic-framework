@@ -47,6 +47,22 @@ class ChecksTest(StateDir):
                                  hooks=(errors, 0.3, {"PostToolUse": 0.3}, 400), swap=swap, disk=60.0,
                                  smoke={"head": "abc", "ok": True, "detail": "ok"}, served=served or {})
 
+    def test_a_git_repository_in_the_home_folder_fails_at_once(self):
+        """2026-11-15: an agent's command ran cd with an empty variable, then git init, in the home folder; every git
+        call under home outside a repository of its own then walked the whole home folder."""
+        r = of_health.measure(now=1.0, server="none", lags={}, views={}, hooks=(0, 0, {}, 0), swap=0.1, disk=50,
+                              smoke={"head": "x", "ok": True}, served={}, homegit="/Users/alex/.git")
+        self.assertEqual((r["machine.home_git"]["state"], r["machine.home_git"]["value"]), ("failed", "/Users/alex/.git"))
+        self.assertIn("move it aside", r["machine.home_git"]["detail"])
+        ok = of_health.measure(now=1.0, server="none", lags={}, views={}, hooks=(0, 0, {}, 0), swap=0.1, disk=50,
+                               smoke={"head": "x", "ok": True}, served={}, homegit=None)
+        self.assertEqual(ok["machine.home_git"]["state"], "ok")
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            self.assertIsNone(of_health.home_git(home))
+            os.makedirs(os.path.join(home, ".git"))
+            self.assertEqual(of_health.home_git(home), os.path.join(home, ".git"))
+
     def test_grades_and_limits(self):
         self.assertEqual([of_health.grade(v, 2, 20) for v in (1, 3, 21, None)], ["ok", "degraded", "failed", "failed"])
         self.assertEqual([of_health.grade(v, 25, 20, "below") for v in (30, 22, 10)], ["ok", "degraded", "failed"])

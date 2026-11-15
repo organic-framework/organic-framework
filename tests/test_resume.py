@@ -12,6 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_capacity  # noqa: E402
 import of_resume  # noqa: E402
+import of_spawn  # noqa: E402
 
 SID = "00000000-0000-4000-8000-00000000a001"  # made up: no real session id in a published tree
 
@@ -47,7 +48,8 @@ class ResumeCommandTest(unittest.TestCase):
                                              state_dir=self.home))
         self.assertEqual(argv[:5], ["env", f"CLAUDE_CONFIG_DIR={own}", "claude", "--resume", SID])
         with open(argv[argv.index("--settings") + 1]) as fh:  # a settings file, as of spawn writes it
-            self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "autoMemoryDirectory": "/m/acme_org",
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "env": of_spawn.agent_env(),
+                                             "autoMemoryDirectory": "/m/acme_org",
                                              "permissions": {"deny": deny}})
         self.assertEqual((argv[argv.index("--model") + 1], argv[argv.index("--effort") + 1]),
                          ("claude-opus-5-5", "xhigh"))
@@ -70,7 +72,7 @@ class ResumeCommandTest(unittest.TestCase):
         self.assertEqual(argv[:6], ["env", "-u", "CLAUDE_CONFIG_DIR", "claude", "--resume", SID])  # no mode: default
         self.assertEqual(argv[6:7], ["--settings"])                              # every session: AGENT_SETTINGS
         with open(argv[7]) as fh:
-            self.assertEqual(json.load(fh), {"feedbackDrafts": "off"})
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "env": of_spawn.agent_env()})
         self.assertEqual(len(argv), 8)
         self.assertIsNone(of_resume.command("00000000-0000-4000-8000-000000000000", [base]))
 

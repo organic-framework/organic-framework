@@ -190,9 +190,13 @@ class CredentialDenyTest(unittest.TestCase):
         self.assertEqual(s["feedbackDrafts"], "off")
         bare = plan(cwd="/w")["command"]                                       # every session: no feedback drafts
         with open(shlex.split(bare.split("--settings ", 1)[1])[0]) as fh:
-            self.assertEqual(json.load(fh), {"feedbackDrafts": "off"})
+            self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "env": of_spawn.agent_env()})
         self.assertEqual(json.loads(of_spawn.session_settings(None, ["Read(//a)"])),
-                         {"feedbackDrafts": "off", "permissions": {"deny": ["Read(//a)"]}})
+                         {"feedbackDrafts": "off", "env": {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~")},
+                          "permissions": {"deny": ["Read(//a)"]}})
+        # a tool profile's env joins the agents' own (2026-11-15: git never climbs into the home folder)
+        self.assertEqual(json.loads(of_spawn.session_settings(None, None, {"env": {"X": "1"}}))["env"],
+                         {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~"), "X": "1"})
 
 
 class OwnerStepsTest(unittest.TestCase):
