@@ -51,6 +51,15 @@ UNREAD = ("unread", None)   # of_loop.UNREAD: a resolver's answer when this mach
 
 LOCATED = "of.loop_run_located"   # of_loop.LOCATED: `of loop locate` names where an earlier run's reading was taken
 KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_cost", LOCATED)
+LOCATE_KEYS = ("observed_at", "direct", "proxy")   # of_loop.LOCATE_KEYS
+
+
+def is_locate(r):
+    """A locate: of.loop_run_located, or an of.loop_run with no rung that carries a reading point, the shape of loop
+    locate wrote for a few minutes on 2026-11-15 and the store keeps (of_loop.is_locate; of_review on PR 199)."""
+    pl = r.get("payload") or {}
+    return r.get("name") == LOCATED or (r.get("name") == "of.loop_run" and isinstance(pl, dict) and not pl.get("rung")
+                                        and any(k in pl for k in LOCATE_KEYS))
 DAY = 86400
 VOI = {"low": 1, "med": 2, "medium": 2, "high": 3}
 STATUS_OF = {"keep": "kept", "drop": "dropped", "park": "parked", "reopen": "open"}   # of_loop.STATUS_OF: reopen puts a
@@ -303,7 +312,7 @@ def _runs(evs, spec, hyp):
     by_id = {}
     for r in evs:
         pl = r.get("payload") or {}
-        if r["name"] == LOCATED:   # of loop locate: never a run itself; it places the run it names from its own time
+        if is_locate(r):   # of loop locate: never a run itself; it places the run it names from its own time
             if str(pl.get("run") or "") in by_id:   # (docs/events.md, of.loop_run_located)
                 _locate(by_id[str(pl["run"])], pl, t_of(r), measures)
             continue
