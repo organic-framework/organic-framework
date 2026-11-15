@@ -338,8 +338,8 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
     ok, why = deliver(pane, pl["brief"], pl["session"])
     # herdr may not see the agent in its pane for a moment after the session came up (Claude Code restarting itself
     # after an update, herdr's detection catching up): its wait then fails with agent_not_running at once although
-    # the prompt is idle right after (a user organization's structure keeper, message 01a1e0f1-c913: two spawns typed no brief); try again within
-    # the same time the session had to come up
+    # the prompt is idle right after (a user organization's structure keeper, message 01a1e0f1-c913: two spawns
+    # typed no brief); try again within the same time the session had to come up
     end = time.time() + timeout
     while ok is not True and "agent_not_running" in str(why) and time.time() < end:
         time.sleep(2)
