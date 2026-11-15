@@ -887,6 +887,30 @@ def _loop_of(w, org, orgs_file=None):
     return None
 
 
+def _loop_works(orgs_file=None):
+    """[(org, work id, its registry entry, its loop or None)] of every listed organization: one read of each registry."""
+    out = []
+    for org, path, _ in org_registries(orgs_file or ORGS_FILE):
+        try:
+            with open(path) as fh:
+                works = (yaml.safe_load(fh) or {}).get("works") or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        for wid, w in works.items() if isinstance(works, dict) else ():
+            if isinstance(w, dict):
+                out.append((org, str(wid), w, _loop_of(w, org, orgs_file)))
+    return out
+
+
+def _stall_thresholds():
+    """The catalogue's loop-stalled thresholds (docs/diagnose-v0.yaml), else the clock's own defaults."""
+    try:
+        import of_diagnose
+        return ((of_diagnose.catalogue().get("rules") or {}).get("loop-stalled") or {}).get("thresholds")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def position_loops(position, orgs_file=None):
     """[(work id, owner|doer, loop)] of the works with a loop that POSITION (a loaded position) owns or does in its
     organization: for the session's start context (bin/of_context.py). One read of its registry."""
@@ -2066,7 +2090,7 @@ def cmd_loop(args):
     conn = of_store.connect()
     rows = [{"name": n, "ts": ts, "payload": json.loads(pl or "{}")} for n, ts, pl in conn.execute(
         "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision', "
-        "'of.loop_run_located') "
+        "'of.loop_run_located', 'of.loop_wait') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work, loop)
     resolve = _for_work(_decided_resolver(conn, _load_quiet()), args.work)
@@ -2098,6 +2122,13 @@ def cmd_loop(args):
                       f"(of loop decision {args.work} <decision> --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
+        if reg["waits"]:  # the latest stated wait (docs/diagnose.md 2.29)
+            import time
+            x = reg["waits"][-1]
+            until = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(x["expect_at"])) if x.get("expect_at") else "?"
+            print(f"  waits on {x['on']} {x.get('ref') or ''} until {until} (stated "
+                  f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(x['ts']))} by {x.get('by') or '?'})"
+                  .replace("  until", " until") + (f": {x['note']}" if x.get("note") else ""))
         return 0
     positions = _load_quiet()
     me = _me(positions, getattr(args, "sender", None))
@@ -2164,6 +2195,20 @@ def cmd_loop(args):
                    "tokens": int(args.tokens) if args.tokens else None,
                    "session": sid, "model": model[0] if model else None, "source": args.source or "manual"}
         kind = "loop_run"
+    elif args.action == "wait":  # docs/diagnose.md 2.29: what the loop waits on and by when holds the stall clock
+        if args.on not in of_loop.WAIT_ON:
+            raise OfError(f"of loop wait {args.work} --on {'|'.join(of_loop.WAIT_ON)} [--ref <job, window, ask id or "
+                          f"position>] --until <ISO time|+2h>")
+        if not args.until:
+            raise OfError("--until <ISO time|+40m|+2h|+1d>: when the wait is expected to end; a wait with no end holds "
+                          "no clock")
+        try:
+            expect_at = _due(args.until)
+        except OfError:
+            raise OfError(f"--until {args.until!r}: an ISO time (2026-11-16T15:00Z) or +40m / +2h / +1d")
+        payload = {"work": args.work, "on": args.on, "ref": args.ref, "expect_at": expect_at,
+                   "hypothesis": need_hypothesis(False), "note": args.note, "by": me["name"]}
+        kind = "loop_wait"
     elif args.action == "locate":  # docs/registry.md, Works, "A run names where its reading was taken"
         mine = [r["payload"] for r in rows if r["name"] == "of.loop_run" and r["payload"].get("run") == args.run
                 and not of_loop.is_locate(r["payload"])]
@@ -5162,6 +5207,15 @@ def cmd_pulse(args):
         of_pulse.save_memory(mem)
     except Exception as e:  # noqa: BLE001
         print(f"scratch check: {e}")
+    try:  # a loop in testing shows a run, a decision or a stated wait within hours (docs/diagnose.md 2.29)
+        import time as _time
+        mem = of_pulse.load_memory()
+        of_pulse.loop_stalls(positions, agents, bind, mem, _time.time(), conn, _loop_works(),
+                             prompt=None if args.no_nudge else of_pulse.herdr_prompt, thresholds=_stall_thresholds(),
+                             log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere)
+        of_pulse.save_memory(mem)
+    except Exception as e:  # noqa: BLE001
+        print(f"loop stalls: {e}")
     try:  # capacity (of_capacity): ask the owner once when a position's account passes a threshold
         _capacity_watch(positions, (lambda m: None) if args.quiet else print)
         import of_capacity
@@ -6151,8 +6205,8 @@ def main(argv=None):
     sp.add_argument("--dry-run", "-n", action="store_true")
     sp.set_defaults(fn=cmd_spawn)
     lp = sub.add_parser("loop", help="a work's development loop (RFC 0005): hypothesis | run | decision | show | "
-                        "locate")
-    lp.add_argument("action", choices=["hypothesis", "run", "decision", "show", "locate"])
+                        "locate | wait")
+    lp.add_argument("action", choices=["hypothesis", "run", "decision", "show", "locate", "wait"])
     lp.add_argument("work")
     lp.add_argument("text", nargs="?", help="hypothesis: the change; decision: keep|drop|park|step_up|step_back|change_objective")
     lp.add_argument("--predict")
@@ -6184,6 +6238,10 @@ def main(argv=None):
     lp.add_argument("--run", help="run: the runner's id for this run (a job name); a run already recorded is skipped")
     lp.add_argument("--source", help="run: the runner that measured it (default manual), e.g. cbx")
     lp.add_argument("--note")
+    lp.add_argument("--on", help="wait: " + " | ".join(("runner", "window", "release", "holdout", "ask", "position",
+                                                         "calendar")))
+    lp.add_argument("--ref", help="wait: the job, window, ask id or position it waits on")
+    lp.add_argument("--until", help="wait: when the wait is expected to end (ISO time, or +40m / +2h / +1d)")
     lp.add_argument("--org")
     lp.add_argument("--from", dest="sender")
     lp.set_defaults(fn=cmd_loop)
