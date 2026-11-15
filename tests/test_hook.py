@@ -127,6 +127,27 @@ class HandleTest(unittest.TestCase):
             open(kw["transcript_path"], "a").close()
         of_hook.handle(name, dict(hook_event_name=name, session_id="S1", cwd="/x", **kw))
 
+    def test_a_watch_on_a_scratchpad_file_gets_a_note(self):
+        """2026-11-15, a user organization's structure keeper: macOS's tmp_cleaner deleted a watch's scripts in the
+        scratchpad and the watch printed "none new" for about 11 hours."""
+        scratch = "/private/tmp/claude-501/-Users-x-repo/S1/scratchpad/watch.sh"
+        for tool, ti in (("Monitor", {"command": f"bash {scratch}", "description": "watch"}),
+                         ("CronCreate", {"cron": "*/30 * * * *", "prompt": f"run {scratch} and report"}),
+                         ("Bash", {"command": f"while true; do bash {scratch}; sleep 60; done", "run_in_background": True})):
+            of_hook.OUTPUT = None
+            self.fire("PostToolUse", tool_name=tool, tool_input=ti, tool_response={})
+            out = (of_hook.OUTPUT or {}).get("hookSpecificOutput") or {}
+            self.assertEqual(out.get("hookEventName"), "PostToolUse", tool)
+            self.assertIn("names a file under the session's scratchpad (/private/tmp/claude-501/...)",
+                          out.get("additionalContext", ""))
+            self.assertIn("print FAIL when it cannot run", out["additionalContext"])
+        for tool, ti in (("Bash", {"command": f"bash {scratch}"}),                 # not a watch: a one-off command
+                         ("Monitor", {"command": "bash ~/repo/scripts/watch.sh"}),  # a persistent path
+                         ("Read", {"file_path": scratch})):
+            of_hook.OUTPUT = None
+            self.fire("PostToolUse", tool_name=tool, tool_input=ti, tool_response={})
+            self.assertIsNone(of_hook.OUTPUT, (tool, ti))
+
     def test_scheduler_prompts_are_never_the_owners(self):
         """2026-11-06: a cron prompt recorded as human closed the founder's ask c54997b8. Claude Code writes a
         system/scheduled_task_fire record before UserPromptSubmit and the prompt's own record (turnOrigin) after."""

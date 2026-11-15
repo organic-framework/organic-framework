@@ -705,6 +705,7 @@ def handle(event, hook):
             herdr_state("working")
         if event == "PostToolUse" and not subagent:
             _mandate_check(hook, sess)
+            _scratch_watch_note(hook)
         return
 
     index = _registry_index()
@@ -1017,6 +1018,36 @@ def _guard(hook, sess):
                                 "router_version": __import__("of_router").VERSION, "tool_name": hook.get("tool_name"),
                                 "reason": why, "subject": mask(str(subject))[:300]}, hook, sess, index)
     except (SystemExit, Exception):
+        pass
+
+
+SCRATCH_PATH = re.compile(r"/(?:private/)?tmp/claude-\d+/")
+WATCH_TOOLS = ("Monitor", "CronCreate", "ScheduleWakeup", "RemoteTrigger")
+SCRATCH_WATCH_NOTE = (
+    "OF: this {what} names a file under the session's scratchpad ({path}...). macOS's tmp_cleaner deletes files there "
+    "that were not accessed, modified or changed for 3 days, every night, and a watch whose script is gone may then "
+    "report nothing new for hours (a user organization, 2026-11-14). Keep a script that a cron, monitor or watch runs "
+    "in a path that persists (the work's repository, or a folder of your organization's state), and have it print "
+    "FAIL when it cannot run.")
+
+
+def _scratch_watch_note(hook):
+    """A watch (a monitor, a cron, a wake-up, a background Bash loop) that names a scratchpad file gets one note after
+    the call: the pulse cannot see what a monitor reads, this hook sees the call (2026-11-15, through a user
+    organization's structure keeper). Never fatal, never a deny."""
+    global OUTPUT
+    try:
+        tool, ti = hook.get("tool_name"), hook.get("tool_input") or {}
+        bg = tool == "Bash" and bool(ti.get("run_in_background"))
+        if tool not in WATCH_TOOLS and not bg:
+            return
+        m = SCRATCH_PATH.search(json.dumps(ti, ensure_ascii=False))
+        if not m:
+            return
+        what = "background command" if bg else tool
+        OUTPUT = {"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                         "additionalContext": SCRATCH_WATCH_NOTE.format(what=what, path=m.group(0))}}
+    except Exception:  # noqa: BLE001
         pass
 
 

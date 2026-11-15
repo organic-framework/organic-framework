@@ -790,6 +790,8 @@ class OwnersMeasureTest(unittest.TestCase):
                               "the risk): its money is "
                               "reported beside it, never asked of the owner as a proof.", ctx)
                 self.assertIn("never ask the owner, or relay an ask, to price, justify or prove it in money", ctx)
+                self.assertIn("Your scratchpad sits under /private/tmp, which macOS's tmp_cleaner empties every night",
+                              ctx)                                              # every enrolled position (2026-11-15)
             self.assertEqual(of.position_loops(by["lab_other"], orgs), [])
             self.assertNotIn("owner's yes", of_context.build("lab_other", positions, [], resolve))
             orgs = cli_org(root, owned("01a1d999-0000"))                       # unresolved: named so, no guidance
