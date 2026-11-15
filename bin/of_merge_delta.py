@@ -48,6 +48,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import of_store  # noqa: E402
@@ -105,6 +106,47 @@ class MergeError(Exception):
     pass
 
 
+# Ingest's own cap and yield (of_store, of_platform 2026-11-14): a hook waits on the store's lock 0.15 s.
+TX_CAP_S = 0.25
+TX_YIELD_S = 0.02
+
+
+class _Writer:
+    """Short write transactions, as ingest writes, so a target's hooks never wait on the merge (of_platform, msg
+    01a1dc95-cee1: one table in one transaction held a store's lock 154.7 s). The lock is taken just before a write
+    (reading the source and checking the target take none), and at each row, written or skipped, a transaction past
+    TX_CAP_S commits and sleeps TX_YIELD_S, so a waiting hook takes the lock. A merge is idempotent, so one cut short
+    is finished by running it again."""
+
+    def __init__(self, conn, dry):
+        self.conn, self.dry, self.t0, self.count, self.longest = conn, dry, None, 0, 0.0
+
+    def begin(self):
+        if not self.dry and self.t0 is None:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self.t0 = time.monotonic()
+
+    def commit(self):
+        if self.t0 is not None:
+            self.conn.execute("COMMIT")
+            self.longest = max(self.longest, time.monotonic() - self.t0)
+            self.count += 1
+            of_store.warn_long(self.t0)
+            self.t0 = None
+
+    def rollback(self):
+        if self.t0 is not None:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            self.t0 = None
+
+    def tick(self):
+        """Before each row: past the cap, commit and let a waiting writer in."""
+        if self.t0 is not None and time.monotonic() - self.t0 > TX_CAP_S:
+            self.commit()
+            time.sleep(TX_YIELD_S)
+
+
 def _source(path):
     if not os.path.isfile(path):
         raise MergeError(f"no store at {path}")
@@ -123,7 +165,7 @@ def _has(conn, table):
     return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone() is not None
 
 
-def _blob(src, dst, sha, dry, counts):
+def _blob(src, dst, sha, dry, counts, w=None):
     """Copy one blob the target lacks, after hashing its bytes: a blob whose bytes are not its address is refused, and
     the row that names it is not merged either (the blob table is INSERT OR IGNORE, so a wrong one would keep the real
     one out for good). True when the row may be merged."""
@@ -140,6 +182,8 @@ def _blob(src, dst, sha, dry, counts):
         return False
     counts["blob"]["added"] += 1
     if not dry:
+        if w:
+            w.begin()
         of_store.put_blob(dst, data)
     return True
 
@@ -204,6 +248,9 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
         raise MergeError("--org names the organization whose rows move: a store holds every organization's")
     if os.path.realpath(source) == os.path.realpath(target):
         raise MergeError("the source and the target are the same store")
+    if os.path.realpath(source) == os.path.realpath(of_store.db_path()):
+        raise MergeError("the source is this machine's live store: merge from a copy (sqlite3 <its of.db> "
+                         "\".backup <copy>\"), never from the store its hooks write (docs/storage.md)")
     positions, works = registry_positions(orgs_file or os.environ.get("OF_ORGS")
                                           or os.path.expanduser("~/.config/of/orgs.yaml"), org)
     src = _source(source)
@@ -213,12 +260,15 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
     counts = {t: {"seen": 0, "added": 0, "refused": 0, "other_org": 0, "held": 0} for t in TABLES}
     acts, held_refs, hook_map = [], [], {}
 
+    w = _Writer(dst, dry_run)
+
     def tx(fn):
-        if dry_run:
+        try:
             fn()
-            return
-        with of_store.write_tx(dst):
-            fn()
+            w.commit()
+        except BaseException:
+            w.rollback()
+            raise
 
     hook_cols = [c for c in _cols(dst, "hook_record") if c != "id"]
     hook_have = ["id"] + [c for c in hook_cols if c in _cols(src, "hook_record")]
@@ -233,6 +283,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
         return target_hooks
 
     def hook_row(row):
+        w.tick()
         d = dict(zip(hook_have, row))
         if d["id"] in hook_map:
             return
@@ -247,7 +298,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
         if hit:
             hook_map[d["id"]] = hit if isinstance(hit, int) else hit[0]
             return
-        if not _blob(src, dst, d.get("blob_sha256"), dry_run, counts):
+        if not _blob(src, dst, d.get("blob_sha256"), dry_run, counts, w):
             counts["hook_record"]["refused"] += 1
             hook_map[d["id"]] = None
             return
@@ -256,6 +307,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
             hook_map[d["id"]] = None
             return
         rest = [c for c in hook_have if c != "id"]
+        w.begin()
         cur = dst.execute(f"INSERT INTO hook_record ({', '.join(rest)}) VALUES ({', '.join('?' * len(rest))})",
                           tuple(d[c] for c in rest))
         hook_map[d["id"]] = cur.lastrowid
@@ -298,6 +350,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
                 rows += src.execute(q + " WHERE session_id IS ? AND timestamp IS NULL AND source_path = ? AND "
                                     "line_offset >= ?", (sid, path, off)).fetchall()
         for row in rows:
+            w.tick()
             d = dict(zip(have, row))
             counts["transcript_record"]["seen"] += 1
             if d.get("session_id") not in sessions:  # another organization's conversation never crosses
@@ -306,11 +359,12 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
             if dst.execute("SELECT 1 FROM transcript_record WHERE session_id IS ? AND record_uuid = ?",
                            (d.get("session_id"), d["record_uuid"])).fetchone():
                 continue
-            if not _blob(src, dst, d.get("blob_sha256"), dry_run, counts):
+            if not _blob(src, dst, d.get("blob_sha256"), dry_run, counts, w):
                 counts["transcript_record"]["refused"] += 1
                 continue
             counts["transcript_record"]["added"] += 1
             if not dry_run:
+                w.begin()
                 dst.execute(f"INSERT OR IGNORE INTO transcript_record ({', '.join(have)}) VALUES "
                             f"({', '.join('?' * len(have))})", row)
     if _has(src, "transcript_record"):
@@ -318,6 +372,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
 
     def forks():
         for row in src.execute("SELECT session_id, parent_session_id, shared, method, detected_at FROM session_fork"):
+            w.tick()
             counts["session_fork"]["seen"] += 1
             if row[0] not in sessions:
                 counts["session_fork"]["other_org"] += 1
@@ -326,6 +381,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
                 continue
             counts["session_fork"]["added"] += 1
             if not dry_run:
+                w.begin()
                 dst.execute("INSERT OR IGNORE INTO session_fork VALUES (?,?,?,?,?)", row)
     if _has(src, "session_fork") and _has(dst, "session_fork"):
         tx(forks)
@@ -375,6 +431,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
 
     def events():
         for row in rows:
+            w.tick()
             d = dict(zip(have, row))
             counts["event"]["seen"] += 1
             if not in_scope(d):
@@ -407,6 +464,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
                 continue
             d["raw_ref"] = raw_ref(d.get("raw_ref"))
             cols = [c for c in EVENT_COLS if c in d]
+            w.begin()
             cur = dst.execute(f"INSERT OR IGNORE INTO event ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                               tuple(d[c] for c in cols))
             if cur.rowcount and isinstance(payload, dict):
@@ -418,6 +476,7 @@ def merge(source, target, org, since=None, dry_run=False, person_act_ids=(), org
     dst.close()
     counts["person_acts"] = acts
     counts["held_refs"] = held_refs
+    counts["transactions"] = {"count": w.count, "longest_s": round(w.longest, 3)}
     return counts
 
 
@@ -446,11 +505,14 @@ def main(argv=None):
         return 0
     acts = counts.pop("person_acts")
     refs_held = counts.pop("held_refs")
+    txs = counts.pop("transactions")
     for t, c in counts.items():
         print(f"{t:18} seen {c['seen']:>8}  {'would add' if a.dry_run else 'added'} {c['added']:>8}"
               + (f"  another organization's {c['other_org']}" if c.get("other_org") else "")
               + (f"  refused {c['refused']} (bytes not their hash)" if c.get("refused") else "")
               + (f"  held {c['held']} (acts of a person)" if c.get("held") else ""))
+    if not a.dry_run:
+        print(f"{'transactions':18} {txs['count']:>13}  the longest held the lock {txs['longest_s']} s")
     for x in refs_held[:200]:
         print(f"  held   {x['name']:30} {x['event_id']}  names another organization's or an unknown record: "
               f"{', '.join(str(n)[-8:] for n in x['names'])}")
