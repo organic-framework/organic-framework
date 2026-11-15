@@ -645,17 +645,21 @@ def ingest_file(conn, path, harness="claude-code", max_bytes=None, on_record=Non
     data = data[:end + 1]
     session_hint = session_from_path(path)
     # A new transcript may be a fork: its session_fork mark is written in the same transaction as its
-    # first rows, so a reader following transcript_record by id never sees a copy before its mark.
+    # first rows, so a reader following transcript_record by id never sees a copy before its mark. Under the
+    # transaction cap the first transaction may hold one record, and a fork's file often begins with a title line no
+    # session shares (of_review on PR 208: all 8 marked forks did), so the mark is checked again in each transaction
+    # of the first batch, and on until a user or assistant record went in (INSERT OR REPLACE: the count grows).
     fork_check = [offset == 0 and f"{os.sep}subagents{os.sep}" not in path and has_uuid_index(conn)]
-    last_sid = [None]
+    last_sid, talked = [None], [False]
 
-    def mark_fork():
+    def mark_fork(first_batch_done):
         if fork_check[0] and last_sid[0]:
-            fork_check[0] = False
             try:
                 detect_forks(conn, [last_sid[0]], in_tx=True)
             except sqlite3.Error:
                 pass
+            if first_batch_done and talked[0]:
+                fork_check[0] = False
     lines = data.split(b"\n")[:-1]
     pos, i = offset, 0
     while i < len(lines):
@@ -696,10 +700,12 @@ def ingest_file(conn, path, harness="claude-code", max_bytes=None, on_record=Non
             prev, _TX.conn = getattr(_TX, "conn", None), conn
             t0 = time.monotonic()
             try:
+                j0 = j
                 j, n_added = _insert_capped(conn, batch, j, usage_cols, t0)
                 added += n_added
-                mark_fork()
+                talked[0] = talked[0] or any(b[5].get("type") in ("user", "assistant") for b in batch[j0:j])
                 done = j >= len(batch)
+                mark_fork(done)
                 at = (pos if i < len(lines) else offset + len(data)) if done else batch[j - 1][6]
                 conn.execute("INSERT OR REPLACE INTO ingest_cursor VALUES (?,?,?,?)",
                              (path, st.st_ino, at, of_events.now_iso()))
