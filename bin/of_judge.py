@@ -477,8 +477,9 @@ def only_proposed_diffs(conn, text, now=None, until=None):
     return named
 
 
-# A clause ends at a sentence's end, at "," or ";", or before "or"
-_CLAUSE = re.compile(r"(?<=[?!.])\s+|[,;]|\s(?=(?:or|или|либо)\s)", re.I)
+# A clause ends at a sentence's end, at "," or ";", or before a conjunction (of_review on PR 230: "Approve sd-… and
+# should I restart the DB too?"; "а" covers "а также"). A split too many only sends the message to the model.
+_CLAUSE = re.compile(r"(?<=[?!.])\s+|[,;]|\s(?=(?:or|and|but|then|also|или|либо|и|а|но|потом|затем)\s)", re.I)
 
 
 def asks_beside(line, ids):
