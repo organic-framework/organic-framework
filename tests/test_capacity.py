@@ -1238,6 +1238,8 @@ class Resume(unittest.TestCase):
                         mock.patch.object(of_capacity, "_herdr", herdr),
                         mock.patch.object(of_capacity, "_pane_lines", lambda *a, **k: list(self.screen)),
                         mock.patch.object(of_capacity, "check_bypass_after_start", lambda *a, **k: "bypass"),
+                        # never the real herdr binary: a CI runner has none (PR 204, of_review)
+                        mock.patch.object(of_capacity, "ensure_herdr_integration", lambda *a, **k: False),
                         mock.patch.object(of_capacity, "_inject",
                                           lambda sid, text, reason: self.calls.append(("inject", sid, text))),
                         mock.patch.object(of_capacity.of_events, "emit",
