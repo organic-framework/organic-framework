@@ -1136,6 +1136,8 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
     held = {(p.get("_org"), p["name"]) for p in positions if (p.get("holder") or {}).get("runtime") != "human"}
     away = {n for _, n in (elsewhere or {})}
     episodes = mem.setdefault("loop_stalls", {})
+    long_told = mem.setdefault("loop_long_waits", [])
+    esc_h = dict(of_diagnose_rules.STALL_DEFAULTS, **(thresholds or {}))["escalate_hours_gte"]
     current, told = set(), 0
     for org, wid, work, loop in works:
         rows = by_work.get(wid) or []
@@ -1146,6 +1148,22 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
             continue
         card.setdefault("waits", of_loop.waits(rows, wid))   # until the card carries them (of_studio, asked 2026-11-16)
         card.setdefault("state", work.get("state"))
+        owner = work.get("owner")
+        if owner and (org, owner) in held:   # a long wait is told when it is stated (docs/registry.md, "A stated wait")
+            for x in long_waits(card["waits"], now, esc_h):
+                k = f"{org}/{wid}/{x['ts']}/{x['on']}/{x.get('ref')}"
+                a = live.get(owner) or {}
+                if k in long_told or not prompt or owner in away or not a.get("pane_id") \
+                        or a.get("agent_status") not in ("idle", "done"):
+                    continue
+                res = prompt(a["pane_id"], long_wait_note(wid, x, esc_h), "of_pulse")
+                if (res[0] if isinstance(res, tuple) else (res is None or res is True)) is True:
+                    long_told.append(k)
+                    of_events.emit("nudge_sent", {"position": owner, "from_position": "of_pulse",
+                                                  "to_position": owner, "about": long_wait_note(wid, x, esc_h),
+                                                  "pane": a["pane_id"], "kind": "loop_long_wait", "work": wid},
+                                   position=owner, org=org)
+                    told += 1
         st = of_diagnose_rules.loop_stall(card, now, thresholds)
         if not st:
             continue
@@ -1177,7 +1195,28 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
             log(f"told {name}: {wid} stalled {st['hours']:g} h")
     for k in [k for k in episodes if k not in current]:
         del episodes[k]   # progress or a stated wait ended the episode
+    del long_told[:-500]
     return told
+
+
+def long_waits(waits, now, esc_h):
+    """The stated waits whose expect_at lies past the escalation threshold from their statement, still to come and
+    stated within the last day: each reaches the work's owner once, when it is stated (docs/registry.md, Works, "A
+    stated wait"). Not a cap: the wait holds as stated."""
+    return [x for x in waits or [] if x.get("ts") and x.get("expect_at") and x["expect_at"] > now
+            and x["ts"] >= now - 86400 and x["expect_at"] - x["ts"] > esc_h * 3600]
+
+
+def long_wait_note(work, x, esc_h):
+    hours = (x["expect_at"] - x["ts"]) / 3600
+    return ("Message from of_pulse (via of pulse, authority: none; a long stated wait, docs/registry.md, Works, "
+            "\"A stated wait\")\n"
+            f"{work}: {x.get('by') or 'a doer'} stated a wait on {x['on']} {x.get('ref') or ''} until "
+            f"{_iso(x['expect_at'])[:16].replace('T', ' ')}Z ({hours:.0f} h), past the {esc_h:g} h escalation "
+            f"threshold".replace("  until", " until")
+            + (f" ({x['note']})" if x.get("note") else "")
+            + ". It holds the stall clock as stated. Accept it, ask for a cheaper rung meanwhile, or park the work.\n"
+            "[to you as the work's owner, once, when the wait is stated]")
 
 
 def herdr_prompt(pane, text, sender):

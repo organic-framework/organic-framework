@@ -222,6 +222,23 @@ class LoopStallTest(unittest.TestCase):
             conn.close()
 
 
+class LongWaitTest(unittest.TestCase):
+    def test_a_wait_past_the_escalation_threshold_reaches_the_owner_once_when_stated(self):
+        """docs/registry.md, Works, "A stated wait" (of_architect, message 01a1e12a-e6e3): a long wait would otherwise
+        hold the clock unseen. Not a cap: it holds as stated."""
+        t0 = 1_800_000_000
+        waits = [{"ts": t0, "on": "runner", "ref": "j1", "expect_at": t0 + 3 * 3600, "by": "of_doer"},
+                 {"ts": t0, "on": "holdout", "ref": "day 3", "expect_at": t0 + 30 * 3600, "by": "of_doer",
+                  "note": "the third day's data"},
+                 {"ts": t0 - 3 * 86400, "on": "window", "ref": "w", "expect_at": t0 + 9 * 3600}]   # stated long ago
+        got = of_pulse.long_waits(waits, t0 + 60, 8)
+        self.assertEqual([x["ref"] for x in got], ["day 3"])
+        note = of_pulse.long_wait_note("w1", got[0], 8)
+        self.assertIn("w1: of_doer stated a wait on holdout day 3 until", note)
+        self.assertIn("(30 h), past the 8 h escalation threshold (the third day's data). It holds the stall clock", note)
+        self.assertEqual(of_pulse.long_waits(waits, t0 + 31 * 3600, 8), [])                  # over: nothing to tell
+
+
 class AttentionCopyTest(unittest.TestCase):
     """of who reads the last pulse's projection instead of projecting the whole log (of_conductor msg 01a1d663-4530,
     2026-11-13: 14 s of CPU and 941 MB a call)."""

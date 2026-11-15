@@ -13,6 +13,7 @@ measure") is told so: the target, the id of that yes, and that its money is repo
 
 import os
 import re
+import time
 
 BRIEF_MAX = 9000
 RULES_MAX = 4000
@@ -83,7 +84,32 @@ def not_observed_runs(runs, limit=5):
                "\"Where a reading is taken\")."])
 
 
-def build(position, positions, loops=None, resolve=None, runs=None):
+def loop_clocks(clocks, limit=8):
+    """Lines for the position's loops with a hypothesis in testing, from {work: of_loop.clock(...)}: the current wait
+    with its time left, or the hours since the last run or decision, and the duty to state a wait (docs/registry.md,
+    Works, "A stated wait")."""
+    out = []
+    for w, c in sorted((clocks or {}).items())[:limit]:
+        if not c.get("testing"):
+            continue
+        x = c.get("wait")
+        if x:
+            out.append(f"- `{w}` ({c['role']}): waits on {x['on']} {x.get('ref') or ''} until "
+                       f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(x['expect_at']))} ({c['left_h']:g} h left)"
+                       .replace("  until", " until") + ".")
+        else:
+            since = f"{c['since_h']:g} h since its last run or decision" if c.get("since_h") is not None else \
+                "no run or decision yet"
+            out.append(f"- `{w}` ({c['role']}): {since}; no wait stated.")
+    if not out:
+        return []
+    return (["", "## Loops with a hypothesis in testing"] + out
+            + ["State a wait when the next run or decision will not come within 4 h: of loop wait <work> --on "
+               "runner|window|release|holdout|ask|position|calendar --ref <what> --until <time> (docs/registry.md, "
+               "Works, \"A stated wait\")."])
+
+
+def build(position, positions, loops=None, resolve=None, runs=None, clocks=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
     newest runs that are proxies whose condition did not hold (of_loop.blind_runs)."""
@@ -110,6 +136,7 @@ def build(position, positions, loops=None, resolve=None, runs=None):
         lines.append(f"- registry says you wait on: {p['waiting_on']}")
     lines += owner_measures(loops, resolve)
     lines += not_observed_runs(runs)
+    lines += loop_clocks(clocks)
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
     if brief:
         lines += ["", "## Brief", brief.strip()]

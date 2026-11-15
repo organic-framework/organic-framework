@@ -333,6 +333,17 @@ class ReadingPointTest(unittest.TestCase):
                           "2.4), valid only when one of our own nodes built the block, which is not known to hold.", lines)
             self.assertEqual(of_context.not_observed_runs([]), [])
             conn.close()
+        # docs/registry.md, Works, "A stated wait": where each loop in testing stands, and the duty in one line
+        lines = "\n".join(of_context.loop_clocks({
+            "w-a": {"role": "doer", "testing": 2, "wait": {"on": "runner", "ref": "job-7", "expect_at": 1_800_000_000},
+                    "left_h": 3.5, "since_h": 1.0},
+            "w-b": {"role": "owner", "testing": 1, "wait": None, "left_h": None, "since_h": 6.2},
+            "w-c": {"role": "doer", "testing": 0, "wait": None, "left_h": None, "since_h": 90}}))
+        self.assertIn("- `w-a` (doer): waits on runner job-7 until 2027-01-15 08:00Z (3.5 h left).", lines)
+        self.assertIn("- `w-b` (owner): 6.2 h since its last run or decision; no wait stated.", lines)
+        self.assertNotIn("w-c", lines)                                          # nothing in testing: nothing to say
+        self.assertIn("State a wait when the next run or decision will not come within 4 h: of loop wait", lines)
+        self.assertEqual(of_context.loop_clocks({}), [])
 
 
 class LocatedRunTest(unittest.TestCase):
@@ -412,10 +423,12 @@ class LocatedRunTest(unittest.TestCase):
             self.assertEqual(run("decision", "w-speed", "keep", "--hypothesis", h2).returncode, 0)  # counts from now
 
     def test_wait_states_what_the_loop_waits_on_and_by_when(self):
-        """docs/diagnose.md 2.29 (of_field-analyst, message 01a1e125-c044): a stated wait holds the stall clock."""
+        """docs/diagnose.md 2.29 (of_field-analyst, message 01a1e125-c044) and docs/registry.md, Works, "A stated wait"
+        (of_architect, message 01a1e12a-e6e3): a stated wait holds the stall clock; its refusals."""
         import json
         import sqlite3
         import subprocess
+        import time
         with tempfile.TemporaryDirectory() as root:
             env = dict(os.environ, OF_ORGS=cli_org(root, LOOP), OF_STATE=os.path.join(root, "state"))
             env.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -423,18 +436,38 @@ class LocatedRunTest(unittest.TestCase):
             run = lambda *a: subprocess.run([sys.executable, of, "loop", *a, "--from", "lab_doer"],  # noqa: E731
                                             capture_output=True, text=True, env=env)
             hid = run("hypothesis", "w-speed", "faster", "--cost", "oracle, 0", "--voi", "high").stdout.split()[-1]
-            for bad in (("--on", "lunch", "--until", "+2h"), ("--on", "runner"), ("--on", "runner", "--until", "soon")):
-                self.assertNotEqual(run("wait", "w-speed", *bad).returncode, 0, bad)
-            r = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "2026-11-16T15:00Z",
-                    "--hypothesis", hid, "--note", "queued behind the nightly replay")
+            for bad, why in ((("--on", "lunch", "--until", "+2h"), "--on"),
+                             (("--on", "runner", "--ref", "j"), "--until"),
+                             (("--on", "runner", "--ref", "j", "--until", "soon"), "an ISO time"),
+                             (("--on", "runner", "--until", "+2h"), "--ref names what the loop waits on"),
+                             (("--on", "runner", "--ref", "j", "--until", "2020-01-01T00:00Z"), "already past"),
+                             (("--on", "ask", "--ref", "deadbeef", "--until", "+2h"), "0 open asks"),
+                             (("--on", "position", "--ref", "nobody", "--until", "+2h"), "names no position"),
+                             (("--on", "position", "--ref", "acme:lab_doer", "--until", "+2h"), "names no position")):
+                r = run("wait", "w-speed", *bad)
+                self.assertNotEqual(r.returncode, 0, bad)
+                self.assertIn(why, r.stderr, bad)
+            for ok in (("--on", "calendar", "--until", "+3d"), ("--on", "position", "--ref", "external:the auditor",
+                                                                "--until", "+1d"),
+                       ("--on", "position", "--ref", "lab_doer", "--until", "+1d")):
+                self.assertEqual(run("wait", "w-speed", *ok).returncode, 0, ok)
+            r = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+5h", "--hypothesis", hid,
+                    "--note", "queued behind the nightly replay", "--source", "cbx")
             self.assertEqual(r.returncode, 0, r.stderr)
+            again = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+6h", "--source", "cbx")
+            self.assertIn("already waits on runner job-7; nothing written", again.stdout)   # a runner's re-sync
             db = sqlite3.connect(os.path.join(root, "state", "of.db"))
-            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait'").fetchone()[0])
-            self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "expect_at": "2026-11-16T15:00:00Z",
-                                 "hypothesis": hid, "note": "queued behind the nightly replay", "by": "lab_doer"})
-            self.assertIn("waits on runner job-7 until 2026-11-16 15:00Z", run("show", "w-speed").stdout)
-            w = of_loop.waits([{"name": "of.loop_wait", "ts": "2026-11-16T10:00:00.000Z", "payload": p}], "w-speed")
-            self.assertEqual((w[0]["on"], w[0]["expect_at"] - w[0]["ts"]), ("runner", 5 * 3600))
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait' ORDER BY rowid DESC "
+                                      "LIMIT 1").fetchone()[0])
+            expect = p.pop("expect_at")
+            self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "hypothesis": hid,
+                                 "note": "queued behind the nightly replay", "by": "lab_doer", "source": "cbx"})
+            self.assertAlmostEqual(of_loop._epoch(expect) - time.time(), 5 * 3600, delta=120)
+            self.assertIn(f"waits on runner job-7 until {expect[:10]} {expect[11:16]}Z", run("show", "w-speed").stdout)
+            c = of_loop.clocks(db, [("w-speed", "doer", LOOP)])["w-speed"]
+            self.assertEqual((c["role"], c["testing"], c["wait"]["on"]), ("doer", 0, "calendar"))  # ends last: +3d
+            self.assertAlmostEqual(c["left_h"], 72, delta=0.2)
+            self.assertIsNone(c["since_h"])                                # no run or decision yet
 
     def test_the_register_and_the_start_context_apply_a_locate(self):
         import of_events
