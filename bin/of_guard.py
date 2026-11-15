@@ -2605,30 +2605,71 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             term = ops[i]
     base, chain, empty, values, exported = set(known), set(), set(empty), dict(values), set(exported)
     loose_cd, prev_test, opaque = [], None, False
-    blocks = []   # what held when each open then/do block began: it holds until its fi, else or done
+    # the open if and loop blocks, innermost last: each holds what its condition asserted (know), what its current
+    # branch set (cur), whether that branch ended in exit or return, and its finished branches. At fi, what every branch
+    # that goes on set holds after it; with no else, the branch where the condition failed counts, knowing what its
+    # test denied (of_review and of_secrets-review on organic-framework PR 223)
+    frames = []
+
+    def close_branch(f):
+        f["done"].append((f["cur"] | f["know"], f["exited"]))
+        f.update(cur=set(), know=set(), exited=False)
+
     for i, pipe in enumerate(pipes):
-        first = pipe[0][1].split(None, 1)[0] if pipe[0][0] == "cmd" and pipe[0][1].strip() else ""
+        words0 = pipe[0][1].split() if pipe[0][0] == "cmd" else []
+        kws = []
+        for w in words0:
+            if w not in ("if", "then", "elif", "else", "fi", "do", "done", "while", "until"):
+                break
+            kws.append(w)
+        first = kws[0] if kws else (words0[0] if words0 else "")
         op = ops[i]
-        if first in ("fi", "done", "else", "elif") and blocks:
-            blocks.pop()
+        settled = set()   # what a fi on this line leaves set after it
+        for kw in kws:
+            f = frames[-1] if frames else None
+            if kw == "if":
+                frames.append({"kind": "if", "know": set(), "cur": set(), "exited": False, "done": [], "else": False,
+                               "conds": 1, "neg": set()})
+            elif kw == "then" and f and f["kind"] == "if":
+                f.update(know=set(chain), cur=set(), exited=False,
+                         neg=set(prev_test[1]) if prev_test and f["conds"] == 1 else set())
+            elif kw == "elif" and f and f["kind"] == "if":
+                close_branch(f)
+                f["conds"] += 1
+            elif kw == "else" and f and f["kind"] == "if":
+                close_branch(f)
+                f.update(know=set(f["neg"]) if f["conds"] == 1 else set(), **{"else": True})
+            elif kw == "fi" and f and f["kind"] == "if":
+                close_branch(f)
+                frames.pop()
+                if not f["else"]:   # the condition failed: what its test denied holds there
+                    f["done"].append((set(f["neg"]) if f["conds"] == 1 else set(), False))
+                going = [held for held, exited in f["done"] if not exited]
+                if going:
+                    settled |= set.intersection(*going)
+            elif kw == "do":
+                frames.append({"kind": "loop", "know": set(chain), "cur": set(), "exited": False, "done": [],
+                               "else": False, "conds": 0, "neg": set()})
+            elif kw == "done" and f and f["kind"] == "loop":
+                frames.pop()
         if first in ("then", "do"):        # runs when the condition before it held: as after &&
             op = "&&"
-            blocks.append(set(chain))
         elif first in ("else", "elif"):    # runs when it did not: as after ||
             op = "||"
-            blocks.append(set())
         head_of_list = op in (None, ";", "\n", "&")
         if head_of_list or op == "||":
             chain = set()
-        now = base | chain | set().union(*blocks)
+        if settled:
+            (frames[-1]["cur"] if frames else base).update(settled)
+        now = base | chain | set().union(*(f["know"] | f["cur"] for f in frames))
         counts = head_of_list or op == "&&"            # what this pipeline sets holds for the rest of its && chain
         # ... and for the lines after it; inside a then, do or else block, until the block ends (a block may not run)
         persists = (head_of_list or first in ("then", "do", "else")) and ends[i] != "&" and len(pipe) == 1
-        keep = blocks[-1] if blocks else base
+        keep = frames[-1]["cur"] if frames else base
         sets, asserts, unsets, checked, loops, negs, is_test, exits = {}, set(), set(), set(), set(), set(), False, False
         if op == "||" and prev_test:
             chain = set(prev_test[1])      # `[ -z "$T" ] || …`: runs only when T is not empty
-            now = base | chain | set().union(*blocks)
+            now = base | chain | set().union(*(f["know"] | f["cur"] for f in frames))
         for kind, stext in pipe:
             if kind == "sub":
                 hit = _targets(stext, here, now, empty, values, nounset, exported, depth + 1, bodies)
@@ -2780,7 +2821,7 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
         for name, val in sets.items():
             if val == "" or (val and not _EXPANSION.sub("", val) and _loose(val, now, empty, nounset)):
                 empty.add(name)       # set empty, or to what may be empty
-                for held in (base, chain, *blocks):
+                for held in (base, chain, *(f["cur"] for f in frames), *(f["know"] for f in frames)):
                     held.discard(name)
                 continue
             empty.discard(name)
@@ -2794,6 +2835,8 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             chain |= asserts
         if exits and prev_test and ends[i] != "&":   # `[ -n "$T" ] || exit 1;` and `[ -z "$T" ] && exit;`: past it, T is set
             keep |= prev_test[0] if op == "||" else prev_test[1] if op == "&&" else set()
+        if exits and frames and persists:   # a branch that ends here goes on nowhere: it settles nothing at its fi
+            frames[-1]["exited"] = True
         prev_test = (asserts, negs) if is_test and len(pipe) == 1 else None
     return None
 
