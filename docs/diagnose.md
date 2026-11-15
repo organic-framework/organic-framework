@@ -349,7 +349,9 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **ΔT basis:** holder and owner time freed, plus ambiguity of ownership removed. *p* = 0.6. *m_decide* = 3 min.
 - **Note.** This rule reads the position's `mandate_exit` (`done_when`, `review`; [`registry.md`](registry.md)). The exit is met when `done_when` is observed or the `review` date has passed. Without the field, the rule is blocked, and history calibrates it only by owner labels.
 
-### 2.15 Inbound backlog — `ap.inbound-backlog@1`
+### 2.15 Inbound backlog — `ap.inbound-backlog@2`
+
+*v2 (2026-11-15): a queue kept under a position's older name (registry `aliases`) is that position's, as the relay delivers it. Queues of one position under several names add up, day by day, under the position's own issue, and the evidence names the aliases. The first user organization's structure keeper labelled two `unattended` issues false positive that day: two aliases of one keeper read as "not in the registry".*
 
 *v0 (2026-11-06), defined on the relay's `of.inbound_queue` events (`of_studio`, 2026-11-06). Queue data starts on 2026-11-06 at 12:47Z, so the rule is blocked until queues are observed on 3 days, and its thresholds are uncalibrated.*
 
@@ -691,7 +693,7 @@ The columns:
 | function-gap@1 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
 | lingering@0 | quiet | quiet | P/R 1.0 | — | — |
-| inbound-backlog@1 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0 | — | — |
+| inbound-backlog@2 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0; negative: a queue under an alias | 5 tp, 2 fp on aliases (fixed in v2) | — |
 | loop-cheapest-rung@0 | 2026-11-15, 18 declared loops: fired 5, quiet 1, blocked 12 (no run in the window) | no declared loop | P/R 1.0 | — | the 5 issues to label with their doers |
 | loop-checkpoint@0 | 2026-11-15, 18 loops: fired 1, quiet 5, blocked 12 | no declared loop | P/R 1.0 | — | the issue to label with its work owner |
 | loop-plateau@2 | 2026-11-15, 18 loops: quiet 6, blocked 12 | no declared loop | P/R 1.0 | — | a real case: quiet on the 6 loops with runs |
@@ -721,7 +723,7 @@ This position's mandate 5 sets each rule's *p* and *m_decide* from its deciders'
 | Rule | Labelled issues | Distinct judgements (false positives) | *p* |
 |---|---|---|---|
 | chatty@4 | 37 | 11 (1) | 0.6 → 0.91 |
-| inbound-backlog@1 | 5 | 5 (0) | 0.5 → 0.95 |
+| inbound-backlog@2 | 5 | 5 (0) | 0.5 → 0.95 |
 | off-map-work@1 | 9 | 5 (1) | 0.5 → 0.8 |
 | cell-gap@0, over-coupled@4, function-gap@1, coordination-gap@2, orphan-work@4, unkept-system@1, missing-verifier@2, owner-router@1, owner-relay@1, unsourced-requirement@0, loop-objective-drift@2, loop-checkpoint@0, loop-eval-bottleneck@0 | 1 to 34 each | under 5 each | too few labels: unchanged |
 | the other rules | none | — | too few labels: unchanged |

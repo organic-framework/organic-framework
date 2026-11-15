@@ -729,6 +729,37 @@ def queue_days(rows, a, b, org=None):
             and (not org or (r.get("payload") or {}).get("org") in (None, org))}
 
 
+def _queues_by_position(model, queues):
+    """{position: (queue, [aliases it was addressed by])}: a queue kept under an older name of a position (registry
+    `aliases`) is that position's, as the relay delivers it (inbound-backlog@2, 2026-11-15: two aliases of one keeper read as
+    "not in the registry"; the first user organization's structure keeper's labels). Queues of one position under
+    several names merge: backlog minutes and depths add up, day by day."""
+    canon = {str(x): n for n, p in model["positions"].items() for x in [n] + list(p.get("aliases") or [])}
+    by = collections.defaultdict(list)
+    for name, q in queues.items():
+        by[canon.get(str(name), name)].append((name, q))
+    out = {}
+    for pos, qs in by.items():
+        aliases = sorted(str(n) for n, _ in qs if n != pos)
+        if len(qs) == 1:
+            out[pos] = (qs[0][1], aliases)
+            continue
+        days = collections.defaultdict(lambda: {"observed_min": 0.0, "depth_avg": 0.0, "backlog_min": 0.0})
+        for _, q in qs:
+            for d, v in (q.get("by_day") or {}).items():
+                days[d]["observed_min"] = max(days[d]["observed_min"], v.get("observed_min") or 0)
+                days[d]["depth_avg"] += v.get("depth_avg") or 0
+                days[d]["backlog_min"] += v.get("backlog_min") or 0
+        qq = [q for _, q in qs]
+        out[pos] = ({"depth_avg": round(sum(q.get("depth_avg") or 0 for q in qq), 2),
+                     "depth_max": sum(q.get("depth_max") or 0 for q in qq),
+                     "backlog_min": sum(q.get("backlog_min") or 0 for q in qq),
+                     "backlog_msg_h": round(sum(q.get("backlog_msg_h") or 0 for q in qq), 2),
+                     "observed_from": min(q.get("observed_from") or "" for q in qq) or None,
+                     "by_day": dict(sorted(days.items()))}, aliases)
+    return out
+
+
 def rule_inbound_backlog(model, rows, a, b, cat, spec):
     t = spec.get("thresholds") or {}
     days = queue_days(rows, a, b, model.get("org"))
@@ -741,7 +772,7 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
     mpp = (cat.get("defaults") or {}).get("minutes_per_prompt", 1.5)
     relays = owner_relays(model, rows, a, b)
     out = []
-    for pos, q in of_model.inbound_queues(model, rows, a, b, old_after_s=old_s).items():
+    for pos, (q, aliases) in _queues_by_position(model, of_model.inbound_queues(model, rows, a, b, old_after_s=old_s)).items():
         p = model["positions"].get(pos)
         if p and p.get("kind") in skip:
             continue
@@ -749,6 +780,8 @@ def rule_inbound_backlog(model, rows, a, b, cat, spec):
         ev = {"backlog_days": hit, "backlog_h": round(q["backlog_min"] / 60, 1), "depth_avg": q["depth_avg"],
               "depth_max": q["depth_max"], "sender_wait_h": q["backlog_msg_h"], "since": q["observed_from"],
               "in_registry": p is not None}
+        if aliases:
+            ev["aliases"] = aliases
         n_rel = sum(n for (x, y), n in relays.items() if pos in (x, y))
         if live_holder(p):
             if len(hit) >= t.get("overload_days_gte", 3) and q["depth_avg"] >= t.get("depth_avg_gte", 2):
