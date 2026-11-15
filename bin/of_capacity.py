@@ -4411,8 +4411,8 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     left; each move counts rescue_step points against its target, so a batch spreads. Production (`hold`) first, then priority tiers, then the oldest
     stop. A holder between turns on an account the probe saw refuse work for rescue_ahead_min (60) or longer yet
     goes too, after every stopped one: it would stop on its next turn. tools: ({session: tools_used}, {dir: what
-    it has}); a target with every plugin the session used comes first, else any (its note says what is missing: a
-    stopped session without a plugin can still work). `skip`: sessions whose move failed lately.
+    it has}); among accounts not about to stop, one with every plugin the session used comes first, else any (its
+    note says what is missing: a stopped session without a plugin can still work). `skip`: sessions whose move failed lately.
     Returns moves, at most rescue_moves; the rest go next run."""
     pos_by_session = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
     acct = {r["config_dir"]: r for r in rows}
@@ -4441,7 +4441,9 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
         miss = any(x.startswith(VETO) for x in lacking(needs.get(sid) or (), seen.get(r["config_dir"])))
         room = 100 - max(cur(r, "five_hour"), cur(r, "seven_day")) - step * taken[r["config_dir"]]
         usd = (wcalib or {}).get(r["config_dir"]) or TIER_WEEK_USD.get(r.get("tier"), 1.0)
-        return (miss, not ok, -room * usd, -TIER_RANK.get(r.get("tier"), 0), r["config_dir"])
+        # an account about to stop comes last even with the plugin: 2026-11-15, two sessions using Cloudflare went
+        # onto one at 99% of its week, stopped there within two minutes and were rescued again without it
+        return (not ok, miss, -room * usd, -TIER_RANK.get(r.get("tier"), 0), r["config_dir"])
     ahead = policy.get("rescue_ahead_min", 60) * 60
     cands = []
     for d in acct:

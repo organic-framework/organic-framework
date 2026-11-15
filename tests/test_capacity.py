@@ -1947,6 +1947,17 @@ class Plugins(unittest.TestCase):
         m = of_capacity.rescue_plan(r.rows(), r.SESS, r.POS, stopped, r.STOPS_ONLY, r.NOW, tools=(needs, have))
         self.assertEqual([(x["position"], x["to"]) for x in m], [("st1", "/ap")])  # none has it: still rescued
 
+    def test_rescue_does_not_put_a_session_on_an_account_about_to_stop_for_its_plugin(self):
+        # 2026-11-15: two sessions using Cloudflare were rescued onto an account at 99% of its week that had it; both
+        # stopped there within two minutes and were rescued again, onto the account without it
+        r = Rescue()
+        rows = r.rows()
+        rows[1]["windows"]["seven_day"]["utilization"] = 99  # /gg has the plugin and is about to stop
+        needs = {"st1": {"plugin:cloudflare"}}
+        have = {"/ap": of_capacity.account_tools(None, set()), "/gg": of_capacity.account_tools(None, {"plugin:cloudflare"})}
+        m = of_capacity.rescue_plan(rows, r.SESS, r.POS, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW, tools=(needs, have))
+        self.assertEqual([(x["position"], x["to"]) for x in m], [("st1", "/ap")])
+
 
 class ToolProfiles(unittest.TestCase):
     """Hand-over 9843194a (docs/tools.md §4-§5): moves keep the position's tool profile, and an account where one of
