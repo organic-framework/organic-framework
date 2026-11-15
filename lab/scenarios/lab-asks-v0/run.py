@@ -24,8 +24,8 @@ runs on the Mac only (docs/lab.md, Level 2); it prints only scores and event ids
                                            never committed as labels without a person's check
 
 The judge's rules before the model (a candidate in a turn that filed an of ask is skipped; a message naming only
-filed asks is cleared) are replayed with the queue as it stood at the case's time; --model-only scores the model
-alone.
+filed asks, or only proposed structural diffs, is cleared) are replayed with the queue as it stood at the case's time;
+--model-only scores the model alone.
 """
 
 import argparse
@@ -126,22 +126,31 @@ def asks_at(conn, ts):
 def rule_at(conn, text, ts, asks, filed, turn_start):
     """The judge's rules before the model (of_judge.judge_one), with the queue as it stood at ts: an of ask filed in
     the same turn skips the candidate; a message naming only known asks, one at least open for the founder, no "?",
-    and nothing else asked of the owner is cleared (of_judge.only_filed_ids)."""
+    and nothing else asked of the owner is cleared (of_judge.only_filed_ids); so is one naming only structural diffs
+    proposed by then (of_judge.only_proposed_diffs, j-v5)."""
     if turn_start and any(a["ts"] >= turn_start for a in filed):
         return "skipped"
+    if _filed_ids_at(conn, text, ts, asks):
+        return "filed-ids"
+    from datetime import datetime
+    now = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    return "proposed-diff" if of_judge.only_proposed_diffs(conn, text, now=now, until=ts) else None
+
+
+def _filed_ids_at(conn, text, ts, asks):
     if "?" in text:
-        return None
+        return False
     ids = set(of_judge.ASK_ID.findall(text))
     if not ids or of_judge.says_more(text, ids):
-        return None
+        return False
     known = {x for (e,) in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND ts >= ? "
                                         "AND ts <= ?", (_days_before(ts, of_judge.KNOWN_DAYS), ts))
              for x in of_judge._short(e)}
     if not ids <= known:
-        return None
+        return False
     founders = {x for a in asks if a["state"] == "open" and (a.get("to") or "founder") in ("founder", "owner")
                 for x in of_judge._short(a["event_id"])}
-    return "filed-ids" if ids & founders else None
+    return bool(ids & founders)
 
 
 def _days_before(ts, days):

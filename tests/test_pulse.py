@@ -1334,6 +1334,65 @@ class JudgeTest(unittest.TestCase):
                 of_events._CONN.clear()
                 of_events.STATE_DIR = saved
 
+    def test_a_message_naming_only_a_proposed_diff_is_cleared_without_the_model(self):
+        # a user organization's structure keeper, message 01a1e0f6-0eab (2026-11-15): an architect closed its turn
+        # with "it starts when you approve diff sd-…" after the founder had approved it on its card, and the judge
+        # filed that line as a second card; an answer to it approves nothing
+        import of_judge
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            of_events._CONN.clear()
+            try:
+                conn = of_store.connect(os.path.join(d, "of.db"))
+
+                def add(kind, payload, position="keeper"):
+                    rec = of_events.record(kind, payload, position=position, session="S", org="acme")
+                    of_store.add_event(conn, rec)
+                    return rec["of.event.id"]
+                sd = "sd-2026-11-16-architect-mandate-2"
+                card = add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
+                                              "diff_id": sd, "topic_key": sd,
+                                              "questions": [{"question": "Approve the second mandate?",
+                                                             "options": ["approve", "reject"]}]})
+                add("diff_proposed", {"id": sd, "kind": "mandate_rewrite", "tier": "medium", "ask_id": card})
+                closing = ("All seven cards are closed; the first mandate is done.\n\n"
+                           f"Next, the second mandate; it starts once you approve the keeper's diff `{sd}`.\n\n"
+                           "Status: idle.")
+                self.assertEqual(of_judge.only_proposed_diffs(conn, closing), [sd])  # its card open
+                add("agent_question_answered", {"ask_id": card, "ask_ids": [card], "answer": "approve", "by": "owner",
+                                                "via": "asks-ui"})
+                self.assertEqual(of_judge.only_proposed_diffs(conn, closing), [sd])  # and once he approved it
+                self.assertEqual(of_judge.only_proposed_diffs(conn, f"Do you approve {sd}?"), [sd])
+                self.assertEqual(of_judge.only_proposed_diffs(conn, f"Waiting on your yes on {sd}."), [sd])
+                self.assertEqual(of_judge.only_proposed_diffs(conn, f"Waiting on card {card[-8:]}, diff {sd}"), [sd])
+                self.assertIsNone(of_judge.only_proposed_diffs(conn, f"Roll it today?\nThen {sd}."))  # a new question
+                self.assertIsNone(of_judge.only_proposed_diffs(conn, f"Waiting on {sd}, a question about 1Password"))
+                self.assertIsNone(of_judge.only_proposed_diffs(conn, "Approve sd-2026-11-16-not-proposed?"))
+                self.assertIsNone(of_judge.only_proposed_diffs(conn, "Approve the mandate?"))
+                # replayed at a time before the proposal, it is not known yet (lab-asks-v0)
+                self.assertIsNone(of_judge.only_proposed_diffs(conn, closing, until="2026-01-01T00:00:00Z"))
+                cand = add("agent_question", {"detected_by": "heuristic", "questions": [{"question": "x"}]},
+                           "architect")
+                called = []
+                v = of_judge.judge_one(conn, {"ask_id": cand, "position": "architect", "ts": of_events.now_iso(),
+                                              "text": closing, "origin": "human"},
+                                       runner=lambda *x, **k: called.append(x), log=lambda m: None)
+                self.assertEqual((v["verdict"], v["rule"], called), ("not_a_question", "proposed-diff", []))
+                self.assertEqual(conn.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question' AND "
+                                              "json_extract(payload, '$.source') = 'pane'").fetchone()[0], 0)
+                # with something else asked, the model reads it with the diff's open card among the named asks
+                asks = [{"event_id": card, "text": "Approve the second mandate?", "position": "keeper",
+                         "diff_id": sd}]
+                self.assertEqual(of_judge.named_asks(asks, f"Roll it today? Then {sd}.", "architect"),
+                                 [(card, "Approve the second mandate?", "keeper")])
+                self.assertEqual(of_judge.named_asks(asks, "Roll it today?", "architect"), [])
+                conn.close()
+            finally:
+                of_events._CONN.clear()
+                of_events.STATE_DIR = saved
+
     def test_a_position_the_owner_chats_with_is_never_corrected(self):
         # of_conductor, 2026-11-10: the founder's one window; a correction asked it to file what he reads in its pane
         import json
