@@ -52,13 +52,13 @@ class PermissionAnswerTest(unittest.TestCase):
         of_hook.OUTPUT = None
         self.root.cleanup()
 
-    def ask(self, cmd, mode, launched=False):
+    def ask(self, cmd, mode, launched=False, tool="Bash", tool_input=None):
         out = io.StringIO()
         with mock.patch.object(of_hook, "_launched_bypass", lambda *a, **kw: launched), \
                 contextlib.redirect_stdout(out):
             of_hook.handle("PermissionRequest", {"hook_event_name": "PermissionRequest", "session_id": "S1",
-                                                 "cwd": self.root.name, "permission_mode": mode, "tool_name": "Bash",
-                                                 "tool_input": {"command": cmd}})
+                                                 "cwd": self.root.name, "permission_mode": mode, "tool_name": tool,
+                                                 "tool_input": tool_input or {"command": cmd}})
         printed = out.getvalue().strip()
         decision = ((json.loads(printed) if printed else {}).get("hookSpecificOutput") or {}).get("decision")
         recorded = [p for k, p in self.written if k == "permission_request"]
@@ -85,13 +85,27 @@ class PermissionAnswerTest(unittest.TestCase):
         self.assertEqual(decision, {"behavior": "allow"})
 
     def test_a_session_started_with_prompts_keeps_its_dialog(self):
-        for mode in ("default", "acceptEdits", "plan"):
+        for mode, launched in (("default", False), ("acceptEdits", False), ("plan", False),
+                               ("default", True), ("plan", True)):   # a person's later choice beats the launch flag
             self.written.clear()
             self.states.clear()
-            decision, rec = self.ask(LOOP, mode)
-            self.assertIsNone(decision, mode)
+            decision, rec = self.ask(LOOP, mode, launched=launched)
+            self.assertIsNone(decision, (mode, launched))
             self.assertNotIn("answered", rec)
             self.assertTrue(of_hook.load_session("S1").get("blocked"), mode)
+
+    def test_what_guards_the_guard_keeps_its_dialog(self):
+        """of_secrets-review on PR 221: only Bash is answered, and never a write to Claude Code's settings, a
+        repository's git folder or hooks, or a skipped hook."""
+        for tool, ti in (("Edit", {"file_path": "/tmp/p/.claude/settings.json", "old_string": "a", "new_string": "b"}),
+                         ("Write", {"file_path": "/tmp/p/.git/hooks/pre-commit", "content": "x"}),
+                         ("AskUserQuestion", {"questions": []}), ("WebFetch", {"url": "https://example.org"})):
+            decision, rec = self.ask(None, "bypassPermissions", tool=tool, tool_input=ti)
+            self.assertIsNone(decision, tool)
+        for cmd in ("printf x > .git/hooks/pre-commit", "git commit --no-verify -m x", "cp a ~/.claude/settings.json",
+                    "git config core.hooksPath /tmp/h", "sed -i s/a/b/ .claude/settings.local.json"):
+            decision, rec = self.ask(cmd, "bypassPermissions")
+            self.assertIsNone(decision, cmd)
 
     def test_the_launch_flags_are_read_up_the_process_tree(self):
         tree = {100: "1 /bin/sh -c of-hook PermissionRequest",

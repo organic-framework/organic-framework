@@ -955,6 +955,10 @@ import of_guard  # noqa: E402  (the guard, bin/of_guard.py)
 from of_guard import _WARNINGS, critical_deny, prompt_secret_mention  # noqa: E402,F401
 
 
+# what guards the guard keeps its dialog for a person (of_secrets-review on organic-framework PR 221): Claude Code's
+# own folders and settings, a repository's git folder and hooks, and a skipped hook
+_KEEP_DIALOG = re.compile(r"(?:^|[\s/'\"=:(])\.(?:claude|git)(?:/|\b)|\bsettings(?:\.local)?\.json\b|--no-verify\b|"
+                          r"\bhooksPath\b|\bcore\.hooks")
 _BYPASS_FLAG = re.compile(r"(?:^|\s)(?:--dangerously-skip-permissions|--permission-mode[ =]bypassPermissions)(?=\s|$)")
 
 
@@ -996,9 +1000,13 @@ def _permission_answer(hook):
     to stdout and returns what was answered, or None."""
     global OUTPUT
     mode = hook.get("permission_mode")
-    if hook.get("hook_event_name", "PermissionRequest") != "PermissionRequest":
+    if hook.get("hook_event_name", "PermissionRequest") != "PermissionRequest" or hook.get("tool_name") != "Bash":
+        return None   # only the Bash dialogs Claude Code cannot check: every other tool keeps its dialog
+    if _KEEP_DIALOG.search(str((hook.get("tool_input") or {}).get("command") or "")):
         return None
-    if mode != "bypassPermissions" and not _launched_bypass():
+    # the launch flag stands in for the mode only in acceptEdits, the mode a resumed session came back in; default and
+    # plan are a person's choice made later, which keeps its dialog (of_secrets-review on PR 221)
+    if mode != "bypassPermissions" and not (mode == "acceptEdits" and _launched_bypass()):
         return None
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
     if hit:
