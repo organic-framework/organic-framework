@@ -322,7 +322,7 @@ rules:
     thresholds: {stall_hours_gte: 4, escalate_hours_gte: 8, calendar_kinds: [calendar, holdout]}
     needs: [registry.works.loop] # never an event in the window: a stall longer than the window is the worst case
     reads: [of.loop_hypothesis, of.loop_run, of.loop_decision, of.loop_wait]
-    decider: work_owner          # the pulse tells the owner and the doers at stall_hours_gte, the conductor and the founder's digest at escalate_hours_gte
+    decider: work_owner          # the pulse tells the owner and the doers at stall_hours_gte, the conductor (the founder's window) at escalate_hours_gte
     severity: {silent: medium, wait_over: medium, calendar: medium}
     delta_m: "0; dT: the hours the work stood with nobody knowing why"
     remedies:
