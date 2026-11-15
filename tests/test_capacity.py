@@ -760,6 +760,18 @@ class Rescue(unittest.TestCase):
         self.assertNotIn("/mm", of_capacity.accepting_accounts(rows, self.SESS, {}, self.NOW))  # nor a target
         self.assertEqual(of_capacity.proposals(rows, set(), now=self.NOW, policy=pol), [])  # nor a card
 
+    def test_a_run_reads_the_sessions_of_an_account_whose_probe_has_no_reading(self):
+        # 2026-11-15: an account's week ran out and its probes timed out for half an hour; the run read sessions only
+        # on accounts with a reading, so the dozen stopped there were not seen and nothing was rescued
+        rows = self.rows()
+        rows[0] = {"config_dir": "/mm", "logged_in": None, "status": None, "windows": {},
+                   "observed_at": self.iso(0), "error": "probe timed out after 120s"}  # probed after the stop
+        rows.append({"config_dir": "/out", "logged_in": False, "windows": {}, "observed_at": self.iso(0)})
+        self.assertEqual(of_capacity.run_dirs(rows), ["/mm", "/gg", "/ap", "/cl"])  # a logged-out one only is left out
+        m = of_capacity.rescue_plan(rows, self.SESS, self.POS, {"st1": self.NOW - 600}, dict(self.STOPS_ONLY),
+                                    self.NOW)
+        self.assertEqual([(x["position"], x["from"]) for x in m], [("st1", "/mm")])
+
     def test_stopped_sessions_go_to_accounts_that_accept_work_most_headroom_first(self):
         pol = dict(self.STOPS_ONLY, rescue_step=30)
         stopped = {"st1": self.NOW - 600, "st2": self.NOW - 300, "busy": self.NOW - 60}
@@ -2750,6 +2762,16 @@ class DryRunPastTheLimitWait(unittest.TestCase):
         self.assertEqual(of_capacity.failed_hold_s(err("x", cancelled_wait=True)), 0)
         self.assertEqual(of_capacity.failed_hold_s(err("x")), of_capacity.FAILED_RETRY_S)
         self.assertEqual(of_capacity.failed_hold_s(err("x", untrusted="/w")), 6 * 3600)
+
+    def test_a_paste_not_yet_sent_is_retried_on_the_next_run(self):
+        # 2026-11-15: the move read the box between the relay's paste of a 64-line message and its Enter, and the
+        # stopped session then sat out FAILED_RETRY_S on a spent account
+        e = of_capacity.draft_error("p", "w1:p1", "[Pasted text #425 +59 lines]")
+        self.assertIn("holds a draft", str(e))
+        self.assertEqual(of_capacity.failed_hold_s(e), 0)
+        self.assertEqual(of_capacity.failed_hold_s(of_capacity.draft_error("p", "w1:p1", "half a sentence")),
+                         of_capacity.FAILED_RETRY_S)  # a person's own words: left alone as before
+        self.assertEqual(of_capacity.failed_hold_s(of_capacity.draft_error("p", "w1:p1", "words", True)), 0)
 
 
 class HoldAfterMove(unittest.TestCase):
