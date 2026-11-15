@@ -2097,6 +2097,16 @@ class LoopTest(unittest.TestCase):
         c = self.card(rows)
         runs = {r["id"]: r for r in c["runs"]}
         self.assertEqual(len(c["runs"]), len(self.card()["runs"]) + 1)          # a locate adds no run
+        # the old shape the store keeps from 2026-11-15, an of.loop_run with no rung and a reading point: a locate too,
+        # read as of_loop.register reads it (of_review on PR 199)
+        import of_loop
+        old = [dict(x, name="of.loop_run") for x in rows if x["name"] == "of.loop_run_located"]
+        olds = [x for x in rows if x["name"] != "of.loop_run_located"] + old
+        self.assertEqual([r for r in self.card(olds)["runs"]], c["runs"])
+        self.assertTrue(all(of_loop.is_locate(x["payload"]) for x in old))
+        reg = of_loop.register(olds, "w1", self.SPEC)
+        hyp = reg["hypotheses"] if isinstance(reg, dict) else reg
+        self.assertEqual(sum(h.get("runs") or 0 for h in hyp), len(c["runs"]))     # the CLI counts the same runs
         stray = self.locate(27, "2026-11-07T12:00Z", "no-such-run", observed_at="x", direct=True)
         self.assertEqual(self.card(rows + [stray])["runs"], c["runs"])              # a locate of no recorded run: nothing
         # the model's projection, which the rules read, applies it too
