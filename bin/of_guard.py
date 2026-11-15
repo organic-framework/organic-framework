@@ -2629,10 +2629,12 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
             f = frames[-1] if frames else None
             if kw == "if":
                 frames.append({"kind": "if", "know": set(), "cur": set(), "exited": False, "done": [], "else": False,
-                               "conds": 1, "neg": set()})
+                               "conds": 1, "neg": set(), "start": i})
             elif kw == "then" and f and f["kind"] == "if":
-                f.update(know=set(chain), cur=set(), exited=False,
-                         neg=set(prev_test[1]) if prev_test and f["conds"] == 1 else set())
+                # what the test denied holds where it failed only when the condition is that one test: no && or ||
+                # in it, no ! (of_secrets-review on PR 223: `if c && [ -z "$T" ]` fails with T set or not)
+                single = prev_test and f["conds"] == 1 and f.get("start") == i - 1
+                f.update(know=set(chain), cur=set(), exited=False, neg=set(prev_test[1]) if single else set())
             elif kw == "elif" and f and f["kind"] == "if":
                 close_branch(f)
                 f["conds"] += 1
@@ -2645,7 +2647,7 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                 if not f["else"]:   # the condition failed: what its test denied holds there
                     f["done"].append((set(f["neg"]) if f["conds"] == 1 else set(), False))
                 going = [held for held, exited in f["done"] if not exited]
-                if going:
+                if going and ends[i] != "&":   # `fi &`: the whole if ran in the background
                     settled |= set.intersection(*going)
             elif kw == "do":
                 frames.append({"kind": "loop", "know": set(chain), "cur": set(), "exited": False, "done": [],
@@ -2777,10 +2779,10 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                         loops.add(a)       # set in this pipeline's shell, a loop body included
             elif head in (".", "source", "eval") and counts:
                 opaque = True              # it may set any name: cd and git trust it, an rm -r that would collapse does not
-            elif head in ("exit", "return"):
+            elif head == "exit":   # `return` outside a function fails, and the line goes on
                 exits = True
-            elif head in ("[", "[[", "test"):
-                is_test = True
+            elif head in ("[", "[[", "test") and "!" not in toks and "-o" not in args:
+                is_test = True     # with a ! (before or inside) or an -o, it asserts nothing either way
                 ws = [a for a in args if a not in ("]", "]]")]
                 for k, a in enumerate(ws):
                     if (a in _TEST_SET and k + 1 < len(ws)) or len(ws) == 1:
@@ -2805,8 +2807,8 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                             return hit
                         break
         for name in unsets:
-            base.discard(name)
-            chain.discard(name)
+            for held in (base, chain, *(f["cur"] for f in frames), *(f["know"] for f in frames)):
+                held.discard(name)
             values.pop(name, None)
         for name in loops:
             empty.discard(name)
