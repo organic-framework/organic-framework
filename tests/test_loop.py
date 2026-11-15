@@ -398,10 +398,12 @@ class LocatedRunTest(unittest.TestCase):
             r = run("locate", "w-speed", "--run", "job-7", "--observed-at", "the replay's ledger", "--proxy-for",
                     "live profit", "--valid-when", "the replay's outside equals the day's")
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(last(), {"work": "w-speed", "run": "job-7", "observed_at": "the replay's ledger",
-                                      "proxy": {"for": "live profit", "valid_when": "the replay's outside equals the "
-                                                "day's", "held": "unknown"}})
-            self.assertEqual(db.execute("SELECT count(*) FROM event WHERE name = 'of.loop_run'").fetchone()[0], 3)
+            loc = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_run_located'").fetchone()[0])
+            self.assertEqual(loc, {"work": "w-speed", "run": "job-7", "observed_at": "the replay's ledger",
+                                   "proxy": {"for": "live profit", "valid_when": "the replay's outside equals the day's",
+                                             "held": "unknown"}, "by": "lab_doer"})
+            self.assertEqual(db.execute("SELECT count(*) FROM event WHERE name = 'of.loop_run'").fetchone()[0], 2)
+            # its own event: no reader of runs takes it for a run (of_review on PR 199)
             out = run("show", "w-speed").stdout                                 # located now: a proxy not shown to hold
             self.assertIn("not observed at live profit; its reading at the replay's ledger is a proxy", out)
             self.assertNotEqual(run("decision", "w-speed", "keep", "--hypothesis", h2).returncode, 0)
@@ -417,7 +419,7 @@ class LocatedRunTest(unittest.TestCase):
         h = of_loop.register(rows, "w", LOOP)["hypotheses"][0]
         self.assertTrue(h["blind"])                                            # unlocated: decides nothing
         self.assertFalse(of_loop.register(rows, "w")["hypotheses"][0]["blind"])  # without its loop: as recorded
-        rows.append(ev(3, "of.loop_run", 3, work="w", run="r1", observed_at="the fills", direct=True))
+        rows.append(ev(3, "of.loop_run_located", 3, work="w", run="r1", observed_at="the fills", direct=True))
         reg = of_loop.register(rows, "w", LOOP)
         self.assertFalse(reg["hypotheses"][0]["blind"])
         self.assertEqual((len(reg["runs"]), reg["hypotheses"][0]["runs"]), (1, 1))  # a locate is no new run
@@ -428,8 +430,8 @@ class LocatedRunTest(unittest.TestCase):
             conn.commit()
             runs = of_loop.blind_runs(conn, {"w-speed": LOOP})
             self.assertEqual([r["run"] for _, r, _ in runs], ["r9"])
-            of_store.add_event(conn, of_events.record("loop_run", {"work": "w-speed", "run": "r9",
-                                                                   "observed_at": "the fills", "direct": True}))
+            of_store.add_event(conn, of_events.record("loop_run_located", {"work": "w-speed", "run": "r9",
+                                                                           "observed_at": "the fills", "direct": True}))
             conn.commit()
             self.assertEqual(of_loop.blind_runs(conn, {"w-speed": LOOP}), [])
             conn.close()
