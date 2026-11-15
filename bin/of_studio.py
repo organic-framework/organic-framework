@@ -2826,6 +2826,11 @@ def _render_cache(orgs_file=None, log=None):
         except Exception as exc:  # noqa: BLE001 — the pages still go out
             if log:
                 log(f"{d.org}: escalations not written: {exc}")
+        try:
+            written += write_issues(d)
+        except Exception as exc:  # noqa: BLE001 — the pages still go out
+            if log:
+                log(f"{d.org}: issues not written: {exc}")
         for view, _ in VIEWS:
             if view in LIVE_VIEWS:
                 continue
@@ -2876,6 +2881,39 @@ def read_escalations(org, now=None):
         return None, None
     age = (now or time.time()) - float(doc.get("computed_at") or 0)
     return (doc.get("escalations") if age <= ESCALATIONS_FRESH_S else None), age
+
+
+def issues_path(org):
+    return os.path.join(_pages_dir(), org, "issues.json")
+
+
+def write_issues(d):
+    """The open issues the render has just diagnosed, each with its `org`, for `of issues label` to find an id without
+    a diagnose run of its own: that run took about 2.5 minutes a call for a user organization, so labelling its 103
+    issues one by one took hours, and a call cut at an agent's two-minute limit left no trace (its structure keeper,
+    2026-11-15). Returns 1 when written."""
+    import json
+    issues = [dict(i, org=d.org) for i in (d.diagnosis or {}).get("issues") or [] if i.get("state") == "open"]
+    _write_page(issues_path(d.org), json.dumps({"org": d.org, "computed_at": d.now, "issues": issues},
+                                               ensure_ascii=False, default=str))
+    return 1
+
+
+def read_issues(names, now=None):
+    """[open issue] of the organizations NAMES from the render's files, or None when one is missing or older than
+    ESCALATIONS_FRESH_S (a render every PERIODIC_RENDER_S, plus its own time)."""
+    import json
+    out = []
+    for n in names:
+        try:
+            with open(issues_path(n)) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if (now or time.time()) - float(doc.get("computed_at") or 0) > ESCALATIONS_FRESH_S:
+            return None
+        out += doc.get("issues") or []
+    return out
 
 
 def last_render(path=None, started=False):

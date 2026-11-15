@@ -197,6 +197,25 @@ def _print_flow(fl):
         print(f"  gap: {x['measure']}: {x['why']}")
 
 
+def issues_for_label(org=None, ids=(), log=None, run=True):
+    """(open issues, source) that `of issues label` matches ids against: the render's (of_studio.read_issues) when
+    every organization's is fresh and holds each of IDS, else one diagnose run per organization here (source "run").
+    ORG: one organization, or None or "all" for every one in orgs.yaml."""
+    names = [o["name"] for o in of_studio.orgs()] if org in (None, "", "all") else [org]
+    cached = of_studio.read_issues(names)
+    if cached is not None and all(any(str(i.get("issue_id") or "").startswith(x) for i in cached) for x in ids):
+        return cached, "render"
+    if not run:   # every id names its issue in full: what the render holds, if anything
+        return cached or [], "render" if cached is not None else "none"
+    if log:
+        log(f"reading the issues: {'no fresh render' if cached is None else 'an id the last render does not hold'} for "
+            f"{', '.join(names)}; one diagnose run each follows")
+    b = time.time()
+    rows = _rows(of_model.iso(b - 16 * 86400))
+    keep = argparse.Namespace(decider=None, for_=None)
+    return [i for n in names for i in _open_issues(keep, n, rows, b)[1]], "run"
+
+
 def _open_issues(args, org_name, rows, b):
     """One organization's diagnose run: its open issues (each tagged with `org`) and the run itself."""
     import of_diagnose
