@@ -1685,8 +1685,9 @@ class PageCacheTest(unittest.TestCase):
 class LoopTest(unittest.TestCase):
     """RFC 0005: the loop metrics, derived from of.loop_* events, and the loop card."""
     NOW = "2026-11-08T00:00Z"
-    SPEC = {"target": {"metric": "day pass USD", "money": "USD per day", "stake": "about 65 USD a day"},
-            "measures": [{"name": "rows_differing", "to_money": "0 rows: no lost candidate"}],
+    SPEC = {"target": {"metric": "day pass USD", "money": "USD per day", "stake": "about 65 USD a day",
+                       "observed_at": "the day pass replay"},
+            "measures": [{"name": "rows_differing", "observed_at": "the oracle diff", "to_money": "0 rows: no lost candidate"}],
             "ladder": [{"rung": "oracle", "cost": "0", "latency": "1 min", "accept": "0 differing rows"},
                        {"rung": "offline", "latency": "5 min"}, {"rung": "day_pass", "cost": "6 runner-h", "latency": "4 h"},
                        {"rung": "shadow", "latency": "1 day"}, {"rung": "all_sites"}],
@@ -2081,10 +2082,83 @@ class LoopTest(unittest.TestCase):
         self.assertNotIn(">400<", card)                                          # nor on the curve's scale
         self.assertIn(">330<", card)
 
+    # docs/registry.md, Works, "A run names where its reading was taken" (hand-over 3b45a2a1)
+    def locate(self, i, ts, run, **kw):
+        return self.ev(i, ts, "of.loop_run", dict({"run": run}, **kw))
+
+    def test_a_run_not_located_and_located_later(self):
+        import of_loops
+        rows = self.rows() + [
+            self.ev(23, "2026-11-07T05:00Z", "of.loop_run", {"hypothesis": "h5", "rung": "gate", "value": 30,
+                                                            "metric": "port_ms", "observed_at": "our clocks", "direct": True}),
+            self.locate(24, "2026-11-07T10:00Z", "el22", observed_at="our clocks", direct=True),
+            self.locate(25, "2026-11-07T11:00Z", "el21", observed_at="our nodes receive log",
+                        proxy={"for": "the block builder", "valid_when": "one of our nodes built the block", "held": "not_held"})]
+        c = self.card(rows)
+        runs = {r["id"]: r for r in c["runs"]}
+        self.assertEqual(len(c["runs"]), len(self.card()["runs"]) + 1)          # a locate adds no run
+        dup = self.ev(27, "2026-11-07T12:00Z", "of.loop_run", {"run": "el22", "rung": "gate", "hypothesis": "h5", "value": 34})
+        self.assertEqual(len(self.card(rows + [dup])["runs"]), len(c["runs"]) + 1)   # a run names its rung: no locate
+        # a metric neither the target's nor a declared measure's, stating no point: not located
+        self.assertEqual((runs["el20"]["observed_at"], runs["el20"]["direct"], runs["el20"]["proxy"], runs["el20"]["located_at"]),
+                         (None, False, None, None))
+        self.assertFalse(of_loops.observed(runs["el20"]))
+        self.assertEqual(of_loops.unseen_text(runs["el20"]), "not located: nobody named where its reading (latency_p50_ms "
+                                                             "41) was taken, so it counts as a proxy not shown to hold")
+        self.assertTrue(of_loops.observed(runs["el23"]) and runs["el23"]["direct"])   # stated where, and direct
+        # located later: from the locate's own time, with what it held before kept
+        self.assertEqual((runs["el22"]["observed_at"], runs["el22"]["direct"], runs["el22"]["located_at"]),
+                         ("our clocks", True, of_model.epoch("2026-11-07T10:00Z")))
+        self.assertEqual(runs["el22"]["as_recorded"], {"observed_at": None, "direct": False, "proxy": None})
+        self.assertEqual(runs["el22"]["value"], 35)                                 # the run's own fields stay
+        self.assertTrue(of_loops.observed(runs["el22"]))
+        self.assertEqual(runs["el21"]["proxy"], {"for": "the block builder", "valid_when": "one of our nodes built the block",
+                                                 "held": "not_held"})
+        self.assertFalse(of_loops.observed(runs["el21"]))
+        self.assertNotIn("as_recorded", runs["el20"])
+        # a run on a target whose registry names no observed_at is not located, and out of the curve until located
+        bare = dict(self.SPEC, target={k: v for k, v in self.SPEC["target"].items() if k != "observed_at"})
+        self.assertEqual(self.card(spec=bare)["curve"], [])
+        c = self.card(self.rows() + [self.locate(26, "2026-11-08T00:00Z", "el18", observed_at="the replay", direct=True)], spec=bare)
+        self.assertEqual([p[1] for p in c["curve"]], [326.4])
+        card, _ = self.html(self.card(rows))
+        self.assertIn("<b>gate</b> h5: not located: nobody named where its reading (latency_p50_ms 41) was taken, so it counts "
+                      "as a proxy not shown to hold</li>", card)
+        self.assertIn("(latency_p50_ms 38), valid only when one of our nodes built the block, which did not hold · located "
+                      "2026-11-07 11:00</li>", card)
+        self.assertNotIn("latency_p50_ms 35)", card)                                 # located direct: out of the list
+        self.assertIn("A run is located when its metric is the target&#x27;s or a declared measure&#x27;s", card)
+
+    def test_a_money_line_on_a_proxy_chain(self):
+        cp = {"at": "live profit", "valid_when": "the replay holds the outside fixed"}
+        spec = dict(self.SPEC, target=dict(self.SPEC["target"], chain_proxy_for=cp),
+                    measures=self.SPEC["measures"] + [{"name": "port_ms", "observed_at": "our clocks", "to_money": "races won",
+                                                       "chain_proxy_for": {"at": "the block builder",
+                                                                           "valid_when": "one of our nodes built the block"}},
+                                                      {"name": "race_ms", "observed_at": "our nodes",
+                                                       "proxy_for": {"at": "the block builder", "valid_when": "ours built it"},
+                                                       "to_target": "a ms off the race"}])
+        c = self.card(spec=spec)
+        self.assertEqual(c["target"]["chain_proxy_for"], cp)
+        card, _ = self.html(c)
+        self.assertIn("<tr><th>Money</th><td>USD per day (a proxy: it stands for live profit, valid only when the replay holds "
+                      "the outside fixed)</td></tr>", card)
+        self.assertIn('<td><code>port_ms</code></td><td class="why">our clocks</td><td class="why">to money: races won'
+                      '<div class=src>a proxy: it stands for the block builder, valid only when one of our nodes built the '
+                      'block</div></td>', card)
+        self.assertIn('<td><code>race_ms</code></td><td class="why">our nodes<div class="src">a proxy for the block builder, '
+                      'valid only when ours built it</div></td><td class="why">to the target: a ms off the race</td>', card)
+        own = dict(spec, target=dict(spec["target"], decided="0a1b2c3d"))   # the owner's measure: money as a reading
+        card, _ = self.html(self.card(spec=own, resolve=self.YES))
+        self.assertIn("Money: USD per day (a proxy: it stands for live profit, valid only when the replay holds the outside "
+                      "fixed).", card)
+
     def test_a_loop_without_decided_keeps_its_card(self):
         card, table = self.html(self.card())
-        self.assertNotIn("Not observed", card)
-        self.assertIn("<tr><th>Observed at</th><td>not named: the target&#x27;s observed_at in the registry", card)
+        self.assertIn("<tr><th>Observed at</th><td>the day pass replay</td></tr>", card)
+        bare = dict(self.SPEC, target={k: v for k, v in self.SPEC["target"].items() if k != "observed_at"})
+        self.assertIn("<tr><th>Observed at</th><td>not named: the target&#x27;s observed_at in the registry",
+                      self.html(self.card(spec=bare))[0])
         self.assertIn("<tr><th>Money</th><td>USD per day</td></tr>", card)
         self.assertNotIn("<th>Decided</th>", card)
         self.assertIn("<h3>Cost this week</h3>", card)
