@@ -133,6 +133,17 @@ class UnsetTargetTest(unittest.TestCase):
                     "cd /tmp/x && rm -rf *"):
             self.assertIsNone(self.verdict(cmd), cmd)
 
+    def test_an_assignment_right_after_then_or_do(self):
+        """of_review on merged PR 218 (comment 6893006268): `do T=…;` on the line of the loop was not read, so these
+        denied. What a block sets holds until the block ends, never after it (the block may not have run)."""
+        for cmd in ("for i in 1 2; do T=/tmp/x$i; rm -rf $T/; done",
+                    "if c; then T=/tmp/x; rm -rf $T/; fi",
+                    "if c; then echo; else T=/tmp/y; rm -rf $T/; fi",
+                    "while read -r f; do D=/tmp/$f; cd $D; done < list"):
+            self.assertIsNone(self.verdict(cmd), cmd)
+        for cmd in ("if c; then T=/tmp/x; fi; rm -rf $T/", "for i in; do T=/tmp/x; done; rm -rf $T/"):
+            self.assertEqual((self.verdict(cmd) or ("",))[0], "deny", cmd)
+
     def test_a_mode_switch_turns_a_warning_into_a_deny(self):
         saved = of_guard.UNSET_TARGET_MODE
         of_guard.UNSET_TARGET_MODE = dict(saved, cd="deny")
