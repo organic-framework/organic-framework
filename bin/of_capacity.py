@@ -1273,13 +1273,15 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
     crons = (continuation or {}).get("session_crons") or []
     tasks = [t for t in (continuation or {}).get("background_tasks") or [] if t.get("status") == "running"]
     if crons or tasks:
-        lines.append("Crons, monitors and background tasks died with the old process. Your last record of them:")
+        lines.append("Scheduled tasks (crons, wake-ups) come back with the session: run CronList first and "
+                     "re-create only the ones missing, or each one that came back runs twice (2026-11-14). "
+                     "Monitors and background shells died with the old process. Your last record of them:")
         for c in crons:
             lines.append(f"- cron/wake-up: {json.dumps(c, ensure_ascii=False)[:2000]}")
         for t in tasks:
             lines.append(f"- background {t.get('type')}: {t.get('description') or ''} "
                          f"({(t.get('command') or '')[:160]!r})")
-        lines += ["Re-create the ones you still need.", ""]
+        lines += ["Re-create the ones you still need that are not there.", ""]
     else:
         lines += ["Your last record shows no crons, monitors or background tasks.", ""]
     lines += ["Check that the move kept your context: reply in at most three lines with",
@@ -2567,13 +2569,15 @@ def reboot_note(e, account, ts, prepared_at, tmp_kept):
                   "off. Check what it left half done before you go on.", ""]
     crons, tasks, running = e.get("crons") or [], e.get("tasks") or [], e.get("running") or []
     if crons or tasks or running:
-        lines.append("Crons, monitors and background tasks died with the old process. Your last record of them:")
+        lines.append("Scheduled tasks (crons, wake-ups) come back with the session: run CronList first and "
+                     "re-create only the ones missing, or each one that came back runs twice (2026-11-14). "
+                     "Monitors and background shells died with the old process. Your last record of them:")
         lines += [f"- cron/wake-up: {json.dumps(c, ensure_ascii=False)[:2000]}" for c in crons]
         lines += [f"- background {t.get('type')}: {t.get('description') or ''} ({(t.get('command') or '')[:160]!r})"
                   for t in tasks]
         lines += [f"- process (from `ps` before the restart): `{c}`" for c in running]
-        lines += ["Re-create the ones you still need. A time that has passed meanwhile needs a fresh look, not a "
-                  "blind re-arm.", ""]
+        lines += ["Re-create the ones you still need that are not there. A time that has passed meanwhile needs a "
+                  "fresh look, not a blind re-arm.", ""]
     else:
         lines += ["Your last record shows no crons, monitors or background tasks.", ""]
     if tmp_kept:

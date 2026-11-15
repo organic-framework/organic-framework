@@ -357,6 +357,7 @@ class MovePieces(unittest.TestCase):
                                               "command": "run.sh 0"}]}, "2026-11-06T10:00:00Z")
         self.assertIn("background shell: lab run", note)
         self.assertIn("Re-create", note)
+        self.assertIn("run CronList first", note)  # scheduled tasks come back with a resume (2026-11-14)
         self.assertIn("# Account move: of_lab", note)
         # a model change on the same account: says the model, the reason, and no account move
         mc = of_capacity.handover_note("p", "sid", "/Users/alex/.claude-a", "/Users/alex/.claude-a", "a@x", {},
