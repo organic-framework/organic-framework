@@ -3303,6 +3303,7 @@ def loop_costs(conn, now, emit=None):
     """For each of.loop_run without an of.loop_cost (RFC 0005 §5 "cost per cycle"): the recording session's spend
     from the run's start (started_at, else queued_at) to its end, each response once by message.id, subagents
     included, at list price. No start: usd None (unknown, never zero). Returns the number of costs written."""
+    import of_loop
     emit = emit or (lambda k, p: of_events.emit(k, p, position=actor()))
     # a window, not the whole log (the founder, 2026-11-14, through of_conductor msg 01a1d68e-8ef9): a run is costed
     # an hour after it ends, so its cost is never older than the run, and one window bounds both reads
@@ -3313,6 +3314,8 @@ def loop_costs(conn, now, emit=None):
     for eid, ts, sid, pl in conn.execute("SELECT event_id, ts, session_id, payload FROM event WHERE name = 'of.loop_run' "
                                          "AND ts >= ? ORDER BY ts", (since,)).fetchall():
         p = json.loads(pl or "{}")
+        if of_loop.is_locate(p):  # `of loop locate` on an earlier run, not a run (PR 199, of_review)
+            continue
         run = p.get("run") or eid
         end = p.get("ended_at") or ts
         if run in done or not sid or now - (_ts(end) or now) < LOOP_COST_SETTLE_S:
