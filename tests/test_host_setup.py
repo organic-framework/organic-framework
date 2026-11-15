@@ -435,7 +435,28 @@ class HostWatchdogTest(unittest.TestCase):
         self.assertTrue(of_relay_client.relay_healthy(self.now, path=os.path.join(real, of_relay_client.HEARTBEAT),
                                                       uid=os.getuid())[0])
 
+    def platform_folders_safe(self):
+        """The folders above the test's own are the platform's: on Linux /tmp is 1777, which the code check refuses
+        (of_review on organic-framework PR 204, comment 6886684796). They read as root's 0755; the test's own stay real."""
+        above, real = set(), os.lstat
+        for q in (os.path.realpath(self.tmp.name), os.path.abspath(self.tmp.name)):
+            while os.path.dirname(q) != q:
+                q = os.path.dirname(q)
+                above.add(q)
+
+        def lstat(path, *a, **kw):
+            st = real(path, *a, **kw)
+            if path not in above:
+                return st
+            return os.stat_result((stat.S_IFDIR | 0o755, st.st_ino, st.st_dev, st.st_nlink, 0, 0, st.st_size,
+                                   int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
+        return mock.patch.object(of_server.os, "lstat", lstat)
+
     def test_unsafe_code_restarts_nothing_and_says_why(self):
+        with self.platform_folders_safe():
+            self._unsafe_code_restarts_nothing_and_says_why()
+
+    def _unsafe_code_restarts_nothing_and_says_why(self):
         prog = os.path.join(self.tmp.name, "python3")
         open(prog, "w").close()
         os.chmod(prog, 0o755)
