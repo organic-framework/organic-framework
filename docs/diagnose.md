@@ -39,6 +39,8 @@ Labels are the in-tenant calibration set.
 - A version bump that changes **detection** starts with no labels: an earlier `false_positive` does not hide the new version's issue.
 - A bump that changes only priors, remedies or deciders, that only adds parts, or that only narrows what fires (each issue it still raises has the same id and evidence as before) lists the earlier versions in `labels_carry_from` (YAML). Their labels still apply, so the owner is not asked twice about the same finding. Labels attach to issue ids, so a new part, with new ids, starts with none. A rule whose false-positive share over its last 20 labels exceeds 0.3 is demoted to "shown on request" until its threshold is revised.
 
+**Who decides.** Each rule names its decider in the catalogue: `owner`, `structure_keeper`, `unit_owner`, `doer` or `work_owner` (§2.16), or `unit_owner_or_structure_keeper`. The last goes to the unit owner when the issue lies wholly inside one delegated unit (`route_to_unit`, the run's), and to the organization's structure keeper otherwise. A label judges whether the diagnosis is right; the remedy is a structure change, which still reaches the owner as a diff for his yes. Since 2026-11-15 these rules have this decider: function-gap (2.12), inbound-backlog (2.15), owner-router (2.1), coordination-gap (2.3), orphan-work's `cluster` part (2.7) and unclear-mandate (2.11). Their issues used to wait for the owner's label, 24 of them that day across two organizations, and no card about labels goes to him (`of_architect`, relay message `01a1dc76-ed6e`, on this position's proposal). chatty and over-coupled moved to the structure keeper on 2026-11-10 (§2.10, §2.4). Each move is a version bump that changes only the decider, so earlier labels carry over.
+
 **Observed positions.** A position counts as observed when it shows hook or import activity on at least `observed_days_gte` (3) distinct days of the window. Events written by the `of` CLI itself, such as registry bookkeeping, do not count. Silence is evidence only for observed positions. Rules that reason from absent or few messages consider observed positions only: coordination gap, over-coupled, bottleneck broker and chatty.
 
 **Trend notation.** "Rising" means the least-squares slope over the window's daily values is positive and the last 3 days are above the window's median. "Flat" means the slope is within ±20% of the window mean per week.
@@ -54,7 +56,7 @@ Notation:
 
 Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 
-### 2.1 Owner as universal router — `ap.owner-router@0`
+### 2.1 Owner as universal router — `ap.owner-router@1`
 
 - **Signals:**
   - *plumbing share* (`of.human_prompt` intent);
@@ -102,7 +104,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   - If the pair also trips §2.4, merge.
 - **ΔT basis:** freed owner minutes, plus faster decisions (the relay's added wait). *p* = 0.7. *m_decide* = 5 min.
 
-### 2.3 Coordination gap — `ap.coordination-gap@1`
+### 2.3 Coordination gap — `ap.coordination-gap@2`
 
 *v1 (2026-11-06): an edge is judged unmet only when both keepers are observed (§1).*
 
@@ -171,7 +173,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   - For code, keep the writers, but route their changes through the keeper's review.
 - **ΔT basis:** incident risk (runtime); review cost against rework (code). *p* = 0.7 (runtime), 0.4 (code). *m_decide* = 3 min.
 
-### 2.7 Orphan work — `ap.orphan-work@3`
+### 2.7 Orphan work — `ap.orphan-work@4`
 
 *v1 (2026-11-06): three parts, each with its own prior, decision time, remedies and decider.*
 *v2 (2026-11-07, from the first user organization through `of_architect`): `keeperless` fires only on a system that is live and kept by nobody, by the registry fields `of_architect` added on 2026-11-07. Labels carry over: v2 only narrows what fires.*
@@ -286,7 +288,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
   The thresholds are first guesses. Labels on these 11 issues set them.
 - **ΔT basis:** holder time and context freed on *raise* positions: typed-in turns removed × the cost of a turn. *p* = 0.6. *m_decide* = 5 min.
 
-### 2.11 Unclear mandate — `ap.unclear-mandate@3`
+### 2.11 Unclear mandate — `ap.unclear-mandate@4`
 
 *v1 (2026-11-06): only substantive changes count, and a position settles first.*
 *v2 (2026-11-15): an organization-wide brief edit is no position's mandate change. In the first user organization's week to 2026-11-15 the rule raised 33 issues from 203 brief revisions, with no summary changed. Most were rules pointed from many briefs at once: from 15 to 55 briefs in one commit, such as the rule against time estimates or the rule on readings taken where the event happens. A brief edit made on ≥ 5 positions within an hour (`org_wide_briefs_gte`, `org_wide_within_min`) no longer counts. The same snapshot's other fields, such as a moved `done_when`, still do. On the same week the rule raises 9 issues; the OF team's 1 stays. There are no labels yet: the 10 go to their deciders. Labels carry from v1: v2 only narrows what fires.*
@@ -314,7 +316,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Default remedy.** Rewrite the brief with done criteria. Split it if two jobs share one position.
 - **ΔT basis:** rework and owner corrections avoided. *p* = 0.5. *m_decide* = 10 min.
 
-### 2.12 Management-function gap — `ap.function-gap@0`
+### 2.12 Management-function gap — `ap.function-gap@1`
 
 - **Signal.** The management-functions check of [`method.md`](method.md): for each function, does an active position's `mandate_functions` ([`registry.md`](registry.md)) cover it? It runs weekly against the registry, and when the stakeholder map changes.
 - **Rule.** A function with no covering position. When the organization's stakeholder map exists as data and lists a right-to-operate interest that depends on the function, the issue is critical. When the map lists any other interest that depends on it, the severity is `high`. Without such evidence it is `medium`. Otherwise the issue is ranked like any other. An organization that does not need a function (for example marketing) dismisses it with a `false_positive` label.
@@ -346,7 +348,7 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **ΔT basis:** holder and owner time freed, plus ambiguity of ownership removed. *p* = 0.6. *m_decide* = 3 min.
 - **Note.** This rule reads the position's `mandate_exit` (`done_when`, `review`; [`registry.md`](registry.md)). The exit is met when `done_when` is observed or the `review` date has passed. Without the field, the rule is blocked, and history calibrates it only by owner labels.
 
-### 2.15 Inbound backlog — `ap.inbound-backlog@0`
+### 2.15 Inbound backlog — `ap.inbound-backlog@1`
 
 *v0 (2026-11-06), defined on the relay's `of.inbound_queue` events (`of_studio`, 2026-11-06). Queue data starts on 2026-11-06 at 12:47Z, so the rule is blocked until queues are observed on 3 days, and its thresholds are uncalibrated.*
 
@@ -639,7 +641,7 @@ The loop rules read one projection per work, `model["loops"][<work>]`, through `
 | Field | Meaning | Source | Owner | Read by |
 |---|---|---|---|---|
 | `work`, `owner`, `doers` | The work id, its owner (`work_owner`), the positions doing it | registry `works:` | `of_architect` (schema) | all |
-| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`), **`segment`** (`start`, `end`, `context`: a list of parts, each a text or `{name, what}`; `segment` is null when the target names none), **`decided`** (the owner's yes on the measure, docs/registry.md Works, "The owner's measure", only when it resolves in this machine's log as a person's yes; else null, and the target is priced in money), **`decided_words`** (what the person said: the ask's question and chosen option, or the prompt's first words), **`decided_unresolved`** and **`decided_unresolved_why`** (`not_found`, `unread`, `not_looked_up`; present only when an id is written and does not resolve), **`observed_at`** (where its reading is taken; null when not named) | registry `works.<w>.loop.target` | `of_architect`; `segment` in `of_studio`'s projection since organic-framework PR 60, `decided` since `of_studio`'s change of 2026-11-14 | 2.17, 2.18, 2.21 |
+| `target` | `metric`, `money`, `stake`, `better` (`higher` default, `lower`), **`segment`** (`start`, `end`, `context`: a list of parts, each a text or `{name, what}`; `segment` is null when the target names none), **`decided`** (the owner's yes on the measure, docs/registry.md Works, "The owner's measure", only when it resolves in this machine's log as a person's yes; else null, and the target is priced in money), **`decided_words`** (what the person said: the ask's question and chosen option, or the prompt's first words), **`decided_unresolved`** and **`decided_unresolved_why`** (`not_found`, `unread`, `not_looked_up`; present only when an id is written and does not resolve), **`observed_at`** (where its reading is taken; null when not named), **`chain_proxy_for`** (`{at, valid_when}` when the target's money line stands for an event elsewhere, such as live profit for a backtest; null otherwise; 2026-11-15, `of_studio`) | registry `works.<w>.loop.target` | `of_architect`; `segment` in `of_studio`'s projection since organic-framework PR 60, `decided` since `of_studio`'s change of 2026-11-14 | 2.17, 2.18, 2.21 |
 | `measures[]` | `name`, `to_money` (empty means not priced), **`to_target`** (how it moves a target the owner decided; null when not given; 2.21 counts it only on such a target), and as the registry writes them **`observed_at`** and **`proxy_for`** {`at`, `valid_when`} ([`registry.md`](registry.md), Works, "Where a reading is taken") | `loop.measures` | `of_architect` | 2.21 |
 | `ladder[]` | Cheapest first: `rung`, `cost`, `latency`, `accept`, **`production`** (true for shadow and higher), **`since`** (when the rung became available; default the loop's start) | `loop.ladder` | `of_architect`; `production` and `since` are new | 2.16, 2.17, 2.22 |
 | `checkpoint_days`, `wip_arms`, `babysit_model` | Per work; defaults 3, 2, `sonnet` | `loop` | `of_architect` | 2.17, 2.19, 2.20 |
@@ -673,21 +675,21 @@ The columns:
 
 | Rule | Live U1 | Live OF | Synthetic | Labelled | Gap |
 |---|---|---|---|---|---|
-| owner-router@0 | fired 1 | fired 1 | P/R 1.0 | 1 tp, fires | — |
+| owner-router@1 | fired 1 | fired 1 | P/R 1.0 | 1 tp, fires | — |
 | owner-relay@1 | fired 3 | quiet | P/R 1.0, both halves; negatives: a busy pair (6 of 80), a unit owner's own unit | 3 tp, fire | — |
-| coordination-gap@1 | fired 4 | blocked (no work records, no `depends_on`) | P/R 1.0; reports blocked when a keeper is unobserved | 3 tp, fire | — |
+| coordination-gap@2 | fired 4 | blocked (no work records, no `depends_on`) | P/R 1.0; reports blocked when a keeper is unobserved | 3 tp, fire | — |
 | over-coupled@4 | blocked (`wr.position`); 2026-11-10 with PRs attributed: 26 under v1, 6 under v2; 2026-11-15: 8 (ratios 3.1–5.3, each ≥ 29 PRs) | 2026-11-15: 1 (`of_release` and `of_secrets-review`, 3.5) | P/R 1.0; negatives: one-directional, a unit owner, a pair with no merged PR | 1 true_but_not_now (2026-11-12, at 4.1, snoozed): too few to move the ratio | the 8 unlabelled issues (7 in U1, 1 in OF) to label with their structure keepers |
 | context-overload@0 | 2026-11-14: quiet | 2026-11-14: quiet | P/R 1.0; negatives: every position compacting as often, an outlier corrected only on output and scope or long after a compaction; reports blocked without the owner's corrections | — | a real case; rereads |
 | fragmented-ownership@1 | blocked (`of.deployment`, `wr.position`) | blocked | code P/R 1.0; negatives: keeper named inside the windows, one window only | — | runtime part not built (no `of.deployment`) |
-| orphan-work@3 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
+| orphan-work@4 | fired 3 (cluster 1, keeperless 2) | quiet | cluster and unmapped P/R 1.0; negatives: a scratchpad, verdicts before rt-v4, 1 of 31 unmapped | 2 true_but_not_now, 1 wrong_remedy (keeperless on an unsupported system, fixed in v2) | keeperless moved to unkept-system (v3) |
 | bottleneck-broker@1 | quiet | quiet | P/R 1.0; negatives: a coordinator hub, a mesh | — | — |
 | missing-verifier@2 | 2026-11-14: fired 1 (`answers`: a position that answers the owner, 7 corrections of its results in 99 of his prompts) | 2026-11-14: fired 1 (`answers`: `of_conductor`, 18 in 226) | both parts P/R 1.0. `results` negatives: one reviewed PR, corrections of method and process, 3 against 20 PRs, PRs that do not say whether they were reviewed, a repository whose verdicts were not read, a PR approved by another position's verdict comment. `answers` negatives: 3 in 100 prompts, corrections of method only. Reports blocked without the owner's corrections | — | the two `answers` issues to label with the structure keepers; reverts |
 | chatty@3 | fired 31 (pair 19, flood 5, nudges 7); 2026-11-14 open pair issues 43 under v2, 19 under v3 | fired 2 (flood) | all parts P/R 1.0 (pair, organization, flood, nudges); pair negatives: 6 per PR, 12 messages over 1 PR | 2 tp (pair, 2026-11-06), fire under v3; 10 fp (pair, 2026-11-12), all below v3's floor; 2 true_but_not_now (flood, 2026-11-12), still raised | 19 pair issues to review |
-| unclear-mandate@3 | quiet; 2026-11-15: 33 under v1, 9 under v2, 2 under v3 | 2026-11-15: 1 under v2 (judged a false positive by its decider), 0 under v3 | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding, a rule pointed from five briefs, a position's own brief gaining rules | 1 false positive in its decider's message (`01a1dc76-ed6e`), not yet recorded as a label: moved v3 | that label; the 2 issues to label |
-| function-gap@0 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
+| unclear-mandate@4 | quiet; 2026-11-15: 33 under v1, 9 under v2, 2 under v3 | 2026-11-15: 1 under v2 (judged a false positive by its decider), 0 under v3 | P/R 1.0; negatives: schema adoption with reworded summaries, onboarding, a rule pointed from five briefs, a position's own brief gaining rules | 1 false positive in its decider's message (`01a1dc76-ed6e`), not yet recorded as a label: moved v3 | that label; the 2 issues to label |
+| function-gap@1 | fired 7 | fired 12 | P/R 1.0 (a function covered only by a parked position) | — | 12 on OF to review |
 | churn@0 | quiet | blocked (no work records) | both parts P/R 1.0; negative: holder changes with no dip | — | — |
 | lingering@0 | quiet | quiet | P/R 1.0 | — | — |
-| inbound-backlog@0 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0 | — | — |
+| inbound-backlog@1 | blocked (queues on 2 of 3 days) | blocked | both parts P/R 1.0 | — | — |
 | loop-cheapest-rung@0 | 2026-11-15, 18 declared loops: fired 5, quiet 1, blocked 12 (no run in the window) | no declared loop | P/R 1.0 | — | the 5 issues to label with their doers |
 | loop-checkpoint@0 | 2026-11-15, 18 loops: fired 1, quiet 5, blocked 12 | no declared loop | P/R 1.0 | — | the issue to label with its work owner |
 | loop-plateau@1 | 2026-11-15, 18 loops: quiet 6, blocked 12 | no declared loop | P/R 1.0 | — | a real case: quiet on the 6 loops with runs |

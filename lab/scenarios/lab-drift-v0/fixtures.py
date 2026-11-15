@@ -367,13 +367,13 @@ SCENARIOS += [
                doc=_loop_doc(measures=[{"name": "latency_ms", "to_money": "USD per ms from the race arithmetic"}])),
     _loop_case("loop-eval-bottleneck/positive",
                [_lrun(1, "2026-11-05T13:00Z", "offline", "h1")] +
-               [_lrun(1 + d, f"2026-11-0{5 + d}T13:00Z", "gate", "h1", queued=f"2026-11-0{5 + d}T10:00Z",
-                      started=f"2026-11-0{5 + d}T12:00Z") for d in (0, 1, 2)],
+               [_lrun(2 + d, f"2026-11-0{5 + d}T13:00Z", "gate", "h1", queued=f"2026-11-0{5 + d}T10:00Z",
+                      started=f"2026-11-0{5 + d}T12:00Z") for d in (0, 1, 2)],   # r2..r4: one id per run, as of loop run writes
                "positive", rule="ap.loop-eval-bottleneck"),
     _loop_case("loop-eval-bottleneck/negative-short-wait",
                [_lrun(1, "2026-11-05T13:00Z", "offline", "h1")] +
-               [_lrun(1 + d, f"2026-11-0{5 + d}T13:00Z", "gate", "h1", queued=f"2026-11-0{5 + d}T10:00Z",
-                      started=f"2026-11-0{5 + d}T10:05Z") for d in (0, 1, 2)],
+               [_lrun(2 + d, f"2026-11-0{5 + d}T13:00Z", "gate", "h1", queued=f"2026-11-0{5 + d}T10:00Z",
+                      started=f"2026-11-0{5 + d}T10:05Z") for d in (0, 1, 2)],   # r2..r4: one id per run, as of loop run writes
                "negative", rule="ap.loop-eval-bottleneck"),
 ]
 

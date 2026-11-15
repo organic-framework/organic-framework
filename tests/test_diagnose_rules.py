@@ -442,7 +442,7 @@ class RulesTest(unittest.TestCase):
         d = of_diagnose.diagnose(of_model.build(doc, moved, at=self.B), moved, self.A, self.B)
         self.assertEqual([(i["affected"], i["rule_version"], [c["fields"] for c in i["evidence"]["changes"]])
                           for i in d["issues"] if i["rule"] == "ap.unclear-mandate"],
-                         [(["bot_search"], "ap.unclear-mandate@3", [["mandate_exit.done_when"]] * 2)])
+                         [(["bot_search"], "ap.unclear-mandate@4", [["mandate_exit.done_when"]] * 2)])
 
     def test_unclear_mandate_and_churn(self):
         doc = self.owner_doc()

@@ -34,7 +34,9 @@ defaults:
 
 rules:
   owner-router:
-    version: 0
+    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides)
+    labels_carry_from: [0]       # v1 changes only the decider
+    decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.6
     m_decide: 5
     thresholds: {plumbing_share_gt: 0.05, in_degree_share_gt: 0.25, l_rising_lambda_flat: true}
@@ -52,7 +54,9 @@ rules:
     remedies: [direct interface and grant between the pair, merge if over-coupled]
 
   coordination-gap:
-    version: 1                   # v1 (2026-11-06): an edge is judged unmet only when both keepers are observed (of_studio)
+    version: 2                   # v2 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides); v1 (2026-11-06): an edge is judged unmet only when both keepers are observed (of_studio)
+    labels_carry_from: [1]       # v2 changes only the decider
+    decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.5
     m_decide: 3
     thresholds: {co_changed_wr_gte: 3, unmet_days: 7, observed_days_gte: 3}
@@ -94,14 +98,14 @@ rules:
     remedies: [hand writes to the system agent, route changes through the keeper's review]
 
   orphan-work:
-    version: 3                   # v3 (2026-11-10): keeperless moves to unkept-system (2.23), which flags a live system nobody keeps with or without work; v2 (2026-11-07): keeperless only on live systems kept by nobody
-    labels_carry_from: [0, 1, 2] # v1 left detection unchanged; v2 narrowed keeperless; v3 drops it: the issues v3 still raises keep their labels
+    version: 4                   # v4 (2026-11-15): the cluster part is decided by the structure keeper (diagnose.md §1, Who decides); v3 (2026-11-10): keeperless moves to unkept-system (2.23), which flags a live system nobody keeps with or without work; v2 (2026-11-07): keeperless only on live systems kept by nobody
+    labels_carry_from: [0, 1, 2, 3] # v1 left detection unchanged; v2 narrowed keeperless; v3 drops it; v4 changes only a decider
     p: {cluster: 0.6, unmapped: 0.8}
     m_decide: {cluster: 10, unmapped: 3}
     thresholds: {unowned_verdicts_per_cluster_gte: 3, unmapped_wr_share_gte: 0.05, cluster_exclude_paths: [/tmp, /private/tmp, $TMPDIR, '*/scratchpad/*'], merge_into: unkept-system}   # a cluster on a system nobody keeps is evidence on that system's issue
     cluster_from_router: rt-v4   # input rule (2026-11-07, of_studio 13b781f): earlier routers judged linked worktrees unowned
     needs: {cluster: [of.mandate_check], unmapped: [of.work_record]}
-    decider: {cluster: owner, unmapped: structure_keeper}
+    decider: {cluster: unit_owner_or_structure_keeper, unmapped: structure_keeper}   # cluster: of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     severity: {cluster: medium, unmapped: low}
     delta_m: "0 (ranks by risk); a new position costs the owner one decision"
     remedies:
@@ -150,8 +154,9 @@ rules:
       repeat_nudges: [a hand-over instead of nudges, escalate to the owner of both]   # no invented deadlines (founder, ask 53628150)
 
   unclear-mandate:
-    version: 3                   # v3 (2026-11-15): no brief revision counts (diagnose.md 2.11); v2 (2026-11-15): organization-wide brief edits left out; v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
-    labels_carry_from: [1, 2]    # v2 and v3 only narrow what fires
+    version: 4                   # v4 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides); v3 (2026-11-15): no brief revision counts (diagnose.md 2.11); v2 (2026-11-15): organization-wide brief edits left out; v1 (2026-11-06): substantive changes only (throughput, brief, done_when from non-empty, done -> active); settle_days after the first snapshot
+    labels_carry_from: [1, 2, 3] # v2 and v3 only narrow what fires; v4 changes only the decider
+    decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.5
     m_decide: 10
     thresholds: {mandate_changes_gte: 2, wrong_priority_or_overengineered_verdicts_gte: 3, spec_failure_share_gte: 0.20, settle_days: 3, substantive_fields: [throughput, mandate_exit.done_when, status_reopened], ignore_added_fields: true}
@@ -160,7 +165,9 @@ rules:
     remedies: [rewrite the brief with done criteria, split if two jobs share one position]
 
   function-gap:
-    version: 0
+    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides)
+    labels_carry_from: [0]       # v1 changes only the decider
+    decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.7
     m_decide: 20
     thresholds: {uncovered_function_with_dependent_interest: true}
@@ -189,7 +196,9 @@ rules:
     remedies: [close, merge into the permanent owner, formalize with a new mandate]
 
   inbound-backlog:
-    version: 0                   # v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    version: 1                   # v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    labels_carry_from: [0]       # v1 changes only the decider
+    decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.5
     m_decide: 5
     thresholds: {queue_observed_days_gte: 3, old_after_min: 30, backlog_min_per_day_gte: 60, overload_days_gte: 3, depth_avg_gte: 2, unattended_days_gte: 2, exclude_kinds: [owner], merge_into: bottleneck-broker}
