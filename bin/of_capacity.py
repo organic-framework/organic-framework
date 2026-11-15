@@ -1976,7 +1976,7 @@ def hold_after_move(session, now=None):
 
 def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
          extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
-         ask=None, restart=False):
+         ask=None, restart=False, positions=None):
     """Move one position's live session to the config dir `target`. Raises MoveError before anything
     irreversible when a precondition fails; the old session then keeps running untouched.
     The session may run in a herdr pane (it resumes in the same pane) or in a Zellij pane (it resumes
@@ -1986,7 +1986,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     (2026-11-12: two keepers moved with a partial tool profile got their tools back this way).
     An account where one of the position's account-bound tools is not signed in stops the move and files the
     founder's task for that account (docs/tools.md §5); `allow_unsigned` (a rescue) moves anyway, says so in the
-    note and files the task. `ask`: the balancer's, else `of ask`."""
+    note and files the task. `ask`: the balancer's, else `of ask`. `positions`: every listed position, for the
+    note's route to the capacity position (report_route)."""
     name, sid = p["name"], ((p.get("holder") or {}).get("session") or "").strip()
     if not sid:
         raise MoveError(f"{name}: no holder.session in the registry")
@@ -2010,7 +2011,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         log(f"  not signed in on {short(target)}: {names}; moving anyway (a rescue)")
         extra_note = (f"Your tool(s) {names} are not signed in on {account_of(target) or short(target)}, so they are "
                       f"missing in this session; the founder has the task to sign in. If work waits on them, tell "
-                      f"of_capacity (of send of_capacity)." + ("\n\n" + extra_note if extra_note else ""))
+                      f"{report_route(p, positions)}." + ("\n\n" + extra_note if extra_note else ""))
         if not dry_run:
             file_signin_task(target, unsigned, name, ask=ask, of_bin=of_bin, moved=True, log=log)
     ctx_model = last_model(find_transcript(src, sid))
@@ -2127,7 +2128,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         extra_note = (f"Your plugin(s) {', '.join(plugs)} are not installed or not signed in on "
                       f"{account_of(target) or short(target)}, "
                       f"so their tools (mcp__plugin_…) are gone in this session. If work waits on them, tell "
-                      f"of_capacity (of send of_capacity) what waits: it moves you to an account that has them or has "
+                      f"{report_route(p, positions)} what waits: of_capacity moves you to an account that has them or has "
                       f"them installed here. Do not work around them." + ("\n\n" + extra_note if extra_note else ""))
     if missing:  # account-level connectors do not travel with the session (2026-11-07: Slack)
         log(f"  claude.ai connectors not seen on {short(target)}: {', '.join(missing)}")
@@ -3756,6 +3757,25 @@ def actor(policy=None):
     return p.split(":", 1)[-1] if p else "of_capacity"
 
 
+def report_route(p, positions, policy=None):
+    """Whom a moved position tells what waits on a missing tool, as the note words it. A position of the capacity
+    position's own organization tells it directly; one of another organization tells its structure keeper, who
+    relays it, since framework matters come through the structure keeper (AGENTS.md) and a plain `of send` resolves
+    inside the sender's own organization (2026-11-15, a user organization's structure keeper, message
+    01a1de9c-570e). The keeper itself, or an organization without one, names the capacity position by its org."""
+    cap = capacity_position(policy) or ""
+    name = actor(policy)
+    cap_org = cap.split(":", 1)[0] if ":" in cap else None
+    org = p.get("_org")
+    if not cap_org or not org or org == cap_org:
+        return f"{name} (of send {name})"
+    import of_pulse
+    keeper = of_pulse.structure_keeper(positions or [], org)
+    if keeper and keeper != p.get("name"):
+        return f"{keeper} (of send {keeper}), who relays it to {name}"
+    return f"{name} (of send {cap_org}:{name})"
+
+
 def owner_card(kind, stalls, accepting, spent, numbers):
     """The owner's card for the invariant's work when no capacity position serves the machine: a session stands on
     its limit for two runs ("self"), or the pool is short or spent ("pool", a money question)."""
@@ -4922,7 +4942,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         note = ("of_capacity's balancer moved you to use model capacity that would otherwise expire unused "
                 "(founder, 2026-11-06). Nothing else changed: same session, pane and name. Carry on.")
         try:  # only idle holders are planned (no background shells); their scheduled tasks are in the note
-            r = move(p, m["to"], allow_shells=True, log=lambda s: None, extra_note=note,
+            r = move(p, m["to"], allow_shells=True, log=lambda s: None, extra_note=note, positions=positions,
                      of_bin=os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"),
                      allow_unsigned=str(m.get("reason") or "").startswith("rescue"), ask=ask)
             m["done"] = True
