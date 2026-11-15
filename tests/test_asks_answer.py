@@ -761,7 +761,10 @@ class RedeliverTest(AnswerTest):
             args = types.SimpleNamespace(action="answered", id=aid[-8:], reason=["routed it myself"], watch=False)
             self.assertEqual(of.cmd_asks(args), 0)
             state = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
-            self.assertEqual((state[aid], state[copy], state[other]), ("answered_upstream", "answered", "open"))
+            self.assertEqual((state[aid], state[copy], state[other]), ("settled_in_unit", "answered", "open"))
+            a = self.asks()[aid]  # the unit owner closed the founder's card: never read as his answer (of_server, PR 222)
+            self.assertEqual((a["settled_by"], a["settled_via"]), ("of_owner", copy))
+            self.assertEqual(of_asks.state_label(a), "settled_in_unit by of_owner")
             row = self.conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'").fetchone()
             self.assertEqual((json.loads(row[0])["by"], json.loads(row[0])["note"]), ("of_owner", "routed it myself"))
             with self.assertRaises(of.OfError):
@@ -786,8 +789,9 @@ class RedeliverTest(AnswerTest):
         self.assertEqual(self.asks()[aid]["state"], "escalated")
         ans = self.answer(copy, "2026-11-01T12:30:00Z", answer="yes")
         a = self.asks()[aid]
-        self.assertEqual((a["state"], a["answered_via"], a["answered_by"], a["answered_at"]),
-                         ("answered_upstream", copy, ans, "2026-11-01T12:30:00Z"))
+        self.assertEqual((a["state"], a["settled_by"], a["settled_via"], a["settled_event"], a["settled_at"]),
+                         ("answered_upstream", "owner", copy, ans, "2026-11-01T12:30:00Z"))
+        self.assertEqual(of_asks.state_label(a), "answered_upstream by owner")
         # it left its unit owner's queue when it was escalated: that stays its closure, which the unit owner's
         # measures read (an escalated ask is closed_otherwise on its side, docs/studio.md)
         self.assertEqual((a["closed_by"], a["closed_at"]), (esc, "2026-11-01T12:00:00Z"))
@@ -805,7 +809,7 @@ class RedeliverTest(AnswerTest):
         rw2 = self.rewrite(aid, at="2026-11-01T12:04:05Z")
         self.answer(rw2, "2026-11-01T13:00:00Z")
         a = self.asks()[aid]
-        self.assertEqual((a["state"], a["answered_via"]), ("answered_upstream", rw2))
+        self.assertEqual((a["state"], a["settled_via"]), ("answered_upstream", rw2))
 
     def test_a_task_copy_answers_it_once_its_asker_checked_the_result(self):
         aid = self.routed()
@@ -818,8 +822,21 @@ class RedeliverTest(AnswerTest):
         self.assertEqual((self.asks()[rw]["claim"], self.asks()[aid]["state"]), ("done", "escalated"))  # a claim only
         done = self.add("state_declared", {"state": "working", "done_task": rw}, "2026-11-01T12:25:00Z",
                         session="SO", position="of_owner")
+        a = self.asks()[aid]  # he said done, its asker checked it: his answer
+        self.assertEqual((a["state"], a["settled_by"], a["settled_via"], a["settled_event"]),
+                         ("answered_upstream", "owner", rw, done))
+
+    def test_a_task_copy_done_with_no_word_from_the_founder_is_settled_in_the_unit(self):
+        aid = self.routed()
+        self.escalated(aid)
+        rw = self.add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
+                                         "escalated_from": aid, "task": True, "steps": "Rotate the bot's key",
+                                         "questions": [{"question": "Rotate the bot's key"}]},
+                      "2026-11-01T12:03:00Z", session="SO", position="of_owner")
+        self.add("state_declared", {"state": "working", "done_task": rw}, "2026-11-01T12:25:00Z",
+                 session="SO", position="of_owner")
         a = self.asks()[aid]
-        self.assertEqual((a["state"], a["answered_via"], a["answered_by"]), ("answered_upstream", rw, done))
+        self.assertEqual((a["state"], a["settled_by"]), ("settled_in_unit", "of_owner"))
 
     def test_with_no_copy_open_its_unit_owner_closes_it_by_its_own_id(self):
         """A user organization's structure keeper, message 01a1deb0-a318: once the founder's copy was withdrawn, of
@@ -849,7 +866,8 @@ class RedeliverTest(AnswerTest):
                                     "AND event_id != ?", (early,)).fetchone()
             self.assertEqual((json.loads(row[1])["ask_ids"], json.loads(row[1])["by"]), ([aid], "of_owner"))
             a = self.asks()[aid]
-            self.assertEqual((a["state"], a.get("answered_via"), a["answered_by"]), ("answered_upstream", None, row[0]))
+            self.assertEqual((a["state"], a.get("settled_via"), a["settled_event"], a["settled_by"]),
+                             ("settled_in_unit", None, row[0], "of_owner"))
             self.assertEqual(a["closed_at"], "2026-11-01T12:00:00Z")  # its escalation stays its closure
             with self.assertRaises(of.OfError):
                 of.cmd_asks(args)  # settled: nothing open or escalated matches any more
@@ -867,6 +885,41 @@ class RedeliverTest(AnswerTest):
         st = of_asks.state_from(before, {})
         of_asks.project([r for r in of_asks.load(self.conn) if r["name"] == "of.agent_question_answered"], st)
         self.assertEqual((st["by_id"][aid]["state"], st["by_id"][copy]["state"]), ("answered_upstream", "answered"))
+
+    def test_only_its_unit_owner_its_asker_or_the_owner_settle_it(self):
+        """of_server on PR 222: an answer by a third position settled an escalated routed ask, which then left its
+        unit owner's queue with nothing done there. It still closes a founder copy it answers, as before."""
+        import importlib.machinery
+        import importlib.util
+        import types
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli", loader))
+        loader.exec_module(of)
+        actor = ["of_stranger"]
+        saved = of._asks_actor, of._reconcile_ask_tokens, of._load_quiet, os.environ.get("OF_DB")
+        of._asks_actor, of._reconcile_ask_tokens, of._load_quiet = (lambda: actor[0]), (lambda *a: None), (lambda: [])
+        os.environ["OF_DB"] = os.path.join(self.tmp.name, "of.db")
+        try:
+            aid = self.routed()
+            copy = self.escalated(aid)
+            self.answer(copy, "2026-11-01T12:05:00Z", by="of_stranger")  # the founder's card goes ...
+            self.assertEqual((self.asks()[copy]["state"], self.asks()[aid]["state"]), ("answered", "escalated"))
+            self.answer(aid, "2026-11-01T12:06:00Z", by="of_stranger")  # ... and nothing open: still not its to settle
+            self.assertEqual(self.asks()[aid]["state"], "escalated")
+            args = types.SimpleNamespace(action="answered", id=aid[-8:], reason=[], watch=False)
+            with self.assertRaises(of.OfError) as e:
+                of.cmd_asks(args)
+            self.assertIn("of_owner", str(e.exception))
+            self.assertIn("of_unit", str(e.exception))
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question_answered'")
+                             .fetchone()[0], 2)  # refused: nothing recorded
+            actor[0] = "of_unit"  # its asker may
+            self.assertEqual(of.cmd_asks(args), 0)
+            a = self.asks()[aid]
+            self.assertEqual((a["state"], a["settled_by"]), ("settled_in_unit", "of_unit"))
+        finally:
+            of._asks_actor, of._reconcile_ask_tokens, of._load_quiet = saved[:3]
+            os.environ.pop("OF_DB") if saved[3] is None else os.environ.__setitem__("OF_DB", saved[3])
 
     def test_the_unit_owner_is_told_once_of_a_later_escalation(self):
         aid = self.routed()

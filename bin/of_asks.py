@@ -13,9 +13,11 @@ opens it when the agent waits on its owner, or closes it as not_a_question (foun
               owner files its rewrite (`of ask --escalates <id>`, `escalated_from` on both);
 - escalated:  `of.ask_escalated`: a routed ask sent on to the founder (by `of pulse` on its delegation's escalate_when,
               or by its unit owner, `of ask --escalates <id>`); it waits on his copy (`escalated_from`);
-- answered_upstream: an escalated ask once a founder copy of it (OF's copy or the unit owner's rewrite) is answered,
-              or done as a task, or an answer names the ask itself while no copy of it is open (`of asks answered
-              <id>` by its unit owner); its escalation stays its closure (answered_upstream());
+- answered_upstream: an escalated ask the owner answered: on a founder copy of it (OF's copy or the unit owner's
+              rewrite), or a task copy he said done and its asker checked; settled_by `owner` (settle());
+- settled_in_unit: an escalated ask its unit owner or its asker settled: closing a founder copy, a task copy done
+              with no word from the owner, or, with no copy open, naming the ask itself (`of asks answered <id>`);
+              settled_by names that position. Never the owner's decision. In both its escalation stays its closure;
 - expired:    `of.session_end` while open;
 - withdrawn:  `of.ask_withdrawn` written by the owner (`of asks withdraw <id>`).
 - amended:    not a closure: `of.ask_amended` (`of ask --amend <id>`), by the position that filed the ask, while it is
@@ -175,9 +177,9 @@ def project(rows, state=None):
                     # the newest version stays open on the card (docs/events.md, of.ask_amended)
                 if ask and ask["state"] == "escalated" and st == "answered" and not any(
                         c.get("escalated_from") == ask["event_id"] and c["state"] == "open" for c in asks):
-                    # named itself, with no founder copy open (of asks answered by its unit owner, of status
-                    # --answered by its asker): settled upstream; with a copy open the founder's card decides
-                    ask.update(state="answered_upstream", answered_by=r["event_id"], answered_at=r["ts"])
+                    # named itself, with no founder copy open (of asks answered by its unit owner or its asker);
+                    # with a copy open the founder's card decides
+                    settle(ask, p_.get("by"), r)
                     continue
                 if ask and ask["state"] == "open" and ask.get("task"):
                     # a task is work for the owner, not a question: an answer is his claim that it is done; it
@@ -188,7 +190,7 @@ def project(rows, state=None):
                 if ask and ask["state"] in ("open", "candidate"):  # a candidate too: the popup's n, of asks answered
                     ask.update(state=st, closed_by=r["event_id"], closed_at=r["ts"])
                     if st == "answered":
-                        answered_upstream(ask, by_id, r)
+                        settle_copy(ask, by_id, r, p_.get("by"))
                     if open_by_session.get(ask["session_id"]) is ask:
                         open_by_session.pop(ask["session_id"], None)
             continue
@@ -201,7 +203,8 @@ def project(rows, state=None):
                                                                    or ask["event_id"].startswith(tid)):
                     if p_.get("done_task"):
                         ask.update(state="done", closed_by=r["event_id"], closed_at=r["ts"])
-                        answered_upstream(ask, by_id, r)
+                        # the owner's work when he said done (a claim is only ever his), else its asker's word
+                        settle_copy(ask, by_id, r, "owner" if ask.get("claimed_at") else r.get("position"))
                     else:
                         ask.update(claimed_at=None, claim=None, reopened=(p_.get("note") or "")[:300],
                                    reopened_at=r["ts"])  # an answer from a chat must be later (of_asks_chat)
@@ -343,7 +346,7 @@ def project(rows, state=None):
                 targets = plain if len(plain) == 1 else []
             for ask in targets:
                 ask.update(state="answered", closed_by=r["event_id"], closed_at=r["ts"])
-                answered_upstream(ask, by_id, r)
+                settle_copy(ask, by_id, r, "owner")  # the person's own words (origin human or paste)
             if m and cur and not cur["event_id"].endswith(m.group(1)):
                 continue  # a popup answer names another ask: the session's open question stays open
         if name == "of.agent_message_in":
@@ -421,18 +424,44 @@ def amend(ask, r):
     ask["amended"] = {"version": v, "at": r["ts"], "changed": ch, "all": [c for c in AMENDABLE if c in ch or c in before]}
 
 
-def answered_upstream(copy, by_id, r):
-    """A founder copy of a routed ask (`escalated_from`: OF's copy or the unit owner's rewrite) was answered, or done as
-    a task, by event `r`: the routed ask, while escalated, is answered upstream, naming the copy and its answer
-    (answered_via, answered_by, answered_at), so its unit owner's queue (of asks --to-me) keeps only real work (a user
-    organization's structure keeper, via of_platform, message 01a1deaf-47e0: 22 routed asks listed as escalated, the
-    founder had answered a copy of 18). It keeps its escalation as its closure (closed_by, closed_at): the time it left
-    the unit owner's queue, which the unit owner's measures read, so the founder's answer never counts as the unit
-    owner's. A withdrawn copy settles nothing: a unit owner withdraws its rewrite to file another."""
+OWNER_BY = ("owner", "founder")  # an answer's `by` when the person gave it (the popup, a chat, his terminal)
+
+
+def settle(ask, by, r, via=None):
+    """Settle an escalated routed ask by event `r`, given by `by` ("owner" or a position), through founder copy `via`
+    (None: an answer naming the ask itself). The owner's answer makes it answered_upstream; its unit owner's (its
+    `to`) or its asker's makes it settled_in_unit, so a closure by an agent never reads as the owner's decision. Anyone
+    else settles nothing: the ask stays in its unit owner's queue (of_server on PR 222). It names who, the event, when
+    and the copy (settled_by, settled_event, settled_at, settled_via), so its unit owner's queue (of asks --to-me)
+    keeps only real work (a user organization's structure keeper, via of_platform, message 01a1deaf-47e0: 22 routed
+    asks listed as escalated, the founder had answered a copy of 18). It keeps its escalation as its closure
+    (closed_by, closed_at): the time it left the unit owner's queue, which the unit owner's measures read, so the
+    owner's answer never counts as the unit owner's."""
+    if not ask or ask["state"] != "escalated" or not may_settle(ask, by):
+        return
+    ask.update(state="answered_upstream" if by in OWNER_BY else "settled_in_unit", settled_by=by,
+               settled_event=r["event_id"], settled_at=r["ts"], **({"settled_via": via} if via else {}))
+
+
+def settle_copy(copy, by_id, r, by):
+    """A founder copy of a routed ask (`escalated_from`: OF's copy or the unit owner's rewrite) was answered, or done
+    as a task, by `by`: its routed ask, while escalated, is settled (settle()). A withdrawn copy settles nothing: a unit
+    owner withdraws its rewrite to file another."""
     src = by_id.get(copy.get("escalated_from")) if copy.get("escalated_from") else None
-    if src and src is not copy and src["state"] == "escalated":
-        src.update(state="answered_upstream", answered_via=copy["event_id"], answered_by=r["event_id"],
-                   answered_at=r["ts"])
+    if src is not copy:
+        settle(src, by, r, via=copy["event_id"])
+
+
+def may_settle(ask, by):
+    """Whether `by` may settle the escalated routed ask `ask` (settle()): the owner, its unit owner or its asker."""
+    return bool(by) and by in OWNER_BY + (ask.get("to"), ask.get("position"))
+
+
+def state_label(ask):
+    """An ask's state as a listing shows it: a settled escalated ask names who settled it, so a unit's closure is never
+    retold as the owner's decision."""
+    return ask["state"] + (f" by {ask['settled_by']}" if ask["state"] in ("answered_upstream", "settled_in_unit")
+                           and ask.get("settled_by") else "")
 
 
 def older_version(answered, ask):

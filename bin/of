@@ -2557,7 +2557,11 @@ def cmd_asks(args):
                 g = {"ask_ids": [a["event_id"] for a in copies], "who": [f"the founder's copy of {src[0]['position']}"]}
             elif len(src) == 1:  # no copy open (answered, withdrawn): the escalated ask itself, else nothing closed it
                 # (a user organization's structure keeper, message 01a1deb0-a318: its unit owner tried seven, each "no
-                # open ask matches")
+                # open ask matches"); only by its unit owner, its asker or the owner (of_server on PR 222)
+                if not of_asks.may_settle(src[0], _asks_actor()):
+                    raise OfError(f"ask {src[0]['event_id'][-8:]} was escalated and no founder copy of it is open: only "
+                                  f"its unit owner ({src[0].get('to')}), its asker ({src[0].get('position')}) or the "
+                                  "owner closes it")
                 g = {"ask_ids": [src[0]["event_id"]], "who": [f"{src[0]['position']} (escalated, no founder copy open)"]}
         if not g:
             raise OfError(f"no open ask matches {args.id!r}")
@@ -2620,7 +2624,7 @@ def cmd_asks(args):
     print(f"asks: {counts.get('open', 0)} open" + "".join(f", {n} {k}" for k, n in sorted(counts.items()) if k != "open"))
     for a in shown:
         who = a["position"] or (a["session_id"] or "?")[:8]
-        state = "" if a["state"] == "open" else f" [{a['state']}]"
+        state = "" if a["state"] == "open" else f" [{of_asks.state_label(a)}]"
         mark = of_asks.label(a["ts"], cfg) if a["state"] == "open" else ""
         am = a.get("amended")
         print(f"  {a['event_id'][-8:]}  {of_asks.age(a['ts']):>5} {mark:<8} {who:<24} {a['kind']:<20} "
