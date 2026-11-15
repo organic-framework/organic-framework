@@ -287,6 +287,7 @@ def structure_issues(org, runner=subprocess.run):
         return None
 
 
+DECIDED_LABELS = ("true_positive", "wrong_remedy")  # labelled, and still open until remedied
 STRUCTURE_ORDER = ("unkept-system", "off-map-work", "cell-gap", "cell-overlap", "orphan-work", "over-coupled", "chatty")
 
 
@@ -302,8 +303,10 @@ def structure_text(issues, sent, org, keeper):
     An issue the keeper already labelled (true_positive, wrong_remedy: still open until remedied) is never asked
     for a label again: it is counted by label in one line, outside the rules' lines (of_field-analyst, 2026-11-15:
     19 chatty issues carrying their labels were listed as if unlabelled)."""
-    labelled = [i for i in issues if i.get("label")]
-    issues = [i for i in issues if not i.get("label")]
+    # only the labels that leave an issue open by design: an ended true_but_not_now (its 7-day snooze over) keeps its
+    # label on the issue but asks for a decision again, so it stays among the rest (of_review on PR 212)
+    labelled = [i for i in issues if i.get("label") in DECIDED_LABELS]
+    issues = [i for i in issues if i.get("label") not in DECIDED_LABELS]
     new = [i for i in issues if i["issue_id"] not in sent]
     if not issues:
         return None  # only labelled ones: nothing to decide, so no daily message for them alone
