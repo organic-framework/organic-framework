@@ -1077,12 +1077,11 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
     import of_spawn
     t_argv, t_settings = tools or ([], {})
-    settings = dict(of_spawn.AGENT_SETTINGS, **(t_settings or {}))  # feedback drafts off, as at spawn (PR 185)
-    if memory_dir:
-        settings["autoMemoryDirectory"] = memory_dir
-    if deny:
-        settings["permissions"] = {"deny": list(deny)}
-    parts += ["--settings", _q(of_spawn.settings_file(json.dumps(settings), sid, state_dir))]
+    # the agents' settings as at spawn: feedback drafts off (PR 185), env GIT_CEILING_DIRECTORIES (of_platform,
+    # 34a1682a), a tool profile's env joined to it
+    settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None,
+                                         list(deny) if deny else None, t_settings)
+    parts += ["--settings", _q(of_spawn.settings_file(settings, sid, state_dir))]
     parts += [_q(str(x)) for x in t_argv or []]
     if model:
         parts += ["--model", model]
