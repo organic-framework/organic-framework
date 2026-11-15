@@ -48,6 +48,14 @@ class MergeTest(unittest.TestCase):
         self.src_path = os.path.join(self.tmp.name, "laptop", "of.db")
         self.dst_path = os.path.join(self.tmp.name, "host", "of.db")
         src, dst = of_store.connect(self.src_path), of_store.connect(self.dst_path)
+        # the target's own organizations list and registries decide whose positions cross
+        for org, names in (("ofb", ["acme_ops", "acme_db"]), ("userorg", ["zeta_ops"])):
+            os.makedirs(os.path.join(self.tmp.name, org, "registry"))
+            with open(os.path.join(self.tmp.name, org, "registry", "positions.yaml"), "w") as fh:
+                fh.write("positions:\n" + "".join(f"  - {{name: {n}}}\n" for n in names))
+        self.orgs = os.path.join(self.tmp.name, "orgs.yaml")
+        with open(self.orgs, "w") as fh:
+            fh.write("orgs:\n  - {name: ofb, path: ofb}\n  - {name: userorg, path: userorg}\n")
         self.before = ask("Run the old migration?", "2026-11-15T11:00:00.000Z")   # B1 copied it to the host already
         for c in (src, dst):
             of_store.add_event(c, self.before)
@@ -85,21 +93,25 @@ class MergeTest(unittest.TestCase):
     def merge(self, **kw):
         kw.setdefault("org", "ofb")
         kw.setdefault("since", CUT)
+        kw.setdefault("orgs_file", self.orgs)
         return of_merge_delta.merge(self.src_path, self.dst_path, **kw)
 
+    def ids(self):
+        return [self.prompt["of.event.id"]]
+
     def test_merge_by_id_and_a_rerun_adds_nothing(self):
-        first = self.merge(person_acts_from=["laptop"])
+        first = self.merge(person_act_ids=self.ids())
         self.assertEqual((first["event"]["added"], first["event"]["other_org"]), (3, 2))
         self.assertEqual(first["transcript_record"]["added"], 2)   # u-1 and u-2: not S1's history, none of S0's
         self.assertEqual(first["hook_record"]["added"], 1)
-        again = self.merge(person_acts_from=["laptop"])
-        self.assertEqual(sum(c["added"] for t, c in again.items() if t != "person_acts"), 0, again)
+        again = self.merge(person_act_ids=self.ids())
+        self.assertEqual(sum(c["added"] for t, c in again.items() if t not in ("person_acts", "held_refs")), 0, again)
         self.assertEqual(again["person_acts"], [])
-        everything = self.merge(since=None, person_acts_from=["laptop"])   # no --since: the whole store, still idempotent
+        everything = self.merge(since=None, person_act_ids=self.ids())   # no --since: the whole store, still idempotent
         self.assertEqual(everything["event"]["added"], 1)   # S0's session start, before the cutover
 
     def test_the_delta_appears_in_the_projections(self):
-        self.merge(person_acts_from=["laptop"])
+        self.merge(person_act_ids=self.ids())
         conn = of_store.connect(self.dst_path)
         try:
             asks = of_asks.project(of_asks.load(conn))
@@ -119,7 +131,7 @@ class MergeTest(unittest.TestCase):
 
     def test_another_organizations_rows_never_cross(self):
         """of_review on PR 195: a laptop store holds every organization's rows; the host's store is one's."""
-        counts = self.merge(person_acts_from=["laptop"])
+        counts = self.merge(person_act_ids=self.ids())
         self.assertEqual(counts["transcript_record"]["other_org"], 1)
         conn = of_store.connect(self.dst_path)
         try:
@@ -130,26 +142,27 @@ class MergeTest(unittest.TestCase):
         finally:
             conn.close()
         with self.assertRaises(of_merge_delta.MergeError):
-            of_merge_delta.merge(self.src_path, self.dst_path, org="")
+            of_merge_delta.merge(self.src_path, self.dst_path, org="", orgs_file=self.orgs)
 
-    def test_acts_of_a_person_cross_only_from_a_named_host(self):
-        """of_secrets-review and of_review on PR 195: the owner's answers and words the target takes as his."""
+    def test_acts_of_a_person_cross_only_by_their_ids(self):
+        """of_secrets-review and of_review on PR 195: the owner's answers and words the target takes as his cross only
+        as ids whoever runs the merge read and checked; a host id is the source's own claim."""
         src = of_store.connect(self.src_path)
         answer = rec("agent_question_answered", {"ask_id": self.after_ask["of.event.id"], "by": "owner",
                                                  "via": "asks-ui", "answer": "yes"}, "2026-11-15T12:08:00.000Z")
         forged = rec("agent_question_answered", {"ask_id": self.before["of.event.id"], "by": "owner",
                                                  "via": "asks-ui", "answer": "yes"}, "2026-11-15T12:09:00.000Z",
-                     host="host")   # written on the host by an organization's OS user (B1's reverse)
+                     host="laptop")   # stamped with the owner's machine by another process of the source's OS user
         for r in (answer, forged):
             of_store.add_event(src, r)
         src.close()
         dry = self.merge(dry_run=True)
-        self.assertEqual(sorted((x["name"], x["host_id"], x["held"]) for x in dry["person_acts"]),
-                         [("of.agent_question_answered", "host", True), ("of.agent_question_answered", "laptop", True),
-                          ("of.human_prompt", "laptop", True)])
+        self.assertEqual(sorted((x["name"], x["held"]) for x in dry["person_acts"]),
+                         [("of.agent_question_answered", True), ("of.agent_question_answered", True),
+                          ("of.human_prompt", True)])
         held = self.merge()                                         # nothing named: every act of a person held
         self.assertEqual((held["event"]["added"], held["event"]["held"]), (2, 3))
-        later = self.merge(person_acts_from=["laptop"])             # the owner's own machine, checked
+        later = self.merge(person_act_ids=self.ids() + [answer["of.event.id"]])   # checked, one by one
         self.assertEqual((later["event"]["added"], later["event"]["held"]), (2, 1))
         conn = of_store.connect(self.dst_path)
         try:
@@ -175,7 +188,7 @@ class MergeTest(unittest.TestCase):
             top = dst.execute(f"SELECT max({key}) FROM {table}").fetchone()[0] or 0
             dst.execute("INSERT OR REPLACE INTO ship_cursor VALUES (?, ?)", (table, top))
         dst.close()
-        self.merge(person_acts_from=["laptop"])
+        self.merge(person_act_ids=self.ids())
         conn = of_store.connect(self.dst_path)
         conn.row_factory = sqlite3.Row
         try:
@@ -193,6 +206,33 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(sorted(d["record_uuid"] for d in shipped.get("transcript_record", [])), ["u-1", "u-2"])
         self.assertEqual([d["hook_event"] for d in shipped.get("hook_record", [])], ["UserPromptSubmit"])
 
+    def test_the_registry_decides_the_positions_and_foreign_records_hold(self):
+        """of_review on PR 195: an event labelled with one organization but naming another's position, and one that
+        changes another organization's ask by its id, never cross."""
+        dst = of_store.connect(self.dst_path)
+        theirs = ask("Their own question", "2026-11-15T11:50:00.000Z", position="zeta_ops", session="Z1", org="userorg")
+        of_store.add_event(dst, theirs)
+        dst.close()
+        src = of_store.connect(self.src_path)
+        borrowed = ask("Spoofed question", "2026-11-15T12:12:00.000Z", position="zeta_ops", session="S1")  # org ofb
+        withdrawal = rec("ask_withdrawn", {"ask_id": theirs["of.event.id"], "by": "acme_ops"},
+                         "2026-11-15T12:13:00.000Z")
+        for r in (borrowed, withdrawal):
+            of_store.add_event(src, r)
+        src.close()
+        counts = self.merge(person_act_ids=self.ids())
+        self.assertEqual([x["event_id"] for x in counts["held_refs"]], [withdrawal["of.event.id"]])
+        conn = of_store.connect(self.dst_path)
+        try:
+            for r in (borrowed, withdrawal):
+                self.assertIsNone(conn.execute("SELECT 1 FROM event WHERE event_id = ?", (r["of.event.id"],)).fetchone())
+            open_ = {a["event_id"] for a in of_asks.project(of_asks.load(conn)) if a["state"] == "open"}
+            self.assertIn(theirs["of.event.id"], open_)
+        finally:
+            conn.close()
+        with self.assertRaises(of_merge_delta.MergeError):   # an organization the target does not list
+            self.merge(org="nobody")
+
     def test_a_blob_whose_bytes_are_not_its_hash_is_refused(self):
         """of_secrets-review on PR 195: a poisoned blob would land, and keep the real one out for good."""
         src = of_store.connect(self.src_path)
@@ -202,7 +242,7 @@ class MergeTest(unittest.TestCase):
         src.execute("INSERT INTO transcript_record (source_path, line_offset, blob_sha256, session_id, record_uuid, "
                     "timestamp) VALUES (?,?,?,?,?,?)", ("/x/S1.jsonl", 40, sha, "S1", "u-9", "2026-11-15T12:30:00Z"))
         src.close()
-        counts = self.merge(person_acts_from=["laptop"])
+        counts = self.merge(person_act_ids=self.ids())
         self.assertEqual((counts["blob"]["refused"], counts["transcript_record"]["refused"]), (1, 1))
         dst = of_store.connect(self.dst_path)
         try:
@@ -213,7 +253,7 @@ class MergeTest(unittest.TestCase):
             dst.close()
 
     def test_dry_run_writes_nothing(self):
-        counts = self.merge(dry_run=True, person_acts_from=["laptop"])
+        counts = self.merge(dry_run=True, person_act_ids=self.ids())
         self.assertEqual(counts["event"]["added"], 3)
         conn = of_store.connect(self.dst_path)
         try:
@@ -226,9 +266,9 @@ class MergeTest(unittest.TestCase):
         self.merge()
         self.assertEqual(os.path.getmtime(self.src_path), before)
         with self.assertRaises(of_merge_delta.MergeError):
-            of_merge_delta.merge(self.dst_path, self.dst_path, org="ofb")
+            of_merge_delta.merge(self.dst_path, self.dst_path, org="ofb", orgs_file=self.orgs)
         with self.assertRaises(of_merge_delta.MergeError):
-            of_merge_delta.merge(os.path.join(self.tmp.name, "nowhere.db"), self.dst_path, org="ofb")
+            of_merge_delta.merge(os.path.join(self.tmp.name, "nowhere.db"), self.dst_path, org="ofb", orgs_file=self.orgs)
 
     def test_cli(self):
         import contextlib
@@ -236,7 +276,7 @@ class MergeTest(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = of_merge_delta.main(["--source", self.src_path, "--target", self.dst_path, "--org", "ofb",
-                                        "--since", CUT, "--person-acts-from", "laptop", "--json"])
+                                        "--since", CUT, "--orgs", self.orgs, "--person-acts", self.ids()[0], "--json"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["event"]["added"], 3)
 
