@@ -499,6 +499,32 @@ def not_observed(run):
             + f", valid only when {pr.get('valid_when')}, which {held}")
 
 
+def clocks(conn, loops, now=None):
+    """{work: {role, testing, wait, left_h, since_h}} for the session's start context, from [(work id, owner|doer,
+    loop)]: the hypotheses in testing, the current stated wait (the latest stated after the last run or decision and
+    still to come) with its hours left, or the hours since the last run or decision (docs/registry.md, Works, "A stated
+    wait"). The stall itself is of_diagnose_rules.loop_stall's; this only shows where each loop stands."""
+    now = now or time.time()
+    ids = {w: (role, lp) for w, role, lp in loops or []}
+    if not ids:
+        return {}
+    rows = [{"name": n, "ts": ts, "payload": __import__("json").loads(pl or "{}")} for n, ts, pl in conn.execute(
+        "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision', "
+        f"'{LOCATED}', '{WAITED}') AND json_extract(payload, '$.work') IN ({','.join('?' * len(ids))}) ORDER BY ts",
+        tuple(ids))]
+    out = {}
+    for w, (role, lp) in ids.items():
+        reg = register(rows, w, lp)
+        last = max([_epoch(r.get("ended_at") or r["ts"]) or 0 for r in reg["runs"]] +
+                   [_epoch(d["ts"]) or 0 for d in reg["decisions"]] + [0]) or None
+        live = [x for x in reg["waits"] if x["ts"] and x["ts"] >= (last or 0) and (x.get("expect_at") or 0) > now]
+        wait = max(live, key=lambda x: x["expect_at"]) if live else None
+        out[w] = {"role": role, "testing": sum(h["status"] == "testing" for h in reg["hypotheses"]), "wait": wait,
+                  "left_h": round((wait["expect_at"] - now) / 3600, 1) if wait else None,
+                  "since_h": round((now - last) / 3600, 1) if last else None}
+    return out
+
+
 def blind_runs(conn, works, limit=500):
     """[(work, run payload, ts)]: the newest run of each hypothesis of WORKS ({work: loop}, or work ids) when it is a
     proxy that did not hold or is unknown, for the session's start context; a run is filled from its loop

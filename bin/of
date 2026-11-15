@@ -2206,8 +2206,41 @@ def cmd_loop(args):
             expect_at = _due(args.until)
         except OfError:
             raise OfError(f"--until {args.until!r}: an ISO time (2026-11-16T15:00Z) or +40m / +2h / +1d")
-        payload = {"work": args.work, "on": args.on, "ref": args.ref, "expect_at": expect_at,
-                   "hypothesis": need_hypothesis(False), "note": args.note, "by": me["name"]}
+        # the refusals of docs/registry.md, Works, "A stated wait" (of_architect, message 01a1e12a-e6e3)
+        ref = (args.ref or "").strip() or None
+        if args.on != "calendar" and not ref:
+            raise OfError(f"--ref names what the loop waits on (every kind but calendar): the job, the window, the "
+                          f"release, the held-out data, the ask's id or the position")
+        if expect_at <= _due("+0m"):
+            raise OfError(f"--until {args.until!r} is already past: a wait states when the work goes on")
+        if args.on == "ask":
+            orgs_of = {p["name"]: p.get("_org") for p in positions}
+            hits = [a for a in _asks_now(conn, quiet=True) if a.get("state") == "open"
+                    and (a["event_id"].startswith(ref) or a["event_id"].endswith(ref))
+                    and orgs_of.get(a.get("position")) == org]
+            if len(hits) != 1:
+                raise OfError(f"--ref {ref!r}: {len(hits)} open asks of {org} match it; a wait on an ask names one "
+                              f"open ask of the organization (of asks --all lists them)")
+            ref = hits[0]["event_id"]
+        if args.on == "position":
+            pre, sep, bare = ref.partition(":")
+            in_org = pre if sep else org
+            known = lambda o, n: any(p.get("_org") == o and (p["name"] == n or n in [str(a) for a in  # noqa: E731
+                                                                                       p.get("aliases") or []])
+                                     for p in positions)
+            if not (sep and pre == "external" and bare) and not known(in_org, bare if sep else ref):
+                raise OfError(f"--ref {ref!r} names no position: a bare name of {org}'s, <org>:<name> in another "
+                              f"organization, or external:<name> for a person outside the registry")
+        if args.source not in (None, "manual") and any(
+                (x["on"], x.get("ref")) == (args.on, ref) for x in reg["waits"]
+                if x["ts"] is not None and x["ts"] >= max([of_loop._epoch(r.get("ended_at") or r["ts"]) or 0
+                                                           for r in reg["runs"]] +
+                                                          [of_loop._epoch(d["ts"]) or 0 for d in reg["decisions"]] + [0])):
+            print(f"loop_wait: {args.work} already waits on {args.on} {ref}; nothing written")  # a re-sync is harmless
+            return 0
+        payload = {"work": args.work, "on": args.on, "ref": ref, "expect_at": expect_at,
+                   "hypothesis": need_hypothesis(False), "note": args.note, "by": me["name"],
+                   "source": args.source if args.source not in (None, "manual") else None}
         kind = "loop_wait"
     elif args.action == "locate":  # docs/registry.md, Works, "A run names where its reading was taken"
         mine = [r["payload"] for r in rows if r["name"] == "of.loop_run" and r["payload"].get("run") == args.run
@@ -6236,7 +6269,8 @@ def main(argv=None):
     lp.add_argument("--started-at")
     lp.add_argument("--ended-at", help="run: default now")
     lp.add_argument("--run", help="run: the runner's id for this run (a job name); a run already recorded is skipped")
-    lp.add_argument("--source", help="run: the runner that measured it (default manual), e.g. cbx")
+    lp.add_argument("--source", help="run: the runner that measured it (default manual), e.g. cbx; wait: the runner "
+                    "whose job start it records (a wait on the same job with no run since is skipped)")
     lp.add_argument("--note")
     lp.add_argument("--on", help="wait: " + " | ".join(("runner", "window", "release", "holdout", "ask", "position",
                                                          "calendar")))
