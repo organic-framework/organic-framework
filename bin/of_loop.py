@@ -411,10 +411,12 @@ def declared(loop, metric):
 
 
 LOCATE_KEYS = ("observed_at", "direct", "proxy")
+LOCATED = "of.loop_run_located"  # `of loop locate`: names where an earlier run's reading was taken; never a run itself
 
 
 def is_locate(p):
-    """An of.loop_run that `of loop locate` wrote: the same run id with only its reading point (no rung)."""
+    """An of.loop_run without a rung that carries only a reading point: never written (a locate is LOCATED, its own
+    event, so no reader of runs takes it for one, of_review on PR 199); read as a locate all the same."""
     return isinstance(p, dict) and not p.get("rung") and any(k in p for k in LOCATE_KEYS)
 
 
@@ -476,12 +478,12 @@ def blind_runs(conn, works, limit=500):
     import json
     loops = works if isinstance(works, dict) else {}
     works, seen, out, located = set(works), set(), [], {}
-    for pl, ts in conn.execute("SELECT payload, ts FROM event WHERE name = 'of.loop_run' ORDER BY ts DESC LIMIT ?",
-                               (limit,)):
+    for name, pl, ts in conn.execute("SELECT name, payload, ts FROM event WHERE name IN ('of.loop_run', ?) "
+                                     "ORDER BY ts DESC LIMIT ?", (LOCATED, limit)):
         p = json.loads(pl or "{}")
         if p.get("work") not in works:
             continue
-        if is_locate(p):  # newer than its run: applied when the run comes
+        if name == LOCATED or is_locate(p):  # newer than its run: applied when the run comes
             located.setdefault((p["work"], p.get("run")), p)
             continue
         key = (p.get("work"), p.get("hypothesis") or p.get("run"))
@@ -544,7 +546,7 @@ def register(rows, work, loop=None):
             hyps[hid] = {"id": hid, "change": p.get("change"), "predict": p.get("predict"), "cost": cost.get("text"),
                          "cost_h": cost.get("runner_h", 1.0), "voi": p.get("voi"), "status": p.get("status") or "open",
                          "runs": 0, "since": r["ts"], "last": r["ts"]}
-        elif r["name"] == "of.loop_run" and is_locate(p):  # `of loop locate`: the run's reading point, from now on
+        elif r["name"] == LOCATED or (r["name"] == "of.loop_run" and is_locate(p)):  # `of loop locate`: from now on
             i = by_run.get(p.get("run"))
             if i is not None:
                 runs[i] = locate(runs[i], p)

@@ -2036,7 +2036,8 @@ def cmd_loop(args):
         raise OfError(f"work {args.work!r} has no loop: its structure keeper adds loop: (RFC 0005 §4)")
     conn = of_store.connect()
     rows = [{"name": n, "ts": ts, "payload": json.loads(pl or "{}")} for n, ts, pl in conn.execute(
-        "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision') "
+        "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision', "
+        "'of.loop_run_located') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work, loop)
     resolve = _for_work(_decided_resolver(conn, _load_quiet()), args.work)
@@ -2145,8 +2146,8 @@ def cmd_loop(args):
                           '--proxy-for "<where the event happens>" --valid-when "<condition>" [--proxy-held ...]')
         observed_at, direct, proxy = _loop_reading(args, loop, mine[-1].get("metric"), explicit=True)
         payload = {"work": args.work, "run": args.run, "observed_at": observed_at,
-                   "direct": True if direct else None, "proxy": proxy}
-        kind = "loop_run"
+                   "direct": True if direct else None, "proxy": proxy, "by": me["name"], "note": args.note}
+        kind = "loop_run_located"  # its own event: no reader of runs takes it for one (of_review on PR 199)
     else:
         dec = args.text
         if dec not in of_loop.DECISIONS:
