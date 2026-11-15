@@ -272,7 +272,9 @@ STRUCTURE_HEAD = ("Structure issues for you to decide (docs/diagnose.md 2.23-2.2
 
 def structure_issues(org, runner=subprocess.run):
     """The open issues the structure keeper decides, from of_diagnose as `of model issues` computes them (of_studio's
-    computation; labelled issues already drop out). None when the computation fails: the digest then says nothing
+    computation). A false_positive or a recent true_but_not_now label takes an issue out there; true_positive and
+    wrong_remedy leave it open, carrying `label`, and structure_text counts those apart. None when the computation
+    fails: the digest then says nothing
     of structure rather than "none". of_architect and of_field-analyst, 2026-11-10: structure issues reach the
     keeper in this digest, never as separate messages."""
     here = os.path.dirname(os.path.realpath(__file__))
@@ -296,10 +298,15 @@ def _rule(i):
 def structure_text(issues, sent, org, keeper):
     """The digest's structure section, by rule in of_field-analyst's order (the structural gaps before the noisy
     traffic rules; 2026-11-10: chatty would have put 56 lines before the 8 that matter), a line per rule with its
-    count, then in full the issues the previous digest did not list, in the run's order; the rest as one line."""
+    count, then in full the issues the previous digest did not list, in the run's order; the rest as one line.
+    An issue the keeper already labelled (true_positive, wrong_remedy: still open until remedied) is never asked
+    for a label again: it is counted by label in one line, outside the rules' lines (of_field-analyst, 2026-11-15:
+    19 chatty issues carrying their labels were listed as if unlabelled)."""
+    labelled = [i for i in issues if i.get("label")]
+    issues = [i for i in issues if not i.get("label")]
     new = [i for i in issues if i["issue_id"] not in sent]
-    if not new and not issues:
-        return None
+    if not issues:
+        return None  # only labelled ones: nothing to decide, so no daily message for them alone
     by = {}
     for i in issues:
         by.setdefault(_rule(i), []).append(i)
@@ -312,6 +319,13 @@ def structure_text(issues, sent, org, keeper):
                   f"({i['issue_id']})" for i in fresh]
     if len(issues) > len(new):
         lines.append(f"{len(issues) - len(new)} still open from earlier digests: of model issues --org {org} --for {keeper}")
+    if labelled:
+        kinds = {}
+        for i in labelled:
+            kinds[i["label"]] = kinds.get(i["label"], 0) + 1
+        lines.append(f"{len(labelled)} you labelled are still open until remedied, no new label needed: "
+                     + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
+                     + f" (of model issues --org {org} --for {keeper})")
     return "\n".join(lines)
 
 
