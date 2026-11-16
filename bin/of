@@ -2225,10 +2225,12 @@ def cmd_loop(args):
         if args.on == "position":
             pre, sep, bare = ref.partition(":")
             in_org = pre if sep else org
-            known = lambda o, n: any(p.get("_org") == o and (p["name"] == n or n in [str(a) for a in  # noqa: E731
-                                                                                       p.get("aliases") or []])
-                                     for p in positions)
-            if not (sep and pre == "external" and bare) and not known(in_org, bare if sep else ref):
+            # its own name: `known` is the hypotheses need_hypothesis reads (a user organization's position, message
+            # 01a1e205-3677: a lambda named known broke --hypothesis on every wait on a position)
+            def is_position(o, n):
+                return any(p.get("_org") == o and (p["name"] == n or n in [str(a) for a in p.get("aliases") or []])
+                           for p in positions)
+            if not (sep and pre == "external" and bare) and not is_position(in_org, bare if sep else ref):
                 raise OfError(f"--ref {ref!r} names no position: a bare name of {org}'s, <org>:<name> in another "
                               f"organization, or external:<name> for a person outside the registry")
         if args.source not in (None, "manual") and any(

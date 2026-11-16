@@ -449,7 +449,7 @@ class LocatedRunTest(unittest.TestCase):
                 self.assertIn(why, r.stderr, bad)
             for ok in (("--on", "calendar", "--until", "+3d"), ("--on", "position", "--ref", "external:the auditor",
                                                                 "--until", "+1d"),
-                       ("--on", "position", "--ref", "lab_doer", "--until", "+1d")):
+                       ("--on", "position", "--ref", "lab_doer", "--until", "+1d", "--hypothesis", hid)):
                 self.assertEqual(run("wait", "w-speed", *ok).returncode, 0, ok)
             r = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+5h", "--hypothesis", hid,
                     "--note", "queued behind the nightly replay", "--source", "cbx")
