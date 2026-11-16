@@ -149,6 +149,14 @@ class RulesTest(unittest.TestCase):
         got = self.off_map(away)
         self.assertEqual([(i["affected"], i["part"]) for i in got], [(["bot_operator"], "no_own_paths")])
         self.assertEqual(got[0]["evidence"]["owned_by"], {"k8s_keeper": 12})
+        self.assertEqual(got[0]["evidence"]["keepers_now"], {"k8s": "k8s_keeper"})
+        self.assertIn("(k8s 12 (keeper k8s_keeper))", got[0]["summary"])
+        # a keeper changed in the window: each edit names the keeper of its time, the summary today's
+        moved = {**self.DOC2, "systems": {**self.DOC2["systems"], "k8s": {**self.DOC2["systems"]["k8s"], "keeper": "data_keeper"}}}
+        both = self.off_map(away, moved)[0]
+        self.assertEqual((both["evidence"]["owned_by"], both["evidence"]["keepers_now"]), ({"k8s_keeper": 12}, {"k8s": "data_keeper"}))
+        self.assertEqual(both["evidence"]["owned_by_span"], {"k8s_keeper": {"from": "2026-11-03T10:00:00Z", "to": "2026-11-03T10:00:00Z"}})
+        self.assertIn("(keeper data_keeper)", both["summary"])
         own = [self.mcheck(100 + i, "s-op", "in_mandate", system="bot") for i in range(3)]
         again = self.off_map(away + own)   # 3 of 15 in its own system: same issue, the other part
         self.assertEqual([(i["issue_id"], i["part"]) for i in again], [(got[0]["issue_id"], "mostly_elsewhere")])

@@ -1585,7 +1585,7 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
     sessions = of_model.session_index(positions)
     tools, min_rv = set(t.get("edit_tools") or EDIT_TOOLS), t.get("min_router", 4)
     per = collections.defaultdict(lambda: {"in_mandate": 0, "owned_by": collections.Counter(), "unowned": collections.Counter(),
-                                           "systems": collections.Counter()})
+                                           "systems": collections.Counter(), "span": {}})
     for r in rows:
         if r["name"] != "of.mandate_check" or not of_model.in_window(r, a, b):
             continue
@@ -1604,6 +1604,9 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
             x["in_mandate"] += 1
         elif v.startswith("owned_by:"):
             x["owned_by"][v[9:]] += 1
+            ts = of_model.t_of(r)
+            a0, b0 = x["span"].get(v[9:], (ts, ts))
+            x["span"][v[9:]] = (min(a0, ts), max(b0, ts))
         elif v == "unowned":
             x["unowned"][pl.get("system") or of_model.area_of(pl.get("path"), repos=repos)] += 1
         else:
@@ -1618,10 +1621,19 @@ def rule_off_map_work(model, rows, a, b, cat, spec):
             continue
         home = (positions.get(pos) or {}).get("system")
         part = "no_own_paths" if not n_own else "mostly_elsewhere"
-        where = ", ".join(f"{k} {c}" for k, c in x["systems"].most_common(3))
+        # the router names each edit's keeper as the registry had it at that edit (owned_by, with owned_by_span); the
+        # summary and keepers_now name today's, so a keeper changed within the window reads as both (2026-11-16: a user
+        # organization's keeper read 9 edits made before a keeper change as a stale registry, of_platform's message
+        # 01a1e2dd-49f6)
+        now = {k: (model["systems"].get(k) or {}).get("keeper") for k in x["systems"] if k != home}
+        where = ", ".join(f"{k} {c}" + (f" (keeper {now[k]})" if now.get(k) else "") for k, c in x["systems"].most_common(3))
+        iso = of_model.iso
         out.append(issue(cat, "off-map-work", [pos], {"position": pos, "system": home, "edits": n, "in_mandate": n_own,
                                                      "in_mandate_share": round(n_own / n, 2),
                                                      "owned_by": dict(x["owned_by"].most_common(5)),
+                                                     "owned_by_span": {k: {"from": iso(f), "to": iso(t_)} for k, (f, t_)
+                                                                       in sorted(x["span"].items()) if f is not None},
+                                                     "keepers_now": now,
                                                      "unowned": dict(x["unowned"].most_common(5)),
                                                      "systems": dict(x["systems"].most_common(5))},
                          f"{pos} (system {home}): {n - n_own} of {n} file edits landed in systems other positions keep ({where})",
