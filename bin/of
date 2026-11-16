@@ -3285,6 +3285,13 @@ def cmd_redact(args):
             e_ids.append(row[0])
     print(f"rows the rules change: transcript_record {len(t_ids)}, hook_record {len(h_ids)}, event {len(e_ids)}")
     if args.dry_run or not (t_ids or h_ids or e_ids):
+        if not args.dry_run:  # a rerun with nothing left to change still cuts the WAL an earlier run could not
+            # (of_secrets-review on PR 248: the advice "run of redact again later" did nothing)
+            if of_store.truncate_wal(conn):
+                print("of.db-wal truncated")
+            else:
+                print("warning: of.db-wal could not be truncated (a reader holds an older snapshot): of.db-wal, and "
+                      "of.db until a later checkpoint, may still hold an old value; run of redact again later")
         return 0
     totals, wal_left = {}, False
     for i in range(0, max(len(t_ids), len(h_ids), len(e_ids)), 300):  # chunks: the store's write lock is held briefly
@@ -3302,8 +3309,9 @@ def cmd_redact(args):
     for table, (n, req, bad) in totals.items():
         print(f"{table}: {n} redacted here; {req} server request(s), {bad} failed")
     if wal_left:
-        print("warning: of.db-wal could not be truncated (a reader held an older snapshot), so it may still hold the "
-              "old value; run of redact again later (docs/guard.md K5)")
+        print("warning: of.db-wal could not be truncated (a reader held an older snapshot): of.db-wal, and of.db "
+              "until a later checkpoint, may still hold the old value; run of redact again later, which then only "
+              "truncates the WAL (docs/guard.md K5)")
     if totals.get("event", [0])[0]:
         print("the listener's cached views (view_asks, view_ask_groups, view_fold) keep their own copy of an event's "
               "text until rebuilt: run of listen rebuild")

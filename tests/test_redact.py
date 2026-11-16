@@ -218,6 +218,45 @@ class RedactTest(unittest.TestCase):
             self.assertNotIn(key.encode(), self.file_bytes(self.path))
             conn.close()
 
+    def test_fast_is_restored_as_fast(self):
+        """of_review on PR 248: `PRAGMA secure_delete = 2` reads as ON, so a FAST connection was left on ON."""
+        with tempfile.TemporaryDirectory() as d:
+            conn = of_store.connect(os.path.join(d, "of.db"))
+            for mode, want in (("FAST", 2), ("OFF", 0), ("ON", 1)):
+                conn.execute(f"PRAGMA secure_delete = {mode}")
+                with of_store.secure_deletes(conn):
+                    self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], 1)
+                self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], want, mode)
+            conn.close()
+
+    def test_a_rerun_with_nothing_to_change_still_truncates_the_wal(self):
+        """of_secrets-review on PR 248: the advice "run of redact again later" did nothing, since a rerun found no row
+        to change and returned before any truncation."""
+        import contextlib
+        import importlib.machinery
+        import importlib.util
+        import io
+        import types
+        from unittest import mock
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli", loader))
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as d:
+            calls = []
+            args = types.SimpleNamespace(reason="test", transcripts=False, targets=[], from_scan=None, resend=False,
+                                         event=None, dry_run=False, local_only=True, apply=False, json=False)
+            with mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "of.db")}), \
+                    mock.patch.object(of_store, "truncate_wal", lambda conn, **kw: calls.append(1) or True):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(of.cmd_redact(args), 0)
+                self.assertEqual(calls, [1])
+                self.assertIn("of.db-wal truncated", out.getvalue())
+                args.dry_run = True
+                with contextlib.redirect_stdout(io.StringIO()):
+                    of.cmd_redact(args)
+                self.assertEqual(calls, [1])   # a dry run changes nothing
+
     def test_a_reader_on_an_older_snapshot_holds_the_truncation_off_briefly(self):
         import sqlite3
         with tempfile.TemporaryDirectory() as d:
