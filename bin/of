@@ -3346,6 +3346,9 @@ def cmd_db(args):
     print(f"{of_store.db_path()}: {size / 1e6:.1f} MB on disk")
     for k, v in st.items():
         print(f"  {k:<20} {v / 1e6:.1f} MB" if k.endswith("bytes") else f"  {k:<20} {v}")
+    import of_archive  # the raw tier (docs/storage.md, "Raw tier: every byte"): its copies and the newest one
+    raw = of_archive.stats()
+    print(f"raw tier: {raw['files']} files, {raw['bytes'] / 1e6:.1f} MB, newest copy {raw['newest'] or 'none'}")
     return 0
 
 
@@ -6511,9 +6514,14 @@ def main(argv=None):
     g = sub.add_parser("go", help="focus an agent by any name or alias")
     g.add_argument("name")
     g.set_defaults(fn=cmd_go)
-    ar = sub.add_parser("archive", help="copy harness transcripts into the raw tier (zstd, low priority)")
+    ar = sub.add_parser("archive", help="copy new and grown harness transcripts into the raw tier (zstd, low "
+                        "priority; the listener runs it hourly, the hook at SessionEnd)")
     ar.add_argument("--dry-run", "-n", action="store_true")
-    ar.set_defaults(fn=lambda a: __import__("of_archive").archive(a.dry_run))
+    ar.add_argument("--path", action="append", help="only this transcript file (repeatable)")
+    ar.add_argument("--budget", type=float, help="stop after this many seconds; the next run goes on")
+    ar.add_argument("--quiet", action="store_true", help="print only when something was copied")
+    ar.set_defaults(fn=lambda a: __import__("of_archive").archive(a.dry_run, paths=a.path, budget_s=a.budget,
+                                                                   quiet=a.quiet))
     ing = sub.add_parser("ingest", help="read new transcript lines into the local store")
     ing.add_argument("paths", nargs="*")
     ing.add_argument("--pending", action="store_true", help="the worker: drain the spool and queued transcripts")

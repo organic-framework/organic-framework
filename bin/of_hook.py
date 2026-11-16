@@ -1702,6 +1702,19 @@ def _store_raw(event, hook, raw):
             _log_error(event, e2)
 
 
+def _archive_detached(path):
+    """`of archive --path <transcript>` in the background at SessionEnd (bin/of_archive.py; docs/storage.md, "Raw tier:
+    every byte"): a running archive holds its lock, and the hourly run covers the file then."""
+    import subprocess
+    try:
+        here = os.path.dirname(os.path.realpath(__file__))
+        subprocess.Popen([sys.executable, os.path.join(here, "of"), "archive", "--quiet", "--budget", "60", "--path",
+                          path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    except Exception:  # noqa: BLE001 - never fail the agent
+        pass
+
+
 def _ingest_detached(path):
     """Queue the transcript for the ingest worker, and start the worker unless one is running.
     One worker per machine: no lock fight between dozens of ingests (lab finding 3)."""
@@ -1773,6 +1786,8 @@ def main(argv):
             sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
         if event in ("Stop", "SessionEnd", "PreCompact") and hook.get("transcript_path"):
             _ingest_detached(hook["transcript_path"])
+        if event == "SessionEnd" and hook.get("transcript_path"):  # the raw tier keeps the session's file as it ended
+            _archive_detached(hook["transcript_path"])
     except (SystemExit, Exception) as e:  # never fail the agent; leave a trace for debugging
         try:
             with open(os.path.join(STATE, "hook-errors.log"), "a") as fh:

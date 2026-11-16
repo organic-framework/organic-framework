@@ -20,7 +20,7 @@ The typed layer can be rebuilt from the raw tier at any time, for example after 
 | Instructions in force | `settings.json`, AGENTS.md and CLAUDE.md files, memory files, briefs, registries | Content-addressed snapshots when they change |
 | Model traffic (later, opt-in) | Exact requests and responses, including system prompts and tool definitions that transcripts do not hold | A local proxy through `ANTHROPIC_BASE_URL` |
 
-Harnesses delete their own history (Claude Code's default `cleanupPeriodDays` is 30 days). On 2026-11-05 the founder set it to 36500 in every config dir, and `of archive` copied all transcripts into the raw tier.
+Harnesses delete their own history (Claude Code's default `cleanupPeriodDays` is 30 days). On 2026-11-05 the founder set it to 36500 in every config dir, and `of archive` copied all transcripts into the raw tier. From 2026-11-16 it runs continuously: the listener every hour and the hook at each SessionEnd copy the transcripts that are new or grew (see Rollout, step 1); `of db stats` shows the raw tier's newest copy.
 
 ## Local store: SQLite
 
@@ -84,7 +84,7 @@ None of them joins an event with a transcript row in one SQL statement; each rea
 4. The mover and redaction exclude each other through one lock (`raw/redact-move.lock`), so a row is never redacted in `main` after its copy was taken, or in `tx` before it lands. Redaction reads and rewrites a row in whichever file holds it.
 5. When `main` has no transcript rows left, its empty transcript tables are dropped and the temp views go. From then on unqualified names resolve to `tx`.
 
-**Copy, not re-ingest.** The direction was to re-ingest old rows from the raw tier. The raw tier cannot give them all back. `of archive` copied every transcript once, on 2026-11-05 (2.5 GB in `raw/files/`), and nothing since. For later sessions, the harness's own transcript files are the only copy outside the store, and a session moved or removed since then has no such file. Re-ingest would also give the rows new `id`s, which the shipping and spend cursors would read as new. Copying the rows as stored keeps both: same content, same `id`s, and no parsing or redaction to run again.
+**Copy, not re-ingest.** The direction was to re-ingest old rows from the raw tier. The raw tier cannot give them all back. `of archive` copied every transcript once, on 2026-11-05 (2.5 GB in `raw/files/`), and nothing more until it was made continuous on 2026-11-16. For later sessions, the harness's own transcript files are the only copy outside the store, and a session moved or removed since then has no such file. Re-ingest would also give the rows new `id`s, which the shipping and spend cursors would read as new. Copying the rows as stored keeps both: same content, same `id`s, and no parsing or redaction to run again.
 
 **Disk, and the deleted bytes.** Deleted rows' pages go to `main`'s free list, and the file does not shrink. During and after the move, `of.db` stays at 12.9 GB while `of-transcripts.db` grows to about 12 GB: about 12 GB more on disk until `main` is vacuumed. Free disk was 94 GiB on 2026-11-16, against the card at 20 GiB. Free-list pages also keep the deleted transcript bytes, redacted ones included, until they are reused (`of_server` on PR 244). So one `VACUUM` of `main` after the move is required, not optional. It rewrites only what is left there (about 2 GB of events, search tables and hook records). It holds `main`'s write lock while it runs, so the hooks spool for that time. It runs once, at night when the machine is idle, from the pulse. The owner is told in advance through his conductor (`of_architect`, message `01a1e3da-0237`). The pulse's free-disk check runs before it, and the `VACUUM` waits while free disk is below 30 GiB, since it needs room for its copy. `main` sets `secure_delete = FAST` for the move's deletes, so the bytes on pages that stay in use are zeroed meanwhile.
 
@@ -183,7 +183,7 @@ Rules:
 
 ## Rollout
 
-1. Done (2026-11-05): stop harness deletion; `of archive` copies all transcripts into `~/.local/state/of/raw/files/` (zstd, low priority, re-runnable).
+1. Done (2026-11-05): stop harness deletion; `of archive` copies all transcripts into `~/.local/state/of/raw/files/` (zstd, low priority, re-runnable). From 2026-11-16 it runs continuously (`of_architect`, hand-over `b097ba7c`: nothing had been copied after the first run): the listener starts it every hour, with 10 minutes of work when the machine is idle (load below its cores) and 1 minute otherwise, at background CPU and IO priority, and the hook starts it for the session's own file at SessionEnd. Files never copied go first. A file that only grew gets one more zstd frame with its new bytes (concatenated frames decompress to the whole file); a file changed otherwise is copied whole, and the earlier copy is kept as `<name>.<its mtime>.zst`. One run at a time (`raw/archive.lock`); each run records `of.raw_archived` with what it copied and what it left for the next.
 2. `of.db` with the tables above; `of hook` writes to it instead of `events.jsonl`, keeping each hook within about 200 ms.
 3. Transcript ingestion: detached, started from Stop and SessionEnd; `of import` for the archive and Codex.
 4. `of` read commands (`asks`, `who`, search) on the typed layer, with masked output.
