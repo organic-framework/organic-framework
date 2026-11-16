@@ -3920,7 +3920,7 @@ def _local_runner_command(head, args):
         for k, a in enumerate(args):
             if a in ("-exec", "-execdir", "-ok", "-okdir"):
                 end = next((j for j in range(k + 1, len(args)) if args[j] in (";", "+")), len(args))
-                cmds.append(" ".join(shlex.quote(x if x != "{}" else "x") for x in args[k + 1:end]))
+                cmds.append(" ".join(shlex.quote(x if x != "{}" else IN_HOLE) for x in args[k + 1:end]))  # a found path
         return "; ".join(cmds) or None
     if head == "parallel":
         k = 0
@@ -4083,6 +4083,8 @@ def command_findings(cmd, depth=0):
                 continue
             if head in _LOCAL_RUNNERS:  # watch, find -exec, parallel, su -c: they run their command here
                 body = _local_runner_command(head, args)
+                if body and head == "parallel" and "{}" not in body:
+                    body += " " + IN_HOLE   # parallel adds its input's items, as xargs does
                 if body:
                     out += command_findings(body, depth + 1)
                 out.append(("word", first, args))
@@ -4101,6 +4103,9 @@ def command_findings(cmd, depth=0):
                     bin_ = "cdk" if pkg.startswith("@aws-cdk/") else _PKG_BINS.get(pkg, pkg.rsplit("/", 1)[-1])
                     out.append(("word", bin_, rest[1:]))
                 continue
+            at = next((i for i, t in enumerate(toks) if t == first), None)
+            if at is not None and any(os.path.basename(t) == "xargs" for t in toks[:at]):
+                args = args + [IN_HOLE]   # xargs adds its input's items: a word the call may still get
             mod = _py_module(args) if _lang(head) else None
             if mod:  # `python3 -m awscli …` is the AWS CLI (of_review on PR 178)
                 out.append(("word", _PKG_BINS.get(mod, mod), args[args.index(mod) + 1:] if mod in args else []))
@@ -4202,7 +4207,8 @@ def _resolve_word(word, line):
     return None, False
 
 
-_MATCH_HOLE = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB\d*__|`[^`]*`")
+_MATCH_HOLE = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB\d*__|__OFIN__|`[^`]*`|\{\}")
+IN_HOLE = "__OFIN__"   # what xargs or parallel adds from its input (of_secrets-review on organic-framework PR 237)
 
 
 def _call_glob(word):
@@ -4240,8 +4246,9 @@ def _match_option_values(args, spelling):
                 out.append(a[len(spelling) + 1:])
             elif a.startswith(spelling):
                 out.append(a[len(spelling):])
-            elif re.fullmatch(r"-[A-Za-z]+", a) and a.endswith(ch):
-                out.append(nxt)
+            elif re.match(r"^-[A-Za-z0-9]", a) and ch in a[2:]:   # a cluster: `-inprod` is -i, then -n prod
+                rest = a[a.index(ch, 2) + len(ch):]
+                out.append(rest[1:] if rest.startswith("=") else rest if rest else nxt)
     return out
 
 
@@ -4315,6 +4322,8 @@ def commands_rule_match(scope, findings, position, line=""):
         if kind != "word":
             continue
         word, args = str(a), [str(x) for x in (b or [])]
+        if scope.get("match"):   # `C=upgrade; helm $C …`: a word set to a literal on the line is that literal
+            args = [(_resolve_word(x, line)[0] or x) if re.fullmatch(r"\$\{?\w+\}?", x) else x for x in args]
         if _cmd_var(word):
             target, known = _resolve_word(word, line)
             target = target.casefold() if target else target
