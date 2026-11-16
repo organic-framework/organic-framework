@@ -433,8 +433,10 @@ def excluded_urls(doc):
 
 def signin_labels(config_dir, path=None):
     """{plugin id or server url: label} for the sign-ins account `config_dir` holds, from capacity.yaml `signins`
-    (of_capacity's; docs/tools.md §4b). {} when the file or the key is absent; None when the file cannot be read as
-    YAML, so the guard fails closed (of_capacity's load_policy() passes such a file over)."""
+    (of_capacity's; docs/tools.md §5a). {} for an account not listed under an existing `signins` key. None, the
+    unknown mode in which the guard fails closed for every sign-in some catalogue labels, when the file is absent,
+    unreadable or has no `signins` key: a dropped key or a fresh machine's file must not hand a labelled sign-in to
+    every session again (of_server, organic-framework PR 243)."""
     import yaml
     if not config_dir:
         return {}
@@ -444,13 +446,9 @@ def signin_labels(config_dir, path=None):
     try:
         with open(path) as fh:
             doc = yaml.safe_load(fh) or {}
-    except FileNotFoundError:
-        return {}
     except (OSError, yaml.YAMLError):
         return None
-    if not isinstance(doc, dict):
-        return None
-    sig = doc.get("signins") or {}
+    sig = doc.get("signins") if isinstance(doc, dict) else None
     if not isinstance(sig, dict):
         return None
     want = os.path.realpath(os.path.expanduser(str(config_dir)))
