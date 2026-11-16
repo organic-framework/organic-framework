@@ -164,7 +164,7 @@ class ProtectedCodeTest(unittest.TestCase):
                     f"busybox sh {s}", f"watch -n 5 bash {s}", f"fish {s}", f"tcsh {s}", f"sh 0< {s}"):
             self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
         for cmd in (f"cat {s} | wc -l", f"bash < /tmp/other.sh", f"cat /tmp/other.sh | bash", f"cat {s} | grep op",
-                    f"find {self.bin} -name '*.sh' -exec shellcheck {{}} \\;", f"find /tmp -exec bash -n {{}} \\;",
+                    f"find {self.bin} -name '*.sh' -exec shellcheck {{}} \\;", f"find {self.root}/other -exec bash -n {{}} \\;",
                     f"V={s}; cat \"$V\"", f"bash -c 'echo hi' < {s}"):
             self.assertIsNone(bash(cmd, self.root), cmd)
 
@@ -211,6 +211,59 @@ class ProtectedCodeTest(unittest.TestCase):
         for cmd in (f"bash /tmp/lint.sh {s}", f"bash -c 'cat {s}'", f"bash -c 'shellcheck {s}'",
                     f"sh -c 'diff {s} /tmp/y'", f"bash -c 'echo $(wc -l < {s})'", f"bash -c 'grep -c op {s}'"):
             self.assertIsNone(bash(cmd, self.root), cmd)
+
+    def test_g21_an_explicit_git_dir_stdin_by_name_and_here_strings(self):
+        """of_secrets-review's pre-check of PR 249's fix: GIT_DIR or --git-dir makes the folder git runs in its work
+        tree, a shell reads `/dev/stdin` as its script, and a here-string carries a substitution."""
+        s = f"{self.bin}/vault.sh"
+        support = os.path.dirname(self.bin)  # holds the entry, no repository
+        for cmd in (f"cd {support} && GIT_DIR=/tmp/evil/.git git checkout -f main",
+                    f"git --git-dir=/tmp/evil/.git -C {support} reset --hard",
+                    f"export GIT_DIR=/tmp/evil/.git; git -C {support} checkout -f main",
+                    f"git --git-dir=/tmp/evil/.git -C {self.bin} checkout -f main"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"bash /dev/stdin < {s}", f"cat {s} | bash /dev/stdin", f"source /dev/stdin < {s}",
+                    f"bash /dev/fd/0 < {s}", f"bash <<< \"$(cat {s})\"", f"dd if={s} | bash",
+                    f"parallel bash ::: {s}", f"xargs -I{{}} bash {{}} <<< {s}", f"bash <<EOF\n$(cat {s})\nEOF"):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"bash <<< 'echo hi'", f"cat /tmp/x | bash /dev/stdin", f"dd if={s} of=/tmp/copy.sh",
+                    f"parallel shellcheck ::: {s}", f"git --git-dir=/tmp/evil/.git -C /tmp/elsewhere checkout -f main"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+
+    def test_g21_the_file_as_code_and_the_usual_wrapper_forms(self):
+        """of_review on PR 249's fix: the file's text as -c code with no $0 or through eval, and the forms flock and watch
+        are usually written in."""
+        s = f"{self.bin}/vault.sh"
+        for cmd in (f"bash -c \"$(cat {s})\"", f"bash -c \"$(< {s})\"", f"eval \"$(cat {s})\"", f"sh -c \"`cat {s}`\"",
+                    f"flock /tmp/l -c 'bash {s}'", f"flock /tmp/l -c '. {s}'", f"watch 'bash {s}'",
+                    f"watch -n 2 \"bash {s}\"", f"watch -n1 'bash {s}'", f"bash /dev/fd/0 < {s}",
+                    f"echo {s} | xargs -I{{}} bash {{}}", f"echo \"$(bash {s})\""):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"watch -n 2 'cat {s}'", "eval \"echo hi\"", f"flock /tmp/l -c 'cat {s}'", f"echo \"$(cat {s})\"",
+                    f"x=\"$(wc -l < {s})\"", f"watch -x ls {self.bin}"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+        for cmd in (f"git config --file {s} a.b c", f"git config -f {s} a.b c", f"git fast-export --export-marks={s} HEAD"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        self.assertIsNone(bash("git config --file /tmp/x.cfg a.b c", self.root))
+        # a raw line's here-document body is data, and a stage the shell lexer cannot read is skipped, never a reason to
+        # fall over to the strict text match (the 21-day replay of this fix: 26 commands denied by other rules)
+        for cmd in ("cat > /tmp/m <<'EOF'\nwon't\nEOF\necho \"$(wc -l < /tmp/m)\"",
+                    f"git commit -F - <<EOF\nbash {s}\nit's done\nEOF\necho \"$(date)\"",
+                    "x=\"$(git log -1 --format='%h %s')\"; echo \"it's $x\""):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+        self.assertIn("run it by its own path", bash(f"bash <<EOF\n$(cat {s})\nEOF", self.root) or "")
+
+    def test_g21_a_new_branch_at_head_writes_nothing(self):
+        """of_secrets-review's note on PR 249: `checkout -b feat` in a repository holding an entry was denied."""
+        repo = os.path.join(self.root, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        os.makedirs(os.path.join(repo, "scripts"))
+        of_guard.use_protection(code=[os.path.join(repo, "scripts")])
+        for cmd in (f"git -C {repo} checkout -b feat", f"git -C {repo} switch -c feat", f"git -C {repo} checkout -B x"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+        for cmd in (f"git -C {repo} checkout -b feat origin/main", f"git -C {repo} switch -c feat origin/main",
+                    f"git -C {repo} submodule add https://example.invalid/x scripts/x"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
 
     def test_g21_file_tools(self):
         for tool, path in (("Write", f"{self.bin}/backup.sh"), ("Edit", f"{self.agents}/com.acme.backup.plist"),
