@@ -354,6 +354,38 @@ class ReadingPointTest(unittest.TestCase):
         self.assertEqual(of_context.loop_clocks({}), [])
 
 
+class SubagentsYesTest(unittest.TestCase):
+    """docs/registry.md, "Subagents" (hand-over ff0f6f09; of_review on PR 241): the owner's standing yes is said only
+    where the organization's registry carries it and every id resolves as the owner's yes."""
+
+    def test_resolved_unresolved_and_absent(self):
+        import importlib.machinery
+        import importlib.util
+        import of_loop
+        loader = importlib.machinery.SourceFileLoader("of_cli_sub", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli_sub", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        yes = {"P1": of_loop.Yes("prompt", "P1", "launch subagents")}
+        resolve = lambda did, work=None: yes.get(did)  # noqa: E731
+        doc = {"subagents": {"decided": ["P1"], "words": "The owner, 2026-11-16:\n  \"launch subagents\"."}}
+        self.assertEqual(of.subagents_yes(doc, resolve), ('The owner, 2026-11-16: "launch subagents".', ["P1"]))
+        self.assertEqual(of.subagents_yes({"subagents": {"decided": "P1", "words": "w"}}, resolve), ("w", ["P1"]))
+        self.assertIsNone(of.subagents_yes({"subagents": {"decided": ["P1", "P2"], "words": "w"}}, resolve))  # P2 no
+        self.assertIsNone(of.subagents_yes({"subagents": {"decided": ["P1"]}}, resolve))          # no words
+        self.assertIsNone(of.subagents_yes({}, resolve))                                         # no key: nothing
+        self.assertIsNone(of.subagents_yes(doc, lambda did, work=None: of_loop.UNREAD))          # log unread
+        self.assertEqual(of.check_subagents(None), [])
+        self.assertEqual(of.check_subagents({"decided": ["P1"], "words": "w"}, resolve), [])
+        probs = of.check_subagents({"decided": ["P2"]}, resolve)
+        self.assertIn("subagents: no words: quote the owner's words, verbatim, dated", probs)
+        self.assertTrue(any(p.startswith("subagents: decided P2 does not resolve") for p in probs))
+        self.assertTrue(of.check_subagents({"decided": ["P1"], "words": "w"},
+                                           lambda did, work=None: of_loop.UNREAD)[0].startswith(of.WARN))
+        self.assertEqual(of.check_subagents({"words": "w"}),
+                         ["subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>"])
+
+
 class LocatedRunTest(unittest.TestCase):
     """docs/registry.md, Works, "A run names where its reading was taken" (hand-over ba0485aa from of_architect;
     of_field-analyst's message 01a1dc77-50fc: on three of a user organization's loops no run named a declared measure

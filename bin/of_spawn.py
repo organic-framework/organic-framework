@@ -28,20 +28,21 @@ class SpawnError(Exception):
     pass
 
 
-# the owner's standing ask for the Agent tool (hand-over ff0f6f09; founder, 2026-11-16, prompt 01a1e393-ded4)
+# said only where the organization's registry carries its owner's yes (hand-over ff0f6f09; docs/registry.md, Subagents)
 SUBAGENTS_LINE = ("Your owner asks you to run the independent parts of your work as subagents, in parallel "
-                  "(docs/method.md, Subagents).")
+                  "(docs/method.md, Subagents; your organization's registry, subagents:).")
 
 
-def brief_text(p, org_root):
-    """The brief, typed as the session's first prompt."""
+def brief_text(p, org_root, subagents=False):
+    """The brief, typed as the session's first prompt. SUBAGENTS: the organization's registry carries its owner's
+    standing yes to subagents (bin/of org_subagents; docs/registry.md, "Subagents")."""
     mandate = p.get("mandate") or f"registry/briefs/{p['name']}.md"
     path = mandate if os.path.isabs(os.path.expanduser(mandate)) else os.path.join(org_root, mandate)
     home = os.path.expanduser("~")
     path = "~" + path[len(home):] if path.startswith(home) else path
     return (f"You hold the position {p['name']}. Read {path} and the organization's AGENTS.md, and follow them. "
-            f"{SUBAGENTS_LINE} "
-            f"At the end of every turn: of status working|waiting --on founder|<position>|idle|done.")
+            + (f"{SUBAGENTS_LINE} " if subagents else "")
+            + f"At the end of every turn: of status working|waiting --on founder|<position>|idle|done.")
 
 
 def work_dir(p, systems, org_paths, exists=os.path.isdir):
@@ -178,7 +179,8 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
 
 def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspace, config_dir=None, cwd=None,
          capacity_rows=None, best_target=None, trusted=None, default_dir=os.path.expanduser("~/.claude"),
-         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None):
+         model=None, bypass=True, sid=None, memory=None, deny=None, accepted=None, tools=None, effort=None,
+         subagents=False):
     """Everything run() needs, or SpawnError. trusted(config_dir, cwd) -> key or None; accepted(config_dir) -> whether
     the account accepted the Bypass Permissions warning (bypass_accepted); tools(position, sid, config_dir) ->
     (argv, settings keys) of its tool profile (of_tools.launch_parts)."""
@@ -205,7 +207,7 @@ def plan(p, positions, agents, bind, systems, org_paths, org_root, want_workspac
     sid = sid or str(uuid.uuid4())
     ws, tab = place(p, want_workspace)
     return {"position": p["name"], "org": p.get("_org"), "cwd": cwd, "config_dir": config_dir, "session": sid,
-            "workspace": ws, "tab": tab, "brief": brief_text(p, org_root),
+            "workspace": ws, "tab": tab, "brief": brief_text(p, org_root, subagents),
             "trusted": trusted(config_dir, cwd) if trusted else None,
             "bypass_ok": (not bypass) or bool(accepted(config_dir)) if accepted else True,
             "deny": list(deny or []),

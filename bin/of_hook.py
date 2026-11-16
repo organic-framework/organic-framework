@@ -1587,8 +1587,12 @@ def _mandate_context(hook, index, sess):
                     rc.close()
         except Exception:  # noqa: BLE001 - never costs the session its context
             runs = []
+    try:  # the owner's standing yes to subagents, only where the organization's registry carries it and it resolves
+        subagents = of.org_subagents(me, positions, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
+    except Exception:  # noqa: BLE001 - never costs the session its context; nothing is said
+        subagents = None
     ctx = of_context.build(name, positions, loops, of._decided_resolver(positions=positions) if loops else None, runs,
-                           clocks)
+                           clocks, subagents)
     if not ctx:
         return
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
