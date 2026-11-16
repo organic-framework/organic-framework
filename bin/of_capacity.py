@@ -2003,19 +2003,23 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     if not os.path.isdir(target) or account_of(target) is None:
         raise MoveError(f"{short(target)}: not a config dir with an account")
     unsigned = missing_signins(name, target) if target != src else []
+    # an entry missing because of a label (a labelled entry where the sign-in carries no such label, or a plain one
+    # where it carries one) is not fixed by signing in: capacity.yaml `signins:` decides, so no task for the founder
+    to_sign = [(i, e) for i, e in unsigned if not e.get("signin") and label_on(e, target) is None]
     if unsigned:
         names = ", ".join(i for i, _ in unsigned)
         if not allow_unsigned:
-            if not dry_run:
-                file_signin_task(target, unsigned, name, ask=ask, of_bin=of_bin, log=log)
+            if not dry_run and to_sign:
+                file_signin_task(target, to_sign, name, ask=ask, of_bin=of_bin, log=log)
             raise MoveError(f"{name}: not signed in on {short(target)}: {names} (docs/tools.md §5)"
-                            + ("" if dry_run else "; the founder has the task"))
+                            + ("" if dry_run or not to_sign else "; the founder has the task"))
         log(f"  not signed in on {short(target)}: {names}; moving anyway (a rescue)")
         extra_note = (f"Your tool(s) {names} are not signed in on {account_of(target) or short(target)}, so they are "
-                      f"missing in this session; the founder has the task to sign in. If work waits on them, tell "
+                      f"missing in this session" + ("; the founder has the task to sign in" if to_sign else "") +
+                      f". If work waits on them, tell "
                       f"{report_route(p, positions)}." + ("\n\n" + extra_note if extra_note else ""))
-        if not dry_run:
-            file_signin_task(target, unsigned, name, ask=ask, of_bin=of_bin, moved=True, log=log)
+        if not dry_run and to_sign:
+            file_signin_task(target, to_sign, name, ask=ask, of_bin=of_bin, moved=True, log=log)
     ctx_model = last_model(find_transcript(src, sid))
     switch = bool(model) and model != ctx_model  # the model changes: a restart on the same account is the point
     s = next(x for x in sessions[src] if x["session"] == sid)
@@ -2123,11 +2127,12 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         raise draft_error(name, pane, draft, cancelled_wait)
     used, there = connectors_used(transcript), connectors_seen(target)
     missing = sorted(used - there) if there is not None else []
-    plugs = sorted(x.split(":", 1)[1]
-                   for x in lacking(tools_used(transcript), account_tools(None, plugins_ready(target))))
+    plugs = sorted(x.split(":", 1)[1].split("#", 1)[0]
+                   for x in lacking(needs_with_labels(tools_used(transcript), granted_labels(name)),
+                                    account_tools(None, with_labels(plugins_ready(target), target))))
     if plugs:  # plugins are installed and signed in per config dir (2026-11-11: aws_keeper lost Cloudflare twice)
-        log(f"  plugins not installed or not signed in on {short(target)}: {', '.join(plugs)}")
-        extra_note = (f"Your plugin(s) {', '.join(plugs)} are not installed or not signed in on "
+        log(f"  plugins not installed, not signed in or kept for other positions on {short(target)}: {', '.join(plugs)}")
+        extra_note = (f"Your plugin(s) {', '.join(plugs)} are not installed, not signed in or kept for other positions on "
                       f"{account_of(target) or short(target)}, "
                       f"so their tools (mcp__plugin_…) are gone in this session. If work waits on them, tell "
                       f"{report_route(p, positions)} what waits: of_capacity moves you to an account that has them or has "
@@ -3408,7 +3413,9 @@ def plan(rows, positions, sessions=None):
                 if sess else set()
 
             def gone(d, n=n, used=used):  # plugins it used and bound tools not signed in there (docs/tools.md §5)
-                return (sorted(lacking(used, account_tools(None, plugins_ready(d)))) if used else []) + \
+                return (sorted(x.split("#", 1)[0] for x in lacking(needs_with_labels(used, granted_labels(n, docs)),
+                                                                      account_tools(None, with_labels(plugins_ready(d), d))))
+                        if used else []) + \
                     [i for i, _ in (missing_signins(n, d, docs) if docs else [])]
             if t and gone(t["config_dir"]):
                 unsigned = gone(t["config_dir"])
@@ -4251,12 +4258,82 @@ def bound_tools(position_name, docs=None):
         ids = of_tools.session_config(pos, doc, None, installed=[])["account_bound"]
     except Exception:  # noqa: BLE001 - not in a catalogued organization
         return []
-    return [(f"{org}/{i}", doc["tools"][i]) for i in ids if isinstance(doc["tools"].get(i), dict)]
+    out = [(f"{org}/{i}", doc["tools"][i]) for i in ids if isinstance(doc["tools"].get(i), dict)]
+    keyed = set().union(*[entry_keys(e) for _, e in out if e.get("signin")])
+    # a plain entry for a plugin the position also holds through a labelled one is served where the label is
+    # (of_tools' launcher enables the plugin there for it): it would otherwise veto that very account
+    return [(i, e) for i, e in out if e.get("signin") or not entry_keys(e) & keyed]
 
 
-def signed_in(entry, d, now=None, run=None):
+# ------------------------------------------------------------ labelled sign-ins (docs/capacity.md, "Labelled sign-ins")
+#
+# 2026-11-16: the founder signed in to Cloudflare with the right to create API tokens on one account (prompt
+# 01a1e3bd-8825), for one position only; the accounts' other Cloudflare sign-ins answer at the same url. capacity.yaml
+# `signins: {<config dir>: {<plugin id or server url>: <label>}}` marks such a sign-in. It serves only catalogue
+# entries with the same `signin: <label>`: of_tools' launcher turns the plugin off there for every other session, and
+# placement counts it only for those entries (names agreed with of_tools, message 01a1e3c6-2ed0).
+
+def signin_labels(policy=None):
+    """{config dir: {plugin id or server url: label}} of capacity.yaml `signins:`. Unreadable reads as none: placement
+    then errs toward a move after which the tool is off (the launcher reads the key itself and fails closed), never
+    toward giving it out."""
+    pol = load_policy() if policy is None else policy
+    out = {}
+    for d, m in ((pol or {}).get("signins") or {}).items():
+        if isinstance(m, dict):
+            out[os.path.abspath(os.path.expanduser(str(d)))] = {str(k).rstrip("/"): str(v) for k, v in m.items() if v}
+    return out
+
+
+def entry_keys(entry):
+    """The keys a label may name for catalogue entry `entry`: its plugin id and its url."""
+    return {k for k in (str(entry.get("plugin") or ""), str(entry.get("url") or "").rstrip("/")) if k}
+
+
+def label_on(entry, d, labels=None):
+    """The label that account `d`'s sign-in for `entry` carries (by its plugin id or url), or None."""
+    m = (signin_labels() if labels is None else labels).get(os.path.abspath(os.path.expanduser(d))) or {}
+    return next((m[k] for k in sorted(entry_keys(entry)) if k in m), None)
+
+
+def labelled_plugins(d, labels=None, now=None, run=None):
+    """{"plugin:<name>": label} of the plugins whose sign-in on account `d` carries a label: by plugin id, or by a
+    url that `claude mcp list` there shows as a plugin's server."""
+    m = (signin_labels() if labels is None else labels).get(os.path.abspath(os.path.expanduser(d))) or {}
+    out = {"plugin:" + k.split("@", 1)[0]: v for k, v in m.items() if "://" not in k}
+    if any("://" in k for k in m):
+        for name, u, _ in mcp_servers(d, now, run) or []:
+            if name.startswith("plugin:") and u and u.rstrip("/") in m:
+                out.setdefault("plugin:" + name.split(":")[1], m[u.rstrip("/")])
+    return out
+
+
+def with_labels(have, d, labels=None, now=None, run=None):
+    """Account `d`'s plugins (plugins_ready) with each labelled one renamed "plugin:<name>#<label>", so that only a
+    need with the same label (needs_with_labels) finds it there."""
+    lab = labelled_plugins(d, labels, now, run) if have else {}
+    return {f"{x}#{lab[x]}" if x in lab else x for x in have} if lab else have
+
+
+def granted_labels(position_name, docs=None):
+    """{"plugin:<name>": label} the position's profile grants through catalogue entries with `signin:`."""
+    return {"plugin:" + str(e["plugin"]).split("@", 1)[0]: str(e["signin"])
+            for _, e in bound_tools(position_name, docs) if e.get("signin") and e.get("plugin")}
+
+
+def needs_with_labels(used, granted):
+    """A session's tools_used with each plugin its profile holds through a labelled entry renamed as with_labels
+    renames it on the account that carries that label."""
+    return {f"{x}#{granted[x]}" if x in granted else x for x in used} if granted else set(used)
+
+
+def signed_in(entry, d, now=None, run=None, labels=None):
     """Whether account-bound tool `entry` is connected on account `d` (`claude mcp list`, by its url; a plugin
-    without one by plugins_ready); None when unknown, which never vetoes."""
+    without one by plugins_ready); None when unknown, which never vetoes. A labelled sign-in serves only an entry
+    with its label, and an entry with `signin:` only a sign-in with that label (signin_labels)."""
+    want, there = entry.get("signin"), label_on(entry, d, labels)
+    if (want or there) and str(want or "") != str(there or ""):
+        return False
     url = str(entry.get("url") or "").rstrip("/")
     if url:
         servers = mcp_servers(d, now, run)
@@ -4336,7 +4413,7 @@ def add_bound(needs, seen, positions, dirs, docs=None, now=None, run=None):
         sid = ((p.get("holder") or {}).get("session") or "").strip()
         if sid in needs:
             b = bound_tools(p.get("name"), docs)
-            needs[sid] = set(needs[sid]) | {"bound:" + i for i, _ in b}
+            needs[sid] = needs_with_labels(needs[sid], granted_labels(p.get("name"), docs)) | {"bound:" + i for i, _ in b}
             entries.update(b)
     for d in dirs:
         if not entries or mcp_servers(d, now, run) is None:
@@ -4920,7 +4997,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                 for d, xs in sessions.items() for x in xs if x.get("status") == "idle"}
     # connectors from claude mcp list (None: unknown, no veto); plugins from the config dir's files, less those whose
     # server the same list shows signed out
-    seen = {d: account_tools(connectors_seen(d), plugins_ready(d)) for d in dirs}
+    seen = {d: account_tools(connectors_seen(d), with_labels(plugins_ready(d), d)) for d in dirs}
     add_bound(needs, seen, positions, dirs)
     stopped = {}
     for d, xs in sessions.items():
