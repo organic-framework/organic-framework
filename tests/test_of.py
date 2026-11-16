@@ -1352,6 +1352,26 @@ class SendClosedReceiverTest(unittest.TestCase):
         self.assertTrue(str(e.exception).startswith("not sent: ofb:of_research is finished"), e.exception)
 
 
+class SendFyiIdleTest(unittest.TestCase):
+    """of_capacity, msg 01a1e5f1-11e3 (2026-11-16): a request sent with --fyi to an idle position waited six hours for
+    its next turn. `of send --fyi` says so when every live holder of the receiver is an idle (or done) agent."""
+
+    def test_fyi_to_an_idle_agent_says_it_waits_for_its_next_turn(self):
+        n = lambda hs: of._fyi_idle_note("ofb:of_capacity", hs)
+        idle = {"position": "of_capacity", "kind": "agent", "state": "idle"}
+        self.assertIn("ofb:of_capacity is idle now", n([idle]))
+        self.assertIn("send it without --fyi", n([idle]))
+        self.assertIsNotNone(n([dict(idle, state="done")]))
+        self.assertIsNotNone(n([dict(idle, kind=None)]))                       # an older relay sends no kind
+        self.assertIsNone(n([dict(idle, state="working")]))                    # it runs of status at its turn's end
+        self.assertIsNone(n([dict(idle, state="blocked")]))                    # a dialog: nothing is typed in anyway
+        self.assertIsNone(n([dict(idle, kind="human", state="human")]))        # a person reads every message in of inbox
+        self.assertIsNone(n([idle, dict(idle, state="working")]))              # one holder of two is working
+        self.assertIsNone(n([dict(idle, position="of_platform")]))             # another position's holder
+        self.assertIsNone(n([]))                                               # nobody holds it: the warning above says so
+        self.assertIsNone(n(None))
+
+
 class InboxMineFromTest(unittest.TestCase):
     """of_lab, 2026-11-07: in a shared lab registry --mine could not tell the position, and refused --from."""
     POS = [{"name": "lab_owner", "_org": "lab", "holder": {"runtime": "claude-code", "session": "S-OWN"}},

@@ -3498,6 +3498,20 @@ def pick_grants(grants_by_org, position, to_org, now=None, to_position=None):
     return out
 
 
+def _fyi_idle_note(to, holders):
+    """What `of send --fyi` prints when every live holder of the receiver is an agent that is idle (or done) now: an
+    fyi is never typed in, so that receiver reads it only at its next turn, and nothing starts one (of_capacity, msg
+    01a1e5f1-11e3, 2026-11-16: a request sent with --fyi at 13:46Z to an idle position was read at 19:58Z, while the
+    sender waited on it). A normal message would have been typed in at once. None otherwise."""
+    pos = to.split(":", 1)[1]
+    mine = [h for h in holders or [] if isinstance(h, dict) and h.get("position") == pos]
+    if not mine or any((h.get("kind") or "agent") != "agent" or h.get("state") not in ("idle", "done") for h in mine):
+        return None
+    return (f"note: {to} is idle now and an --fyi message is never typed in, so it reads this only at its next "
+            f"turn, which nothing starts. If it must act on it or answer, send it without --fyi: that is typed in "
+            f"at once.")
+
+
 def cmd_send(args):
     """Send a message to a position on any machine, through its organization's server."""
     import of_client
@@ -3566,9 +3580,10 @@ def cmd_send(args):
         org, pos = to.split(":", 1)
         try:
             pres = client.presence(org)
-            held = {h.get("position") for h in ((pres.get("holders") if isinstance(pres, dict) else pres) or [])}
+            holders = (pres.get("holders") if isinstance(pres, dict) else pres) or []
+            held = {h.get("position") for h in holders}
         except Exception:  # noqa: BLE001
-            held = None
+            holders, held = [], None
         if held is not None and pos not in held:
             print(f"warning: no running relay shows {to} as held on any machine, so nothing types this message in "
                   f"yet; it waits on the server until one does, and {pos} can read it now with `of inbox --mine`")
@@ -3576,6 +3591,9 @@ def cmd_send(args):
             w = _relay_warning()
             if w:
                 print(f"warning: {to} is held here and {w}")
+        note = _fyi_idle_note(to, holders) if priority == "fyi" else None
+        if note:
+            print(note)
     return 0
 
 
