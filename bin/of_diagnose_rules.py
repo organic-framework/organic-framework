@@ -1385,8 +1385,10 @@ def loop_clock(lp, now, thresholds=None):
 
     Returns {work, part: held|silent|wait_over|calendar, level: None|owner|conductor, hours, since, last, wait,
     waits_not_counted, testing, owner, doers}. `since` is when the clock starts (or started), the key of an episode for
-    whoever delivers it. While a stated wait holds the clock, part is `held`, `wait` is the wait holding it, `since` its
-    end, and `hours` is negative: the hours left. Below stall_hours_gte, `level` is None."""
+    whoever delivers it. `waits_not_counted` lists every wait stated since the last progress that holds nothing as a
+    re-declaration: a later end on the same thing, or the one a shorter restatement replaced. While a stated wait
+    holds the clock, part is `held`, `wait` is the wait holding it, `since` its end, and `hours` is negative: the hours
+    left. Below stall_hours_gte, `level` is None."""
     t = dict(STALL_DEFAULTS, **(thresholds or {}))
     if not lp or str(lp.get("state") or "") in _STALL_DONE:
         return None
@@ -1422,7 +1424,8 @@ def loop_clock(lp, now, thresholds=None):
         if k not in by_key:
             by_key[k] = x
         elif _wait_end(x, now) < _wait_end(by_key[k], now):
-            by_key[k] = x          # a re-declaration may shorten the counted wait, never lengthen it
+            not_counted.append(by_key[k])   # a re-declaration may shorten the counted wait, never lengthen it: the
+            by_key[k] = x                    # one it replaces counts no more (of_review on PR 240)
         else:
             not_counted.append(x)
     counted = list(by_key.values())
@@ -1449,7 +1452,7 @@ def loop_clock(lp, now, thresholds=None):
     return {"work": lp.get("work"), "part": part, "level": level,
             "hours": round(hours, 1), "since": start,
             "last": {"kind": last[1], "at": last[0], "what": last[2], "hypothesis": last[3]} if last else None,
-            "wait": wait, "waits_not_counted": not_counted[-5:], "testing": testing,
+            "wait": wait, "waits_not_counted": sorted(not_counted, key=lambda x: x["ts"]), "testing": testing,
             "owner": lp.get("owner"), "doers": list(lp.get("doers") or [])}
 
 
@@ -1499,7 +1502,8 @@ def rule_loop_stalled(model, rows, a, b, cat, spec):
         iso = of_model.iso   # the evidence carries ISO times, as every issue's `since` (the run ranks by it)
         when = lambda x: x and dict(x, **{k: iso(x[k]) for k in ("at", "ts", "expect_at", "ended_at", "ended_early") if x.get(k)})
         ev = {"work": w, "part": st["part"], "level": st["level"], "hours": st["hours"], "since": iso(st["since"]),
-              "last": when(st["last"]), "wait": when(st["wait"]), "waits_not_counted": [when(x) for x in st["waits_not_counted"]],
+              "last": when(st["last"]), "wait": when(st["wait"]),
+              "waits_not_counted": [when(x) for x in st["waits_not_counted"][-10:]],
               "testing": st["testing"]}
         out.append(issue(cat, "loop-stalled", [w], ev, stall_text(st), part=st["part"]))
     return out, [], notes
