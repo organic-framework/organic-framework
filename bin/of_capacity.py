@@ -4281,7 +4281,7 @@ def signin_labels(policy=None):
     out = {}
     for d, m in ((pol or {}).get("signins") or {}).items():
         if isinstance(m, dict):
-            out[os.path.abspath(os.path.expanduser(str(d)))] = {str(k).rstrip("/"): str(v) for k, v in m.items() if v}
+            out[os.path.realpath(os.path.expanduser(str(d)))] = {str(k).rstrip("/"): str(v) for k, v in m.items() if v}
     return out
 
 
@@ -4292,14 +4292,14 @@ def entry_keys(entry):
 
 def label_on(entry, d, labels=None):
     """The label that account `d`'s sign-in for `entry` carries (by its plugin id or url), or None."""
-    m = (signin_labels() if labels is None else labels).get(os.path.abspath(os.path.expanduser(d))) or {}
+    m = (signin_labels() if labels is None else labels).get(os.path.realpath(os.path.expanduser(d))) or {}
     return next((m[k] for k in sorted(entry_keys(entry)) if k in m), None)
 
 
 def labelled_plugins(d, labels=None, now=None, run=None):
     """{"plugin:<name>": label} of the plugins whose sign-in on account `d` carries a label: by plugin id, or by a
     url that `claude mcp list` there shows as a plugin's server."""
-    m = (signin_labels() if labels is None else labels).get(os.path.abspath(os.path.expanduser(d))) or {}
+    m = (signin_labels() if labels is None else labels).get(os.path.realpath(os.path.expanduser(d))) or {}
     out = {"plugin:" + k.split("@", 1)[0]: v for k, v in m.items() if "://" not in k}
     if any("://" in k for k in m):
         for name, u, _ in mcp_servers(d, now, run) or []:
