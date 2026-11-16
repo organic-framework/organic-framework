@@ -190,9 +190,18 @@ class SigninGuardTest(unittest.TestCase):
         self.assertIs(self.cfg("acme_web", None)["enabledPlugins"][CF], False)
         self.assertNotIn("deniedMcpServers", self.cfg("acme_edge", None))
 
-    def test_a_url_label_denies_a_connector(self):
-        st = self.cfg("acme_org", {"https://api.example/v1/pages/mcp": "owner"})
-        self.assertEqual(st["deniedMcpServers"], [{"serverUrl": "https://api.example/v1/pages/mcp"}])
+    def test_a_url_label_denies_a_connector_in_every_spelling(self):
+        want = [{"serverUrl": "https://api.example/v1/pages/mcp"}, {"serverUrl": "https://api.example/v1/pages/mcp/"}]
+        for key in ("https://api.example/v1/pages/mcp", "https://api.example/v1/pages/mcp/"):
+            self.assertEqual(self.cfg("acme_org", {key: "owner"})["deniedMcpServers"], want, key)
+
+    def test_a_url_label_with_a_slash_still_matches_the_catalogue_and_denies_its_spelling(self):
+        # of_review, PR 243: the label spelt with a trailing slash, the catalogue without one
+        label = {CF_URL + "/": "keys"}
+        self.assertNotIn("deniedMcpServers", self.cfg("acme_edge", label))
+        st = self.cfg("acme_web", label)
+        self.assertIn({"serverUrl": CF_URL}, st["deniedMcpServers"])
+        self.assertIn({"serverUrl": CF_URL + "/"}, st["deniedMcpServers"])
 
     def test_labels_are_read_for_the_account_strictly(self):
         import tempfile
