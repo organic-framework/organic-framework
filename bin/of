@@ -911,9 +911,10 @@ def _stall_thresholds():
         return None
 
 
-def position_loops(position, orgs_file=None):
+def position_loops(position, orgs_file=None, with_work=False):
     """[(work id, owner|doer, loop)] of the works with a loop that POSITION (a loaded position) owns or does in its
-    organization: for the session's start context (bin/of_context.py). One read of its registry."""
+    organization: for the session's start context (bin/of_context.py). One read of its registry. WITH_WORK: each with
+    the work's registry entry as a fourth item (its state: a parked or done work has no stall clock)."""
     regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
     path, name = regs.get(position.get("_org")), position.get("name")
     if not path or not name:
@@ -933,7 +934,7 @@ def position_loops(position, orgs_file=None):
         except (OSError, yaml.YAMLError):
             continue
         if isinstance(loop, dict):
-            out.append((str(wid), role, loop))
+            out.append((str(wid), role, loop, w) if with_work else (str(wid), role, loop))
     return out
 
 
@@ -2122,7 +2123,7 @@ def cmd_loop(args):
                       f"(of loop decision {args.work} <decision> --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
-        clock = of_loop.clocks(conn, [(args.work, "", loop)]).get(args.work)
+        clock = of_loop.clocks(conn, [(args.work, "", loop, w)]).get(args.work)
         if clock:  # the one stall clock (docs/diagnose.md 2.29) and every wait stated since the last progress
             import of_context
             for line in of_context.loop_clocks({args.work: dict(clock, role="clock")})[2:-1]:

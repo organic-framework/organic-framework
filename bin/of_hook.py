@@ -1568,9 +1568,11 @@ def _mandate_context(hook, index, sess):
     positions, _ = of.load_positions(os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
     me = next((p for p in positions if p.get("name") == name), None)
     try:  # the works it owns or does with a loop: a target the owner decided is named (docs/registry.md, Works)
-        loops = of.position_loops(me, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")) if me else []
+        worked = of.position_loops(me, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"),
+                                   with_work=True) if me else []
+        loops = [x[:3] for x in worked]
     except Exception:  # noqa: BLE001 - an unreadable registry or loop.yaml never costs the session its context
-        loops = []
+        worked, loops = [], []
     runs, clocks = [], {}
     if loops:  # their newest runs that are proxies whose condition did not hold (docs/registry.md, Works)
         try:
@@ -1580,7 +1582,7 @@ def _mandate_context(hook, index, sess):
             if rc is not None:
                 try:
                     runs = of_loop.blind_runs(rc, {w: lp for w, _, lp in loops})
-                    clocks = of_loop.clocks(rc, loops)   # where each loop stands: its wait or its hours since progress
+                    clocks = of_loop.clocks(rc, worked)   # where each loop stands: its wait or hours since progress
                 finally:
                     rc.close()
         except Exception:  # noqa: BLE001 - never costs the session its context
