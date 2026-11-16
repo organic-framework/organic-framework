@@ -2076,6 +2076,71 @@ class ToolProfiles(unittest.TestCase):
         self.assertEqual([x["to"] for x in m], ["/ap"])
 
 
+class LabelledSignins(unittest.TestCase):
+    """2026-11-16: a sign-in that can create Cloudflare API tokens as the founder, on one account, for one position
+    (capacity.yaml `signins:`, catalogue `signin:`; names agreed with of_tools). The accounts' other Cloudflare
+    sign-ins answer at the same url, so placement must tell them apart."""
+    CF = "https://mcp.cloudflare.com/mcp"
+    PLUGIN = "cloudflare@anthropic-plugin-directory"
+    ENTRY = {"kind": "plugin", "plugin": PLUGIN, "url": CF, "account_bound": True, "acts_as": "the owner",
+             "scope": "read", "keeper": "acme_org"}
+    DOCS = {"acme": {"tools": {"cloudflare": dict(ENTRY), "cloudflare-keys": dict(ENTRY, signin="keys")},
+                     "positions": [{"name": "net", "tools": ["cloudflare", "cloudflare-keys"]},
+                                   {"name": "cloud", "tools": ["cloudflare"]}, {"name": "plain"}]}}
+
+    def servers(self, d, now=None, run=None):
+        return {"/mail": [("plugin:cloudflare:cloudflare", self.CF, True)],
+                "/ez": [("plugin:cloudflare:cloudflare", self.CF, True)], "/ap": []}.get(d)
+
+    def patched(self, key=PLUGIN, **kw):
+        from unittest import mock
+        return mock.patch.multiple(of_capacity, tool_docs=lambda: self.DOCS, mcp_servers=self.servers,
+                                   load_policy=lambda: dict(POLICY, signins={"/mail": {key: "keys"}}), **kw)
+
+    def test_a_labelled_sign_in_serves_only_entries_with_its_label(self):
+        with self.patched():
+            missing = {(n, d): [i for i, _ in of_capacity.missing_signins(n, d)]
+                       for n in ("net", "cloud", "plain") for d in ("/mail", "/ez")}
+        self.assertEqual(missing, {("net", "/mail"): [], ("net", "/ez"): ["acme/cloudflare-keys"],
+                                   ("cloud", "/mail"): ["acme/cloudflare"], ("cloud", "/ez"): [],
+                                   ("plain", "/mail"): [], ("plain", "/ez"): []})
+
+    def test_the_balancer_keeps_the_labelled_plugin_to_its_positions(self):
+        needs = {"n1": {"plugin:cloudflare"}, "c1": {"plugin:cloudflare"}, "o1": {"plugin:cloudflare"}}
+        pos = [{"name": "net", "holder": {"session": "n1"}}, {"name": "cloud", "holder": {"session": "c1"}},
+               {"name": "uncatalogued", "holder": {"session": "o1"}}]  # an organization with no catalogue
+        with self.patched():
+            seen = {d: of_capacity.account_tools(None, of_capacity.with_labels({"plugin:cloudflare"}, d))
+                    for d in ("/mail", "/ez")}
+            of_capacity.add_bound(needs, seen, pos, ["/mail", "/ez"])
+        fits = {(s, d): not of_capacity.lacking(needs[s], seen[d]) for s in needs for d in seen}
+        self.assertEqual(fits, {("n1", "/mail"): True, ("n1", "/ez"): False, ("c1", "/mail"): False,
+                                ("c1", "/ez"): True, ("o1", "/mail"): False, ("o1", "/ez"): True})
+
+    def test_a_url_label_names_the_plugin_whose_server_it_is(self):
+        with self.patched(key=self.CF + "/"):
+            self.assertEqual(of_capacity.labelled_plugins("/mail"), {"plugin:cloudflare": "keys"})
+            self.assertEqual(of_capacity.labelled_plugins("/ez"), {})
+
+    def test_a_move_by_hand_away_from_the_label_stops_and_files_no_sign_in_task(self):
+        from unittest import mock
+        cache, asks = {}, []
+        with tempfile.TemporaryDirectory() as mail, tempfile.TemporaryDirectory() as ez, mock.patch.multiple(
+                of_capacity, tool_docs=lambda: self.DOCS, load_cache=lambda: cache, save_cache=lambda c: None,
+                load_policy=lambda: dict(POLICY, signins={mail: {self.PLUGIN: "keys"}}),
+                mcp_servers=lambda d, now=None, run=None: self.servers("/mail" if d == mail else "/ez"),
+                config_dirs=lambda: [mail, ez], live_sessions=lambda d: [],
+                dir_of_position=lambda p, s: mail if p["name"] == "net" else ez,
+                account_of=lambda d: "x@example.com"):
+            with self.assertRaisesRegex(of_capacity.MoveError, "not signed in on .*acme/cloudflare-keys [^;]*$"):
+                of_capacity.move({"name": "net", "holder": {"session": "s1"}}, ez,
+                                 ask=lambda t, task=None: asks.append((t, task)), log=lambda x: None)
+            with self.assertRaisesRegex(of_capacity.MoveError, "not signed in on .*acme/cloudflare [^;]*$"):
+                of_capacity.move({"name": "cloud", "holder": {"session": "s2"}}, mail,
+                                 ask=lambda t, task=None: asks.append((t, task)), log=lambda x: None)
+        self.assertEqual(asks, [])  # signing in again changes no label: nothing for the founder's hands
+
+
 class McpList(unittest.TestCase):
     def test_parse_connected_connectors(self):
         text = """Checking MCP server health…
