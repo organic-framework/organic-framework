@@ -4182,6 +4182,20 @@ def plugins_down(d, now=None, run=None):
     return set(c["plugins_down"]) if "plugins_down" in c else None
 
 
+def plugins_changed_at(d):
+    """When the files that say which plugins account `d` has last changed (installed_plugins.json, settings.json);
+    0 when neither exists. A plugin installed after `claude mcp list` was cached makes the cache stale (2026-11-16:
+    the founder installed Cloudflare on an account at 09:41Z, and for the next hours a move there was refused as
+    "not signed in" from a list cached before it). A sign-in alone changes neither file; the 6-hour age covers it."""
+    t = 0.0
+    for f in (os.path.join(d, "plugins", "installed_plugins.json"), os.path.join(d, "settings.json")):
+        try:
+            t = max(t, os.path.getmtime(f))
+        except OSError:
+            pass
+    return t
+
+
 def connectors_seen(d, now=None, run=None):
     """claude.ai connectors connected on account `d`, from `claude mcp list` (cached 6 h); None if unknown.
     A connector belongs to the claude.ai account, so a moved session finds only the target's (2026-11-07:
@@ -4191,7 +4205,8 @@ def connectors_seen(d, now=None, run=None):
     d = os.path.expanduser(d)
     cache = load_cache()
     c = (cache.get("_connectors") or {}).get(d)
-    if c and "servers" in c and now - c.get("at", 0) < CONNECTORS_MAX_AGE_S:
+    if c and "servers" in c and now - c.get("at", 0) < CONNECTORS_MAX_AGE_S and \
+            plugins_changed_at(d) <= c.get("at", 0):
         return set(c.get("names") or [])
     probe_dir = os.path.join(STATE_DIR, "capacity", "probe")
     os.makedirs(probe_dir, mode=0o700, exist_ok=True)

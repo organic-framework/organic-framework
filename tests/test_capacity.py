@@ -2076,6 +2076,29 @@ class ToolProfiles(unittest.TestCase):
         self.assertEqual([x["to"] for x in m], ["/ap"])
 
 
+class ConnectorsCache(unittest.TestCase):
+    def test_a_plugin_installed_after_the_list_was_cached_reads_it_again(self):
+        from unittest import mock
+        cache, runs = {}, []
+        text = "plugin:cloudflare:cloudflare: https://mcp.cloudflare.com/mcp (HTTP) - ✔ Connected\n"
+        with tempfile.TemporaryDirectory() as d, mock.patch.multiple(
+                of_capacity, load_cache=lambda: cache, save_cache=lambda c: None, STATE_DIR=d):
+            os.makedirs(os.path.join(d, "plugins"))
+            path = os.path.join(d, "plugins", "installed_plugins.json")
+            with open(path, "w") as fh:
+                fh.write("{}")
+            os.utime(path, (1000, 1000))
+            run = lambda x: runs.append(x) or text
+            of_capacity.connectors_seen(d, now=2000, run=run)
+            of_capacity.connectors_seen(d, now=2100, run=run)
+            self.assertEqual(len(runs), 1)  # fresh and unchanged: the cache answers
+            os.utime(path, (2050, 2050))  # a plugin installed after the list was taken
+            of_capacity.connectors_seen(d, now=2200, run=run)
+            self.assertEqual(len(runs), 2)
+            self.assertEqual(of_capacity.mcp_servers(d, now=2300, run=run),
+                             [("plugin:cloudflare:cloudflare", "https://mcp.cloudflare.com/mcp", True)])
+
+
 class LabelledSignins(unittest.TestCase):
     """2026-11-16: a sign-in that can create Cloudflare API tokens as the founder, on one account, for one position
     (capacity.yaml `signins:`, catalogue `signin:`; names agreed with of_tools). The accounts' other Cloudflare
