@@ -86,6 +86,9 @@ class ProtectedCodeTest(unittest.TestCase):
         os.makedirs(os.path.join(wt, "scripts"))
         of_guard.use_protection(code=[self.bin, wt])
         repo = os.path.join(self.root, "repo")
+        os.makedirs(os.path.join(repo, ".git", "worktrees", "vault"))  # a repository and its linked worktree
+        with open(os.path.join(wt, ".git"), "w") as fh:
+            fh.write(f"gitdir: {repo}/.git/worktrees/vault\n")
         for cmd in (f"git -C {wt} merge --ff-only origin/main", f"cd {wt} && git pull", f"git -C {wt} reset --hard abc",
                     f"git -C {wt} apply p.diff", f"git -C {wt} stash pop", f"git -C {wt} stash",
                     f"cd {wt}/scripts && git checkout HEAD~1 -- .", f"git --work-tree={wt} checkout main -- .",
@@ -117,6 +120,96 @@ class ProtectedCodeTest(unittest.TestCase):
         for cmd in (f"{s} verify", f"BASH_ENV=/tmp/x {s} verify", f"cat {s}", f"bash -n /tmp/other.sh",
                     f"bash {self.root}/other/vault.sh", "bash -c 'git status'", f"cp {s} /tmp/copy.sh",
                     f"shellcheck {s}"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+
+    def test_g21_git_abbreviations_outputs_and_settings_that_run(self):
+        """of_secrets-review on PR 249: `reset --har`, a git option that names an output file, and a setting git runs
+        as a shell line all reached protected code."""
+        wt = os.path.join(self.root, "repo", ".worktrees", "vault")
+        os.makedirs(os.path.join(wt, "scripts"))
+        of_guard.use_protection(code=[self.bin, wt])
+        repo = os.path.join(self.root, "repo")
+        os.makedirs(os.path.join(repo, ".git", "worktrees", "vault"))  # a repository and its linked worktree
+        with open(os.path.join(wt, ".git"), "w") as fh:
+            fh.write(f"gitdir: {repo}/.git/worktrees/vault\n")
+        for cmd in (f"git -C {wt} reset --har abc", f"git -C {wt} reset --mer abc", f"git -C {wt} reset --kee abc",
+                    f"git -C {wt} clean --forc -d", f"git -C {wt} restore --wor --sta x",
+                    f"git -C {repo} log -1 --format='format:echo hi' --output={wt}/scripts/s.sh",
+                    f"git -C {repo} log -1 --outp {wt}/scripts/s.sh", f"git -C {repo} diff --output={wt}/scripts/s.sh",
+                    f"git -C {repo} show HEAD --output={wt}/scripts/s.sh", f"git -C {repo} format-patch -1 -o {wt}/scripts",
+                    f"git -C {repo} format-patch -1 --output-directory={wt}/scripts",
+                    f"git -C {repo} archive -o {wt}/scripts/a.tar HEAD", f"git -C {repo} archive --output={wt}/a.tar HEAD",
+                    f"git -C {wt} merge-file scripts/s.sh base other", f"git -C {repo} checkout-index -a --prefix={wt}/",
+                    f"git -C {repo} bundle create {wt}/b.bundle HEAD", f"git clone {repo} {wt}/copy", f"git init {wt}/x",
+                    f"cd {wt} && git init", f"git -C {repo} -c core.pager='cp evil {wt}/scripts/s.sh' log",
+                    f"git -C {repo} -c pager.log='bash {wt}/scripts/s.sh' log",
+                    f"GIT_PAGER='cp evil {wt}/scripts/s.sh' git -C {repo} log",
+                    f"git -C {repo} -c diff.external='tee {wt}/scripts/s.sh' diff"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"git -C {wt} reset --quiet", f"git -C {wt} restore --sta x", f"git -C {wt} apply --chec p.diff",
+                    f"git -C {wt} rm --cach x", f"git -C {wt} clean --dry", f"git -C {repo} log --oneline -3",
+                    f"git -C {repo} log --output=/tmp/out.txt", f"git -C {repo} format-patch -1 -o /tmp/patches",
+                    f"git -C {repo} archive --prefix=vault/ -o /tmp/a.tar HEAD",
+                    f"git -C {wt} merge-file -p scripts/s.sh base other", f"git -C {repo} -c core.pager=less log",
+                    f"git clone {repo} /tmp/copy"):
+            self.assertNotIn("protected_code", bash(cmd, self.root) or "", cmd)
+
+    def test_g21_a_shell_reading_protected_code_on_stdin_or_by_a_variable(self):
+        """of_secrets-review on PR 249: `bash < script` and `cat script | bash` run the caller's code first just as
+        `bash script` does."""
+        s = f"{self.bin}/vault.sh"
+        for cmd in (f"bash < {s}", f"bash -s verify < {s}", f"BASH_ENV=/tmp/x bash < {s}", f"cat {s} | bash",
+                    f"cat {s} | bash -s verify", f"echo {s} | xargs bash", f"V={s}; bash \"$V\" verify",
+                    f"find {self.bin} -name vault.sh -exec bash {{}} \\;", f"find /tmp -exec bash {s} \\;",
+                    f"busybox sh {s}", f"watch -n 5 bash {s}", f"fish {s}", f"tcsh {s}", f"sh 0< {s}"):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"cat {s} | wc -l", f"bash < /tmp/other.sh", f"cat /tmp/other.sh | bash", f"cat {s} | grep op",
+                    f"find {self.bin} -name '*.sh' -exec shellcheck {{}} \\;", f"find /tmp -exec bash -n {{}} \\;",
+                    f"V={s}; cat \"$V\"", f"bash -c 'echo hi' < {s}"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+
+    def test_g21_an_entry_inside_a_work_tree_and_writes_read_as_reads(self):
+        """of_review on PR 249: an entry that is a file, a glob or a folder below a work tree's top was not covered by a
+        git write of the whole tree; `apply --stat --apply`, `restore --staged --work`, core.worktree, a `!` alias's
+        relative path, pushd and a variable on the line got through."""
+        repo = os.path.join(self.root, "repo")
+        wt = os.path.join(repo, ".worktrees", "vault")
+        os.makedirs(os.path.join(wt, "scripts"))
+        os.makedirs(os.path.join(repo, ".git", "worktrees", "vault"))
+        with open(os.path.join(wt, ".git"), "w") as fh:
+            fh.write(f"gitdir: {repo}/.git/worktrees/vault\n")
+        sh = f"{wt}/scripts/vault.sh"
+        for entry in (sh, f"{wt}/scripts/*.sh", f"{wt}/scripts"):
+            of_guard.use_protection(code=[entry])
+            for cmd in (f"git -C {wt} merge --ff-only origin/main", f"cd {wt} && git pull", f"git -C {wt} reset --hard abc",
+                        f"git -C {wt} checkout abc -- .", f"git -C {wt} stash pop", f"cd {wt}/scripts && git pull",
+                        f"git -C {wt} checkout abc -- scripts/vault.sh", f"git -C {wt} restore scripts",
+                        f"git -C {wt} apply --stat --apply p.diff", f"git -C {wt} apply --check --apply p.diff",
+                        f"git -C {wt} restore --staged --work scripts/vault.sh", f"git -C {wt} reset --merg abc",
+                        f"git -C {repo} -c core.worktree={wt} reset --hard abc",
+                        f"git -C {wt} -c 'alias.x=!cp /tmp/e scripts/vault.sh' x",
+                        f"git -C {repo} submodule foreach 'cp /tmp/e {sh}'", f"pushd {wt} && git pull",
+                        f"W={wt}; git -C $W pull", f"W={wt}; cd $W && git pull"):
+                self.assertIn("protected_code", bash(cmd, self.root) or "", (entry, cmd))
+            for cmd in (f"git -C {wt} status", f"git -C {wt} checkout abc -- README", f"git -C {wt} restore README",
+                        f"git -C {wt} fetch origin", f"git -C {repo} pull", f"git -C {wt} diff --stat"):
+                self.assertNotIn("protected_code", bash(cmd, self.root) or "", (entry, cmd))
+        # a folder the guard cannot resolve collapses by `..`; with no repository there, git writes nothing, so a folder
+        # that merely holds an entry is no write (the 21-day replay: a pull after `cd $(dirname $f)/../..`)
+        of_guard.use_protection(code=[self.bin])
+        self.assertIsNone(bash("[ -n \"$f\" ] && (cd $(dirname $f)/../.. && git pull -q --ff-only)", self.bin))
+        self.assertIn("protected_code", bash(f"git -C {self.bin} reset --hard", self.root) or "")
+
+    def test_g21_shells_read_protected_code_freely_and_never_run_it(self):
+        """of_review on PR 249: a shell that only reads the file (a lint, cat, diff) is G21's read; `. vault.sh` in -c
+        code after a cd, flock, and `<(cat file)` run it."""
+        s = f"{self.bin}/vault.sh"
+        for cmd in (f"cd {self.bin} && bash -c '. vault.sh'", f"flock /tmp/l bash {s}", f"bash <(cat {s})",
+                    f"source <(cat {s})", f"S={s}; bash $S", f"bash -c 'cd {self.bin} && bash vault.sh'",
+                    f"bash -c 'cat {s} | bash'"):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"bash /tmp/lint.sh {s}", f"bash -c 'cat {s}'", f"bash -c 'shellcheck {s}'",
+                    f"sh -c 'diff {s} /tmp/y'", f"bash -c 'echo $(wc -l < {s})'", f"bash -c 'grep -c op {s}'"):
             self.assertIsNone(bash(cmd, self.root), cmd)
 
     def test_g21_file_tools(self):
