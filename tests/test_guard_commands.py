@@ -201,6 +201,12 @@ class MatchListTest(unittest.TestCase):
                     "S=upgrade; helm $S orders -n prod", "S=upgrade && helm ${S} orders -n prod",
                     "C=upgrade; helm $C orders -n prod"):
             self.assertEqual(strict_hit(cmd), "deny", cmd)
+        # only the subcommand is resolved: a release a loop, a read or a branch sets stays a hole (of_secrets-review)
+        for cmd in ("R=payments; for R in orders; do helm upgrade $R ./c -n prod; done",
+                    "R=payments; read R < f; helm upgrade $R ./c -n prod",
+                    "if c; then R=orders; else R=payments; fi; helm upgrade $R ./c -n prod"):
+            self.assertEqual(strict_hit(cmd), "deny", cmd)
+        self.assertEqual(helm_hit("helm upgrade orders ./c -fingress.yaml"), "deny")   # a cluster guess, '' listed
         self.assertIsNone(strict_hit("echo x | xargs helm list -n prod"))
         self.assertIsNone(strict_hit("helm upgrade -instaging orders ./c"))
 
