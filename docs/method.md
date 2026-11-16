@@ -73,11 +73,11 @@ Our reading, to confirm:
   - an owner who must relay between positions.
 - **Grounding.** Team Topologies uses cognitive load as the primary sizing rule for teams. Parnas (information hiding) and the design structure matrix cut modules where coupling is low. Conway's law ties the communication structure to the structure of the result.
 
-### Subagents: the owner's standing ask (2026-11-16, `of_architect`)
+### Subagents: the owner's standing yes (2026-11-16, `of_architect`)
 
-The owner asks every position to run the independent parts of its work as subagents, in parallel, rather than one after another in its own turns. The founder said this about a user organization's search decider, which had named its own hours as its only limit although its approved process names its workers as its subagents: "Again, the only limit is [its] own time. It can simply launch subagents. For some reason it does not" (2026-11-16, prompt `01a1e393-ded4` in `of_conductor`'s session; relayed in message `01a1e394-376d`). A minute later he widened it: "we need, for everyone where work has to be parallelised, done fast, attacked, iterated toward a goal and so on, to allow launching subagents" (prompt `01a1e395-8d97`, its last word corrected to "subagents" in `01a1e395-b062`).
+An organization's owner may give every position a standing yes to run the independent parts of its work as subagents, in parallel, rather than one after another in its own turns. The founder gave it for his organizations. He said this about a user organization's search decider, which had named its own hours as its only limit although its approved process names its workers as its subagents: "Again, the only limit is [its] own time. It can simply launch subagents. For some reason it does not" (2026-11-16, prompt `01a1e393-ded4` in `of_conductor`'s session; relayed in message `01a1e394-376d`). A minute later he widened it: "we need, for everyone where work has to be parallelised, done fast, attacked, iterated toward a goal and so on, to allow launching subagents" (prompt `01a1e395-8d97`, its last word corrected to "subagents" in `01a1e395-b062`).
 
-- **Why it must be said.** Claude Code's description of its Agent tool tells an agent not to spawn subagents unless the user asks, and to use the tool only when the user explicitly says so (as read on 2026-11-16). A position's user is its owner, and no brief or start context said that the owner asks. So the ask is stated where every session reads it: the organization's AGENTS.md, the start context of every enrolled position, and the brief `of spawn` types (below).
+- **Why it must be said.** Claude Code's description of its Agent tool tells an agent not to spawn subagents unless the user asks, and to use the tool only when the user explicitly says so (as read on 2026-11-16). A position's user is its owner, and no brief or start context said that the owner asks. So the yes is stated where every session reads it, in its owner's own words: the organization's AGENTS.md, the start context of every enrolled position, and the brief `of spawn` types (below).
 - **What runs as a subagent.** Parts that need no durable context and do not wait on each other:
   - a loop's variants and hypotheses, one per subagent (RFC 0005 §4.5);
   - searches over code, documents or the web;
@@ -97,11 +97,11 @@ The owner asks every position to run the independent parts of its work as subage
   - commits to a shared branch.
 
   A subagent reports to the position that launched it.
-- **It is the default for every organization on OF.** An organization's owner who wants otherwise tells its structure keeper, and its AGENTS.md says so.
+- **It holds where the organization's owner said yes.** The organization's registry records that yes in a top-level `subagents:`, with the owner's words and the ids that resolve to them (docs/registry.md, "Subagents"). Only then do the start context and the spawn brief state it. OF never tells one organization's positions that another's owner asked (organic-framework PR 241 review).
 - **Where it is said:**
   - the framework's own AGENTS.md (2026-11-16), for the OF team;
   - each organization's AGENTS.md, by its structure keeper;
-  - every enrolled position's start context, and one sentence in `of spawn`'s brief (`of_platform`, to build).
+  - every enrolled position's start context, and one sentence in `of spawn`'s brief, where the organization's registry records the owner's yes (`of_platform`, to build).
 
 ### One team: rails for working together
 

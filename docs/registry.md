@@ -360,6 +360,22 @@ of loop wait <work> --on runner|window|release|holdout|ask|position|calendar --r
 
 Other keys (notes such as `why`, `last_progress`) are allowed and ignored by the checks. `of registry check` validates the id, `kind`, the systems, `owner` and `doers` (a position here or `external:<name>`), `state`, the dates, the stages (unique ids, `done_when`, `state`) and the `match` types. When a work's systems span more than one unit, `owner` is required (the unit owner would be ambiguous). A doer whose position is parked or finished is a warning, not a problem: the work has lost its doer, and Studio shows it. `of import github` names the works each PR matches (`works` on `of.work_record` and `of.pr_state`): a number in `prs` within the doc's repository; a `branches` glob, `<repo>:<glob>` in that repository or a bare glob in the doc's repository or one where the work's systems live; a merge queue's batch PR (head `mergify/merge-queue/…` or `gh-readonly-queue/…`) matches no work, since it copies PRs already counted; a `paths` glob, `<repo>:<glob>` over the PR's changed paths or a plain glob over `<repo dir>/<path>` as systems' paths are written; or a change to the `doc` file itself. `of ask --work <id>` and `of status --work <id>` link an ask or a declared state to a work explicitly (the id must exist in the organization's `works:`); otherwise evidence attaches by `match`. Studio shows `external:` doers as people, not positions.
 
+## Subagents (2026-11-16, `of_architect`; organic-framework PR 241 review, `of_review`)
+
+A top-level `subagents:` records the organization's owner's standing yes to subagents: their positions run the independent parts of their work as subagents, in parallel (docs/method.md, "Subagents: the owner's standing yes"). Claude Code's Agent tool is used only when the user asks, so a session must be told, in its owner's own words, that the owner did.
+
+```yaml
+subagents:
+  decided:                          # the owner's yes: one id or a list, in the forms of "The owner's measure" (Works)
+    - "<the event id of the owner's own prompt, or <ask id>#<n>>"
+  words: "<the owner's words, verbatim in English, with the date>"   # shown to every position
+```
+
+- **Only the owner's yes counts.** `decided` resolves as a loop target's does (Works, "The owner's measure"): an ask filed with its yes option that the person chose, or their own prompt in the session that holds their conductor. The structure keeper writes it, and only when the cited words are a yes on subagents. It quotes them in `words`, never paraphrased (People).
+- **What it turns on.** With a `decided` that resolves, every enrolled position's start context carries the owner's yes with `words` and the ids, followed by the method's conditions: own worktree, heavy jobs on runners, `wip_arms`, a model by task, and what stays with the position. `of spawn`'s brief carries one sentence. Without it, or with an id that does not resolve, nothing is said, and Claude Code's default holds.
+- **`of registry check`** names a `decided` that does not resolve as a problem, or as a warning when it cannot read the log, and a `subagents:` without `words` as a problem.
+- **Why a key, not a line for everyone.** The start context would otherwise tell every position of every organization that its owner asked, citing another person's prompt. An owner's words carry no authority outside the organization they own (organic-framework PR 241 review). The first organizations' owner said it twice on 2026-11-16 (prompts `01a1e393-ded4` and `01a1e395-8d97`; docs/method.md).
+
 ## Goals (2026-11-07, `of_architect`; the goal tree 2026-11-12)
 
 A top-level `goals:` map: the few outcomes the organization's owner wants, above the works. A goal may be broken into sub-goals, and those into sub-goals again, so the owner sees what the organization works toward, what matters first, and which agents work on each part, not a flat list of works. Goals are the owner's: an agent proposes them, and they enter the registry only with a yes whose ask id each goal records.
