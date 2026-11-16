@@ -4222,10 +4222,11 @@ def _fits(word, alternatives):
     return any(_globs_meet(_call_glob(word), alt) for alt in str(alternatives).split("|") if alt != "")
 
 
-def _match_option_values(args, spelling):
-    """Every value the call gives option SPELLING, in every spelling: `-n v`, `-nv`, `-n=v`, a short cluster ending
-    in it (`-xn v`), `--name v`, `--name=v` and an unambiguous abbreviation of a long one. None for one without a
-    value (a doubt)."""
+def _match_option_values(args, spelling, guesses=None):
+    """Every value the call gives option SPELLING, in every spelling: `-n v`, `-nv`, `-n=v`, a short cluster holding
+    it (`-inprod`, `-xn v`), `--name v`, `--name=v` and an unambiguous abbreviation of a long one. None for one without
+    a value (a doubt). A value read inside a cluster is a guess (`-fingress.yaml` may be -f alone): its index goes
+    into GUESSES, so a rule that lists '' still fits it as not given (of_secrets-review on PR 237)."""
     out = []
     long_ = spelling.startswith("--")
     for k, a in enumerate(args):
@@ -4248,11 +4249,13 @@ def _match_option_values(args, spelling):
                 out.append(a[len(spelling):])
             elif re.match(r"^-[A-Za-z0-9]", a) and ch in a[2:]:   # a cluster: `-inprod` is -i, then -n prod
                 rest = a[a.index(ch, 2) + len(ch):]
+                if guesses is not None:
+                    guesses.add(len(out))
                 out.append(rest[1:] if rest.startswith("=") else rest if rest else nxt)
     return out
 
 
-def _cmd_matched(scope, name, args):
+def _cmd_matched(scope, name, args, line=""):
     """O4 `match` (docs/registry.md, Scope cli; of_architect, msg 01a1e245-c3a5): "hard", "soft" or None. With no match
     list, every call of a listed name is hard; else one an entry fits, every key of it. `words`: an ordered
     subsequence of the call's words that are not options, each a set of alternatives (`|`) and globs, so an unknown
@@ -4271,6 +4274,12 @@ def _cmd_matched(scope, name, args):
             continue
         want, k, literal_head = list(e.get("words") or []), 0, True
         for w in words:
+            if k == 0 and want and re.fullmatch(r"\$\{?\w+\}?", w):
+                said = _resolve_word(w, line)[0] if line else None  # `S=upgrade; helm $S …`: only the subcommand
+                if said is not None:  # is read so; a wrong reading only moves a record to nothing (of_secrets-review)
+                    if _fits(said, want[0]):
+                        k += 1
+                    continue
             if k < len(want) and _fits(w, want[k]):
                 if k == 0:
                     literal_head = _call_glob(w) == w
@@ -4281,10 +4290,17 @@ def _cmd_matched(scope, name, args):
             continue
         ok = True
         for spellings, values in (e.get("options") or {}).items():
-            got = [v for sp in str(spellings).split("|") if sp for v in _match_option_values(args, sp)]
+            got, guessed = [], set()
+            for sp in str(spellings).split("|"):
+                if sp:
+                    g = set()
+                    vs = _match_option_values(args, sp, g)
+                    guessed |= {len(got) + i for i in g}
+                    got += vs
             vals = [str(v) for v in values or []]
-            if not got:
-                ok = "" in vals
+            if not got or ("" in vals and len(guessed) == len(got)):
+                ok = "" in vals or (bool(got) and any(v is None or any(_fits(v, p) for p in vals if p != "")
+                                                      for v in got))
             else:
                 ok = any(v is None or any(_fits(v, p) for p in vals if p != "") for v in got)
             if not ok:
@@ -4322,23 +4338,21 @@ def commands_rule_match(scope, findings, position, line=""):
         if kind != "word":
             continue
         word, args = str(a), [str(x) for x in (b or [])]
-        if scope.get("match"):   # `C=upgrade; helm $C …`: a word set to a literal on the line is that literal
-            args = [(_resolve_word(x, line)[0] or x) if re.fullmatch(r"\$\{?\w+\}?", x) else x for x in args]
         if _cmd_var(word):
             target, known = _resolve_word(word, line)
             target = target.casefold() if target else target
             if target in names:
-                m = _cmd_matched(scope, target, args)
+                m = _cmd_matched(scope, target, args, line)
                 if m and not _cmd_allowed(scope, target, args, position):
                     if m == "hard":
                         return f"{target} {' '.join(args)}".strip()[:200], False
                     soft = soft or (f"{target} {' '.join(args)}".strip()[:200], True)
                 continue
-            if not known and _cmd_matched(scope, "", args):  # the line does not say what runs: a warning, never a
+            if not known and _cmd_matched(scope, "", args, line):  # the line does not say what runs: a warning, never a
                 soft = soft or (f"a command word held in a variable ({word[:60]})", True)  # deny (condition 1)
             continue
         name = os.path.basename(word).casefold()
-        m = _cmd_matched(scope, name, args) if name in names else None
+        m = _cmd_matched(scope, name, args, line) if name in names else None
         if m and not _cmd_allowed(scope, name, args, position):
             if m == "hard":
                 return f"{name} {' '.join(args)}".strip()[:200], False
