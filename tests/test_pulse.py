@@ -1281,6 +1281,31 @@ class OpenAsksNoteTest(unittest.TestCase):
             self.assertIsNone(of_hook.open_asks_note("S", "hi", db=os.path.join(d, "missing.db")))
 
 
+class ReplyWithinTheWaitTest(unittest.TestCase):
+    def test_a_reply_anywhere_in_the_wait_silences_the_nudge_for_good(self):
+        """of_field-analyst, message 01a1e208-4591: answered 16 min into a wait, it was nudged 2 h 18 min in and again
+        2 h later, each as the first nudge (AGENTS.md: never after the peer answered the waiter within the wait)."""
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            try:
+                typed = []
+                rows = [ev(1, "of.state_declared", "c", 0, state="waiting", waiting_on="d", note="review"),
+                        ev(2, "of.agent_message_out", "d", 16, to="organic-framework-build:c", via="relay")]
+                mem = of_pulse.load_memory()
+                mem["panes"] = {"pd": ["idle", T0]}
+                of_pulse.save_memory(mem)
+                kw = dict(send=lambda t, b, sound="request": None, log=lambda m: None,
+                          prompt=lambda pane, text, who: typed.append(pane))
+                for minutes in (40, 140, 260, 26 * 60):
+                    of_pulse.run(POS, AGENTS, rows, [], fake_bind, now=T0 + minutes * 60, **kw)
+                self.assertEqual(typed, [])
+                of_pulse.run(POS, AGENTS, rows[:1], [], fake_bind, now=T0 + 40 * 60, **kw)
+                self.assertEqual(typed, ["pd"])                           # no reply: nudged, as before
+            finally:
+                of_events.STATE_DIR = saved
+
+
 class RelayedReplyTest(unittest.TestCase):
     """acme_org, 2026-11-07: the pulse nudged unit owners for keepers they had answered: `of send` replies (source
     `of`) never reached the pulse's rows, and `of asks answered` by the owner did not count."""

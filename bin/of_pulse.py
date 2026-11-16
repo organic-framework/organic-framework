@@ -338,8 +338,10 @@ def run(positions, agents, rows, asks, bind, now=None, send=notify, prompt=None,
             continue
         peer = live.get(r["on"])
         key = f"{r['position']}->{r['on']}"
-        since = max(wait_run_start(rows, r["position"], r["on"]) or r["since"] or "",
-                    _iso(now - REPLY_QUIET_H * 3600))
+        # the whole wait, from its first declaration: a reply anywhere in it silences the nudge, and the back-off counts
+        # within it (AGENTS.md; of_field-analyst, message 01a1e208-4591: a 2 h cap on the reply's reach moved `since`
+        # every pulse, so a peer that had answered was nudged again, each time as the first)
+        since = wait_run_start(rows, r["position"], r["on"]) or r["since"] or ""
         if replied(rows, r["position"], r["on"], since):
             continue  # the peer answered (of send or SendMessage) within this wait: the waiter carries on
         last = nudge_state(mem["nudged"].get(key), since)
@@ -623,7 +625,6 @@ def inbound_stalls(mem, now, send, queues=None):
     return new
 
 
-REPLY_QUIET_H = 2  # a peer's reply within the wait silences nudges for this long at most
 
 
 def still_waits(r, observed, conn=None):
