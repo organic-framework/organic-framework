@@ -826,7 +826,8 @@ def _decided_resolver(conn=None, positions=None):
 
 
 def subagents_yes(doc, resolve):
-    """(words, [ids]) when the organization's top-level `subagents:` quotes its owner's words and every id in its
+    """(words, [ids], [each prompt's own words]) when the organization's top-level `subagents:` quotes its owner's
+    words and every id in its
     `decided` resolves in this machine's log as the owner's yes, else None (docs/registry.md, "Subagents"; of_review on
     PR 241: an owner's words carry no authority outside the organization they own)."""
     import of_loop
@@ -836,11 +837,13 @@ def subagents_yes(doc, resolve):
     ids = [s["decided"]] if isinstance(s.get("decided"), str) else list(s.get("decided") or [])
     if not ids:
         return None
+    typed = []
     for i in ids:
         y = resolve(str(i))
         if not y or y == of_loop.UNREAD:
             return None
-    return " ".join(str(s["words"]).split()), [str(i) for i in ids]
+        typed.append(getattr(y, "words", "") or "")
+    return " ".join(str(s["words"]).split()), [str(i) for i in ids], typed
 
 
 def check_subagents(s, resolve=None):
@@ -915,19 +918,18 @@ def _work_unit_people(doc, positions, org):
     return out
 
 
-def org_resolver(docs, positions, org, conn=None, fallback="own"):
-    """id[, work] -> the yes it names, for ORG. With a top-level `owner` (a person) whose `people.<owner>.conductors`
-    lists conductors, a prompt counts only when typed in one of them on one of that person's machines, or, on a work, of
-    a person who holds one of its units' owner positions (docs/registry.md, People, "A person's conductor"). Without
-    those keys, FALLBACK: 'own' (the organization's own conductors: the subagents interim, bf453523) or 'all' (every
-    listed conductor, as loop targets were read before)."""
+def org_resolver(docs, positions, org, conn=None, fallback=None):
+    """id[, work] -> the yes it names, for ORG. A prompt counts only when typed in a conductor that ORG lists for its
+    `owner` person (`people.<owner>.conductors`), on one of that person's machines when listed, or, on a work, for a
+    person who holds one of its units' owner positions (docs/registry.md, People, "A person's conductor"). Without
+    those keys no prompt counts; an ask's yes resolves on its work as before. FALLBACK is unused (kept for callers)."""
     import of_loop
     doc = docs.get(org) or {}
     owner = doc.get("owner")
+    # without `owner` and its conductors no prompt resolves as the owner's (docs/registry.md, People; of_server on PR
+    # 241: any conductor of the organization, a second person's included, read as the owner's yes); an ask's yes still
+    # resolves on its work
     names, machines = person_conductors(docs, org, owner) if owner else (set(), set())
-    if not names:
-        mine = positions if fallback == "all" else [p for p in positions if p.get("_org") == org]
-        return _decided_resolver(conn, mine)
     by_work = _work_unit_people(doc, positions, org)
     held = {"conn": conn}
 
@@ -938,6 +940,7 @@ def org_resolver(docs, positions, org, conn=None, fallback="own"):
         if not held["conn"]:
             return of_loop.UNREAD
         allowed = [(names, machines)] + [person_conductors(docs, org, x) for x in by_work.get(str(work), ())]
+        allowed = [(n, m) for n, m in allowed if n]
 
         def typed_by_person(position, host):
             return any(position in n and (not m or str(host) in m) for n, m in allowed)

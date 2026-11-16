@@ -422,9 +422,11 @@ class HandleTest(unittest.TestCase):
         # an organization whose registry carries no owner's yes to subagents: nothing is said (of_review on PR 241)
         self.assertNotIn("Subagents", ctx)
         import of_context
-        sec = "\n".join(of_context.subagents_section(("The owner, 2026-11-16: \"launch subagents\".", ["P1"])))
+        sec = "\n".join(of_context.subagents_section(("The owner, 2026-11-16: \"launch subagents\".", ["P1"],
+                                                       ["launch subagents"])))
         self.assertIn("## Subagents: your owner asks you to use them\nYour owner's standing yes for the Agent tool "
-                      "(your organization's registry, subagents:; P1): The owner, 2026-11-16: \"launch subagents\".\n"
+                      "(your organization's registry, subagents:; P1): The owner, 2026-11-16: \"launch subagents\". "
+                      "As typed in their conductor: \"launch subagents\"\n"
                       "Run the independent parts of your work as subagents, in parallel", sec)
         self.assertEqual(of_context.subagents_section(None), [])
         self.assertEqual(outs["S2"], "")                     # not enrolled: no context
