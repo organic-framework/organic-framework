@@ -334,13 +334,19 @@ class ReadingPointTest(unittest.TestCase):
             self.assertEqual(of_context.not_observed_runs([]), [])
             conn.close()
         # docs/registry.md, Works, "A stated wait": where each loop in testing stands, and the duty in one line
+        hold = {"on": "release", "ref": "rt35.1", "expect_at": 1_800_000_000, "ts": 1}
         lines = "\n".join(of_context.loop_clocks({
-            "w-a": {"role": "doer", "testing": 2, "wait": {"on": "runner", "ref": "job-7", "expect_at": 1_800_000_000},
-                    "left_h": 3.5, "since_h": 1.0},
-            "w-b": {"role": "owner", "testing": 1, "wait": None, "left_h": None, "since_h": 6.2},
-            "w-c": {"role": "doer", "testing": 0, "wait": None, "left_h": None, "since_h": 90}}))
-        self.assertIn("- `w-a` (doer): waits on runner job-7 until 2027-01-15 08:00Z (3.5 h left).", lines)
-        self.assertIn("- `w-b` (owner): 6.2 h since its last run or decision; no wait stated.", lines)
+            "w-a": {"role": "doer", "testing": 2, "part": "held", "wait": hold, "left_h": 3.5, "since_h": None,
+                    "stated": [dict(hold, holds=True),
+                               {"on": "holdout", "ref": "day 3", "expect_at": 1_800_100_000, "ts": 2,
+                                "hypothesis": "cdd8952f", "holds": False}]},
+            "w-b": {"role": "owner", "testing": 1, "part": "silent", "wait": None, "left_h": None, "since_h": 6.2,
+                    "stated": []},
+            "w-c": {"role": "doer", "testing": 0, "part": "silent", "wait": None, "since_h": 90, "stated": []}}))
+        self.assertIn("- `w-a` (doer): its stall clock is held by the wait on release rt35.1 until 2027-01-15 08:00Z "
+                      "(3.5 h left); also stated: holdout day 3 until 2027-01-16 11:46Z for cdd8952f (holds no clock).",
+                      lines)   # a user organization's structure keeper, message 01a1e317-4677: no wait replaces another
+        self.assertIn("- `w-b` (owner): 6.2 h with no run, decision or holding wait.", lines)
         self.assertNotIn("w-c", lines)                                          # nothing in testing: nothing to say
         self.assertIn("State a wait when the next run or decision will not come within 4 h: of loop wait", lines)
         self.assertEqual(of_context.loop_clocks({}), [])
@@ -463,11 +469,20 @@ class LocatedRunTest(unittest.TestCase):
             self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "hypothesis": hid,
                                  "note": "queued behind the nightly replay", "by": "lab_doer", "source": "cbx"})
             self.assertAlmostEqual(of_loop._epoch(expect) - time.time(), 5 * 3600, delta=120)
-            self.assertIn(f"waits on runner job-7 until {expect[:10]} {expect[11:16]}Z", run("show", "w-speed").stdout)
+            self.assertEqual(of_loop.clocks(db, [("w-speed", "doer", LOOP)]), {})   # nothing in testing yet
+            r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "win_rate", "--value", "0.3",
+                    "--observed-at", "the exchange's fills", "--direct", "--ended-at", "2026-11-01T00:00:00Z")
+            self.assertEqual(r.returncode, 0, r.stderr)                   # an old run: every wait came after it
             c = of_loop.clocks(db, [("w-speed", "doer", LOOP)])["w-speed"]
-            self.assertEqual((c["role"], c["testing"], c["wait"]["on"]), ("doer", 0, "calendar"))  # ends last: +3d
-            self.assertAlmostEqual(c["left_h"], 72, delta=0.2)
-            self.assertIsNone(c["since_h"])                                # no run or decision yet
+            self.assertEqual((c["part"], c["testing"], c["wait"]["on"]), ("held", 1, "position"))  # +1d holds, not
+            # the calendar's +3d
+            self.assertAlmostEqual(c["left_h"], 24, delta=0.2)
+            self.assertEqual(sorted((x["on"], x["holds"]) for x in c["stated"]),
+                             [("calendar", False), ("position", True), ("position", True), ("runner", True)])
+            out = run("show", "w-speed").stdout
+            self.assertIn("stall clock: held by the wait on position ", out)
+            self.assertIn("calendar until", out)
+            self.assertIn("(holds no clock)", out)
 
     def test_the_register_and_the_start_context_apply_a_locate(self):
         import of_events

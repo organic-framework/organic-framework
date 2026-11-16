@@ -499,29 +499,40 @@ def not_observed(run):
             + f", valid only when {pr.get('valid_when')}, which {held}")
 
 
-def clocks(conn, loops, now=None):
-    """{work: {role, testing, wait, left_h, since_h}} for the session's start context, from [(work id, owner|doer,
-    loop)]: the hypotheses in testing, the current stated wait (the latest stated after the last run or decision and
-    still to come) with its hours left, or the hours since the last run or decision (docs/registry.md, Works, "A stated
-    wait"). The stall itself is of_diagnose_rules.loop_stall's; this only shows where each loop stands."""
+def clocks(conn, loops, now=None, thresholds=None):
+    """{work: {role, testing, part, wait, left_h, since_h, stated}} for `of loop show` and the session's start context,
+    from [(work id, owner|doer, loop)], read from the one stall clock (of_diagnose_rules.loop_clock over the loop card,
+    of_loops.project): part `held` with the wait holding it and its hours left, or the hours since the last run,
+    decision or holding wait; `stated`: every wait stated since the last progress, each with `holds` (a wait on the
+    calendar or held-out data holds nothing; a user organization's structure keeper, message 01a1e317-4677: the latest wait
+    shown alone read as replacing the others). Loops with no hypothesis in testing are left out."""
+    import json
+    import of_diagnose_rules
+    import of_loops
     now = now or time.time()
     ids = {w: (role, lp) for w, role, lp in loops or []}
     if not ids:
         return {}
-    rows = [{"name": n, "ts": ts, "payload": __import__("json").loads(pl or "{}")} for n, ts, pl in conn.execute(
-        "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision', "
-        f"'{LOCATED}', '{WAITED}') AND json_extract(payload, '$.work') IN ({','.join('?' * len(ids))}) ORDER BY ts",
-        tuple(ids))]
+    rows = [{"event_id": e, "name": n, "ts": ts, "position": pos, "session_id": sid, "payload": json.loads(pl or "{}")}
+            for e, n, ts, pos, sid, pl in conn.execute(
+                "SELECT event_id, name, ts, position, session_id, payload FROM event WHERE name IN "
+                f"('of.loop_hypothesis', 'of.loop_run', 'of.loop_decision', 'of.loop_cost', '{LOCATED}', '{WAITED}') "
+                f"AND json_extract(payload, '$.work') IN ({','.join('?' * len(ids))}) ORDER BY ts", tuple(ids))]
+    ends = of_loops.ask_ends(conn)
+    cal = set(dict(of_diagnose_rules.STALL_DEFAULTS, **(thresholds or {}))["calendar_kinds"])
     out = {}
     for w, (role, lp) in ids.items():
-        reg = register(rows, w, lp)
-        last = max([_epoch(r.get("ended_at") or r["ts"]) or 0 for r in reg["runs"]] +
-                   [_epoch(d["ts"]) or 0 for d in reg["decisions"]] + [0]) or None
-        live = [x for x in reg["waits"] if x["ts"] and x["ts"] >= (last or 0) and (x.get("expect_at") or 0) > now]
-        wait = max(live, key=lambda x: x["expect_at"]) if live else None
-        out[w] = {"role": role, "testing": sum(h["status"] == "testing" for h in reg["hypotheses"]), "wait": wait,
-                  "left_h": round((wait["expect_at"] - now) / 3600, 1) if wait else None,
-                  "since_h": round((now - last) / 3600, 1) if last else None}
+        card = of_loops.project(w, lp, rows, now, asks=ends)
+        clk = of_diagnose_rules.loop_clock(card, now, thresholds) if card else None
+        if not clk:
+            continue
+        last = (clk.get("last") or {}).get("at") or 0
+        held = clk["part"] == "held"
+        stated = [dict(x, holds=x.get("on") not in cal and (x.get("ended_at") or x.get("expect_at") or 0) > now)
+                  for x in card.get("waits") or [] if (x.get("ts") or 0) >= last]
+        out[w] = {"role": role, "testing": len(clk["testing"]), "part": clk["part"],
+                  "wait": clk["wait"] if held else None, "left_h": round(-clk["hours"], 1) if held else None,
+                  "since_h": None if held else round(clk["hours"], 1), "stated": stated}
     return out
 
 

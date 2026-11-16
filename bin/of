@@ -2122,13 +2122,12 @@ def cmd_loop(args):
                       f"(of loop decision {args.work} <decision> --hypothesis {h['id']})")
         for d in reg["decisions"][-5:]:
             print(f"  decision {d['ts'][:16]} {d['decision']} {d.get('hypothesis') or ''} {d.get('note') or ''}")
-        if reg["waits"]:  # the latest stated wait (docs/diagnose.md 2.29)
-            import time
-            x = reg["waits"][-1]
-            until = time.strftime("%Y-%m-%d %H:%MZ", time.gmtime(x["expect_at"])) if x.get("expect_at") else "?"
-            print(f"  waits on {x['on']} {x.get('ref') or ''} until {until} (stated "
-                  f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(x['ts']))} by {x.get('by') or '?'})"
-                  .replace("  until", " until") + (f": {x['note']}" if x.get("note") else ""))
+        clock = of_loop.clocks(conn, [(args.work, "", loop)]).get(args.work)
+        if clock:  # the one stall clock (docs/diagnose.md 2.29) and every wait stated since the last progress
+            import of_context
+            for line in of_context.loop_clocks({args.work: dict(clock, role="clock")})[2:-1]:
+                print("  stall clock: " + line[2:].replace(f"`{args.work}` (clock): ", "")
+                      .replace("its stall clock is ", ""))
         return 0
     positions = _load_quiet()
     me = _me(positions, getattr(args, "sender", None))
