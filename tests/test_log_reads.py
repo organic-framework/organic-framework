@@ -42,7 +42,7 @@ ALLOWED = {
     ('of', 'cmd_pulse', 'of_handover.load(conn)'): HANDOVER,
     ('of', '_asks_now', 'of_asks.load(conn or of_store.connect())'): ASKS,
     ('of', 'cmd_loop', "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_"): RARE,
-    ('of_loop.py', 'clocks', "SELECT name, ts, payload FROM event WHERE name IN ('of.loop_"): RARE,  # 364 rows, 2026-11-16
+    ('of_loop.py', 'clocks', 'SELECT event_id, name, ts, position, session_id, payload FRO'): RARE,  # 364 rows, 2026-11-16
     ('of_pulse.py', 'loop_stalls', 'SELECT event_id, name, ts, position, session_id, payload FRO'): RARE,  # the same names
     ('of', '_diff_events', 'SELECT ts, name, payload, event_id FROM event WHERE name IN '): RARE,
     ('of', 'cmd_registry', "SELECT name, org, payload FROM event WHERE name IN ('of.gran"): RARE,

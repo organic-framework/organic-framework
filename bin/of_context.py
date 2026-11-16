@@ -85,28 +85,36 @@ def not_observed_runs(runs, limit=5):
 
 
 def loop_clocks(clocks, limit=8):
-    """Lines for the position's loops with a hypothesis in testing, from {work: of_loop.clock(...)}: the current wait
-    with its time left, or the hours since the last run or decision, and the duty to state a wait (docs/registry.md,
-    Works, "A stated wait")."""
+    """Lines for the position's loops with a hypothesis in testing, from {work: of_loop.clocks(...)}: the wait holding
+    the stall clock with its time left, or the hours with no run, decision or holding wait, the other waits stated
+    since the last progress, and the duty to state a wait (docs/registry.md, Works, "A stated wait")."""
+    def until(x):
+        return time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(x["expect_at"])) if x.get("expect_at") else "?"
     out = []
     for w, c in sorted((clocks or {}).items())[:limit]:
         if not c.get("testing"):
             continue
         x = c.get("wait")
         if x:
-            out.append(f"- `{w}` ({c['role']}): waits on {x['on']} {x.get('ref') or ''} until "
-                       f"{time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(x['expect_at']))} ({c['left_h']:g} h left)"
-                       .replace("  until", " until") + ".")
+            line = (f"- `{w}` ({c['role']}): its stall clock is held by the wait on {x['on']} {x.get('ref') or ''} until "
+                    f"{until(x)} ({c['left_h']:g} h left)").replace("  until", " until")
         else:
-            since = f"{c['since_h']:g} h since its last run or decision" if c.get("since_h") is not None else \
-                "no run or decision yet"
-            out.append(f"- `{w}` ({c['role']}): {since}; no wait stated.")
+            line = f"- `{w}` ({c['role']}): {c['since_h']:g} h with no run, decision or holding wait"
+        rest = [y for y in c.get("stated") or [] if not x or (y.get("on"), y.get("ref"), y.get("ts")) !=
+                (x.get("on"), x.get("ref"), x.get("ts"))]
+        if rest:
+            line += "; also stated: " + "; ".join(
+                f"{y['on']} {y.get('ref') or ''} until {until(y)}".replace("  until", " until")
+                + (f" for {y['hypothesis']}" if y.get("hypothesis") else "")
+                + ("" if y.get("holds") else " (holds no clock)") for y in rest[-4:])
+        out.append(line + ".")
     if not out:
         return []
     return (["", "## Loops with a hypothesis in testing"] + out
             + ["State a wait when the next run or decision will not come within 4 h: of loop wait <work> --on "
                "runner|window|release|holdout|ask|position|calendar --ref <what> --until <time> (docs/registry.md, "
-               "Works, \"A stated wait\")."])
+               "Works, \"A stated wait\"). Every wait counts; the latest of those that hold a clock holds it; a wait "
+               "on the calendar or held-out data holds none."])
 
 
 def build(position, positions, loops=None, resolve=None, runs=None, clocks=None):
