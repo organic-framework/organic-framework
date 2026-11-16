@@ -503,8 +503,8 @@ def clocks(conn, loops, now=None, thresholds=None):
     """{work: {role, testing, part, wait, left_h, since_h, stated}} for `of loop show` and the session's start context,
     from [(work id, owner|doer, loop[, the work's registry entry])], read from the one stall clock (of_diagnose_rules.loop_clock over the loop card,
     of_loops.project): part `held` with the wait holding it and its hours left, or the hours since the last run,
-    decision or holding wait; `stated`: every wait stated since the last progress, each with `holds` (a wait on the
-    calendar or held-out data holds nothing; a user organization's structure keeper, message 01a1e317-4677: the latest wait
+    decision or holding wait; `stated`: every wait stated since the last progress, each with its `status` in the
+    clock (holder, counted, calendar: holds none, not_counted: a restatement it did not count; a user organization's structure keeper, message 01a1e317-4677: the latest wait
     shown alone read as replacing the others). Loops with no hypothesis in testing are left out."""
     import json
     import of_diagnose_rules
@@ -530,7 +530,13 @@ def clocks(conn, loops, now=None, thresholds=None):
             continue
         last = (clk.get("last") or {}).get("at") or 0
         held = clk["part"] == "held"
-        stated = [dict(x, holds=x.get("on") not in cal and (x.get("ended_at") or x.get("expect_at") or 0) > now)
+        ident = lambda x: (x.get("ts"), x.get("on"), x.get("ref"))  # noqa: E731
+        skipped = {ident(x) for x in clk.get("waits_not_counted") or []}
+        holder = ident(clk["wait"]) if clk.get("wait") else None
+        # each wait as the clock counted it (of_review on PR 239): the one holding it, one counted that ends later,
+        # one on the calendar or held-out data (holds none), or a restatement the clock did not count
+        stated = [dict(x, status="holder" if ident(x) == holder and held else "not_counted" if ident(x) in skipped
+                       else "calendar" if x.get("on") in cal else "counted")
                   for x in card.get("waits") or [] if (x.get("ts") or 0) >= last]
         out[w] = {"role": role, "testing": len(clk["testing"]), "part": clk["part"],
                   "wait": clk["wait"] if held else None, "left_h": round(-clk["hours"], 1) if held else None,
