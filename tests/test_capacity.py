@@ -359,7 +359,7 @@ class MovePieces(unittest.TestCase):
         self.assertIn("background shell: lab run", note)
         self.assertIn("Re-create", note)
         self.assertIn("run CronList first", note)  # scheduled tasks come back with a resume (2026-11-14)
-        self.assertIn("# Account move: of_lab", note)
+        self.assertTrue(note.startswith("# Account move: of_lab, now on b@x\n"))  # the account in the first line
         # a model change on the same account: says the model, the reason, and no account move
         mc = of_capacity.handover_note("p", "sid", "/Users/alex/.claude-a", "/Users/alex/.claude-a", "a@x", {},
                                        "2026-11-10T16:30:00Z", model=("claude-opus-5-5", "claude-fable-5-2"),
@@ -2074,6 +2074,25 @@ class ToolProfiles(unittest.TestCase):
         have["/gg"] = {"bound:known"}
         m = of_capacity.rescue_plan(r.rows(), r.SESS, r.POS, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW, tools=(needs, have))
         self.assertEqual([x["to"] for x in m], ["/ap"])
+
+
+class Stay(unittest.TestCase):
+    """2026-11-16: the founder reaches of_conductor from his phone, signed in to the Claude app on that session's
+    account; a move breaks the link. capacity.yaml `stay` positions move only by rescue."""
+
+    def test_fill_and_relief_leave_a_stay_position_rescue_still_moves_it(self):
+        from unittest import mock
+        b = Balance()
+        b.setUp()
+        rows, pos = b.rows(), [{"name": "aws", "holder": {"session": "aws"}}]
+        sess = {"/cl": [], "/ez": [], "/gg": [{"session": "aws", "status": "idle"}]}
+        args = (rows, sess, pos, {"aws": 50}, {"/ez": 12.0, "/cl": 12.0})
+        self.assertEqual(len(of_capacity.balance_plan(*args, dict(POLICY), Balance.NOW)), 1)  # relief, as a control
+        self.assertEqual(of_capacity.balance_plan(*args, dict(POLICY, stay=["aws"]), Balance.NOW), [])
+        r = Rescue()
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, r.POS, {"st1": r.NOW - 600}, dict(r.STOPS_ONLY, stay=["st1"]),
+                                    r.NOW)
+        self.assertEqual([x["position"] for x in m], ["st1"])  # stopped on its limit: it moves anyway
 
 
 class ConnectorsCache(unittest.TestCase):

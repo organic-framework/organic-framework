@@ -1252,20 +1252,20 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
     """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
     restarted: a restart on the same account and model (move --restart)."""
     if restarted:
-        lines = [f"# Restart: {name}", "",
+        lines = [f"# Restart: {name}, on {account}", "",
                  f"`of_capacity` restarted this session (`{sid}`) at {ts} on the same account, `{short(dst)}` "
                  f"({account}). " + (f"{why.strip()} " if why else "")
                  + "Same session, same pane, same name; your context, memory and files are carried, and your model, "
                    "effort and permissions are unchanged.", ""]
     elif model:
         moved = f" and moved it from `{short(src)}` to `{short(dst)}` ({account})" if src != dst else ""
-        lines = [f"# Model change: {name}", "",
+        lines = [f"# Model change: {name}, on {account}", "",
                  f"`of_capacity` restarted this session (`{sid}`) at {ts} on `{model[1]}` (was `{model[0]}`){moved}. "
                  + (f"{why.strip()} " if why else "")
                  + "Same session, same pane, same name; your context, memory and files are carried, and your effort "
                    "and permissions are unchanged.", ""]
     else:
-        lines = [f"# Account move: {name}", "",
+        lines = [f"# Account move: {name}, now on {account}", "",
                  f"`of_capacity` moved this session (`{sid}`) at {ts} from `{short(src)}` to `{short(dst)}` "
                  f"({account}): the old account is near its model limits. Same session, same pane, same name; "
                  "your context, memory and files are carried. Nothing else changed.", ""]
@@ -2319,7 +2319,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
 
 
 def resume_note(name, sid, target, account, ts, last_ts, extra=None):
-    out = [f"# Account move, finished late: {name}", "",
+    out = [f"# Account move, finished late: {name}, now on {account}", "",
            f"`of_capacity` resumed this session (`{sid}`) on `{short(target)}` ({account}) at {ts}. An earlier move "
            f"did not finish its resume, so the session had no live holder after its last record ({last_ts or 'unknown'}). "
            "Same session, same pane, same name; your context, memory and files are where the move put them.", "",
@@ -3686,6 +3686,7 @@ def close(sid, position, reason, dry_run=False, log=print):
 PRICES = {"in": 4, "out": 20, "cw5": 5, "cw1h": 8, "cr": 0.2}  # $/MTok at list, Opus 5.5 (measured 2026-10)
 POLICY = {"auto": False, "fill_to": 85, "relief_at": 95, "week_max": 97, "min_rate": 5.0, "max_moves": 2,
           "hold": [],  # production positions, named in capacity.yaml `hold`
+          "stay": [],  # positions moved only off an account that refuses work (rescue), named in `stay`
           "position_memory": False}
 # of_capacity is not held (2026-11-08): the balancer runs as its own process, so relief moves of_capacity's session
 # between turns like any other; held, it sat on its own limit screen from 11:42Z to 14:34Z with nobody to move it.
@@ -4780,12 +4781,16 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         # sessions stood on ~/.claude at 100% because relief took idle sessions only. Fill takes idle ones only.
         # Positions in `hold` (production) move only by relief, off an account exhausted or about to be, and they go
         # first there: a stalled keeper costs the most (founder, ask 44a3b1f9, 2026-11-08). Fill never takes them.
+        # Positions in `stay` move neither by fill nor by relief: only rescue takes them, off an account that refuses
+        # work, to the one with the most room (2026-11-16: the founder reaches of_conductor from his phone, signed in
+        # to the Claude app on that session's account; a move breaks the link until he signs in again).
         ok = ("idle", "shell", "waiting") if relief else ("idle",)
         out = []
         for s in sessions.get(d, []):
             p = pos_by_session.get(s["session"])
             held = bool(p) and p["name"] in policy["hold"]
-            if not p or (held and not relief) or s.get("status") not in ok or s["session"] in skip:
+            if not p or (held and not relief) or p["name"] in (policy.get("stay") or ()) \
+                    or s.get("status") not in ok or s["session"] in skip:
                 continue
             out.append((rates.get(s["session"], 0.0), p["name"], s["session"]))
         return sorted(out, key=lambda x: (x[1] not in policy["hold"], tier(x[1]), -x[0], x[1]))
