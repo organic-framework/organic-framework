@@ -302,7 +302,9 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         doc = docs[org]
         problems += [f"{org}:registry/positions.yaml: {pr}" if not pr.startswith(WARN) else
                      f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}"
-                     for pr in check_subagents(doc.get("subagents"), resolve) if deep or not pr.startswith(WARN)]
+                     for pr in check_subagents(doc.get("subagents"), _decided_resolver(
+                         positions=[p for p in positions if p.get("_org") == org]) if deep and doc.get("subagents")
+                         else None) if deep or not pr.startswith(WARN)]   # its own conductors only (PR 241 review)
         works = doc.get("works")
         if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
             import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
@@ -850,7 +852,7 @@ def check_subagents(s, resolve=None):
     out = [] if str(s.get("words") or "").strip() else ["subagents: no words: quote the owner's words, verbatim, dated"]
     ids = [s["decided"]] if isinstance(s.get("decided"), str) else list(s.get("decided") or [])
     if not ids:
-        out.append("subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>")
+        out.append("subagents: no decided: the owner's yes, the id of their own prompt")
     asks = [str(i) for i in ids if "#" in str(i)]
     for i in asks:  # docs/registry.md, "Subagents" (5bf42c41): the owner's prompts only, an ask form never resolves
         out.append(f"subagents: decided {i} is an ask's yes; decided names the owner's own prompts only")
@@ -860,19 +862,22 @@ def check_subagents(s, resolve=None):
             out.append(f"{WARN}subagents: decided {i}: this machine's log cannot be read to resolve it")
         elif not y:
             out.append(f"subagents: decided {i} does not resolve as the owner's yes (their own prompt in their "
-                       f"conductor's session, or an ask's yes option they chose)")
+                       f"organization's conductor's session)")
     return out
 
 
-def org_subagents(position, positions, orgs_file=None):
-    """subagents_yes for POSITION's organization: one read of its registry and the log's resolver."""
+def org_subagents(position, positions, orgs_file=None, conn=None):
+    """subagents_yes for POSITION's organization: one read of its registry and the log's resolver over that
+    organization's own conductors only, so another organization's owner's prompt never counts (of_review on PR 241)."""
+    org = (position or {}).get("_org")
     regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
-    path = regs.get((position or {}).get("_org"))
+    path = regs.get(org)
     if not path:
         return None
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
-    return subagents_yes(doc, _decided_resolver(positions=positions) if doc.get("subagents") else None)
+    mine = [p for p in positions if p.get("_org") == org]
+    return subagents_yes(doc, _decided_resolver(conn, mine) if doc.get("subagents") else None)
 
 
 def _for_work(resolve, wid):
