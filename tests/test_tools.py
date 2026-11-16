@@ -204,10 +204,15 @@ class SigninGuardTest(unittest.TestCase):
                 fh.write(f"auto: true\nsignins:\n  {acct}/:\n    {CF}: keys\n")
             self.assertEqual(of_tools.signin_labels(acct, cap), {CF: "keys"})
             self.assertEqual(of_tools.signin_labels(os.path.join(t, "other"), cap), {})
-            self.assertEqual(of_tools.signin_labels(acct, os.path.join(t, "none.yaml")), {})
+            # no file, no signins key, or an unreadable file: unknown, so the guard fails closed (of_server, PR 243)
+            self.assertIsNone(of_tools.signin_labels(acct, os.path.join(t, "none.yaml")))
+            for text in ("auto: true\n", "signins: [unclosed\n", "signins:\n", ""):
+                with open(cap, "w") as fh:
+                    fh.write(text)
+                self.assertIsNone(of_tools.signin_labels(acct, cap), text)
             with open(cap, "w") as fh:
-                fh.write("signins: [unclosed\n")
-            self.assertIsNone(of_tools.signin_labels(acct, cap))
+                fh.write("signins: {}\n")
+            self.assertEqual(of_tools.signin_labels(acct, cap), {})  # declared, and this account holds none
 
     def test_it_applies_to_an_organization_without_a_catalogue(self):
         import tempfile
@@ -224,6 +229,14 @@ class SigninGuardTest(unittest.TestCase):
                 self.assertEqual(st, {"enabledPlugins": {CF: False}, "deniedMcpServers": [{"serverUrl": CF_URL}]})
                 self.assertEqual(of_tools.launch_parts("of_conductor", "s-1", os.path.join(t, "elsewhere"),
                                                        capacity_file=cap), ([], {}))
+                # the signins key dropped: unknown, so the labelled plugin is off on every account
+                with open(cap, "w") as fh:
+                    fh.write("auto: true\n")
+                self.assertEqual(of_tools.launch_parts("of_conductor", "s-1", os.path.join(t, "elsewhere"),
+                                                       capacity_file=cap)[1]["enabledPlugins"], {CF: False})
+                # and no catalogue labels anything: nothing changes
+                of_tools.registries = lambda orgs_file=None: {"of": {"positions": [{"name": "of_conductor"}]}}
+                self.assertEqual(of_tools.launch_parts("of_conductor", "s-1", t, capacity_file=cap), ([], {}))
             finally:
                 of_tools.registries = real
 
