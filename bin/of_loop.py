@@ -501,7 +501,7 @@ def not_observed(run):
 
 def clocks(conn, loops, now=None, thresholds=None):
     """{work: {role, testing, part, wait, left_h, since_h, stated}} for `of loop show` and the session's start context,
-    from [(work id, owner|doer, loop)], read from the one stall clock (of_diagnose_rules.loop_clock over the loop card,
+    from [(work id, owner|doer, loop[, the work's registry entry])], read from the one stall clock (of_diagnose_rules.loop_clock over the loop card,
     of_loops.project): part `held` with the wait holding it and its hours left, or the hours since the last run,
     decision or holding wait; `stated`: every wait stated since the last progress, each with `holds` (a wait on the
     calendar or held-out data holds nothing; a user organization's structure keeper, message 01a1e317-4677: the latest wait
@@ -510,7 +510,7 @@ def clocks(conn, loops, now=None, thresholds=None):
     import of_diagnose_rules
     import of_loops
     now = now or time.time()
-    ids = {w: (role, lp) for w, role, lp in loops or []}
+    ids = {x[0]: (x[1], x[2], x[3] if len(x) > 3 else None) for x in loops or []}
     if not ids:
         return {}
     rows = [{"event_id": e, "name": n, "ts": ts, "position": pos, "session_id": sid, "payload": json.loads(pl or "{}")}
@@ -521,8 +521,10 @@ def clocks(conn, loops, now=None, thresholds=None):
     ends = of_loops.ask_ends(conn)
     cal = set(dict(of_diagnose_rules.STALL_DEFAULTS, **(thresholds or {}))["calendar_kinds"])
     out = {}
-    for w, (role, lp) in ids.items():
-        card = of_loops.project(w, lp, rows, now, asks=ends)
+    for w, (role, lp, entry) in ids.items():
+        # the work's entry carries its state: a parked or done work has no clock, as in the pulse and Studio
+        # (of_review on PR 239)
+        card = of_loops.project(w, lp, rows, now, work=entry, asks=ends)
         clk = of_diagnose_rules.loop_clock(card, now, thresholds) if card else None
         if not clk:
             continue

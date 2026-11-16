@@ -479,10 +479,21 @@ class LocatedRunTest(unittest.TestCase):
             self.assertAlmostEqual(c["left_h"], 24, delta=0.2)
             self.assertEqual(sorted((x["on"], x["holds"]) for x in c["stated"]),
                              [("calendar", False), ("position", True), ("position", True), ("runner", True)])
+            parked = of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "parked"})])
+            self.assertEqual(parked, {})                     # a parked work has no clock (of_review on PR 239)
+            self.assertEqual(of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "done"})]), {})
             out = run("show", "w-speed").stdout
             self.assertIn("stall clock: held by the wait on position ", out)
             self.assertIn("calendar until", out)
             self.assertIn("(holds no clock)", out)
+            import yaml
+            reg = os.path.join(root, "org", "registry", "positions.yaml")
+            with open(reg) as fh:
+                doc = yaml.safe_load(fh)
+            doc["works"]["w-speed"]["state"] = "parked"
+            with open(reg, "w") as fh:
+                yaml.safe_dump(doc, fh)
+            self.assertNotIn("stall clock", run("show", "w-speed").stdout)   # parked: no clock in show either
 
     def test_the_register_and_the_start_context_apply_a_locate(self):
         import of_events
