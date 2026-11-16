@@ -46,6 +46,53 @@ Tables (v1):
 
 Content addressing removes duplicates. A session copied into another config dir by an account move produces the same records, and they are stored once.
 
+### Transcripts in their own file (proposed, 2026-11-16, `of_platform`)
+
+*Proposed for review by `of_review`, `of_server` and `of_capacity` before any code (`of_architect`, message `01a1e3c3-9800`, accepted the direction).*
+
+**Why.** One SQLite file has one write lock. The hooks write `event` and `hook_record` into `of.db`, and so does the transcript ingest, into `transcript_record` and `blob`. On 2026-11-15 and 11-16 `hooks.errors` failed twice (18% and 15% of hook calls spooled within 10 minutes). Two causes were fixed: the GitHub import rewrote every record through a search-table scan (organic-framework PR 234), and a moved session ran the fork check over all its records (2026-11-16, `of_platform`). The cause left is the size of the store: at 12.9 GB (3.8 million transcript records, 3.9 million blobs, 6.1 GB of compressed content) and 92% swap, one transcript insert takes about 0.7 s, measured by the ingest's own breakdown (8 records of one file in 5.6 s; the fork check and the commit 0.0 s). Each insert updates the blob key and five transcript indexes, two of them in random order, on pages no longer in memory. The 0.25 s transaction cap cannot split one insert, so the hooks' short lock wait runs out and they spool.
+
+**The measure** is read at the hook: the spooled hook calls per hour in `hook-errors.log` (lines with ` spooled`), and `hooks.errors` (the spooled and failed share of hook calls in 10 minutes, docs/health.md). Before: 761, 348, 491 and 215 spooled calls on 2026-11-13, 14, 15 and 16 (to 10:00Z). The change works when the spooled calls caused by the ingest go to zero. Calls spooled for another writer, such as the listener, are counted apart.
+
+**Layout.** Two files, each with its own WAL and write lock:
+- `of.db` keeps everything the hooks, the relay and the listener write: `event` and its search tables, `hook_record`, `runtime_record`, `snapshot`, the views and cursors, and the blobs those rows name.
+- `of-transcripts.db` takes `transcript_record`, `session_fork`, the `transcript_own` view, `ingest_cursor`, and the blobs of transcript lines.
+
+`of_store.connect()` attaches `of-transcripts.db` as `tx`. A hook call that writes only events connects without it, so it opens one file as today. After the move, `main` has no transcript tables, so an unqualified `transcript_record` resolves to `tx` (SQLite searches `temp`, then `main`, then the attached files) and readers keep their queries. `blob` exists in both files; `get_blob` looks in `main`, then `tx`.
+
+**Writers**, each changed to name `tx` explicitly:
+- `of_store.ingest_file` and `_insert_capped`: transcript rows, their blobs, `ingest_cursor`;
+- `of_store.detect_forks`, `of db forks` in `bin/of`: `session_fork` and the uuid index;
+- `of_store.redact_rows` and `drop_unreferenced`, with `of redact`: transcript rows and their blobs, in the file each row lives in;
+- `of_merge_delta` (a host move's store merge, offline): it merges each file into its peer.
+
+**Readers** that read transcript rows, unchanged except where noted:
+- `bin/of_capacity.py` (the spend view by `id` cursor, the usage sums over `transcript_own`), `bin/of_spend.py`;
+- `bin/of_derive.py` (sessions, Codex rows), `bin/of_asks_answer.py` (the assistant's last blob), `bin/of_paste.py`;
+- `bin/of_credentials.py` and `bin/of_guard_replay.py` (blobs of tool calls in a window), `bin/of_tools.py`;
+- `bin/of_studio.py` and `bin/of_studio_cli.py` (assistant turns per session in a window);
+- `bin/of_ship.py` and `bin/of_route.py` (shipping by `id`, raw-consent gating), `bin/of_server.py` (its own tables on the server, not this file);
+- `bin/of` (`of db forks`, `of redact`, `of db stats`).
+
+None of them joins an event with a transcript row in one SQL statement; each reads one side and matches in Python. So no query has to span both files.
+
+**The move, without an offline job.** A 12 GB copy run at once would hold the disk and the lock for long and spool every hook, so the move goes in small steps and only while the machine is idle:
+1. `of-transcripts.db` is created empty. From then on new ingest writes there. Its `id` sequence starts above `main`'s largest transcript `id`, so the `id` cursors (`ship_cursor`, the capacity spend view) read on without a gap or a repeat.
+2. During the move every connection defines temp views `transcript_record`, `transcript_own` and `blob` as `main`'s rows `UNION ALL` `tx`'s. Temp is searched first, so every reader sees all rows.
+3. A mover copies old rows into `tx` by `id` range: rows and their blobs, as stored, keeping their `id`. It copies at most 2,000 rows in a transaction capped at 0.25 s, and runs only while the machine is idle: no hook spooled in the last 10 minutes, and load below the number of cores. The pulse runs it. Its cursor is a row in `tx`. Each copied range is checked by count and by its first and last `id`, then deleted from `main` in transactions capped at 0.25 s.
+4. When `main` has no transcript rows left, its empty transcript tables are dropped and the temp views go. From then on unqualified names resolve to `tx`.
+
+**Copy, not re-ingest.** The direction was to re-ingest old rows from the raw tier. The raw tier cannot give them all back. `of archive` copied every transcript once, on 2026-11-05 (2.5 GB in `raw/files/`), and nothing since. For later sessions, the harness's own transcript files are the only copy outside the store, and a session moved or removed since then has no such file. Re-ingest would also give the rows new `id`s, which the shipping and spend cursors would read as new. Copying the rows as stored keeps both: same content, same `id`s, and no parsing or redaction to run again.
+
+**Disk.** Deleted rows' pages go to `main`'s free list, and the file does not shrink. During and after the move, `of.db` stays at 12.9 GB while `of-transcripts.db` grows to about 12 GB: about 12 GB more on disk until `main` is vacuumed. Free disk was 94 GiB on 2026-11-16, against the card at 20 GiB. A `VACUUM` of `main` afterwards rewrites only what is left there (about 2 GB of events, search tables and hook records). It is needed only for the disk, never for correctness. It holds `main`'s write lock while it runs, so the hooks spool for that time. It runs once, at night when the machine is idle, from the pulse. The owner is told in advance. The pulse's free-disk check runs before it, and the `VACUUM` waits while free disk is below 30 GiB, since it needs room for its copy. Event growth reuses the free list meanwhile.
+
+**What is not changed.** The event log, its search tables, the views and every `event` reader stay in `of.db`, so the listener and the hooks' path keep their queries. The central store, ClickHouse, keeps its tables. `of_server`'s own store is a separate file and is not touched.
+
+**Open for the review.**
+- The idle rule's numbers: 10 minutes without a spooled hook call, load below the number of cores.
+- Whether `blob` rows that both a hook record and a transcript line name stay in both files. They are rare, and content addressing makes the copies harmless.
+- The move's pace, in batches per idle tick.
+
 ### Merging another machine's store (2026-11-15)
 
 When positions move to another machine (the agent host move, organic-framework-build reports/agent-server-migration-plan-2026-11-11.md §3, step B3), the target's store takes one organization's rows from the source's after a cutover point. On the host each organization runs as its own OS user with its own store, so a merge names its organization (`--org`) and another organization's rows never cross (`of_review` on organic-framework PR 195). Its positions come from the target's own registry (`--orgs`, the target's organizations list), never from the source's labels; a session is the organization's when the target knows it as one of those positions' sessions, or does not know it and the source names only those positions for it. Each row moves by the key that names it on every machine: events by `event_id`, the organization's own, naming one of its positions and sessions when they name any; transcript records of its sessions by `(session_id, record_uuid)`; session forks of those sessions; hook records of those sessions by their content, since their row ids are per machine (an event's `raw_ref` to one is rewritten to the target's id). The blobs those rows name come along. Machine-level rows that name no organization's session stay: runtime records, snapshots, the pulse's and the capacity probe's records, and the ingest and ship cursors.
