@@ -366,12 +366,12 @@ A top-level `subagents:` records the organization's owner's standing yes to suba
 
 ```yaml
 subagents:
-  decided:                          # the owner's yes: one id or a list, in the forms of "The owner's measure" (Works)
-    - "<the event id of the owner's own prompt, or <ask id>#<n>>"
+  decided:                          # the owner's yes: one id or a list of the event ids of their own prompts
+    - "<the event id of the owner's own prompt>"
   words: "<the owner's words, verbatim in English, with the date>"   # shown to every position
 ```
 
-- **Only the owner's yes counts.** `decided` resolves as a loop target's does (Works, "The owner's measure"): an ask filed with its yes option that the person chose, or their own prompt in the session that holds their conductor. The structure keeper writes it, and only when the cited words are a yes on subagents. It quotes them in `words`, never paraphrased (People).
+- **Only the owner's yes counts.** `decided` names the owner's own prompts, and resolves as a loop target's prompt form does (Works, "The owner's measure"): an `of.human_prompt` with origin human in the session that holds their conductor. The ask form does not apply: an ask resolves only when it was filed for a work (`of ask --work`), and this yes belongs to no work. When an owner who has no conductor needs it, an ask form is built then (2026-11-16, `of_platform`, message `01a1e3a7-bb4f`). The structure keeper writes it, and only when the cited words are a yes on subagents. It quotes them in `words`, never paraphrased (People).
 - **What it turns on.** With a `decided` that resolves, every enrolled position's start context carries the owner's yes with `words` and the ids, followed by the method's conditions: own worktree, heavy jobs on runners, `wip_arms`, a model by task, and what stays with the position. `of spawn`'s brief carries one sentence. Without it, or with an id that does not resolve, nothing is said, and Claude Code's default holds.
 - **`of registry check`** names a `decided` that does not resolve as a problem, or as a warning when it cannot read the log, and a `subagents:` without `words` as a problem.
 - **Why a key, not a line for everyone.** The start context would otherwise tell every position of every organization that its owner asked, citing another person's prompt. An owner's words carry no authority outside the organization they own (organic-framework PR 241 review). The first organizations' owner said it twice on 2026-11-16 (prompts `01a1e393-ded4` and `01a1e395-8d97`; docs/method.md).
