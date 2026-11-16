@@ -628,6 +628,15 @@ class ForkTest(unittest.TestCase):
             own = conn.execute("SELECT record_uuid FROM transcript_own WHERE session_id = 'C3' AND record_uuid "
                                "LIKE '%' AND type IN ('user', 'assistant')").fetchall()
             self.assertEqual(own, [("c3",)])
+            # a moved session: the same session's transcript under another account's folder is no new fork, and its
+            # ingest never runs the fork check (2026-11-15: 2 to 9 s a transaction on large sessions, the lock held
+            # 14 to 26 s)
+            moved = os.path.join(d, "other-account", "P.jsonl")
+            os.makedirs(os.path.dirname(moved))
+            with open(moved, "w") as fh:
+                fh.write(rec("P", "u1", 1) + rec("P", "u2", 2) + rec("P", "u3", 3) + rec("P", "u4", 7))
+            with mock.patch.object(of_store, "detect_forks", side_effect=AssertionError("fork check")):
+                self.assertEqual(of_store.ingest_file(conn, moved), 1)   # its one new record
             conn.close()
 
 

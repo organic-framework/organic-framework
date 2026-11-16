@@ -649,7 +649,12 @@ def ingest_file(conn, path, harness="claude-code", max_bytes=None, on_record=Non
     # transaction cap the first transaction may hold one record, and a fork's file often begins with a title line no
     # session shares (of_review on PR 208: all 8 marked forks did), so the mark is checked again in each transaction
     # of the first batch, and on until a user or assistant record went in (INSERT OR REPLACE: the count grows).
-    fork_check = [offset == 0 and f"{os.sep}subagents{os.sep}" not in path and has_uuid_index(conn)]
+    # A session that already has records under another file is no new fork: a moved session's transcript is the same
+    # session under another account's folder, and checking it ran detect_forks over all its records (2 to 9 s on a
+    # large session) in each transaction of its first batch, holding the write lock 14 to 26 s (2026-11-15)
+    fork_check = [offset == 0 and f"{os.sep}subagents{os.sep}" not in path and has_uuid_index(conn)
+                  and not conn.execute("SELECT 1 FROM transcript_record WHERE session_id = ? AND source_path != ? "
+                                       "LIMIT 1", (session_hint, path)).fetchone()]
     last_sid, talked = [None], [False]
 
     def mark_fork(first_batch_done):
