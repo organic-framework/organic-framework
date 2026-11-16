@@ -425,6 +425,67 @@ class SubagentsYesTest(unittest.TestCase):
             conn.close()
 
 
+    def test_a_persons_conductor_speaks_for_the_organizations_they_own(self):
+        """docs/registry.md, People, "A person's conductor" (of_architect, 95b2bcd2): one person owns two organizations
+        and types in one conductor of the first; the second lists it as `<org>:<position>` under the same tenant. A
+        conductor of a different tenant, another machine, or another person counts for nothing."""
+        import importlib.machinery
+        import importlib.util
+        import of_events
+        import of_store
+        import yaml
+        loader = importlib.machinery.SourceFileLoader("of_cli_sub3", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli_sub3", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as root:
+            conn = of_store.connect(os.path.join(root, "of.db"))
+
+            def prompt(position, host):
+                rec = of_events.record("human_prompt", {"origin": "human", "text": "yes"}, position=position, session="S")
+                rec["host.id"] = host
+                of_store.add_event(conn, rec)
+                return rec["of.event.id"]
+            here = prompt("a_conductor", "M1")
+            elsewhere = prompt("a_conductor", "M2")
+            stranger = prompt("c_conductor", "M1")
+            unit = prompt("b_kim_conductor", "M1")
+            conn.commit()
+            regs = {"orga": {"tenant": "t1", "owner": "pat", "people": {"pat": {"machines": ["M1"],
+                                                                                 "conductors": ["a_conductor"]}},
+                             "positions": [{"name": "a_conductor", "role": "conductor"}]},
+                    "orgb": {"tenant": "t1", "owner": "pat",
+                             "people": {"pat": {"machines": ["M1"], "conductors": ["orga:a_conductor"]},
+                                        "kim": {"conductors": ["b_kim_conductor"]}},
+                             "units": {"u": {"owner": "b_unit_owner", "systems": ["sb"]}},
+                             "works": {"w1": {"systems": ["sb"]}, "w2": {"systems": ["other"]}},
+                             "positions": [{"name": "b_kim_conductor", "role": "conductor"},
+                                           {"name": "b_unit_owner"}, {"name": "b_doer"}]},
+                    "orgc": {"tenant": "t2", "owner": "lee", "people": {"lee": {"conductors": ["orga:a_conductor"]}},
+                             "positions": [{"name": "c_conductor", "role": "conductor"}]}}
+            positions = [dict(p, _org=o) for o, d in regs.items() for p in d["positions"]]
+            positions = [dict(p, holder={"runtime": "human", "person": "kim"}) if p["name"] == "b_unit_owner" else p
+                         for p in positions]
+            ra = of.org_resolver(regs, positions, "orga", conn)
+            rb = of.org_resolver(regs, positions, "orgb", conn)
+            rc = of.org_resolver(regs, positions, "orgc", conn)
+            self.assertTrue(ra(here) and rb(here))                    # one person, one conductor, same tenant
+            self.assertIsNone(ra(elsewhere))                          # not on the person's machine
+            self.assertIsNone(rb(stranger))                           # another organization's conductor
+            self.assertIsNone(rc(here))                               # a different tenant's conductor: never
+            self.assertTrue(rb(unit, "w1"))                           # a unit owner a person holds, on its work
+            self.assertIsNone(rb(unit, "w2"))                         # not on another work
+            self.assertIsNone(rb(unit))
+            self.assertIn("people: lee: conductor 'orga:a_conductor' is of orga, whose tenant differs",
+                          of.check_people_conductors(regs, "orgc"))
+            bad = dict(regs, orgd={"owner": "nobody", "people": {"x": {"conductors": ["ghost"]}}, "positions": []})
+            self.assertEqual(of.check_people_conductors(bad, "orgd"),
+                             ["owner: 'nobody' names no person under people:",
+                              "people: x: conductor 'ghost' is no position of a listed organization"])
+            self.assertEqual(of.check_people_conductors(regs, "orgb"), [])
+            conn.close()
+
+
 class LocatedRunTest(unittest.TestCase):
     """docs/registry.md, Works, "A run names where its reading was taken" (hand-over ba0485aa from of_architect;
     of_field-analyst's message 01a1dc77-50fc: on three of a user organization's loops no run named a declared measure

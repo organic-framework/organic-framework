@@ -295,16 +295,18 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         for uid, u in (first.get("_units") or {}).items():
             if isinstance(u, dict) and u.get("memory") is not None and u["memory"] not in MEMORY_SCOPES:
                 problems.append(f"{rel}: units: {uid}: memory {u['memory']!r} is not one of {', '.join(MEMORY_SCOPES)}")
-    resolve = _decided_resolver(positions=positions) if deep else None  # only `of registry check` reads the log for a loop's decided
     for org, path, _ in org_registries(orgs_file):  # works: (docs/works.md, step 1)
         if org in BROKEN or org not in docs:
             continue
         doc = docs[org]
+        problems += [f"{org}:registry/positions.yaml: {pr}" for pr in (check_people_conductors(docs, org) if deep
+                                                                       else [])]   # deep: the docs carry positions
+        # only `of registry check` reads the log for a decided; each organization's with its owner's conductors
+        resolve = org_resolver(docs, positions, org, fallback="all") if deep else None
+        sub_resolve = org_resolver(docs, positions, org, fallback="own") if deep and doc.get("subagents") else None
         problems += [f"{org}:registry/positions.yaml: {pr}" if not pr.startswith(WARN) else
                      f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}"
-                     for pr in check_subagents(doc.get("subagents"), _decided_resolver(
-                         positions=[p for p in positions if p.get("_org") == org]) if deep and doc.get("subagents")
-                         else None) if deep or not pr.startswith(WARN)]   # its own conductors only (PR 241 review)
+                     for pr in check_subagents(doc.get("subagents"), sub_resolve) if deep or not pr.startswith(WARN)]
         works = doc.get("works")
         if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
             import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
@@ -866,18 +868,111 @@ def check_subagents(s, resolve=None):
     return out
 
 
+def registry_docs(orgs_file=None):
+    """{org: its registry document} of every listed organization (one read each); an unreadable one is left out."""
+    out = {}
+    for org, path, _ in org_registries(orgs_file or ORGS_FILE):
+        try:
+            with open(path) as fh:
+                out[org] = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError):
+            pass
+    return out
+
+
+def person_conductors(docs, org, person):
+    """(conductor position names, machine ids) where only PERSON types, as ORG's registry lists them (docs/registry.md,
+    People, "A person's conductor"): a bare name is a position of ORG; `<org>:<position>` one of another organization,
+    which counts only when that organization has the same tenant. Names that are no such position are left out (the
+    registry check names them)."""
+    doc = docs.get(org) or {}
+    p = ((doc.get("people") or {}).get(person) if isinstance(doc.get("people"), dict) else None) or {}
+
+    def is_position(o, n):
+        return any(isinstance(x, dict) and x.get("name") == n for x in (docs.get(o) or {}).get("positions") or [])
+    names = set()
+    for c in p.get("conductors") or []:
+        o, sep, n = str(c).partition(":")
+        if not sep:
+            o, n = org, o
+        if is_position(o, n) and (o == org or (docs.get(o) or {}).get("tenant") == doc.get("tenant")):
+            names.add(n)
+    return names, {str(m) for m in p.get("machines") or []}
+
+
+def _work_unit_people(doc, positions, org):
+    """{work id: the people who hold its units' owner positions}: a unit owner a person holds gives yeses on that work
+    (docs/registry.md, People, "Why on the person"). A work's units come from its systems."""
+    units = doc.get("units") if isinstance(doc.get("units"), dict) else {}
+    held = {p["name"]: (p.get("holder") or {}).get("person") for p in positions
+            if p.get("_org") == org and (p.get("holder") or {}).get("runtime") == "human"}
+    of_system = {str(sy): u.get("owner") for u in units.values() if isinstance(u, dict)
+                 for sy in u.get("systems") or []}
+    out = {}
+    for wid, w in (doc.get("works") or {}).items() if isinstance(doc.get("works"), dict) else ():
+        if isinstance(w, dict):
+            out[str(wid)] = {held[o] for o in (of_system.get(str(sy)) for sy in w.get("systems") or []) if held.get(o)}
+    return out
+
+
+def org_resolver(docs, positions, org, conn=None, fallback="own"):
+    """id[, work] -> the yes it names, for ORG. With a top-level `owner` (a person) whose `people.<owner>.conductors`
+    lists conductors, a prompt counts only when typed in one of them on one of that person's machines, or, on a work, of
+    a person who holds one of its units' owner positions (docs/registry.md, People, "A person's conductor"). Without
+    those keys, FALLBACK: 'own' (the organization's own conductors: the subagents interim, bf453523) or 'all' (every
+    listed conductor, as loop targets were read before)."""
+    import of_loop
+    doc = docs.get(org) or {}
+    owner = doc.get("owner")
+    names, machines = person_conductors(docs, org, owner) if owner else (set(), set())
+    if not names:
+        mine = positions if fallback == "all" else [p for p in positions if p.get("_org") == org]
+        return _decided_resolver(conn, mine)
+    by_work = _work_unit_people(doc, positions, org)
+    held = {"conn": conn}
+
+    def resolve(did, work=None):
+        if held["conn"] is None:
+            import of_fold
+            held["conn"] = of_fold.reader() or False
+        if not held["conn"]:
+            return of_loop.UNREAD
+        allowed = [(names, machines)] + [person_conductors(docs, org, x) for x in by_work.get(str(work), ())]
+
+        def typed_by_person(position, host):
+            return any(position in n and (not m or str(host) in m) for n, m in allowed)
+        return of_loop.resolve_decided(held["conn"], did, typed_by_person, work)
+    return resolve
+
+
+def check_people_conductors(docs, org):
+    """docs/registry.md, People, "A person's conductor": `owner` naming no listed person; a conductor that is no
+    position of a listed organization, or one of another organization with a different tenant."""
+    doc = docs.get(org) or {}
+    people = doc.get("people") if isinstance(doc.get("people"), dict) else {}
+    out = []
+    if doc.get("owner") is not None and str(doc["owner"]) not in people:
+        out.append(f"owner: {doc['owner']!r} names no person under people:")
+    for pid, p in people.items():
+        for c in (p or {}).get("conductors") or [] if isinstance(p, dict) else ():
+            o, sep, n = str(c).partition(":")
+            o, n = (o, n) if sep else (org, o)
+            if not any(isinstance(x, dict) and x.get("name") == n for x in (docs.get(o) or {}).get("positions") or []):
+                out.append(f"people: {pid}: conductor {c!r} is no position of a listed organization")
+            elif o != org and (docs.get(o) or {}).get("tenant") != doc.get("tenant"):
+                out.append(f"people: {pid}: conductor {c!r} is of {o}, whose tenant differs")
+    return out
+
+
 def org_subagents(position, positions, orgs_file=None, conn=None):
-    """subagents_yes for POSITION's organization: one read of its registry and the log's resolver over that
-    organization's own conductors only, so another organization's owner's prompt never counts (of_review on PR 241)."""
+    """subagents_yes for POSITION's organization, resolved with its owner's conductors (org_resolver), so another
+    organization's owner's prompt never counts (of_review on PR 241)."""
     org = (position or {}).get("_org")
-    regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
-    path = regs.get(org)
-    if not path:
+    docs = registry_docs(orgs_file)
+    doc = docs.get(org)
+    if doc is None:
         return None
-    with open(path) as fh:
-        doc = yaml.safe_load(fh) or {}
-    mine = [p for p in positions if p.get("_org") == org]
-    return subagents_yes(doc, _decided_resolver(conn, mine) if doc.get("subagents") else None)
+    return subagents_yes(doc, org_resolver(docs, positions, org, conn, "own") if doc.get("subagents") else None)
 
 
 def _for_work(resolve, wid):
@@ -2160,7 +2255,7 @@ def cmd_loop(args):
         "'of.loop_run_located', 'of.loop_wait') "
         "AND json_extract(payload, '$.work') = ? ORDER BY ts", (args.work,))]
     reg = of_loop.register(rows, args.work, loop)
-    resolve = _for_work(_decided_resolver(conn, _load_quiet()), args.work)
+    resolve = _for_work(org_resolver(registry_docs(), _load_quiet(), org, conn, "all"), args.work)
     if args.action == "show":
         print(f"{args.work} ({org}): {of_loop.target_line(loop, resolve)}; ladder {' > '.join(of_loop.rungs(loop))}")
         seg = (loop.get("target") or {}).get("segment")

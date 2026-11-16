@@ -1591,7 +1591,14 @@ def _mandate_context(hook, index, sess):
         subagents = of.org_subagents(me, positions, os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml"))
     except Exception:  # noqa: BLE001 - never costs the session its context; nothing is said
         subagents = None
-    ctx = of_context.build(name, positions, loops, of._decided_resolver(positions=positions) if loops else None, runs,
+    resolve = None
+    if loops:  # the organization's owner's conductors (docs/registry.md, People, "A person's conductor")
+        try:
+            resolve = of.org_resolver(of.registry_docs(os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")),
+                                      positions, me.get("_org"), fallback="all")
+        except Exception:  # noqa: BLE001 - never costs the session its context
+            resolve = of._decided_resolver(positions=positions)
+    ctx = of_context.build(name, positions, loops, resolve, runs,
                            clocks, subagents)
     if not ctx:
         return
