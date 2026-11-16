@@ -188,9 +188,10 @@ class RedactTest(unittest.TestCase):
                                  "toolUseResult": {"stdout": f"postgres://ro:{pw}@h/db"}}).encode()
             conn.execute("UPDATE blob SET zdata = ?, codec = 'raw' WHERE sha256 = ?", (leaked, old))
             self.assertIn(pw.encode(), self.file_bytes(self.path))   # in the WAL now
+            default = conn.execute("PRAGMA secure_delete").fetchone()[0]   # a build's default: 1 on GitHub's Linux
             out = self.run_local(conn, transcript_ids=[rid])
             self.assertEqual((out["transcript_record"]["local"], out["_wal"]), (1, True))
-            self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], 0)   # restored after
+            self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], default)   # restored after
             self.assertNotIn(pw.encode(), self.file_bytes(self.path))
             conn.close()
 
