@@ -1,7 +1,8 @@
 """of archive: copy harness transcripts into the raw tier, continuously (docs/storage.md, "Raw tier: every byte").
 
 Each source file is zstd-compressed to ~/.local/state/of/raw/files/<path relative to home>.zst. A file that only grew
-(transcripts are appended to) gets one more zstd frame with its new bytes, so the copy is never compressed again whole;
+(transcripts are appended to; its first 4 KB and the 4 KB before its old end unchanged) gets one more zstd frame with
+its new bytes, so the copy is never compressed again whole;
 concatenated frames decompress to the whole file. A file that changed otherwise is copied again whole, and the earlier
 copy is kept beside it as <name>.<its mtime>.zst: nothing is dropped. Files never copied go first. Runs at low CPU and
 IO priority, at most BUDGET seconds a run, one run at a time (raw/archive.lock): the listener runs it every hour (10
@@ -62,6 +63,14 @@ def _head(path, n):
         return hashlib.sha256(fh.read(min(n, HEAD))).hexdigest()
 
 
+def _tail(path, n):
+    """The hash of the HEAD bytes just before offset N: with _head, what tells an append from a change (of_review on PR
+    246: a change past the first 4 KB, then an append, was taken for an append by the head alone)."""
+    with open(path, "rb") as fh:
+        fh.seek(max(0, n - HEAD))
+        return hashlib.sha256(fh.read(min(n, HEAD))).hexdigest()
+
+
 def plan(index, paths):
     """[(source, rel, stat, kind)] to copy: kind `new` (never copied), `grown` (appended to since) or `changed` (else);
     new files first, oldest first within each kind."""
@@ -77,7 +86,7 @@ def plan(index, paths):
             continue
         if not was:
             kind = "new"
-        elif len(was) > 2 and st.st_size > was[0] and _head(src, was[0]) == was[2]:
+        elif len(was) > 3 and st.st_size > was[0] and _head(src, was[0]) == was[2] and _tail(src, was[0]) == was[3]:
             kind = "grown"
         else:
             kind = "changed"
@@ -150,7 +159,7 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
         except OSError as e:
             log(f"skip {rel}: {e}")
             continue
-        index[rel] = [st.st_size, int(st.st_mtime), _head(src, st.st_size)]
+        index[rel] = [st.st_size, int(st.st_mtime), _head(src, st.st_size), _tail(src, st.st_size)]
         done[kind] += 1
         bytes_in += len(data)
         bytes_out += len(out)
