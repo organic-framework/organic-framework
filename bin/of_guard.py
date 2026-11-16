@@ -1839,6 +1839,15 @@ KEYCHAIN_DENY = ("a macOS keychain item that an organization keeps from every ag
                  "catalogue's keychain:; docs/guard.md G20); the program that needs it reads it itself")
 PROTECTED_CODE_DENY = ("code that runs with an organization's secrets, which agents never change (its registry's "
                        "protected_code:; docs/guard.md G21)")
+PROTECTED_RUN_DENY = ("code that runs with an organization's secrets, handed to a shell or sourced: run it by its own "
+                      "path (its registry's protected_code:; docs/guard.md G21)")
+# git subcommands that write files in their work tree whatever their options (G21: a protected worktree changes only
+# by the owner's hand; 2026-11-16, a user organization's worktree at a reviewed merge)
+_GIT_TREE_WRITES = {"merge", "pull", "checkout", "switch", "rebase", "cherry-pick", "revert", "am", "mv",
+                    "checkout-index"}
+_GIT_STASH_KEEPS = {"list", "show", "drop", "clear", "create", "store"}
+_SHELL_VALUE_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+_PATH_TOKEN = re.compile(r"[^\s'\"`;|&()<>{}]*/[^\s'\"`;|&()<>{}]*")
 _SEC_ARG_OPTS = set("acCdDGjlpPrst")  # security find-*-password options that take a value
 # The caches these rules and the passkey check read: an agent that removed or rewrote one would lift them
 # (of_review's probe on organic-framework PR 65: rm, an overwrite, and a forged version-2 cache that is never rebuilt).
@@ -2002,8 +2011,96 @@ def _tree_targets(head, args, cwd):
     return []
 
 
-def _protected_code_deny(head, args, stext, cwd):
-    """(reason, path) for G21 on one simple command, else None; and the guard's own state files, always."""
+def _git_writes_tree(sub, rest):
+    """Does git subcommand SUB, with the words REST after it, write files in its work tree?"""
+    longs = {a.split("=", 1)[0] for a in rest if a.startswith("--")}
+    shorts = set("".join(a[1:] for a in rest if a.startswith("-") and not a.startswith("--")))
+    pos = [a for a in rest if not a.startswith("-")]
+    if sub in _GIT_TREE_WRITES:
+        return True
+    if sub == "reset":
+        return bool(longs & {"--hard", "--merge", "--keep"})
+    if sub == "restore":
+        return "W" in shorts or "--worktree" in longs or not ("S" in shorts or "--staged" in longs)
+    if sub == "apply":
+        return not longs & {"--cached", "--check", "--stat", "--numstat", "--summary"}
+    if sub == "rm":
+        return "--cached" not in longs
+    if sub == "clean":
+        return not ("n" in shorts or "--dry-run" in longs)
+    if sub == "stash":
+        return not (pos and pos[0] in _GIT_STASH_KEEPS)
+    if sub == "read-tree":
+        return "u" in shorts
+    if sub == "sparse-checkout":
+        return not (pos and pos[0] in ("list", "check-rules"))
+    if sub == "submodule":
+        return bool(pos) and pos[0] in ("update", "deinit", "absorbgitdirs")
+    if sub == "bisect":
+        return not (pos and pos[0] in ("log", "view", "visualize", "help", "terms"))
+    return False
+
+
+def _git_protected(args, cwd, env):
+    """The protected_code entry a git call writes files under (G21), else None: its work tree (--work-tree,
+    GIT_WORK_TREE, else the folder it runs in after each -C) for a subcommand that writes it, a worktree it adds,
+    moves or removes, and a `clean -ff`, which removes the nested worktrees below it too."""
+    where, tree = cwd or ".", None
+    dirs, _, _ = _git_targets(args)
+    for opt, w in dirs:
+        w = os.path.expanduser(w.strip("'\""))
+        if opt == "-C":
+            where = os.path.join(where, w)
+        elif opt == "--work-tree":
+            tree = os.path.join(where, w)
+    if tree is None and env.get("GIT_WORK_TREE"):
+        tree = os.path.join(where, os.path.expanduser(env["GIT_WORK_TREE"]))
+    expanded, shell = git_expand(args, where, env, env.get("__git_aliases"))
+    if shell is not None:  # a `!` alias runs a shell line at the repository's top
+        hit = _bash_deny(shell, 1)
+        return hit[1] if hit else None
+    if expanded is None:
+        return None
+    _, sub, rest = _git_targets(expanded)
+    sub = (sub or "").lower()
+    if sub == "worktree":
+        if rest[:1] and rest[0] in ("add", "move", "remove"):
+            return next((p for p in rest[1:] if not p.startswith("-") and _protected_code(p, where, removal=True)),
+                        None)
+        return None
+    if not _git_writes_tree(sub, rest):
+        return None
+    removal = sub == "clean" and "".join(a[1:] for a in rest if a.startswith("-") and not a.startswith("--")
+                                         ).count("f") + rest.count("--force") >= 2
+    return _protected_code(tree or where, cwd, removal) and (tree or where)
+
+
+def _shell_runs_protected(head, args, cwd):
+    """A file under a protected_code entry that a shell is handed as its script, its $0 or inside its -c code, or that
+    `source` or `.` reads (G21), else None. A shell started that way runs its caller's code first (BASH_ENV, defined
+    functions, `set -p`) in the process that then holds the organization's secret; run by its own path, the script's
+    interpreter line decides (2026-11-16, a user organization's script with `#!/bin/bash -p`)."""
+    if head in ("source", "."):
+        return next((p for p in args[:1] if _protected_code(p, cwd)), None)
+    if head not in _SHELLS - {"eval"}:
+        return None
+    code, i = False, 0
+    while i < len(args) and args[i][:1] in "-+" and args[i] != "--":
+        code = code or (args[i][:1] == "-" and not args[i].startswith("--") and "c" in args[i])
+        i += 2 if args[i] in _SHELL_VALUE_OPTS else 1
+    operand = None if code else next(iter(args[i + (args[i:i + 1] == ["--"]):]), None)
+    if operand and _protected_code(operand, cwd):
+        return operand
+    for a in args:
+        for p in _PATH_TOKEN.findall(a.replace("${HOME}", "~").replace("$HOME", "~")):
+            if _protected_code(p, cwd):
+                return p
+    return None
+
+
+def _protected_code_deny(head, args, stext, cwd, env=None):
+    """(reason, path) for G21 on one simple command run in CWD with ENV (the line's exports and its own
+    assignments), else None; and the guard's own state files, always."""
     removal = head in ("rm", "rmdir", "mv", "unlink", "shred")
     files = _changed_files(head, args, stext) + ([a for a in args if not a.startswith("-")] if head == "rmdir" else [])
     state = next((f for f in files if _guard_state_file(f, cwd)), None)
@@ -2011,6 +2108,12 @@ def _protected_code_deny(head, args, stext, cwd):
         return GUARD_STATE_DENY, state
     if not _ORG_PROTECTION["code"]:
         return None
+    hit = _git_protected(args, cwd, env or {}) if head == "git" else None
+    if hit:
+        return PROTECTED_CODE_DENY, hit
+    hit = _shell_runs_protected(head, args, cwd)
+    if hit:
+        return PROTECTED_RUN_DENY, hit
     # a recursive copy or an extraction writes anywhere under its destination: a folder above an entry counts
     # (of_secrets-review's review of organic-framework PR 65: cp -R, rsync, ditto, tar -C, unzip -d)
     hit = next((t for t in _tree_targets(head, args, cwd) if _protected_code(t, cwd, removal=True)), None)
@@ -2271,7 +2374,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
                                                            **({"__lab_link": "1"} if lab_link else {})}) \
-                or _protected_code_deny(head, args, stext, here)
+                or _protected_code_deny(head, args, stext, here, {**exported, **_assignments(stext)})
             if hit:
                 return hit
             if head == "cd":
