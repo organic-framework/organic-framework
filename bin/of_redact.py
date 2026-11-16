@@ -122,13 +122,16 @@ def _key(table, rec):
     return [d.get("session_id") or "", d.get("record_uuid")] if table == "transcript_record" else d.get("local_id")
 
 
-def _fts_secure(conn):
-    """The event search index removes a deleted row's terms at once (FTS5 'secure-delete', SQLite 3.42 and later;
-    a persistent setting of the table). Without it a deleted row leaves its terms in the index's segments, where no
-    VACUUM reaches them. False when this SQLite cannot."""
+def _fts_secure(conn, on=True):
+    """The event search index removes a deleted row's terms at once while FTS5 'secure-delete' is on (SQLite 3.42 and
+    later). Without it a deleted row leaves its terms in the index's segments, where no VACUUM reaches them. It is a
+    stored setting of the table, so a redaction turns it on for its own deletes and off after: on, every delete from
+    the index takes the costlier path, of_derive's and of_github's inside their write transactions too
+    (of_secrets-review on PR 248). Turning it on raises the table's FTS5 format to version 5, which a SQLite before
+    3.42 cannot open (docs/guard.md K5). False when this SQLite cannot."""
     try:
         with of_store.write_tx(conn):
-            conn.execute("INSERT INTO event_fts(event_fts, rank) VALUES ('secure-delete', 1)")
+            conn.execute("INSERT INTO event_fts(event_fts, rank) VALUES ('secure-delete', ?)", (1 if on else 0,))
         return True
     except sqlite3.OperationalError:
         return False
@@ -173,6 +176,8 @@ def redact_events(conn, rowids, fn=None):
                     conn.execute("INSERT INTO event_fts VALUES (?, ?)", (eid, text))
             changed.append((rowid, hashlib.sha256(record.encode()).hexdigest(),
                             hashlib.sha256(new_record.encode()).hexdigest()))
+        if searchable:
+            _fts_secure(conn, False)
     return changed
 
 
@@ -192,7 +197,8 @@ def wait_done(client, redaction_id, timeout_s=1800, poll_s=5, sleep=None):
 def run(conn, reason, transcript_ids=(), hook_ids=(), send_to_servers=True, client_for=None, log=print, wait=True,
         event_ids=()):
     """Redact the rows locally, record of.redacted, and replace the shipped ones on their servers. event_ids are
-    rowids of the event table. Returns {table: {"local": n, "requests": [(server, redaction_id, state)]}}."""
+    rowids of the event table. Returns {table: {"local": n, "requests": [(server, redaction_id, state)]}}, and under
+    "_wal" whether the WAL was truncated after a local change (of_store.truncate_wal; None when nothing changed)."""
     import of_ship
     cfg = of_ship.config()
     host = of_events.machine_id()
@@ -211,6 +217,11 @@ def run(conn, reason, transcript_ids=(), hook_ids=(), send_to_servers=True, clie
         if not send_to_servers:
             continue
         summary[table]["requests"] += send(requests(conn, table, changed, reason, cfg, host), client_for, log, wait)
+    if any(s["local"] for s in summary.values()):  # the frames written before still hold the old value
+        summary["_wal"] = of_store.truncate_wal(conn)
+        if not summary["_wal"]:
+            log("of.db-wal could not be truncated now (a reader holds an older snapshot): it may still hold the old "
+                "value; run of redact again later, or let a quiet moment's checkpoint cut it")
     return summary
 
 
