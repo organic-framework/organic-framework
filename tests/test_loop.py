@@ -497,6 +497,16 @@ class SubagentsYesTest(unittest.TestCase):
                              ["owner: 'nobody' names no person under people:",
                               "people: x: conductor 'ghost' is no position of a listed organization"])
             self.assertEqual(of.check_people_conductors(regs, "orgb"), [])
+            # of_architect, message 01a1e3cc-72c3: a prompt-form decided with no owner, or one with no conductors
+            noowner = {"x": {"subagents": {"decided": ["P1"], "words": "w"},
+                             "works": {"w9": {"loop": {"target": {"metric": "m", "decided": "P2"}}}}, "positions": []}}
+            self.assertEqual(of.check_prompt_yes_has_owner(noowner, "x"),
+                             ["subagents:, works: w9: loop: target.decided cite(s) the owner's prompt, but there is no "
+                              "top-level owner:, so no prompt resolves: add owner: <person id> and "
+                              "people.<id>.conductors: [<conductor position>]"])
+            noowner["x"].update(owner="pat", people={"pat": {}})
+            self.assertIn("owner 'pat' lists no conductor", of.check_prompt_yes_has_owner(noowner, "x")[0])
+            self.assertEqual(of.check_prompt_yes_has_owner(regs, "orgb"), [])
             conn.close()
 
 

@@ -301,6 +301,9 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         doc = docs[org]
         problems += [f"{org}:registry/positions.yaml: {pr}" for pr in (check_people_conductors(docs, org) if deep
                                                                        else [])]   # deep: the docs carry positions
+        if deep:
+            problems += [f"{org}:registry/positions.yaml: {pr}"
+                         for pr in check_prompt_yes_has_owner(docs, org, orgs_file)]
         # only `of registry check` reads the log for a decided; each organization's with its owner's conductors
         resolve = org_resolver(docs, positions, org, fallback="all") if deep else None
         sub_resolve = org_resolver(docs, positions, org, fallback="own") if deep and doc.get("subagents") else None
@@ -965,6 +968,35 @@ def check_people_conductors(docs, org):
             elif o != org and (docs.get(o) or {}).get("tenant") != doc.get("tenant"):
                 out.append(f"people: {pid}: conductor {c!r} is of {o}, whose tenant differs")
     return out
+
+
+def check_prompt_yes_has_owner(docs, org, orgs_file=None):
+    """A decided in the prompt form (subagents:, a loop target's) with no `owner` or an owner with no conductors can
+    never resolve: a problem, with the fix (docs/registry.md, People; of_architect, message 01a1e3cc-72c3)."""
+    import of_loop
+    doc = docs.get(org) or {}
+    if person_conductors(docs, org, doc.get("owner"))[0] if doc.get("owner") else False:
+        return []
+    cited = []
+    sub = doc.get("subagents") if isinstance(doc.get("subagents"), dict) else {}
+    ids = [sub["decided"]] if isinstance(sub.get("decided"), str) else list(sub.get("decided") or [])
+    if any("#" not in str(i) for i in ids):
+        cited.append("subagents:")
+    for wid, w in (doc.get("works") or {}).items() if isinstance(doc.get("works"), dict) else ():
+        if not isinstance(w, dict):
+            continue
+        try:
+            loop = _loop_of(w, org, orgs_file)
+        except (OSError, yaml.YAMLError):
+            continue
+        did = of_loop.decided(loop) if isinstance(loop, dict) else None
+        if did and "#" not in str(did):
+            cited.append(f"works: {wid}: loop: target.decided")
+    if not cited:
+        return []
+    return [f"{', '.join(cited[:5])}{' …' if len(cited) > 5 else ''} cite(s) the owner's prompt, but "
+            + ("there is no top-level owner:" if not doc.get("owner") else f"owner {doc['owner']!r} lists no conductor")
+            + ", so no prompt resolves: add owner: <person id> and people.<id>.conductors: [<conductor position>]"]
 
 
 def org_subagents(position, positions, orgs_file=None, conn=None):
