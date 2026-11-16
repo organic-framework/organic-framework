@@ -242,6 +242,14 @@ class ProtectedCodeTest(unittest.TestCase):
         for cmd in (f"watch -n 2 'cat {s}'", "eval \"echo hi\"", f"flock /tmp/l -c 'cat {s}'", f"echo \"$(cat {s})\"",
                     f"x=\"$(wc -l < {s})\"", f"watch -x ls {self.bin}"):
             self.assertIsNone(bash(cmd, self.root), cmd)
+        # of_review's notes on 7d1d3b72
+        for cmd in (f"parallel -j 4 bash ::: {s}", f"parallel --jobs 4 'bash {{}}' ::: {s}", f"echo {s} | parallel bash",
+                    f"flock /tmp/l --command='bash {s}'", f"cd {self.bin} && bash -c \"$(git show HEAD:vault.sh)\"",
+                    f"T=$(cat {s}); bash -c \"$T\"", f"T=\"$(cat {s})\"; eval \"$T\"", f"bash /dev/fd/3 3< {s}"):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"parallel -j 4 shellcheck ::: {s}", f"echo {s} | parallel cat", f"T=$(cat {s}); echo \"$T\" | wc -l",
+                    "bash /dev/fd/3 3< /tmp/other.sh", f"git show HEAD:vault.sh | wc -l"):
+            self.assertIsNone(bash(cmd, self.bin), cmd)
         for cmd in (f"git config --file {s} a.b c", f"git config -f {s} a.b c", f"git fast-export --export-marks={s} HEAD"):
             self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
         self.assertIsNone(bash("git config --file /tmp/x.cfg a.b c", self.root))
@@ -262,6 +270,8 @@ class ProtectedCodeTest(unittest.TestCase):
         for cmd in (f"git -C {repo} checkout -b feat", f"git -C {repo} switch -c feat", f"git -C {repo} checkout -B x"):
             self.assertIsNone(bash(cmd, self.root), cmd)
         for cmd in (f"git -C {repo} checkout -b feat origin/main", f"git -C {repo} switch -c feat origin/main",
+                    f"git -C {repo} checkout -f -b x", f"git -C {repo} checkout --force -b x", f"git -C {repo} checkout -fb x",
+                    f"git -C {repo} switch --discard-changes -c x", f"git -C {repo} checkout -m -b x",
                     f"git -C {repo} submodule add https://example.invalid/x scripts/x"):
             self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
 
