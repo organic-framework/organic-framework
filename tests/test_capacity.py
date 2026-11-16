@@ -2117,6 +2117,15 @@ class LabelledSignins(unittest.TestCase):
         self.assertEqual(fits, {("n1", "/mail"): True, ("n1", "/ez"): False, ("c1", "/mail"): False,
                                 ("c1", "/ez"): True, ("o1", "/mail"): False, ("o1", "/ez"): True})
 
+    def test_a_symlinked_account_folder_reads_the_same_label(self):
+        with tempfile.TemporaryDirectory() as t:  # of_tools keys by realpath too (PR 243 review)
+            real, link = os.path.join(t, "acct"), os.path.join(t, "link")
+            os.mkdir(real)
+            os.symlink(real, link)
+            labels = of_capacity.signin_labels({"signins": {link: {self.PLUGIN: "keys"}}})
+            self.assertEqual(of_capacity.label_on(self.ENTRY, real, labels), "keys")
+            self.assertEqual(of_capacity.labelled_plugins(link, labels), {"plugin:cloudflare": "keys"})
+
     def test_a_url_label_names_the_plugin_whose_server_it_is(self):
         with self.patched(key=self.CF + "/"):
             self.assertEqual(of_capacity.labelled_plugins("/mail"), {"plugin:cloudflare": "keys"})
