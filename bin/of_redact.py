@@ -148,18 +148,28 @@ def redact_events(conn, rowids, fn=None):
     changed = []
     with of_store.secure_deletes(conn):
         searchable = None
+        todo = []
         for rowid in rowids:
             row = conn.execute("SELECT event_id, payload, record FROM event WHERE rowid = ?", (rowid,)).fetchone()
             if not row:
                 continue
             eid, payload, record = row[0], row[1] or "", row[2] or ""
             new_payload, new_record = fn(payload.encode()).decode(), fn(record.encode()).decode()
-            if (new_payload, new_record) == (payload, record):
-                continue
+            if (new_payload, new_record) != (payload, record):
+                todo.append((rowid, eid, record, new_payload, new_record))
+        # the index rows of every event to change, by event id, in one scan outside the write lock (event_id is not
+        # indexed there; of_review on PR 248: a scan per event)
+        index_rows = {}
+        eids = sorted({t[1] for t in todo})
+        for i in range(0, len(eids), 500):
+            part = eids[i:i + 500]
+            for r, e in conn.execute(f"SELECT rowid, event_id FROM event_fts WHERE event_id IN "
+                                     f"({','.join('?' * len(part))})", part):
+                index_rows.setdefault(e, []).append(r)
+        for rowid, eid, record, new_payload, new_record in todo:
             if searchable is None:
                 searchable = _fts_secure(conn)
-            # the index row by its event id, read outside the write lock (event_id is not indexed there)
-            fts = [r[0] for r in conn.execute("SELECT rowid FROM event_fts WHERE event_id = ?", (eid,))]
+            fts = index_rows.get(eid, [])
             try:
                 text = "\n".join(of_store._texts(json.loads(new_payload or "{}"), []))
             except (ValueError, TypeError):
@@ -220,8 +230,9 @@ def run(conn, reason, transcript_ids=(), hook_ids=(), send_to_servers=True, clie
     if any(s["local"] for s in summary.values()):  # the frames written before still hold the old value
         summary["_wal"] = of_store.truncate_wal(conn)
         if not summary["_wal"]:
-            log("of.db-wal could not be truncated now (a reader holds an older snapshot): it may still hold the old "
-                "value; run of redact again later, or let a quiet moment's checkpoint cut it")
+            log("of.db-wal could not be truncated now (a reader holds an older snapshot): of.db-wal, and of.db until "
+                "a later checkpoint, may still hold the old value; run of redact again later: with nothing left to "
+                "change, it only truncates the WAL")
     return summary
 
 

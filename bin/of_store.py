@@ -552,17 +552,17 @@ def redact_credentials(line):
 
 @contextlib.contextmanager
 def secure_deletes(conn):
-    """PRAGMA secure_delete on CONN while a redaction writes, restored after. SQLite then overwrites what it deletes
-    and the pages it frees in the main file; without it a redacted value's bytes stay on the free list until the page
-    is reused (of_server on organic-framework PR 244, 2026-11-16). The WAL keeps the frames written before; only a
-    TRUNCATE checkpoint removes them (truncate_wal). Copies freed earlier, by routine deletes and the search index's
-    merges, go only with a VACUUM."""
+    """PRAGMA secure_delete on CONN while a redaction writes, restored after (OFF, ON or FAST: SQLite reads `= 2` as
+    ON, so FAST is restored by name; of_review on PR 248). SQLite then overwrites what this redaction deletes and the
+    pages it frees (of_server on organic-framework PR 244, 2026-11-16). It reaches nothing earlier writes left: free
+    pages, unused space inside pages still in use (a page split leaves the old cells' bytes behind), and the WAL's
+    frames. Those go only with a VACUUM, and the WAL's with a TRUNCATE checkpoint (truncate_wal)."""
     prev = conn.execute("PRAGMA secure_delete").fetchone()[0]
     conn.execute("PRAGMA secure_delete = ON")
     try:
         yield conn
     finally:
-        conn.execute(f"PRAGMA secure_delete = {int(prev)}")
+        conn.execute(f"PRAGMA secure_delete = {({0: 'OFF', 1: 'ON', 2: 'FAST'}).get(int(prev), 'OFF')}")
 
 
 def truncate_wal(conn, tries=6, pause_s=0.5, busy_ms=300):
