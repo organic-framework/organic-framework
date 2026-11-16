@@ -28,6 +28,11 @@ class SpawnError(Exception):
     pass
 
 
+# the owner's standing ask for the Agent tool (hand-over ff0f6f09; founder, 2026-11-16, prompt 01a1e393-ded4)
+SUBAGENTS_LINE = ("Your owner asks you to run the independent parts of your work as subagents, in parallel "
+                  "(docs/method.md, Subagents).")
+
+
 def brief_text(p, org_root):
     """The brief, typed as the session's first prompt."""
     mandate = p.get("mandate") or f"registry/briefs/{p['name']}.md"
@@ -35,6 +40,7 @@ def brief_text(p, org_root):
     home = os.path.expanduser("~")
     path = "~" + path[len(home):] if path.startswith(home) else path
     return (f"You hold the position {p['name']}. Read {path} and the organization's AGENTS.md, and follow them. "
+            f"{SUBAGENTS_LINE} "
             f"At the end of every turn: of status working|waiting --on founder|<position>|idle|done.")
 
 

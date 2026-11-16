@@ -50,6 +50,18 @@ def rules(agents_md, limit=RULES_MAX):
     return out[:limit] + ("\n…" if len(out) > limit else "") if out else None
 
 
+# The owner's standing ask for the Agent tool, whose own description says to spawn subagents only when the user asks:
+# the start context is where every position reads that its owner does (hand-over ff0f6f09 from of_architect; the
+# founder, 2026-11-16, prompt 01a1e393-ded4; docs/method.md, "Subagents: the owner's standing ask")
+SUBAGENTS = ("Run the independent parts of your work as subagents, in parallel, not one after another in your own "
+             "turns: a loop's variants (one hypothesis each, in its own git worktree, within the work's wip_arms), "
+             "searches, a fresh-context review, reading, watching a runner (on the loop's babysit_model). This is your "
+             "owner's explicit ask for the Agent tool (founder, 2026-11-16, prompt 01a1e393-ded4: \"the only limit is "
+             "[its] own time. It can simply launch subagents\"). Heavy jobs stay on runners or CI. Decisions, asks to "
+             "the owner, messages to positions, of status and the registry stay yours (docs/method.md, \"Subagents: "
+             "the owner's standing ask\").")
+
+
 def owner_measures(loops, resolve=None):
     """Lines naming each loop whose target names the owner's yes, from [(work id, owner|doer, loop)]; RESOLVE (an id ->
     the yes in the log) tells a real one from an unresolved one, which is named as such (of_review on PR 168)."""
@@ -152,6 +164,7 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None)
     r = rules(os.path.join(root, "AGENTS.md"))
     if r:
         lines += ["", "## Binding rules (AGENTS.md of the organization)", r]
+    lines += ["", "## Subagents: your owner asks you to use them", SUBAGENTS]
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]
             and x.get("status") in (None, "active")][:TEAM_MAX]
     if team:

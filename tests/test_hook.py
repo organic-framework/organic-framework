@@ -419,6 +419,11 @@ class HandleTest(unittest.TestCase):
         for piece in ("`of_a`", "build it", "Mandate 1: build the thing.", "Documents in English", "`of_b` (b): review it"):
             self.assertIn(piece, ctx)
         self.assertNotIn("ignore me", ctx)
+        # the owner's standing ask for subagents, before the team (hand-over ff0f6f09; prompt 01a1e393-ded4)
+        self.assertIn("## Subagents: your owner asks you to use them\nRun the independent parts of your work as "
+                      "subagents, in parallel", ctx)
+        self.assertIn("This is your owner's explicit ask for the Agent tool", ctx)
+        self.assertLess(ctx.index("## Subagents"), ctx.index("## Your team"))
         self.assertEqual(outs["S2"], "")                     # not enrolled: no context
         self.assertIn("of.context_injected", [e["event.name"] for e in self.events()])
 
