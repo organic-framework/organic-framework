@@ -1849,7 +1849,11 @@ _GIT_STASH_KEEPS = {"list", "show", "drop", "clear", "create", "store"}
 _SHELL_VALUE_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 _RUN_SHELLS = (_SHELLS - {"eval"}) | {"fish", "tcsh", "csh", "mksh", "yash", "posh", "ash"}
 _FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
-_STDIN_NAMES = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}  # a shell handed its stdin by name reads it as its script
+_STDIN_NAMES = {"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"}
+_PARALLEL_VALUE_OPTS = {"-j", "--jobs", "-P", "--max-procs", "-S", "--sshlogin", "--sshloginfile", "--slf", "--tmpdir",
+                        "--results", "--joblog", "-a", "--arg-file", "--delay", "--timeout", "--retries", "-n",
+                        "--max-args", "-N", "--colsep", "-C", "-d", "--delimiter", "-E", "--eof", "--tagstring",
+                        "--workdir", "--wd", "--env", "--memfree", "--load", "-l"}  # a shell handed its stdin by name reads it as its script
 # git settings and variables whose value git runs as a shell line or a program (of_secrets-review on PR 249)
 _GIT_RUN_KEYS = re.compile(r"^(?:core\.(?:pager|editor|fsmonitor|sshcommand|askpass)|pager\..+|diff\.external"
                            r"|sequence\.editor|gpg\.(?:[^.]+\.)?program|credential\.(?:[^.]+\.)?helper"
@@ -2038,9 +2042,10 @@ def _git_writes_tree(sub, rest):
     """Does git subcommand SUB, with the words REST after it, write files in its work tree?"""
     shorts = set("".join(a[1:] for a in rest if a.startswith("-") and not a.startswith("--")))
     pos = [a for a in rest if not a.startswith("-")]
-    if sub in ("checkout", "switch") and len(pos) <= 1 and \
+    if sub in ("checkout", "switch") and len(pos) <= 1 and not ({"f", "m"} & shorts) and \
+            not _long_hit(rest, ("force", "discard-changes", "merge")) and \
             any(a in ("-b", "-B", "-c", "-C", "--orphan") or _long_hit([a], ("create", "force-create")) for a in rest):
-        return False  # a new branch at HEAD changes no file
+        return False  # a new branch at HEAD, with no force or merge, changes no file (of_review: `checkout -f -b x`)
     if sub in _GIT_TREE_WRITES:
         return True
     if sub == "reset":
@@ -2245,17 +2250,17 @@ def _git_protected(args, cwd, env, shvars=None):
         return where if _protected_code(where, cwd) else None
     return top if _tree_entry(top) else None
 
-def _stdin_file(stext):
-    """The file a simple command's stdin is redirected from (`< file`, `0< file`), else None."""
+def _stdin_redirect(stext, fd=0):
+    """The file descriptor FD of a simple command is redirected from (`< file` and `0< file` for 0, `3< file` for 3),
+    else None (G21; the older _stdin_file serves the other rules)."""
     try:
         toks = _tokens(stext or "")
     except ValueError:
         return None
     for k, t in enumerate(toks[:-1]):
-        if t == "<" and (k == 0 or not toks[k - 1].isdigit() or toks[k - 1] == "0"):
+        if t == "<" and ((k > 0 and toks[k - 1] == str(fd)) or (fd == 0 and (k == 0 or not toks[k - 1].isdigit()))):
             return toks[k + 1]
     return None
-
 
 def _expand_vars(word, shvars):
     return re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: str(shvars.get(m.group(1), m.group(0))), word) if shvars \
@@ -2272,24 +2277,33 @@ def _shell_runs_protected(head, args, cwd, stext=None, shvars=None, fed=None, de
     args = [_expand_vars(a, shvars) for a in args]
     if depth > 4:
         return None
-    if head == "parallel":  # `parallel bash ::: f`: the command before :::, each input after it
+    if head == "parallel":  # `parallel bash ::: f`, `parallel -j 4 'bash {}' ::: f`, `echo f | parallel bash`
         cut = next((k for k, a in enumerate(args) if a in (":::", "::::", ":::+")), len(args))
         k = 0
         while k < cut and args[k].startswith("-"):
-            k += 1
-        if k < cut:
-            h = os.path.basename(args[k])
-            hit = _shell_runs_protected(h, args[k + 1:cut], cwd, None, shvars, None, depth + 1)
+            k += 2 if args[k] in _PARALLEL_VALUE_OPTS else 1
+        if k >= cut:
+            return None
+        words = args[k:cut]
+        inputs = args[cut + 1:] if cut < len(args) else []
+        for x in inputs or [None]:
+            line = " ".join(w.replace("{}", x) if x and "{}" in w else w for w in words)
+            if x and "{}" not in line:
+                line += " " + x
+            hit = _code_runs_protected(line, cwd, shvars, depth + 1)
             if hit:
                 return hit
-            if h in _RUN_SHELLS | {"source", "."} and "-c" not in args[k + 1:cut]:
-                return next((a for a in args[cut + 1:] if _protected_code(a, cwd)), None)
+        first = words[0].split()[0] if words[0].split() else ""
+        if not inputs and os.path.basename(first) in _RUN_SHELLS | {"source", "."} and "-c" not in " ".join(words):
+            return fed() if callable(fed) else fed  # its inputs come on stdin
         return None
     if head == "eval":
         return _code_runs_protected(" ".join(args), cwd, shvars, depth + 1)
     if head == "flock" and any(a in ("-c", "--command") for a in args[:-1]):  # `flock /tmp/l -c 'bash f'`
         k = next(k for k, a in enumerate(args) if a in ("-c", "--command"))
         return _code_runs_protected(args[k + 1], cwd, shvars, depth + 1)
+    if head == "flock" and any(a.startswith("--command=") for a in args):
+        return _code_runs_protected(next(a for a in args if a.startswith("--command="))[10:], cwd, shvars, depth + 1)
     if head == "watch" and args and not any(a in ("-x", "--exec") for a in args):  # watch runs its words with sh -c
         k = 0
         while k < len(args) and args[k].startswith("-"):
@@ -2321,6 +2335,10 @@ def _shell_runs_protected(head, args, cwd, stext=None, shvars=None, fed=None, de
         if len(rest) > 1 and _protected_code(rest[1], cwd):  # its $0
             return rest[1]
         return _code_runs_protected(rest[0], cwd, shvars, depth + 1) if rest else None
+    m = re.fullmatch(r"/(?:dev|proc/self)/fd/([1-9]\d*)", rest[0]) if rest and not stdin else None
+    if m:  # `bash /dev/fd/3 3< f`
+        f = _stdin_redirect(stext, int(m.group(1)))
+        return f if f and _protected_code(f, cwd) else None
     if rest and not stdin and rest[0] not in _STDIN_NAMES and rest[0] != "{}":
         return rest[0] if _protected_code(rest[0], cwd) else None
     return _stdin_runs_protected(stext, cwd, fed)  # its script comes on stdin (or, after xargs, `{}` from it)
@@ -2334,7 +2352,7 @@ def _fed(prior):
 def _stdin_runs_protected(stext, cwd, fed):
     """The protected file a command's stdin carries: `< file`, a here-string that is the file or whose substitution
     reads it (`<<< "$(cat file)"`), or FED from an earlier stage of its pipe; else None."""
-    f = _stdin_file(stext)
+    f = _stdin_redirect(stext)
     if f and _protected_code(f, cwd):
         return f
     try:
@@ -2388,7 +2406,7 @@ def _text_names_protected(text, cwd):
         for kind, st in pipe:
             s = _simple_g21(st) if kind == "cmd" else None
             if kind == "cmd" and not s:  # `$(< file)`: a redirection alone reads the file
-                f = _stdin_file(st)
+                f = _stdin_redirect(st)
                 if f and _protected_code(f, cwd):
                     return f
             hit = (s[1] if _protected_code(s[1], cwd) else None) if s and s[0] == "<read" else \
@@ -2405,11 +2423,14 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
         pipes = _split(code)
     except ValueError:
         return None
-    here = cwd
+    here, shvars = cwd, dict(shvars or {})
     for pipe in pipes:
         prior, prev = [], None
         for kind, st in pipe:
             if kind == "sub":
+                m = re.fullmatch(r"\s*([A-Za-z_]\w*)=[\"']?\$", prev[1]) if prev else None
+                if m:  # `T=$(cat f)`: T holds the text a later `bash -c "$T"` or `eval "$T"` runs
+                    shvars[m.group(1)] = "$(" + st + ")"
                 if prev and (prev[1].strip() == "$" or (prev[1].rstrip().endswith("<") and prev[0] in
                                                         _RUN_SHELLS | {"source", "."})):
                     hit = _text_names_protected(st, here)
@@ -2425,9 +2446,12 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
                 hit = _text_names_protected(m.group(1), here)
                 if hit:
                     return hit
+            m = re.fullmatch(r"\s*([A-Za-z_]\w*)=([\"'])(.*)\2\s*", st, re.S)
+            if m and ("$(" in m.group(3) or "`" in m.group(3)):  # `T="$(cat f)"`, kept whole by the split
+                shvars[m.group(1)] = m.group(3)
             s1 = _simple_g21(st)
             if not s1 or s1[0] == "<read":
-                prev = None
+                prev = (None, st)  # an assignment alone (`T=$` before its substitution) is read by the next stage
                 continue
             h, a = s1[0], s1[1]
             if h in ("cd", "pushd") and a:
@@ -2443,8 +2467,11 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
 def _names_protected(head, args, stext, cwd):
     """A file under a protected_code entry that one pipe stage names as an argument or reads on its stdin, else None:
     what it may hand the next stage (G21)."""
-    for a in [a for a in args if not a.startswith("-")] + [_stdin_file(stext)]:
-        for p in [a] + ([a.split("=", 1)[1]] if a and "=" in a else []) + (_PATH_TOKEN.findall(a) if a else []):
+    for a in [a for a in args if not a.startswith("-")] + [_stdin_redirect(stext)]:
+        # `dd if=f`, and `git show HEAD:path` (a path in the repository, read from where git runs)
+        for p in [a] + ([a.split("=", 1)[1]] if a and "=" in a else []) + \
+                ([a.split(":", 1)[1]] if a and ":" in a and not a.startswith("/") else []) + \
+                (_PATH_TOKEN.findall(a) if a else []):
             if p and _protected_code(p, cwd):
                 return p
     return None
