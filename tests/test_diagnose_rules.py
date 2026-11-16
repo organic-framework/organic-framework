@@ -1259,6 +1259,11 @@ class LoopRulesTest(unittest.TestCase):
         st = stall(dict(card, waits=[runner, again]), t0 + 15 * H)
         self.assertEqual((st["part"], len(st["waits_not_counted"])), ("wait_over", 1))
         other = dict(again, ref="job-8")   # a wait on something else holds the clock
+        # a re-declaration may shorten the counted wait, never lengthen it (the slot moved earlier)
+        sooner = dict(runner, ts=t0 + 5 * H, expect_at=t0 + 8 * H)
+        self.assertEqual(stall(dict(card, waits=[runner, sooner]), t0 + 13 * H)["since"], t0 + 8 * H)
+        self.assertEqual(stall(dict(card, waits=[runner, sooner]), t0 + 13 * H)["waits_not_counted"], [])
+        self.assertIsNone(stall(dict(card, waits=[runner, sooner]), t0 + 11 * H))
         self.assertIsNone(stall(dict(card, waits=[runner, other]), t0 + 15 * H))
         week = {"ts": t0 + H, "on": "calendar", "ref": "locked week", "expect_at": t0 + 7 * 24 * H}
         cal = stall(dict(card, waits=[week]), t0 + 9 * H)

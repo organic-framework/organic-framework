@@ -1377,7 +1377,10 @@ def loop_clock(lp, now, thresholds=None):
     expect_at comes only from another tool, and it holds nothing past its own time. A wait on the calendar
     (`calendar_kinds`: a date the work's design fixes, such as a locked week or a test of 14 days, and held-out data that
     does not exist yet) holds nothing: with nothing else in flight the work has no next step (point 3). A wait re-declared on the same thing (`on`, `ref`)
-    with no run or decision between counts once: two checks of an unchanged loop are no progress (point 4).
+    with no run or decision between counts once: two checks of an unchanged loop are no progress (point 4). A
+    re-declaration with an earlier end replaces it, so a wait can be shortened, never lengthened (2026-11-16: a user
+    organization's keeper moved a runner slot earlier, and the first, later end kept holding the clock; of_platform's
+    message 01a1e356-c25c).
 
     Returns {work, part: held|silent|wait_over|calendar, level: None|owner|conductor, hours, since, last, wait,
     waits_not_counted, testing, owner, doers}. `since` is when the clock starts (or started), the key of an episode for
@@ -1412,14 +1415,16 @@ def loop_clock(lp, now, thresholds=None):
     cal = set(t["calendar_kinds"])
     waits = sorted((x for x in lp.get("waits") or [] if x.get("ts") is not None and since <= x["ts"] <= now),
                    key=lambda x: x["ts"])
-    counted, seen, not_counted = [], set(), []
+    by_key, not_counted = {}, []   # (on, ref) -> the wait counted for it, in the order first stated
     for x in waits:
         k = _wait_key(x)
-        if k in seen:
+        if k not in by_key:
+            by_key[k] = x
+        elif _wait_end(x, now) < _wait_end(by_key[k], now):
+            by_key[k] = x          # a re-declaration may shorten the counted wait, never lengthen it
+        else:
             not_counted.append(x)
-            continue
-        seen.add(k)
-        counted.append(x)
+    counted = list(by_key.values())
     live = [x for x in counted if x.get("on") not in cal]
     holds = max([_wait_end(x, now) for x in live] or [since])
     start = max(since, holds)
