@@ -1254,11 +1254,19 @@ class LoopRulesTest(unittest.TestCase):
         self.assertIsNone(stall(dict(card, waits=[runner]), t0 + 13 * H))
         over = stall(dict(card, waits=[runner]), t0 + 15 * H)
         self.assertEqual((over["part"], over["level"], over["hours"], over["since"]), ("wait_over", "owner", 5.0, t0 + 10 * H))
-        self.assertIn("job-7 expected by", R.stall_text(over))
+        self.assertIn("no run or decision for 5 h since its wait on runner job-7 expected by", R.stall_text(over))
         again = dict(runner, ts=t0 + 11 * H, expect_at=t0 + 20 * H)   # the same job, re-declared: counts once
         st = stall(dict(card, waits=[runner, again]), t0 + 15 * H)
         self.assertEqual((st["part"], len(st["waits_not_counted"])), ("wait_over", 1))
         other = dict(again, ref="job-8")   # a wait on something else holds the clock
+        # of several waits, the earliest current promise holds: a long wait does not hide a short one that slipped,
+        # and a wait stated after another ended answers it
+        long_ = {"ts": t0 + H, "on": "window", "ref": "next week's window", "expect_at": t0 + 40 * H}
+        slipped = stall(dict(card, waits=[runner, long_]), t0 + 15 * H)
+        self.assertEqual((slipped["part"], slipped["since"], slipped["wait"]["ref"]), ("wait_over", t0 + 10 * H, "job-7"))
+        later = {"ts": t0 + 12 * H, "on": "position", "ref": "x_keeper", "expect_at": t0 + 18 * H}
+        held = R.loop_clock(dict(card, waits=[runner, long_, later]), t0 + 15 * H)
+        self.assertEqual((held["part"], held["since"], held["wait"]["ref"]), ("held", t0 + 18 * H, "x_keeper"))
         # a re-declaration may shorten the counted wait, never lengthen it (the slot moved earlier)
         sooner = dict(runner, ts=t0 + 5 * H, expect_at=t0 + 8 * H)
         self.assertEqual(stall(dict(card, waits=[runner, sooner]), t0 + 13 * H)["since"], t0 + 8 * H)
