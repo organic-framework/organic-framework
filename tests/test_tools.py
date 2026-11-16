@@ -153,6 +153,87 @@ class SessionConfigTest(unittest.TestCase):
         self.assertTrue(any("slack@anthropic-plugin-directory is not installed" in n for n in c["notes"]))
 
 
+CF = "cloudflare@anthropic-plugin-directory"
+CF_URL = "https://mcp.cloudflare.com/mcp"
+
+
+class SigninGuardTest(unittest.TestCase):
+    """A labelled sign-in (capacity.yaml signins) reaches only a profile naming an entry with that label."""
+    def doc(self, mode="add"):
+        tools = dict(DOC["tools"])
+        base = {"kind": "plugin", "plugin": CF, "url": CF_URL, "account_bound": True, "scope": "write",
+                "keeper": "acme_org"}
+        tools["cloudflare"] = dict(base, acts_as="the account's Cloudflare user")
+        tools["cloudflare-keys"] = dict(base, signin="keys", acts_as="the owner's Cloudflare user, token creation")
+        return dict(DOC, tools_mode=mode, tools=tools, positions=DOC["positions"] + [
+            {"name": "acme_edge", "tools": ["cloudflare-keys"]}, {"name": "acme_web", "tools": ["cloudflare"]}])
+
+    def cfg(self, name, labels, mode="add"):
+        d = self.doc(mode)
+        p = next(x for x in d["positions"] if x["name"] == name)
+        g = of_tools.signin_guard(p, d, labels, {"acme": d})
+        return of_tools.session_config(p, d, ofb="/of/bin/of", installed=[CF], guard=g)["settings"]
+
+    def test_only_the_labelled_profile_keeps_the_plugin(self):
+        for mode in ("add", "enforce"):
+            keys = self.cfg("acme_edge", {CF: "keys"}, mode)
+            self.assertNotIn("deniedMcpServers", keys, mode)
+            self.assertIsNot((keys.get("enabledPlugins") or {}).get(CF), False, mode)
+            for name in ("acme_web", "acme_org"):  # a plain entry and no entry alike
+                st = self.cfg(name, {CF: "keys"}, mode)
+                self.assertIs(st["enabledPlugins"][CF], False, (name, mode))
+                self.assertEqual(st["deniedMcpServers"], [{"serverUrl": CF_URL}], (name, mode))
+
+    def test_an_unlabelled_account_changes_nothing_and_an_unreadable_file_fails_closed(self):
+        self.assertNotIn("deniedMcpServers", self.cfg("acme_org", {}))
+        self.assertIs(self.cfg("acme_org", None)["enabledPlugins"][CF], False)
+        self.assertIs(self.cfg("acme_web", None)["enabledPlugins"][CF], False)
+        self.assertNotIn("deniedMcpServers", self.cfg("acme_edge", None))
+
+    def test_a_url_label_denies_a_connector(self):
+        st = self.cfg("acme_org", {"https://api.example/v1/pages/mcp": "owner"})
+        self.assertEqual(st["deniedMcpServers"], [{"serverUrl": "https://api.example/v1/pages/mcp"}])
+
+    def test_labels_are_read_for_the_account_strictly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            acct = os.path.join(t, ".claude-x")
+            os.mkdir(acct)
+            cap = os.path.join(t, "capacity.yaml")
+            with open(cap, "w") as fh:
+                fh.write(f"auto: true\nsignins:\n  {acct}/:\n    {CF}: keys\n")
+            self.assertEqual(of_tools.signin_labels(acct, cap), {CF: "keys"})
+            self.assertEqual(of_tools.signin_labels(os.path.join(t, "other"), cap), {})
+            self.assertEqual(of_tools.signin_labels(acct, os.path.join(t, "none.yaml")), {})
+            with open(cap, "w") as fh:
+                fh.write("signins: [unclosed\n")
+            self.assertIsNone(of_tools.signin_labels(acct, cap))
+
+    def test_it_applies_to_an_organization_without_a_catalogue(self):
+        import tempfile
+        real = of_tools.registries
+        with tempfile.TemporaryDirectory() as t:
+            cap = os.path.join(t, "capacity.yaml")
+            with open(cap, "w") as fh:
+                fh.write(f"signins:\n  {t}:\n    {CF}: keys\n")
+            try:
+                of_tools.registries = lambda orgs_file=None: {"acme": self.doc(),
+                                                              "of": {"positions": [{"name": "of_conductor"}]}}
+                argv, st = of_tools.launch_parts("of_conductor", "s-1", t, capacity_file=cap)
+                self.assertEqual(argv, [])
+                self.assertEqual(st, {"enabledPlugins": {CF: False}, "deniedMcpServers": [{"serverUrl": CF_URL}]})
+                self.assertEqual(of_tools.launch_parts("of_conductor", "s-1", os.path.join(t, "elsewhere"),
+                                                       capacity_file=cap), ([], {}))
+            finally:
+                of_tools.registries = real
+
+    def test_check(self):
+        self.assertEqual(of_tools.check({"acme": self.doc()}), [])
+        bad = self.doc()
+        bad["tools"]["superpowers"] = dict(bad["tools"]["superpowers"], signin="keys")
+        self.assertTrue(any("signin: <label>" in x for x in of_tools.check({"acme": bad})))
+
+
 class SharedServerTest(unittest.TestCase):
     def doc(self):
         d = dict(DOC, tools=dict(DOC["tools"]))

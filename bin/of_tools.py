@@ -194,6 +194,9 @@ def check(docs):
                 out.append(f"{where}: a {kind} tool needs url")
             if kind == "plugin" and not e.get("plugin"):
                 out.append(f"{where}: a plugin tool needs plugin: <name>@<marketplace>")
+            if "signin" in e and (not isinstance(e["signin"], str) or not e["signin"]
+                                  or not (kind == "connector" or e.get("account_bound"))):
+                out.append(f"{where}: signin: <label> names a labelled sign-in, on an account_bound tool only")
             if kind == "connector" and not e.get("account_bound", True):
                 out.append(f"{where}: a connector is always account_bound")
             if kind == "mcp-remote" and e.get("oauth") and not e.get("account_bound"):
@@ -428,7 +431,71 @@ def excluded_urls(doc):
     return sorted({str(x["url"]) for x in ex if isinstance(x, dict) and x.get("url")}) if isinstance(ex, list) else []
 
 
-def session_config(position, doc, config_dir=None, ofb=None, installed=None, org=None, up=port_up):
+def signin_labels(config_dir, path=None):
+    """{plugin id or server url: label} for the sign-ins account `config_dir` holds, from capacity.yaml `signins`
+    (of_capacity's; docs/tools.md §4b). {} when the file or the key is absent; None when the file cannot be read as
+    YAML, so the guard fails closed (of_capacity's load_policy() passes such a file over)."""
+    import yaml
+    if not config_dir:
+        return {}
+    if path is None:
+        import of_events
+        path = of_events.config_path("capacity.yaml")
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    sig = doc.get("signins") or {}
+    if not isinstance(sig, dict):
+        return None
+    want = os.path.realpath(os.path.expanduser(str(config_dir)))
+    for d, labels in sig.items():
+        if os.path.realpath(os.path.expanduser(str(d))) == want:
+            return {str(k): str(v) for k, v in labels.items()} if isinstance(labels, dict) else None
+    return {}
+
+
+def _signin_keys(e):
+    return {str(x) for x in (e.get("plugin"), e.get("url")) if x}
+
+
+def signin_guard(position, doc, labels, docs):
+    """(plugins to turn off, server urls to deny, notes) for a session of `position` on an account whose labelled
+    sign-ins are `labels` (signin_labels). A sign-in the account holds under a label, such as a Cloudflare user that
+    can create API tokens, reaches only a profile naming an entry with that plugin or url and `signin:` that label
+    (2026-11-16, a user organization; of_capacity's proposal). With labels unknown (None), every plugin or url some
+    listed catalogue labels is off for a profile that names no labelled entry for it. Both modes, with or without
+    a catalogue."""
+    cat = doc.get("tools") or {}
+    mine = [cat[t] for t in profile(position, doc) if isinstance(cat.get(t), dict)]
+    every = [e for d in (docs or {}).values() for e in ((d.get("tools") or {}).values()
+             if isinstance(d.get("tools"), dict) else []) if isinstance(e, dict)]
+    if labels is None:
+        want = {k: None for e in every if e.get("signin") for k in _signin_keys(e)}
+    else:
+        want = dict(labels)
+    off_p, off_u, notes = set(), set(), []
+    for key, label in sorted(want.items()):
+        if any(key in _signin_keys(e) and e.get("signin") and (label is None or e.get("signin") == label)
+               for e in mine):
+            continue
+        if key.startswith(("http://", "https://")):
+            off_u.add(key)
+        else:
+            off_p.add(key)
+            off_u.update(str(e["url"]) for e in every if e.get("plugin") == key and e.get("url"))
+        notes.append(f"{key}: this account's sign-in is labelled {label or '(unknown: capacity.yaml unreadable)'}"
+                     f"; off for a profile without that label")
+    return off_p, sorted(off_u), notes
+
+
+def session_config(position, doc, config_dir=None, ofb=None, installed=None, org=None, up=port_up,
+                   guard=None):
     """{"mcp": the --mcp-config JSON or None, "settings": the --settings keys, "account_bound": [ids],
     "mode": add|enforce, "notes": [str]} for this position on this account.
 
@@ -501,10 +568,15 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None, org
                      "the keeper sets tools_mode: enforce once the catalogue is complete")
     elif banned:
         settings["enabledPlugins"] = dict(plugins, **{p: False for p in banned})
-    if excluded_urls(doc):
+    off_p, off_u, gnotes = guard or (set(), [], [])
+    if off_p:
+        settings["enabledPlugins"] = dict(settings.get("enabledPlugins") or {}, **{x: False for x in off_p})
+    notes.extend(gnotes)
+    denied = sorted(set(excluded_urls(doc)) | set(off_u))
+    if denied:
         # deniedMcpServers in a session's --settings hides a claude.ai connector and a plugin's server by URL
         # (probed 2026-11-14, Claude Code 2.1.325: a connected claude.ai Slack connector was gone from the session)
-        settings["deniedMcpServers"] = [{"serverUrl": u} for u in excluded_urls(doc)]
+        settings["deniedMcpServers"] = [{"serverUrl": u} for u in denied]
     return {"position": position.get("name"), "tools": ids, "mcp": {"mcpServers": servers} if servers else None,
             "settings": settings, "account_bound": bound, "mode": mode, "notes": notes}
 
@@ -523,16 +595,18 @@ def write_mcp_config(cfg, sid, state_dir=None):
     return path
 
 
-def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None):
+def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None, capacity_file=None):
     """For a launcher (of spawn, of capacity move/resume): (extra argv, settings keys to merge into the session's
     one --settings file). A position whose organization has neither a `tools:` catalogue nor `tools_excluded`
     gets ([], {}): nothing changes until its structure keeper declares one. `tools_excluded` alone applies (of_review,
-    organic-framework PR 121: an organization excluding a plugin before it has a catalogue)."""
+    organic-framework PR 121: an organization excluding a plugin before it has a catalogue), and so does a labelled
+    sign-in on the account (signin_guard)."""
     docs = registries(orgs_file)
     org, p, doc = find_position(position_name, docs)
-    if not doc.get("tools") and not excluded_plugins(doc) and not excluded_urls(doc):
+    guard = signin_guard(p, doc, signin_labels(config_dir, capacity_file), docs)
+    if not doc.get("tools") and not excluded_plugins(doc) and not excluded_urls(doc) and not any(guard[:2]):
         return [], {}
-    cfg = session_config(p, doc, config_dir, org=org)
+    cfg = session_config(p, doc, config_dir, org=org, guard=guard)
     path = write_mcp_config(cfg, sid, state_dir)
     return (["--mcp-config", path] if path else []), cfg["settings"]
 
@@ -801,7 +875,8 @@ def main(argv=None):
         if a.cmd == "plan":
             docs = registries()
             org, p, doc = find_position(a.position, docs)
-            cfg = session_config(p, doc, a.config_dir, org=org)
+            cfg = session_config(p, doc, a.config_dir, org=org,
+                                 guard=signin_guard(p, doc, signin_labels(a.config_dir), docs))
             if a.json:
                 print(json.dumps(cfg, indent=1))
                 return 0
