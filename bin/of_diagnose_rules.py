@@ -1371,7 +1371,8 @@ def loop_clock(lp, now, thresholds=None):
 
     Progress is a run that ended or a decision, nothing else: a report, a status note or an owner's check that finds the
     loop unchanged never counts (the conductor's point 4). A wait declared after the last progress (`waits` in the
-    card: on, ref, expect_at, ended_at, ts) holds the clock until its end: its expect_at, or for a wait on an `ask` the
+    card: on, ref, expect_at, ended_at, ts) holds the clock until its end; of several, the earliest end among those
+    not ended before the last wait was stated: its expect_at, or for a wait on an `ask` the
     answer or withdrawal (`ended_at`) when that came first, from which the clock counts again (of_architect, message
     01a1e12a-e502; docs/registry.md, Works, "A stated wait"). `of loop wait` requires --until, so an event with no
     expect_at comes only from another tool, and it holds nothing past its own time. A wait on the calendar
@@ -1426,13 +1427,18 @@ def loop_clock(lp, now, thresholds=None):
             not_counted.append(x)
     counted = list(by_key.values())
     live = [x for x in counted if x.get("on") not in cal]
-    holds = max([_wait_end(x, now) for x in live] or [since])
-    start = max(since, holds)
+    # the earliest of the current promises holds the clock: a wait that ended before the last statement was answered
+    # by it, and of the rest the first to end decides, so one long wait cannot hide a short one that slipped
+    # (2026-11-16, a user organization's structure keeper through of_platform, message 01a1e319-de65; until then the
+    # latest end held)
+    last_said = max([x["ts"] for x in live] or [since])
+    holder = min((x for x in live if _wait_end(x, now) >= last_said), key=lambda x: _wait_end(x, now), default=None)
+    start = max(since, _wait_end(holder, now) if holder else since)
     hours = (now - start) / 3600
     if start > now:
-        part, wait = "held", max(live, key=lambda x: _wait_end(x, now))
+        part, wait = "held", holder
     elif live:
-        part, wait = "wait_over", max(live, key=lambda x: _wait_end(x, now))
+        part, wait = "wait_over", holder
         if _ended_early(wait, now):
             wait = dict(wait, ended_early=_ended_early(wait, now))
     elif counted:
@@ -1449,27 +1455,28 @@ def loop_clock(lp, now, thresholds=None):
 
 def stall_text(st):
     """One line for the issue, the pulse's nudge and Studio: what stalled, since when, and what to do; for a clock
-    below its threshold (loop_clock), what holds it or the hours since the last progress."""
+    below its threshold (loop_clock), what holds it or how long it has run."""
     def at(x):
         return of_model.iso(x)[:16].replace("T", " ") + "Z" if x else "?"
-    w, last = st["work"], st.get("last")
+    w, last, x, h = st["work"], st.get("last"), st.get("wait") or {}, st["hours"]
+    what = f"{x.get('on')} {x.get('ref') or ''}".strip()
     if st["part"] == "held":
-        x = st["wait"]
-        return f"{w}: waits on {x.get('on')} {x.get('ref') or ''} until {at(st['since'])} ({-st['hours']:g} h left)".replace("  ", " ")
-    if not st.get("level"):
-        return (f"{w}: {st['hours']:g} h since the last run or decision"
-                + (f" ({last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else ""))
-    lead = (f"{w}: no run, decision or stated wait for {st['hours']:g} h"
-            + (f" (last: {last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else "")
-            + f"; in testing: {', '.join(st['testing'][:5])}{' …' if len(st['testing']) > 5 else ''}")
-    x = st.get("wait") or {}
-    if st["part"] == "wait_over" and x.get("ended_early"):
-        lead += f"; its wait on {x.get('on')} {x.get('ref') or ''} ended at {at(x['ended_early'])}, when it was answered or withdrawn".replace("  ", " ")
-    elif st["part"] == "wait_over":
-        lead += f"; its wait on {x.get('on')} {x.get('ref') or ''} expected by {at(x.get('expect_at') or x.get('ts'))} passed".replace("  ", " ")
+        return f"{w}: waits on {what} until {at(st['since'])} ({-h:g} h left)"
+    seen = (f" (last: {last['kind']} {last.get('what') or ''} at {at(last['at'])})".replace("  ", " ") if last else "")
+    if st["part"] == "wait_over":
+        due = (f"ended at {at(x['ended_early'])}, when it was answered or withdrawn" if x.get("ended_early")
+               else f"expected by {at(x.get('expect_at') or x.get('ts'))}")
+        lead = f"{w}: no run or decision for {h:g} h since its wait on {what} {due}"
     elif st["part"] == "calendar":
-        lead += (f"; it waits only on the calendar ({x.get('on')} {x.get('ref') or ''}".rstrip() +
-                 f", until {at(x.get('expect_at'))}), so the work has no next step meanwhile")
+        lead = (f"{w}: no run or decision for {h:g} h{seen}, and it waits only on the calendar ({what}, until "
+                f"{at(x.get('expect_at'))}), so the work has no next step meanwhile")
+    elif not st.get("level"):
+        return f"{w}: {h:g} h since the last run or decision{seen.replace(' (last: ', ' (')}"
+    else:
+        lead = f"{w}: no run, decision or stated wait for {h:g} h{seen}"
+    if not st.get("level"):
+        return lead
+    lead += f"; in testing: {', '.join(st['testing'][:5])}{' …' if len(st['testing']) > 5 else ''}"
     if st.get("waits_not_counted"):
         lead += f"; {len(st['waits_not_counted'])} wait(s) re-declared on the same thing not counted"
     return (lead + f": run it, decide it, or state what it waits on and by when (of loop wait {w} --on <what> "
