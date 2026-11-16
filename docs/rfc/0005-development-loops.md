@@ -133,6 +133,18 @@ Several hypotheses may already be in flight on one work, up to its `wip_arms`. W
 
 Why: in that organization's design review (2026-11-15, `of_architect`), the cheap rungs did not rank as live did. A runner's quote time was about 16 times the live one, and a bench case 20 to 30 times smaller than production. Halving on them would, in the draft's own words, "select the wrong winners faster".
 
+### 4.5 Workers are subagents (2026-11-16)
+
+A doer runs its hypotheses' tests as subagents, in parallel.
+- **One hypothesis per worker.** Each worker has its own git worktree and a short brief: the hypothesis, the rung, its accept, the evidence it returns, and when it checks in.
+- **A worker records its own run** (`of loop run`).
+- **The decision stays with the position that holds the loop's decision rights** (one decider per cell, RFC 0007). A cohort is then compared on the same inputs (§4.4) and judged by one decider.
+- **Arms count against the limit.** The arms in flight count against `wip_arms`, which the work sets to the number it runs at once.
+- **A critique of a hypothesis before its run** is a fresh subagent with none of its author's context.
+- **Heavy runs go to runners**, and a babysitter watches each (docs/capacity.md).
+
+The owner asks for this in every position's start context (docs/method.md, "Subagents: the owner's standing ask"). A decider that names its own hours as its limit has not used it: "the only limit is [its] own time. It can simply launch subagents. For some reason it does not" (the founder, 2026-11-16, prompt `01a1e393-ded4`).
+
 ## 5. Loop metrics: derived, never reported
 
 As for works (`docs/works.md` §3), no agent writes "60%". From the events:
@@ -195,6 +207,7 @@ The card answers "how is it going" without a prompt.
 | 6 | The first loop: `acme-search-ladder`, its ladder and target from the structure keeper's analysis; reader `acme_throughput-owner` | `acme_org` with the search work's doer |
 | 7 | Cohorts, promotion and rung fidelity (§4.4): `of loop` and its events; the card's cohort table and fidelity. Built after a work has halved a cohort with the existing commands | `of_platform`; `of_studio` |
 | 8 | The stated wait (§4.1) and the stalled-loop rule (§6): `of loop wait` and `of.loop_wait`, the doers' start context, the pulse's delivery at 4 h and 8 h; the projection's `waits[]` and the card's clock; the rule, built (2026-11-16, `of_field-analyst`) | `of_platform`; `of_studio`; `of_field-analyst` |
+| 9 | Workers as subagents (§4.5): the owner's standing ask in every enrolled position's start context and in `of spawn`'s brief (docs/method.md, "Subagents: the owner's standing ask") | `of_platform` |
 
 ## 9. Open questions
 
