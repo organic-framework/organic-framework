@@ -458,8 +458,14 @@ def signin_labels(config_dir, path=None):
     return {}
 
 
+def _signin_key(k):
+    """A label's key as both readers compare it: a url without its trailing slash (of_capacity.entry_keys)."""
+    k = str(k)
+    return k.rstrip("/") if "://" in k else k
+
+
 def _signin_keys(e):
-    return {str(x) for x in (e.get("plugin"), e.get("url")) if x}
+    return {_signin_key(x) for x in (e.get("plugin"), e.get("url")) if x}
 
 
 def signin_guard(position, doc, labels, docs):
@@ -475,15 +481,22 @@ def signin_guard(position, doc, labels, docs):
              if isinstance(d.get("tools"), dict) else []) if isinstance(e, dict)]
     if labels is None:
         want = {k: None for e in every if e.get("signin") for k in _signin_keys(e)}
+        spelt = {}
     else:
-        want = dict(labels)
+        want = {_signin_key(k): v for k, v in labels.items()}
+        spelt = {}
+        for k in labels:
+            spelt.setdefault(_signin_key(k), set()).add(str(k))
     off_p, off_u, notes = set(), set(), []
     for key, label in sorted(want.items()):
         if any(key in _signin_keys(e) and e.get("signin") and (label is None or e.get("signin") == label)
                for e in mine):
             continue
-        if key.startswith(("http://", "https://")):
-            off_u.add(key)
+        if "://" in key:
+            # deny every spelling: the label's, with and without a trailing slash, and each catalogue entry's
+            # (of_review, organic-framework PR 243: a label spelt with a slash left the plain spelling reachable)
+            off_u.update({key, key + "/"} | spelt.get(key, set()))
+            off_u.update(str(e["url"]) for e in every if e.get("url") and _signin_key(e["url"]) == key)
         else:
             off_p.add(key)
             off_u.update(str(e["url"]) for e in every if e.get("plugin") == key and e.get("url"))
