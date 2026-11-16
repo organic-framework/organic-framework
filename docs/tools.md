@@ -74,6 +74,7 @@ Rules:
 - **`tools_excluded`** names plugins, or MCP server URLs, that no position of the organization starts with, whatever its account enables, each with its basis (the owner's ask id or a source). It works in both modes: every session's settings carry `enabledPlugins: {<plugin>: false}`, and under `add` only those entries, so the account's other plugins stay. An entry with `url` puts `deniedMcpServers: [{serverUrl: <url>}]` into every session's settings, in both modes; a trailing `*` matches any path. It hides a claude.ai connector, which `enabledPlugins` cannot reach, and a plugin's server alike (probed 2026-11-14, Claude Code 2.1.325: a connected claude.ai Slack connector was gone from the session). A catalogue entry for an excluded plugin is a problem for `of registry check`. It hides the tool from the agents only: the sign-in stays on the account until its owner signs out, and a live session keeps what it loaded until its next start (2026-11-14: a user organization's owner chose that no agent acts as him in Slack, while one of its accounts still enabled the Slack plugin, signed in as him).
 - **`keeper`** owns the integration: its credential and rotation, its version, its scope.
 - **`account_bound: true`** marks a tool whose sign-in lives in one Claude account. A `connector` is always account-bound.
+- **`signin: <label>`** on an account-bound entry names which of the account's sign-ins it needs, when one account holds a sign-in with more rights than the plain entry (§5a).
 - **`url`** of a plugin or connector is the server address the session allows. `of tools inventory` shows it per account.
 - `of tools check` validates all of this; `of registry check` calls it once `of_platform` wires it in.
 
@@ -135,6 +136,16 @@ An OAuth tool's sign-in, and a claude.ai connector, exist only on the accounts w
 - `of capacity plan` and `move` read the position's account-bound tools (`launch_parts` lists them; `of tools plan` prints them). A move goes only to an account where they are connected. Otherwise the move stops, and the founder gets one task per account, listing each missing sign-in, before the move rather than after.
 - Such a sign-in is the founder's (or the tool keeper's) work: one task per account, filed only when a position needs that tool there.
 - A tool a position depends on moves to a portable form where the service allows it: a bot or service-account token held by the broker, or the tool's own OAuth sign-in through the bridge (§6, end).
+
+### 5a. A labelled sign-in
+
+One account may hold a sign-in with more rights than the tool's plain entry: a person signed in to a plugin as a user who can create API keys, on an account that many positions share. Without more, every session that starts there gets it, in `add` mode or with no catalogue at all.
+- **The machine labels the sign-in.** `capacity.yaml` (of_capacity's) keeps `signins: {<config dir>: {<plugin id or server url>: <label>}}`, each with its basis in a comment, for example `{~/.claude-x: {cloudflare@anthropic-plugin-directory: keys}}`.
+- **The catalogue names the label.** An entry with the same plugin (or url) and `signin: <label>` is the tool for that sign-in. Positions get it like any tool; `of tools check` refuses `signin` on an entry that is not account-bound.
+- **The launch.** On an account whose sign-in for plugin P (or url U) carries label L, a session whose profile names no entry for P (or U) with `signin: L` starts with `enabledPlugins: {P: false}` and `deniedMcpServers` for that url, and for the url of every catalogue entry of P. This holds in both modes, for an organization with no catalogue, and for a profile that names the plain entry. A profile that names the labelled entry keeps the plugin.
+- **Fails closed.** When `capacity.yaml` cannot be read, every plugin or url that some listed catalogue labels is off for every profile that names no labelled entry for it, on every account.
+- **Placement** (of_capacity): an entry with `signin: L` counts as signed in only on an account whose label for it is L, and a plain entry only where that plugin carries no label.
+- As with `tools_excluded`, this hides the sign-in from sessions that start after it. A live session keeps what it loaded until its next start (2026-11-16, a user organization: a sign-in that could create API keys reached two dozen sessions on one account, while three positions needed it).
 
 ## 6. The plan
 
