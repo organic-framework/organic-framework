@@ -369,8 +369,9 @@ class SubagentsYesTest(unittest.TestCase):
         yes = {"P1": of_loop.Yes("prompt", "P1", "launch subagents")}
         resolve = lambda did, work=None: yes.get(did)  # noqa: E731
         doc = {"subagents": {"decided": ["P1"], "words": "The owner, 2026-11-16:\n  \"launch subagents\"."}}
-        self.assertEqual(of.subagents_yes(doc, resolve), ('The owner, 2026-11-16: "launch subagents".', ["P1"]))
-        self.assertEqual(of.subagents_yes({"subagents": {"decided": "P1", "words": "w"}}, resolve), ("w", ["P1"]))
+        self.assertEqual(of.subagents_yes(doc, resolve),
+                         ('The owner, 2026-11-16: "launch subagents".', ["P1"], ["launch subagents"]))
+        self.assertEqual(of.subagents_yes({"subagents": {"decided": "P1", "words": "w"}}, resolve)[:2], ("w", ["P1"]))
         self.assertIsNone(of.subagents_yes({"subagents": {"decided": ["P1", "P2"], "words": "w"}}, resolve))  # P2 no
         self.assertIsNone(of.subagents_yes({"subagents": {"decided": ["P1"]}}, resolve))          # no words
         self.assertIsNone(of.subagents_yes({}, resolve))                                         # no key: nothing
@@ -420,7 +421,20 @@ class SubagentsYesTest(unittest.TestCase):
                 yaml.safe_dump({"orgs": orgs}, fh)
             positions = [{"name": "a_conductor", "_org": "orga", "role": "conductor"}, {"name": "a_doer", "_org": "orga"},
                          {"name": "b_conductor", "_org": "orgb", "role": "conductor"}, {"name": "b_doer", "_org": "orgb"}]
-            self.assertEqual(of.org_subagents(positions[1], positions, orgs_file, conn)[1], [eid])   # its own owner
+            # without owner and people.<owner>.conductors no prompt counts, not even its own conductor's (of_server
+            # on PR 241: a second person's conductor read as the owner's yes)
+            self.assertIsNone(of.org_subagents(positions[1], positions, orgs_file, conn))
+            self.assertIsNone(of.org_subagents(positions[3], positions, orgs_file, conn))           # another's: never
+            for org in ("orga", "orgb"):
+                path = os.path.join(root, org, "registry", "positions.yaml")
+                with open(path) as fh:
+                    d = yaml.safe_load(fh)
+                d.update(tenant="t", owner="pat", people={"pat": {"conductors": [f"{org[-1]}_conductor"]}},
+                         positions=[{"name": f"{org[-1]}_conductor", "role": "conductor"}])
+                with open(path, "w") as fh:
+                    yaml.safe_dump(d, fh)
+            got = of.org_subagents(positions[1], positions, orgs_file, conn)
+            self.assertEqual((got[1], got[2]), ([eid], ["launch subagents"]))           # its owner's own conductor
             self.assertIsNone(of.org_subagents(positions[3], positions, orgs_file, conn))           # another's: never
             conn.close()
 
@@ -673,6 +687,7 @@ def cli_org(root, loop):
     os.makedirs(os.path.join(org, "registry"), exist_ok=True)
     with open(os.path.join(org, "registry", "positions.yaml"), "w") as fh:
         yaml.safe_dump({"organization": "lab", "systems": {"s": {"name": "S", "kind": "target"}},
+                        "owner": "pat", "people": {"pat": {"name": "the owner", "conductors": ["lab_conductor"]}},
                         "positions": [{"name": "lab_doer", "system": "s", "role": "doer", "enrolled": True},
                                       {"name": "lab_owner", "system": "s", "role": "owner", "enrolled": True},
                                       {"name": "lab_other", "system": "s", "role": "other", "enrolled": True},

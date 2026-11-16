@@ -65,10 +65,11 @@ def subagents_section(subagents):
     """The start context's section for (words, ids) from bin/of org_subagents, or nothing."""
     if not subagents:
         return []
-    words, ids = subagents
+    words, ids, typed = (tuple(subagents) + ([],))[:3]
+    said = "; ".join(f"\"{t}\"" for t in typed if t)
     return ["", "## Subagents: your owner asks you to use them",
             f"Your owner's standing yes for the Agent tool (your organization's registry, subagents:; {', '.join(ids)}): "
-            f"{words}", SUBAGENTS_HOW]
+            f"{words}" + (f" As typed in their conductor: {said}" if said else ""), SUBAGENTS_HOW]
 
 
 def owner_measures(loops, resolve=None):
