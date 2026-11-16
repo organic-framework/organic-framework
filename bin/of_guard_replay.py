@@ -95,8 +95,10 @@ def org_replay(rules, rows):
     import of_guard
     out = {r["id"]: {"positions": collections.Counter(), "days": collections.Counter(), "excepted": 0,
                      "in_variable": 0} for r in rules}
+    names = {str(n) for r in rules for n in ((r.get("cli") or {}).get("names") or [])}
     for pos, day, cmd in rows:
-        if "kubectl" not in cmd and not of_guard._SSH_WORDS.search(cmd):
+        # a cli rule's names too: this filter let no cli rule be replayed (of_server, 2026-11-16)
+        if "kubectl" not in cmd and not of_guard._SSH_WORDS.search(cmd) and not any(n in cmd for n in names):
             continue
         for r in rules:
             if r.get("subject") not in (None, "*") and r["subject"] != pos:

@@ -4202,6 +4202,93 @@ def _resolve_word(word, line):
     return None, False
 
 
+_MATCH_HOLE = re.compile(r"\$\{[^}]*\}|\$\w+|\$[@*#?$!0-9-]|__OFSUB\d*__|`[^`]*`")
+
+
+def _call_glob(word):
+    """A call's word as a glob: a variable, a $( ) or a shell glob in it may hold anything, so only its literal parts
+    must fit (as the ssh matcher reads a host)."""
+    return re.sub(r"\[[^\]]*\]", "?", _MATCH_HOLE.sub("*", str(word)))
+
+
+def _fits(word, alternatives):
+    """Can WORD (a call's, read as a glob) be one of ALTERNATIVES (`a|b*`)?"""
+    return any(_globs_meet(_call_glob(word), alt) for alt in str(alternatives).split("|") if alt != "")
+
+
+def _match_option_values(args, spelling):
+    """Every value the call gives option SPELLING, in every spelling: `-n v`, `-nv`, `-n=v`, a short cluster ending
+    in it (`-xn v`), `--name v`, `--name=v` and an unambiguous abbreviation of a long one. None for one without a
+    value (a doubt)."""
+    out = []
+    long_ = spelling.startswith("--")
+    for k, a in enumerate(args):
+        nxt = args[k + 1] if k + 1 < len(args) else None
+        if a == "--":
+            break
+        if long_:
+            if not a.startswith("--"):
+                continue
+            key, eq, val = a.partition("=")
+            if len(key) > 2 and spelling.startswith(key):
+                out.append(val if eq else nxt)
+        elif re.match(r"^-[^-]", a):
+            ch = spelling[1:]
+            if a == spelling:
+                out.append(nxt)
+            elif a.startswith(spelling + "="):
+                out.append(a[len(spelling) + 1:])
+            elif a.startswith(spelling):
+                out.append(a[len(spelling):])
+            elif re.fullmatch(r"-[A-Za-z]+", a) and a.endswith(ch):
+                out.append(nxt)
+    return out
+
+
+def _cmd_matched(scope, name, args):
+    """O4 `match` (docs/registry.md, Scope cli; of_architect, msg 01a1e245-c3a5): "hard", "soft" or None. With no match
+    list, every call of a listed name is hard; else one an entry fits, every key of it. `words`: an ordered
+    subsequence of the call's words that are not options, each a set of alternatives (`|`) and globs, so an unknown
+    option's value never shifts it. `options`: each listed spelling read anywhere on the line; `''` stands for not
+    given. A value in a variable fits where its literal parts can: a doubt matches, as a deny must. Only the first
+    word an entry names (the subcommand) must be literal: one that fits only through a variable is soft, recorded and
+    never denied, as a command word held in a variable is (condition 1; the replay of a user organization's helm calls:
+    `helm get $R -n $NS` would have read $R as `upgrade`)."""
+    entries = scope.get("match")
+    if not entries:
+        return "hard"
+    words = [a for a in args if not a.startswith("-") or a == "-"]
+    best = None
+    for e in entries:
+        if e.get("tool") and name and str(e["tool"]).casefold() != name.casefold():
+            continue
+        want, k, literal_head = list(e.get("words") or []), 0, True
+        for w in words:
+            if k < len(want) and _fits(w, want[k]):
+                if k == 0:
+                    literal_head = _call_glob(w) == w
+                    if not literal_head and any(_call_glob(x) == x and _fits(x, want[0]) for x in words):
+                        continue  # a literal word further on fits the head: take that one
+                k += 1
+        if k < len(want):
+            continue
+        ok = True
+        for spellings, values in (e.get("options") or {}).items():
+            got = [v for sp in str(spellings).split("|") if sp for v in _match_option_values(args, sp)]
+            vals = [str(v) for v in values or []]
+            if not got:
+                ok = "" in vals
+            else:
+                ok = any(v is None or any(_fits(v, p) for p in vals if p != "") for v in got)
+            if not ok:
+                break
+        if ok:
+            if not want or literal_head:
+                return "hard"
+            best = "soft"
+    return best
+
+
 def commands_rule_match(scope, findings, position, line=""):
     """(what matched, soft) for O4, or None. soft: a command word held in a variable, which only warns (of_architect's
     condition 1), unless its value is set to a listed name on the same line or its literal parts end in one."""
@@ -4232,15 +4319,21 @@ def commands_rule_match(scope, findings, position, line=""):
             target, known = _resolve_word(word, line)
             target = target.casefold() if target else target
             if target in names:
-                if not _cmd_allowed(scope, target, args, position):
-                    return f"{target} {' '.join(args)}".strip()[:200], False
+                m = _cmd_matched(scope, target, args)
+                if m and not _cmd_allowed(scope, target, args, position):
+                    if m == "hard":
+                        return f"{target} {' '.join(args)}".strip()[:200], False
+                    soft = soft or (f"{target} {' '.join(args)}".strip()[:200], True)
                 continue
-            if not known:  # the line does not say what runs: a warning, never a deny (condition 1)
-                soft = soft or (f"a command word held in a variable ({word[:60]})", True)
+            if not known and _cmd_matched(scope, "", args):  # the line does not say what runs: a warning, never a
+                soft = soft or (f"a command word held in a variable ({word[:60]})", True)  # deny (condition 1)
             continue
         name = os.path.basename(word).casefold()
-        if name in names and not _cmd_allowed(scope, name, args, position):
-            return f"{name} {' '.join(args)}".strip()[:200], False
+        m = _cmd_matched(scope, name, args) if name in names else None
+        if m and not _cmd_allowed(scope, name, args, position):
+            if m == "hard":
+                return f"{name} {' '.join(args)}".strip()[:200], False
+            soft = soft or (f"{name} {' '.join(args)}".strip()[:200], True)
     return soft
 
 

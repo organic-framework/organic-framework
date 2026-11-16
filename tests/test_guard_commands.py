@@ -145,6 +145,67 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual([p for p in of_grants.shape_problems(allow) if "cli" in p or "commands" in p], [])
 
 
+HELM = {"names": ["helm"],
+        "match": [{"tool": "helm", "words": ["upgrade|rollback|uninstall|un|delete|del", "orders|billing-*"],
+                   "options": {"-n|--namespace": ["prod", ""]}}],
+        "allow": [{"positions": ["db_keeper"], "tool": "helm", "argv": ["rollback", "orders", "7"]}]}
+HELM_RULE = {"id": "g-helm", "mode": "deny", "reason": "These releases own the primaries' Services.", "subject": "*",
+             "except": [], "cli": HELM}
+
+
+def helm_hit(cmd, position=None):
+    h = of_guard.org_rule_hits("Bash", {"command": cmd}, [HELM_RULE], position=position)
+    return h[0][0]["mode"] if h else None
+
+
+class MatchListTest(unittest.TestCase):
+    """O4 `match` (of_architect, msg 01a1e245-c3a5; a user organization's request, msg 01a1e243-1387): a deny on some
+    calls of a tool, by its words and options, not on the tool."""
+
+    def test_the_named_calls_deny(self):
+        for cmd in ("helm upgrade orders ./chart -n prod", "helm upgrade --version 1.2 orders ./chart -n prod",
+                    "helm -n prod rollback orders 3", "helm rollback orders 3 --namespace=prod",
+                    "helm uninstall a orders -nprod", "helm un billing-eu --namespace prod",
+                    "helm upgrade --install -f v.yaml orders ./chart -n prod", "sudo helm upgrade orders ./c -n prod",
+                    "bash -c 'helm upgrade orders ./c -n prod'",
+                    "helm upgrade orders ./chart",                       # no namespace: helm takes the context's
+                    "HELM_NAMESPACE=prod helm upgrade orders ./chart",   # not given on the line: '' matches
+                    "helm upgrade $R ./chart -n prod",                   # a variable may hold a listed release
+                    "helm upgrade orders ./chart -n $NS",
+                    "helm upgrade orders ./c -n pr*"):
+            self.assertEqual(helm_hit(cmd), "deny", cmd)
+
+    def test_a_subcommand_only_a_variable_fits_is_recorded_not_denied(self):
+        """The replay of a user organization's helm calls: `helm get $R -n $NS` read $R as the subcommand. The first
+        word an entry names must be literal; one a variable fits is soft, as a command word in a variable is."""
+        for cmd in ("helm get $R -n $NS", "helm template $R $C -n $NS", "helm $CMD orders -n prod"):
+            self.assertNotEqual(helm_hit(cmd), "deny", cmd)
+        h = of_guard.commands_rule_match(HELM, of_guard.command_findings("helm $CMD orders -n prod"), None)
+        self.assertEqual(h and h[1], True)
+        self.assertIsNone(of_guard.commands_rule_match(HELM, of_guard.command_findings("$K get pods -n prod"), None))
+
+    def test_other_calls_of_the_tool_pass(self):
+        for cmd in ("helm list -n prod", "helm status orders -n prod", "helm upgrade payments ./chart -n prod",
+                    "helm upgrade orders ./chart -n staging", "helm template orders ./chart -n prod",
+                    "helm diff upgrade-check payments -n prod", "helm repo update", "kubectl get svc -n prod"):
+            self.assertIsNone(helm_hit(cmd), cmd)
+
+    def test_an_allow_entry_stays_an_exception(self):
+        self.assertIsNone(helm_hit("helm rollback orders 7 -n prod", position="db_keeper"))
+        self.assertEqual(helm_hit("helm rollback orders 7 -n prod", position="ops_x"), "deny")
+        self.assertEqual(helm_hit("helm rollback orders 8 -n prod", position="db_keeper"), "deny")
+
+    def test_shape(self):
+        g = cmd_grant(scope={"cli": HELM})
+        self.assertEqual(of_grants.shape_problems(g), [])
+        for bad, why in ((dict(HELM, env=["X"]), "carries no env or code"),
+                         (dict(HELM, match=[{"tool": "kubectl", "words": ["x"]}]), "cli.match"),
+                         (dict(HELM, match=[{"tool": "helm"}]), "cli.match"),
+                         (dict(HELM, match=[{"options": {"namespace": ["prod"]}}]), "cli.match"),
+                         (dict(HELM, match=[]), "cli.match")):
+            self.assertTrue(any(why in p for p in of_grants.shape_problems(cmd_grant(scope={"cli": bad}))), (bad, why))
+
+
 class HookTest(KeyCase):
     """The hook reads a cli rule for a line that names neither kubectl nor ssh (of_hook._org_guard)."""
 

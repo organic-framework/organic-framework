@@ -513,14 +513,30 @@ def commands_shape(cm, subject=None):
     01a1db57-17f9): names are bare command words, env variable names, code module names; each allow entry names its
     positions and what it lets through (options or argv)."""
     out = []
-    if not isinstance(cm, dict) or not cm or set(cm) - {"names", "env", "code", "allow"}:
-        return ["scope cli takes names, env, code and allow"]
+    if not isinstance(cm, dict) or not cm or set(cm) - {"names", "env", "code", "allow", "match"}:
+        return ["scope cli takes names, env, code, allow and match"]
     for key, rx, what in (("names", _CMD_WORD, "bare command words"), ("env", _ENV_NAME, "variable names"),
                           ("code", _MODULE, "module names")):
         if key in cm and not (_str_list(cm[key]) and all(rx.match(x) for x in cm[key])):
             out.append(f"scope cli.{key} is a list of {what}")
     if not any(cm.get(k) for k in ("names", "env", "code")):
         out.append("scope cli names at least one of names, env or code")
+    mt = cm.get("match")
+    if mt is not None:  # of_architect, msg 01a1e245-c3a5: one grant reads as one rule
+        names = set(cm.get("names") or [])
+        if cm.get("env") or cm.get("code") or not names:
+            out.append("scope cli.match keys on names only: a grant with match carries no env or code")
+        good = isinstance(mt, list) and mt and all(
+            isinstance(e, dict) and not set(e) - {"tool", "words", "options"}
+            and (e.get("tool") is None or e["tool"] in names)
+            and (e.get("words") is None or (_str_list(e["words"]) and all(w for w in e["words"])))
+            and (e.get("options") is None or (isinstance(e["options"], dict) and e["options"] and all(
+                isinstance(o, str) and all(x.startswith("-") for x in o.split("|")) and isinstance(v, list)
+                and all(isinstance(x, str) for x in v) and v for o, v in e["options"].items())))
+            and (e.get("words") or e.get("options")) for e in mt)
+        if not good:
+            out.append("scope cli.match is a list of {tool?: a listed name, words?: [alternatives|globs], "
+                       "options?: {-o|--option: [values or globs; '' for not given]}}, each with words or options")
     al = cm.get("allow")
     if al is not None:
         names = set(cm.get("names") or [])
