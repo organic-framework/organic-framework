@@ -385,7 +385,44 @@ class SubagentsYesTest(unittest.TestCase):
         self.assertEqual(of.check_subagents({"decided": ["A1#1"], "words": "w"}, resolve),   # of_architect, 5bf42c41
                          ["subagents: decided A1#1 is an ask's yes; decided names the owner's own prompts only"])
         self.assertEqual(of.check_subagents({"words": "w"}),
-                         ["subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>"])
+                         ["subagents: no decided: the owner's yes, the id of their own prompt"])
+
+
+    def test_another_organizations_conductor_prompt_never_counts(self):
+        """of_review on PR 241: the resolver took every organization's conductors, so org B's subagents: resolved with a
+        prompt typed in org A's conductor session."""
+        import importlib.machinery
+        import importlib.util
+        import of_events
+        import of_store
+        import yaml
+        loader = importlib.machinery.SourceFileLoader("of_cli_sub2", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli_sub2", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        with tempfile.TemporaryDirectory() as root:
+            conn = of_store.connect(os.path.join(root, "of.db"))
+            rec = of_events.record("human_prompt", {"origin": "human", "text": "launch subagents"},
+                                   position="a_conductor", session="SA")
+            of_store.add_event(conn, rec)
+            conn.commit()
+            eid = rec["of.event.id"]
+            orgs = []
+            for org in ("orga", "orgb"):
+                d = os.path.join(root, org, "registry")
+                os.makedirs(d)
+                with open(os.path.join(d, "positions.yaml"), "w") as fh:
+                    yaml.safe_dump({"organization": org, "positions": [],
+                                    "subagents": {"decided": [eid], "words": "The owner: launch subagents."}}, fh)
+                orgs.append({"name": org, "path": os.path.join(root, org)})
+            orgs_file = os.path.join(root, "orgs.yaml")
+            with open(orgs_file, "w") as fh:
+                yaml.safe_dump({"orgs": orgs}, fh)
+            positions = [{"name": "a_conductor", "_org": "orga", "role": "conductor"}, {"name": "a_doer", "_org": "orga"},
+                         {"name": "b_conductor", "_org": "orgb", "role": "conductor"}, {"name": "b_doer", "_org": "orgb"}]
+            self.assertEqual(of.org_subagents(positions[1], positions, orgs_file, conn)[1], [eid])   # its own owner
+            self.assertIsNone(of.org_subagents(positions[3], positions, orgs_file, conn))           # another's: never
+            conn.close()
 
 
 class LocatedRunTest(unittest.TestCase):
