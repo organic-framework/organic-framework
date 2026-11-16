@@ -337,15 +337,17 @@ class ReadingPointTest(unittest.TestCase):
         hold = {"on": "release", "ref": "rt35.1", "expect_at": 1_800_000_000, "ts": 1}
         lines = "\n".join(of_context.loop_clocks({
             "w-a": {"role": "doer", "testing": 2, "part": "held", "wait": hold, "left_h": 3.5, "since_h": None,
-                    "stated": [dict(hold, holds=True),
+                    "stated": [dict(hold, status="holder"),
                                {"on": "holdout", "ref": "day 3", "expect_at": 1_800_100_000, "ts": 2,
-                                "hypothesis": "cdd8952f", "holds": False}]},
+                                "hypothesis": "cdd8952f", "status": "calendar"},
+                               {"on": "release", "ref": "rt35.1", "expect_at": 1_800_200_000, "ts": 3,
+                                "status": "not_counted"}]},
             "w-b": {"role": "owner", "testing": 1, "part": "silent", "wait": None, "left_h": None, "since_h": 6.2,
                     "stated": []},
             "w-c": {"role": "doer", "testing": 0, "part": "silent", "wait": None, "since_h": 90, "stated": []}}))
         self.assertIn("- `w-a` (doer): its stall clock is held by the wait on release rt35.1 until 2027-01-15 08:00Z "
-                      "(3.5 h left); also stated: holdout day 3 until 2027-01-16 11:46Z for cdd8952f (holds no clock).",
-                      lines)   # a user organization's structure keeper, message 01a1e317-4677: no wait replaces another
+                      "(3.5 h left); also stated: holdout day 3 until 2027-01-16 11:46Z for cdd8952f (holds no clock); "
+                      "release rt35.1 until 2027-01-17 15:33Z (a restatement the clock does not count).", lines)   # a user organization's structure keeper, message 01a1e317-4677: no wait replaces another
         self.assertIn("- `w-b` (owner): 6.2 h with no run, decision or holding wait.", lines)
         self.assertNotIn("w-c", lines)                                          # nothing in testing: nothing to say
         self.assertIn("State a wait when the next run or decision will not come within 4 h: of loop wait", lines)
@@ -474,16 +476,16 @@ class LocatedRunTest(unittest.TestCase):
                     "--observed-at", "the exchange's fills", "--direct", "--ended-at", "2026-11-01T00:00:00Z")
             self.assertEqual(r.returncode, 0, r.stderr)                   # an old run: every wait came after it
             c = of_loop.clocks(db, [("w-speed", "doer", LOOP)])["w-speed"]
-            self.assertEqual((c["part"], c["testing"], c["wait"]["on"]), ("held", 1, "position"))  # +1d holds, not
-            # the calendar's +3d
-            self.assertAlmostEqual(c["left_h"], 24, delta=0.2)
-            self.assertEqual(sorted((x["on"], x["holds"]) for x in c["stated"]),
-                             [("calendar", False), ("position", True), ("position", True), ("runner", True)])
+            self.assertEqual((c["part"], c["testing"], c["wait"]["on"]), ("held", 1, "runner"))  # the first to end
+            self.assertAlmostEqual(c["left_h"], 5, delta=0.2)
+            self.assertEqual(sorted((x["on"], x["status"]) for x in c["stated"]),
+                             [("calendar", "calendar"), ("position", "counted"), ("position", "counted"),
+                              ("runner", "holder")])
             parked = of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "parked"})])
             self.assertEqual(parked, {})                     # a parked work has no clock (of_review on PR 239)
             self.assertEqual(of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "done"})]), {})
             out = run("show", "w-speed").stdout
-            self.assertIn("stall clock: held by the wait on position ", out)
+            self.assertIn("stall clock: held by the wait on runner job-7 until", out)
             self.assertIn("calendar until", out)
             self.assertIn("(holds no clock)", out)
             import yaml
