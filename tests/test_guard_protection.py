@@ -79,6 +79,46 @@ class ProtectedCodeTest(unittest.TestCase):
         of_guard.use_protection()
         self.tmp.cleanup()
 
+    def test_g21_git_writes_in_a_protected_worktree(self):
+        """2026-11-16: a user organization keeps a detached worktree at a reviewed merge as protected code; the guard
+        let `git merge`, `reset --hard`, `pull`, `apply` and `stash pop` change it."""
+        wt = os.path.join(self.root, "repo", ".worktrees", "vault")
+        os.makedirs(os.path.join(wt, "scripts"))
+        of_guard.use_protection(code=[self.bin, wt])
+        repo = os.path.join(self.root, "repo")
+        for cmd in (f"git -C {wt} merge --ff-only origin/main", f"cd {wt} && git pull", f"git -C {wt} reset --hard abc",
+                    f"git -C {wt} apply p.diff", f"git -C {wt} stash pop", f"git -C {wt} stash",
+                    f"cd {wt}/scripts && git checkout HEAD~1 -- .", f"git --work-tree={wt} checkout main -- .",
+                    f"GIT_WORK_TREE={wt} git checkout main -- .", f"git -C {wt} restore scripts/s.sh",
+                    f"git -C {wt} clean -fd", f"git -C {wt} switch -d abc", f"git -C {wt} rebase origin/main",
+                    f"git -C {wt} cherry-pick abc", f"git -C {wt} sparse-checkout set scripts lib",
+                    f"git -C {wt} -c alias.ff=merge ff origin/main", f"git -C {wt} rm scripts/s.sh",
+                    f"git -C {repo} worktree remove --force {wt}", f"git -C {repo} worktree move {wt} /tmp/elsewhere",
+                    f"git -C {repo} clean -ffdx", f"git -C {repo} -c 'alias.x=!cp evil {wt}/scripts/s.sh' x"):
+            self.assertIn("protected_code", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"git -C {wt} fetch origin", f"git -C {wt} status", f"git -C {wt} log -1", f"git -C {wt} diff",
+                    f"git -C {wt} rev-parse HEAD", f"git -C {wt} reset", f"git -C {wt} restore --staged x",
+                    f"git -C {wt} apply --check p.diff", f"git -C {wt} stash list", f"git -C {wt} clean -n",
+                    f"git -C {wt} sparse-checkout list", f"git -C {repo} checkout main", f"git -C {repo} clean -fdx",
+                    f"git -C {repo} worktree list", f"git -C {repo} worktree add {self.root}/repo/.worktrees/other abc",
+                    f"git -C {repo} merge origin/main"):
+            self.assertNotIn("protected_code", bash(cmd, self.root) or "", cmd)
+
+    def test_g21_a_shell_never_runs_protected_code_handed_to_it(self):
+        """2026-11-16: a user organization's script starts with `#!/bin/bash -p`, so BASH_ENV and exported functions
+        do not reach it; `bash <script>` drops that line and runs the caller's code first, in the process that then
+        reads the organization's secret. Run by its own path only."""
+        s = f"{self.bin}/vault.sh"
+        for cmd in (f"bash {s} verify", f"sh {s}", f"BASH_ENV=/tmp/x bash {s} verify", f"zsh {s}", f"env -i bash {s}",
+                    f"/bin/bash -x {s}", f"bash -o pipefail {s}", f"source {s}", f". {s}", f"exec bash {s}",
+                    f"bash -p -c 'f(){{ :; }}; . {s}' {s}", f"bash -c \"$(cat {s})\" {s}",
+                    f"cd {self.bin} && bash vault.sh verify", f"cd {self.bin} && . ./vault.sh"):
+            self.assertIn("run it by its own path", bash(cmd, self.root) or "", cmd)
+        for cmd in (f"{s} verify", f"BASH_ENV=/tmp/x {s} verify", f"cat {s}", f"bash -n /tmp/other.sh",
+                    f"bash {self.root}/other/vault.sh", "bash -c 'git status'", f"cp {s} /tmp/copy.sh",
+                    f"shellcheck {s}"):
+            self.assertIsNone(bash(cmd, self.root), cmd)
+
     def test_g21_file_tools(self):
         for tool, path in (("Write", f"{self.bin}/backup.sh"), ("Edit", f"{self.agents}/com.acme.backup.plist"),
                            ("MultiEdit", f"{self.bin}/../bin/run.sh")):
@@ -102,7 +142,7 @@ class ProtectedCodeTest(unittest.TestCase):
                     f"unzip -l t.zip", f"cp -R newtree /tmp/elsewhere"):
             self.assertIsNone(bash(cmd, self.root), cmd)
         for cmd in (f"cat {b}/backup.sh", f"ls {a}", f"cp {b}/backup.sh /tmp/copy.sh", f"echo x > {a}/other.plist",
-                    f"rm -rf {self.root}/elsewhere", f"bash {b}/backup.sh scan"):
+                    f"rm -rf {self.root}/elsewhere", f"{b}/backup.sh scan"):
             self.assertIsNone(bash(cmd, self.root), cmd)
 
 
