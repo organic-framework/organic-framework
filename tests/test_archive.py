@@ -71,6 +71,18 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(self.emitted[-1][0], "raw_archived")
         self.assertTrue(os.path.exists(a))
 
+    def test_a_change_past_the_head_then_an_append_is_copied_whole(self):
+        """of_review on PR 246: a change at offset 8000, then an append, was taken for an append by the head alone; the
+        copy then matched no version of the file."""
+        body = b"a" * 9000 + b"\n"
+        self.put("m.jsonl", body)
+        self.run_()
+        changed = body[:7900] + b"B" * 200 + body[8100:] + b"tail\n"   # within the last 4 KB before the old end
+        self.put("m.jsonl", changed)
+        out = self.run_()
+        self.assertIn("1 changed", out[-1])
+        self.assertEqual(self.copy("m.jsonl"), changed)                    # the copy is the file, not a mix
+
     def test_new_files_first_within_a_budget_and_one_path(self):
         self.put("old.jsonl", b"x\n")
         self.run_()
@@ -94,7 +106,7 @@ class ArchiveTest(unittest.TestCase):
         with open(os.path.join(root, "files", ".claude-x", "projects", "p", "b.jsonl.zst"), "wb") as fh:
             fh.write(of_archive.zstd.compress(b"first\n"))
         with open(os.path.join(root, "files.json"), "w") as fh:            # the 2026-11-05 index: size and mtime only
-            json.dump({".claude-x/projects/p/b.jsonl": [1, 1]}, fh)
+            json.dump({".claude-x/projects/p/b.jsonl": [1, 1]}, fh)   # nor the tail hash: copied whole
         self.put("b.jsonl", b"second\n", mode="a")
         self.run_()
         self.assertEqual(self.copy("b.jsonl"), b"first\nsecond\n")
