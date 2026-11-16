@@ -851,7 +851,10 @@ def check_subagents(s, resolve=None):
     ids = [s["decided"]] if isinstance(s.get("decided"), str) else list(s.get("decided") or [])
     if not ids:
         out.append("subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>")
-    for i in ids if resolve else ():
+    asks = [str(i) for i in ids if "#" in str(i)]
+    for i in asks:  # docs/registry.md, "Subagents" (5bf42c41): the owner's prompts only, an ask form never resolves
+        out.append(f"subagents: decided {i} is an ask's yes; decided names the owner's own prompts only")
+    for i in [i for i in ids if str(i) not in asks] if resolve else ():
         y = resolve(str(i))
         if y == of_loop.UNREAD:
             out.append(f"{WARN}subagents: decided {i}: this machine's log cannot be read to resolve it")

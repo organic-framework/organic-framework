@@ -382,6 +382,8 @@ class SubagentsYesTest(unittest.TestCase):
         self.assertTrue(any(p.startswith("subagents: decided P2 does not resolve") for p in probs))
         self.assertTrue(of.check_subagents({"decided": ["P1"], "words": "w"},
                                            lambda did, work=None: of_loop.UNREAD)[0].startswith(of.WARN))
+        self.assertEqual(of.check_subagents({"decided": ["A1#1"], "words": "w"}, resolve),   # of_architect, 5bf42c41
+                         ["subagents: decided A1#1 is an ask's yes; decided names the owner's own prompts only"])
         self.assertEqual(of.check_subagents({"words": "w"}),
                          ["subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>"])
 
