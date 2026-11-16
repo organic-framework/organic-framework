@@ -73,6 +73,36 @@ Our reading, to confirm:
   - an owner who must relay between positions.
 - **Grounding.** Team Topologies uses cognitive load as the primary sizing rule for teams. Parnas (information hiding) and the design structure matrix cut modules where coupling is low. Conway's law ties the communication structure to the structure of the result.
 
+### Subagents: the owner's standing ask (2026-11-16, `of_architect`)
+
+The owner asks every position to run the independent parts of its work as subagents, in parallel, rather than one after another in its own turns. The founder said this about a user organization's search decider, which had named its own hours as its only limit although its approved process names its workers as its subagents: "Again, the only limit is [its] own time. It can simply launch subagents. For some reason it does not" (2026-11-16, prompt `01a1e393-ded4` in `of_conductor`'s session; relayed in message `01a1e394-376d`).
+
+- **Why it must be said.** Claude Code's description of its Agent tool tells an agent not to spawn subagents unless the user asks, and to use the tool only when the user explicitly says so (as read on 2026-11-16). A position's user is its owner, and no brief or start context said that the owner asks. So the ask is stated where every session reads it: the organization's AGENTS.md, the start context of every enrolled position, and the brief `of spawn` types (below).
+- **What runs as a subagent.** Parts that need no durable context and do not wait on each other:
+  - a loop's variants and hypotheses, one per subagent (RFC 0005 §4.5);
+  - searches over code, documents or the web;
+  - a review of a draft by a fresh context that has none of its author's;
+  - reading a long record into a short answer;
+  - watching a runner: a babysitter on the loop's `babysit_model` ([`capacity.md`](capacity.md)).
+- **The conditions are the rules already in force.**
+  - A subagent that changes files works in its own git worktree, so parallel changes never meet in one checkout.
+  - Heavy jobs run on runners or in CI, never on a laptop.
+  - A loop's variants in flight are arms: the work's `wip_arms` is set to the number it runs at once (RFC 0005 §4.4).
+  - A subagent's model follows its task: the position's own model for reasoning, a smaller one for watching and reading.
+- **A subagent is not a position** ([`ontology.md`](ontology.md)). What needs the position stays with the position:
+  - decisions on its cells and its loops;
+  - asks to the owner;
+  - messages to other positions;
+  - `of status` and the registry;
+  - commits to a shared branch.
+
+  A subagent reports to the position that launched it.
+- **It is the default for every organization on OF.** An organization's owner who wants otherwise tells its structure keeper, and its AGENTS.md says so.
+- **Where it is said:**
+  - the framework's own AGENTS.md (2026-11-16), for the OF team;
+  - each organization's AGENTS.md, by its structure keeper;
+  - every enrolled position's start context, and one sentence in `of spawn`'s brief (`of_platform`, to build).
+
 ### One team: rails for working together
 
 Founder, 2026-11-05:
