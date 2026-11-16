@@ -184,6 +184,26 @@ class MatchListTest(unittest.TestCase):
         self.assertEqual(h and h[1], True)
         self.assertIsNone(of_guard.commands_rule_match(HELM, of_guard.command_findings("$K get pods -n prod"), None))
 
+    def test_input_from_xargs_or_find_and_a_value_in_a_cluster(self):
+        """of_secrets-review on PR 237: the words xargs, parallel or find -exec {} add can be the listed ones, and pflag
+        reads `-inprod` as -i, then -n prod."""
+        strict = dict(HELM, match=[dict(HELM["match"][0], options={"-n|--namespace": ["prod"]})])
+        rule = dict(HELM_RULE, cli=strict)
+
+        def strict_hit(cmd):
+            h = of_guard.org_rule_hits("Bash", {"command": cmd}, [rule])
+            return h[0][0]["mode"] if h else None
+        for cmd in ("helm list -q -n prod | grep billing | xargs -n1 helm uninstall -n prod",
+                    "echo orders | xargs helm upgrade -n prod", "xargs -I% helm upgrade % ./c -n prod < list",
+                    "find . -name orders -exec helm upgrade {} ./c -n prod \\;",
+                    "printf 'orders\\n' | parallel helm uninstall -n prod", "parallel helm upgrade {} ./c -n prod ::: orders",
+                    "helm upgrade -inprod orders ./c", "helm upgrade -in prod orders ./c", "helm upgrade -in=prod orders ./c",
+                    "S=upgrade; helm $S orders -n prod", "S=upgrade && helm ${S} orders -n prod",
+                    "C=upgrade; helm $C orders -n prod"):
+            self.assertEqual(strict_hit(cmd), "deny", cmd)
+        self.assertIsNone(strict_hit("echo x | xargs helm list -n prod"))
+        self.assertIsNone(strict_hit("helm upgrade -instaging orders ./c"))
+
     def test_other_calls_of_the_tool_pass(self):
         for cmd in ("helm list -n prod", "helm status orders -n prod", "helm upgrade payments ./chart -n prod",
                     "helm upgrade orders ./chart -n staging", "helm template orders ./chart -n prod",
