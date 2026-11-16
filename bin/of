@@ -300,6 +300,9 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         if org in BROKEN or org not in docs:
             continue
         doc = docs[org]
+        problems += [f"{org}:registry/positions.yaml: {pr}" if not pr.startswith(WARN) else
+                     f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}"
+                     for pr in check_subagents(doc.get("subagents"), resolve) if deep or not pr.startswith(WARN)]
         works = doc.get("works")
         if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
             import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
@@ -816,6 +819,57 @@ def _decided_resolver(conn=None, positions=None):
             held["conn"] = of_fold.reader() or False
         return of_loop.resolve_decided(held["conn"], did, typed_by_person, work) if held["conn"] else of_loop.UNREAD
     return resolve
+
+
+def subagents_yes(doc, resolve):
+    """(words, [ids]) when the organization's top-level `subagents:` quotes its owner's words and every id in its
+    `decided` resolves in this machine's log as the owner's yes, else None (docs/registry.md, "Subagents"; of_review on
+    PR 241: an owner's words carry no authority outside the organization they own)."""
+    import of_loop
+    s = doc.get("subagents") if isinstance(doc, dict) else None
+    if not isinstance(s, dict) or not str(s.get("words") or "").strip() or not resolve:
+        return None
+    ids = [s["decided"]] if isinstance(s.get("decided"), str) else list(s.get("decided") or [])
+    if not ids:
+        return None
+    for i in ids:
+        y = resolve(str(i))
+        if not y or y == of_loop.UNREAD:
+            return None
+    return " ".join(str(s["words"]).split()), [str(i) for i in ids]
+
+
+def check_subagents(s, resolve=None):
+    """Problems of a top-level `subagents:` (docs/registry.md, "Subagents"): no words, no decided, or (with RESOLVE, `of
+    registry check`) an id that does not resolve; a warning when the log cannot be read."""
+    import of_loop
+    if s is None:
+        return []
+    if not isinstance(s, dict):
+        return ["subagents: is a mapping {decided, words}"]
+    out = [] if str(s.get("words") or "").strip() else ["subagents: no words: quote the owner's words, verbatim, dated"]
+    ids = [s["decided"]] if isinstance(s.get("decided"), str) else list(s.get("decided") or [])
+    if not ids:
+        out.append("subagents: no decided: the owner's yes, a prompt id or <ask id>#<n>")
+    for i in ids if resolve else ():
+        y = resolve(str(i))
+        if y == of_loop.UNREAD:
+            out.append(f"{WARN}subagents: decided {i}: this machine's log cannot be read to resolve it")
+        elif not y:
+            out.append(f"subagents: decided {i} does not resolve as the owner's yes (their own prompt in their "
+                       f"conductor's session, or an ask's yes option they chose)")
+    return out
+
+
+def org_subagents(position, positions, orgs_file=None):
+    """subagents_yes for POSITION's organization: one read of its registry and the log's resolver."""
+    regs = {o: p for o, p, _ in org_registries(orgs_file or ORGS_FILE)}
+    path = regs.get((position or {}).get("_org"))
+    if not path:
+        return None
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    return subagents_yes(doc, _decided_resolver(positions=positions) if doc.get("subagents") else None)
 
 
 def _for_work(resolve, wid):
@@ -1987,12 +2041,16 @@ def cmd_spawn(args):
         deny = None
         print(f"credentials: no deny rules for this session ({type(e).__name__}: {e}); the guard still applies")
     try:
+        try:  # the owner's standing yes to subagents, only where the organization's registry carries it
+            subagents = bool(org_subagents(p, positions))
+        except Exception:  # noqa: BLE001 - an unreadable registry or log: nothing is said
+            subagents = False
         pl = of_spawn.plan(p, positions, live_agents(), bind, p.get("_systems") or {}, _org_paths().get(p["_org"]),
                            roots.get(p["_org"], ""), want_workspace, config_dir=args.config_dir, cwd=args.cwd,
                            capacity_rows=rows, best_target=of_capacity.best_target,
                            trusted=lambda d, c: of_spawn.trusted_with_parents(d, c, of_capacity.trusted_key),
                            model=args.model or agents.get("model"), effort=getattr(args, "effort", None) or agents.get("effort"),
-                           bypass=not args.no_bypass, memory=memory, deny=deny, accepted=of_spawn.bypass_accepted,
+                           bypass=not args.no_bypass, memory=memory, deny=deny, accepted=of_spawn.bypass_accepted, subagents=subagents,
                            tools=_tool_parts)
     except of_spawn.SpawnError as e:
         raise OfError(str(e))

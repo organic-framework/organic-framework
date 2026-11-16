@@ -50,16 +50,25 @@ def rules(agents_md, limit=RULES_MAX):
     return out[:limit] + ("\n…" if len(out) > limit else "") if out else None
 
 
-# The owner's standing ask for the Agent tool, whose own description says to spawn subagents only when the user asks:
-# the start context is where every position reads that its owner does (hand-over ff0f6f09 from of_architect; the
-# founder, 2026-11-16, prompt 01a1e393-ded4; docs/method.md, "Subagents: the owner's standing ask")
-SUBAGENTS = ("Run the independent parts of your work as subagents, in parallel, not one after another in your own "
-             "turns: a loop's variants (one hypothesis each, in its own git worktree, within the work's wip_arms), "
-             "searches, a fresh-context review, reading, watching a runner (on the loop's babysit_model). This is your "
-             "owner's explicit ask for the Agent tool (founder, 2026-11-16, prompt 01a1e393-ded4: \"the only limit is "
-             "[its] own time. It can simply launch subagents\"). Heavy jobs stay on runners or CI. Decisions, asks to "
-             "the owner, messages to positions, of status and the registry stay yours (docs/method.md, \"Subagents: "
-             "the owner's standing ask\").")
+# What a position runs as subagents once its owner said yes (docs/method.md, "Subagents: the owner's standing yes"):
+# shown only where the organization's registry carries that yes, in the owner's own words (docs/registry.md,
+# "Subagents"; hand-over ff0f6f09; of_review on PR 241: an owner's words carry no authority outside their organization)
+SUBAGENTS_HOW = ("Run the independent parts of your work as subagents, in parallel, not one after another in your own "
+                 "turns: a loop's variants (one hypothesis each, in its own git worktree, within the work's wip_arms), "
+                 "searches, a fresh-context review, reading, watching a runner (on the loop's babysit_model), each on a "
+                 "model that fits its task. Heavy jobs stay on runners or CI. Decisions, asks to the owner, messages to "
+                 "positions, of status and the registry stay yours (docs/method.md, \"Subagents: the owner's standing "
+                 "yes\").")
+
+
+def subagents_section(subagents):
+    """The start context's section for (words, ids) from bin/of org_subagents, or nothing."""
+    if not subagents:
+        return []
+    words, ids = subagents
+    return ["", "## Subagents: your owner asks you to use them",
+            f"Your owner's standing yes for the Agent tool (your organization's registry, subagents:; {', '.join(ids)}): "
+            f"{words}", SUBAGENTS_HOW]
 
 
 def owner_measures(loops, resolve=None):
@@ -130,7 +139,7 @@ def loop_clocks(clocks, limit=8):
                "never lengthen it."])
 
 
-def build(position, positions, loops=None, resolve=None, runs=None, clocks=None):
+def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
     newest runs that are proxies whose condition did not hold (of_loop.blind_runs)."""
@@ -164,7 +173,7 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None)
     r = rules(os.path.join(root, "AGENTS.md"))
     if r:
         lines += ["", "## Binding rules (AGENTS.md of the organization)", r]
-    lines += ["", "## Subagents: your owner asks you to use them", SUBAGENTS]
+    lines += subagents_section(subagents)
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]
             and x.get("status") in (None, "active")][:TEAM_MAX]
     if team:

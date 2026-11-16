@@ -36,8 +36,11 @@ class SpawnPlanTest(unittest.TestCase):
         pl = plan(cwd="/tmp")
         self.assertEqual((pl["workspace"], pl["tab"], pl["session"]), ("ac·platform", "net", "S-1"))
         self.assertTrue(pl["brief"].startswith("You hold the position net_keeper. Read /h/acme/org/registry/briefs/"))
+        self.assertNotIn("subagents", pl["brief"])   # no owner's yes in the registry: nothing said (PR 241 review)
+        p = {"name": "net_keeper", "mandate": "registry/briefs/net_keeper.md"}
         self.assertIn(" Your owner asks you to run the independent parts of your work as subagents, in parallel "
-                      "(docs/method.md, Subagents). At the end of every turn:", pl["brief"])   # hand-over ff0f6f09
+                      "(docs/method.md, Subagents; your organization's registry, subagents:). At the end of every turn:",
+                      of_spawn.brief_text(p, "/h/acme/org", subagents=True))   # hand-over ff0f6f09
         self.assertIn("--session-id S-1 -n net_keeper --settings ", pl["command"])  # every session: AGENT_SETTINGS
         self.assertTrue(pl["command"].endswith(".settings.json --dangerously-skip-permissions"), pl["command"])
         self.assertIn("CLAUDE_CONFIG_DIR=", pl["command"])
