@@ -650,6 +650,33 @@ sys.exit(subprocess.run([sys.executable, sys.argv[2], 'import', 'git', '--org', 
 """
 
 
+class ArchiveProcessor(Processor):
+    """Every hour: `of archive` as a detached process (bin/of_archive.py; its own lock), so the raw tier keeps every
+    transcript as produced (docs/storage.md, "Raw tier: every byte"; hand-over b097ba7c). 10 minutes of work when the
+    machine is idle (load below its cores), 1 minute otherwise, at background priority; a backlog goes on next hour."""
+    name = "archive"
+    version = "1"
+    tick_s = 3600
+
+    def handle(self, conn, rows):
+        return False
+
+    def tick(self, conn, now):
+        import subprocess
+        try:
+            idle = os.getloadavg()[0] < (os.cpu_count() or 1)
+        except OSError:
+            idle = False
+        here = os.path.dirname(os.path.realpath(__file__))
+        log = open(os.open(os.path.join(of_events.STATE_DIR, "archive.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                           0o600), "a")
+        subprocess.Popen([sys.executable, os.path.join(here, "of"), "archive", "--quiet", "--budget",
+                          "600" if idle else "60"], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                         start_new_session=True, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+        log.close()
+        return False
+
+
 class PromptOriginProcessor(Processor):
     """Every 15 minutes: of_hook.correct_prompt_origins over the last day, for prompts the hook's live check could
     not tell (the scheduler's fire record written after the hook read the transcript)."""
@@ -930,7 +957,7 @@ class HandoverScopesProcessor(Processor):
 PROCESSORS = [AsksProcessor, WaitsProcessor, PasteProcessor, BlockedProcessor, ViewsProcessor, PulseProcessor,
               DeliverProcessor, CaseProcessor, CorrectionsProcessor,
               PromptOriginProcessor,
-              GithubProcessor, StudioCacheProcessor, HandoverScopesProcessor]
+              GithubProcessor, StudioCacheProcessor, HandoverScopesProcessor, ArchiveProcessor]
 try:  # of_capacity's processor (bin/of_capacity.py, owned there): spend by message id, the balancer detached
     import of_capacity
     PROCESSORS.append(of_capacity.ListenerProcessor)
