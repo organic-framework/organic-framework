@@ -150,9 +150,9 @@ class RedactTest(unittest.TestCase):
             finally:
                 of_events.STATE_DIR = saved
 
-    def file_bytes(self, conn, path):
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.close()
+    def file_bytes(self, path):
+        """The main file and its WAL as they lie on disk, read while the store is still open: no checkpoint of the
+        test's own, since a last close would checkpoint and delete the WAL (of_secrets-review on PR 248)."""
         out = b""
         for p in (path, path + "-wal"):
             if os.path.exists(p):
@@ -160,13 +160,24 @@ class RedactTest(unittest.TestCase):
                     out += fh.read()
         return out
 
-    def test_a_redacted_blob_leaves_no_bytes_in_the_file(self):
-        """of_server on organic-framework PR 244 (2026-11-16): a deleted row's bytes stayed on SQLite's free list, so a
-        redacted value could still be read from the file. A redaction now writes with secure_delete."""
+    def run_local(self, conn, **ids):
+        import of_events
+        import of_redact
+        saved = of_events.STATE_DIR
+        of_events.STATE_DIR = os.path.dirname(self.path)   # of.redacted goes to the test's own store
+        try:
+            return of_redact.run(conn, "test", send_to_servers=False, log=lambda m: None, **ids)
+        finally:
+            of_events.STATE_DIR = saved
+
+    def test_a_redacted_blob_leaves_no_bytes_in_the_file_or_its_wal(self):
+        """of_server on organic-framework PR 244 (2026-11-16): a deleted row's bytes stayed on SQLite's free list, and
+        the frames written before stayed in the WAL (of_secrets-review on PR 248). A redaction writes with
+        secure_delete and then truncates the WAL."""
         pw = "Zk9" + "q" * 30
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "of.db")
-            conn = of_store.connect(path)
+            self.path = os.path.join(d, "of.db")
+            conn = of_store.connect(self.path)
             tr = os.path.join(d, "S.jsonl")
             with open(tr, "w") as fh:
                 fh.write(json.dumps({"type": "user", "uuid": "u1", "sessionId": "S", "toolUseResult": {"stdout": "ok"}})
@@ -176,32 +187,52 @@ class RedactTest(unittest.TestCase):
             leaked = json.dumps({"type": "user", "uuid": "u1", "sessionId": "S",
                                  "toolUseResult": {"stdout": f"postgres://ro:{pw}@h/db"}}).encode()
             conn.execute("UPDATE blob SET zdata = ?, codec = 'raw' WHERE sha256 = ?", (leaked, old))
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            self.assertEqual([c[0] for c in of_store.redact_rows(conn, [rid], "test")], [rid])
+            self.assertIn(pw.encode(), self.file_bytes(self.path))   # in the WAL now
+            out = self.run_local(conn, transcript_ids=[rid])
+            self.assertEqual((out["transcript_record"]["local"], out["_wal"]), (1, True))
             self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], 0)   # restored after
-            self.assertNotIn(pw.encode(), self.file_bytes(conn, path))
+            self.assertNotIn(pw.encode(), self.file_bytes(self.path))
+            conn.close()
 
     def test_a_redacted_event_leaves_its_search_index_and_no_bytes(self):
         """of_server, 2026-11-16: `event_fts` keeps its own copy of an event's text, and of redact rewrote only the
         event row, so the value stayed searchable and in the file."""
         import of_events
-        import of_redact
         key = "7a6b5c4d" * 4
         url = f"https://books-1.booksmcp.example/mcp/{key}/message"
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "of.db")
-            conn = of_store.connect(path)
+            self.path = os.path.join(d, "of.db")
+            conn = of_store.connect(self.path)
             rec = of_events.record("human_prompt", {"origin": "human", "text": f"use {url} now"}, position="p",
                                    session="S1", org="ofb")
             of_store.add_event(conn, rec)
             rowid = conn.execute("SELECT rowid FROM event WHERE event_id = ?", (rec["of.event.id"],)).fetchone()[0]
             found = "SELECT count(*) FROM event_fts WHERE event_fts MATCH ?"
             self.assertEqual(conn.execute(found, (f'"{key}"',)).fetchone()[0], 1)
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            self.assertEqual(len(of_redact.redact_events(conn, [rowid])), 1)
+            out = self.run_local(conn, event_ids=[rowid])
+            self.assertEqual((out["event"]["local"], out["_wal"]), (1, True))
             self.assertEqual(conn.execute(found, (f'"{key}"',)).fetchone()[0], 0)       # no longer searchable
             self.assertEqual(conn.execute(found, ('"now"',)).fetchone()[0], 1)          # the rest still is
-            self.assertNotIn(key.encode(), self.file_bytes(conn, path))
+            self.assertEqual(conn.execute("SELECT v FROM event_fts_config WHERE k = 'secure-delete'").fetchone()[0], 0)
+            self.assertNotIn(key.encode(), self.file_bytes(self.path))
+            conn.close()
+
+    def test_a_reader_on_an_older_snapshot_holds_the_truncation_off_briefly(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "of.db")
+            conn = of_store.connect(path)
+            of_store.put_blob(conn, b"one")
+            reader = sqlite3.connect(path, isolation_level=None)
+            reader.execute("BEGIN")
+            reader.execute("SELECT count(*) FROM blob").fetchone()      # holds this snapshot
+            of_store.put_blob(conn, b"two")
+            self.assertFalse(of_store.truncate_wal(conn, tries=2, pause_s=0, busy_ms=20))
+            reader.execute("COMMIT")
+            self.assertTrue(of_store.truncate_wal(conn, tries=2, pause_s=0, busy_ms=20))
+            self.assertEqual(os.path.getsize(path + "-wal"), 0)
+            reader.close()
+            conn.close()
 
     def test_of_redact_masks_an_event_here_and_asks_the_server(self):
         """A user organization's sec_keeper, 2026-11-11: a founder's prompt event held a capability URL. Its payload and

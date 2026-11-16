@@ -3286,17 +3286,27 @@ def cmd_redact(args):
     print(f"rows the rules change: transcript_record {len(t_ids)}, hook_record {len(h_ids)}, event {len(e_ids)}")
     if args.dry_run or not (t_ids or h_ids or e_ids):
         return 0
-    totals = {}
+    totals, wal_left = {}, False
     for i in range(0, max(len(t_ids), len(h_ids), len(e_ids)), 300):  # chunks: the store's write lock is held briefly
         out = of_redact.run(conn, args.reason, t_ids[i:i + 300], h_ids[i:i + 300],
                             send_to_servers=not args.local_only, log=lambda m: None, event_ids=e_ids[i:i + 300])
+        if out.get("_wal") is False:
+            wal_left = True
         for table, s_ in out.items():
+            if table.startswith("_"):
+                continue
             t = totals.setdefault(table, [0, 0, 0])
             t[0] += s_["local"]
             t[1] += len(s_["requests"])
             t[2] += sum(1 for r in s_["requests"] if not str(r[3]).startswith(("queued", "done")))
     for table, (n, req, bad) in totals.items():
         print(f"{table}: {n} redacted here; {req} server request(s), {bad} failed")
+    if wal_left:
+        print("warning: of.db-wal could not be truncated (a reader held an older snapshot), so it may still hold the "
+              "old value; run of redact again later (docs/guard.md K5)")
+    if totals.get("event", [0])[0]:
+        print("the listener's cached views (view_asks, view_ask_groups, view_fold) keep their own copy of an event's "
+              "text until rebuilt: run of listen rebuild")
     return 0
 
 

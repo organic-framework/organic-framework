@@ -553,15 +553,39 @@ def redact_credentials(line):
 @contextlib.contextmanager
 def secure_deletes(conn):
     """PRAGMA secure_delete on CONN while a redaction writes, restored after. SQLite then overwrites what it deletes
-    and the pages it frees; without it a redacted value's bytes stay on the free list (and in the WAL until it
-    resets) until the page is reused (of_server on organic-framework PR 244, 2026-11-16). It reaches only what this
-    redaction frees: copies freed earlier, by routine deletes and the search index's merges, go only with a VACUUM."""
+    and the pages it frees in the main file; without it a redacted value's bytes stay on the free list until the page
+    is reused (of_server on organic-framework PR 244, 2026-11-16). The WAL keeps the frames written before; only a
+    TRUNCATE checkpoint removes them (truncate_wal). Copies freed earlier, by routine deletes and the search index's
+    merges, go only with a VACUUM."""
     prev = conn.execute("PRAGMA secure_delete").fetchone()[0]
     conn.execute("PRAGMA secure_delete = ON")
     try:
         yield conn
     finally:
         conn.execute(f"PRAGMA secure_delete = {int(prev)}")
+
+
+def truncate_wal(conn, tries=6, pause_s=0.5, busy_ms=300):
+    """PRAGMA wal_checkpoint(TRUNCATE): every frame into the main file, and the WAL file cut to zero bytes, so no frame
+    written before a redaction keeps the old value (of_secrets-review on organic-framework PR 248: a WAL reset rewrites
+    from frame 0 and leaves the later frames, and the listener's open connection means no last close deletes the
+    file). It blocks new writers while it waits for readers on older snapshots, so it waits BUSY_MS at a time and tries
+    again after PAUSE_S, letting the hooks in between. True once it completed; False when readers held on."""
+    prev = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout = {int(busy_ms)}")
+    try:
+        for k in range(tries):
+            try:
+                busy = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+            except sqlite3.OperationalError:
+                busy = 1
+            if not busy:
+                return True
+            if k + 1 < tries:
+                time.sleep(pause_s)
+        return False
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {int(prev)}")
 
 
 def redact_rows(conn, ids, reason, fn=None, table="transcript_record", pause_s=0.02):
