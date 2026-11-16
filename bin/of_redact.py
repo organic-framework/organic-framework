@@ -11,6 +11,7 @@ redaction_id is derived from the request, so a retry never doubles it.
 
 import json
 import os
+import sqlite3
 import uuid
 
 import of_events
@@ -121,27 +122,57 @@ def _key(table, rec):
     return [d.get("session_id") or "", d.get("record_uuid")] if table == "transcript_record" else d.get("local_id")
 
 
+def _fts_secure(conn):
+    """The event search index removes a deleted row's terms at once (FTS5 'secure-delete', SQLite 3.42 and later;
+    a persistent setting of the table). Without it a deleted row leaves its terms in the index's segments, where no
+    VACUUM reaches them. False when this SQLite cannot."""
+    try:
+        with of_store.write_tx(conn):
+            conn.execute("INSERT INTO event_fts(event_fts, rank) VALUES ('secure-delete', 1)")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
 def redact_events(conn, rowids, fn=None):
     """Re-mask stored events (their payload and record) with the ingest rules, one short write transaction per
-    event (a founder's prompt held a capability URL: a user organization's sec_keeper, 2026-11-11). Returns
-    [(rowid, old sha, new sha)] of the record text for the events that changed."""
+    event (a founder's prompt held a capability URL: a user organization's sec_keeper, 2026-11-11), and their text
+    in the search index `event_fts`, which keeps its own copy (of_server, 2026-11-16: the index still held the
+    value). Deletes write over what they free (of_store.secure_deletes). Returns [(rowid, old sha, new sha)] of
+    the record text for the events that changed."""
     import hashlib
     fn = fn or of_store.redact_keys
     changed = []
-    for rowid in rowids:
-        row = conn.execute("SELECT payload, record FROM event WHERE rowid = ?", (rowid,)).fetchone()
-        if not row:
-            continue
-        payload, record = row[0] or "", row[1] or ""
-        new_payload, new_record = fn(payload.encode()).decode(), fn(record.encode()).decode()
-        if (new_payload, new_record) == (payload, record):
-            continue
-        with of_store.write_tx(conn):
-            cur = conn.execute("SELECT record FROM event WHERE rowid = ?", (rowid,)).fetchone()
-            if not cur or cur[0] != record:
-                continue  # changed meanwhile
-            conn.execute("UPDATE event SET payload = ?, record = ? WHERE rowid = ?", (new_payload, new_record, rowid))
-        changed.append((rowid, hashlib.sha256(record.encode()).hexdigest(), hashlib.sha256(new_record.encode()).hexdigest()))
+    with of_store.secure_deletes(conn):
+        searchable = None
+        for rowid in rowids:
+            row = conn.execute("SELECT event_id, payload, record FROM event WHERE rowid = ?", (rowid,)).fetchone()
+            if not row:
+                continue
+            eid, payload, record = row[0], row[1] or "", row[2] or ""
+            new_payload, new_record = fn(payload.encode()).decode(), fn(record.encode()).decode()
+            if (new_payload, new_record) == (payload, record):
+                continue
+            if searchable is None:
+                searchable = _fts_secure(conn)
+            # the index row by its event id, read outside the write lock (event_id is not indexed there)
+            fts = [r[0] for r in conn.execute("SELECT rowid FROM event_fts WHERE event_id = ?", (eid,))]
+            try:
+                text = "\n".join(of_store._texts(json.loads(new_payload or "{}"), []))
+            except (ValueError, TypeError):
+                text = ""
+            with of_store.write_tx(conn):
+                cur = conn.execute("SELECT record FROM event WHERE rowid = ?", (rowid,)).fetchone()
+                if not cur or cur[0] != record:
+                    continue  # changed meanwhile
+                conn.execute("UPDATE event SET payload = ?, record = ? WHERE rowid = ?",
+                             (new_payload, new_record, rowid))
+                for r in fts:
+                    conn.execute("DELETE FROM event_fts WHERE rowid = ? AND event_id = ?", (r, eid))
+                if fts and text:
+                    conn.execute("INSERT INTO event_fts VALUES (?, ?)", (eid, text))
+            changed.append((rowid, hashlib.sha256(record.encode()).hexdigest(),
+                            hashlib.sha256(new_record.encode()).hexdigest()))
     return changed
 
 

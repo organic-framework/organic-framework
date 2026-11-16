@@ -150,6 +150,59 @@ class RedactTest(unittest.TestCase):
             finally:
                 of_events.STATE_DIR = saved
 
+    def file_bytes(self, conn, path):
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        out = b""
+        for p in (path, path + "-wal"):
+            if os.path.exists(p):
+                with open(p, "rb") as fh:
+                    out += fh.read()
+        return out
+
+    def test_a_redacted_blob_leaves_no_bytes_in_the_file(self):
+        """of_server on organic-framework PR 244 (2026-11-16): a deleted row's bytes stayed on SQLite's free list, so a
+        redacted value could still be read from the file. A redaction now writes with secure_delete."""
+        pw = "Zk9" + "q" * 30
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "of.db")
+            conn = of_store.connect(path)
+            tr = os.path.join(d, "S.jsonl")
+            with open(tr, "w") as fh:
+                fh.write(json.dumps({"type": "user", "uuid": "u1", "sessionId": "S", "toolUseResult": {"stdout": "ok"}})
+                         + "\n")
+            of_store.ingest_file(conn, tr)
+            rid, old = conn.execute("SELECT id, blob_sha256 FROM transcript_record").fetchone()
+            leaked = json.dumps({"type": "user", "uuid": "u1", "sessionId": "S",
+                                 "toolUseResult": {"stdout": f"postgres://ro:{pw}@h/db"}}).encode()
+            conn.execute("UPDATE blob SET zdata = ?, codec = 'raw' WHERE sha256 = ?", (leaked, old))
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.assertEqual([c[0] for c in of_store.redact_rows(conn, [rid], "test")], [rid])
+            self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], 0)   # restored after
+            self.assertNotIn(pw.encode(), self.file_bytes(conn, path))
+
+    def test_a_redacted_event_leaves_its_search_index_and_no_bytes(self):
+        """of_server, 2026-11-16: `event_fts` keeps its own copy of an event's text, and of redact rewrote only the
+        event row, so the value stayed searchable and in the file."""
+        import of_events
+        import of_redact
+        key = "7a6b5c4d" * 4
+        url = f"https://books-1.booksmcp.example/mcp/{key}/message"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "of.db")
+            conn = of_store.connect(path)
+            rec = of_events.record("human_prompt", {"origin": "human", "text": f"use {url} now"}, position="p",
+                                   session="S1", org="ofb")
+            of_store.add_event(conn, rec)
+            rowid = conn.execute("SELECT rowid FROM event WHERE event_id = ?", (rec["of.event.id"],)).fetchone()[0]
+            found = "SELECT count(*) FROM event_fts WHERE event_fts MATCH ?"
+            self.assertEqual(conn.execute(found, (f'"{key}"',)).fetchone()[0], 1)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.assertEqual(len(of_redact.redact_events(conn, [rowid])), 1)
+            self.assertEqual(conn.execute(found, (f'"{key}"',)).fetchone()[0], 0)       # no longer searchable
+            self.assertEqual(conn.execute(found, ('"now"',)).fetchone()[0], 1)          # the rest still is
+            self.assertNotIn(key.encode(), self.file_bytes(conn, path))
+
     def test_of_redact_masks_an_event_here_and_asks_the_server(self):
         """A user organization's sec_keeper, 2026-11-11: a founder's prompt event held a capability URL. Its payload and
         record are masked here, and the server replaces the shipped event by its event_id."""

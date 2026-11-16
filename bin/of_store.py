@@ -550,13 +550,31 @@ def redact_credentials(line):
     return line
 
 
+@contextlib.contextmanager
+def secure_deletes(conn):
+    """PRAGMA secure_delete on CONN while a redaction writes, restored after. SQLite then overwrites what it deletes
+    and the pages it frees; without it a redacted value's bytes stay on the free list (and in the WAL until it
+    resets) until the page is reused (of_server on organic-framework PR 244, 2026-11-16). It reaches only what this
+    redaction frees: copies freed earlier, by routine deletes and the search index's merges, go only with a VACUUM."""
+    prev = conn.execute("PRAGMA secure_delete").fetchone()[0]
+    conn.execute("PRAGMA secure_delete = ON")
+    try:
+        yield conn
+    finally:
+        conn.execute(f"PRAGMA secure_delete = {int(prev)}")
+
+
 def redact_rows(conn, ids, reason, fn=None, table="transcript_record", pause_s=0.02):
     """Re-redact stored rows (the core of `of redact`): each row's blob is read and masked outside any
     transaction, then ONE short write transaction per row stores the new blob, repoints the row and deletes
     the old blob when no row refers to it; the lock is released between rows (a redaction held it for
     minutes on 2026-11-06). Returns [(id, old sha, new sha)] for the rows that changed. The caller records
     of.redacted {table, ids, shas, reason}, never content."""
-    fn = fn or redact_keys
+    with secure_deletes(conn):
+        return _redact_rows(conn, ids, fn or redact_keys, table, pause_s)
+
+
+def _redact_rows(conn, ids, fn, table, pause_s):
     changed = []
     for rid in ids:
         row = conn.execute(f"SELECT blob_sha256 FROM {table} WHERE id = ?", (rid,)).fetchone()
@@ -596,9 +614,10 @@ def drop_unreferenced(conn, shas, batch=200):
             still |= {r[0] for r in conn.execute(
                 f"SELECT DISTINCT blob_sha256 FROM {t} WHERE blob_sha256 IN ({','.join('?' * len(part))})", part)}
     gone = [x for x in shas if x not in still]
-    for i in range(0, len(gone), batch):
-        with write_tx(conn):
-            conn.executemany("DELETE FROM blob WHERE sha256 = ?", [(x,) for x in gone[i:i + batch]])
+    with secure_deletes(conn):   # a dropped blob is often a secret's old copy: its bytes are overwritten
+        for i in range(0, len(gone), batch):
+            with write_tx(conn):
+                conn.executemany("DELETE FROM blob WHERE sha256 = ?", [(x,) for x in gone[i:i + batch]])
     return len(gone)
 
 
