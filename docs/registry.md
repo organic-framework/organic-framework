@@ -683,6 +683,23 @@ An organization's own policy on what its positions may run ([`guard.md`](guard.m
 - **Scope `cli`** (2026-11-14; O4 in docs/guard.md; a user organization's request after its agents ran AWS calls under the founder's personal SSO session, msg `01a1db4f-f9f0`; `of_architect`'s conditions, msg `01a1db57-17f9`). On a deny only. A grant scopes one of `kubectl`, `ssh` or `cli`. It is not the `commands` dimension above, a list of shell patterns on an allow.
   - **`names`**: bare command words. **`env`**: variable names whose assignment on the command line counts. **`code`**: module names whose import in interpreter code counts. At least one of the three.
   - **`allow`**: `[{positions: [p], tool?: a listed name, argv?: [words], options?: {--option: [values or globs]}}]`, each entry naming its positions and either `argv`, the call's first words, or `options`, every one of which the call must carry with a listed value, anywhere on the line. It is signed with the grant, so an exception is a new grant. `env` and `code` matches have no allow.
+  - **`match`** (2026-11-16; a user organization's request, msg `01a1e243-1387`; `of_architect`'s shape, msg `01a1e245-c3a5`): `[{tool?: a listed name, words?: [alternatives], options?: {"-o|--option": [values]}}]`, a deny on some calls of a tool instead of the tool. Entries are alternatives; every key of an entry must fit.
+    - `words` is an ordered subsequence of the call's words that are not options, each a set of alternatives with `|` and globs. It is a subsequence, not leading positions, because the guard does not know which of an arbitrary tool's options take a value: an option's value anywhere on the line never shifts it, and a word naming several targets (`uninstall a b`) still fits. It errs toward a match, as a deny must, so a read-only call with the same words (a diff plugin's `diff upgrade …`) matches too; list that in `allow`.
+    - `options` reads each listed spelling anywhere on the line (`-n v`, `-nv`, `-n=v`, a short cluster ending in it, `--namespace v`, `--namespace=v`, an abbreviation of a long one). `''` stands for not given, which a tool that falls back to an environment variable or a config file needs: an inline variable is not given on the line.
+    - A value in a variable, a `$( )` or a shell glob fits where its literal parts can, as for `ssh`: a doubt matches. Only the first word an entry names (the subcommand) must be literal: one that only a variable fits is recorded, never denied, as a command word held in a variable is, since otherwise `helm get $R` reads `$R` as `upgrade`.
+    - The organization lists the tool's aliases for a subcommand (for helm: `uninstall|un|delete|del`).
+    - A grant with `match` names commands only: no `env` or `code`, so one grant reads as one rule. `allow` entries stay its exceptions. `of registry check` refuses the mix, a `tool` that is not in `names`, and an entry with neither `words` nor `options`.
+    - What it does not see, beyond what O4 does not see: a tool's front-end that runs it (helmfile), a GitOps controller, a script or a make target that runs it, and a direct change to the resource the rule protects (`kubectl edit` of it, which a `kubectl` grant can name). The boundary for a resource that must not change is in the cluster: an admission policy or RBAC on it, which is the organization's to set.
+
+    ```yaml
+    scope:
+      cli:
+        names: [helm]
+        match:
+          - tool: helm
+            words: ["upgrade|rollback|uninstall|un|delete|del", "orders|billing-*"]
+            options: {"-n|--namespace": [prod, ""]}
+    ```
   - **The organization picks its list.** For a cloud account, it names the CLIs that run on the same default profile through the provider's SDK, which a cooperative agent blocked on one reaches for next: for AWS `aws`, `terraform`, `tofu`, `terragrunt`, `pulumi`, `cdk`, `sam`, `eksctl` and the SSO helpers. Its `note`, shown to the agent, says where that work goes now, so the agent does not route around the rule.
   - **What it is.** A tripwire for cooperative Claude Code sessions under one OS user (O4 lists what it does not see). The boundary is a separate OS user per position, or a CI role with nothing on the machine.
   - Example, a user organization's draft (warn first; `critical: true` by a later grant once the replay shows the flows have moved):
