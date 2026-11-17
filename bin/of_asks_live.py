@@ -95,10 +95,12 @@ def run(conn, positions=None, agents=None, bind=None, log=print, view=False):
     """One reconcile pass over the store (pulse, popup). view: the asks as the listener's view holds them (a few ms),
     and no pass when the listener is not fresh, for the questions screen: its pass projected the whole log, 16 s of
     CPU and 8 s of reads on 2026-11-12, and the cards waited behind it (the founder: the screen opened in 10 to 30 s;
-    of_conductor msg 01a1d09c-4562). The pulse reconciles every 5 minutes either way. The view lags the log by up to a
-    listener tick, so an ask answered a moment ago may still read open and get a reconcile close after its answer:
-    harmless, since of_asks.project changes only an open ask's state (of_review on PR 98)."""
-    import of_asks
+    of_conductor msg 01a1d09c-4562). The pulse reconciles every 5 minutes either way, from the asks it reads itself
+    (of_pulse.current_asks: the view and the log's tail, the log only where no view is): its pass projected the whole
+    log too, 101 of a pulse's 342 s at load 90 on 2026-11-17, and the listener stops a pulse at 240 s, so its later
+    steps never ran (of_platform, message 01a1ea50-2317). The view lags the log by up to a listener tick, so an ask
+    answered a moment ago may still read open and get a reconcile close after its answer: harmless, since
+    of_asks.project changes only an open ask's state (of_review on PR 98)."""
     import of_events
     if view:
         import of_listen
@@ -106,7 +108,8 @@ def run(conn, positions=None, agents=None, bind=None, log=print, view=False):
             return []
         asks = of_listen.read_asks(conn)
     else:
-        asks = of_asks.project(of_asks.load(conn))
+        import of_pulse
+        asks = of_pulse.current_asks(conn)
     try:
         import of_coord
         remote = {eid for (eid,) in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' "
