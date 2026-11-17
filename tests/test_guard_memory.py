@@ -157,6 +157,44 @@ class RemoteStdinTest(unittest.TestCase):
             self.assertIsNotNone(deny("ssh gw1 bash -s < check.sh"))          # changed since the commit: checked
             self.assertIsNone(deny("ssh gw1 bash -s < missing.sh"))           # nothing to send
 
+    def test_the_committed_check_runs_nothing_the_repository_names(self):
+        """of_review on organic-framework PR 283: `git ls-files` and `git diff` in the script's own repository ran its
+        core.fsmonitor script inside the guard, and a git found first on PATH would have run too."""
+        import subprocess
+        import tempfile
+        if not os.path.isfile(of_guard._SYSTEM_GIT):
+            self.skipTest("no system git")
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "ran")
+            spy = os.path.join(d, "spy.sh")
+            with open(spy, "w") as fh:
+                fh.write(f"#!/bin/sh\necho \"$@\" >> {marker}\n")
+            os.chmod(spy, 0o755)
+            ok = os.path.join(d, "check.sh")
+            with open(ok, "w") as fh:
+                fh.write("#!/bin/sh\nsudo strings /proc/kcore | head\n")
+            git = lambda *a: subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+                                             "-c", "user.email=t@t", "-c", "user.name=t", *a], capture_output=True, check=True)
+            git("init", "-q")
+            git("add", "check.sh")
+            git("commit", "-qm", "reviewed")
+            git("config", "core.fsmonitor", spy)                            # a repository's own program
+            git("config", "diff.external", spy)
+            fakebin = os.path.join(d, "bin")
+            os.makedirs(fakebin)
+            os.symlink(spy, os.path.join(fakebin, "git"))                  # a git found first on PATH
+            saved = os.environ.get("PATH", "")
+            os.environ["PATH"] = fakebin + os.pathsep + saved
+            try:
+                self.assertTrue(of_guard._committed_clean(ok))
+                self.assertIsNone(of_guard.critical_deny("Bash", {"command": "ssh gw1 bash -s < check.sh"}, d))
+                with open(ok, "a") as fh:
+                    fh.write("echo changed\n")
+                self.assertFalse(of_guard._committed_clean(ok))
+            finally:
+                os.environ["PATH"] = saved
+            self.assertFalse(os.path.exists(marker))                         # nothing of the repository's ran
+
 
 if __name__ == "__main__":
     unittest.main()
