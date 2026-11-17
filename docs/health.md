@@ -37,11 +37,11 @@ A limit here is the starting value. Its owner tunes it in this table with the ev
 ## 3. Where the result goes
 
 - **The state.** `of health run` writes the current state of every check to `~/.local/state/of/health.json`: the state (`ok`, `degraded` or `failed`), the value, the limit, and since when. of-server keeps its own checks and serves them to its machines.
-- **The event.** One `of.health_changed` event `{check, state, value, limit, since, owner}` is written only when a check changes state. The log does not grow by one event a minute.
+- **The event.** One `of.health_changed` event `{check, state, value, limit, since, owner}` is written only when a check changes state. The log does not grow by one event a minute. Each change is recorded once: `server.health` by each machine's `of health run`, which measures the server's answer from there and so also sees a server that does not answer, and `relay.oldest` by of-server; the server keeps and serves its own `server.health` reading without recording its changes (2026-11-17, `of_architect`'s hand-over `09042907`: both sides had recorded them).
 - **The command.** `of health` prints the table.
 - **The page.** Studio's Health tab shows the table, with each failed check's owner and the time since it failed (`of_studio`).
 - **The owner of a check** gets one `--fyi` once it has failed for 5 minutes, and one when that failure is over; a check that fails and recovers within 5 minutes tells nobody (2026-11-14: swap around its limit failed and recovered every few minutes, one `--fyi` each time).
-- **A failure that lasts is told again** (2026-11-17, `of_architect`, on `of_platform`'s proposal, message `01a1e82f-f81e`). While a check stays failed, its owner is told once a day. The first reminder, a day after the failure began, is typed into the owner's pane, not `--fyi`. One `--fyi` is easy to miss among health notes: on 2026-11-14 a check failed, its owner missed the one `--fyi`, and the check stayed failed for three days until a hand-over check found it on the Health tab. It was a stale cursor, not a real lag. The same holds for of-server's own checks: of-server tells their owners in the same way.
+- **A failure that lasts is told again** (2026-11-17, `of_architect`, on `of_platform`'s proposal, message `01a1e82f-f81e`). While a check stays failed, its owner is told once a day. The first reminder, a day after the failure began, is typed into the owner's pane, not `--fyi`. One `--fyi` is easy to miss among health notes: on 2026-11-14 a check failed, its owner missed the one `--fyi`, and the check stayed failed for three days until a hand-over check found it on the Health tab. It was a stale cursor, not a real lag. The same holds for of-server's own checks: of-server tells the owner of `relay.oldest` in the same way, through its own relay, from `of_server` (`bin/of_server_health.py`; hand-over `09042907`: before it, a failing `relay.oldest` was never told, since `of health run` leaves the server's checks to the server).
 - **The person.** A card goes to the organization's owner only when his own work is hit, after 5 minutes failed:
   - `server.health`;
   - `relay.oldest`;
@@ -70,5 +70,5 @@ The founder's machine runs the working copy's `main`. So a commit that breaks a 
 | Part | Owner |
 |---|---|
 | `of health run`, as a launchd job every minute at Standard priority, installed by `of health install`; the machine checks; the state file; the events; `of health`; the smoke check; `of rollback` | `of_platform` |
-| The server's checks: `server.health` as answered, and `relay.oldest`; serving them to the machines | `of_server` |
+| The server's checks: `server.health` as answered, and `relay.oldest`; serving them to the machines; recording `relay.oldest`'s changes and telling its owner | `of_server` |
 | Studio's Health tab, and the card when his work is hit | `of_studio` |

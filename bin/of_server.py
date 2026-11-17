@@ -1903,7 +1903,14 @@ class App:
         self.passkeys = of_server_passkey.Passkeys(self.store, self.cfg, self._grant_key)
         self.passkey_rate = BadCodes(limit=30, window=600)  # the unauthenticated passkey routes, per token
         import of_server_health  # docs/health.md §2: server.health and relay.oldest, kept and served
-        self.health_checks = of_server_health.Health(self.store)
+        self.health_checks = of_server_health.Health(self.store, tell=self._tell_health)
+
+    def _tell_health(self, position, text, typed):
+        """docs/health.md §3: a check's owner told through this server's own relay, from of_server, typed in or --fyi.
+        The message id, or None when the owner's organization is not served here."""
+        import of_server_health
+        return self.relay.system_post(f"{of_server_health.OWNER_ORG}:{position}", text,
+                                      priority="normal" if typed else "fyi")
 
     def router(self):
         if self._router is None or time.time() - self._router_at > 30:  # pick up registry changes
