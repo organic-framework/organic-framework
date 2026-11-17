@@ -1548,17 +1548,6 @@ def live_agents_or_none(warn=True):
     routed asks). Without herdr, one warning: `of who` still lists the positions from the registries (lab-quickstart
     Q1). Commands that change herdr's panes (`of apply`, `of go`, views) keep live_agents(): a tmux or screen pane is
     never theirs."""
-    agents, e = live_agents_read()
-    if e is not None and warn:
-        print(f"of: herdr unavailable ({e}); showing the registry" + (" and the agents in tmux or screen" if agents else
-              " only") + ". Agents get names, states and the desk when they run in herdr panes (README).",
-              file=sys.stderr)
-    return agents
-
-
-def live_agents_read():
-    """(agents, error): live_agents_or_none's agents, and herdr's OfError when it could not be read (None when it was),
-    for a caller that must not take a list without herdr's agents for the whole (`of send`'s presence)."""
     import of_screen
     import of_tmux
     tmux = []
@@ -1568,9 +1557,13 @@ def live_agents_read():
         except Exception:  # noqa: BLE001 - a broken report never hides herdr's agents
             pass
     try:
-        return live_agents() + tmux, None
+        return live_agents() + tmux
     except OfError as e:
-        return tmux, e
+        if warn:
+            print(f"of: herdr unavailable ({e}); showing the registry" + (" and the agents in tmux or screen" if tmux else
+                  " only") + ". Agents get names, states and the desk when they run in herdr panes (README).",
+                  file=sys.stderr)
+        return tmux
 
 
 def agent_session(a):
@@ -3564,22 +3557,21 @@ def cmd_send(args):
     # `verified` needs this machine to present the sending position on the receiving server: PUT
     # presence first, with everything this machine holds for that server plus the sender.
     import of_relay_client
-    agents, unread = live_agents_read()
     try:
-        local = of_relay_client.local_holders(positions, bind, agents)
-    except OfError as e:
-        local, unread = {}, unread or e
+        local = of_relay_client.local_holders(positions, bind, live_agents_or_none(warn=False))
+    except OfError:
+        local = {}
     body = of_relay_client.presence_bodies(local, servers, default).get(server, [])
     if not any(f"{h['org']}:{h['position']}" == sender for h in body):
         org, pos = sender.split(":", 1)
         body.append({"org": org, "position": pos, "session_id": os.environ.get("CLAUDE_CODE_SESSION_ID"),
                      "state": "working", "pane": os.environ.get("HERDR_PANE_ID"), "kind": "agent"})
-    # A PUT replaces this machine's whole presence set on that server. Without herdr's agents (a launchd job, herdr
-    # restarting) the body holds little more than the sender, and every other position here would drop out until the
-    # relay's next PUT, up to a minute: no message leased to them, `of inbox --mine` refused not_holder (a user
-    # organization's structure keeper, msg 01a1e766-e334, 2026-11-16). While a relay runs here, its presence stands.
-    if unread is None or relay_alive() is not True:
-        client.put_presence(body)
+    # A merge: it adds or updates the rows it carries and drops none. A plain PUT replaces this machine's whole set on
+    # that server, so a send that read no agents (a launchd job that cannot reach herdr) dropped every other position
+    # here until the relay's next PUT, up to a minute (a user organization's structure keeper, msg 01a1e766-e334,
+    # 2026-11-16). The sender is still presented: `verified` across servers, a sender the relay has not published yet
+    # (of_review on organic-framework PR 251). An older server ignores `merge` and replaces, as before.
+    client.put_presence(body, merge=True)
     priority = "fyi" if getattr(args, "fyi", False) else ("urgent" if getattr(args, "urgent", False) else None)
     r = client.send_message(to, sender, args.text, args.reply_to, args.grant, grants, priority=priority)
     of_events.emit("agent_message_out", {"to": to, "to_position": to.split(":", 1)[1], "delivery": r.get("state"),
@@ -3739,7 +3731,8 @@ def relay_alive():
     A new organization's install, 2026-11-11: no relay ran, so a conductor's first message never arrived and nothing said so."""
     import subprocess
     try:
-        r = subprocess.run(["pgrep", "-f", r"of relay run"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["pgrep", "-U", str(os.getuid()), "-f", r"of relay run"], capture_output=True, text=True,
+                           timeout=5)  # this user's relay: another user's never types into this user's panes
     except (OSError, subprocess.TimeoutExpired):
         return None
     pids = [p for p in r.stdout.split() if p.isdigit() and int(p) != os.getpid()]

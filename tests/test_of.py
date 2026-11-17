@@ -1375,12 +1375,12 @@ class SendFyiIdleTest(unittest.TestCase):
 class SendPresenceTest(unittest.TestCase):
     """A user organization's structure keeper, msg 01a1e766-e334 (2026-11-16): `of send` from a launchd job that
     cannot read herdr PUT a presence of the sender alone, which replaces the machine's whole set: every other position
-    here dropped out until the relay's next PUT. Without herdr's agents, and with a relay running here, it PUTs
-    nothing; otherwise as before."""
+    here dropped out until the relay's next PUT. It now always PUTs a merge (docs/server.md), which still presents the
+    sender (of_review on organic-framework PR 251) and drops nobody; the server's side is in test_server_relay."""
     POS = [{"name": "sec_keeper", "_org": "acme", "holder": {"session": "S-SEC"}},
            {"name": "k8s_keeper", "_org": "acme", "holder": {"session": "S-K8S"}}]
 
-    def send(self, agents, unread, relay, fyi=False, holders=None, automation=None, streams=None):
+    def send(self, agents, relay, fyi=False, holders=None, automation=None, streams=None):
         import contextlib
         import io
         import types
@@ -1393,8 +1393,8 @@ class SendPresenceTest(unittest.TestCase):
             def __init__(self, url):
                 pass
 
-            def put_presence(self, body):
-                puts.append(body)
+            def put_presence(self, body, merge=False):
+                puts.append((body, merge))
                 return {}
 
             def send_message(self, *a, **k):
@@ -1404,10 +1404,10 @@ class SendPresenceTest(unittest.TestCase):
                 return {"holders": holders if holders is not None else
                         [{"position": "k8s_keeper", "kind": "agent", "state": "working"}]}
 
-        saved = (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
+        saved = (of._load_quiet, of.live_agents_or_none, of.relay_alive, of_client.Client, of_ship.config,
                  of_ship.org_servers, of_events.emit)
         of._load_quiet = lambda: self.POS
-        of.live_agents_read = lambda: (agents, unread)
+        of.live_agents_or_none = lambda warn=True: agents
         of.relay_alive = lambda: relay
         of_client.Client = Fake
         of_ship.config = lambda: {"server_url": "http://192.0.2.10:18200"}
@@ -1423,7 +1423,7 @@ class SendPresenceTest(unittest.TestCase):
                 of.cmd_send(types.SimpleNamespace(to="acme:k8s_keeper", sender="acme:sec_keeper", text="hi",
                                                   reply_to=None, grant=None, fyi=fyi, urgent=False))
         finally:
-            (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
+            (of._load_quiet, of.live_agents_or_none, of.relay_alive, of_client.Client, of_ship.config,
              of_ship.org_servers, of_events.emit) = saved
             os.environ.pop("OF_AUTOMATION", None)
             os.environ.update(env)
@@ -1431,18 +1431,17 @@ class SendPresenceTest(unittest.TestCase):
             streams.extend([out.getvalue(), err.getvalue()])
         return puts
 
-    def test_a_send_that_cannot_read_herdr_leaves_the_relays_presence(self):
-        down = of.OfError("herdr unavailable")
-        self.assertEqual(self.send([], down, True), [])                       # the relay's presence stands
-        alone = [[{"org": "acme", "position": "sec_keeper", "session_id": None, "state": "working", "pane": None,
-                   "kind": "agent"}]]
-        self.assertEqual(self.send([], down, None), alone)                    # cannot tell whether a relay runs: as before
-        self.assertEqual(self.send([], down, False), alone)                   # no relay here: as before
+    def test_of_send_always_puts_a_merge_that_presents_the_sender(self):
+        alone = [{"org": "acme", "position": "sec_keeper", "session_id": None, "state": "working", "pane": None,
+                  "kind": "agent"}]
+        for relay in (True, False, None):                                     # a job that reads no agents
+            self.assertEqual(self.send([], relay), [(alone, True)], relay)
         live = [{"name": "sec_keeper", "pane_id": "p1", "agent_session": {"value": "S-SEC"}, "agent_status": "idle"},
                 {"name": "k8s_keeper", "pane_id": "p2", "agent_session": {"value": "S-K8S"}, "agent_status": "idle"}]
-        puts = self.send(live, None, True)                                    # herdr read: the whole set, as before
-        self.assertEqual(len(puts), 1)
-        self.assertEqual(sorted(h["position"] for h in puts[0]), ["k8s_keeper", "sec_keeper"])
+        (body, merge), = self.send(live, True)                                # agents read: all of them, merged
+        self.assertTrue(merge)
+        self.assertEqual(sorted((h["position"], h["session_id"]) for h in body),
+                         [("k8s_keeper", "S-K8S"), ("sec_keeper", "S-SEC")])
 
     def test_the_fyi_note_goes_to_stderr_and_never_beside_a_no_relay_warning(self):
         """of_review on organic-framework PR 250: a job's log keeps stdout's `queued:` line; the note never contradicts
@@ -1450,16 +1449,16 @@ class SendPresenceTest(unittest.TestCase):
         live = [{"name": "k8s_keeper", "pane_id": "p2", "agent_session": {"value": "S-K8S"}, "agent_status": "idle"}]
         idle = [{"position": "k8s_keeper", "kind": "agent", "state": "idle"}]
         s = []
-        self.send(live, None, True, fyi=True, holders=idle, streams=s)
+        self.send(live, True, fyi=True, holders=idle, streams=s)
         self.assertTrue(s[0].startswith("queued: m-1"), s[0])
         self.assertNotIn("is idle now", s[0])
         self.assertIn("acme:k8s_keeper is idle now", s[1])
         self.assertIn("which this message does not start", s[1])
         s = []
-        self.send(live, None, True, fyi=True, holders=idle, automation="1", streams=s)   # a job sends --fyi on purpose
+        self.send(live, True, fyi=True, holders=idle, automation="1", streams=s)   # a job sends --fyi on purpose
         self.assertNotIn("is idle now", s[0] + s[1])
         s = []
-        self.send(live, None, False, fyi=True, holders=idle, streams=s)                  # held here, no relay runs
+        self.send(live, False, fyi=True, holders=idle, streams=s)                  # held here, no relay runs
         self.assertIn("is held here and no relay runs", s[0])
         self.assertNotIn("is idle now", s[0] + s[1])
 

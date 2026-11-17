@@ -160,9 +160,18 @@ class Relay:
                 raise RelayError(400, "bad_request", f"kind must be one of {KINDS}")
             rows.append((m["machine_id"], org, pos, h.get("session_id") or "", h.get("state") or "",
                          h.get("pane") or "", kind, time.time()))
+        merge = (body or {}).get("merge") is True
         with self.app.store.tx() as c:
-            c.execute("DELETE FROM presence WHERE machine_id = ?", (m["machine_id"],))
-            c.executemany("INSERT OR REPLACE INTO presence VALUES (?,?,?,?,?,?,?,?)", rows)
+            put = rows
+            if merge:  # `of send`: add or update these rows, drop none; a row with no session never replaces one this
+                # machine presents now (a job sending as a position its live agent holds; of_review on PR 251)
+                live = time.time() - PRESENCE_TTL
+                put = [r for r in rows if r[3] or not c.execute(
+                    "SELECT 1 FROM presence WHERE machine_id = ? AND org = ? AND position = ? AND updated > ?",
+                    (r[0], r[1], r[2], live)).fetchone()]
+            else:
+                c.execute("DELETE FROM presence WHERE machine_id = ?", (m["machine_id"],))
+            c.executemany("INSERT OR REPLACE INTO presence VALUES (?,?,?,?,?,?,?,?)", put)
             # a name a holder presents is a position, never an alias: one taken while it was away is void at once
             # (of_secrets-review on organic-framework PR 164)
             c.executemany("INSERT OR REPLACE INTO presented VALUES (?, ?, ?)", [(r[1], r[2], r[7]) for r in rows])

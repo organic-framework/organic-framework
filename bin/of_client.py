@@ -325,8 +325,10 @@ class Client:
 
     # ---- relay and presence (docs/server.md) ----
 
-    def put_presence(self, holders):
-        return self._authed("PUT", "/v1/presence", body={"holders": holders})[1]
+    def put_presence(self, holders, merge=False):
+        """merge: add or update only these rows (docs/server.md, PUT /v1/presence); else replace the machine's set."""
+        body = {"holders": holders, **({"merge": True} if merge else {})}
+        return self._authed("PUT", "/v1/presence", body=body)[1]
 
     def presence(self, org):
         from urllib.parse import quote
