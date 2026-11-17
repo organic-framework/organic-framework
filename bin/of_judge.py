@@ -463,7 +463,11 @@ def waits_on_receiver(declared, to):
     had declared `waiting --on` its unit owner, which was bringing the founder's yes, got a card for that owner).
     lab-asks-v0: it clears three labelled non-questions and no question. A wait declared on another position stays the
     model's: two questions for the founder stood beside such a wait (asks-034, asks-076), and so did one beside a
-    message to the receiver (asks-113, which the founder reported lost)."""
+    message to the receiver (asks-113, which the founder reported lost).
+    The card it skips would also have escalated to the founder by the delegation's escalate_when (ask_unanswered, a
+    tag); a declared wait does not (of_review on organic-framework PR 287). Accepted on the field's readings: of the 68
+    pane cards filed for unit owners from 2026-11-10 to 2026-11-17, the rule would have skipped five, each closed by
+    its unit owner within 1.3 minutes, and none of the 68 escalated."""
     return bool(declared and declared.get("state") == "waiting" and _bare(to) not in ("", "founder", "owner")
                 and _bare(declared.get("waiting_on")) == _bare(to))
 

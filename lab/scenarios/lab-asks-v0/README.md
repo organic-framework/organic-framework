@@ -98,7 +98,11 @@ cards of the same hour they are `asks-118` to `asks-126`. On j-v5's model calls 
 clears three labelled non-questions (`asks-041`, `asks-054`, `asks-094`) and no question; of the nine new cases, j-v5
 filed 8 and 7, j-v6 files 6 and 6. A wait declared on another position, or a message to the receiver in the turn, is
 no such rule: questions for the founder stood beside them (`asks-034`, `asks-076`; `asks-113`, which he reported
-lost).
+lost). The card the rule skips would also have escalated to the founder by the delegation's
+`escalate_when` (`ask_unanswered > 2h`, a tag), and a declared wait does not (`of_review` on organic-framework PR
+287). That is accepted on the field's readings: of the 68 pane cards filed for unit owners from 2026-11-10 to
+2026-11-17, the rule would have skipped five, each closed by its unit owner within 1.3 minutes, and none of the 68
+escalated.
 
 Two prompt changes were measured and dropped. With the turn's last `of status`, the open founder asks of the unit
 owner and of the waited-on position, an item "a decision another position already carries", and a line saying where
