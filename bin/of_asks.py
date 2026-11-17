@@ -132,13 +132,30 @@ def new_state():
             "waits_founder": {}}
 
 
+def twins(conn, plain):
+    """The event ids of the asks whose card id is PLAIN (AS-9), stamped or given by of.ask_ref, in the order of their
+    event ids: the first reads AS-9, the next AS-9b, AS-9c. The one set ref_id and card_name read; the projection's
+    suffix_refs orders the asks it shows the same way (of_review on PR 300)."""
+    ids = [e for (e,) in conn.execute(
+        "SELECT event_id FROM event WHERE name IN ('of.agent_question', 'of.permission_request') AND "
+        "json_extract(payload, '$.ref') = ? "
+        "UNION SELECT json_extract(payload, '$.ask_id') FROM event WHERE name = 'of.ask_ref' AND "
+        "json_extract(payload, '$.ref') = ?", (plain, plain))]
+    return sorted(set(i for i in ids if i))
+
+
 def card_name(conn, ask_id):
-    """ASK_ID's card id (its ref, or one an of.ask_ref gave it), else its event id's last 8 hex digits."""
+    """ASK_ID's card id as it is shown and resolved (its ref, or one an of.ask_ref gave it, with its twins' suffix),
+    else its event id's last 8 hex digits."""
     r = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE event_id = ?", (ask_id,)).fetchone()
     if not (r and r[0]):
         r = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE name = 'of.ask_ref' AND "
                          "json_extract(payload, '$.ask_id') = ? LIMIT 1", (ask_id,)).fetchone()
-    return str(r[0]) if r and r[0] else str(ask_id or "")[-8:]
+    if not (r and r[0]):
+        return str(ask_id or "")[-8:]
+    plain, same = str(r[0]), twins(conn, str(r[0]))
+    k = same.index(ask_id) if ask_id in same else 0
+    return plain + (chr(ord("a") + k) if k else "")
 
 
 def suffix_refs(asks):
@@ -164,12 +181,7 @@ def ref_id(conn, ref):
     if not m:
         return None
     base = f"{m.group(1).upper()}-{int(m.group(2))}"
-    ids = [e for (e,) in conn.execute(
-        "SELECT event_id FROM event WHERE name IN ('of.agent_question', 'of.permission_request') AND "
-        "json_extract(payload, '$.ref') = ? "
-        "UNION SELECT json_extract(payload, '$.ask_id') FROM event WHERE name = 'of.ask_ref' AND "
-        "json_extract(payload, '$.ref') = ?", (base, base))]
-    ids = sorted(set(i for i in ids if i))
+    ids = twins(conn, base)
     k = ord(m.group(3)) - ord("a") if m.group(3) else 0   # b: the second
     return ids[k] if k < len(ids) else None
 

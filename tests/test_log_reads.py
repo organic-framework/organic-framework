@@ -58,7 +58,7 @@ ALLOWED = {
     ('of_corrections.py', 'due_digests', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
     ('of_pulse.py', 'booking_notes', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
     ('of_tempo.py', 'judge', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
-    ('of_asks.py', 'ref_id', "SELECT event_id FROM event WHERE name IN ('of.agent_question"): RARE,  # a card id, by name
+    ('of_asks.py', 'twins', "SELECT event_id FROM event WHERE name IN ('of.agent_question"): RARE,  # a card id, by name
     ('of_github.py', 'pr_links', 'SELECT position, org, session_id, payload FROM event WHERE n'): GITHUB,
     ('of_github.py', 'rematch', 'SELECT event_id, payload FROM event WHERE org = ? AND name I'): GITHUB,
     ('of_github.py', 'last_merged', "SELECT max(ts) FROM event WHERE name = 'of.work_record' AND "): GITHUB,
