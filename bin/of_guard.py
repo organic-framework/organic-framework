@@ -1654,18 +1654,31 @@ def _remote_shell(head, args):
     return None
 
 
+_SYSTEM_GIT = "/usr/bin/git"  # the system's own git (read-only on macOS, root-owned on Linux), never one found on PATH
+
+
 def _committed_clean(path):
-    """Is this local file tracked by git and unchanged? (a committed script: the sanctioned pattern)"""
+    """Is this local file committed at HEAD and unchanged, byte for byte? (a committed script: the sanctioned pattern)
+    The guard runs no program a repository names (of_review on organic-framework PR 283: `git ls-files` and `git diff`
+    in the file's own repository ran its core.fsmonitor script inside the guard): the system's git compares the blob
+    HEAD holds (`rev-parse HEAD:<file>`, which reads no index and no work tree) with the file's bytes hashed with no
+    filter (`hash-object --no-filters`), with fsmonitor and hooks off. No system git, or any doubt: not committed."""
     import subprocess
+    if not os.path.isfile(_SYSTEM_GIT):
+        return False
     d = os.path.dirname(os.path.abspath(path)) or "."
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/"), "GIT_OPTIONAL_LOCKS": "0",
+           "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"}
+    git = [_SYSTEM_GIT, "-C", d, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
     try:
-        tracked = subprocess.run(["git", "-C", d, "ls-files", "--error-unmatch", os.path.basename(path)],
-                                 capture_output=True, timeout=5, env=env).returncode == 0
-        clean = tracked and subprocess.run(["git", "-C", d, "diff", "--quiet", "HEAD", "--", os.path.basename(path)],
-                                           capture_output=True, timeout=5, env=env).returncode == 0
-        return clean
-    except (OSError, ValueError):
+        head = subprocess.run(git + ["rev-parse", "--verify", "--quiet", f"HEAD:./{os.path.basename(path)}"],
+                              capture_output=True, text=True, timeout=5, env=env)
+        if head.returncode != 0 or not head.stdout.strip():
+            return False
+        here = subprocess.run(git + ["hash-object", "--no-filters", "--", os.path.basename(path)],
+                              capture_output=True, text=True, timeout=5, env=env)
+        return here.returncode == 0 and here.stdout.strip() == head.stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
         return False
 
 
