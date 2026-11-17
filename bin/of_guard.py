@@ -3370,8 +3370,9 @@ UNSET_TARGET_DENY = ("{what} whose target rests on a variable that may be unset 
 # one step, and a cd that may reach the home folder before git init is G26's deny already.
 UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git": "warn"}
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
+ESCAPE_DENY = "a pattern this machine's sed or awk does not read as written"
 OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target",
-              POD_ENV_DENY, SECRET_FETCH_DENY)
+              POD_ENV_DENY, SECRET_FETCH_DENY, ESCAPE_DENY)
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
 _LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)
@@ -3845,6 +3846,60 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
     return None
 
 
+# G30: a pattern the machine's sed or awk reads otherwise than it is written. macOS's sed and awk take \s, \S, \d, \D,
+# \w and \W as the letters themselves, so a mask written with them does nothing, silently: on 2026-11-17 a key pair
+# printed into a transcript through `sed -E` that was meant to mask it (a user organization's security keeper, through
+# its structure keeper, msg 01a1e8ec-f1aa). GNU sed and awk read \s, \S, \w and \W, not \d or \D.
+_ESCAPE_ANY = re.compile(r"(?<!\\)\\[sSdDwW]")
+_ESCAPE_GNU = re.compile(r"(?<!\\)\\[dD]")
+_FLAVOURS = {}  # the command word -> "gnu" or "bsd", once per process
+
+
+def _flavour(word):
+    """'gnu' or 'bsd' for a sed or awk command word (`gsed` and `gawk` are GNU's), by what it answers to --version;
+    None for another command."""
+    name = os.path.basename(word)
+    if name in ("gsed", "gawk"):
+        return "gnu"
+    if name not in ("sed", "awk"):
+        return None
+    if word not in _FLAVOURS:
+        import shutil
+        import subprocess
+        path = word if "/" in word else shutil.which(name)
+        try:
+            out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3).stdout if path else ""
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        _FLAVOURS[word] = "gnu" if "GNU" in out else "bsd"
+    return _FLAVOURS[word]
+
+
+def escape_deny(cmd):
+    """G30: (reason, subject) for a sed or awk run on this machine whose arguments hold an escape it reads as a letter,
+    else None. Read through command_findings, so a command another machine runs (ssh, an exec) is not judged."""
+    if "\\" not in cmd or ("sed" not in cmd and "awk" not in cmd):
+        return None
+    try:
+        found = command_findings(cmd)
+    except Exception:  # noqa: BLE001 - unread is not denied here
+        return None
+    for kind, word, args in found:
+        if kind != "word" or os.path.basename(str(word)) not in ("sed", "awk", "gsed", "gawk"):
+            continue
+        hits = [m.group(0) for a in (args or []) for m in _ESCAPE_ANY.finditer(str(a))]
+        if not hits:
+            continue
+        fl = _flavour(str(word))
+        hits = hits if fl == "bsd" else [h for h in hits if _ESCAPE_GNU.fullmatch(h)]
+        if hits:
+            name = os.path.basename(str(word))
+            return (f"{ESCAPE_DENY} ({name} takes {hits[0]} as the letter {hits[0][1]}, so a mask or a match written "
+                    "with it silently does nothing): write [[:space:]] for \\s, [0-9] for \\d and [[:alnum:]_] for "
+                    "\\w, and mask a secret only in a committed script (docs/guard.md G30)"), f"{name} {hits[0]}"
+    return None
+
+
 def critical_deny(tool, tool_input, cwd=None):
     """(reason, subject) for a call to deny, or None. Examples (.env.example, *.pub) stay allowed."""
     ti = tool_input or {}
@@ -3861,6 +3916,8 @@ def critical_deny(tool, tool_input, cwd=None):
             hit = _prints(m.group(0).strip(" ;&|(")) if m else _reads(READERS.search(bare) and _loose_secret_path(bare))
         if not hit:
             hit = targets_deny(cmd, cwd)  # G26, G27
+        if not hit:
+            hit = escape_deny(cmd)  # G30
         return (hit[0], cmd) if hit else None
     path = ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""
     _DENY_CWD[0] = cwd
