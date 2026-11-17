@@ -138,7 +138,7 @@ Thresholds are code defaults until of_field-analyst sets them in the catalogue. 
 (platform_owner 787 turns, peak 130/hr) and 6 nudge pairs (returns_keeper → storefront_operator 28).
 
 **Correction — runners is a positive.** The founder labelled `a6c80536a491` (storefront_search + runners_coordinator,
-453 messages / 1 PR) **true_positive** (ask `ac3b43dc`: runs outside the cbx gate made every chain a slot
+453 messages / 1 PR) **true_positive** (ask `ac3b43dc`: runs outside the runner gate made every chain a slot
 negotiation). So the coordinator-heavy chatty case is a POSITIVE fixture, not the false positive I first planned.
 
 **Real labelled cases (source 2), 10 `of.issue_labelled` in the store** (read from of.db; payload issue_id,
