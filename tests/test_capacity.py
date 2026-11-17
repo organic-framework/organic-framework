@@ -2163,6 +2163,54 @@ class ConnectorsCache(unittest.TestCase):
                              [("plugin:cloudflare:cloudflare", "https://mcp.cloudflare.com/mcp", True)])
 
 
+class WakeStopped(unittest.TestCase):
+    """2026-11-17: two accounts reopened by the founder's free resets, and 27 sessions on them sat in the limit dialog;
+    the rescue moves only sessions off an account that refuses work."""
+    DIALOG = ["   What do you want to do?", "   ❯ 1. Stop and wait for limit to reset",
+              "     2. Wait here, then continue automatically at Nov 23 at 12am", "     3. Switch to usage credits",
+              "   Enter to confirm · Esc to cancel"]
+    T0 = 1_800_000_000
+
+    def run_it(self, screen, status="idle", stop=-60, probe_at=0, account_ok=True, dry_run=False, cache=None):
+        from unittest import mock
+        rows = [{"config_dir": "/m", "logged_in": True, "observed_at": of_capacity._iso(self.T0 + probe_at),
+                 "windows": {"seven_day": {"utilization": 0 if account_ok else 100}}}]
+        sessions = {"/m": [{"session": "s1", "name": "sec", "status": status}]}
+        pressed, typed, store = [], [], dict(cache or {})
+        with mock.patch.object(of_capacity, "load_cache", side_effect=lambda: dict(store)), \
+                mock.patch.object(of_capacity, "save_cache", side_effect=store.update), \
+                mock.patch.object(of_capacity, "actor", return_value="of_capacity"):
+            out = of_capacity.wake_stopped(
+                rows, sessions, now=self.T0 + 60, log=lambda m: None, dry_run=dry_run,
+                agent=lambda sid: {"pane_id": "p1"}, read=lambda pane: screen,
+                keys=lambda pane, k: pressed.append(k), deliver=lambda pane, text, sid: typed.append(text) or (True, None),
+                stopped=lambda d, sid: self.T0 + stop if stop is not None else None, sleep=lambda s: None)
+        return out, pressed, typed, store
+
+    def test_the_dialog_gets_stop_and_wait_then_a_prompt(self):
+        out, pressed, typed, store = self.run_it(self.DIALOG)
+        self.assertEqual((pressed, len(typed), out), (["enter"], 1, [("sec", (True, None))]))
+        self.assertIn("accepts work again", typed[0])
+        self.assertIn("s1", store["_woken"])
+
+    def test_never_on_usage_credits_and_never_twice(self):
+        credits = [ln.replace("❯ 1.", "  1.").replace("  3. Switch", "❯ 3. Switch") for ln in self.DIALOG]
+        self.assertEqual(self.run_it(credits)[1:3], ([], []))  # cursor elsewhere: left as it is
+        self.assertEqual(self.run_it(self.DIALOG, cache={"_woken": {"s1": self.T0}})[1:3], ([], []))
+
+    def test_only_a_stop_older_than_the_probe_on_an_open_account(self):
+        self.assertEqual(self.run_it(self.DIALOG, stop=30)[2], [])  # stopped after the probe said it accepts work
+        self.assertEqual(self.run_it(self.DIALOG, account_ok=False)[2], [])  # still exhausted: rescue's case
+        self.assertEqual(self.run_it(self.DIALOG, stop=None)[2], [])  # not stopped
+        self.assertEqual(self.run_it(self.DIALOG, status="busy")[2], [])
+
+    def test_a_limit_wait_is_cancelled_and_a_dry_run_touches_nothing(self):
+        wait = ["Usage limit reached · continuing automatically at Nov 23 12am · Esc to cancel"]
+        self.assertEqual(self.run_it(wait)[1], ["esc"])
+        out, pressed, typed, store = self.run_it(self.DIALOG, dry_run=True)
+        self.assertEqual((out, pressed, typed, store), ([("sec", "would wake (enter)")], [], [], {}))
+
+
 class SigninTaskReconcile(unittest.TestCase):
     """2026-11-17: two of the founder's sign-in tasks named an account both positions had left days before
     (of_architect, msg 01a1e8df-76f1). The balancer withdraws a task once nobody needs it."""

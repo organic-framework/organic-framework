@@ -3575,6 +3575,73 @@ def limit_cursor(lines):
     return any(OPTION.match(x) and LIMIT_DIALOG in x for x in plain)
 
 
+WAKE_TEXT = ("of_capacity: your account accepts work again (probed at {at}), after its usage limit stopped you. "
+             "Continue the work you were doing when the limit stopped you.")
+WAKE_AGAIN_S = 1800  # a session woken once is not woken again within this
+
+
+def wake_stopped(rows, sessions, now=None, log=print, dry_run=False, agent=None, read=None, keys=None, deliver=None,
+                 stopped=None, sleep=time.sleep):
+    """Wake the sessions stopped on a usage limit whose own account accepts work again: choose the limit dialog's
+    "Stop and wait" (never usage credits), or cancel a limit wait, then type a declared prompt to go on. The rescue
+    moves only sessions off an account that refuses work, and a session in the limit dialog never goes on by itself
+    (2026-11-17: the founder's free resets reopened two accounts at about 22:05Z, and 27 sessions on them sat in the
+    dialog, waiting for 23.11). Only when the account's probe is later than the stop, and once per WAKE_AGAIN_S.
+    rows: status(); sessions: {dir: live_sessions(dir)}. Returns [(name, result)]."""
+    now = now or time.time()
+    agent, read = agent or _agent_by_session, read or _pane_lines
+    keys = keys or (lambda pane, k: _herdr("pane", "send-keys", pane, k))
+    stopped = stopped or (lambda d, sid: limit_stop(find_transcript(d, sid) or ""))
+    if deliver is None:
+        import of_relay_client
+        deliver = lambda pane, text, sid: of_relay_client.herdr_deliver(pane, text, sid, actor(), wait_s=8)  # noqa: E731
+    ok = {r["config_dir"]: r for r in rows if r.get("logged_in") and not exhausted(r)}
+    cache = load_cache()
+    woken = {k: v for k, v in (cache.get("_woken") or {}).items() if now - v < WAKE_AGAIN_S}
+    out = []
+    for d, xs in sessions.items():
+        r = ok.get(d)
+        probed = _ts((r or {}).get("observed_at") or "")
+        if not r or probed is None:
+            continue
+        for x in xs:
+            sid, name = x.get("session"), x.get("name") or str(x.get("session"))[:8]
+            if not sid or x.get("status") == "busy" or sid in woken or name == actor():
+                continue
+            t = stopped(d, sid)
+            if not t or t >= probed:  # the stop is newer than what says the account accepts work
+                continue
+            a = agent(sid)
+            if not a:
+                continue
+            pane = a["pane_id"]
+            lines = read(pane)
+            plain = [ANSI.sub("", ln) for ln in lines]
+            step = None
+            if any(LIMIT_DIALOG in ln for ln in plain):
+                if not limit_cursor(lines):
+                    log(f"balance: {name}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {pane}; left")
+                    continue
+                step = "enter"
+            elif any(AUTO_CONTINUE.search(ln) for ln in plain[-12:]):
+                step = "esc"
+            if dry_run:
+                out.append((name, f"would wake ({step or 'type'})"))
+                continue
+            if step:
+                keys(pane, step)
+                sleep(2)
+            res = deliver(pane, WAKE_TEXT.format(at=(r.get("observed_at") or "")[11:16] + "Z"), sid)
+            woken[sid] = now
+            out.append((name, res))
+            log(f"balance: woke {name} on {short(d)}: {res}")
+    if out and not dry_run:
+        cache = load_cache()
+        cache["_woken"] = woken
+        save_cache(cache)
+    return out
+
+
 def agents_json(d):
     env = probe_env(d)
     try:
@@ -5096,6 +5163,10 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         reconcile_signin_tasks(sessions, now=now, log=log, dry_run=dry_run)
     except Exception as e:
         log(f"balance: sign-in tasks not reconciled: {e}")
+    try:  # sessions stopped on a limit their own account no longer has (a reset, a reopened window)
+        wake_stopped(rows, sessions, now=now, log=log, dry_run=dry_run)
+    except Exception as e:
+        log(f"balance: stopped sessions not woken: {e}")
     index = current_index(dirs, now)
     rates = burn_rates(dirs, now, index)
     calib = {r["config_dir"]: calibrate(r, now, index) for r in rows if r.get("logged_in")}
