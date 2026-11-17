@@ -31,6 +31,7 @@ TEAM_ORG = "organic-framework-build"
 LIMITS = {
     "server.health": (2.0, 20.0, "above", "of_server"),
     "hooks.errors": (0.01, 0.10, "above", "of_platform"),
+    "hooks.spooled": (0.10, 0.50, "above", "of_platform"),   # of_architect, 2026-11-17 (message 01a1ea91-7683)
     "hooks.latency": (1.0, 5.0, "above", "of_platform"),
     "machine.memory": (0.80, 0.95, "above", "of_platform"),
     "machine.disk": (25.0, 20.0, "below", "of_platform"),
@@ -207,8 +208,11 @@ def _tail_since(path, since_iso, max_bytes=16 << 20):
 
 
 def hook_readings(now, state=None):
-    """(error share, worst p99 seconds, {event: p99 seconds}, calls) over the last WINDOW_S, from hook-timing.jsonl
-    (one line a call) and hook-errors.log (an ERROR or a spooled call per line)."""
+    """(error share, worst p99 seconds, {event: p99 seconds}, calls, spooled share) over the last WINDOW_S, from
+    hook-timing.jsonl (one line a call) and hook-errors.log (an ERROR or a spooled call per line). A spooled call is
+    apart from an error: the store was busy past the hook's wait and the call went to the spool, the designed path, and
+    nothing was lost (of_architect, 2026-11-17, message 01a1ea91-7683: counted together, 252 spools of 300 lines hid any
+    real failure)."""
     state = state or of_events.STATE_DIR
     since = iso(now - WINDOW_S)
     calls, by = 0, {}
@@ -219,14 +223,15 @@ def hook_readings(now, state=None):
             continue
         calls += 1
         by.setdefault(d.get("event") or "?", []).append(float(d.get("ms") or 0) / 1000)
-    bad = sum(1 for s in _tail_since(os.path.join(state, "hook-errors.log"), since)
-              if " ERROR" in s or " spooled" in s)
+    lines = _tail_since(os.path.join(state, "hook-errors.log"), since)
+    bad = sum(1 for s in lines if " ERROR" in s)
+    spooled = sum(1 for s in lines if " spooled" in s and " ERROR" not in s)
     p99 = {}
     for ev, xs in by.items():
         xs.sort()
         p99[ev] = round(xs[min(len(xs) - 1, int(0.99 * len(xs)))], 3)
     share = (bad / calls) if calls else 0.0
-    return round(share, 4), max(p99.values() or [0.0]), p99, calls
+    return round(share, 4), max(p99.values() or [0.0]), p99, calls, round((spooled / calls) if calls else 0.0, 4)
 
 
 def swap_share(run=subprocess.run):
@@ -284,8 +289,9 @@ def measure(now=None, server=None, lags=None, hooks=None, swap=None, disk=None, 
     for name, reading in (_view_ages(now) if views is None else views).items():
         age, lag_ok, owner = (tuple(reading) + ("of_platform",))[:3]  # the view's owner hears of it (health.md §2)
         put(f"view.age.{name}", age, lag_ok, 5 * lag_ok, "above", owner)
-    share, worst, p99, calls = hook_readings(now) if hooks is None else hooks
+    share, worst, p99, calls, *rest = hook_readings(now) if hooks is None else hooks
     put("hooks.errors", share, *LIMITS["hooks.errors"], detail=f"{calls} calls in 10 min")
+    put("hooks.spooled", rest[0] if rest else 0.0, *LIMITS["hooks.spooled"], detail=f"{calls} calls in 10 min")
     put("hooks.latency", worst, *LIMITS["hooks.latency"],
         detail=", ".join(f"{k} {v:.2f}s" for k, v in sorted(p99.items(), key=lambda x: -x[1])[:4]))
     sw = swap_share() if swap is None else swap

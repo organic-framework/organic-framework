@@ -25,7 +25,8 @@ The checks never run on the listener's loop, because the listener is one of the 
 | `relay.oldest` | how long the oldest message has been queued for a live, idle receiver, from the first check that saw it so (a wait on a busy agent counts nothing; a message the person holds, with a dialog open or text in the input box, does not count) | over 10 min | over 60 min | of-server | `of_server` |
 | `listener.lag.<processor>` | events behind, and seconds since the processor's last tick | over 2 min | over 10 min | `of health run` | `of_platform` |
 | `view.age.<view>` | the age of each view a screen or the CLI reads | over the view's declared lag | over 5 times it | `of health run` | `of_platform`, with the view's owner |
-| `hooks.errors` | hook calls that failed or spooled, out of all calls, in the last 10 min | over 1% | over 10% | `of health run` | `of_platform` |
+| `hooks.errors` | hook calls that failed (an `ERROR` line in hook-errors.log), out of all calls, in the last 10 min | over 1% | over 10% | `of health run` | `of_platform` |
+| `hooks.spooled` | hook calls that found the store busy past their wait and went to the spool, out of all calls, in the last 10 min: nothing is lost (the listener moves the spool in every 10 s), but the store is contended (2026-11-17, `of_architect`, message `01a1ea91-7683`: counted with the errors, they hid any real failure) | over 10% | over 50% | `of health run` | `of_platform` |
 | `hooks.latency` | the hooks' p99 time per event kind, in the last 10 min | over 1 s | over 5 s | `of health run` | `of_platform` |
 | `machine.memory` | swap used, out of swap | over 80% | over 95% | `of health run` | `of_platform` |
 | `machine.disk` | free disk | under 25 GiB | under 20 GiB (the pulse's card) | `of health run` | `of_platform` |
