@@ -1497,7 +1497,7 @@ def run(stop=None, log=print, rebuild=False):
             if now - last_spool >= SPOOL_S:  # what hooks spooled while the store was busy, apart from the ingest worker
                 last_spool = now
                 try:   # the next step folds what it moved in
-                    of_store.drain_spool(conn)
+                    of_store.drain_spool(conn, budget_s=BUDGET_S)
                 except Exception as e:  # noqa: BLE001
                     log(f"of listen: spool: {type(e).__name__}: {e}")
             if now - last_outbox >= 30:  # answers a popup handed over whose sender died: send them
