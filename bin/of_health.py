@@ -379,6 +379,7 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typ
     typed = typed if typed is not None else _typed
     old = load_state().get("checks") or {}
     new = measure(now) if readings is None else readings
+    notes, reminders = {}, {}   # owner -> this run's: one message each (2026-11-17: a stopped listener sent its owner 22)
     for check, r in new.items():
         prev = old.get(check) or {}
         if r.get("source") == "of-server":  # the server records and tells its own checks' changes
@@ -397,19 +398,32 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typ
         r["told"] = prev.get("told") if r["state"] == "failed" else None
         r["reminded"] = prev.get("reminded") if r["state"] == "failed" else None
         if r["state"] == "failed" and not r["told"] and now - _epoch(r["since"]) >= TELL_AFTER_S:
-            fyi(r["owner"], _fyi_text(check, r, prev))
+            notes.setdefault(r["owner"], []).append(_fyi_text(check, r, prev))
             r["told"] = iso(now)
         elif r["state"] == "failed" and now - _epoch(r["since"]) >= REMIND_EVERY_S and \
                 now - _epoch(r["reminded"] or r["since"]) >= REMIND_EVERY_S:
             # one --fyi is easy to miss among health notes (2026-11-14: a check stayed failed three days): once a day,
             # typed into the owner's pane, from a day after the failure began
-            if typed(r["owner"], _reminder_text(check, r, now)) is not False:
-                r["reminded"] = iso(now)
-                log(f"of health: reminded {r['owner']} of {check}, failed since {r['since']}")
+            reminders.setdefault(r["owner"], []).append((check, r))
         elif r["state"] != "failed" and prev.get("told"):
-            fyi(r["owner"], _fyi_text(check, r, prev))
+            notes.setdefault(r["owner"], []).append(_fyi_text(check, r, prev))
     for check in set(old) - set(new):  # a check that stopped applying (a processor gone) leaves quietly
         pass
+    for owner, due in reminders.items():
+        text = _reminder_text(*due[0], now) if len(due) == 1 else (
+            f"Health on this machine, {len(due)} checks failed for a day or more. You are their owner: fix them, or say "
+            f"why they stay (docs/health.md §3; `of health`). Reminded once a day while they stay failed.\n"
+            + "\n".join(f"- {c}: failed since {r['since']} ({(now - _epoch(r['since'])) / 86400:.1f} days), value "
+                         f"{r['value']}, limit {r['limit']}" for c, r in due))
+        if typed(owner, text) is not False:
+            for check, r in due:
+                r["reminded"] = iso(now)
+                log(f"of health: reminded {owner} of {check}, failed since {r['since']}")
+
+    for owner, texts in notes.items():
+        fyi(owner, texts[0] if len(texts) == 1 else
+            f"Health on this machine, {len(texts)} checks (docs/health.md §2; `of health`):\n"
+            + "\n".join("- " + t[len("Health: "):].replace(" (docs/health.md §2; `of health`)", "") for t in texts))
     state = {"at": iso(now), "checks": new}
     with open(state_path() + ".tmp", "w") as fh:
         json.dump(state, fh, indent=1)
