@@ -5123,6 +5123,10 @@ def _amend_ask(args, positions, me):
     payload, _session, _position, _ts = of_asks_answer.ask_details(conn, a["event_id"])  # its newest version
     if payload.get("detected_by") != "declared" or payload.get("from_position") not in (None, me["name"]):
         raise OfError(f"--amend: ask {short} was not filed by {me['name']} with of ask")
+    late = of_asks.closed_after_view(conn, a["event_id"], payload.get("version"))
+    if late:  # the listener's view is behind and still shows it open
+        raise OfError(f"--amend: ask {short} was {late[0]} at {late[1]}: only an open ask with no answer is amended; a "
+                      "new decision is a new ask (of ask)")
     is_task = bool(payload.get("task"))
     where = getattr(args, "where", None)
     for flag, val in (("--task", args.task), ("--command", args.command), ("--where", where)):

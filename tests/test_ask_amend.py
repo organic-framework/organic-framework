@@ -478,5 +478,41 @@ class CliTest(unittest.TestCase):
         self.assertEqual(len(self.events("of.ask_escalated")), 1)  # never twice
 
 
+    def test_an_answer_the_late_view_has_not_folded_refuses_the_amend(self):
+        """of_conductor, message 01a1ea94-7796: card MT-31 was answered in the popup at version 6 at 17:12:05Z and
+        amended to version 7 at 17:18:51Z. The listener's view had stood since 17:11:02Z and still showed it open, and
+        the log's last 15 minutes on top of a late view do not hold an ask filed before them."""
+        import time
+        import of_listen
+        r = self.run_of("ask", "Lift the hold on the relay?", "--options", "yes|no", "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        aid = self.events("of.agent_question")[0][0]
+        saved = of_events.STATE_DIR
+        of_events.STATE_DIR = os.path.join(self.t.name, "state")
+        of_events._CONN.clear()
+        conn = of_store.connect(os.path.join(self.t.name, "state", "of.db"))
+        try:
+            old = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3600))
+            conn.execute("UPDATE event SET ts = ? WHERE event_id = ?", (old, aid))  # filed an hour ago
+            procs = [of_listen.AsksProcessor()]
+            of_listen.step(conn, procs, of_listen.prepare(conn, procs))  # the view, before the answer
+            of_events.emit("agent_question_answered", {"ask_id": aid, "ask_ids": [aid], "answer": "yes",
+                                                       "via": "asks-ui", "by": "owner", "version": 1})
+            late = of_events.record("turn_end", {"last_message": "ok"}, position="of_b", session="S-b", org="org",
+                                    source="hook")
+            late["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 7200))
+            of_store.add_event(conn, late)  # older than what the view fed: the view reads late
+            self.assertTrue(of_asks.current_asks(conn)["late"])
+            self.assertEqual(of_asks.closed_after_view(conn, aid, 1)[0], "answered")
+            self.assertIsNone(of_asks.closed_after_view(conn, aid, 2))  # an answer to an older version closes nothing
+        finally:
+            conn.close()
+            of_events._CONN.clear()
+            of_events.STATE_DIR = saved
+        r = self.run_of("ask", "Lift the hold today?", "--amend", aid[-8:], "--from", "of_a")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(f"--amend: ask {aid[-8:]} was answered at ", r.stderr)
+        self.assertEqual(self.events("of.ask_amended"), [])
+
 if __name__ == "__main__":
     unittest.main()
