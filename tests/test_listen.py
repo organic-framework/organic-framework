@@ -474,6 +474,67 @@ class ListenTest(unittest.TestCase):
         self.assertEqual(self.conn.execute(f"SELECT {cols} FROM view_asks WHERE event_id = ?", (a1,)).fetchone(),
                          after[a1])
 
+    def test_a_row_older_than_the_mark_is_projected_again_from_a_snapshot_not_from_every_row(self):
+        """The founder, 2026-11-17 (prompt 01a1eae5-4583, via of_conductor): the questions must never wait minutes. A
+        spool drained after a busy store brings rows up to an hour old; they redo the projection from the newest
+        snapshot before them, with the rows since read by ts, not from every row of the log."""
+        import contextlib
+        import io
+        import time as _t
+
+        def at(s):
+            return _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - s))
+
+        def same():
+            want = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
+            self.assertEqual({a["event_id"]: a["state"] for a in of_listen.read_asks(self.conn)}, want)
+            return want
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S, procs[0].SNAP_S = 0, 60
+        cur = of_listen.prepare(self.conn, procs)
+        a1 = self.ask("Merge PR 2349 now?", ts=at(6000))
+        of_listen.step(self.conn, procs, cur)
+        a2 = self.ask("Rotate the etcd keys?", position="b", ts=at(4000))
+        of_listen.step(self.conn, procs, cur)
+        self.ask("Open the gateway window?", position="c", ts=at(1000))
+        of_listen.step(self.conn, procs, cur)
+        self.assertEqual(len(procs[0].snaps), 3)  # at the marks of 6600, 4600 and 1600 s ago
+        saved, out = of_asks.load, io.StringIO()
+
+        def whole(*a, **k):
+            raise AssertionError("every row read again")
+        of_asks.load = whole
+        try:
+            # an answer an hour old, drained from a spool: older than the mark, newer than the oldest snapshots
+            rec = of_events.record("agent_question_answered", {"ask_id": a2, "ask_ids": [a2], "by": "owner"},
+                                   position="b", session="S-b", org="ofb")
+            rec["timestamp"] = at(3000)
+            of_store.add_event(self.conn, rec)
+            with contextlib.redirect_stdout(out):
+                of_listen.step(self.conn, procs, cur)
+            self.assertEqual((procs[0].rewinds, procs[0].late), (1, 0))
+            self.assertIn("projected again from the snapshot at", out.getvalue())
+            # a correction of a prompt's origin, for a prompt inside the snapshots' reach
+            p = of_events.record("human_prompt", {"origin": "human", "text": "yes"}, position="a", session="S-a",
+                                 org="ofb", source="hook")
+            p["timestamp"] = at(2000)
+            of_store.add_event(self.conn, p)
+            of_events.emit("prompt_origin", {"event_id": p["of.event.id"], "origin": "scheduled"})
+            with contextlib.redirect_stdout(out):
+                of_listen.step(self.conn, procs, cur)
+            self.assertEqual((procs[0].rewinds, procs[0].late), (2, 0))
+        finally:
+            of_asks.load = saved
+        want = same()
+        self.assertEqual((want[a1], want[a2]), ("open", "answered"))
+        # older than every snapshot (an import): every row, counted
+        self.ask("From imported history?", position="d", ts=at(20000))
+        with contextlib.redirect_stdout(out):
+            of_listen.step(self.conn, procs, cur)
+        self.assertEqual(procs[0].late, 1)
+        self.assertIn("and every snapshot: every row projected again", out.getvalue())
+        same()
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)

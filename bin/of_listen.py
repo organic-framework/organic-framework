@@ -128,6 +128,9 @@ class AsksProcessor(Processor):
         # whose events this run has not read), the checkpoint's rowid (rows up to it are in the view), the
         # checkpoint a write stores beside the fold (CARRIED_KEY), kept for settle() in a shadow build
         self.stored, self.carried_upto, self.carried = {}, 0, None
+        # snapshots of the carried state (SNAP_S apart, SNAP_KEEP_S back): [(mark, JSON)], oldest first; rewind: the
+        # earliest ts a late row or a correction needs projected again from; rewinds: how often one was used
+        self.snaps, self.rewind, self.rewinds, self.late_rows = [], None, 0, (0, None)
         import of_asks
         # a rebuild or a new version catches up on these names only (relevant() takes nothing else): a rebuild from
         # rowid 0 had read the whole log (the founder's read-path rule, 2026-11-14; seen on organic-framework PR 181)
@@ -148,6 +151,13 @@ class AsksProcessor(Processor):
     # the carried state at the hold's mark, stored beside the fold at each write so a start carries on from it: the
     # mark, the asks the held rows added (absent from it) or changed (their carried versions), and its indexes
     CARRIED_KEY = "asks_carried"
+    # A row older than the hold's mark, a correction of a prompt's origin or an event again under its id needs the
+    # projection redone from before its ts. The processor keeps a snapshot of the carried state every SNAP_S of the
+    # mark, SNAP_KEEP_S back (5.6 MB of JSON each for 7,704 asks, 0.03 s to take, 0.22 s to load), and redoes it from
+    # the newest one before that ts with the rows since read again by ts: two hours of rows were 8,199 on 2026-11-17.
+    # Only what is older than every snapshot (an import) reads the whole log.
+    SNAP_S = 900
+    SNAP_KEEP_S = 2 * 3600
 
     SHADOW = "__new"
     suffix = ""      # "__new" while a new version is built beside the view that keeps serving
@@ -184,7 +194,7 @@ class AsksProcessor(Processor):
             conn.execute(f"DROP TABLE IF EXISTS {t}{self.SHADOW}")
         self.defer, self.dirty = True, False  # the stored view is current up to the cursor
         self.state, self.tail, self.written, self.held, self.mark = None, [], {}, [], ""
-        self.stored, self.carried_upto = {}, 0
+        self.stored, self.carried_upto, self.snaps, self.rewind = {}, 0, [], None
         row = conn.execute("SELECT last_rowid FROM listener_cursor WHERE processor = ?", (self.name,)).fetchone()
         self.max_rowid = int(row[0]) if row else 0
         if not self._carry_on(conn):
@@ -224,19 +234,7 @@ class AsksProcessor(Processor):
         self.mark, self.fed, self.carried_upto = mark, ck.get("fed") or "", upto
         self.stored = {r[0]: r for r in stored}
         self.written = dict(self.stored)  # the first write writes only what changed
-        held = []
-        for rid, e, ts, n, sid, pos, pl, org, src, host in conn.execute(
-                f"SELECT rowid, event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
-                f"WHERE ts >= ? AND name IN ({','.join('?' * len(self.catch_up_names))}) AND rowid <= ?",
-                (mark,) + tuple(self.catch_up_names) + (upto,)):
-            try:
-                pl = json.loads(pl) if pl else {}
-            except ValueError:
-                pl = {}
-            if of_asks.relevant(n, src, pl):
-                held.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": pl,
-                             "org": org, "host_id": host})
-        self.held = sorted(held, key=lambda r: r["ts"] or "")
+        self.held = self._rows_since(conn, mark, upto)
         self.rows = {r["event_id"]: r for r in self.held}
         start = upto
         while start < self.max_rowid:  # handled before the restart and not yet in the view
@@ -246,6 +244,50 @@ class AsksProcessor(Processor):
             self.handle(conn, rows)
             start = rows[-1]["rowid"]
         self.max_rowid = max(self.max_rowid, upto)
+        return True
+
+    def _rows_since(self, conn, ts, upto):
+        """The relevant rows with a ts at or after TS and a rowid up to UPTO, by ts: by the name index, never the whole
+        log."""
+        import of_asks
+        out = []
+        for e, t, n, sid, pos, pl, org, src, host in conn.execute(
+                f"SELECT event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
+                f"WHERE ts >= ? AND name IN ({','.join('?' * len(self.catch_up_names))}) AND rowid <= ?",
+                (ts,) + tuple(self.catch_up_names) + (upto,)):
+            try:
+                pl = json.loads(pl) if pl else {}
+            except ValueError:
+                pl = {}
+            if of_asks.relevant(n, src, pl):
+                out.append({"event_id": e, "ts": t, "name": n, "session_id": sid, "position": pos, "payload": pl,
+                            "org": org, "host_id": host})
+        return sorted(out, key=lambda r: r["ts"] or "")
+
+    @staticmethod
+    def _origin_ts(conn, row):
+        """The ts of the prompt an of.prompt_origin corrects, or "" (unknown: every row again)."""
+        eid = (row.get("payload") or {}).get("event_id")
+        got = conn.execute("SELECT ts FROM event WHERE event_id = ?", (eid,)).fetchone() if eid else None
+        return (got[0] or "") if got else ""
+
+    def _rewind_to_snapshot(self, conn):
+        """The carried state from the newest snapshot at or before self.rewind, and every row since it read again (by
+        ts, up to the rows handled); False when no snapshot is that old."""
+        import of_asks
+        snap = next(((m, blob) for m, blob in reversed(self.snaps) if m <= self.rewind), None)
+        if snap is None:
+            return False
+        m, blob = snap
+        data = json.loads(blob)
+        self.state = of_asks.state_from(data["asks"], data["indexes"])
+        rows = self._rows_since(conn, m, self.max_rowid)
+        self.rows.update({r["event_id"]: r for r in rows})
+        self.held, self.tail, self.mark = rows, [], m
+        self.snaps = [x for x in self.snaps if x[0] <= m]
+        self.rewinds += 1
+        print(f"of listen: asks: projected again from the snapshot at {m} ({len(rows)} rows since), for a row at "
+              f"{self.rewind} ({self.rewinds} since the start)", flush=True)
         return True
 
     def settle(self, conn):
@@ -280,27 +322,25 @@ class AsksProcessor(Processor):
         new = [r for r in rows if self._relevant(r) and (r.get("rowid") or 0) > self.carried_upto]
         if not new:
             return False
-        late, oldest = 0, None
+        late, oldest = self.late_rows
         for r in new:
             row = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position", "payload", "org",
                                          "host_id")}
             behind = (row["ts"] or "") < self.mark
-            if r["event_id"] in self.rows or r["name"] == "of.prompt_origin" or behind:
+            origin = r["name"] == "of.prompt_origin"
+            if r["event_id"] in self.rows or origin or behind:
                 # an event again under its id, a correction of an earlier prompt's origin, or a row older than the
                 # hold's mark (imported history, a spool drained after a busy store): the carried projection no longer
-                # holds; all rows again
-                if behind and self.state is not None:
+                # holds from its ts on; the write redoes it from a snapshot before that, or from every row
+                if behind:
                     late, oldest = late + 1, min(oldest or row["ts"], row["ts"])
-                self.state, self.tail, self.held = None, [], []
-            elif behind:
-                late, oldest = late + 1, min(oldest or row["ts"], row["ts"])
+                if self.state is not None:
+                    at = self._origin_ts(conn, row) if origin else (row["ts"] or "")
+                    self.rewind = at if self.rewind is None else min(self.rewind, at)
             self.rows[r["event_id"]] = row
             if self.state is not None:
                 self.tail.append(row)
-        if late:
-            self.late += 1
-            print(f"of listen: asks: {late} event(s) older than the hold's mark {self.mark} (the oldest at {oldest}): "
-                  f"every row projected again ({self.late} since the start)", flush=True)
+        self.late_rows = (late, oldest)
         self.dirty = True  # projected once, at the end of the step (flush) or of the first catch-up (settle)
         return False
 
@@ -320,7 +360,17 @@ class AsksProcessor(Processor):
     def write(self, conn):
         import copy
         import of_asks
+        if self.state is not None and self.rewind is not None and not self._rewind_to_snapshot(conn):
+            self.state, self.tail, self.held = None, [], []  # older than every snapshot: every row again
+            late, oldest = self.late_rows
+            if late:
+                self.late += 1
+                print(f"of listen: asks: {late} event(s) older than the hold's mark {self.mark} (the oldest at "
+                      f"{oldest}) and every snapshot: every row projected again ({self.late} since the start)",
+                      flush=True)
+        self.rewind, self.late_rows = None, (0, None)
         if self.state is None:
+            self.snaps = []
             if self.stored:  # carried on from the view, with only the rows since: every row, read now
                 self.rows = {**self._read_all(conn), **self.rows}
                 self.stored, self.carried_upto = {}, 0
@@ -337,6 +387,13 @@ class AsksProcessor(Processor):
             k = bisect.bisect_left([r["ts"] or "" for r in self.held], self.mark)
             of_asks.project(self.held[:k], self.state)  # old enough: into the carried projection for good
             self.held = self.held[k:]
+        if self.mark and (not self.snaps or _minus_s(self.mark, self.SNAP_S) >= self.snaps[-1][0]):
+            indexes = {k: v for k, v in of_asks.fold_meta(self.state, 0, "").items()
+                       if k in ("open_by_session", "declared_turn", "waits_founder")}
+            self.snaps.append((self.mark, json.dumps({"asks": self.state["asks"], "indexes": indexes},
+                                                     ensure_ascii=False, default=str)))
+            keep = _minus_s(self.mark, self.SNAP_KEEP_S)
+            self.snaps = [x for x in self.snaps if x[0] >= keep]
         view = self.state
         if self.held:  # the rows inside the hold, on a copy: the view is whole, the carried state waits for them
             t0 = time.time()
