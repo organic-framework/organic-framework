@@ -17,7 +17,10 @@ import warnings
 
 import of_classify
 
-_HOME_WORD = re.compile(r"^(?:\$\{HOME\}|\$HOME)(?=/|$)")
+# `$HOME`, `${HOME}`, and `${HOME` with an operator that gives HOME while it is set: `:?`, `?`, `:-`, `-`, `:=`, `=` (any
+# word) and the trims `%`, `%%`, `#`, `##` (of_secrets-review on organic-framework PR 268: `"${HOME:?}"` is the form
+# shellcheck asks for before an `rm -rf`); not `:+` or `+`, which give the other word
+_HOME_WORD = re.compile(r"^(?:\$\{HOME(?:(?::?[?=-]|%%?|##?)[^}]*)?\}|\$HOME)(?=/|$)")
 
 
 def _expanduser(p):
