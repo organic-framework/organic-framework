@@ -11,6 +11,7 @@ from rowid 0; the log stays the source of truth (event sourcing with projections
 listener, the CLI computes from the log as before (`fresh()` says whether the views are live).
 """
 
+import bisect
 import json
 import re
 import os
@@ -88,6 +89,15 @@ class Processor:
         return False
 
 
+def _minus_s(ts, seconds):
+    """An event ts (2026-11-17T17:12:05.817Z) SECONDS earlier, in the same form; "" for none."""
+    if not ts:
+        return ""
+    import datetime
+    d = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")) - datetime.timedelta(seconds=seconds)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + f"{d.microsecond // 1000:03d}Z"
+
+
 # ---------------------------------------------------------------------- asks
 
 class AsksProcessor(Processor):
@@ -111,6 +121,9 @@ class AsksProcessor(Processor):
         self.state, self.fed, self.tail = None, "", []
         self.written = {}  # event_id -> the row last written to view_asks: a flush writes only what changed
         self.max_rowid, self.fold = 0, None  # the last event handled; a shadow build's fold_meta, kept for settle()
+        # the hold (HOLD_S): rows at or after the mark wait here, projected on a copy for each write; rows before it
+        # are in the carried state for good. late: projections of every row a row later than the hold caused
+        self.held, self.mark, self.late = [], "", 0
         import of_asks
         # a rebuild or a new version catches up on these names only (relevant() takes nothing else): a rebuild from
         # rowid 0 had read the whole log (the founder's read-path rule, 2026-11-14; seen on organic-framework PR 181)
@@ -119,6 +132,15 @@ class AsksProcessor(Processor):
     def _relevant(self, r):
         import of_asks
         return of_asks.relevant(r["name"], r["source"], r.get("payload"))
+
+    # The hold: the carried projection takes a row only once it is HOLD_S older than the newest row fed, so a row that
+    # comes in late, by its ts, still folds in order; the rows not yet that old are projected on a copy at each write,
+    # so the view and its fold mark cover every row up to the cursor and readers see no delay. Measured over two days
+    # from 2026-11-15T18:00Z (83,300 rows, 5.7% late): every row was projected again in 434 flush windows (15 s) a
+    # day; 19 with a hold of 120 s, 11 with 300 s, 4.5 with 600 s, 4.0 with 900 s. What a 600 s hold leaves is spool
+    # drains after a busy store (670 rows at once, up to an hour old), counted in listen.log (of_platform's design
+    # points, message 01a1eaab-8fbd).
+    HOLD_S = 600
 
     SHADOW = "__new"
     suffix = ""      # "__new" while a new version is built beside the view that keeps serving
@@ -140,6 +162,7 @@ class AsksProcessor(Processor):
             self.suffix = ""
         self.rows, self.defer, self.dirty = {}, True, True
         self.state, self.tail, self.written, self.max_rowid = None, [], {}, 0
+        self.held, self.mark = [], ""
 
     def load_state(self, conn):
         """After a restart: the relevant rows up to the cursor, so the projection continues (a rebuild that
@@ -184,16 +207,27 @@ class AsksProcessor(Processor):
         new = [r for r in rows if self._relevant(r)]
         if not new:
             return False
+        late, oldest = 0, None
         for r in new:
             row = {k: r.get(k) for k in ("event_id", "ts", "name", "session_id", "position", "payload", "org",
                                          "host_id")}
-            if r["event_id"] in self.rows or r["name"] == "of.prompt_origin" or (row["ts"] or "") < self.fed:
-                # an event again under its id, a correction of an earlier prompt's origin, or a row older than
-                # what was projected (imported history): the carried projection no longer holds; all rows again
-                self.state, self.tail = None, []
+            behind = (row["ts"] or "") < self.mark
+            if r["event_id"] in self.rows or r["name"] == "of.prompt_origin" or behind:
+                # an event again under its id, a correction of an earlier prompt's origin, or a row older than the
+                # hold's mark (imported history, a spool drained after a busy store): the carried projection no longer
+                # holds; all rows again
+                if behind and self.state is not None:
+                    late, oldest = late + 1, min(oldest or row["ts"], row["ts"])
+                self.state, self.tail, self.held = None, [], []
+            elif behind:
+                late, oldest = late + 1, min(oldest or row["ts"], row["ts"])
             self.rows[r["event_id"]] = row
             if self.state is not None:
                 self.tail.append(row)
+        if late:
+            self.late += 1
+            print(f"of listen: asks: {late} event(s) older than the hold's mark {self.mark} (the oldest at {oldest}): "
+                  f"every row projected again ({self.late} since the start)", flush=True)
         self.dirty = True  # projected once, at the end of the step (flush) or of the first catch-up (settle)
         return False
 
@@ -211,19 +245,25 @@ class AsksProcessor(Processor):
         return True
 
     def write(self, conn):
+        import copy
         import of_asks
         if self.state is None:
-            ordered = sorted(self.rows.values(), key=lambda r: r["ts"])  # imported history can arrive late
-            self.state = of_asks.new_state()
-            of_asks.project(ordered, self.state)
-            self.fed = ordered[-1]["ts"] if ordered else ""
+            self.state, self.held = of_asks.new_state(), sorted(self.rows.values(), key=lambda r: r["ts"] or "")
+            self.fed, self.mark = "", ""  # imported history can arrive late: every row, in order, through the hold
         else:  # only the rows since the last write, on the carried projection: the same asks (of_asks.project)
-            tail = sorted(self.tail, key=lambda r: r["ts"])
-            of_asks.project(tail, self.state)
-            if tail:
-                self.fed = max(self.fed, tail[-1]["ts"])
+            self.held = sorted(self.held + self.tail, key=lambda r: r["ts"] or "")
         self.tail = []
-        asks = self.state["asks"]
+        if self.held:
+            self.fed = max(self.fed, self.held[-1]["ts"] or "")
+            self.mark = max(self.mark, _minus_s(self.fed, self.HOLD_S))
+            k = bisect.bisect_left([r["ts"] or "" for r in self.held], self.mark)
+            of_asks.project(self.held[:k], self.state)  # old enough: into the carried projection for good
+            self.held = self.held[k:]
+        view = self.state
+        if self.held:  # the rows inside the hold, on a copy: the view is whole, the carried state waits for them
+            view = copy.deepcopy(self.state)
+            of_asks.project(self.held, view)
+        asks = view["asks"]
         groups = of_asks.group(of_asks.for_owner(asks))
         by_id = self.rows
         rows = []  # built before the write lock is taken
@@ -255,7 +295,7 @@ class AsksProcessor(Processor):
                 for i, g in enumerate(groups)])
             # what the view now reflects, for readers that carry it on (of_asks.current_asks); a shadow build's goes
             # in when settle() swaps it in
-            fold = json.dumps(of_asks.fold_meta(self.state, self.max_rowid, self.fed), ensure_ascii=False)
+            fold = json.dumps(of_asks.fold_meta(view, self.max_rowid, self.fed), ensure_ascii=False)
             if self.suffix:
                 self.fold = fold
             else:
