@@ -104,6 +104,9 @@ class FilterTest(unittest.TestCase):
 
 class JudgeTest(unittest.TestCase):
     def setUp(self):
+        self.live = of_tempo.NOTES_LIVE
+        of_tempo.NOTES_LIVE = True
+        self.addCleanup(setattr, of_tempo, "NOTES_LIVE", self.live)
         self.tmp = tempfile.TemporaryDirectory()
         self.saved = of_events.STATE_DIR
         of_events.STATE_DIR = self.tmp.name
