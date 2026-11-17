@@ -422,6 +422,23 @@ class RelayTest(unittest.TestCase):
         with open(os.path.join(of_events.STATE_DIR, "injections.jsonl")) as fh:
             self.assertEqual(len(fh.read().splitlines()), 2)                         # declared again when pressed
 
+    def test_the_relays_own_text_held_plain_in_the_box_is_sent_once(self):
+        """of_platform, msg 01a1e8d8-5537: a framed text sat 17 minutes in a box as plain text, not a paste placeholder,
+        and the relay deferred behind it; the relay's own last delivery shown so is pressed once."""
+        res, typed = self._deliver_with_box(self._screen(""))
+        self.assertEqual((res[0], len(typed)), (True, 1))
+        shown = typed[0][-1].replace("\n", "\n  ")                                  # the box indents continuation lines
+        res, calls = self._deliver_with_box(self._screen(shown), keys=True)
+        self.assertEqual(res[0], "deferred")
+        self.assertIn("pressed Enter", res[1])
+        self.assertEqual(calls, [["herdr", "pane", "send-keys", "w3:pS", "Enter"]])
+        res, calls = self._deliver_with_box(self._screen(shown), keys=True)          # once only
+        self.assertEqual((res[0], calls), ("deferred", []))
+        res, typed = self._deliver_with_box(self._screen(""))
+        for other in (shown + " and more", "a person's own words"):                  # not ours: left alone
+            res, calls = self._deliver_with_box(self._screen(other), keys=True)
+            self.assertEqual((res[0], calls), ("deferred", []), other)
+
     def test_a_placeholder_that_is_not_the_relays_own_is_left_alone(self):
         self._deliver_with_box(self._screen(""))
         for box in ("[Pasted text #2 +40 lines]", "[Pasted text #2 +1 lines] and words"):  # another paste; a draft

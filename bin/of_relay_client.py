@@ -239,23 +239,36 @@ def _write_typed(doc):
         pass
 
 
+def _flat(text):
+    """TEXT without any whitespace: the box wraps a long line and indents its continuation lines."""
+    return re.sub(r"\s+", "", text or "")
+
+
 def note_typed(pane, text, mark):
-    """The relay's last delivery typed into a pane: its line count and its injection mark (no text)."""
+    """The relay's last delivery typed into a pane: its line count, the digest of its text without whitespace, and its
+    injection mark (no text)."""
     doc = _read_typed()
-    doc[pane] = {"ts": mark["ts"], "newlines": text.count("\n"), "mark": mark, "enter": False}
+    doc[pane] = {"ts": mark["ts"], "newlines": text.count("\n"), "mark": mark, "enter": False,
+                 "flat": hashlib.sha256(_flat(text).encode()).hexdigest()}
     _write_typed(doc)
 
 
 def held_delivery(pane, box, now=None, conn=None):
-    """The relay's own last delivery to this pane when the box holds only its paste placeholder, its Enter lost:
-    typed here within HELD_MAX_S, the placeholder's line count matches it, Enter not pressed for it yet, and the
-    session's hook has recorded no message since it was typed. Else None. A store that cannot be read says None."""
-    m = _PASTE_ONLY.fullmatch((box or "").strip())
-    last = _read_typed().get(pane) if m else None
+    """The relay's own last delivery to this pane when the box holds only it, its Enter lost: as its paste placeholder,
+    or as its own text drawn plain (the same text, whitespace aside: of_platform, msg 01a1e8d8-5537, a framed text of
+    458 characters sat 17 minutes in a box and the relay deferred behind it); typed here within HELD_MAX_S, Enter not
+    pressed for it yet, and the session's hook has recorded no message since it was typed. Else None. A store that
+    cannot be read says None."""
+    box = (box or "").strip()
+    m = _PASTE_ONLY.fullmatch(box)
+    last = _read_typed().get(pane) if box else None
     now = now or time.time()
     if not last or last.get("enter") or now - (last.get("ts") or 0) > HELD_MAX_S:
         return None
-    if m.group(1) is not None and abs(int(m.group(1)) - int(last.get("newlines", -9))) > 1:
+    if m:
+        if m.group(1) is not None and abs(int(m.group(1)) - int(last.get("newlines", -9))) > 1:
+            return None
+    elif not last.get("flat") or hashlib.sha256(_flat(box).encode()).hexdigest() != last["flat"]:
         return None
     session = (last.get("mark") or {}).get("session")
     if not session:
