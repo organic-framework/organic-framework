@@ -312,10 +312,34 @@ def bypass_task(pl, lang=None):
                "3. Tell your conductor it is done; it runs of spawn {position} again.", lang, **kw))
 
 
-def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeout=180):
+HELD_BRIEF = re.compile(r"^(?:\[Pasted text #\d+(?: \+\d+ lines)?\]|Message from \S+ \(via of spawn)")
+
+
+def submit_held(pane, read_box, press, wait_s=15, sleep=time.sleep, clock=time.time):
+    """After the brief was typed: did it leave the input box? A brief can sit typed and unsent (a user organization's
+    structure keeper, message 01a1e8ce-44ee: at a busy moment a spawn's brief waited 17 minutes in the box, a relayed
+    message behind it, until Enter was pressed by hand). Reads the box for up to WAIT_S; when it still holds the brief
+    (its frame, or Claude Code's paste placeholder), presses Enter once. read_box(pane) -> text, '' or None;
+    press(pane) -> ok. Returns 'sent', 'pressed', 'press failed', or 'unknown' (the box holds something else, or
+    cannot be read: nothing is pressed)."""
+    end = clock() + wait_s
+    while True:
+        box = read_box(pane)
+        if box == "":
+            return "sent"
+        if clock() >= end:
+            break
+        sleep(1)
+    if box and HELD_BRIEF.match(box.strip()):
+        return "pressed" if press(pane) else "press failed"
+    return "unknown"
+
+
+def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeout=180, held=None):
     """Side effects: open the pane, launch, wait for the session, type the brief (declared), name the agent, of apply.
     herdr(*args) -> result; deliver(pane, text, session) -> (ok, why); rename(pane, name, sid) -> str;
-    wait_session(sid, timeout) -> agent or None. Returns the pane id."""
+    wait_session(sid, timeout) -> agent or None; held(pane) -> submit_held's result, after the brief is typed.
+    Returns the pane id."""
     import of_capacity
     ws = herdr("workspace", "list")["workspaces"]
     tabs = herdr("tab", "list")["tabs"]
@@ -355,6 +379,11 @@ def run(pl, herdr, deliver, rename, wait_session, log=print, of_bin=None, timeou
     if ok is not True:
         raise SpawnError(f"the brief was not typed ({why}); the session runs in pane {pane}: type it with of send")
     log(f"  brief typed (declared for session {pl['session']})")
+    if held:
+        sent = held(pane)
+        if sent != "sent":
+            log(f"  the brief stayed in the input box: {sent}" + ("" if sent == "pressed" else
+                f"; press Enter in pane {pane} if it still holds the brief"))
     if bypass:  # the input box is drawn by now: one read of the footer
         of_capacity.check_bypass_after_start(pane, log, wait=0, herdr=herdr)
     log(f"  agent name: {rename(pane, pl['position'], pl['session'])}")
