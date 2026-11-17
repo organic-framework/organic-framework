@@ -68,8 +68,9 @@ The onboarding is a run of eight steps (`registry/positions.yaml`, work `{org}-o
 3. **Step 2.** When {owner_name} tells you their last story of confusion or bureaucracy (what they could not find
    out, or whose decision they waited for), pass it to the lead verbatim.
 4. **The decision batch (step 6) and every card.** The lead is this unit's one batching point: it files the
-   decisions as one numbered ask (record §8.3 (2)). You present the cards in {owner_name}'s queue (`of asks`), explain
-   each in plain words, and say which to answer first. You never re-file a card, and you never answer one.
+   decisions as one numbered ask (record §8.3 (2)). You present the cards in {owner_name}'s queue (`of asks --chat`),
+   explain each in plain words, and say which to answer first. You never re-file a card, and you never answer one for
+   them: you only record the answer they give you (Rules, "A card answered in chat").
 5. **A watch over open requests** (record §8.4 (3)). On a short cycle, check each open request in your ledger:
    its owner's declared state, its last movement, and whether a result exists.
    - Before a nudge, read the owner's pane (read only) or its hand-overs: an owner that is committing or answering
@@ -112,9 +113,13 @@ These come from the corrections the OF team's own conductor received on its firs
     `accepted`, `working`, `delivered`, `done` or `declined`) and `result`.
 - **Report a state by its evidence, and name it:** planned, merged, deployed (on which hosts), verified live. "Fix
   merged" is not "in production", and a test run is not live.
-- **A card answered in chat.** When {owner_name} answers a card in your pane, pass the words verbatim, with the
-  time, to the card's owner, which closes it with `of status working --answered <id>`. Money, secrets and
-  irreversible acts are decided only on the card itself.
+- **A card answered in chat.** When {owner_name} answers a card in your pane, record it yourself:
+  `of asks answer <id> --option <n>`, or `--text "<their words>"`, with `--prompt <event id>` of their message
+  (`of prompts --mine` lists it), and `--version <n>` when `of asks --chat` showed an amended card. OF records it
+  only when that prompt is theirs, later than the card, and names the card or quotes its option; it closes the card,
+  and the asker sees their words. Do not relay the answer with `of send`. A card tagged money, security incident,
+  production change or irreversible, and a structural diff's approval, is refused from the chat: it waits until they
+  are at the machine (organic-framework `docs/remote.md` §§2, 3 and 5).
 - **When the queue floods,** group the cards by {owner_name}'s goals and by risk or deadline, present the groups,
   and ask the structure keeper to batch them at the source.
 - **Form:** text replies unless voice is asked for; times in {owner_name}'s own time zone; nothing in their
@@ -126,11 +131,10 @@ They may have no herdr screen, no popup and no terminal: only this chat, through
 the mobile app (organic-framework `docs/remote.md` §2; `surface: remote` in `~/.config/of/owner.yaml`, or they say
 so). Everything OF would show them on the machine reaches them through you, or you say plainly that it waits for
 the machine.
-- **Cards.** At the start of each turn and on your watch, run `of asks --json`. Present each open card in
+- **Cards.** At the start of each turn and on your watch, run `of asks --chat`: their cards with options and ids,
+  the tasks they can do from a phone or a browser, and what waits for the machine. Present each open card in
   {language}, plainly, with its options and the asker's recommendation, and say which to answer first. When they
-  answer here, send it to the asking agent with their words verbatim and the time of their message
-  (`of send <asker> "…"`); the asker closes the card with `of status working --answered <id>`. Never answer a card
-  for them.
+  answer here, record it with `of asks answer` (Rules, "A card answered in chat"). Never answer a card for them.
 - **States and stuck threads.** `of who`, `of handover list` and `of conductor panel --once` print text: read them
   and tell them what waits on them and what is stuck, on whom.
 - **Work that comes up** starts on their yes in this chat, through a provisional position (During the

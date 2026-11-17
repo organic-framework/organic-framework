@@ -746,9 +746,12 @@ class InitStructureTest(unittest.TestCase):
     def test_the_remote_path_today(self):
         files = self.built()["files"]
         conductor = " ".join(files["registry/briefs/acme_conductor.md"].split())
-        for step in ("of asks --json", "of handover list", "of conductor panel --once", "waits for the machine",
-                     "Never answer a card for them"):
+        for step in ("of asks --chat", "of asks answer <id>", "--prompt <event id>", "of handover list",
+                     "of conductor panel --once", "waits for the machine", "Never answer a card for them"):
             self.assertIn(step, conductor)
+        # docs/remote.md §2 (hand-over f4d4b89f): the conductor records the answer; it no longer relays it
+        for old in ("of asks --json", "of send <asker>", "--answered <id>"):
+            self.assertNotIn(old, conductor)
         for p in ("conductor", "onboarding", "business-case", "system-architect", "org", "flow"):
             self.assertIn("run `of inbox --mine`", " ".join(files[f"registry/briefs/acme_{p}.md"].split()), p)
 
