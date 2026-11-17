@@ -2134,12 +2134,12 @@ class SigninTaskReconcile(unittest.TestCase):
     """2026-11-17: two of the founder's sign-in tasks named an account both positions had left days before
     (of_architect, msg 01a1e8df-76f1). The balancer withdraws a task once nobody needs it."""
 
-    def run_it(self, sessions, missing, dry_run=False):
+    def run_it(self, sessions, missing, dry_run=False, moved=True):
         from unittest import mock
         title = "Sign in to linear in the account a@x"
         cache = {"_signin_tasks": {"/ap": {"acme/linear": 1.0}},
                  "_signin_open": [{"dir": "/ap", "position": "disp", "tools": ["acme/linear"], "title": title,
-                                   "at": 1.0}]}
+                                   "at": 1.0, "moved": moved}]}
         asks = [{"event_id": "e-1", "state": "open", "kind": "task", "position": "of_capacity", "text": title,
                  "session_id": "s"},
                 {"event_id": "e-2", "state": "open", "kind": "task", "position": "other", "text": title}]
@@ -2167,6 +2167,17 @@ class SigninTaskReconcile(unittest.TestCase):
         out, emitted, cache = self.run_it({"/ap": [{"name": "disp"}]}, [("acme/linear", {})])
         self.assertEqual((out, emitted), ([], []))
         self.assertEqual(len(cache["_signin_open"]), 1)
+
+    def test_a_refused_moves_task_stays_until_signed_in_or_the_position_is_gone(self):
+        # of_review on PR 277: a move refused for want of the sign-in leaves the position where it was; its task
+        # names an account it never ran on, and must not be withdrawn for that
+        out, emitted, cache = self.run_it({"/ez": [{"name": "disp"}]}, [("acme/linear", {})], moved=False)
+        self.assertEqual((out, emitted, len(cache["_signin_open"])), ([], [], 1))
+        self.assertIn("acme/linear", cache["_signin_tasks"]["/ap"])  # the once-a-day mark stays
+        out, _, _ = self.run_it({"/ez": [{"name": "disp"}]}, [], moved=False)
+        self.assertEqual(out, [("e-1", "linear signed in on /ap")])
+        out, _, _ = self.run_it({"/ez": [{"name": "else"}]}, [("acme/linear", {})], moved=False)
+        self.assertEqual(out, [("e-1", "disp no longer runs on any account")])
 
     def test_a_dry_run_withdraws_nothing(self):
         out, emitted, cache = self.run_it({}, [], dry_run=True)
