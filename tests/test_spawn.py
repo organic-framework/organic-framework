@@ -292,5 +292,43 @@ class AgentDefaultsTest(unittest.TestCase):
         self.assertNotIn("--effort", plan(cwd="/w")["command"])
 
 
+
+class ClaudeOverrideTest(unittest.TestCase):
+    """~/.config/of/claude-bin names the Claude Code to start, for a machine whose Claude runs through a wrapper
+    (a proxy's env, for example): of spawn, a move's resume line and the headless calls all use it."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ, {"HOME": self.home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.wrapper = os.path.join(self.home, "bin", "claude wrapper")
+        os.makedirs(os.path.dirname(self.wrapper))
+        with open(self.wrapper, "w") as fh:
+            fh.write("#!/bin/sh\n")
+
+    def point_at(self, path):
+        os.makedirs(os.path.join(self.home, ".config", "of"), exist_ok=True)
+        with open(os.path.join(self.home, ".config", "of", "claude-bin"), "w") as fh:
+            fh.write(path + "\n")
+
+    def test_without_the_file_plain_claude(self):
+        self.assertEqual(of_spawn.of_capacity.claude_launch(), "claude")
+        self.assertIn(" OF_SPAWNED=1 claude --session-id S-1", plan(cwd="/w")["command"])
+
+    def test_the_file_names_the_command_everywhere(self):
+        os.chmod(self.wrapper, 0o755)
+        self.point_at(self.wrapper)
+        q = shlex.quote(self.wrapper)
+        self.assertIn(f" OF_SPAWNED=1 {q} --session-id S-1", plan(cwd="/w")["command"])
+        line = of_spawn.of_capacity.launch_command("/w", "/h/.claude-b", "s1", "n", "/n.md")
+        self.assertIn(f"CLAUDE_CONFIG_DIR=/h/.claude-b {q} --resume s1", line)
+        self.assertEqual(of_spawn.of_capacity.claude_bin(), self.wrapper)
+
+    def test_a_file_that_is_not_executable_is_ignored(self):
+        self.point_at(self.wrapper)
+        self.assertEqual(of_spawn.of_capacity.claude_launch(), "claude")
+
+
 if __name__ == "__main__":
     unittest.main()

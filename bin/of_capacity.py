@@ -158,9 +158,27 @@ def probe_env(d, home=None):
     return env
 
 
+def claude_override():
+    """~/.config/of/claude-bin (one line, an executable): the Claude Code to run on a machine whose Claude goes
+    through a wrapper (a proxy's env, for example). None when absent."""
+    try:
+        with open(os.path.expanduser("~/.config/of/claude-bin")) as fh:
+            path = fh.readline().strip()
+    except OSError:
+        return None
+    return path if path and os.access(path, os.X_OK) else None
+
+
+def claude_launch():
+    """The command word a pane's shell line starts Claude Code with: the override, else plain `claude`."""
+    return claude_override() or "claude"
+
+
 def claude_bin():
     """launchd and systemd jobs run with a short PATH (no ~/.local/bin): look in the usual places too."""
     import shutil
+    if claude_override():
+        return claude_override()
     found = shutil.which("claude")
     if found:
         return found
@@ -1074,7 +1092,7 @@ def launch_command(cwd, target, sid, name, note_path, model=None, effort=None, b
     alone can pass 4 KB (of_platform, 2026-11-11). tools: (argv, settings keys) of the position's tool profile
     (tools_for; docs/tools.md §4): its --mcp-config and its allowedMcpServers / enabledPlugins, in the same file."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if is_default(target) else [f"CLAUDE_CONFIG_DIR={_q(target)}"]
-    parts = ["cd", _q(cwd), "&&", *env, "claude", "--resume", sid, "-n", name]
+    parts = ["cd", _q(cwd), "&&", *env, _q(claude_launch()), "--resume", sid, "-n", name]
     import of_spawn
     t_argv, t_settings = tools or ([], {})
     # the agents' settings as at spawn: feedback drafts off (PR 185), env GIT_CEILING_DIRECTORIES (of_platform,

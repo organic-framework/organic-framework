@@ -23,6 +23,8 @@ import sys
 import time
 import uuid
 
+import of_capacity
+
 
 class SpawnError(Exception):
     pass
@@ -162,7 +164,7 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
     (of_tools.launch_parts). The settings go into one settings file (settings_file)."""
     env = ["env", "-u", "CLAUDE_CONFIG_DIR"] if os.path.realpath(config_dir) == os.path.realpath(default_dir) \
         else [f"CLAUDE_CONFIG_DIR={shlex.quote(config_dir)}"]
-    parts = ["cd", shlex.quote(cwd), "&&", *env, "OF_SPAWNED=1", "claude", "--session-id", sid, "-n", name]
+    parts = ["cd", shlex.quote(cwd), "&&", *env, "OF_SPAWNED=1", shlex.quote(of_capacity.claude_launch()), "--session-id", sid, "-n", name]
     tool_argv, tool_settings = tools or ([], {})
     settings = session_settings(memory, deny, tool_settings)
     if settings:
