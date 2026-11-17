@@ -238,9 +238,10 @@ class ProtectedFfTest(unittest.TestCase):
         with open(os.path.join(self.wt, "lib", "a.txt")) as fh:
             self.assertEqual(fh.read(), "a\n")
 
-    def test_an_object_swapped_between_the_check_and_the_checkout_moves_it_back(self):
+    def test_an_object_swapped_between_the_check_and_the_checkout_is_never_read(self):
         """of_architect's third pass on organic-framework PR 306: a blob swapped in the shared store after it was hashed
-        and before the checkout; every file the checkout wrote is hashed on disk against the verified tree."""
+        and before the checkout. Since its fourth pass the checkout reads a private store of the verified objects, so
+        the swap is never read and the tree gets the reviewed content."""
         self.write("scripts/other.sh", "#!/bin/sh\necho d\n")
         d = self.commit("other d")
         oid = self.g("rev-parse", f"{d}:scripts/other.sh")
@@ -252,12 +253,68 @@ class ProtectedFfTest(unittest.TestCase):
             return real(tree, *args, **kw)
         P._git = swapping
         try:
+            self.ff(d)
+        finally:
+            P._git = real
+        self.assertEqual(self.head(), d)
+        with open(os.path.join(self.wt, "scripts", "other.sh")) as fh:
+            self.assertEqual(fh.read(), "#!/bin/sh\necho d\n")
+
+    def _raw(self, *args):
+        return subprocess.run(["git", "-C", self.work, *args], capture_output=True, check=True).stdout
+
+    def test_a_tree_swapped_while_github_is_asked_is_never_read(self):
+        """of_architect's fourth pass on organic-framework PR 306: a tree swapped in the shared store after it was
+        verified (here while GitHub is asked) rewrote a file the change does not touch and added another. git now reads
+        only a private store of the verified objects, and the whole index is compared after the checkout."""
+        os.makedirs(os.path.join(self.work, "lib"))
+        self.write("lib/helper.sh", "#!/bin/sh\necho helper\n")
+        b = self.commit("helper")
+        self.ff(b)
+        self.write("lib/note.txt", "v2\n")
+        c = self.commit("a note")
+        self.write("lib/helper.sh", "#!/bin/sh\necho EVIL\n")                     # the forged lib folder: helper.sh
+        self.write("lib/zz.sh", "#!/bin/sh\necho EVIL\n")                         # rewritten and zz.sh added
+        self.g("add", "-A")
+        forged = self._raw("cat-file", "tree", self.g("rev-parse", f"{self.g('write-tree')}:lib"))
+        self.g("reset", "-q", "--hard", c)
+        lib = self.g("rev-parse", f"{c}:lib")
+        genuine = self._raw("cat-file", "tree", lib)
+        stand_in = green({c: 7})
+
+        def api(path):
+            self._overwrite(lib, b"tree", forged)
+            return stand_in(path)
+        self.ff(c, api=api)
+        self.assertEqual(self.head(), c)
+        with open(os.path.join(self.wt, "lib", "helper.sh")) as fh:
+            self.assertEqual(fh.read(), "#!/bin/sh\necho helper\n")
+        self.assertFalse(os.path.exists(os.path.join(self.wt, "lib", "zz.sh")))
+        self._overwrite(lib, b"tree", genuine)                                      # to read the index against c
+        self.assertEqual(P._index_differs(self.wt, P._snapshot(self.wt, c)), [])
+
+    def test_the_move_back_writes_only_verified_objects(self):
+        """of_architect's fourth pass on organic-framework PR 306: the move back read the shared store, so a blob of
+        HEAD swapped there was written into the tree, worse than where it started."""
+        self.write("scripts/other.sh", "#!/bin/sh\necho d\n")
+        d = self.commit("other d")
+        old = self.g("rev-parse", f"{self.a}:scripts/other.sh")
+        real = P._differs
+        calls = []
+
+        def differs(tree, snap, paths):
+            calls.append(1)
+            if len(calls) == 1:                                                     # the forward check fails, and
+                self._overwrite(old, b"blob", b"#!/bin/sh\necho EVIL\n")         # HEAD's blob is swapped before
+                return ["scripts/other.sh"]                                         # the move back
+            return real(tree, snap, paths)
+        P._differs = differs
+        try:
             with self.assertRaises(P.Refused) as cm:
                 self.ff(d)
         finally:
-            P._git = real
-        self.assertIn("moved back", str(cm.exception))
-        self.assertIn("scripts/other.sh", str(cm.exception))
+            P._differs = real
+        self.assertIn("HEAD's again", str(cm.exception))
         self.assertEqual(self.head(), self.a)
         with open(os.path.join(self.wt, "scripts", "other.sh")) as fh:
             self.assertEqual(fh.read(), "#!/bin/sh\necho other\n")
