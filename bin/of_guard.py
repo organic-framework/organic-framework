@@ -1657,19 +1657,38 @@ def _remote_shell(head, args):
 _SYSTEM_GIT = "/usr/bin/git"  # the system's own git (read-only on macOS, root-owned on Linux), never one found on PATH
 
 
+_DEV_TOOLS = []
+
+
+def _developer_tools():
+    """Are Apple's command line developer tools installed (so /usr/bin/git is git, not the stub that offers them)?
+    Read from the folder `xcode-select -p` would print, without running anything; once per process."""
+    if not _DEV_TOOLS:
+        _DEV_TOOLS.append(any(os.path.isfile(os.path.join(p, "usr", "bin", "git")) for p in
+                              ("/Library/Developer/CommandLineTools", "/Applications/Xcode.app/Contents/Developer")))
+    return _DEV_TOOLS[0]
+
+
 def _committed_clean(path):
     """Is this local file committed at HEAD and unchanged, byte for byte? (a committed script: the sanctioned pattern)
     The guard runs no program a repository names (of_review on organic-framework PR 283: `git ls-files` and `git diff`
     in the file's own repository ran its core.fsmonitor script inside the guard): the system's git compares the blob
     HEAD holds (`rev-parse HEAD:<file>`, which reads no index and no work tree) with the file's bytes hashed with no
-    filter (`hash-object --no-filters`), with fsmonitor and hooks off. No system git, or any doubt: not committed."""
+    filter (`hash-object --no-filters`), with fsmonitor and hooks off, and no fetch: a partial clone missing HEAD's tree
+    would fetch it through the repository's own core.sshCommand (of_secrets-review on organic-framework PR 284), so
+    lazy fetching is off and no transport is allowed. On a Mac without the developer tools, /usr/bin/git is a stub
+    that offers to install them: no developer tools counts as no git. No system git, or any doubt: not committed."""
     import subprocess
+    import sys
     if not os.path.isfile(_SYSTEM_GIT):
+        return False
+    if sys.platform == "darwin" and not _developer_tools():
         return False
     d = os.path.dirname(os.path.abspath(path)) or "."
     env = {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/"), "GIT_OPTIONAL_LOCKS": "0",
-           "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"}
-    git = [_SYSTEM_GIT, "-C", d, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
+           "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_NO_LAZY_FETCH": "1"}
+    git = [_SYSTEM_GIT, "-C", d, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+           "-c", "protocol.allow=never"]
     try:
         head = subprocess.run(git + ["rev-parse", "--verify", "--quiet", f"HEAD:./{os.path.basename(path)}"],
                               capture_output=True, text=True, timeout=5, env=env)

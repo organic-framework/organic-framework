@@ -195,6 +195,37 @@ class RemoteStdinTest(unittest.TestCase):
                 os.environ["PATH"] = saved
             self.assertFalse(os.path.exists(marker))                         # nothing of the repository's ran
 
+    def test_a_partial_clone_missing_heads_tree_fetches_nothing(self):
+        """of_secrets-review on organic-framework PR 284: in a repository marked as a partial clone with HEAD's tree
+        removed, `rev-parse HEAD:./file` fetched it through the repository's own core.sshCommand, inside the guard."""
+        import subprocess
+        import tempfile
+        if not os.path.isfile(of_guard._SYSTEM_GIT) or (sys.platform == "darwin" and not of_guard._developer_tools()):
+            self.skipTest("no system git")
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "ran")
+            spy = os.path.join(d, "spy.sh")
+            with open(spy, "w") as fh:
+                fh.write(f"#!/bin/sh\necho \"$@\" >> {marker}\nexit 1\n")
+            os.chmod(spy, 0o755)
+            ok = os.path.join(d, "check.sh")
+            with open(ok, "w") as fh:
+                fh.write("#!/bin/sh\necho ok\n")
+            git = lambda *a: subprocess.run(["git", "-C", d, "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+                                             "-c", "user.email=t@t", "-c", "user.name=t", *a], capture_output=True,
+                                            check=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("add", "check.sh")
+            git("commit", "-qm", "reviewed")
+            tree = git("rev-parse", "HEAD^{tree}")
+            os.remove(os.path.join(d, ".git", "objects", tree[:2], tree[2:]))  # HEAD's tree missing
+            for k, v in (("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
+                         ("remote.origin.promisor", "true"), ("remote.origin.url", "ssh://h.invalid/x"),
+                         ("core.sshCommand", spy)):
+                git("config", k, v)
+            self.assertFalse(of_guard._committed_clean(ok))
+            self.assertFalse(os.path.exists(marker))                         # no fetch ran the repository's program
+
 
 if __name__ == "__main__":
     unittest.main()
