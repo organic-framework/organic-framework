@@ -94,6 +94,12 @@ class ProtectedCodeTest(unittest.TestCase):
                             f'echo x > "{var}/{rel}/run.sh"', f'rm -rf "{var}/Library/Application Support/acme-backup"',
                             f'cp evil.sh "{var}/{rel}/run.sh"', f'chmod +x "{var}/{rel}/run.sh"'):
                     self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+            # a trim is computed against HOME as bash computes it (of_review on organic-framework PR 268)
+            last = os.path.basename(os.path.expanduser("~"))
+            for cmd in (f'bash "${{HOME%/*}}/{last}/{rel}/run.sh"',
+                        f'rm -rf "${{HOME%/*}}/{last}/Library/Application Support/acme-backup"',
+                        f'echo x > "${{HOME%%/{last}}}/{last}/{rel}/run.sh"'):
+                self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
             for cmd in (f'"$HOME/{rel}/run.sh"', f'cat "$HOME/{rel}/run.sh"', f'bash "$HOMEX/{rel}/run.sh"',
                         f'bash "${{HOME:+/x}}/{rel}/run.sh"',
                         f'cp "$HOME/{rel}/run.sh" /tmp/claude-501/x/copy.sh'):
