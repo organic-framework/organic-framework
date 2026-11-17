@@ -36,6 +36,8 @@ also prints how many items the window held and how many were flagged in all.
 |---|---|---|---|---|---|
 | tb-v1 | synthetic | 16 | 0.86 | 0.75 | $0.005 |
 | tb-v1 | real | 10 | 1.00 | 0.80 | $0.066 |
+| tb-v2 | synthetic | 16 | 0.75 | 0.75 | $0.005 |
+| tb-v2 | real | 30 | 0.75 | 1.00 | $0.071 |
 
 The real window held 152 items. The judge flagged 58 of them; only 10 are labelled, so the precision over all 58 is
 not known yet.
@@ -45,3 +47,11 @@ Misses on 2026-11-17:
   report's deadline as no booking. It flagged "I start at 14:30Z if the rule is open by then", which waits on a
   position, because nothing named requires 14:30Z. That last flag is arguable.
 - **Real.** It passed an alarm before a roll, because the roll waits on another position's decision at a fixed hour.
+
+tb-v2 (2026-11-17) adds of_architect's rule (AGENTS.md and docs/method.md, "Work starts when it is ready"): a clock
+time holds only when it is the basis's own time. It also names the basis's own times, a short lead before them and
+the role's own cadence. The real cases grew to 30: 20 random flagged items were labelled from the rule's text, an
+inference like the first 10. All five false flags of the real run are items where `of_platform` had read a short
+lead before a booked slot, or a booked hour, as a basis. Read strictly, the rule's text does not say that. The
+synthetic s11 and s16 wait on a lock or a position and then name a fixed hour, and were labelled before the rule;
+the judge flags them by it.
