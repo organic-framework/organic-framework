@@ -260,6 +260,16 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("kubectl get secret arc --template='{{.data.password}}'"))
         self.assertTrue(deny("kubectl get secret arc --template '{{.data}}'"))
         self.assertTrue(deny("kubectl create secret generic x --from-literal=a=b --dry-run=client --template='{{.data.a}}'"))
+        # the kind in any case or with its group, and the table flags that fetch whole Secrets (of_secrets-review and
+        # of_review on organic-framework PR 271)
+        for cmd in ("kubectl get Secret arc -o yaml", "kubectl get SECRETS -o json", "kubectl get secrets.v1. arc -o yaml",
+                    "kubectl get Secret/arc -o name", "kubectl describe Secret arc",
+                    "kubectl get secrets --sort-by=.metadata.name", "kubectl get secrets --sort-by .metadata.name",
+                    "kubectl get secret x --server-print=false", "kubectl get secret x --server-print=F",
+                    "kubectl get secrets --sort-by=.metadata.name > /tmp/claude-501/x/s"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("kubectl get secret x --server-print=true", "kubectl get pods --sort-by=.metadata.name"):
+            self.assertIsNone(deny(cmd), cmd)
         self.assertIsNone(deny("kubectl get secret arc"))  # default table
         for cmd in ("kubectl get secret arc --no-headers", "kubectl get secret arc --ignore-not-found --no-headers",
                     "kubectl get secrets -A --show-labels", "kubectl get secrets -l app=x -n ci"):

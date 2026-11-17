@@ -1259,15 +1259,38 @@ SECRET_FETCH_ADVICE = ("for its name, type and key count use the table, which th
                        "value is read where it lives (docs/guard.md G6)")
 
 
+def _kube_names(nonopt, kinds):
+    """Does a kubectl call name one of KINDS: any word, split on `,` and `/`, lowercased and without its group or
+    version (`Secret/arc`, `SECRETS`, `secrets.v1.`; of_secrets-review on organic-framework PR 271: a Secret named so
+    printed its values through `-o yaml`)."""
+    return any(p.split(".")[0].lower() in kinds for a in nonopt for p in re.split(r"[,/]", a) if p)
+
+
+# A Secret read that kubectl makes from the whole object, though it prints a table: --sort-by asks the server for the
+# objects (includeObject=Object), --server-print=false prints the table from the plain object (of_review and
+# of_secrets-review on organic-framework PR 271, with kubectl 1.36.1 against a local fake API server)
+def _kube_whole_flag(args):
+    """`--sort-by` or `--server-print=false` (any spelling Go's flag package reads as false) when given, else None."""
+    for a in args:
+        if a == "--sort-by" or a.startswith("--sort-by="):
+            return "--sort-by"
+        if a.startswith("--server-print=") and a.split("=", 1)[1].lower() in ("false", "0", "f"):
+            return "--server-print=false"
+    return None
+
+
 def _kubectl_secret_fetch(args):
     """G6 for a Secret read written to a file: any -o, --template or -w, and describe, still fetch the whole Secret,
     data included, into kubectl on this machine; only the default table does not."""
     nonopt = _positional(args, _KUBECTL_VALUE)
     sub = nonopt[0] if nonopt else None
-    if not any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a)):
+    if not _kube_names(nonopt, ("secret", "secrets", "all")):
         return None
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0].lower()
-    if sub == "get" and (out or _opt_value(args, ("--template",)) is not None or any(a in ("-w", "--watch") for a in args)):
+    whole = _kube_whole_flag(args)
+    if sub == "get" and whole:
+        token = f"kubectl get secret {whole} > file"
+    elif sub == "get" and (out or _opt_value(args, ("--template",)) is not None or any(a in ("-w", "--watch") for a in args)):
         token = f"kubectl get secret -o {out or 'go-template'} > file"
     elif sub == "describe":
         token = "kubectl describe secret > file"
@@ -1286,8 +1309,8 @@ def _kubectl_secret_deny(args, line_vars=None):
     workload's spec warn first (_kube_pod_spec_read, docs/guard.md G6 and G6.1)."""
     nonopt = _positional(args, _KUBECTL_VALUE)
     sub = nonopt[0] if nonopt else None
-    has_secret = any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a))
-    has_pod = any(p in ("pod", "pods", "po") for a in nonopt for p in re.split(r"[,/]", a))
+    has_secret = _kube_names(nonopt, ("secret", "secrets", "all"))
+    has_pod = _kube_names(nonopt, ("pod", "pods", "po"))
     out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0].lower()  # kubectl reads `-o YAML` as yaml
     raw = _kube_raw(args, line_vars)  # the API's JSON: a Secret's values; the Pod, its spec with env (not its log);
     # a service account's token subresource, which mints and prints a bearer token (of_secrets-review on PR 151)
@@ -1312,6 +1335,9 @@ def _kubectl_secret_deny(args, line_vars=None):
             return _prints(f"kubectl get secret -o {out}")
         if out == "name":  # kubectl takes the whole Secret for it; only the default table is the server's own
             return f"{SECRET_FETCH_DENY} (kubectl get secret -o name): {SECRET_FETCH_ADVICE}", "kubectl get secret -o name"
+        whole = _kube_whole_flag(args)
+        if whole:
+            return f"{SECRET_FETCH_DENY} (kubectl get secret {whole}): {SECRET_FETCH_ADVICE}", f"kubectl get secret {whole}"
     if sub == "describe" and has_secret:
         return f"{SECRET_FETCH_DENY} (kubectl describe secret): {SECRET_FETCH_ADVICE}", "kubectl describe secret"
     if sub in ("get", "describe") and has_pod and out in ("yaml", "json"):  # the pod spec carries env values (kyaml and
