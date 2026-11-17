@@ -1,6 +1,6 @@
 # Agents' secrets that follow the position
 
-Status: **approved with changes** by `of_architect` (msg `01a1cab8`, 2026-11-11; the changes are in), by `of_server`. Hand-over `7ae99eac` from `of_architect`, from the founder's request through `of_conductor` (hand-over `df9d6584`). Points marked **schema**, **API** or **event** are agreed with `of_architect`; the schema paragraphs go into registry.md with the build. The founder's decisions are one card (§11). **Built** (2026-11-11): the broker (`bin/of_server_secrets.py`, `POST /v1/secrets/use`), `of secret run` and `of secret plan` (`bin/of_secret.py`), `ref` and `rotate_days` in the catalogue, the guard's deny of the token folder (guard.md G1.10); tests `tests/test_secrets_broker.py`. Next: break-glass grants, `of secret rotate|handover|review`, the `of.secret_*` events (with `of_platform`), then the lab proof (§10). **The store is the organization's choice** (founder, 2026-11-11, §13): sections 4 to 7 describe the 1Password store, one of several; the broker and the hand-over do not depend on the store. Building waits on the founder's decision on the broker (card `379274c4`).
+Status: **approved with changes** by `of_architect` (msg `01a1cab8-9f0e`, 2026-11-11; the changes are in), by `of_server`. Hand-over `7ae99eac` from `of_architect`, from the founder's request through `of_conductor` (hand-over `df9d6584`). Points marked **schema**, **API** or **event** are agreed with `of_architect`; the schema paragraphs go into registry.md with the build. The founder's decisions are one card (§11). **Built** (2026-11-11): the broker (`bin/of_server_secrets.py`, `POST /v1/secrets/use`), `of secret run` and `of secret plan` (`bin/of_secret.py`), `ref` and `rotate_days` in the catalogue, the guard's deny of the token folder (guard.md G1.10); tests `tests/test_secrets_broker.py`. Next: break-glass grants, `of secret rotate|handover|review`, the `of.secret_*` events (with `of_platform`), then the lab proof (§10). **The store is the organization's choice** (founder, 2026-11-11, §13): sections 4 to 7 describe the 1Password store, one of several; the broker and the hand-over do not depend on the store. **Building is put off** until the agents have moved off this Mac: the founder, 2026-11-13, on card `379274c4`: "For now it is unclear how to do this; first we need to move to the second Mac as the server and take the agents off this Mac, and then we'll see."
 
 Frame: the credentials catalogue ([`registry.md`](registry.md), Credentials), the guard ([`guard.md`](guard.md) G9, G14), tool profiles (RFC 0004 §3.1), the identity-store rules (RFC 0003 §1a), of-server on several machines ([`server-several-machines.md`](server-several-machines.md)), moves ([`capacity.md`](capacity.md)).
 
@@ -132,7 +132,7 @@ Three levels, each declared and recorded (§3, point 5):
 
 1. **A position needs a credential it does not list, urgently.** The founder's signed grant, issued in a plain terminal like every grant, names exactly one credential for exactly one position for at most 24 hours (**schema**, agreed: grants get `scope: {credentials: [id]}` with one id and a required `expires` at most 24 hours after issue, as for `contacts`). The broker serves it, files a founder card at each use, and files the credential's rotation for its keeper when the grant ends.
 2. **The broker or its host is down.** Agents wait; a person acts. The founder reads the item in his own 1Password app and does the work himself, or restores the broker. No agent gets a token as a workaround.
-3. **1Password or the founder's own account is out of reach.** The `<org> · break-glass` vault holds the few root credentials (cloud root, domain registrar, the 1Password account's own recovery). No service account can open it. Two named people can, from devices that are not agents' machines. Following Microsoft's guidance on emergency access accounts: at least two people, no dependency on the normal path, an alert on every use, a review after each use, and a drill at least every 90 days. OWASP §2.9: break-glass credentials are backed up in a second system and tested routinely.
+3. **1Password or the founder's own account is out of reach.** The `<org>-break-glass` vault holds the few root credentials (cloud root, domain registrar, the 1Password account's own recovery). No service account can open it. Two named people can, from devices that are not agents' machines. Following Microsoft's guidance on emergency access accounts: at least two people, no dependency on the normal path, an alert on every use, a review after each use, and a drill at least every 90 days. OWASP §2.9: break-glass credentials are backed up in a second system and tested routinely.
 
 ### 5.7 Audit and review
 
@@ -170,7 +170,7 @@ Three levels, each declared and recorded (§3, point 5):
 
 ## 8. Migration
 
-1. **Catalogue.** Each structure keeper adds `vault:` and `rotate_days` to its credentials (after the schema review). `of registry check` validates them.
+1. **Catalogue.** Each structure keeper adds `ref` (the value's place in the organization's store, docs/registry.md, Credentials) and `rotate_days` to its credentials. `of registry check` validates them.
 2. **Vaults and items.** Each credential's keeper moves the value into its system's vault (the founder's hands for vault creation, once per vault).
 3. **Service accounts.** `of secret plan` prints the creation lines; the founder runs them in a plain terminal.
 4. **Broker.** of-server serves `of secret run` on the Mac. Positions switch from files to `of secret run`, credential by credential. When a credential's file is no longer used, its keeper deletes it and drops `paths`. The guard G14 keeps protecting the files that remain.
@@ -187,7 +187,7 @@ Three levels, each declared and recorded (§3, point 5):
 | `of_capacity` | moves: never copy a token or a secret file; holder changes only through the registry and presence |
 | `of_lab` | the lab proof (§10) |
 | `of_agent-server` | one OS user per position on the agent server; the broker client runs per user |
-| Each structure keeper | `vault:` and `rotate_days` in its catalogue; asks its keepers to move values |
+| Each structure keeper | `ref` and `rotate_days` in its catalogue; asks its keepers to move values |
 | Each credential's keeper | moves its value into the vault; rotates it on schedule and on triggers |
 | The founder's hands | create vaults and service accounts (one line each), rotate tokens quarterly, hold the break-glass vault with a second person |
 
