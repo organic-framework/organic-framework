@@ -17,7 +17,6 @@ import time
 
 BRIEF_MAX = 10 ** 6   # read whole: build() fits the context to CAP at paragraph and bullet boundaries
 RULES_MAX = 10 ** 6
-TEAM_MAX = 40
 # Claude Code saves a hook's injected output above 10,000 characters to a file and shows the agent a 2 KB preview,
 # which holds only the header and the mandate lines (hand-over b460c5ed from of_architect: 76 of 79 start contexts on
 # 2026-11-16 were over it). The context OF emits stays under CAP, with room to spare.
@@ -188,10 +187,14 @@ def fit(head, sections, cap=CAP, note=None):
             break
         cut = now
     first = note(cut) if (cut and note) else None
-    return join([first, head] + keep), cut
+    text = join([first, head] + keep)
+    if len(text) > cap and cap > len(head):   # the final note grew past its margin: fit again in less room
+        return fit(head, sections, cap - (len(text) - cap), note)
+    return text, cut
 
 
-def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None, info=None, cap=CAP):
+def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None, info=None, cap=CAP,
+          unwritten=False):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
     newest runs that are proxies whose condition did not hold (of_loop.blind_runs). The text is at most CAP characters
@@ -227,8 +230,9 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
         return "\n".join(parts).lstrip("\n") if parts else None
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
     r = rules(os.path.join(root, "AGENTS.md"))
+    # every active teammate: what does not fit is cut at a line and named in the note, never dropped silently
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]
-            and x.get("status") in (None, "active")][:TEAM_MAX]
+            and x.get("status") in (None, "active")]
     sections = [
         ("the owner's measure", section(owner_measures(loops, resolve))),
         ("runs not observed", section(not_observed_runs(runs))),
@@ -250,6 +254,11 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
     def note(cut):
         what = "; ".join(f"{n} cut to {k:,} of {w:,} characters" if k else f"{n} left out ({w:,} characters)"
                          for n, k, w in cut)
+        if unwritten:   # the hook could not write the file: point to the sources themselves (of_review on PR 254)
+            src = (f"your brief ({os.path.join(root, p['mandate'])}) and " if p.get("mandate") else "") + \
+                f"your organization's rules ({os.path.join(root, 'AGENTS.md')})"
+            return (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output "
+                    f"({what}), and the whole could not be written to a file. Read {src} now, before anything else.")
         return (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output ({what}). "
                 f"Read the whole context now, before anything else: {path}")
     text, cut = fit(head, sections, cap, note)

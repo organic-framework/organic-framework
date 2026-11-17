@@ -480,6 +480,35 @@ class HandleTest(unittest.TestCase):
         self.assertEqual(ev["chars"], len(ctx))
         self.assertEqual(ev["whole"], len(whole))
         self.assertEqual(ev["cut"][0]["section"], "the brief")
+        # of_review on PR 254: an unwritable file is never pointed to; the note names the sources instead
+        import unittest.mock as um
+        real_open = os.open
+        def deny(path, *a, **k):
+            if path.endswith(os.path.join("context", "test-org", "of_a.md")):
+                raise PermissionError("denied")
+            return real_open(path, *a, **k)
+        os.unlink(path)
+        sys.stdin, sys.stdout = io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "S1",
+                                                        "source": "startup", "cwd": "/x"})), io.StringIO()
+        of_hook.OUTPUT = None
+        try:
+            with um.patch.object(of_hook.os, "open", deny):
+                of_hook.main(["SessionStart"])
+            out = sys.stdout.getvalue()
+        finally:
+            sys.stdin, sys.stdout = old_in, old_out
+        ctx2 = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertLessEqual(len(ctx2), of_context.CAP)
+        self.assertIn("and the whole could not be written to a file. Read your brief (", ctx2.split("\n")[0])
+        self.assertNotIn(path, ctx2)
+        # every fit stays within CAP, the final note included (of_review on PR 254: it overshot by a few characters)
+        import random
+        rnd = random.Random(7)
+        for _ in range(300):
+            secs = [(f"s{i}", "\n".join("x" * rnd.randint(1, 900) for _ in range(rnd.randint(1, 30))))
+                    for i in range(rnd.randint(1, 8))]
+            text, _ = of_context.fit("# head", secs, 2000, lambda c: "N " * (10 + 30 * len(c)))
+            self.assertLessEqual(len(text), 2000)
         # a small context is whole, with no note
         small = of_context.fit("# head", [("a", "## A\none line")], 9500, lambda c: "NOTE")
         self.assertEqual(small, ("# head\n\n## A\none line", []))
