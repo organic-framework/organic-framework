@@ -396,7 +396,7 @@ def chat_view(conn, asks):
     for g in of_asks.group(mine):
         a = g["first"]
         members = [by_id[i] for i in g["ask_ids"] if i in by_id]
-        tag = f"[{a['event_id'][-8:]}] {', '.join(g['who'])}, waiting {of_asks.age(g['since'])}"
+        tag = f"[{a.get('ref') or a['event_id'][-8:]}] {', '.join(g['who'])}, waiting {of_asks.age(g['since'])}"
         v, amended = _version_of(conn, a) if a.get("version") else (1, None)
         if amended:  # the conductor names the version it showed: of asks answer … --version N
             tag += (f", amended: version {v} ({', '.join(amended.get('changed') or [])} changed at "

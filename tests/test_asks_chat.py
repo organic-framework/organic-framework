@@ -272,7 +272,8 @@ class ForgedOrStaleTest(ChatTest):
                  ts="2026-11-11T10:00:30Z")
         self.assertEqual([len(g["ask_ids"]) for g in of_asks.group(self.asks()) if a in g["ask_ids"]], [2])
         view = of_asks_chat.chat_view(self.conn, self.asks())
-        self.assertIn(f"[{a[-8:]}]", view.split("Waits until the person is at the machine")[1])
+        ref = next(x.get("ref") for x in self.asks() if x["event_id"] == a)   # the card id, shown in chat
+        self.assertIn(f"[{ref}]", view.split("Waits until the person is at the machine")[1])
         self.assertIn("tagged security_incident", view)
         self.refused(a, self.prompt(f"{a[-8:]} yes"), "tagged security_incident", option=1)
 

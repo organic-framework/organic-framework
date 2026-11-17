@@ -16,6 +16,7 @@ EVENTS = frozenset({
     "of.ask_withdrawn", "of.ask_amended", "of.escalation_due", "of.question_labelled",
     # declared states and stalls
     "of.state_declared", "of.stall_detected", "of.nudge_sent",
+    "of.ask_ref",  # a card id given to an ask filed before ids existed: the same on every machine
     "of.booking_judged",  # work booked with no basis: the machine that holds the position types the note
     # who holds what, and mandates
     "of.holder_changed", "of.holder_bound", "of.holder_unbound", "of.mandate_changed",

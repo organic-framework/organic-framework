@@ -298,7 +298,7 @@ def _registry_index():
         router = None
 
     def fresh(c):
-        return isinstance(c, dict) and c.get("router") == router == router and "paths" in c and "systems" in c and "memory" in c and \
+        return isinstance(c, dict) and c.get("router") == router == router and "paths" in c and "systems" in c and "memory" in c and "card_prefix" in c and \
             c["mtimes"] and all(os.path.exists(f) and os.path.getmtime(f) == m for f, m in c["mtimes"].items())
 
     def read():
@@ -319,7 +319,8 @@ def _registry_index():
         lk = open(os.open(os.path.join(STATE, "index.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
         fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        if isinstance(cache, dict) and cache.get("router") == router and all(k in cache for k in ("sessions", "paths", "systems", "memory")):
+        if isinstance(cache, dict) and cache.get("router") == router and all(k in cache for k in ("sessions", "paths", "systems", "memory",
+                                                                                    "card_prefix")):
             return cache
         fcntl.flock(lk, fcntl.LOCK_EX)  # no index, or one compiled by another router version: wait for the new one
         cache = read()
@@ -367,6 +368,12 @@ def _registry_index():
         if p.get("enrolled"):
             cache.setdefault("enrolled", []).append(p["name"])
             cache.setdefault("pos_system", {})[p["name"]] = p.get("system")
+    cache["card_prefix"] = {}   # organization -> its card ids' prefix (docs/registry.md, card_prefix)
+    for p in positions:
+        if p.get("_card_prefix"):
+            for o in (p.get("_org"), p.get("_orgid")):
+                if o:
+                    cache["card_prefix"][o] = str(p["_card_prefix"]).upper()
     cache["memory"] = {}
     try:  # RFC 0006 §2.3: the memory indexes each position keeps under the cut, with its structure keeper
         import of_memory

@@ -201,6 +201,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             p["_systems"] = doc.get("systems") or {}
             p["_units"] = doc.get("units") if isinstance(doc.get("units"), dict) else {}
             p["_memory_org"] = doc.get("memory")  # RFC 0006: the organization's memory scope (bin/of_memory.py)
+            p["_card_prefix"] = doc.get("card_prefix")  # its card ids' prefix (docs/registry.md; of_events.card_prefix)
             p["_delegations"] = doc.get("delegations") if isinstance(doc.get("delegations"), list) else []
             p["_unit"] = p.get("unit") or unit_of(p.get("system"), p["_units"])  # `unit:` places an owner in it
             if p.get("unit") and p["unit"] not in p["_units"]:
@@ -296,6 +297,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         for uid, u in (first.get("_units") or {}).items():
             if isinstance(u, dict) and u.get("memory") is not None and u["memory"] not in MEMORY_SCOPES:
                 problems.append(f"{rel}: units: {uid}: memory {u['memory']!r} is not one of {', '.join(MEMORY_SCOPES)}")
+    problems += check_card_prefixes(positions)
     for org, path, _ in org_registries(orgs_file):  # works: (docs/works.md, step 1)
         if org in BROKEN or org not in docs:
             continue
@@ -959,6 +961,24 @@ def org_resolver(docs, positions, org, conn=None, fallback=None):
             return any(position in n and (not m or str(host) in m) for n, m in allowed)
         return of_loop.resolve_decided(held["conn"], did, typed_by_person, work)
     return resolve
+
+
+def check_card_prefixes(positions):
+    """Card ids (docs/registry.md, card_prefix; of_architect, message 01a1ea68-ffac): each organization's prefix,
+    set or by default its name's initials, is 2 to 5 capital letters and no two organizations listed here share one."""
+    import of_events
+    problems, by = [], {}
+    for org in sorted({p["_org"] for p in positions}):
+        first = next(p for p in positions if p["_org"] == org)
+        prefix = str(first.get("_card_prefix") or of_events.default_prefix(org))
+        if first.get("_card_prefix") is not None and not re.fullmatch(r"[A-Z]{2,5}", prefix):
+            problems.append(f"{org}:registry/positions.yaml: card_prefix {prefix!r} is not 2 to 5 capital letters")
+        by.setdefault(prefix.upper(), []).append(org)
+    for prefix, orgs in sorted(by.items()):
+        if len(orgs) > 1:
+            problems.append(f"card_prefix {prefix} is shared by {', '.join(orgs)}: set card_prefix in one of their "
+                            "registries")
+    return problems
 
 
 def check_people_conductors(docs, org):
@@ -2756,7 +2776,31 @@ def _asks_deliver(position=None):
     return 0
 
 
+def _ask_refs(args, *fields):
+    """Card ids (AS-412, any case) in ARGS' FIELDS become their asks' event ids (the founder, prompt 01a1ea59-aeb7:
+    "add an ID to the cards, like in Linear ... refer to them by it in chat, not by the hash"). A hex id passes."""
+    import of_events
+    conn = None
+    try:
+        for f in fields:
+            v = getattr(args, f, None)
+            if not isinstance(v, str) or not of_events.REF_RE.match(v.strip()):
+                continue
+            if conn is None:
+                import of_asks
+                import of_store
+                conn = of_store.connect()
+            eid = of_asks.ref_id(conn, v)
+            if not eid:
+                raise OfError(f"no ask has the card id {v.strip().upper()}")
+            setattr(args, f, eid)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def cmd_asks(args):
+    _ask_refs(args, "id")
     if args.action == "send-outbox":
         return _send_outbox()
     if args.action == "judge":  # bin/of_judge.py: does a question left in a pane wait on the owner?
@@ -2764,6 +2808,26 @@ def cmd_asks(args):
         return of_judge.run([x for x in [args.id, *(args.reason or [])] if x], args.pending, args.pane, args.dry_run)
     if args.action == "deliver":  # the listener, at the end of a position's turn (of_asks_answer.redeliver_pass)
         return _asks_deliver(args.id)
+    if args.action == "refs":  # card ids for the open asks filed before ids existed, oldest first, once each
+        import of_asks
+        import of_events
+        import of_store
+        conn = of_store.connect()
+        try:
+            n = 0
+            for a in sorted(of_asks.current_asks(conn)["asks"], key=lambda x: x["ts"]):
+                if a.get("ref") or a.get("state") not in ("open", "escalated"):
+                    continue
+                ref = of_events.next_ref(of_events.ask_org(a["event_id"]))
+                of_events.emit("ask_ref", {"ask_id": a["event_id"], "ref": ref},
+                               event_id=of_events.stable_id("ask_ref", a["event_id"]),
+                               org=of_events.ask_org(a["event_id"]), position=a.get("position"))
+                print(f"{ref}  {a['event_id'][-8:]}  {a.get('position')}: {(a.get('text') or '')[:70]}")
+                n += 1
+            print(f"{n} open asks given a card id")
+        finally:
+            conn.close()
+        return 0
     if getattr(args, "to_me", False):  # a unit owner's own queue: a lost delivery is caught by its receiver
         return _asks_to_me(args)
     if getattr(args, "panel", False):  # the small panel of the questions, always in sight (bin/of_asks_panel.py)
@@ -2901,7 +2965,7 @@ def cmd_asks(args):
         for g in groups:
             mark = of_asks.label(g["since"], cfg)
             am = (g.get("first") or {}).get("amended")
-            print(f"  {g['ask_ids'][0][-8:]}  {of_asks.age(g['since']):>5} {mark:<8} {', '.join(g['who']):<34} "
+            print(f"  {(g['first'].get('ref') or g['ask_ids'][0][-8:]):<8}  {of_asks.age(g['since']):>5} {mark:<8} {', '.join(g['who']):<34} "
                   f"{g['kind']:<22} {g['text'][:80]}" + (f"  [amended v{am['version']}: {', '.join(am['changed'])}]"
                                                           if am else ""))
         if groups:
@@ -2916,7 +2980,7 @@ def cmd_asks(args):
         state = "" if a["state"] == "open" else f" [{of_asks.state_label(a)}]"
         mark = of_asks.label(a["ts"], cfg) if a["state"] == "open" else ""
         am = a.get("amended")
-        print(f"  {a['event_id'][-8:]}  {of_asks.age(a['ts']):>5} {mark:<8} {who:<24} {a['kind']:<20} "
+        print(f"  {(a.get('ref') or a['event_id'][-8:]):<8}  {of_asks.age(a['ts']):>5} {mark:<8} {who:<24} {a['kind']:<20} "
               f"{panes.get(a['session_id'], '-'):<6} {a['text'][:80]}{state}"
               + (f"  [amended v{am['version']}: {', '.join(am['changed'])}]" if am else ""))
     if shown and not args.all:
@@ -3870,6 +3934,7 @@ def _due(text, now=None):
 
 def cmd_ask(args):
     """An agent asks the founder (or a peer) something, visibly: an event plus a batched notification."""
+    _ask_refs(args, "amend", "escalates")
     import of_events
     import of_pulse
     positions = _load_quiet()
@@ -3906,7 +3971,12 @@ def cmd_ask(args):
     if src and to != "founder":
         raise OfError(f"--escalates: your asks go to {to}, not to the founder; answer {src['position']} yourself "
                       f"(of send {src['position']} --reply-to {src['event_id'][-8:]} …)")
+    try:  # its card id, here so the asker can name it (of_events stamps every other writer's)
+        ref = of_events.next_ref(me.get("_org"))
+    except Exception:  # noqa: BLE001
+        ref = None
     eid = of_events.emit("agent_question", {
+        **({"ref": ref} if ref else {}),
         "detected_by": "declared", "source": "declared", "from_position": me["name"], "to": to, "tags": tags,
         "tags_declared": tags_declared,
         "context": _ask_context(me, args),
@@ -3944,7 +4014,7 @@ def cmd_ask(args):
         import of_herdr_asks
         pane = of_herdr_asks.panes_by_position(positions, live_agents(), bind).get(me["name"])
         if pane:
-            of_herdr_asks.set_ask(pane, text)
+            of_herdr_asks.set_ask(pane, text, ref or "")
     except Exception:
         pass
     if rerouted:  # one line on where it went (of_architect, 577eb3c5)
@@ -3973,15 +4043,16 @@ def cmd_ask(args):
         if of_pulse.flush_notices(mem, __import__("time").time()):
             of_pulse.save_memory(mem)
     _reconcile_ask_tokens(positions)
+    name = ref or (eid[-8:] if eid else None)   # the card id people use in chat; the hex id still works
     if task:
-        print(f"task for {to} (ask {eid[-8:] if eid else '?'}): it shows at the top of the popup under "
+        print(f"task for {to} ({name or 'ask ?'}): it shows at the top of the popup under "
               f"'{tr('To do for you')}'. "
               "An answer or a reply does not close it: check the result yourself, then "
-              f"`of status working --done-task {eid[-8:] if eid else '<id>'}` (or --reopen-task with what you still see).")
+              f"`of status working --done-task {name or '<id>'}` (or --reopen-task with what you still see).")
         return 0
-    print(f"asked {to}{' (blocking)' if args.blocking else ''} (ask {eid[-8:] if eid else '?'}); it shows in `of asks` "
+    print(f"asked {to}{' (blocking)' if args.blocking else ''} ({name or 'ask ?'}); it shows in `of asks` "
           "and stays open until answered. Meanwhile carry on with other work. When the answer reaches you elsewhere, "
-          f"run `of status working --answered {eid[-8:] if eid else '<id>'}`.")
+          f"run `of status working --answered {name or '<id>'}`.")
     return 0
 
 
@@ -5138,7 +5209,7 @@ def _amend_ask(args, positions, me):
         import of_herdr_asks
         pane = of_herdr_asks.panes_by_position(positions, live_agents(), bind).get(me["name"])
         if pane and "text" in changed:
-            of_herdr_asks.set_ask(pane, text)
+            of_herdr_asks.set_ask(pane, text, a.get("ref") or "")
     except Exception:
         pass
     _reconcile_ask_tokens(positions)
@@ -5294,6 +5365,7 @@ def cmd_prompts(args):
 
 def cmd_status(args):
     """Declare this position's state: working | waiting --on founder|<position> | idle | done."""
+    _ask_refs(args, "answered", "done_task", "reopen_task")
     import of_events
     positions = _load_quiet()
     me = _me(positions, args.sender)
@@ -6677,8 +6749,9 @@ def main(argv=None):
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
     ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "send-outbox", "judge",
-                                                  "deliver"],
-                    default="list", help="deliver [<position>]: type the founder's answers not yet in the pane; "
+                                                  "deliver", "refs"],
+                    default="list", help="refs: give the open asks filed before card ids existed their ids (once); "
+                    "deliver [<position>]: type the founder's answers not yet in the pane; "
                     "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
                     "their conductor's chat, recorded only when that prompt is their own and names the card or "
                     "quotes its option")

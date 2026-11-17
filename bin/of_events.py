@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import re
 import os
 import socket
 import time
@@ -73,7 +74,83 @@ def record(kind, payload, *, position=None, org=None, session=None, source="of",
     if run:  # a lab run: its own organization of the tenant `lab` (docs/lab.md)
         rec["of.lab.run_id"] = run
         rec["of.org"] = f"lab-{run}"
+    if kind in ("agent_question", "permission_request") and source != "import" and isinstance(rec["of.payload"], dict) \
+            and not rec["of.payload"].get("ref"):
+        try:  # the card's short id, stamped once when the ask is filed (every writer comes through here)
+            rec["of.payload"]["ref"] = next_ref(rec.get("of.org"))
+        except Exception:  # noqa: BLE001 - an ask is never lost for its id
+            pass
     return rec
+
+
+# ------------------------------------------------------------------ card ids
+
+REF_RE = re.compile(r"^([A-Za-z][A-Za-z0-9]{0,7})-(\d+)([a-z]?)$")
+
+
+def card_prefix(org):
+    """An organization's card prefix: the registry's `card_prefix`, else its name's initials (acme-shop: AS)."""
+    try:
+        import of_hook
+        set_ = ((of_hook._registry_index() or {}).get("card_prefix") or {}).get(org)
+        if set_:
+            return str(set_).upper()
+    except Exception:  # noqa: BLE001
+        pass
+    return default_prefix(org)
+
+
+def default_prefix(org):
+    """An organization's name's initials (acme-shop: AS)."""
+    words = [w for w in re.split(r"[-_. ]+", str(org or "of")) if w]
+    return "".join(w[0] for w in words).upper() or "OF"
+
+
+def _refs_path():
+    return os.path.join(STATE_DIR, "ask-refs.json")
+
+
+def _with_refs(fn):
+    """FN(counters) under the counters' lock; it changes them in place; returns its result."""
+    import fcntl
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    with open(os.open(_refs_path() + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)) as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            with open(_refs_path()) as fh:
+                counters = json.load(fh)
+        except (OSError, ValueError):
+            counters = {}
+        out = fn(counters)
+        tmp = _refs_path() + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(counters, fh)
+        os.replace(tmp, _refs_path())
+        return out
+
+
+def next_ref(org):
+    """The next card id of ORG: its prefix and the next number of its counter on this machine (ask-refs.json), which
+    seen_ref raises to the highest number another machine used (the coordination feed)."""
+    prefix = card_prefix(org)
+
+    def take(c):
+        c[prefix] = int(c.get(prefix) or 0) + 1
+        return f"{prefix}-{c[prefix]}"
+    return _with_refs(take)
+
+
+def seen_ref(ref):
+    """Raise the counter of REF's prefix to its number (an ask filed on another machine, or a backfill)."""
+    m = REF_RE.match(str(ref or ""))
+    if not m:
+        return
+
+    def raise_(c):
+        prefix, n = m.group(1).upper(), int(m.group(2))
+        if n > int(c.get(prefix) or 0):
+            c[prefix] = n
+    _with_refs(raise_)
 
 
 HOOK_TIMEOUT = None  # set by `of hook`: wait at most this long for the database, then spool

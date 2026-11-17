@@ -39,6 +39,23 @@ REDELIVER_TRIES = 3
 LATE_AFTER_S = 600         # a later delivery says when it was answered
 
 
+
+def _card_paren(ask_id):
+    """" (AS-412)" after the hex id the delivery marks keep (they must not change once typed), or "" without a ref."""
+    c = card_id(ask_id)
+    return f" ({c})" if c and c != str(ask_id or "")[-8:] else ""
+
+
+def card_id(ask_id):
+    """The id a card is cited by: its ref (AS-412; the founder, prompt 01a1ea59-aeb7), else the event id's last 8 hex
+    digits, which every command takes too."""
+    try:
+        import of_asks
+        import of_events
+        return of_asks.card_name(of_events._conn(), ask_id)
+    except Exception:  # noqa: BLE001
+        return str(ask_id or "")[-8:]
+
 def ask_details(conn, ask_id):
     """(payload of the ask event, session id, position, ts). A declared ask's payload is its newest version (of ask
     --amend: of_asks.at_version), with `version` and `amended`."""
@@ -221,9 +238,9 @@ def frame(ask_id, answer, version=None, question=None):
     version's question, never a bare answer (docs/events.md, of.ask_amended; of_review on PR 181)."""
     if version and question:
         q = " ".join(str(question).split())
-        return (f"Answer from the founder to your question {ask_id[-8:]} (version {version}: \u00ab"
+        return (f"Answer from the founder to your question {ask_id[-8:]}{_card_paren(ask_id)} (version {version}: \u00ab"
                 f"{q if len(q) <= 300 else q[:299] + '…'}\u00bb): {answer}")
-    return f"Answer from the founder to your question {ask_id[-8:]}: {answer}"
+    return f"Answer from the founder to your question {ask_id[-8:]}{_card_paren(ask_id)}: {answer}"
 
 
 def answered_question(conn, ask_id, version):
@@ -266,11 +283,13 @@ def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amen
     # the frame starts as every routed question does: the projection (of_asks.TOOL_FRAME), the relay and the paste
     # source know a tool's text by it, never as the person's words
     note = f"; amended to version {amended[0]} ({', '.join(amended[1])} changed)" if amended else ""
+    card = card_id(ask_id)   # after the marks, which stay on the hex id
     return (f"Question from {asker} (unit {unit}, delegated to you; ask {ask_id[-8:]}{note}"
-            f"{'; escalated to the founder' if escalated else ''}{', blocking' if blocking else ''}): {text}"
+            f"{'; escalated to the founder' if escalated else ''}{', blocking' if blocking else ''}"
+            f"{f'; card {card}' if card != ask_id[-8:] else ''}): {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")
             + (escalated_note(asker, ask_id, escalated) if escalated else
-               f"\n[answer: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then of asks answered {ask_id[-8:]}; "
+               f"\n[answer: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then of asks answered {card_id(ask_id)}; "
                "outside your envelope: of ask the founder]"))
 
 
@@ -280,9 +299,9 @@ def escalated_note(asker, ask_id, rule):
     # founder's copy stayed open, and he does not read panes
     return (f"\n[OF escalated it to the founder ({rule}): it is on his queue in {asker}'s words. Do not file it again. "
             f"Your rewrite for him, in {owner_language()} and standing on its own, replaces that copy: "
-            f"of ask \"…\" --escalates {ask_id[-8:]}. His answer reaches you and {asker}. "
+            f"of ask \"…\" --escalates {card_id(ask_id)}. His answer reaches you and {asker}. "
             f"If you settle it yourself, answer {asker} (of send {asker} --reply-to {ask_id[-8:]} \"…\") and close the "
-            f"founder's copy: of asks answered {ask_id[-8:]} \"what you did\".]")
+            f"founder's copy: of asks answered {card_id(ask_id)} \"what you did\".]")
 
 
 def owner_language():
@@ -314,7 +333,7 @@ def unrouted_note(ask_id, to, target=None):
     succ = f" (its successor is {target['successor']})" if target and target.get("successor") else ""
     return (f"(OF: your {unrouted_mark(ask_id)}: it is routed to '{to}', {why}{succ}, so it was typed in to no one, "
             "and only its unit's escalation rule would bring it to the founder. Withdraw it (of asks withdraw "
-            f"{ask_id[-8:]}) and ask again with --to set to the bare name of an active position of your organization, "
+            f"{card_id(ask_id)}) and ask again with --to set to the bare name of an active position of your organization, "
             "or to founder.)")
 
 
@@ -331,7 +350,7 @@ def handed_frame(asker, ask_id, text, opts, conductor=None):
     return (f"The founder hands you a card to settle ({handed_mark(ask_id)}), asked by {asker}: {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")
             + f"\n[answer {asker}: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then close his card: of asks "
-              f"answered {ask_id[-8:]} \"what you decided\". If it is not yours to settle, {back}.]")
+              f"answered {card_id(ask_id)} \"what you decided\". If it is not yours to settle, {back}.]")
 
 
 def receiver_conductor(positions, receiver):
