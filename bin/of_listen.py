@@ -985,6 +985,24 @@ def fetch(conn, after, limit=None, top=None, names=None):
     return out
 
 
+def prune(conn, processors):
+    """Forget the cursors of processors that no longer run, and a removed fold view's rows: a leftover cursor reads as
+    a processor days behind (2026-11-17: fold:escalated, removed when the pulse took to reading escalations by their
+    fixed ids, showed as failed in Studio's Health tab for three days; of_architect, message 01a1e82c-d448). Returns
+    the names forgotten."""
+    names = {p.name for p in processors}
+    gone = [r[0] for r in conn.execute("SELECT processor FROM listener_cursor").fetchall() if r[0] not in names]
+    for name in gone:
+        conn.execute("DELETE FROM listener_cursor WHERE processor = ?", (name,))
+        if name.startswith("fold:"):
+            for table in ("view_fold_meta", "view_fold"):
+                try:
+                    conn.execute(f"DELETE FROM {table} WHERE view = ?", (name[len("fold:"):],))
+                except __import__("sqlite3").OperationalError:
+                    pass   # no fold tables yet
+    return gone
+
+
 def prepare(conn, processors, rebuild=False):
     """Cursor per processor; a new version (or rebuild) resets the view and replays from 0."""
     conn.executescript(DDL)
@@ -1346,9 +1364,11 @@ def run(stop=None, log=print, rebuild=False):
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
+    folds_ok = False
     try:  # the fold views (bin/of_fold.py): one processor each, by its own cursor
         import of_fold
         processors += [of_fold.FoldProcessor(v) for v in of_fold.views().values()]
+        folds_ok = True
     except Exception as e:  # noqa: BLE001 - a broken view never stops the listener
         log(f"of listen: fold views: {type(e).__name__}: {e}")
     # Readers trust the views only while the heartbeat is fresh. A view rebuilt in place is half-built until
@@ -1357,6 +1377,9 @@ def run(stop=None, log=print, rebuild=False):
     while True:  # a busy store at start: wait, never exit (launchd would restart it into the same lock)
         try:
             cursors = prepare(conn, processors, rebuild)
+            if folds_ok:  # only with every view loaded: a view that failed to load is not removed
+                for name in prune(conn, processors):
+                    log(f"of listen: forgot the cursor of {name}, which no longer runs")
             break
         except __import__("sqlite3").OperationalError as e:
             log(f"of listen: start waits for the store ({e})")
