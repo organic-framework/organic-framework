@@ -74,6 +74,11 @@ The critical deny parses a Bash command once, with quotes tracked, and denies wh
 - keeps no temporary files with values, or only mode-600 files removed on exit;
 - is re-reviewed after any change before it runs against production again.
 
+**Where the script runs** (`of_architect`, 2026-11-17, from a user organization's rule of 2026-11-16). The pattern above is the floor every organization holds, not a permission. An organization may require more in its own rules, and its stricter rule holds for its positions.
+- **Prefer running the script where the secret lives.** For a Kubernetes Secret, that is a pod in the cluster that mounts the Secret, compares it there with the other side of the check, and prints only match or no-match. No value then reaches the agent's machine at all, not even a process's memory or a pipe. Kernel and process memory follow the same rule (above).
+- **Read the value onto the agent's machine** and fingerprint it there only where the secret's host cannot run the script.
+- **An organization may forbid that fallback**, or allow a stored value's fingerprint only as a named exception. Its rule then holds, whatever this section allows.
+
 #### The @file-mention vector (`of_architect`/`of_platform`, 2026-11-06)
 
 A text another session reads that places `@` directly before a path is read by Claude Code as a **file mention**: the file's content is loaded into the receiving session. This is how a Grafana token leaked on 2026-11-06 — a relayed note carried `@<path>` and the token entered the reader's context. `of_platform` confirmed the mechanism first-hand: `herdr agent prompt` delivers a relayed prompt as a **paste**; Claude Code expands an `@path` that arrives by paste; the expansion is its own transcript record of type `attachment` carrying the file content; and it is **not a tool call**, so no `PreToolUse` hook fires for it and the native `Read(...)` deny rules do not catch it.
