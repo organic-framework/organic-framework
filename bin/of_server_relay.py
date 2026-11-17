@@ -423,6 +423,32 @@ class Relay:
         return {"msg_id": msg_id, "state": "queued", "authority": authority, "authority_reason": why,
                 "priority": priority}
 
+    def system_post(self, to, text, priority="fyi", sender="of_server"):
+        """A message of-server sends itself (docs/health.md §3: its own checks told to their owner): from SENDER of the
+        receiver's organization, with no authority, machine "of-server", queued and delivered like any other. The
+        message id, or None when the receiver's organization is not served here."""
+        to_org, to_pos = parse_address(to)
+        if priority not in PRIORITIES or not POSITION_NAME.match(to_pos) or not self._org_known(to_org):
+            return None
+        msg_id = of_events._uuid7()
+        body = {"msg_id": msg_id, "to": f"{to_org}:{to_pos}", "from": f"{to_org}:{sender}", "text": text,
+                "priority": priority}
+        sha = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        why = "of-server's own message (docs/health.md §3)"
+        with self.app.store.conn() as c:
+            c.execute("INSERT INTO messages (msg_id, body_sha, to_org, to_position, from_org, from_position, text,"
+                      " authority, authority_reason, sender_machine, created_at, created, state, priority)"
+                      " VALUES (?,?,?,?,?,?,?, 'none', ?, 'of-server', ?, ?, 'queued', ?)",
+                      (msg_id, sha, to_org, to_pos, to_org, sender, text, why, of_events.now_iso(), time.time(),
+                       priority))
+        self._queue([self._event(to_org, "of.message_sent", {
+            "msg_id": msg_id, "to": body["to"], "from": body["from"], "authority": "none", "reply_to": None,
+            "sender_machine": "of-server", "sender_person": None, "chars": len(text), "secrets_masked": 0,
+            "priority": priority, "text": text})])
+        with self.cond:
+            self.cond.notify_all()
+        return msg_id
+
     # fyi is never offered to an agent's relay (never typed into a pane): the agent reads it with
     # `of inbox --mine`; a human's relay still gets it, for `of inbox`.
     _OFFERED = "(COALESCE({m}.priority, 'normal') != 'fyi' OR p.kind = 'human')"

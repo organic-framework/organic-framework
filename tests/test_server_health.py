@@ -1,5 +1,7 @@
-"""of-server's own checks (docs/health.md §2, §5; of_architect's hand-over 154a0cbf): server.health as answered,
-relay.oldest, one state each with its limits, an of.health_changed on a change only, GET /v1/health/checks."""
+"""of-server's own checks (docs/health.md §2, §3, §5; of_architect's hand-overs 154a0cbf and 09042907): server.health
+as answered, relay.oldest, one state each with its limits, an of.health_changed on a change of relay.oldest only (each
+machine records server.health), its owner told after 5 minutes failed, when it is over and once a day typed in, and
+GET /v1/health/checks."""
 
 import os
 import sys
@@ -25,8 +27,9 @@ class Clock:
 class HealthChecksTest(ServerBase):
     def setUp(self):
         super().setUp()
-        self.clock, self.said = Clock(), []
-        self.h = H.Health(self.app.store, now=self.clock, emit=lambda name, data: self.said.append((name, data)))
+        self.clock, self.said, self.told = Clock(), [], []
+        self.h = H.Health(self.app.store, now=self.clock, emit=lambda name, data: self.said.append((name, data)),
+                          tell=lambda pos, text, typed: self.told.append((pos, text, typed)) or "id")
 
     def message(self, to, created, priority="normal", state="queued"):
         with self.app.store.conn() as c:
@@ -90,11 +93,111 @@ class HealthChecksTest(ServerBase):
         change = self.h.evaluate()
         self.assertEqual([(c["check"], c["state"], c["limit"], c["owner"]) for c in change],
                          [("server.health", "failed", 20.0, "of_server")])
-        self.assertEqual([n for n, _ in self.said], ["health_changed"] * 3)
+        # server.health's changes are each machine's to record (of health run measures it there): recorded once,
+        # not by both sides (hand-over 09042907); relay.oldest's are the server's
+        self.assertEqual([(n, d["check"]) for n, d in self.said], [("health_changed", "relay.oldest")])
+        self.clock.t += H.TELL_AFTER + 60
+        self.h.answered(25)
+        self.h.evaluate()
+        self.assertEqual(self.told, [])                                  # and so are its owner's notes
         self.clock.t += H.WINDOW + 1                                     # no answer since: the state stays
         self.assertEqual(self.h.evaluate(), [])
         states = {s["check"]: s for s in self.h.states()}
         self.assertEqual((states["server.health"]["state"], states["server.health"]["limit_failed"]), ("failed", 20.0))
+
+    def failing(self, minutes):
+        """relay.oldest failed: a message seen queued for a live, idle agent for over an hour, then MINUTES more."""
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.message("idle_a", self.clock() - 10)
+        self.h.evaluate()
+        self.clock.t += 3601
+        for _ in range(minutes + 1):
+            self.presence("idle_a", "idle", self.clock() - 10)
+            self.h.evaluate()
+            self.clock.t += 60
+
+    def test_relay_oldest_failed_is_told_after_five_minutes_and_when_it_is_over(self):
+        self.failing(3)
+        self.assertEqual({s["check"]: s["state"] for s in self.h.states()}["relay.oldest"], "failed")
+        self.assertEqual(self.told, [])                                  # under 5 minutes failed: nobody yet
+        for _ in range(3):
+            self.presence("idle_a", "idle", self.clock() - 10)
+            self.h.evaluate()
+            self.clock.t += 60
+        self.assertEqual(len(self.told), 1)
+        pos, text, typed = self.told[0]
+        self.assertEqual((pos, typed), ("of_server", False))             # one --fyi to the owner
+        self.assertIn("relay.oldest failed at", text)
+        for _ in range(10):                                              # still failed: no second note this day
+            self.presence("idle_a", "idle", self.clock() - 10)
+            self.h.evaluate()
+            self.clock.t += 60
+        self.assertEqual(len(self.told), 1)
+        with self.app.store.conn() as c:                                 # typed in at last
+            c.execute("UPDATE messages SET state = 'delivered'")
+        self.h.evaluate()
+        self.assertEqual(len(self.told), 2)
+        self.assertEqual(self.told[1][2], False)
+        self.assertIn("the failure you were told of is over", self.told[1][1])
+        self.clock.t += 60
+        self.h.evaluate()
+        self.assertEqual(len(self.told), 2)
+
+    def test_a_failure_within_five_minutes_tells_nobody(self):
+        self.failing(2)
+        with self.app.store.conn() as c:
+            c.execute("UPDATE messages SET state = 'delivered'")
+        self.h.evaluate()
+        self.assertEqual(self.told, [])
+        self.assertEqual([d["state"] for n, d in self.said if d["check"] == "relay.oldest"], ["ok", "failed", "ok"])
+
+    def test_a_failure_that_lasts_is_typed_in_once_a_day(self):
+        self.failing(6)
+        self.assertEqual([t[2] for t in self.told], [False])
+        self.clock.t += H.REMIND_EVERY - 7 * 60                          # a day after the failure began
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.h.evaluate()
+        self.assertEqual([t[2] for t in self.told], [False, True])       # typed into the owner's pane
+        self.assertIn("Reminded once a day", self.told[1][1])
+        for _ in range(3):
+            self.clock.t += 3600
+            self.presence("idle_a", "idle", self.clock() - 10)
+            self.h.evaluate()
+        self.assertEqual(len(self.told), 2)                              # not again the same day
+        self.clock.t += H.REMIND_EVERY
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.h.evaluate()
+        self.assertEqual([t[2] for t in self.told], [False, True, True])
+
+    def test_a_note_the_relay_cannot_take_is_tried_again(self):
+        answers = [None, "id"]
+        self.h.tell = lambda pos, text, typed: self.told.append(typed) or answers.pop(0)
+        self.failing(5)
+        self.assertEqual(self.told, [False])
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.h.evaluate()
+        self.assertEqual(self.told, [False, False])
+        self.clock.t += 60
+        self.presence("idle_a", "idle", self.clock() - 10)
+        self.h.evaluate()
+        self.assertEqual(self.told, [False, False])                      # told once it was queued
+
+    def test_the_server_tells_through_its_own_relay(self):
+        msg = self.app.relay.system_post("ofb:of_server", "Health: a test note", priority="fyi")
+        with self.app.store.conn() as c:
+            row = c.execute("SELECT to_org, to_position, from_org, from_position, authority, sender_machine, state,"
+                            " priority FROM messages WHERE msg_id = ?", (msg,)).fetchone()
+        self.assertEqual(row, ("ofb", "of_server", "ofb", "of_server", "none", "of-server", "queued", "fyi"))
+        self.assertIsNone(self.app.relay.system_post("acme:of_server", "x"))          # not served here
+        self.assertIsNone(self.app.relay.system_post("ofb:Bad Name", "x"))
+        old = H.OWNER_ORG
+        try:
+            H.OWNER_ORG = "ofb"
+            got = self.app._tell_health("of_server", "Health: typed", True)
+        finally:
+            H.OWNER_ORG = old
+        with self.app.store.conn() as c:
+            self.assertEqual(c.execute("SELECT priority FROM messages WHERE msg_id = ?", (got,)).fetchone(), ("normal",))
 
     def test_the_server_measures_its_health_answers_and_serves_the_states(self):
         with urllib.request.urlopen(self.url + "/v1/health", timeout=5) as r:
