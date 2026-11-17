@@ -117,7 +117,8 @@ def log_resolver(conn=None, org=None, docs=None, positions=None):
     WORK for a person who holds one of its units' owner positions. Without ORG, or without those keys, no prompt
     counts. DOCS and POSITIONS: the listed organizations' registries and positions, read from the list on the first
     lookup when not given. Each lookup once, through a read-only connection opened on the first; UNREAD when the store
-    will not open, or this host has no of_loop or no bin/of (of-server's image). for_work binds it to one work."""
+    will not open, when this host has no of_loop or no bin/of (of-server's image), or when bin/of fails. for_work binds
+    it to one work."""
     import sqlite3
     held, memo = {"conn": conn, "resolve": None}, {}
 
@@ -140,6 +141,8 @@ def log_resolver(conn=None, org=None, docs=None, positions=None):
                     memo[key] = held["resolve"](did, work)
             except (ImportError, OSError, sqlite3.Error, ValueError):
                 memo[key] = UNREAD
+            except Exception:  # noqa: BLE001 - bin/of mid-edit on this machine (2026-11-17: an AttributeError from its
+                memo[key] = UNREAD   # registry read stopped a whole Studio render); the card says the id was not read
         return memo[key]
     return resolve
 
