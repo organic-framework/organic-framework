@@ -1753,8 +1753,12 @@ class PermissionMode(unittest.TestCase):
                     pressed.append(a[3])
                     return None
                 return "\n".join(seq.pop(0) if len(seq) > 1 else seq[0])
-            return of_capacity.check_bypass_after_start("w1:p1", log=lambda m: None, wait=0.05, step=0.01,
-                                                        herdr=herdr), pressed
+            now = [0.0]  # a clock that moves only when the wait sleeps: never the machine's load
+
+            def sleep(s):
+                now[0] += s
+            return of_capacity.check_bypass_after_start("w1:p1", log=lambda m: None, wait=5, step=1, herdr=herdr,
+                                                        sleep=sleep, clock=lambda: now[0]), pressed
         self.assertEqual(run([self.BOX, self.BOX, self.screen("bypass")]), ("bypass", []))
         self.assertEqual(run([self.BOX]), ("default", []))  # never drawn: the next balance run looks again
         mode, pressed = run([self.BOX, self.screen("auto"), self.screen("auto"), self.screen("bypass")])
