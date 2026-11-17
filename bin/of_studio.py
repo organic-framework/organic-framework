@@ -2883,7 +2883,11 @@ PAGE_STALE_S = 300
 PERIODIC_RENDER_S = 1800   # the listener's tick (every 10 min) renders at most this often; a viewer's stale page at once
 PAGE_CACHE_LAG_OK_S = 2700   # the cache's declared lag (docs/health.md, view.age): a periodic render's spacing and its time
 REFRESH_LOCK_S = 600   # at most one start per this many seconds; the render's flock keeps a second one out
-REFRESH_MAX_S = 1200   # a render still running after this is stopped (SIGALRM): its lock goes with it
+REFRESH_MAX_S = 3600   # wall time: a render that waits on nothing (a hang) is stopped (SIGALRM), its lock with it
+REFRESH_CPU_S = 900    # CPU time: a render past this is a runaway and is stopped (SIGXCPU), its lock with it
+# 2026-11-17: at a load of 62 to 73 on the founder's 10 cores, the old 1200 s of wall time stopped 4 of the last 20
+# renders while they still worked, so the pages and the escalations stayed over 2 hours old. A render at nice 10 there
+# got as little as 12% of a core (1138 s of wall for 139 s of CPU); the most CPU any of 182 logged renders used is 267 s.
 REFRESH_NICE = 10      # renders run below the founder's own work (Ghostty lagged at load ~50, 2026-11-10)
 
 
