@@ -353,6 +353,18 @@ class HandleTest(unittest.TestCase):
         self.assertEqual([e["event.name"] for e in self.events()], ["of.human_prompt"])
         self.assertEqual(conn.execute("SELECT count(*) FROM hook_record").fetchone()[0], 1)
         self.assertEqual(of_store.drain_spool(conn), 0)
+        # the spool has its own lock: a transcript ingest holding the worker's lock never holds it, and a second
+        # drainer waits or returns at once (2026-11-17: the founder's prompts waited 93 minutes behind one ingest)
+        import fcntl
+        with open(os.path.join(of_hook.STATE, "ingest.lock"), "w") as worker:
+            fcntl.flock(worker, fcntl.LOCK_EX)
+            of_store.spool_append("events.jsonl", of_events.record("pulse", {"n": 0}, position="of_a"))
+            self.assertEqual(of_store.drain_spool(conn), 1)
+        with open(of_store.spool_path("drain.lock"), "w") as other:
+            fcntl.flock(other, fcntl.LOCK_EX)
+            of_store.spool_append("events.jsonl", of_events.record("pulse", {"n": -1}, position="of_a"))
+            self.assertEqual(of_store.drain_spool(conn), 0)                # another drainer runs: none here
+        self.assertEqual(of_store.drain_spool(conn), 1)
         # a run that stopped midway left a .draining file: the next run drains it (2026-11-06)
         left = of_store.spool_path("events.jsonl") + ".draining.99999"
         rec = of_events.record("pulse", {"n": 1}, position="of_a")

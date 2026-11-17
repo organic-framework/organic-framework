@@ -21,6 +21,8 @@ import of_events
 
 POLL_S = 0.5
 BATCH = 2000
+SPOOL_S = 10  # the listener drains the hooks' spool this often (2026-11-17: the founder's prompts waited behind a
+#              93-minute transcript ingest that held the only drainer's lock)
 BUDGET_S = 2  # a processor's share of one step, unless it names its own budget_s (step())
 HEARTBEAT_S = 5
 STALE_S = 120  # 2026-11-11: 15 s made every reader project the whole log itself whenever one asks projection
@@ -1477,7 +1479,7 @@ def run(stop=None, log=print, rebuild=False):
             time.sleep(2)
     starting.set()
     heartbeat(conn)
-    last_beat = last_outbox = time.time()
+    last_beat = last_outbox = last_spool = time.time()
     ticks = {p.name: time.time() - (p.tick_s or 0) + 20 for p in processors}  # first tick after 20 s
     import threading
     locks = {p.name: threading.Lock() for p in processors}
@@ -1492,6 +1494,12 @@ def run(stop=None, log=print, rebuild=False):
                 changed = True
             if changed:
                 bump()
+            if now - last_spool >= SPOOL_S:  # what hooks spooled while the store was busy, apart from the ingest worker
+                last_spool = now
+                try:   # the next step folds what it moved in
+                    of_store.drain_spool(conn)
+                except Exception as e:  # noqa: BLE001
+                    log(f"of listen: spool: {type(e).__name__}: {e}")
             if now - last_outbox >= 30:  # answers a popup handed over whose sender died: send them
                 last_outbox = now
                 try:  # option A's backups hold secrets: never kept past 24 h
