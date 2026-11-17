@@ -177,6 +177,26 @@ class StatusAndTarget(unittest.TestCase):
             self.assertEqual(len(calls), 3)
             self.assertEqual(rows[0]["observed_at"], of_capacity._iso(t0 + 32 * 60))
 
+    def test_due_accounts_are_probed_at_once(self):
+        # of_platform, 2026-11-17: four probes in a row took 37 s of a pulse. Each probe here returns only once all
+        # three run together, so probes one after another break the barrier
+        import threading
+        gate = threading.Barrier(3, timeout=10)
+
+        def probe_fn(d, now):
+            gate.wait()
+            return dict(_row(d, 1, int(d[-1])), observed_at=of_capacity._iso(now), account=d, probe={}, error=None)
+
+        saved = of_capacity.STATE_DIR
+        self.addCleanup(setattr, of_capacity, "STATE_DIR", saved)
+        with tempfile.TemporaryDirectory() as state:
+            of_capacity.STATE_DIR = state
+            rows = of_capacity.status([], ["/d1", "/d2", "/d3"], now=1_800_000_000, probe_fn=probe_fn,
+                                      sessions_fn=lambda d: [], emit=lambda *a: None)
+            self.assertEqual([(r["config_dir"], r["windows"]["seven_day"]["utilization"]) for r in rows],
+                             [("/d1", 1), ("/d2", 2), ("/d3", 3)])  # each reading on its own account, in order
+            self.assertEqual(sorted(k for k in of_capacity.load_cache() if k.startswith("/")), ["/d1", "/d2", "/d3"])
+
     def test_snapshot_event_per_fresh_probe(self):
         events = []
         with tempfile.TemporaryDirectory() as state:

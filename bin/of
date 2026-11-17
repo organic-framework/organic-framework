@@ -5523,9 +5523,13 @@ def cmd_pulse(args):
     except Exception as e:  # noqa: BLE001
         print(f"loop stalls: {e}")
     try:  # capacity (of_capacity): ask the owner once when a position's account passes a threshold
-        _capacity_watch(positions, (lambda m: None) if args.quiet else print)
         import of_capacity
-        if of_capacity.load_policy().get("auto") and not _listener_runs_capacity():
+        # with the balancer on and the listener running it, the probes are its own (detached, every 5 minutes): the
+        # pulse reads their readings and never waits on a probe (of_platform, 2026-11-17: a pulse at load 90 took
+        # 342 s, 50 s of it here, and the listener stops a pulse at 240 s)
+        detached = bool(of_capacity.load_policy().get("auto")) and _listener_runs_capacity()
+        _capacity_watch(positions, (lambda m: None) if args.quiet else print, probe=not detached)
+        if of_capacity.load_policy().get("auto") and not detached:
             of_capacity.balance(positions, log=print, ask=_capacity_ask)  # spend first what expires first
     except Exception as e:
         print(f"capacity: {e}")
@@ -5585,10 +5589,12 @@ def _capacity_card(sender, text, options=None, task=None, due=None, blocking=Fal
         position=sender)
 
 
-def _capacity_watch(positions, log):
-    """docs/capacity.md: probes each account at most every 30 minutes; one ask per account, window and reset."""
+def _capacity_watch(positions, log, probe=True):
+    """docs/capacity.md: probes each account at most every 30 minutes; one ask per account, window and reset.
+    probe=False reads the last readings only: the pulse passes it when the listener's detached balancer probes."""
     import of_capacity
-    return of_capacity.watch(positions, lambda t: _capacity_ask(t, tr("move now") + "|" + tr("wait for the reset")), log=log)
+    return of_capacity.watch(positions, lambda t: _capacity_ask(t, tr("move now") + "|" + tr("wait for the reset")), log=log,
+                             probe=probe)
 
 
 def _pulse_service(action):
