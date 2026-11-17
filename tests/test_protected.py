@@ -302,12 +302,12 @@ class ProtectedFfTest(unittest.TestCase):
         real = P._differs
         calls = []
 
-        def differs(tree, snap, paths):
+        def differs(tree, snap, paths, human=()):
             calls.append(1)
             if len(calls) == 1:                                                     # the forward check fails, and
                 self._overwrite(old, b"blob", b"#!/bin/sh\necho EVIL\n")         # HEAD's blob is swapped before
                 return ["scripts/other.sh"]                                         # the move back
-            return real(tree, snap, paths)
+            return real(tree, snap, paths, human)
         P._differs = differs
         try:
             with self.assertRaises(P.Refused) as cm:
@@ -318,6 +318,73 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(self.head(), self.a)
         with open(os.path.join(self.wt, "scripts", "other.sh")) as fh:
             self.assertEqual(fh.read(), "#!/bin/sh\necho other\n")
+
+    def test_sparse_checkout_never_takes_a_human_file_away(self):
+        """of_architect's fifth pass on organic-framework PR 306: with core.sparseCheckout on in the shared config and
+        vault.sh outside the worktree's patterns, the move deleted it and passed. The checkouts run with sparse checkout
+        off, a human path the index leaves out or marks unchanged is refused, and a missing human file never passes."""
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        self.g("config", "core.sparseCheckout", "true")
+        gitdir = self.g("rev-parse", "--path-format=absolute", "--git-dir", cwd=self.wt)
+        os.makedirs(os.path.join(gitdir, "info"), exist_ok=True)
+        with open(os.path.join(gitdir, "info", "sparse-checkout"), "w") as fh:
+            fh.write("/*\n!/scripts/vault.sh\n")
+        self.ff(b)
+        self.assertTrue(os.path.exists(os.path.join(self.wt, "scripts", "vault.sh")))
+        self.g("config", "--unset", "core.sparseCheckout")
+        for flag in ("--skip-worktree", "--assume-unchanged"):
+            self.g("update-index", flag, "scripts/vault.sh", cwd=self.wt)
+            self.write("scripts/other.sh", f"#!/bin/sh\necho {flag}\n")
+            c = self.commit(flag)
+            with self.assertRaises(P.Refused) as cm:
+                self.ff(c)
+            self.assertIn("scripts/vault.sh", str(cm.exception))
+            self.g("update-index", flag.replace("--", "--no-"), "scripts/vault.sh", cwd=self.wt)
+        snap = P._snapshot(self.wt, self.head())
+        os.remove(os.path.join(self.wt, "scripts", "vault.sh"))
+        self.assertEqual(P._differs(self.wt, snap, ["scripts/vault.sh"], {"scripts/vault.sh"}), ["scripts/vault.sh"])
+
+    def test_a_graft_does_not_turn_a_rollback_into_a_fast_forward(self):
+        """of_architect's fifth pass on organic-framework PR 306: the ancestry check read parents through the shared
+        store, which honours info/grafts, so a graft moved the tree back to an older commit."""
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("b")
+        self.ff(b)
+        self.write("scripts/other.sh", "#!/bin/sh\necho c\n")
+        c = self.commit("c")
+        self.ff(c)
+        common = self.g("rev-parse", "--path-format=absolute", "--git-common-dir")
+        os.makedirs(os.path.join(common, "info"), exist_ok=True)
+        with open(os.path.join(common, "info", "grafts"), "w") as fh:
+            fh.write(f"{b} {c}\n")
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(b)
+        self.assertIn("does not fast-forward", str(cm.exception))
+        self.assertEqual(self.head(), c)
+
+    def test_no_private_store_is_left_behind(self):
+        """of_architect's fifth pass on organic-framework PR 306: a failure while the private store was written left
+        it on disk."""
+        import glob
+        import tempfile
+        import zlib
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        pattern = os.path.join(tempfile.gettempdir(), "of-protected-ff-*")
+        before = set(glob.glob(pattern))
+        real = zlib.compress
+
+        def boom(*args, **kw):
+            raise OSError("disk full")
+        zlib.compress = boom
+        try:
+            with self.assertRaises(OSError):
+                self.ff(b)
+        finally:
+            zlib.compress = real
+        self.assertEqual(set(glob.glob(pattern)) - before, set())
+        self.assertEqual(self.head(), self.a)
 
     def test_the_status_runs_no_filter_a_submodules_own_configuration_names(self):
         """of_architect's third pass on organic-framework PR 306: the status read a submodule's work tree, so a clean
