@@ -377,6 +377,26 @@ class ListenTest(unittest.TestCase):
         finally:
             of_listen.BATCH = saved
 
+    def test_a_working_start_keeps_the_watchdogs_file_and_a_waiting_one_does_not(self):
+        """2026-11-17: at load 45 to 103 the start (the asks view's state from the log) passed the watchdog's 180 s,
+        and each restart began it again."""
+        import time as _t
+        path = of_listen.heartbeat_path()
+        clock = [0.0]
+
+        def cpu():
+            return clock[0]
+        done = of_listen.starting_beat(every=0.02, cpu=cpu)
+        try:
+            _t.sleep(0.1)
+            self.assertFalse(os.path.exists(path))         # no CPU spent: waits on nothing, never touched
+            for _ in range(10):
+                clock[0] += 1
+                _t.sleep(0.02)
+            self.assertTrue(os.path.exists(path))          # working: the watchdog sees it alive
+        finally:
+            done.set()
+
     def test_the_view_is_projected_at_most_once_per_interval(self):
         # 2026-11-11: with ~40 agents the projection (5 to 57 s) ran almost back to back while Ghostty lagged
         procs = [of_listen.AsksProcessor()]

@@ -1369,12 +1369,34 @@ def heartbeat(conn):
         return False
 
 
+def starting_beat(every=None, cpu=None):
+    """Until the returned event is set, touch the watchdog's file every HEARTBEAT_S while the process's CPU time grows:
+    a start that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that
+    waits on nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart
+    began it again). Readers trust only listener_meta's beat, which the start does not write."""
+    import resource
+    import threading
+    done = threading.Event()
+    cpu = cpu or (lambda: sum(resource.getrusage(resource.RUSAGE_SELF)[:2]))
+
+    def loop():
+        last = cpu()
+        while not done.wait(every or HEARTBEAT_S):
+            now = cpu()
+            if now > last:
+                _touch(heartbeat_path())
+            last = now
+    threading.Thread(target=loop, name="of-listen-start", daemon=True).start()
+    return done
+
+
 def run(stop=None, log=print, rebuild=False):
     import of_store
     if stop is None:  # the service: the watchdog asks for every thread's stack before it restarts a stuck one
         import faulthandler
         import signal
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+    starting = starting_beat()
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
     folds_ok = False
@@ -1411,6 +1433,7 @@ def run(stop=None, log=print, rebuild=False):
             if stop and stop.is_set():
                 return
             time.sleep(2)
+    starting.set()
     heartbeat(conn)
     last_beat = last_outbox = time.time()
     ticks = {p.name: time.time() - (p.tick_s or 0) + 20 for p in processors}  # first tick after 20 s
