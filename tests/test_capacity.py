@@ -2171,7 +2171,8 @@ class WakeStopped(unittest.TestCase):
               "   Enter to confirm · Esc to cancel"]
     T0 = 1_800_000_000
 
-    def run_it(self, screen, status="idle", stop=-60, probe_at=0, account_ok=True, dry_run=False, cache=None):
+    def run_it(self, screen, status="idle", stop=-60, probe_at=0, account_ok=True, dry_run=False, cache=None,
+               positions=None):
         from unittest import mock
         rows = [{"config_dir": "/m", "logged_in": True, "observed_at": of_capacity._iso(self.T0 + probe_at),
                  "windows": {"seven_day": {"utilization": 0 if account_ok else 100}}}]
@@ -2181,7 +2182,8 @@ class WakeStopped(unittest.TestCase):
                 mock.patch.object(of_capacity, "save_cache", side_effect=store.update), \
                 mock.patch.object(of_capacity, "actor", return_value="of_capacity"):
             out = of_capacity.wake_stopped(
-                rows, sessions, now=self.T0 + 60, log=lambda m: None, dry_run=dry_run,
+                rows, sessions, [{"name": "sec", "holder": {"session": "s1"}}] if positions is None else positions,
+                now=self.T0 + 60, log=lambda m: None, dry_run=dry_run,
                 agent=lambda sid: {"pane_id": "p1"}, read=lambda pane: screen,
                 keys=lambda pane, k: pressed.append(k), deliver=lambda pane, text, sid: typed.append(text) or (True, None),
                 stopped=lambda d, sid: self.T0 + stop if stop is not None else None, sleep=lambda s: None)
@@ -2203,6 +2205,14 @@ class WakeStopped(unittest.TestCase):
         self.assertEqual(self.run_it(self.DIALOG, account_ok=False)[2], [])  # still exhausted: rescue's case
         self.assertEqual(self.run_it(self.DIALOG, stop=None)[2], [])  # not stopped
         self.assertEqual(self.run_it(self.DIALOG, status="busy")[2], [])
+
+    def test_only_an_agent_positions_holder(self):
+        # of_review on PR 318: a session no position claims (a person's own) or a position a person holds is theirs
+        self.assertEqual(self.run_it(self.DIALOG, positions=[])[1:3], ([], []))
+        held = [{"name": "sec", "holder": {"session": "s1", "runtime": "human", "person": "someone"}}]
+        self.assertEqual(self.run_it(self.DIALOG, positions=held)[1:3], ([], []))
+        other = [{"name": "sec", "holder": {"session": "s2"}}]
+        self.assertEqual(self.run_it(self.DIALOG, positions=other)[1:3], ([], []))
 
     def test_a_limit_wait_is_cancelled_and_a_dry_run_touches_nothing(self):
         wait = ["Usage limit reached · continuing automatically at Nov 23 12am · Esc to cancel"]
