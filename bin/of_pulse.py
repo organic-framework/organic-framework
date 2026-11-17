@@ -1226,6 +1226,9 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
     """Type each `of.booking_judged` with no_basis items into its position's pane once, one note per judgement (one
     turn's items): hand-over 277de578. Only positions this machine holds, and only into an idle pane; a busy one is
     tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. Returns the number told."""
+    import of_tempo
+    if not of_tempo.NOTES_LIVE:
+        return 0
     st = mem.setdefault("tempo", {"cursor": None, "pending": []})
     if st["cursor"] is None:   # from now: what was judged before the pulse first ran is not typed in
         st["cursor"] = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]

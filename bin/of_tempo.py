@@ -37,6 +37,10 @@ KEEP_S = 3 * 24 * 3600    # judged keys kept this long in the state file
 FETCH_MAX = 5000          # events read per run; the rest is the next run's
 TEXT_MAX = 700            # of one item's text in the prompt
 NAMES = ("of.continuation", "of.agent_message_in", "of.agent_question")
+# The pulse types the notes only once the lab's precision is accepted (lab/scenarios/lab-tempo-v0; of_architect): until
+# then the judge records its verdicts, and nothing is typed into a pane (the first replay, 2026-11-17, judged an hourly
+# check-in a booking with no basis).
+NOTES_LIVE = False
 BASIS_KINDS = ("position", "owner_card", "window", "runner", "data_not_yet", "conflict", "owner_limit", "condition",
                "none")
 VERDICTS = ("basis", "no_basis", "not_a_booking")
@@ -175,6 +179,11 @@ source), runner (a CI run, a build, a job running now), data_not_yet (data that 
 conflict (the same system, host, file or resource is in use, named), owner_limit (a limit the owner set, with its \
 ask id), condition (it waits for a named event or condition rather than a time), none (no reason given, or only \
 "later", "tomorrow", a round deadline, a guess at how long something takes).
+A fixed clock time needs its own basis: when the item also waits for conditions (a merge, a check, another \
+step's end), ask whether the time itself is needed. If the conditions could be met earlier and nothing named requires \
+that hour, the time is a booking with no basis ("arm item 7 for 18:45Z with its merge gate": the merge gate does not \
+explain 18:45Z). Waiting for a condition with a deadline or timeout (poll CI until done, give up after 50 minutes) \
+is a condition, not a booking.
 A slot in a plan that this agent or a peer made ("item 7 at 18:45Z", "before k8s_keeper's 18:45-19:10Z slot", "after \
 the queue: RISK-003, then Wazuh, then Kafka") is not a window and not a basis by itself: it is one only when the item \
 names why the work cannot run now (a conflict on a named system, host or resource, a position that must act first, \
@@ -182,7 +191,7 @@ the owner's decision with its id). A recurring watch or health check that runs e
 booking.
 - verdict: basis (a booking with a basis), no_basis (a booking with basis_kind none), not_a_booking.
 - basis: the words of the item that name the basis, at most 120 characters; "" when none.
-- reason: one short English sentence."""
+- reason: one short English sentence. Write basis and reason in English whatever language the item is in."""
 
 SCHEMA = {"type": "object", "additionalProperties": False,
           "properties": {"items": {"type": "array", "items": {
@@ -313,19 +322,22 @@ def fetch(conn, after=None, since=None, until=None, limit=FETCH_MAX):
     return out
 
 
+PER_CALL = 10   # items in one call: a position with forty new items timed out in one (2026-11-17, lab-tempo-v0)
+
+
 def groups(todo):
-    """{position: [items]} in first-seen order: one call per position and run, all its new items in it."""
-    out = {}
+    """[(position, [items])] in first-seen order: one call per position and run with its new items, PER_CALL a call."""
+    by = {}
     for it in todo:
-        out.setdefault(it["position"], []).append(it)
-    return out
+        by.setdefault(it["position"], []).append(it)
+    return [(pos, its[i:i + PER_CALL]) for pos, its in by.items() for i in range(0, len(its), PER_CALL)]
 
 
 def judge_items(todo, positions=(), runner=subprocess.run, log=print):
     """[(position, group, result)] for the items, one call per position."""
     summaries = {p["name"]: p.get("summary") for p in positions or ()}
     out = []
-    for pos, group in groups(todo).items():
+    for pos, group in groups(todo):
         v = call(user_prompt(pos, group, summaries.get(pos)), len(group), runner=runner)
         if "error" in v:
             log(f"of tempo: {pos}: {v['error']}")

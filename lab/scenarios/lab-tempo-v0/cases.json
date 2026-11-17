@@ -1,0 +1,18 @@
+[
+  {"id": "s01", "position": "storefront_keeper", "source": "cron", "label": "no_basis", "text": "schedule 0 16 * * *, recurring False: storefront_keeper: at 16:00Z deploy the price fix; it is ready, do it in the afternoon."},
+  {"id": "s02", "position": "storefront_keeper", "source": "clock_wait", "label": "no_basis", "text": "Deploy the price fix in two hours: sleep 7200; ./deploy_price_fix.sh"},
+  {"id": "s03", "position": "storefront_keeper", "source": "message", "to": "acme_owner", "label": "no_basis", "text": "PR 412 is green and reviewed. I will merge it tomorrow at 10:00Z."},
+  {"id": "s04", "position": "search_keeper", "source": "message", "to": "acme_owner", "label": "no_basis", "text": "Next I start the cache migration at 17:30Z."},
+  {"id": "s05", "position": "search_keeper", "source": "ask", "to": "owner", "label": "no_basis", "text": "The new keys are made and tested. Shall I rotate them tomorrow?"},
+  {"id": "s06", "position": "search_keeper", "source": "clock_wait", "label": "no_basis", "text": "Run the backfill at 19:00Z: until [ \"$(date -u +%H%M)\" -ge 1900 ]; do sleep 60; done; ./run_backfill.sh"},
+  {"id": "s07", "position": "billing_keeper", "source": "message", "to": "acme_conductor", "label": "no_basis", "text": "The invoice report is drafted; deadline for it: Friday 12:00Z."},
+  {"id": "s08", "position": "billing_keeper", "source": "cron", "label": "no_basis", "text": "schedule 45 18 20 11 *, recurring False: billing_keeper: item 3 at 18:45Z, after search_keeper's 18:00-18:40Z slot in today's plan."},
+  {"id": "s09", "position": "db_keeper", "source": "cron", "label": "passes", "text": "schedule 0 2 21 11 *, recurring False: db_keeper: 02:00Z, apply the database upgrade in maintenance window CHG-118, booked by the owner (ask 7f3a2c1d-0b12)."},
+  {"id": "s10", "position": "db_keeper", "source": "clock_wait", "label": "passes", "text": "Wait for CI run 991 on PR 418: end=$(( $(date +%s) + 3000 )); while [ \"$(date +%s)\" -lt \"$end\" ]; do s=$(gh run view 991 --json status -q .status); [ \"$s\" = completed ] && exit 0; sleep 45; done"},
+  {"id": "s11", "position": "storefront_keeper", "source": "message", "to": "acme_owner", "label": "passes", "text": "I apply the index change at 15:30Z, once db_keeper finishes the vacuum on db-2: it holds the table lock until then."},
+  {"id": "s12", "position": "billing_keeper", "source": "message", "to": "acme_owner", "label": "passes", "text": "The nightly export lands at 03:00Z; I start the reconciliation right after it, since it reads that export."},
+  {"id": "s13", "position": "search_keeper", "source": "cron", "label": "passes", "text": "schedule */10 * * * *, recurring True: search_keeper: check the queue depth and alert when it passes 5,000."},
+  {"id": "s14", "position": "db_keeper", "source": "clock_wait", "label": "passes", "text": "Re-read the error rate 30 minutes after the deploy, the soak time the rollout runbook sets: sleep 1800; ./read_error_rate.sh"},
+  {"id": "s15", "position": "db_keeper", "source": "ask", "to": "owner", "label": "passes", "text": "The vendor's maintenance window is tomorrow 06:00-07:00Z (their notice INC-55). Shall I run the cutover in it?"},
+  {"id": "s16", "position": "billing_keeper", "source": "message", "to": "acme_owner", "label": "passes", "text": "Waiting on net_keeper to open the firewall rule for the payment API; I start at 14:30Z if it is open by then."}
+]
