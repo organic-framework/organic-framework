@@ -18,15 +18,38 @@ import warnings
 import of_classify
 
 # `$HOME`, `${HOME}`, and `${HOME` with an operator that gives HOME while it is set: `:?`, `?`, `:-`, `-`, `:=`, `=` (any
-# word) and the trims `%`, `%%`, `#`, `##` (of_secrets-review on organic-framework PR 268: `"${HOME:?}"` is the form
-# shellcheck asks for before an `rm -rf`); not `:+` or `+`, which give the other word
-_HOME_WORD = re.compile(r"^(?:\$\{HOME(?:(?::?[?=-]|%%?|##?)[^}]*)?\}|\$HOME)(?=/|$)")
+# word; of_secrets-review on organic-framework PR 268: `"${HOME:?}"` is the form shellcheck asks for before an
+# `rm -rf`); not `:+` or `+`, which give the other word. A trim (`%`, `%%`, `#`, `##`) is computed against HOME as bash
+# computes it (of_review on PR 268: `${HOME%/*}/<its last name>` is HOME again)
+_HOME_WORD = re.compile(r"^(?:\$\{HOME(?:(:?[?=-])[^}]*|(%%?|##?)([^}]*))?\}|\$HOME)(?=/|$)")
+
+
+def _home_trim(home, op, pat):
+    """HOME with bash's ${HOME<op><pat>} applied: `%` the shortest matching suffix removed, `%%` the longest, `#` the
+    shortest matching prefix, `##` the longest. None for a pattern the guard cannot read (a quote, a variable, a backslash)."""
+    import fnmatch
+    if re.search(r"""[$`'"\\]""", pat):
+        return None
+    n = len(home)
+    if op in ("%", "%%"):
+        cuts = range(n, -1, -1) if op == "%" else range(0, n + 1)
+        return next((home[:i] for i in cuts if fnmatch.fnmatchcase(home[i:], pat)), home)
+    cuts = range(0, n + 1) if op == "#" else range(n, -1, -1)
+    return next((home[j:] for j in cuts if fnmatch.fnmatchcase(home[:j], pat)), home)
+
+
+def _home_word(m):
+    if not m.group(2):
+        return "~"
+    home = os.path.expanduser("~")
+    got = _home_trim(home, m.group(2), m.group(3))
+    return m.group(0) if got is None else got
 
 
 def _expanduser(p):
-    """os.path.expanduser, with a leading `$HOME` or `${HOME}` read as `~`: the shell expands it from the session's
-    HOME, and a path written so reached G19's and G21's folders unseen (2026-11-17, `bash "$HOME/…"`)."""
-    return os.path.expanduser(_HOME_WORD.sub("~", p) if isinstance(p, str) else p)
+    """os.path.expanduser, with a leading `$HOME` or `${HOME}` read as the home folder: the shell expands it from the
+    session's HOME, and a path written so reached G19's and G21's folders unseen (2026-11-17, `bash "$HOME/…"`)."""
+    return os.path.expanduser(_HOME_WORD.sub(_home_word, p) if isinstance(p, str) else p)
 
 CRITICAL_DENY_BASH = re.compile(
     r"(?:^|[;&|(\s])(?:printenv\b|env\s*(?:$|[|;>&])|export\s+-p\b|set\s*(?:$|[|;>&])|"
