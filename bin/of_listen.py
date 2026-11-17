@@ -1370,7 +1370,7 @@ def heartbeat(conn):
 
 
 def starting_beat(every=None, cpu=None):
-    """Until the returned event is set, touch the watchdog's file every HEARTBEAT_S while the process's CPU time grows:
+    """Until the returned event is set, touch the watchdog's files every HEARTBEAT_S while the process's CPU time grows:
     a start that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that
     waits on nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart
     began it again). Readers trust only listener_meta's beat, which the start does not write."""
@@ -1383,8 +1383,9 @@ def starting_beat(every=None, cpu=None):
         last = cpu()
         while not done.wait(every or HEARTBEAT_S):
             now = cpu()
-            if now > last:
+            if now > last:   # both files the watchdog reads: the timers do not turn before the start ends
                 _touch(heartbeat_path())
+                _touch(ticks_path())
             last = now
     threading.Thread(target=loop, name="of-listen-start", daemon=True).start()
     return done
