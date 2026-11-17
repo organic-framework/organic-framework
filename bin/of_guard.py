@@ -930,12 +930,219 @@ def _kube_raw(args, line_vars=None):
     return ns, rest[0], sub
 
 
+# A Pod's spec, and a workload's pod template, carry each container's literal env values; a workload's
+# last-applied-configuration annotation carries the whole applied object (of_review's probe on organic-framework PR 253:
+# `describe pod`, `-o jsonpath|go-template|custom-columns` and `set env --list` printed what `-o yaml` is denied for).
+_KUBE_POD_KINDS = {"pod", "pods", "po", "all"}
+_KUBE_WORKLOAD_KINDS = {"deployment", "deployments", "deploy", "statefulset", "statefulsets", "sts", "daemonset",
+                        "daemonsets", "ds", "replicaset", "replicasets", "rs", "job", "jobs", "cronjob", "cronjobs", "cj",
+                        "replicationcontroller", "replicationcontrollers", "rc", "podtemplate", "podtemplates"}
+_KUBE_TEMPLATE_OUT = {"jsonpath", "jsonpath-as-json", "go-template", "template", "custom-columns"}
+_KUBE_TEMPLATE_FILE_OUT = {"jsonpath-file", "go-template-file", "templatefile", "custom-columns-file"}
+# a printed subtree that holds container env values or the applied object
+_KUBE_ENV_HOLDERS = {"items", "spec", "template", "jobtemplate", "containers", "initcontainers", "ephemeralcontainers",
+                     "metadata", "annotations"}
+_KUBE_PATH_TOKEN = re.compile(r"\.\.|\.|\[[^\]]*\]|[^.\[\]]+")
+# The Pod's own template reads deny (its -o yaml|json already did). `describe pod` and every read of a workload's spec
+# warn first: the 21-day replay before 2026-11-17 (35,200 distinct commands naming kubectl) found them in live flows
+# (a workload's -o yaml|json 439, a workload template reaching env or its applied object 103, describe pod 57, describe
+# of a workload 14), while a Pod's template reaching env was 11, and `set env --list` and `view-last-applied` on these
+# kinds had no use.
+POD_SPEC_MODE = {"describe pod": "warn", "workload": "warn"}
+POD_ENV_DENY = "a command that would print container env values"
+POD_ENV_ADVICE = ("read the fields you need outside the containers' env ({.status}, {.spec.containers[*].image}), or "
+                  "env names only (env[*].name); a value stays where it is used (docs/guard.md G6)")
+POD_SPEC_NOTE = ("a Pod's and a workload's spec carry container env values, and a workload's last-applied annotation "
+                 "the whole applied object: read the fields you need outside the containers' env ({.status}, "
+                 "{.spec.template.spec.containers[*].image}, env[*].name), and a pod's state with `kubectl get events "
+                 "--field-selector involvedObject.name=<pod>`; these reads will be denied once the flows have moved "
+                 "(docs/guard.md G6.1)")
+
+
+def _kube_kinds_named(nonopt, at=1):
+    """The resource kinds a kubectl call names at position AT (`pod`, `pod,deploy`, `deployment.apps/web`), plus a
+    `kind/name` later on, lowercased and without a group."""
+    out = set()
+    if len(nonopt) > at:
+        out |= {p.split("/")[0].split(".")[0].lower() for p in nonopt[at].split(",") if p}
+    out |= {a.split("/")[0].split(".")[0].lower() for a in nonopt[at + 1:] if "/" in a}
+    return out
+
+
+def _kube_segs(path):
+    """[(field, recursive)] of a JSONPath-like path; indexes and filters dropped, a quoted bracket kept as a field."""
+    out, rec = [], False
+    for t in _KUBE_PATH_TOKEN.findall(path.strip().strip("{}")):
+        if t == "..":
+            rec = True
+        elif t == ".":
+            continue
+        elif t.startswith("["):
+            inner = t[1:-1].strip()
+            if len(inner) > 1 and inner[0] in "'\"" and inner[-1] == inner[0]:
+                out.append((inner[1:-1].lower(), rec))
+                rec = False
+        else:
+            out.append((t.strip().lower(), rec))
+            rec = False
+    if rec:
+        out.append(("*", True))
+    return out
+
+
+def _kube_path_holds_env(segs):
+    """Does a printed path reach container env values or the applied object? `env` itself or its `value`, a
+    last-applied-configuration, a recursive `..value`/`..env`/`..*`, or a subtree that holds them (`.spec`,
+    `.spec.containers[0]`, `.items[*]`, the object's own `.metadata.annotations`, the root). `env[*].name` and
+    `env[*].valueFrom` name references only."""
+    names = [n for n, _ in segs]
+    for i, (n, rec) in enumerate(segs):
+        if n == "last-applied-configuration" or n.endswith("/last-applied-configuration"):
+            return True
+        if n == "env" and (i + 1 == len(names) or names[i + 1] not in ("name", "valuefrom")):
+            return True
+        if rec and (n in ("value", "env", "*") or n in _KUBE_ENV_HOLDERS):
+            return True
+    named = [n for n in names if n != "*"]
+    if named and named[-1] in ("metadata", "annotations"):  # the object's own: a pod template's holds no applied copy
+        return (named[1:] if named[0] == "items" else named) in (["metadata"], ["metadata", "annotations"])
+    return not named or named[-1] in _KUBE_ENV_HOLDERS
+
+
+def _kube_unquote(s):
+    return re.sub(r'"(?:\\.|[^"\\])*"|`[^`]*`', '""', s)
+
+
+def _kube_jsonpath_paths(expr):
+    """The paths a kubectl JSONPath template prints, each from the root (`{range}` sets the context)."""
+    out, ctx = [], [[]]
+    for act in re.findall(r"\{([^{}]*)\}", expr):
+        a = _kube_unquote(act).strip()
+        if a.startswith("range "):
+            ctx.append(ctx[-1] + _kube_segs(a[6:].strip().lstrip("@$")))
+        elif a == "end":
+            ctx = ctx[:-1] if len(ctx) > 1 else ctx
+        elif a in ('""', "''") or (len(a) > 1 and a[0] == a[-1] == "'"):
+            continue
+        elif a.startswith("$"):
+            out.append(_kube_segs(a[1:]))
+        else:
+            out.append(ctx[-1] + _kube_segs(a.lstrip("@")))
+    if "{" not in expr and expr.strip():  # kubectl wraps a bare path in braces
+        out.append(_kube_segs(expr))
+    return out
+
+
+def _kube_go_path(tok, ctx, var):
+    m = re.match(r"(\$\w*)((?:\.[\w-]+)*)$", tok)
+    if m:
+        return (list(var.get(m.group(1), [])) if m.group(1) != "$" else []) + _kube_segs(m.group(2))
+    return ctx[-1] + _kube_segs(tok) if tok.startswith(".") else None
+
+
+def _kube_gotemplate_paths(expr):
+    """The paths a go-template prints, each from the root: `range` and `with` set the context, `$v :=` binds one;
+    an `if` condition and a `range`/`with` pipeline are not printed; `template`/`block` count as the root."""
+    out, ctx, var = [], [[]], {}
+    for act in re.findall(r"\{\{-?(.*?)-?\}\}", expr, re.S):
+        a = _kube_unquote(act).strip()
+        if a.startswith(("range ", "with ")):
+            body = a.split(" ", 1)[1]
+            m = re.match(r"(\$\w+)\s*(?:,\s*(\$\w+))?\s*:?=\s*(.*)", body)
+            words = (m.group(3) if m else body).split()
+            base = _kube_go_path(words[-1], ctx, var) if words else None
+            if m:
+                var[m.group(2) or m.group(1)] = base if base is not None else []
+            ctx.append(base if base is not None else ctx[-1])
+        elif a.startswith("if "):
+            ctx.append(ctx[-1])
+        elif a == "end":
+            ctx = ctx[:-1] if len(ctx) > 1 else ctx
+        elif a.startswith(("else", "/*")) or a in ("break", "continue"):
+            continue
+        elif a.startswith(("define ", "block ", "template ")):
+            out.append([])
+        elif re.match(r"\$\w+\s*:?=", a):
+            name, val = re.split(r"\s*:?=\s*", a, 1)
+            words = val.split()
+            var[name] = (_kube_go_path(words[-1], ctx, var) if words else None) or []
+        else:
+            for tok in re.findall(r"\$\w*(?:\.[\w-]+)*|(?<![\w)])\.(?:[\w-]+(?:\.[\w-]+)*)?", a):
+                p = _kube_go_path(tok, ctx, var)
+                out.append(p if p is not None else [])
+    return out
+
+
+def _kube_template_holds_env(args, line_vars=None):
+    """(format, True) when a kubectl template output prints container env values or the applied object, or cannot be
+    read (a template file, a substitution, a shell variable the line does not set); (format, False) when it reads
+    other fields; None for any other output."""
+    o = _opt_value(args, ("-o", "--output")) or ""
+    fmt, _, expr = o.partition("=")
+    tmpl = _opt_value(args, ("--template",))
+    if not fmt and tmpl:
+        fmt = "go-template"
+    if fmt in _KUBE_TEMPLATE_FILE_OUT:
+        return fmt, True
+    if fmt not in _KUBE_TEMPLATE_OUT:
+        return None
+    expr = expr or tmpl or ""
+    if line_vars and "$" in expr and fmt not in ("go-template", "template"):
+        expr = re.sub(r"\$\{(\w+)\}|\$([A-Za-z_]\w*)", lambda m: line_vars.get(m.group(1) or m.group(2), m.group(0)), expr)
+    if not expr.strip() or "__OFSUB__" in expr or "`" in expr or \
+            (fmt not in ("go-template", "template") and re.search(r"\$\{?[A-Za-z_]", expr)):
+        return fmt, True
+    if fmt == "custom-columns":
+        paths = [_kube_segs(c.split(":", 1)[1]) for c in expr.split(",") if ":" in c]
+    elif fmt in ("go-template", "template"):
+        paths = _kube_gotemplate_paths(expr)
+    else:
+        paths = _kube_jsonpath_paths(expr)
+    return fmt, any(_kube_path_holds_env(p) for p in paths)
+
+
+def _kube_pod_spec_read(sub, nonopt, args, out, line_vars=None):
+    """G6 and G6.1: a read that prints a Pod's or a workload's container env values. Returns a deny, or None after
+    noting a warning in POD_SPEC_MODE's warn mode."""
+    if sub == "set" and nonopt[1:2] == ["env"] and any(a == "--list" or a.startswith("--list=") for a in args) and \
+            not any(a in ("--list=false",) for a in args):
+        token = "kubectl set env --list" + (" --resolve" if any(a.startswith("--resolve") for a in args) else "")
+        return f"{POD_ENV_DENY} ({token}): {POD_ENV_ADVICE}", token
+    if sub == "apply" and "view-last-applied" in nonopt and \
+            _kube_kinds_named(nonopt, nonopt.index("view-last-applied") + 1) & (_KUBE_POD_KINDS | _KUBE_WORKLOAD_KINDS):
+        return f"{POD_ENV_DENY} (kubectl apply view-last-applied): {POD_ENV_ADVICE}", "kubectl apply view-last-applied"
+    if sub not in ("get", "describe"):
+        return None
+    kinds = _kube_kinds_named(nonopt)
+    pod, work = bool(kinds & _KUBE_POD_KINDS), bool(kinds & _KUBE_WORKLOAD_KINDS)
+    if not (pod or work):
+        return None
+    tmpl = _kube_template_holds_env(args, line_vars) if sub == "get" else None
+    if pod and tmpl and tmpl[1]:
+        token = f"kubectl get pod -o {tmpl[0]}"
+        return f"{POD_ENV_DENY} ({token}): {POD_ENV_ADVICE}", token
+    if sub == "describe" and not out:
+        what, mode = ("kubectl describe pod", "describe pod") if pod else ("kubectl describe <workload>", "workload")
+    elif work and (out in ("yaml", "json") or (tmpl and tmpl[1])):
+        what, mode = f"kubectl {sub} <workload> -o {tmpl[0] if tmpl else out}", "workload"
+    else:
+        return None
+    if POD_SPEC_MODE.get(mode) == "deny":
+        return f"{POD_ENV_DENY} ({what}): {POD_ENV_ADVICE}", what
+    note = (f"{POD_ENV_DENY} ({what})", what, POD_SPEC_NOTE)
+    if note not in _WARNINGS:
+        _WARNINGS.append(note)
+    return None
+
+
 def _kubectl_secret_deny(args, line_vars=None):
     """Cluster reads that print a stored Secret's values (of_architect, 2026-11-06, after three real leaks,
     the last from a go-template/jsonpath that fell back to printing the whole object). For a Secret kind
     (any alias/namespace, -A, comma lists, `all`): allow only -o name, the default table and `describe`
     (which lists keys with sizes); deny every other -o, plus get -w/--watch, edit and apply view-last-applied.
-    For a pod kind, -o yaml|json is denied too (the spec carries container env values)."""
+    For a pod kind, -o yaml|json is denied too (the spec carries container env values), and so is every other read of
+    those values: a template output reaching them, `set env --list`, `apply view-last-applied`; `describe pod` and a
+    workload's spec warn first (_kube_pod_spec_read, docs/guard.md G6 and G6.1)."""
     nonopt = _positional(args, _KUBECTL_VALUE)
     sub = nonopt[0] if nonopt else None
     has_secret = any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a))
@@ -959,7 +1166,7 @@ def _kubectl_secret_deny(args, line_vars=None):
             return _prints(f"kubectl get secret -o {out}")  # jsonpath/go-template fall back to the whole object
     if sub in ("get", "describe") and has_pod and out in ("yaml", "json"):  # the pod spec carries env values
         return _prints(f"kubectl {sub} pod -o {out}")
-    return None
+    return _kube_pod_spec_read(sub, nonopt, args, out, line_vars)
 
 
 def _cluster_secret_deny(head, args, to_file, line_vars=None):
@@ -2902,7 +3109,8 @@ UNSET_TARGET_DENY = ("{what} whose target rests on a variable that may be unset 
 # one step, and a cd that may reach the home folder before git init is G26's deny already.
 UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git": "warn"}
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
-OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target")
+OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target",
+              POD_ENV_DENY)
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
 _LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)

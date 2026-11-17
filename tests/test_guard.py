@@ -265,10 +265,75 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("kubectl get secret acme-inc-arc -n ci"))
         self.assertIsNone(deny("kubectl get secret -o name"))
         self.assertIsNone(deny("kubectl describe secret app-key -n ci"))
-        self.assertIsNone(deny("kubectl get deploy arc -o yaml"))  # a non-secret kind
+        self.assertIsNone(deny("kubectl get deploy arc -o yaml"))  # a non-secret kind (G6.1 warns)
         self.assertIsNone(deny("kubectl get secret arc -o yaml > /tmp/claude-501/x/s.yaml"))
         self.assertIsNone(deny("sops -d -i secrets.enc.yaml"))  # decrypted in place, not to stdout
         self.assertIsNone(deny("vault kv get -field=pw secret/app > /tmp/claude-501/x/pw"))
+
+    def test_container_env_values_by_every_output(self):
+        """docs/guard.md G6 and G6.1 (of_review's probe on organic-framework PR 253): `-o yaml|json` on a pod was
+        denied while a template output, `set env --list` and `describe` printed the same literal env values."""
+        def warned():
+            return [w for w in of_guard._WARNINGS if "container env values" in w[0]]
+        # a Pod's template output that reaches env values, the applied object or a subtree holding them: denied
+        for cmd in ("kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env}'",
+                    "kubectl get po web-1 -o jsonpath='{.spec.containers[0].env[0].value}'",
+                    "kubectl get pods -o jsonpath='{range .items[*]}{.spec.containers[*].env[*].value}{end}'",
+                    "kubectl get pods -o jsonpath='{range .items[*].spec.containers[*].env[*]}{.value}{end}'",
+                    "kubectl get pod/web-1 -o=go-template='{{range .spec.containers}}{{.env}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range $i, $c := .spec.containers}}{{$c.env}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template --template='{{range .items}}{{.}}{{end}}'",
+                    "kubectl get pod web-1 -o custom-columns=N:.metadata.name,E:.spec.containers[*].env",
+                    "kubectl get pod web-1 -o jsonpath='{.spec.containers[0]}'",
+                    "kubectl get pod web-1 -o jsonpath='{.spec}'", "kubectl get pod web-1 -o jsonpath='{@}'",
+                    "kubectl get pods -o jsonpath='{.items}'", "kubectl get pod web-1 -o jsonpath='{..value}'",
+                    "kubectl get pod web-1 -o jsonpath=\"{.spec.containers[*]['env']}\"",
+                    "kubectl get pod web-1 -o jsonpath='{.metadata.annotations}'",
+                    "kubectl get pod web-1 -o jsonpath-as-json='{.spec.containers[*].env}'",
+                    "kubectl get pod web-1 -o jsonpath-file=/tmp/claude-501/x/t.jsonpath",
+                    "kubectl get pod web-1 -o jsonpath=\"{.spec.containers[*].$F}\"",
+                    "kubectl get pod,svc -o go-template='{{range .items}}{{.spec}}{{end}}'"):
+            hit = deny(cmd)
+            self.assertTrue(hit, cmd)
+            self.assertTrue(hit[0].startswith(of_guard.POD_ENV_DENY), cmd)
+            self.assertTrue(of_guard.owns_advice(hit[0]), cmd)
+        # set env --list prints them (with --resolve, the Secrets' values too); view-last-applied the applied object
+        for cmd in ("kubectl set env pod/web-1 --list", "kubectl -n ci set env deploy/web --list --resolve",
+                    "kubectl set env pods --all --list=true", "kubectl apply view-last-applied deploy/web",
+                    "kubectl apply view-last-applied pod web-1 -o json"):
+            self.assertTrue(deny(cmd), cmd)
+        # other fields, env names and references only, images, phases: allowed and quiet
+        for cmd in ("kubectl get pods -o jsonpath='{.items[*].metadata.name}'",
+                    "kubectl get pod web-1 -o jsonpath='{.status.phase}'",
+                    "kubectl get pods -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{.status.phase}{\"\\n\"}{end}'",
+                    "kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env[*].name}'",
+                    "kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env[*].valueFrom.secretKeyRef.name}'",
+                    "kubectl get pods -o jsonpath='{..image}'",
+                    "kubectl get pods -o go-template='{{range .items}}{{.metadata.name}}{{\"\\n\"}}{{end}}'",
+                    "kubectl get pod web-1 -o custom-columns=N:.metadata.name,S:.status.phase",
+                    "kubectl get pod web-1 -o jsonpath='{.metadata.annotations.prometheus\\.io/port}'",
+                    "kubectl get pods -o wide", "kubectl get pods -o name", "kubectl get pods",
+                    "kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env}' > /tmp/claude-501/x/env.txt",
+                    "kubectl get deploy web -o jsonpath='{.spec.template.spec.containers[*].image}'",
+                    "kubectl set env deploy/web FOO=bar", "kubectl describe svc web", "kubectl describe node n1"):
+            self.assertIsNone(deny(cmd), cmd)
+            self.assertEqual(warned(), [], cmd)
+        # describe pod and a workload's spec are live flows: they warn first, with the rule's note
+        for cmd in ("kubectl describe pod web-1 -n ci", "kubectl describe pods", "kubectl describe deploy web",
+                    "kubectl get deploy web -o yaml", "kubectl get sts web -o json",
+                    "kubectl get cronjob c -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[*].env}'",
+                    "kubectl get deployment.apps/web -o jsonpath='{.metadata.annotations}'"):
+            self.assertIsNone(deny(cmd), cmd)
+            self.assertEqual(len(warned()), 1, cmd)
+            self.assertIn("G6.1", warned()[0][2], cmd)
+        old = dict(of_guard.POD_SPEC_MODE)
+        try:
+            of_guard.POD_SPEC_MODE.update({"describe pod": "deny", "workload": "deny"})
+            for cmd in ("kubectl describe pod web-1", "kubectl get deploy web -o yaml", "kubectl describe ds d"):
+                self.assertTrue(deny(cmd), cmd)
+        finally:
+            of_guard.POD_SPEC_MODE.clear()
+            of_guard.POD_SPEC_MODE.update(old)
 
     def test_proc_environ_and_process_env_listings(self):
         # of_architect, 2026-11-06: /proc/<pid>/environ holds a process's env (a DSN+password leaked this way)
