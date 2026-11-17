@@ -287,11 +287,21 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
     sessions = {d: sessions_fn(d) for d in dirs}
     by_dir = positions_by_dir(positions, sessions)
     rows, changed = [], False
+    # the accounts due are probed at once, not one after another (of_platform, 2026-11-17, msg 01a1ea50-3a54: four
+    # probes in a row took 37 s of a pulse at load 90); a probe only runs `claude -p` and parses it, the cache is ours
+    due = [d for d in dirs if probe and (fresh or cache.get(d) is None or _stale(cache.get(d), now))]
+    fresh_snaps = {}
+    if len(due) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(due), 8)) as pool:
+            fresh_snaps = dict(zip(due, pool.map(lambda d: probe_fn(d, now), due)))
+    elif due:
+        fresh_snaps = {due[0]: probe_fn(due[0], now)}
     for d in dirs:
         snap = cache.get(d)
         probed = False
-        if probe and (fresh or snap is None or _stale(snap, now)):
-            snap = probe_fn(d, now)
+        if d in fresh_snaps:
+            snap = fresh_snaps[d]
             cache[d] = snap
             changed, probed = True, True
         row = dict(snap or {"config_dir": d, "account": account_of(d, home), "logged_in": None, "windows": {},
