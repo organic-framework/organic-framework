@@ -131,35 +131,43 @@ def _is_rule(line):
 _RIGHT_ALIGNED = re.compile(r" {10,}\S[^\n]*$")
 
 
+# Claude Code's footer under the box ('⏵⏵ bypass permissions on', '⏸ plan mode on', '? for shortcuts'): never typed text
+_FOOTER = re.compile(r"(?:⏵⏵|⏸|\? for shortcuts)")
+
+
 def input_box_text(screen):
-    """The text in Claude Code's input box on a pane screen read with ANSI codes (the lines between the last two
-    horizontal rules), without the prompt mark and without a dim suggestion; '' when empty, None when no box."""
+    """The text in Claude Code's input box on a pane screen read with ANSI codes, without the prompt mark, a dim
+    suggestion or Claude Code's own status; '' when empty, None when no box.
+
+    The box opens on its prompt line, the last line with `❯` at column 0 (its continuation lines are indented, so a `❯`
+    in typed text never is), and runs down to the next rule, empty line or footer. A side view drawn beside the
+    conversation (a diff, a subagent) breaks the box's rules: on 2026-11-17 its own rules made the box read 2,989
+    characters, and later its bottom rule was not drawn at all and 4,277 characters were read (a user organization's
+    structure keeper, msgs 01a1e907-653e and 01a1e94f-2ad8). On the prompt line, text after a wide gap that ends at the
+    pane's edge is Claude Code's status, and a footer drawn over the prompt line is the footer (of_review on
+    organic-framework PR 280: text after a gap that stops short of the edge is typed). With no prompt line, the box is
+    read between the last two rules."""
     lines = (screen or "").replace("\r", "").split("\n")
-    rules = [i for i, l in enumerate(lines) if _is_rule(l)]
-    if len(rules) < 2:
-        return None
-    start, end, prompt = rules[-2], rules[-1], None
-    # The box opens on its prompt line, `❯` at column 0 (its continuation lines are indented, so a `❯` in typed text
-    # never is). A side view drawn beside the conversation (a diff, a subagent) has rules of its own, and the rule
-    # above the box may then be the view's, with the box's own top rule broken by the view: the box starts at the
-    # prompt line above its bottom rule (2026-11-17: 2,989 characters of a side view were read as the box and three
-    # messages waited 22 minutes; a user organization's structure keeper, msg 01a1e907-653e).
-    for j in range(end - 1, start, -1):
-        if _ANSI.sub("", lines[j]).replace("\xa0", " ").startswith("❯"):
-            start, prompt = j - 1, j
-            break
-    width = len(_ANSI.sub("", lines[end]).rstrip())
-    out = []
-    for k in range(start + 1, end):
-        t = _ANSI.sub("", _DIM.sub("", lines[k])).replace("\xa0", " ")
-        m = _RIGHT_ALIGNED.search(t) if k == prompt else None
-        if m and len(t.rstrip()) >= width - 3:
-            # right-aligned to the pane's edge after a wide gap, on the prompt line: Claude Code's own status, not
-            # typed (the same pane's prompt line carried 38 such characters); text after a gap that stops short of
-            # the edge is typed (of_review on organic-framework PR 280)
-            t = t[:m.start()]
-        out.append(t)
-    return "\n".join(out).strip().lstrip("❯>").strip()
+    plain = [_ANSI.sub("", _DIM.sub("", l)).replace("\xa0", " ") for l in lines]
+    prompt = next((i for i in range(len(lines) - 1, -1, -1) if plain[i].startswith("❯")), None)
+    if prompt is None:
+        rules = [i for i, l in enumerate(lines) if _is_rule(l)]
+        if len(rules) < 2:
+            return None
+        return "\n".join(plain[rules[-2] + 1:rules[-1]]).strip().lstrip("❯>").strip()
+    stop = prompt + 1
+    while stop < len(lines) and plain[stop].strip() and not _is_rule(lines[stop]) and \
+            not _FOOTER.match(plain[stop].strip()):
+        stop += 1
+    width = max((len(t.rstrip()) for t in plain), default=0)
+    first = plain[prompt]
+    m = _RIGHT_ALIGNED.search(first)
+    if m and len(first.rstrip()) >= width - 3:
+        first = first[:m.start()]
+    rest = first[1:].strip()
+    if _FOOTER.match(rest):  # the footer drawn over the prompt line
+        first = "❯"
+    return "\n".join([first] + plain[prompt + 1:stop]).strip().lstrip("❯>").strip()
 
 
 # A dialog in the pane (of_capacity, 2026-11-07: Claude Code's 'Background work is running' exit dialog swallowed two

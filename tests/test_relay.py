@@ -476,6 +476,21 @@ class RelayTest(unittest.TestCase):
             screen = "\n".join(lines + [prompt] + rest + ["─" * (left + right), "  ⏵⏵ bypass permissions on"])
             self.assertEqual(of_relay.input_box_text(screen), want, box)
 
+    def test_a_box_whose_bottom_rule_is_not_drawn(self):
+        """2026-11-17, a user organization's structure keeper (msg 01a1e94f-2ad8): beside a side view the box's bottom
+        rule was not drawn (the prompt line, an empty line, the footer), the box was read from the conversation above
+        the top rule, 4,277 characters, and a message waited 20 minutes; earlier the footer was drawn over the prompt
+        line itself."""
+        rule = "─" * 120
+        convo = ["a reply " * 10, "  more " + " " * 80 + "─" * 30, "✻ Working… · esc to interrupt", " " * 118]
+        for tail, want in ((["❯ ", "", "  ⏵⏵ bypass permissions on · 1 shell"], ""),
+                           (["❯ ⏵⏵ bypass permissions on · 1 shell", "", "  ⏵⏵ bypass permissions on"], ""),
+                           (["❯ half typed", "", "  ⏵⏵ bypass permissions on"], "half typed"),
+                           (["❯ first", "  second", "", "  ⏵⏵ bypass permissions on"], "first\n  second"),
+                           (["❯ ", "  ⏸ plan mode on"], "")):
+            screen = "\n".join(convo + [rule] + tail)
+            self.assertEqual(of_relay.input_box_text(screen), want, tail)
+
     def test_typed_text_after_a_gap_or_an_indented_prompt_mark_is_still_typed(self):
         """of_review on organic-framework PR 280: text after a wide gap that stops short of the pane's edge, and a box
         whose later line is an indented `❯` (a pasted shell prompt), read as empty, so OF would type into them."""
