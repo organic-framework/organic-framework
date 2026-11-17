@@ -2782,44 +2782,59 @@ class HealthTabTest(unittest.TestCase):
         self.assertIn("of health install", H.body({}, self.NOW))
 
     def test_a_card_after_five_minutes_failed_that_closes_itself(self):
+        """Only a check whose failure keeps its owner from being told brings the person a card (of_conductor,
+        2026-11-17, message 01a1ea82-ce80); every other check goes to its owner only."""
+        import json
         import tempfile
         import of_studio_health as H
         sent = []
         emit = lambda name, payload, **kw: sent.append((name, payload, kw)) or f"ev{len(sent)}"
-        fail = lambda since: {"value": 0.25, "limit": [0.01, 0.1], "state": "failed", "owner": "of_platform",
-                              "since": H.iso(since)}
+        fail = lambda since, owner="of_server", value=25.0: {"value": value, "limit": [2.0, 20.0], "state": "failed",
+                                                             "owner": owner, "since": H.iso(since)}
+        self.assertEqual(set(H.UNTOLD), {"server.health", "relay.oldest"})
+        self.assertLessEqual(set(H.UNTOLD), set(H.PERSON))
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "cards.json")
-            st = self.state(**{"hooks.errors": fail(self.NOW - 240), "machine.memory": dict(fail(self.NOW - 900), value=0.99)})
+            st = self.state(**{"server.health": fail(self.NOW - 240),
+                               "machine.memory": fail(self.NOW - 900, "of_platform", 0.99)})
             self.assertEqual(H.cards(st, self.NOW, emit, path), [])              # 4 minutes: not yet; memory: owner only
-            st = self.state(**{"hooks.errors": fail(self.NOW - 301)})
-            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "hooks.errors", "ev1")])
+            for check in ("hooks.errors", "view.age.asks", "commit.smoke"):     # the person's work, but its owner is told
+                self.assertEqual(H.cards(self.state(**{check: fail(self.NOW - 900, "of_platform")}), self.NOW, emit,
+                                         path), [])
+            self.assertEqual(sent, [])
+            st = self.state(**{"server.health": fail(self.NOW - 301)})
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "server.health", "ev1")])
             self.assertEqual(H.cards(st, self.NOW + 60, emit, path), [])         # one card per episode
             name, pl, kw = sent[0]
             self.assertEqual((name, pl["source"], pl["to"], pl["from_position"], pl["topic_key"], kw["position"]),
-                             ("agent_question", "health", "owner", "of_studio", "health-hooks.errors", "of_studio"))
+                             ("agent_question", "health", "owner", "of_studio", "health-server.health", "of_studio"))
             q = pl["questions"][0]["question"]
-            for text in ("hooks.errors", "for 5 min", "25.0%", "10.0%", "of_platform", "late or not at all", "closes itself"):
+            for text in ("server.health", "for 5 min", "of_server", "go through of-server", "closes itself"):
                 self.assertIn(text, q)
-            self.assertIn("leave it to of_platform", pl["questions"][0]["options"][0])
-            st = self.state(**{"hooks.errors": {"value": 0.0, "limit": [0.01, 0.1], "state": "ok", "owner": "of_platform",
-                                                "since": H.iso(self.NOW + 100)}})
-            self.assertEqual(H.cards(st, self.NOW + 120, emit, path), [("closed", "hooks.errors", "ev1")])
+            self.assertIn("leave it to of_server", pl["questions"][0]["options"][0])
+            st = self.state(**{"server.health": {"value": 0.2, "limit": [2.0, 20.0], "state": "ok", "owner": "of_server",
+                                                 "since": H.iso(self.NOW + 100)}})
+            self.assertEqual(H.cards(st, self.NOW + 120, emit, path), [("closed", "server.health", "ev1")])
             name, pl, _ = sent[-1]
             self.assertEqual((name, pl["ask_id"], pl["ask_ids"], pl["via"]), ("agent_question_answered", "ev1", ["ev1"], "health"))
-            self.assertIn("hooks.errors is ok again", pl["note"])
+            self.assertIn("server.health is ok again", pl["note"])
             self.assertEqual(H.cards(st, self.NOW + 180, emit, path), [])
+            # a card filed before UNTOLD, for a check still failed: it closes at once, its owner told
+            with open(path, "w") as fh:
+                json.dump({"hooks.errors": {"event_id": "old", "from": "of_studio"}}, fh)
+            st = self.state(**{"hooks.errors": fail(self.NOW - 900, "of_platform")})
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [("closed", "hooks.errors", "old")])
+            self.assertIn("hooks.errors is told to its owner of_platform only", sent[-1][1]["note"])
+            self.assertEqual(H.cards(st, self.NOW + 60, emit, path), [])
             # a check that leaves the state while its card is open: the card closes
-            st = self.state(**{"commit.smoke": {"value": "abc", "limit": None, "state": "failed", "owner": "of_platform",
-                                                "since": H.iso(self.NOW - 400)}})
+            st = self.state(**{"relay.oldest": fail(self.NOW - 400)})
             nxt = f"ev{len(sent) + 1}"
-            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "commit.smoke", nxt)])
+            self.assertEqual(H.cards(st, self.NOW, emit, path), [("opened", "relay.oldest", nxt)])
             gone = self.state()
-            gone["checks"].pop("commit.smoke")
-            self.assertEqual([x[:2] for x in H.cards(gone, self.NOW + 60, emit, path)], [("closed", "commit.smoke")])
+            self.assertEqual([x[:2] for x in H.cards(gone, self.NOW + 60, emit, path)], [("closed", "relay.oldest")])
             self.assertIn("no longer measured", sent[-1][1]["note"])
             # on a machine without the OF team's organization: filed in the machine's, with no sending position
-            st = self.state(**{"server.health": dict(fail(self.NOW - 400), owner="of_server")})
+            st = self.state(**{"server.health": fail(self.NOW - 400)})
             self.assertEqual([x[:2] for x in H.cards(st, self.NOW, emit, path, org="acme")], [("opened", "server.health")])
             name, pl, kw = sent[-1]
             self.assertEqual((pl["from_position"], kw["position"], kw["org"]), (None, None, "acme"))

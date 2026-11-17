@@ -13,7 +13,7 @@ A small job checks OF itself every minute on each machine, and of-server checks 
 - one current state per check;
 - an event when a check changes state;
 - one page that shows it all;
-- a card to the owner only when his own work is hit.
+- a card to the owner only when his own work is hit and the check's owner cannot be told.
 
 The checks never run on the listener's loop, because the listener is one of the things they watch.
 
@@ -42,14 +42,14 @@ A limit here is the starting value. Its owner tunes it in this table with the ev
 - **The page.** Studio's Health tab shows the table, with each failed check's owner and the time since it failed (`of_studio`).
 - **The owner of a check** gets one `--fyi` once it has failed for 5 minutes, and one when that failure is over; a check that fails and recovers within 5 minutes tells nobody (2026-11-14: swap around its limit failed and recovered every few minutes, one `--fyi` each time). What one run has to tell an owner, notes and daily reminders alike, goes as one message listing every check (2026-11-17: a stopped listener failed 22 of one owner's checks, and the owner got 22 notes).
 - **A failure that lasts is told again** (2026-11-17, `of_architect`, on `of_platform`'s proposal, message `01a1e82f-f81e`). While a check stays failed, its owner is told once a day. The first reminder, a day after the failure began, is typed into the owner's pane, not `--fyi`. One `--fyi` is easy to miss among health notes: on 2026-11-14 a check failed, its owner missed the one `--fyi`, and the check stayed failed for three days until a hand-over check found it on the Health tab. It was a stale cursor, not a real lag. The same holds for of-server's own checks: of-server tells the owner of `relay.oldest` in the same way, through its own relay, from `of_server` (`bin/of_server_health.py`; hand-over `09042907`: before it, a failing `relay.oldest` was never told, since `of health run` leaves the server's checks to the server). Two limits (`of_review` on organic-framework PR 263): when the relay itself is what fails, the typed reminder waits in the queue it reports on, while the `--fyi` still shows in the owner's `of status` count and the person's card below does not go through the relay; and the server tells only in the OF team's organization (`OWNER_ORG`), as `of health run` does, so a server that does not serve it tells nobody.
-- **The person.** A card goes to the organization's owner only when his own work is hit, after 5 minutes failed:
+- **The person.** These checks hit the organization's owner's own work, and the Health tab marks them:
   - `server.health`;
   - `relay.oldest`;
   - the age of the view his questions screen reads;
   - `hooks.errors`;
   - `commit.smoke`.
 
-  It names the check, its owner and what he sees meanwhile. It closes itself when the check is back. The other checks go to their owners only.
+  A card goes to him only for `server.health` and `relay.oldest`, after 5 minutes failed. Their owner hears of a failure through of-server's relay, the thing that fails, so the card is the one path left (the limits above). It names the check, its owner and what he sees meanwhile. It closes itself when the check is back. Every other check, his work's included, goes to its owner only: an operations matter with an owner, and no decision only he can make (`of_conductor`, 2026-11-17, message `01a1ea82-ce80`; 14 such cards reached him from 2026-11-15 to 2026-11-17, 11 of them on the 17th, none for those two).
 
 ## 4. A broken commit, caught quickly (R3)
 

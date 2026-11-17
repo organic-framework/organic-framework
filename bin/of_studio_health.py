@@ -7,9 +7,10 @@ event log. This module is kept apart from bin/of_studio.py, so that the minute's
 
 - body(state, now): the tab's content. Every check with its state, value, limits, owner and how long it has been in
   that state, failed first. A state older than STALE_S says that `of health run` itself has stopped.
-- cards(state, now): one card to the person for each episode of a check that hits their own work (PERSON), once it has
-  failed for CARD_AFTER_S. The card names the check, its owner and what the person sees meanwhile, and it closes
-  itself when the check is back. `of health run` calls it after writing the state.
+- cards(state, now): one card to the person for each episode of a check whose failure keeps its owner from being told
+  (UNTOLD: of-server and its relay carry that message), once it has failed for CARD_AFTER_S. Every other check goes to
+  its owner only. The card names the check, its owner and what the person sees meanwhile, and it closes itself when
+  the check is back. `of health run` calls it after writing the state.
 """
 
 import calendar
@@ -39,6 +40,12 @@ PERSON = {
     "commit.smoke": "The newest commit in this machine's working copy fails OF's smoke check, so agents' hooks and "
                     "`of` commands may fail until it is fixed or rolled back.",
 }
+# The checks whose failure keeps their owner from being told: `of health run` and of-server tell an owner through
+# of-server's relay, so when of-server or the relay is what fails, the person's card is the one path left. Every other
+# check goes to its owner only (of_conductor, 2026-11-17, message 01a1ea82-ce80: a health alert reached the founder as a
+# card asking what to do, an operations matter with an owner and no decision only he can make; 14 such cards from
+# 2026-11-15 to 2026-11-17, 11 of them on the 17th, none for these two).
+UNTOLD = ("server.health", "relay.oldest")
 RANK = {"failed": 0, "degraded": 1, "ok": 2}
 PERCENT = ("hooks.errors", "machine.memory")
 
@@ -156,9 +163,10 @@ def body(state, now=None):
                    'brings no card; of-server\'s own checks reach this page once <code>of health run</code> carries '
                    'them.</p>')
     out.append('<p class="legend">A check\'s owner hears of a failure that lasted 5 minutes, and again when it is over. '
-               '<span class="yours">your work</span> marks the checks that also bring you a card after 5 minutes failed; '
-               'the card closes itself when the check is back. The limits are docs/health.md §2\'s; each owner tunes '
-               'them there.</p>')
+               '<span class="yours">your work</span> marks the checks that hit your own work. Of those, only '
+               f'{e(" and ".join(UNTOLD))} bring you a card after 5 minutes failed, since their owner hears through '
+               'of-server\'s relay, which is what fails; the card closes itself when the check is back. The limits are '
+               'docs/health.md §2\'s; each owner tunes them there.</p>')
     return "".join(out)
 
 
@@ -222,7 +230,7 @@ def cards(state, now=None, emit=None, path=None, org=None):
         r, card = checks.get(check), mem.get(check)
         since = epoch((r or {}).get("since"))
         failing = bool(r) and r.get("state") == "failed"
-        if failing and card is None and since is not None and now - since >= CARD_AFTER_S:
+        if failing and card is None and check in UNTOLD and since is not None and now - since >= CARD_AFTER_S:
             owner = r.get("owner") or JOB_OWNER
             org = org or card_org()
             sender = CARD_FROM if org in (TEAM_ORG, None) else None
@@ -235,8 +243,9 @@ def cards(state, now=None, emit=None, path=None, org=None):
                 position=sender, org=org)
             mem[check] = {"event_id": eid, "opened": iso(now), "since": r.get("since"), "org": org, "from": sender}
             done.append(("opened", check, eid))
-        elif card is not None and not failing:
-            note = (f"{check} is {r.get('state')} again since {r.get('since')}" if r else f"{check} is no longer measured")
+        elif card is not None and (not failing or check not in UNTOLD):   # a card from before UNTOLD closes at once
+            note = (f"{check} is told to its owner {r.get('owner') or JOB_OWNER} only" if failing else
+                    f"{check} is {r.get('state')} again since {r.get('since')}" if r else f"{check} is no longer measured")
             emit("agent_question_answered", {"ask_id": card["event_id"], "ask_ids": [card["event_id"]], "by": CARD_FROM,
                                              "via": CARD_SOURCE, "note": note}, position=card.get("from"))
             mem.pop(check)
