@@ -212,6 +212,9 @@ class GuardBashTest(unittest.TestCase):
         # of_architect, 2026-11-06, after a real GitHub App key leaked through a last-applied-configuration
         self.assertTrue(deny("kubectl -n ci get secret acme-inc-arc -o yaml"))
         self.assertTrue(deny("kubectl get secret -A -o json"))
+        self.assertTrue(deny("kubectl get secret -A -o YAML"))
+        self.assertTrue(deny("kubectl get pod web-0 -o YAML"))
+        self.assertTrue(deny("kubectl get pod web-0 --output=Json"))
         # the API's own JSON through --raw (2026-11-14: it passed): a Secret, a pod's spec; a pod's log or proxy passes
         self.assertTrue(deny("kubectl get --raw /api/v1/namespaces/ci/secrets/acme-inc-arc"))
         self.assertTrue(deny("kubectl get --raw=/api/v1/secrets"))
@@ -292,7 +295,29 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl get pod web-1 -o jsonpath-as-json='{.spec.containers[*].env}'",
                     "kubectl get pod web-1 -o jsonpath-file=/tmp/claude-501/x/t.jsonpath",
                     "kubectl get pod web-1 -o jsonpath=\"{.spec.containers[*].$F}\"",
-                    "kubectl get pod,svc -o go-template='{{range .items}}{{.spec}}{{end}}'"):
+                    "kubectl get pod,svc -o go-template='{{range .items}}{{.spec}}{{end}}'",
+                    # a base the guard cannot read is an unknown context (of_secrets-review on organic-framework
+                    # PR 264: each of these printed the value through a real kubectl)
+                    "kubectl get pod web-1 -o go-template='{{range (index .spec.containers 0).env}}{{.name}}="
+                    "{{.value}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range index (index .spec.containers 0) \"env\"}}"
+                    "{{.value}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range $k, $v := index .spec.containers 0}}"
+                    "{{if eq $k \"env\"}}{{range $v}}{{.value}}{{end}}{{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range index .spec.containers 0}}{{range .}}{{.value}}"
+                    "{{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{with index .spec.containers 0}}{{range .env}}{{.value}}"
+                    "{{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{$c := index .spec.containers 0}}{{$c.env}}'",
+                    "KUBE_EDITOR=cat kubectl edit pod web-1",
+                    # an output name in any case, and kyaml, print the whole Pod; a union in one bracket is judged once
+                    # per field (of_review on organic-framework PR 264)
+                    "kubectl get pod web-0 -o kyaml", "kubectl get pod web-0 -o KYAML", "kubectl get pod web-0 -oKyaml",
+                    "kubectl get pod web-0 -o JSONPATH='{.spec.containers[*].env}'",
+                    "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*]['name','env']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{.spec['containers','volumes']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{['spec','status']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*].env[*]['name','value']}\""):
             hit = deny(cmd)
             self.assertTrue(hit, cmd)
             self.assertTrue(hit[0].startswith(of_guard.POD_ENV_DENY), cmd)
@@ -315,12 +340,21 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl get pods -o wide", "kubectl get pods -o name", "kubectl get pods",
                     "kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env}' > /tmp/claude-501/x/env.txt",
                     "kubectl get deploy web -o jsonpath='{.spec.template.spec.containers[*].image}'",
+                    "kubectl get pod web-1 -o go-template='{{(index .spec.containers 0).image}}'",
+                    "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{.name}} {{end}}"
+                    "{{end}}'",
+                    "kubectl get pods -o go-template='{{range $i, $p := .items}}{{$i}} {{$p.metadata.name}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range $k, $v := .metadata.labels}}{{$k}}={{$v}} {{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{index .metadata.labels \"app\"}}'",
+                    "kubectl edit deploy web", "kubectl get pod web-0 -o Wide", "kubectl get pods -o NAME",
+                    "kubectl get pod web-0 -o jsonpath=\"{.status['phase','podIP']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*]['name','image']}\"",
                     "kubectl set env deploy/web FOO=bar", "kubectl describe svc web", "kubectl describe node n1"):
             self.assertIsNone(deny(cmd), cmd)
             self.assertEqual(warned(), [], cmd)
         # describe pod and a workload's spec are live flows: they warn first, with the rule's note
         for cmd in ("kubectl describe pod web-1 -n ci", "kubectl describe pods", "kubectl describe deploy web",
-                    "kubectl get deploy web -o yaml", "kubectl get sts web -o json",
+                    "kubectl get deploy web -o yaml", "kubectl get sts web -o json", "kubectl get deploy web -o KYAML",
                     "kubectl get cronjob c -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[*].env}'",
                     "kubectl get deployment.apps/web -o jsonpath='{.metadata.annotations}'"):
             self.assertIsNone(deny(cmd), cmd)
