@@ -79,6 +79,25 @@ class ProtectedCodeTest(unittest.TestCase):
         of_guard.use_protection()
         self.tmp.cleanup()
 
+    def test_g21_a_path_written_with_home_is_the_home_folders(self):
+        """2026-11-17: `bash "$HOME/…"`, a write, a removal and a git call in a protected worktree written with $HOME or
+        ${HOME} passed, while the same with `~` was denied: the guard expanded `~` only."""
+        home = os.path.realpath(os.path.expanduser("~"))
+        rel = os.path.join("Library", "Application Support", "acme-backup", "bin")
+        os.makedirs(os.path.join(home, rel), exist_ok=True)
+        of_guard.use_protection(code=["~/" + rel])
+        try:
+            for var in ("$HOME", "${HOME}"):
+                for cmd in (f'bash "{var}/{rel}/run.sh"', f'source "{var}/{rel}/run.sh"',
+                            f'echo x > "{var}/{rel}/run.sh"', f'rm -rf "{var}/Library/Application Support/acme-backup"',
+                            f'cp evil.sh "{var}/{rel}/run.sh"', f'chmod +x "{var}/{rel}/run.sh"'):
+                    self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+            for cmd in (f'"$HOME/{rel}/run.sh"', f'cat "$HOME/{rel}/run.sh"', f'bash "$HOMEX/{rel}/run.sh"',
+                        f'cp "$HOME/{rel}/run.sh" /tmp/claude-501/x/copy.sh'):
+                self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+        finally:
+            of_guard.use_protection(code=[self.bin, os.path.join(self.agents, "com.acme.*")])
+
     def test_g21_git_writes_in_a_protected_worktree(self):
         """2026-11-16: a user organization keeps a detached worktree at a reviewed merge as protected code; the guard
         let `git merge`, `reset --hard`, `pull`, `apply` and `stash pop` change it."""

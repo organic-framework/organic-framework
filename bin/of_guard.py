@@ -17,6 +17,14 @@ import warnings
 
 import of_classify
 
+_HOME_WORD = re.compile(r"^(?:\$\{HOME\}|\$HOME)(?=/|$)")
+
+
+def _expanduser(p):
+    """os.path.expanduser, with a leading `$HOME` or `${HOME}` read as `~`: the shell expands it from the session's
+    HOME, and a path written so reached G19's and G21's folders unseen (2026-11-17, `bash "$HOME/…"`)."""
+    return os.path.expanduser(_HOME_WORD.sub("~", p) if isinstance(p, str) else p)
+
 CRITICAL_DENY_BASH = re.compile(
     r"(?:^|[;&|(\s])(?:printenv\b|env\s*(?:$|[|;>&])|export\s+-p\b|set\s*(?:$|[|;>&])|"
     r"echo\s+[^|;&]*\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)\w*|"
@@ -1576,7 +1584,7 @@ def _committed_clean(path):
 def _stdin_script_deny(path, kind, depth):
     """A local file sent as the script of a remote shell or interpreter: allowed when committed and unchanged,
     otherwise its text is checked like a heredoc body."""
-    p = os.path.expanduser(path)
+    p = _expanduser(path)
     if not os.path.isabs(p) and _DENY_CWD[0]:
         p = os.path.join(_DENY_CWD[0], p)
     if not os.path.isfile(p):
@@ -1693,7 +1701,7 @@ def _grant_file(p):
     p = str(p or "").strip("'\"")
     if p and not p.startswith(("/", "~", "$")) and _DENY_CWD[0]:
         p = os.path.join(_DENY_CWD[0], p)
-    return bool(p) and bool(_GRANT_FILES.search(os.path.normpath(os.path.expanduser(p))))
+    return bool(p) and bool(_GRANT_FILES.search(os.path.normpath(_expanduser(p))))
 
 
 def _write_targets(stext):
@@ -1900,7 +1908,7 @@ def _config_files_set(env, word):
         if not f or f == "/dev/null":
             continue
         try:
-            with open(os.path.expanduser(f), errors="replace") as fh:
+            with open(_expanduser(f), errors="replace") as fh:
                 if word in fh.read(1 << 20).lower():
                     return True
         except OSError:
@@ -1932,7 +1940,7 @@ def _config_sections(path, section):
     """{name in lower case: value} of one section of a git config file (`[alias]`), and its include paths."""
     out, inc, cur = {}, [], None
     try:
-        lines = open(os.path.expanduser(path), errors="replace").read(1 << 20).splitlines()
+        lines = open(_expanduser(path), errors="replace").read(1 << 20).splitlines()
     except OSError:
         return out, inc
     for line in lines:
@@ -1973,8 +1981,8 @@ def _git_aliases(where, env, line):
     for f in reversed(files):  # later files win in git; read the lowest first so the repository's wins
         found, inc = _config_sections(f, "alias")
         for i in inc:
-            out.update(_config_sections(os.path.join(os.path.dirname(os.path.expanduser(f)), os.path.expanduser(i))
-                                        if not os.path.isabs(os.path.expanduser(i)) else i, "alias")[0])
+            out.update(_config_sections(os.path.join(os.path.dirname(_expanduser(f)), _expanduser(i))
+                                        if not os.path.isabs(_expanduser(i)) else i, "alias")[0])
         out.update(found)
     out.update(line or {})
     return out
@@ -2010,7 +2018,7 @@ def _gh_aliases(line):
     d = os.environ.get("GH_CONFIG_DIR") or os.path.join(os.environ.get("XDG_CONFIG_HOME") or "~/.config", "gh")
     out, inside = {}, False
     try:
-        lines = open(os.path.join(os.path.expanduser(d), "config.yml"), errors="replace").read(1 << 20).splitlines()
+        lines = open(os.path.join(_expanduser(d), "config.yml"), errors="replace").read(1 << 20).splitlines()
     except OSError:
         lines = []
     for ln in lines:
@@ -2055,7 +2063,7 @@ def gh_expand(args, line=None, depth=0):
 
 def _git_dir(path):
     """The git directory (the common one, for a worktree) of the repository holding PATH, or None."""
-    p = os.path.abspath(os.path.expanduser(path or "."))
+    p = os.path.abspath(_expanduser(path or "."))
     for _ in range(64):
         g = os.path.join(p, ".git")
         if os.path.isdir(g):
@@ -2095,7 +2103,7 @@ def gated(path):
 
 
 def _in_hooks(path, cwd):
-    p = os.path.expanduser(str(path).strip("'\""))
+    p = _expanduser(str(path).strip("'\""))
     p = p if os.path.isabs(p) else os.path.join(cwd or ".", p)
     p = os.path.normpath(p)
     return ("/.git/hooks/" in p + "/" or p.endswith("/.git/hooks")) and gated(p.split("/.git/hooks")[0] or "/")
@@ -2169,10 +2177,10 @@ def _guard_state_file(path, cwd=None):
         return False
     if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
-    p = os.path.expanduser(p)
+    p = _expanduser(p)
     if _GUARD_STATE_FILES.search(os.path.normpath(p)):
         return True
-    state = os.path.realpath(os.path.expanduser("~/.local/state/of"))
+    state = os.path.realpath(_expanduser("~/.local/state/of"))
     targets = [os.path.join(state, n) for n in _GUARD_STATE_NAMES]
     if any(ch in p for ch in "*?["):
         import fnmatch
@@ -2253,7 +2261,7 @@ def _security_deny(args):
 
 def _real_pattern(pattern):
     """PATTERN with the real path of its literal folder: /tmp and /var are links on macOS."""
-    p = os.path.expanduser(str(pattern))
+    p = _expanduser(str(pattern))
     head = re.split(r"[*?[]", p, maxsplit=1)[0]
     stem = head if head.endswith("/") or head == p else os.path.dirname(head)
     return os.path.realpath(stem.rstrip("/") or "/") + p[len(stem.rstrip("/")):] if stem else p
@@ -2265,7 +2273,7 @@ def _protected_code(path, cwd, removal=False):
     if not _ORG_PROTECTION["code"] or not path:
         return None
     import fnmatch
-    p = os.path.expanduser(str(path).strip("'\""))
+    p = _expanduser(str(path).strip("'\""))
     p = os.path.realpath(p if os.path.isabs(p) else os.path.join(cwd or ".", p))
     chain = [p]
     while os.path.dirname(chain[-1]) != chain[-1]:
@@ -2404,7 +2412,7 @@ def _git_outputs(sub, rest):
 def _git_top(path):
     """The top of the work tree holding PATH: the nearest folder at or above it with a .git, else None (no repository
     there for git to write, or a folder the guard could not resolve, such as `cd $(dirname $f)/..`)."""
-    q = os.path.abspath(os.path.expanduser(path or "."))
+    q = os.path.abspath(_expanduser(path or "."))
     for _ in range(64):
         if os.path.exists(os.path.join(q, ".git")):
             return q
@@ -2487,16 +2495,16 @@ def _git_protected(args, cwd, env, shvars=None):
     where, tree = cwd or ".", None
     dirs, _, _ = _git_targets(args)
     for opt, w in dirs:
-        w = os.path.expanduser(w.strip("'\""))
+        w = _expanduser(w.strip("'\""))
         if opt == "-C":
             where = os.path.join(where, w)
         elif opt == "--work-tree":
             tree = os.path.join(where, w)
     pairs = _git_config_pairs(args, env)
     if tree is None:
-        tree = next((os.path.join(where, os.path.expanduser(v)) for k, v in pairs if k == "core.worktree" and v), None)
+        tree = next((os.path.join(where, _expanduser(v)) for k, v in pairs if k == "core.worktree" and v), None)
     if tree is None and env.get("GIT_WORK_TREE"):
-        tree = os.path.join(where, os.path.expanduser(env["GIT_WORK_TREE"]))
+        tree = os.path.join(where, _expanduser(env["GIT_WORK_TREE"]))
     if tree is None and (any(opt == "--git-dir" for opt, _ in dirs) or env.get("GIT_DIR")):
         tree = where  # an explicit git dir with no work tree makes the folder git runs in the tree (of_secrets-review)
     top = tree or _git_top(where) or where
@@ -2743,7 +2751,7 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
                 continue
             h, a = s1[0], s1[1]
             if h in ("cd", "pushd") and a:
-                here = os.path.join(here or ".", os.path.expanduser(_expand_vars(a[0], shvars)))
+                here = os.path.join(here or ".", _expanduser(_expand_vars(a[0], shvars)))
             hit = _shell_runs_protected(h, a, here, st, shvars, _fed(prior), depth + 1) or \
                 (_find_runs_protected(a, here) if h == "find" else None)
             if hit:
@@ -2816,8 +2824,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
 
 
 def _herdr_lab(path):
-    lab = os.path.realpath(os.path.expanduser(HERDR_LAB))
-    p = os.path.realpath(os.path.expanduser(str(path or "")))
+    lab = os.path.realpath(_expanduser(HERDR_LAB))
+    p = os.path.realpath(_expanduser(str(path or "")))
     return bool(path) and (p == lab or p.startswith(lab + "/"))
 
 
@@ -2833,12 +2841,12 @@ def _plugin_dirs():
         xdg = os.environ.get("XDG_CONFIG_HOME")
         herdr = list(HERDR_PLUGIN_DIRS) + ([os.path.join(xdg, "herdr", "plugins")] if xdg and not _herdr_lab(xdg)
                                            else [])
-        _PLUGIN_DIRS.append(keep + [os.path.realpath(os.path.expanduser(d)) for d in herdr])
+        _PLUGIN_DIRS.append(keep + [os.path.realpath(_expanduser(d)) for d in herdr])
     return _PLUGIN_DIRS[0]
 
 
 def _in_plugin_code(path, cwd):
-    p = os.path.expanduser(str(path).strip("'\""))
+    p = _expanduser(str(path).strip("'\""))
     p = os.path.realpath(p if os.path.isabs(p) else os.path.join(cwd or ".", p))
     return any(p == d or p.startswith(d.rstrip("/") + "/") for d in _plugin_dirs())
 
@@ -2884,10 +2892,10 @@ def _herdr_reached_is_lab(stext, env):
         xdg = e.get("XDG_CONFIG_HOME")
         if not _herdr_lab(xdg):
             return False
-        sock = os.path.join(os.path.expanduser(xdg), "herdr", "herdr.sock")
+        sock = os.path.join(_expanduser(xdg), "herdr", "herdr.sock")
     # the socket must exist when the guard looks, its real path inside the lab: a link made later on the line, or one
     # that points out of the lab, reaches the owner's herdr (of_architect's second review of PR 32)
-    path = os.path.expanduser(sock)
+    path = _expanduser(sock)
     return os.path.lexists(path) and os.path.exists(path) and _herdr_lab(os.path.realpath(path))
 
 
@@ -2930,7 +2938,7 @@ def _hooks_deny(head, args, stext, cwd, env=None):
     where0 = cwd or "."
     for k in range(len(args) - 1):  # git -C <dir> before the subcommand moves the repository
         if args[k] == "-C":
-            where0 = os.path.join(where0, os.path.expanduser(args[k + 1]))
+            where0 = os.path.join(where0, _expanduser(args[k + 1]))
     expanded, shell = git_expand(args, where0, env, (env or {}).get("__git_aliases"))
     if shell is not None:
         hit = _bash_deny(shell, 1) if gated(where0) else None
@@ -2944,7 +2952,7 @@ def _hooks_deny(head, args, stext, cwd, env=None):
         a = args[i]
         if a in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
             if a == "-C":
-                where = os.path.join(where, os.path.expanduser(args[i + 1]))
+                where = os.path.join(where, _expanduser(args[i + 1]))
             elif a == "-c" or a == "--config-env":
                 conf.append(args[i + 1])
             i += 2
@@ -3092,10 +3100,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 prior.append((head, [_expand_vars(a, {**line_vars, **exported}) for a in args], stext, here21))
             prev = (head, stext)
             if head in ("cd", "pushd"):  # pushd moves like cd (of_review on PR 249)
-                to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
+                to = _expanduser(args[0]) if args and args[0] != "-" else _expanduser("~")
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
-                to = os.path.expanduser(_expand_vars(args[0], {**line_vars, **exported})) \
-                    if args and args[0] != "-" else os.path.expanduser("~")
+                to = _expanduser(_expand_vars(args[0], {**line_vars, **exported})) \
+                    if args and args[0] != "-" else _expanduser("~")
                 here21 = to if os.path.isabs(to) else os.path.join(here21 or ".", to)
             elif head == "export":
                 exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
@@ -3258,7 +3266,7 @@ def _resolve_dir(word, here, values):
         w = re.sub(r"\$\{%s\}|\$%s(?!\w)" % (name, name), lambda _m, v=val: v, w)
     if "$" in w or "__OFSUB" in w or "`" in w:
         return None
-    w = os.path.expanduser(w)
+    w = _expanduser(w)
     if not os.path.isabs(w):
         if here is None:
             return None
@@ -3279,7 +3287,7 @@ def _home_git(path):
         return path == MAYBE_HOME
     try:
         return _is_home(path) or os.path.realpath(path) == os.path.join(
-            os.path.realpath(os.path.expanduser("~")), ".git")
+            os.path.realpath(_expanduser("~")), ".git")
     except (OSError, ValueError):
         return False
 
@@ -3298,7 +3306,7 @@ def _is_home(path):
     if path == MAYBE_HOME:
         return True
     try:
-        return path is not None and os.path.realpath(path) == os.path.realpath(os.path.expanduser("~"))
+        return path is not None and os.path.realpath(path) == os.path.realpath(_expanduser("~"))
     except (OSError, ValueError):
         return False
 
@@ -3361,12 +3369,12 @@ def _collapses(word, names):
     w = re.sub(r"(?:/\*|/\.?)+$", "", w) or "/"   # a folder's contents count as the folder
     if "$" in w or "__OFSUB" in w or "*" in w:
         return False
-    w = os.path.expanduser(w)
+    w = _expanduser(w)
     if not os.path.isabs(w):
         return False
-    p, home = os.path.normpath(w), os.path.realpath(os.path.expanduser("~"))
+    p, home = os.path.normpath(w), os.path.realpath(_expanduser("~"))
     return p == "/" or home == p or home.startswith(p.rstrip("/") + "/") or \
-        os.path.expanduser("~") == p or os.path.expanduser("~").startswith(p.rstrip("/") + "/")
+        _expanduser("~") == p or _expanduser("~").startswith(p.rstrip("/") + "/")
 
 
 def _target_hit(what, names, subject, home=None, after_cd=()):
@@ -3581,7 +3589,7 @@ def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=N
                     if _is_home(target) or ({"--bare", "--mirror"} & set(rest) and _home_git(target)):
                         return _home_repo(where, loose_cd), "git clone"
                 elif sub_cmd == "commit" and where is not None:
-                    if (_is_home(where) and (where != MAYBE_HOME or os.path.isdir(os.path.expanduser("~/.git")))) or \
+                    if (_is_home(where) and (where != MAYBE_HOME or os.path.isdir(_expanduser("~/.git")))) or \
                             (where != MAYBE_HOME and _is_home(os.path.dirname(_git_dir(where) or "/"))):
                         return _home_repo(where, loose_cd), "git commit"
             elif head in ("export", "declare", "typeset", "local", "readonly"):
@@ -3729,7 +3737,7 @@ _KUBE_INTO_POD = {"exec", "attach", "cp", "debug", "port-forward"}
 
 def _norm_path(p):
     p = re.sub(r"^\$\{?HOME\}?(?=/|$)", "~", str(p).strip())
-    return os.path.normpath(os.path.expanduser(p))
+    return os.path.normpath(_expanduser(p))
 
 
 def _assignments(stext):
@@ -4213,8 +4221,8 @@ def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
     read (of_secrets-review on organic-framework PR 152). Read as text; never printed."""
     import glob
     seen = seen if seen is not None else set()
-    path = os.path.expanduser(path)
-    base = base or (os.path.dirname(path) if path.startswith("/etc/ssh") else os.path.expanduser("~/.ssh"))
+    path = _expanduser(path)
+    base = base or (os.path.dirname(path) if path.startswith("/etc/ssh") else _expanduser("~/.ssh"))
     if depth > 8 or path in seen:
         return []
     seen.add(path)
@@ -4249,7 +4257,7 @@ def _ssh_config_blocks(path, depth=0, seen=None, opaque=None, base=None):
             block = "match"
         elif key == "include":
             for pat in val.split():
-                pat = os.path.expanduser(pat)
+                pat = _expanduser(pat)
                 if not os.path.isabs(pat):
                     pat = os.path.join(base, pat)
                 for p in sorted(glob.glob(pat)):
@@ -5362,7 +5370,7 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
                 continue
             head, args = s[0], s[1]
             if head == "cd":
-                to = os.path.expanduser(args[0]) if args and args[0] != "-" else os.path.expanduser("~")
+                to = _expanduser(args[0]) if args and args[0] != "-" else _expanduser("~")
                 here = to if os.path.isabs(to) else os.path.join(here or ".", to)
             elif head == "export":
                 exported.update(dict(a.split("=", 1) for a in args if re.match(r"^[A-Za-z_]\w*=", a)))
@@ -5385,7 +5393,7 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
                 while i < len(args) and args[i].startswith("-"):
                     if args[i] in ("-C", "-c", "--git-dir", "--work-tree") and i + 1 < len(args):
                         if args[i] == "-C":
-                            where = os.path.join(where, os.path.expanduser(args[i + 1]))
+                            where = os.path.join(where, _expanduser(args[i + 1]))
                         i += 2
                         continue
                     i += 1
@@ -5450,7 +5458,7 @@ def _cred_expand(w, env, cwd):
     w = re.sub(r"^\$\{?HOME\}?(?=/|$)", "~", w)
     if "$" in w or "`" in w or not w or "\n" in w or " " in w:
         return None
-    w = os.path.expanduser(w)
+    w = _expanduser(w)
     if not os.path.isabs(w):
         if not cwd or not _PATHISH.match(w) and "/" not in w and not os.path.exists(os.path.join(cwd, w)):
             return None
@@ -5637,7 +5645,7 @@ def _scratch_path(w, env, cwd):
     w = re.sub(r"^\$\{?HOME\}?(?=/|$)", "~", w)
     if not w or "$" in w or "`" in w or "\n" in w:
         return None
-    w = os.path.expanduser(w)
+    w = _expanduser(w)
     if not os.path.isabs(w):
         if not cwd or w.startswith("-") or not (w.startswith(".") or "/" in w):
             return None
