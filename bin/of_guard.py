@@ -190,7 +190,9 @@ def _key_file(path):
     """Does the regular file at PATH start with a private key's header (OpenSSH, PEM, PGP, PuTTY)? Reads at most its
     first 96 bytes, kept nowhere and never printed; anything else (a folder, a FIFO, no file) is no."""
     try:
-        if not path or not stat.S_ISREG(os.stat(path).st_mode):
+        st = os.stat(path) if path else None
+        # a dataless file (iCloud Drive, a File Provider folder) would be downloaded by opening it: never opened
+        if not st or not stat.S_ISREG(st.st_mode) or getattr(st, "st_flags", 0) & 0x40000000:
             return False
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         try:
@@ -227,16 +229,104 @@ def _loop_header(stext, loops):
         loops[toks[1]] = [t for t in toks[3:] if t != "do"]
 
 
-def _glob(pattern):
+_POSIX_CLASS = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+                "xdigit": "0-9A-Fa-f", "space": " \t\n\r\f\v", "blank": " \t", "word": "a-zA-Z0-9_"}
+
+
+def _fnpattern(part):
+    """A glob component in fnmatch's terms: bash's `[[:alpha:]]` classes and `[^…]` negation (of_secrets-review on
+    organic-framework PR 321: a class matched nothing)."""
+    part = re.sub(r"\[:(\w+):\]", lambda m: _POSIX_CLASS.get(m.group(1), m.group(0)), part)
+    return part.replace("[^", "[!")
+
+
+def _braces(word, limit=EXPAND_LIMIT):
+    """WORD's brace expansion, which bash does before anything else: `{a,b}`, nested, and `{1..3}` or `{a..c}` ranges;
+    `${…}` is a parameter, not a brace. At most LIMIT words (of_secrets-review on organic-framework PR 321:
+    `cat k/{run.sh,deploy}` printed a key)."""
+    i = 0
+    while i < len(word):
+        if word[i] != "{" or (i and word[i - 1] == "$"):
+            i += 1
+            continue
+        depth, j, commas = 0, i, []
+        while j < len(word):
+            c = word[j]
+            if c == "\\":
+                j += 2
+                continue
+            depth += c == "{"
+            depth -= c == "}"
+            if c == "}" and depth == 0:
+                break
+            if c == "," and depth == 1:
+                commas.append(j)
+            j += 1
+        if j >= len(word):
+            return [word]
+        body = word[i + 1:j]
+        if commas:
+            bounds = [i] + commas + [j]
+            parts = [word[bounds[k] + 1:bounds[k + 1]] for k in range(len(bounds) - 1)]
+        else:
+            m = re.fullmatch(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])", body)
+            if not m:
+                i += 1
+                continue
+            if m.group(1) is not None:
+                a, b, step = int(m.group(1)), int(m.group(2)), abs(int(m.group(3) or 1)) or 1
+                pad = max(len(m.group(1)), len(m.group(2))) if re.match(r"-?0\d", m.group(1) + " ") or \
+                    re.match(r"-?0\d", m.group(2) + " ") else 0
+                seq = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
+                parts = [str(x).zfill(pad) for x in seq[:limit]]
+            else:
+                a, b = ord(m.group(4)), ord(m.group(5))
+                parts = [chr(x) for x in (range(a, b + 1) if a <= b else range(a, b - 1, -1))]
+        out = []
+        for part in parts:
+            out += _braces(word[:i] + part + word[j + 1:], limit)
+            if len(out) >= limit:
+                return out[:limit]
+        return out
+    return [word]
+
+
+def _glob(pattern, wide=False):
     """The paths an absolute PATTERN matches as bash matches them (case-sensitive, `*` and `?` never match a leading
-    dot), reading at most EXPAND_BUDGET folder entries and keeping at most EXPAND_LIMIT matches."""
+    dot), reading at most EXPAND_BUDGET folder entries and keeping at most EXPAND_LIMIT matches. WIDE: as with
+    `shopt -s dotglob globstar` as well, a leading dot matched and `**` any depth, for the content check alone, where
+    matching more costs no false deny (of_secrets-review on organic-framework PR 321)."""
     import fnmatch
+    if pattern.endswith("/") and len(pattern) > 1:  # `k/*/`: folders only, as the shell matches it
+        return [q for q in _glob(pattern.rstrip("/"), wide) if os.path.isdir(q)]
     parts, paths, read = [x for x in pattern.split("/") if x], ["/"], 0
     for i, part in enumerate(parts):
         last, nxt = i == len(parts) - 1, []
         if not _GLOB.search(part):
             nxt = [q for q in (os.path.join(x, part) for x in paths) if last or os.path.isdir(q)]
+        elif part == "**":  # recursive, as zsh (the agents' shell on a Mac) reads it by default and bash with globstar
+            stack = list(paths)
+            while stack:
+                x = stack.pop()
+                nxt.append(x)
+                try:
+                    with os.scandir(x) as it:
+                        for e in it:
+                            read += 1
+                            if read > EXPAND_BUDGET:
+                                return [q for q in nxt if os.path.lexists(q)][:EXPAND_LIMIT] if last else []
+                            if not wide and e.name.startswith("."):
+                                continue
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append(os.path.join(x, e.name))
+                            elif last:
+                                nxt.append(os.path.join(x, e.name))
+                except OSError:
+                    continue
         else:
+            # for the content check, any bracket expression is one character of any kind: a class fnmatch does not read
+            # never hides a key (of_review on organic-framework PR 321)
+            pat = re.sub(r"\[(?:\[:\w+:\]|[^\]\[])+\]", "?", part) if wide else _fnpattern(part)
             for x in paths:
                 try:
                     with os.scandir(x) as it:
@@ -244,9 +334,9 @@ def _glob(pattern):
                             read += 1
                             if read > EXPAND_BUDGET:
                                 return [q for q in nxt if os.path.lexists(q)][:EXPAND_LIMIT] if last else []
-                            if e.name.startswith(".") and not part.startswith("."):
+                            if not wide and e.name.startswith(".") and not part.startswith("."):
                                 continue
-                            if fnmatch.fnmatchcase(e.name, part) and (last or e.is_dir()):
+                            if fnmatch.fnmatchcase(e.name, pat) and (last or e.is_dir()):
                                 nxt.append(os.path.join(x, e.name))
                 except OSError:
                     continue
@@ -257,31 +347,38 @@ def _glob(pattern):
 
 
 def _expanded(word, here, loops, shvars):
-    """[(by_shell, path)]: what a reader's WORD reaches on this machine as the shell expands it: a loop variable as each
-    word of its `for` list, then the line's variables, then a glob. BY_SHELL: the path came out of a glob or a loop's
-    list, which no word on the line names (G0.9). Nothing for an unknown part, or inside a remote command (ssh, a
-    container's or a VM's exec), whose files are not this machine's."""
+    """[(by_shell, path, by_name)]: what a reader's WORD reaches on this machine as the shell expands it: braces, a loop
+    variable as each word of its `for` list, the line's variables, then a glob. BY_SHELL: the path came out of braces, a
+    glob or a loop's list, which no word on the line names (G0.9). BY_NAME: the name rules may judge it too (bash's
+    default glob, a brace word, a loop's word); a path only the wide glob reaches, or a line variable holds, is judged
+    by content. Nothing for an unknown part, or inside a remote command (ssh, a container's or a VM's exec), whose files
+    are not this machine's."""
     if _REMOTE_BODY[0]:
         return []
-    words, loop = [word], False
-    m = re.search(r"\$\{?([A-Za-z_]\w*)\}?", word)
-    if m and m.group(1) in loops:
-        words, loop = [word[:m.start()] + w + word[m.end():] for w in loops[m.group(1)]], True
+    braced = _braces(word)
+    brace = braced != [word]
     out = []
-    for w in words:
-        p = _local(_expand_vars(w, shvars), here)
-        if p and _GLOB.search(p):
-            out += [(True, x) for x in _glob(p)]
-        elif p and (not loop or os.path.lexists(p)):  # a loop's word that is no file here is a name, not a path
-            out.append((loop, p))
+    for bw in braced:
+        words, loop = [bw], False
+        m = re.search(r"\$\{?([A-Za-z_]\w*)\}?", bw)
+        if m and m.group(1) in loops:
+            words, loop = [bw[:m.start()] + w + bw[m.end():] for w in loops[m.group(1)]], True
+        for w in words:
+            p = _local(_expand_vars(w, shvars), here)
+            if p and _GLOB.search(p):
+                plain = set(_glob(p))
+                out += [(True, x, x in plain) for x in _glob(p, wide=True)]
+            elif p and (not loop or os.path.lexists(p)):  # a loop's word that is no file here is a name, not a path
+                out.append((loop or brace, p, loop or brace))
     return out
 
 
-def _key_hit(path, expanded):
+def _key_hit(path, expanded, by_name=None):
     """A secret file a reader reaches only through a glob or a loop's list (G0.9: by name or content), or a private key
     by content (G1.13): (reason, path) to deny, None (a warning is noted when its mode warns). A path a variable set on
     the line holds is judged by content only: by name it is G5's own reading of the word (Known limits)."""
-    if expanded and _secret_path(path) and not _NO_CRED.search(os.path.basename(path)):  # not kubeconfig.go
+    by_name = expanded if by_name is None else by_name
+    if by_name and _secret_path(path) and not _NO_CRED.search(os.path.basename(path)):  # not kubeconfig.go
         kind = "expand"
     elif _key_file(path):
         kind = "expand" if expanded else "content"
@@ -295,11 +392,19 @@ def _key_hit(path, expanded):
 
 
 def _reader_key(word, here, loops, shvars):
-    for expanded, p in _expanded(word, here, loops, shvars):
-        hit = _key_hit(p, expanded)
+    for expanded, p, by_name in _expanded(word, here, loops, shvars):
+        hit = _key_hit(p, expanded, by_name)
         if hit:
             return hit
     return None
+
+
+def _redirect_key(target):
+    """A `<` redirection's target that reaches a secret file once expanded (a loop's variable, a line variable, a glob)
+    or is a private key by content: (reason, path) or None (of_secrets-review on organic-framework PR 321:
+    `for f in k/*; do head -5 < "$f"; done`)."""
+    here, shvars = _REDIR_CTX[0] or (_DENY_CWD[0], {})
+    return _reader_key(target, here, _LOOPS[0], shvars)
 
 
 def _prints(token):
@@ -1672,10 +1777,11 @@ def _simple(stext):
             k += 2
         elif w and set(w) <= _REDIR:
             target = toks[k + 1] if k + 1 < len(toks) else ""
-            if "<" in w and "<<" not in w and (_secret_path(target) or _memory_path(target)
-                                                or (_key_file(_local(target, _DENY_CWD[0]))
-                                                    and KEY_READ_MODE["content"] == "deny")):
+            if "<" in w and "<<" not in w and (_secret_path(target) or _memory_path(target)):
                 return ("<read", target, None, None, None)  # `done < .env`, `nc h 9 < /proc/kcore`: deny now
+            hit = _redirect_key(target) if "<" in w and "<<" not in w else None  # G0.9, G1.13
+            if hit:
+                return ("<read", hit[1], None, None, None)
             if ">" in w and not target.isdigit() and target not in _DEV_STREAMS and not w.endswith("&"):
                 to_file = True
             k += 2
@@ -2478,6 +2584,7 @@ def _launch_file(path, cwd=None):
 # > 0 while _bash_deny reads a command another machine runs: there `~` is that machine's home (G29 reads only this one's)
 _REMOTE_BODY = [0]
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
+_REDIR_CTX = [None]  # (folder, line variables) of the simple command _bash_deny reads, for its `<` targets (G0.9)
 
 
 def _launch_write(head, args, cwd, files, removal):
@@ -3409,6 +3516,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     return hit
                 continue
             _loop_header(stext, loops)
+            _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
             s = _simple(stext)
             if not s:
                 line_vars.update(_assignments(stext))  # `P=…;` alone: a shell variable the line reads later
@@ -4091,6 +4199,7 @@ def critical_deny(tool, tool_input, cwd=None):
     _WARNINGS.clear()
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
+    _REDIR_CTX[0] = None
     if tool == "Bash":
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd

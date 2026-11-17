@@ -83,6 +83,39 @@ class KeyReadTest(unittest.TestCase):
         self.assertIsNone(deny(f"ssh runner 'head -40 {self.kit}/*'"))             # the remote host's files
         self.assertIsNone(deny(f"ssh runner 'for f in {self.kit}/*; do cat \"$f\"; done'"))
 
+    def test_braces_a_redirection_and_hidden_or_deeper_files(self):
+        """of_secrets-review on organic-framework PR 321: brace expansion, a `<` from a loop's variable, and dotglob or
+        globstar each printed a key under an innocuous name."""
+        k = self.kit
+        self.assertTrue(deny(f"cat {k}/{{ssh_config,notes.txt}}"))
+        self.assertTrue(deny(f"head {k}/{{ssh_{{config,x}},notes.{{txt,md}}}}"))       # nested
+        self.assertIsNone(deny(f"cat {k}/{{ssh_config,env.sh}}"))
+        self.assertIsNone(deny(f"grep -rn needle {k}/*/"))                              # a trailing /: folders only
+        for n in (1, 2, 3):
+            with open(os.path.join(self.d, f"part{n}"), "w") as fh:
+                fh.write(HEADER if n == 2 else "x\n")
+        self.assertTrue(deny(f"cat {self.d}/part{{1..3}}"))                            # a range
+        self.assertIsNone(deny(f"echo ${{HOME}} ; cat {k}/ssh_config"))                 # ${…} is no brace word
+        self.assertTrue(deny(f'for f in {k}/*; do head -5 < "$f"; done'))
+        self.assertTrue(deny(f'f={k}/notes.txt; head -5 < "$f"'))
+        self.assertIsNone(deny(f'for f in {k}/*.pub; do head -5 < "$f"; done'))
+        os.makedirs(os.path.join(self.d, "hid"))
+        with open(os.path.join(self.d, "hid", ".deploy"), "w") as fh:
+            fh.write(HEADER)
+        self.assertTrue(deny(f"shopt -s dotglob; cat {self.d}/hid/*"))
+        self.assertTrue(deny(f"shopt -s dotglob; for f in {self.d}/hid/*; do cat \"$f\"; done"))
+        os.makedirs(os.path.join(self.d, "deep", "a", "b"))
+        with open(os.path.join(self.d, "deep", "a", "b", "k"), "w") as fh:
+            fh.write(HEADER)
+        self.assertTrue(deny(f"shopt -s globstar; cat {self.d}/deep/**"))
+        self.assertTrue(deny(f"cat {k}/[[:alpha:]]otes.txt"))                          # a POSIX class
+        self.assertTrue(deny(f"cat {k}/[^s]otes.txt"))
+        # of_review on organic-framework PR 321, in zsh's reading too: `**/` recursive, classes, negation
+        self.assertTrue(deny(f"head -40 {self.d}/deep/**/*"))
+        self.assertTrue(deny(f"head -40 {k}/[^.]*"))
+        self.assertTrue(deny(f"head -40 {k}/[[:alnum:]]*"))
+        self.assertTrue(deny(f"head -40 {k}/[[:punct:][:alpha:]]otes.txt"))             # a class fnmatch lacks
+
     def test_a_header_further_down_or_a_public_key_is_not_one(self):
         doc = os.path.join(self.d, "doc.md")
         with open(doc, "w") as fh:
