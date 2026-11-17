@@ -1026,6 +1026,16 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual(T.card_ref({"event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"}), "6e7fa1b2")
         self.assertEqual(T.card_ref({"who": ["of_a"], "ids": [], "kind": "registry", "first": None}), "")
 
+    def test_twins_show_the_suffix_the_projection_gives_and_a_search_tells_them_apart(self):
+        """of_review on PR 300, point 4: two asks two machines numbered alike showed the same plain id."""
+        import of_asks
+        a = {"event_id": "019a5c1e-0000-7000-8000-00000000000a", "ref": "XO-9", "text": "Rotate the key now?"}
+        b = {"event_id": "019a5c1e-0000-7000-8000-00000000000b", "ref": "XO-9", "text": "Drop the old table?"}
+        of_asks.suffix_refs([b, a])
+        self.assertEqual((T.card_ref(a), T.card_ref(b)), ("XO-9", "XO-9b"))
+        self.assertEqual(I.search([a, b], "xo-9b"), [b])
+        self.assertEqual(I.search([b, a], "xo9")[0], a)
+
 
 class CardIdScreenTest(PanelTest):
     """The id on the screen, in the panel and in the search; run once here (PanelTest's own tests run in PanelTest)."""
