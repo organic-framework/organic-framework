@@ -930,6 +930,43 @@ class CorrectionsProcessor(Processor):
         log.close()
 
 
+class TempoProcessor(Processor):
+    """Work booked for later, judged for a basis (bin/of_tempo.py; hand-over 277de578). It reads only its own names (a
+    session's crons and background tasks, messages, asks), by its own cursor and within its time budget; once an item
+    of them came and QUIET_S passed, at most every GAP_S, it starts `of tempo judge` as a detached child (a small model
+    per position and run; the child holds a lock and skips what it judged). The pulse types a booking with no basis
+    into its position's pane."""
+    name = "tempo"
+    version = "1"
+    from_now = True
+    tick_s = 30
+    QUIET_S = 60
+    GAP_S = 120
+
+    def __init__(self):
+        import of_tempo
+        self.catch_up_names = tuple(of_tempo.NAMES)
+        self.last, self.pending, self.started = 0.0, False, 0.0
+
+    def handle(self, conn, rows):
+        if rows:
+            self.last, self.pending = time.time(), True
+        return False
+
+    def tick(self, conn, now):
+        if self.pending and now - self.last >= self.QUIET_S and now - self.started >= self.GAP_S:
+            self.pending, self.started = False, now
+            import subprocess
+            here = os.path.dirname(os.path.realpath(__file__))
+            log = open(os.open(os.path.join(of_events.STATE_DIR, "tempo.log"),
+                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+            subprocess.Popen([sys.executable, os.path.join(here, "of"), "tempo", "judge", "--quiet"],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                             env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+            log.close()
+        return False
+
+
 class HandoverScopesProcessor(Processor):
     """handover-scopes.json: the accepted and blocked hand-overs with a scope, rewritten when a hand-over event comes,
     for the hook's mandate check, which reads it instead of the store (the read path's 3.6; of_handover.write_scopes)."""
@@ -957,7 +994,7 @@ class HandoverScopesProcessor(Processor):
 
 
 PROCESSORS = [AsksProcessor, WaitsProcessor, PasteProcessor, BlockedProcessor, ViewsProcessor, PulseProcessor,
-              DeliverProcessor, CaseProcessor, CorrectionsProcessor,
+              DeliverProcessor, CaseProcessor, CorrectionsProcessor, TempoProcessor,
               PromptOriginProcessor,
               GithubProcessor, StudioCacheProcessor, HandoverScopesProcessor, ArchiveProcessor]
 try:  # of_capacity's processor (bin/of_capacity.py, owned there): spend by message id, the balancer detached
