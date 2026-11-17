@@ -889,6 +889,7 @@ def handle(event, hook):
         changed = True
         if not subagent:
             herdr_state("idle")
+            _deliver_without_listener(hook, index)
     elif event == "StopFailure":
         write("turn_error", {"error": clip(str(hook.get("error") or ""), SHORT)[0]}, hook, sess, index)
         if not subagent:
@@ -897,6 +898,55 @@ def handle(event, hook):
         write("compaction", {"trigger": hook.get("trigger")}, hook, sess, index)
     if changed:
         save_session(sid, sess)
+
+
+LISTENER_STALE_S = 120  # of_listen.STALE_S (tests.test_hook checks they agree): a heartbeat older than this is no listener
+DELIVER_GAP_S = 60      # at most one delivery child per position in this time, while no listener keeps the views
+
+
+def _deliver_without_listener(hook, index):
+    """When no listener keeps the views (its heartbeat in the store older than LISTENER_STALE_S: down, or in a long
+    start), a position's own turn end starts the delivery the listener's DeliverProcessor would: `of asks deliver
+    <position>`, a detached child that types into this pane what is due and not yet in it (the founder's answers, a
+    question routed to it, an escalation note). The founder, 2026-11-17 (prompt 01a1eae5-4583, via of_conductor),
+    translated: "all these questions must be lightweight and not wait for a start for minutes": an answer he gave a busy
+    agent waited for the listener. Never waits: one read on a read-only connection, at most one child per position in
+    DELIVER_GAP_S."""
+    sid = hook.get("session_id")
+    pos = (((index.get("sessions") or {}).get(sid) or []) + [None])[0]
+    if not pos:
+        return
+    try:
+        import subprocess
+        import of_asks
+        conn = of_asks.reader()
+        if conn is None:
+            return
+        try:
+            row = conn.execute("SELECT value FROM listener_meta WHERE key = 'heartbeat'").fetchone()
+        except Exception:  # noqa: BLE001 - no listener tables on this machine: nothing to stand in for
+            return
+        finally:
+            conn.close()
+        if not row or time.time() - float(row[0]) < LISTENER_STALE_S:
+            return
+        mark = os.path.join(STATE, "deliver-hook", re.sub(r"[^A-Za-z0-9_.-]", "_", pos))
+        os.makedirs(os.path.dirname(mark), mode=0o700, exist_ok=True)
+        if os.path.exists(mark) and time.time() - os.path.getmtime(mark) < DELIVER_GAP_S:
+            return
+        with open(mark, "w"):
+            pass
+        here = os.path.dirname(os.path.realpath(__file__))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and k != "CLAUDE_CODE_SESSION_ID"}
+        log = open(os.open(os.path.join(STATE, "deliver.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+        try:
+            subprocess.Popen([sys.executable, os.path.join(here, "of"), "asks", "deliver", pos],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                             env=dict(env, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+        finally:
+            log.close()
+    except Exception as e:  # noqa: BLE001  the pulse and the listener deliver it later
+        _log_error("deliver", e)
 
 
 def _judge_gate():
