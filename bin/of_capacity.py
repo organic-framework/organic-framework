@@ -2126,7 +2126,10 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
             if _exit_dialog(lines) is None and input_draft(lines) is not None:
                 break
     if any(LIMIT_DIALOG in ANSI.sub("", x) for x in lines) and not dry_run:
-        # the old account's limit dialog: Enter only on "Stop and wait" (never usage credits, never "wait here")
+        # the old account's limit dialog: Enter only on "Stop and wait" (never usage credits, never "wait here"), read
+        # again right before the key (of_server on PR 318)
+        lines = _pane_lines(pane) if runtime == "herdr" else \
+            _zellij(zs, "dump-screen", "--pane-id", zp, "--ansi").splitlines()[-60:]
         if not limit_cursor(lines):
             raise MoveError(f"{name}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {pane}; left as it is")
         if runtime == "herdr":
@@ -3569,10 +3572,29 @@ def without_auto_continue(lines):
     return [x for x in lines if not AUTO_CONTINUE.search(ANSI.sub("", x))]
 
 
+def live_dialog(lines):
+    """The lines of the dialog drawn at the bottom of the screen, from its "What do you want to do?" to its footer
+    ("Enter to confirm · Esc to cancel"), which must be the screen's last non-blank line; None when there is none.
+    A copy printed higher up in the pane is not the live dialog (of_server on PR 318)."""
+    plain = [ANSI.sub("", x).rstrip() for x in lines]
+    while plain and not plain[-1].strip():
+        plain.pop()
+    if not plain or "Enter to confirm" not in plain[-1]:
+        return None
+    for i in range(len(plain) - 2, max(-1, len(plain) - 16), -1):
+        if "What do you want to do?" in plain[i]:
+            return plain[i:]
+    return None
+
+
 def limit_cursor(lines):
-    """True when the harness's limit dialog is open with the cursor on "Stop and wait for limit to reset"."""
-    plain = [ANSI.sub("", x) for x in lines]
-    return any(OPTION.match(x) and LIMIT_DIALOG in x for x in plain)
+    """True when the harness's limit dialog is open at the bottom of the screen with its only cursor on "Stop and
+    wait for limit to reset"."""
+    block = live_dialog(lines)
+    if not block or not any(LIMIT_DIALOG in x for x in block):
+        return False
+    cursors = [x for x in block if OPTION.match(x)]
+    return len(cursors) == 1 and LIMIT_DIALOG in cursors[0]
 
 
 WAKE_TEXT = ("of_capacity: your account accepts work again (probed at {at}), after its usage limit stopped you. "
@@ -3633,6 +3655,9 @@ def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, 
                 step = "esc"
             if dry_run:
                 out.append((name, f"would wake ({step or 'type'})"))
+                continue
+            if step == "enter" and not limit_cursor(read(pane)):  # read again right before the key
+                log(f"balance: {name}: the limit dialog changed in {pane}; left")
                 continue
             if step:
                 keys(pane, step)
