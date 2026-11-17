@@ -208,6 +208,95 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertIn("do not hash", str(cm.exception))
         self.assertEqual(self.head(), b)
 
+    def _overwrite(self, oid, kind, content):
+        """Put CONTENT under OID's loose object in the shared store, as a writer of that store could."""
+        import zlib
+        common = self.g("rev-parse", "--path-format=absolute", "--git-common-dir")
+        path = os.path.join(common, "objects", oid[:2], oid[2:])
+        os.chmod(path, 0o644)
+        with open(path, "wb") as fh:
+            fh.write(zlib.compress(b"%s %d\0" % (kind, len(content)) + content))
+
+    def test_a_forged_folder_tree_is_refused(self):
+        """of_architect's third pass on organic-framework PR 306: git checks the root tree as it reads it, not the trees
+        below it, so a forged tree under the target's genuine `lib` id passed the check of the changed blobs."""
+        os.makedirs(os.path.join(self.work, "lib"))
+        self.write("lib/a.txt", "a\n")
+        b = self.commit("lib")
+        self.ff(b)
+        self.write("lib/a.txt", "a2\n")
+        c = self.commit("lib a2")
+        evil = os.path.join(self.d, "evil.txt")
+        with open(evil, "w") as fh:
+            fh.write("EVIL\n")
+        blob = self.g("hash-object", "-w", evil)
+        self._overwrite(self.g("rev-parse", f"{c}:lib"), b"tree", b"100644 a.txt\0" + bytes.fromhex(blob))
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(c)
+        self.assertIn("do not hash", str(cm.exception))
+        self.assertEqual(self.head(), b)
+        with open(os.path.join(self.wt, "lib", "a.txt")) as fh:
+            self.assertEqual(fh.read(), "a\n")
+
+    def test_an_object_swapped_between_the_check_and_the_checkout_moves_it_back(self):
+        """of_architect's third pass on organic-framework PR 306: a blob swapped in the shared store after it was hashed
+        and before the checkout; every file the checkout wrote is hashed on disk against the verified tree."""
+        self.write("scripts/other.sh", "#!/bin/sh\necho d\n")
+        d = self.commit("other d")
+        oid = self.g("rev-parse", f"{d}:scripts/other.sh")
+        real = P._git
+
+        def swapping(tree, *args, **kw):
+            if args and args[0] == "checkout" and "--force" not in args:
+                self._overwrite(oid, b"blob", b"#!/bin/sh\necho EVIL\n")
+            return real(tree, *args, **kw)
+        P._git = swapping
+        try:
+            with self.assertRaises(P.Refused) as cm:
+                self.ff(d)
+        finally:
+            P._git = real
+        self.assertIn("moved back", str(cm.exception))
+        self.assertIn("scripts/other.sh", str(cm.exception))
+        self.assertEqual(self.head(), self.a)
+        with open(os.path.join(self.wt, "scripts", "other.sh")) as fh:
+            self.assertEqual(fh.read(), "#!/bin/sh\necho other\n")
+
+    def test_the_status_runs_no_filter_a_submodules_own_configuration_names(self):
+        """of_architect's third pass on organic-framework PR 306: the status read a submodule's work tree, so a clean
+        driver its own config and attributes named ran; the status no longer reads it, and the checkout never
+        recurses."""
+        marker = os.path.join(self.d, "ran")
+        spy = os.path.join(self.d, "spy.sh")
+        with open(spy, "w") as fh:
+            fh.write(f"#!/bin/sh\necho ran >> {marker}\ncat\n")
+        os.chmod(spy, 0o755)
+        sub = os.path.join(self.wt, "sub")
+        os.makedirs(sub)
+        self.g("init", "-q", "-b", "main", cwd=sub)
+        with open(os.path.join(sub, "f.txt"), "w") as fh:
+            fh.write("f\n")
+        self.g("add", "-A", cwd=sub)
+        self.g("commit", "-qm", "sub", cwd=sub)
+        self.g("update-index", "--add", "--cacheinfo", f"160000,{self.g('rev-parse', 'HEAD', cwd=sub)},sub")
+        self.g("commit", "-qm", "a submodule pointer")
+        e = self.g("rev-parse", "HEAD")
+        self.g("update-ref", "refs/remotes/origin/main", e)
+        self.g("checkout", "-q", "--detach", e, cwd=self.wt)
+        self.g("config", "filter.y.clean", spy, cwd=sub)
+        with open(os.path.join(sub, ".git", "info", "attributes"), "w") as fh:
+            fh.write("* filter=y\n")
+        st = os.stat(os.path.join(sub, "f.txt"))
+        os.utime(os.path.join(sub, "f.txt"), (st.st_atime, st.st_mtime + 5))
+        self.write("scripts/other.sh", "#!/bin/sh\necho f\n")
+        self.g("add", "scripts/other.sh")                                           # the pointer stays (no sub/ here)
+        self.g("commit", "-qm", "other f")
+        f = self.g("rev-parse", "HEAD")
+        self.g("update-ref", "refs/remotes/origin/main", f)
+        self.ff(f)
+        self.assertEqual(self.head(), f)
+        self.assertFalse(os.path.exists(marker))
+
     def test_the_registry_names_the_repository_and_the_git_folder_is_this_users(self):
         self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
         b = self.commit("other")
@@ -223,7 +312,8 @@ class ProtectedFfTest(unittest.TestCase):
         finally:
             os.chmod(os.path.join(common, "config"), 0o644)
         os.remove(os.path.join(self.wt, "scripts", "vault.sh"))                     # what a move back is checked for
-        self.assertEqual(P._differs(self.wt, self.a, ["scripts/vault.sh", "scripts/other.sh"]), ["scripts/vault.sh"])
+        self.assertEqual(P._differs(self.wt, P._snapshot(self.wt, self.a), ["scripts/vault.sh", "scripts/other.sh"]),
+                         ["scripts/vault.sh"])
 
     def test_replace_objects_submodules_and_checks_of_architect_found(self):
         """of_architect on organic-framework PR 306: a `git replace` showed unreviewed content under the vouched id,
