@@ -23,6 +23,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 LABEL = "dev.organic-framework.health"
 WINDOW_S = 600          # hooks.errors and hooks.latency look at the last 10 minutes
 TELL_AFTER_S = 300      # a check's owner hears of a failure that lasted 5 minutes, not of each flap around a limit
+REMIND_EVERY_S = 86400  # and again once a day while it stays failed, typed into its pane (docs/health.md §3)
 FYI_FROM = "organic-framework-build:of_platform"
 TEAM_ORG = "organic-framework-build"
 
@@ -368,11 +369,14 @@ def load_state():
         return {}
 
 
-def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None):
-    """One run: measure, compare with health.json, record each change, tell owners. Returns the new state."""
+def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typed=None):
+    """One run: measure, compare with health.json, record each change, tell owners. Returns the new state. FYI(owner,
+    text) leaves a note in the owner's inbox; TYPED(owner, text) types it into the owner's pane, for the daily
+    reminder of a failure that lasts (docs/health.md §3, "A failure that lasts is told again")."""
     now = time.time() if now is None else now
     emit = emit or of_events.emit
     fyi = fyi if fyi is not None else _fyi
+    typed = typed if typed is not None else _typed
     old = load_state().get("checks") or {}
     new = measure(now) if readings is None else readings
     for check, r in new.items():
@@ -391,9 +395,17 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None):
         # the owner is told once a failure has lasted TELL_AFTER_S, and once when a told failure is over (2026-11-14:
         # swap around 95% failed and recovered every few minutes, one --fyi each time)
         r["told"] = prev.get("told") if r["state"] == "failed" else None
+        r["reminded"] = prev.get("reminded") if r["state"] == "failed" else None
         if r["state"] == "failed" and not r["told"] and now - _epoch(r["since"]) >= TELL_AFTER_S:
             fyi(r["owner"], _fyi_text(check, r, prev))
             r["told"] = iso(now)
+        elif r["state"] == "failed" and now - _epoch(r["since"]) >= REMIND_EVERY_S and \
+                now - _epoch(r["reminded"] or r["since"]) >= REMIND_EVERY_S:
+            # one --fyi is easy to miss among health notes (2026-11-14: a check stayed failed three days): once a day,
+            # typed into the owner's pane, from a day after the failure began
+            if typed(r["owner"], _reminder_text(check, r, now)) is not False:
+                r["reminded"] = iso(now)
+                log(f"of health: reminded {r['owner']} of {check}, failed since {r['since']}")
         elif r["state"] != "failed" and prev.get("told"):
             fyi(r["owner"], _fyi_text(check, r, prev))
     for check in set(old) - set(new):  # a check that stopped applying (a processor gone) leaves quietly
@@ -420,6 +432,24 @@ def _fyi_text(check, r, prev):
                 f"{('(' + r['detail'] + ')') if r.get('detail') else ''} (docs/health.md §2; `of health`).")
     return f"Health: {check} is {r['state']} since {r['since']} (value {r['value']}); the failure you were told of " \
            f"is over."
+
+
+def _reminder_text(check, r, now):
+    days = (now - _epoch(r["since"])) / 86400
+    return (f"Health: {check} has been failed on this machine since {r['since']} ({days:.1f} days): value "
+            f"{r['value']}, limit {r['limit']}{(' (' + r['detail'] + ')') if r.get('detail') else ''}. You are its owner: "
+            f"fix it, or say why it stays (docs/health.md §3; `of health`). Reminded once a day while it stays failed.")
+
+
+def _typed(owner, text):
+    """The reminder typed into the owner's pane by the relay (an `of send` without --fyi), from of_platform, when the OF
+    team's organization is on this machine. False when it could not be sent (tried again at the next run)."""
+    if TEAM_ORG not in _org_names():
+        return False
+    r = subprocess.run([sys.executable, os.path.join(HERE, "of"), "send", f"{TEAM_ORG}:{owner}", "--from", FYI_FROM,
+                        text], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    return r.returncode == 0
 
 
 def _fyi(owner, text):
