@@ -56,13 +56,17 @@ def register(view):
     return view
 
 
+FAILED = []   # the view modules the last views() could not import (the listener then forgets no fold cursor)
+
+
 def views():
     import importlib
+    FAILED.clear()
     for m in VIEW_MODULES:
         try:
             importlib.import_module(m)
-        except ImportError:
-            pass
+        except ImportError:   # an image without Studio's views (of-server's) runs without them
+            FAILED.append(m)
     return dict(_VIEWS)
 
 

@@ -659,6 +659,19 @@ class PruneTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT view FROM view_fold_meta").fetchall(), [("answers",)])
         self.assertEqual(conn.execute("SELECT view FROM view_fold").fetchall(), [("answers",)])
 
+    def test_a_view_module_that_does_not_import_is_recorded(self):
+        """of_review on PR 256: an ImportError was swallowed, so its views' cursors would be forgotten as removed."""
+        import of_fold
+        saved = of_fold.VIEW_MODULES
+        of_fold.VIEW_MODULES = ("of_fold", "of_no_such_views_module")
+        try:
+            of_fold.views()
+            self.assertEqual(of_fold.FAILED, ["of_no_such_views_module"])
+        finally:
+            of_fold.VIEW_MODULES = saved
+            of_fold.views()
+        self.assertEqual(of_fold.FAILED, [])
+
 
 if __name__ == "__main__":
     unittest.main()

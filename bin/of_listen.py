@@ -1368,7 +1368,7 @@ def run(stop=None, log=print, rebuild=False):
     try:  # the fold views (bin/of_fold.py): one processor each, by its own cursor
         import of_fold
         processors += [of_fold.FoldProcessor(v) for v in of_fold.views().values()]
-        folds_ok = True
+        folds_ok = not of_fold.FAILED   # a view module that did not import is no removed view (of_review on PR 256)
     except Exception as e:  # noqa: BLE001 - a broken view never stops the listener
         log(f"of listen: fold views: {type(e).__name__}: {e}")
     # Readers trust the views only while the heartbeat is fresh. A view rebuilt in place is half-built until
