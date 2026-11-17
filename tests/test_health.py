@@ -98,6 +98,34 @@ class ChecksTest(StateDir):
             self.assertEqual(json.load(fh)["checks"]["machine.disk"]["state"], "ok")
         self.assertIn("hooks.errors", of_health.table(state))
 
+    def test_a_failure_that_lasts_is_typed_to_its_owner_once_a_day(self):
+        """docs/health.md §3, "A failure that lasts is told again" (hand-over 4575c97a): on 2026-11-14 a check failed,
+        its owner missed the one --fyi, and it stayed failed three days."""
+        told, typed, logged = [], [], []
+        run = lambda r, now, ok=True: of_health.run(  # noqa: E731
+            now=now, readings=r, emit=lambda k, p, **kw: None, fyi=lambda o, t: told.append(o),
+            typed=lambda o, t: typed.append((o, t)) or ok, log=logged.append, cards=lambda state: None)
+        t0 = 10_000.0
+        run(self.readings(errors=0.2), t0)
+        run(self.readings(errors=0.2), t0 + of_health.TELL_AFTER_S)        # the first --fyi, as before
+        self.assertEqual((told, typed), (["of_platform"], []))
+        run(self.readings(errors=0.2), t0 + 86400 - 60)                     # not yet a day
+        self.assertEqual(typed, [])
+        run(self.readings(errors=0.2), t0 + 86400, ok=False)                # the relay could not send it: next run
+        run(self.readings(errors=0.2), t0 + 86400 + 60)
+        self.assertEqual(len(typed), 2)
+        self.assertIn("hooks.errors has been failed on this machine since", typed[-1][1])
+        self.assertIn("(1.0 days)", typed[-1][1])
+        state = run(self.readings(errors=0.2), t0 + 86400 + 3600)           # once a day, not every run
+        self.assertEqual(len(typed), 2)
+        self.assertEqual(state["checks"]["hooks.errors"]["reminded"], of_health.iso(t0 + 86400 + 60))
+        self.assertTrue(any("reminded of_platform of hooks.errors" in m for m in logged))
+        run(self.readings(errors=0.2), t0 + 2 * 86400 + 60)                 # the next day
+        self.assertEqual(len(typed), 3)
+        state = run(self.readings(), t0 + 2 * 86400 + 120)                  # over: told once, no more reminders
+        self.assertIsNone(state["checks"]["hooks.errors"]["reminded"])
+        self.assertEqual(told, ["of_platform", "of_platform"])
+
     def test_swap_is_read_by_its_full_path(self):
         seen = []
         out = "total = 14336.00M  used = 13107.20M  free = 1228.80M  (encrypted)"
