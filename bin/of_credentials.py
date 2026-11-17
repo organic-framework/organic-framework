@@ -92,7 +92,9 @@ def _org_entry(org, doc):
             positions[str(p["name"])] = [str(i) for i in ids]
     contacts = sorted({str(c).strip().lower() for a in doc.get("authorities") or [] if isinstance(a, dict)
                        for c in a.get("contacts") or [] if isinstance(c, str) and c.strip()})
-    code = doc.get("protected_code") if isinstance(doc.get("protected_code"), list) else []
+    import of_protected  # a protected_code item is a path, or a mapping with its path and `ff:` (docs/registry.md)
+    code = [of_protected.entry_path(c) for c in doc.get("protected_code")] \
+        if isinstance(doc.get("protected_code"), list) else []
     excluded = doc.get("tools_excluded") if isinstance(doc.get("tools_excluded"), list) else []
     return {"plugins_excluded": [{"plugin": str(x["plugin"]), "basis": str(x.get("basis") or "")}  # G22
                                  for x in excluded if isinstance(x, dict) and x.get("plugin")],
@@ -101,7 +103,7 @@ def _org_entry(org, doc):
                                     for x in excluded if isinstance(x, dict) and x.get("url")],
             "roots": [r for r in roots if r not in NOT_A_ROOT], "credentials": creds, "positions": positions,
             "authorities": contacts,  # docs/guard.md G16: the organization's own regulators, hosts and addresses
-            "protected_code": [_abs(c) for c in code if _code_path_ok(c)]}  # G21
+            "protected_code": [_abs(c) for c in code if c and _code_path_ok(c)]}  # G21
 
 
 def _keychain_ok(k):
@@ -436,10 +438,16 @@ def check(orgs_file=None):
         code = doc.get("protected_code")
         if code is not None and not isinstance(code, list):
             problems.append(f"{rel}: protected_code must be a list of paths or globs (docs/guard.md G21)")
-        for pth in code if isinstance(code, list) else []:
+        import of_protected
+        for item in code if isinstance(code, list) else []:
+            pth = of_protected.entry_path(item)
             if not _code_path_ok(pth):
-                problems.append(f"{rel}: protected_code: {str(pth)[:60]!r} is not a path or glob under / or ~/ two "
-                                "levels deep at least (docs/guard.md G21)")
+                problems.append(f"{rel}: protected_code: {str(pth or item)[:60]!r} is not a path or glob under / or ~/ "
+                                "two levels deep at least (docs/guard.md G21)")
+            if isinstance(item, dict):
+                problems += [f"{rel}: protected_code {str(pth)[:60]!r}: {p} (docs/registry.md, Protected code)"
+                             for p in (of_protected.ff_problems(item) +
+                                       [f"unknown key {k!r}" for k in item if k not in ("path", "ff")])]
         for p in doc.get("positions") or []:
             if not isinstance(p, dict) or p.get("credentials") is None:
                 continue
