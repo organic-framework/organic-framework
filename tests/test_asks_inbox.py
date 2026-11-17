@@ -1037,6 +1037,46 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual(I.search([b, a], "xo9")[0], a)
 
 
+class SearchTest(unittest.TestCase):
+    """The popup's search by card id (the founder, 2026-11-17 ~17:55Z via of_conductor, msg 01a1ea92-3d97)."""
+
+    def cards(self):
+        return [item("e1", "Rotate the deploy key?", who="as_ops", first={"ref": "AS-31"}),
+                item("e2", "Move the 31 nodes?", who="as_k8s", first={"ref": "AS-310"}),
+                item("e3", "Ship the fix today?", who="of_platform", first={"ref": "OF-31"}),
+                item("e4", "Drop the old table?", who="of_store", first={"ref": "OF-7"}),
+                item("e5", "Twin of OF-7?", who="of_store", first={"ref": "OF-7b"})]
+
+    def found(self, q):
+        return [T.card_ref(x) for x in I.search(self.cards(), q)]
+
+    def test_an_id_in_any_spelling_comes_first(self):
+        for q in ("AS-31", "as-31", "as31", "As 31", " as-31 "):
+            self.assertEqual(self.found(q)[0], "AS-31", q)
+        self.assertEqual(I.search_rank(self.cards()[0], "as31"), 0)
+        self.assertEqual(self.found("OF-7b"), ["OF-7b"])
+
+    def test_a_bare_number_finds_every_card_with_that_number_then_the_rest(self):
+        # 31: AS-31 and OF-31 exactly; AS-310 by its start; its question's "31" is a word match too
+        self.assertEqual(self.found("31"), ["AS-31", "OF-31", "AS-310"])
+        self.assertEqual(I.search_rank(self.cards()[1], "31"), 1)
+        self.assertEqual(self.found("7"), ["OF-7", "OF-7b"])
+
+    def test_the_start_of_an_id_and_words(self):
+        self.assertEqual(self.found("as-3"), ["AS-31", "AS-310"])
+        self.assertEqual(self.found("of"), ["OF-31", "OF-7", "OF-7b"])  # its prefix, in the queue's order
+        self.assertEqual(self.found("table old"), ["OF-7"])            # every word, in any order
+        self.assertEqual(self.found("as_k8s"), ["AS-310"])               # who asks
+        self.assertEqual(self.found("nothing like it"), [])
+        self.assertIsNone(I.search_rank(self.cards()[0], "  "))
+
+    def test_a_card_without_a_ref_is_found_by_its_hex_tail(self):
+        x = item("019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2", "Old question?")
+        self.assertEqual(I.search([x], "6e7f"), [x])
+        self.assertTrue(I.looks_like_id("as 31") and I.looks_like_id("XO-9b"))
+        self.assertFalse(I.looks_like_id("31") or I.looks_like_id("rotate key"))
+
+
 class CardIdScreenTest(PanelTest):
     """The id on the screen, in the panel and in the search; run once here (PanelTest's own tests run in PanelTest)."""
 
@@ -1062,6 +1102,21 @@ class CardIdScreenTest(PanelTest):
         rows = [t for (y, x), t in self.frames[-1].items() if x == 2]
         self.assertTrue(any(t.startswith("OF-112") for t in rows), rows)
         self.assertFalse(any(t.startswith("OF-57") for t in rows), rows)
+
+    def test_the_list_follows_each_key_and_esc_goes_back(self):
+        data = SearchTest.cards(self)
+        self.inbox([0.1, ord("/"), "a", "s", "3", "1", "\x1b", 0.1], data)  # no Enter: drawn while he types, then Esc
+        live = next(f for f in self.frames if "Search: as31" in self.text(f))
+        rows = [t for (y, x), t in sorted(live.items()) if x == 2]
+        self.assertTrue(rows and rows[0].startswith("AS-31 "), rows)  # the best match first, and selected:
+        self.assertIn("Rotate the deploy key?", self.text(live))      # its card shows at once
+        self.assertFalse(any(t.startswith("OF-") for t in rows), rows)
+        self.assertNotIn("Search: as", self.text(self.frames[-1]))   # Esc: back where he was, no search left
+        self.assertIn("Holds work", self.text(self.frames[-1]))
+
+    def test_an_id_with_no_open_card_says_so(self):
+        self.inbox([0.1, ord("/"), "a", "s", "-", "9", "9", "\n", 0.1], SearchTest.cards(self))
+        self.assertIn("No open card has the id AS-99", self.text(self.frames[-1]))
 
     def test_the_panel_shows_the_id(self):
         self.panel([0.05], self.cards(), size=(6, 140))
