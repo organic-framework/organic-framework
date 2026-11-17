@@ -1369,21 +1369,25 @@ def heartbeat(conn):
         return False
 
 
+START_CPU_S = 0.01  # the CPU the other threads must spend in a beat's interval for the start to count as working
+
+
 def starting_beat(every=None, cpu=None):
-    """Until the returned event is set, touch the watchdog's files every HEARTBEAT_S while the process's CPU time grows:
-    a start that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that
-    waits on nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart
-    began it again). Readers trust only listener_meta's beat, which the start does not write."""
-    import resource
+    """Until the returned event is set, touch the watchdog's files every HEARTBEAT_S while the start spends CPU: a start
+    that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that waits on
+    nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart began it
+    again). The CPU counted is the process's less this thread's own, past START_CPU_S: the whole process's grew with
+    the beat's own wake-up, so a hung start was never restarted (of_review on organic-framework PR 274). Readers trust
+    only listener_meta's beat, which the start does not write."""
     import threading
     done = threading.Event()
-    cpu = cpu or (lambda: sum(resource.getrusage(resource.RUSAGE_SELF)[:2]))
+    cpu = cpu or (lambda: time.process_time() - time.thread_time())   # called in the beat's thread
 
     def loop():
         last = cpu()
         while not done.wait(every or HEARTBEAT_S):
             now = cpu()
-            if now > last:   # both files the watchdog reads: the timers do not turn before the start ends
+            if now - last >= START_CPU_S:   # both files the watchdog reads: the timers turn only after the start
                 _touch(heartbeat_path())
                 _touch(ticks_path())
             last = now
