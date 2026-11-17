@@ -1,5 +1,6 @@
 """The listener (of_listen): cursors, replay, the asks view equal to the projection."""
 
+import json
 import os
 import sys
 import tempfile
@@ -85,6 +86,18 @@ class ListenTest(unittest.TestCase):
         finally:
             stop.set()
             release.set()
+
+    def test_the_watchdog_sees_one_stuck_timer(self):
+        """of_review on organic-framework PR 294: with a thread per timer, the others keep the timers' file fresh, so
+        the watchdog reads each timer's last start."""
+        path = os.path.join(self.tmp.name, "listen-ticks.json")
+        with open(path, "w") as fh:
+            json.dump({"pulse": {"at": 1000.0, "every": 300}, "paste": {"at": 100.0, "every": 20},
+                       "archive": {"at": 0.0, "every": 3600}}, fh)
+        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path), ["paste"])     # 1,200 s > 20 + 900
+        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path + ".none"), [])  # no file: none
+        os.mkfifo(path + ".fifo")
+        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path + ".fifo"), [])  # never opens a FIFO
 
     def test_a_hung_timer_holds_no_other_timer(self):
         """2026-11-17: the paste tick searched its sources for over an hour at load 90, and the pulse, which types the
