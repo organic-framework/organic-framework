@@ -1372,6 +1372,71 @@ class SendFyiIdleTest(unittest.TestCase):
         self.assertIsNone(n(None))
 
 
+class SendPresenceTest(unittest.TestCase):
+    """A user organization's structure keeper, msg 01a1e766-e334 (2026-11-16): `of send` from a launchd job that
+    cannot read herdr PUT a presence of the sender alone, which replaces the machine's whole set: every other position
+    here dropped out until the relay's next PUT. Without herdr's agents, and with a relay running here, it PUTs
+    nothing; otherwise as before."""
+    POS = [{"name": "sec_keeper", "_org": "acme", "holder": {"session": "S-SEC"}},
+           {"name": "k8s_keeper", "_org": "acme", "holder": {"session": "S-K8S"}}]
+
+    def send(self, agents, unread, relay):
+        import contextlib
+        import io
+        import types
+        import of_client
+        import of_events
+        import of_ship
+        puts = []
+
+        class Fake:
+            def __init__(self, url):
+                pass
+
+            def put_presence(self, body):
+                puts.append(body)
+                return {}
+
+            def send_message(self, *a, **k):
+                return {"state": "queued", "msg_id": "m-1", "authority": "none", "authority_reason": "no grant"}
+
+            def presence(self, org):
+                return {"holders": [{"position": "k8s_keeper", "kind": "agent", "state": "working"}]}
+
+        saved = (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
+                 of_ship.org_servers, of_events.emit)
+        of._load_quiet = lambda: self.POS
+        of.live_agents_read = lambda: (agents, unread)
+        of.relay_alive = lambda: relay
+        of_client.Client = Fake
+        of_ship.config = lambda: {"server_url": "http://192.0.2.10:18200"}
+        of_ship.org_servers = lambda cfg: {}
+        of_events.emit = lambda *a, **k: None
+        env = {k: os.environ.pop(k) for k in ("CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID") if k in os.environ}
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                of.cmd_send(types.SimpleNamespace(to="acme:k8s_keeper", sender="acme:sec_keeper", text="hi",
+                                                  reply_to=None, grant=None, fyi=False, urgent=False))
+        finally:
+            (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
+             of_ship.org_servers, of_events.emit) = saved
+            os.environ.update(env)
+        return puts
+
+    def test_a_send_that_cannot_read_herdr_leaves_the_relays_presence(self):
+        down = of.OfError("herdr unavailable")
+        self.assertEqual(self.send([], down, True), [])                       # the relay's presence stands
+        alone = [[{"org": "acme", "position": "sec_keeper", "session_id": None, "state": "working", "pane": None,
+                   "kind": "agent"}]]
+        self.assertEqual(self.send([], down, None), alone)                    # cannot tell whether a relay runs: as before
+        self.assertEqual(self.send([], down, False), alone)                   # no relay here: as before
+        live = [{"name": "sec_keeper", "pane_id": "p1", "agent_session": {"value": "S-SEC"}, "agent_status": "idle"},
+                {"name": "k8s_keeper", "pane_id": "p2", "agent_session": {"value": "S-K8S"}, "agent_status": "idle"}]
+        puts = self.send(live, None, True)                                    # herdr read: the whole set, as before
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(sorted(h["position"] for h in puts[0]), ["k8s_keeper", "sec_keeper"])
+
+
 class InboxMineFromTest(unittest.TestCase):
     """of_lab, 2026-11-07: in a shared lab registry --mine could not tell the position, and refused --from."""
     POS = [{"name": "lab_owner", "_org": "lab", "holder": {"runtime": "claude-code", "session": "S-OWN"}},
