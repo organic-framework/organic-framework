@@ -975,12 +975,13 @@ def _position_of_session(sid):
     return None
 
 
-def bound_render():
-    """A cache render's bounds (docs/studio.md 5.1a): it runs below the founder's own work, and the kernel stops it after
-    REFRESH_CPU_S of CPU (a runaway) or REFRESH_MAX_S of wall time (a hang uses no CPU); its flock goes with it. A
-    render the load starves is not stopped while it still works."""
+def bound_render(log=None):
+    """A cache render's bounds (docs/studio.md 5.1a): it runs below the founder's own work. The kernel stops it after
+    REFRESH_CPU_S of CPU (a runaway). After REFRESH_MAX_S of wall time faulthandler's own thread writes every thread's
+    stack to the log and ends it, even while the main thread is stuck in C, so the log tells a hang from a render the
+    load starved. Its flock goes with it either way."""
+    import faulthandler
     import resource
-    import signal
     try:
         os.nice(of_studio.REFRESH_NICE)
     except OSError:
@@ -991,7 +992,7 @@ def bound_render():
         resource.setrlimit(resource.RLIMIT_CPU, (cap, hard))
     except (ValueError, OSError):
         pass
-    signal.alarm(of_studio.REFRESH_MAX_S)
+    faulthandler.dump_traceback_later(of_studio.REFRESH_MAX_S, exit=True, file=log or sys.stderr)
 
 
 def cmd_studio(args):

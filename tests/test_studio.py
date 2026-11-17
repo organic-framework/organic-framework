@@ -1675,22 +1675,47 @@ class PageCacheTest(unittest.TestCase):
         self.assertIsNotNone(again)
         again.close()
 
+    def test_one_organization_failing_never_stops_the_others(self):
+        from unittest import mock
+
+        def data(org, **kw):
+            raise AttributeError("module 'of_events' has no attribute 'default_prefix'")
+        of_studio.Data = data
+        logged = []
+        with mock.patch.object(of_studio, "orgs", return_value=[{"name": "acme"}, {"name": "beta"}]):
+            out = of_studio.render_cache(orgs_file="/nonexistent", log=logged.append)
+        self.assertIn("0 pages for 0 organizations", out)
+        self.assertEqual([m.split(":")[0] for m in logged], ["acme", "beta"])
+        self.assertIn("AttributeError: module 'of_events'", logged[0])          # its traceback, for the reader of the log
+
     def test_a_render_is_bounded_by_cpu_and_by_a_hang(self):
         """2026-11-17: 1200 s of wall time stopped renders the load starved while they still worked. The kernel now stops
-        a render after REFRESH_CPU_S of CPU or REFRESH_MAX_S of wall time, under any lower hard CPU limit."""
+        a render after REFRESH_CPU_S of CPU, under any lower hard CPU limit; after REFRESH_MAX_S of wall time
+        faulthandler writes every thread's stack and ends it."""
+        import faulthandler
         import resource
-        import signal
+        import subprocess
         from unittest import mock
         import of_studio_cli
+        log = object()
         for hard, soft in ((resource.RLIM_INFINITY, of_studio.REFRESH_CPU_S), (60, 60)):
             seen = []
             with mock.patch.object(os, "nice", lambda n: seen.append(("nice", n))), \
                     mock.patch.object(resource, "getrlimit", lambda r: (resource.RLIM_INFINITY, hard)), \
                     mock.patch.object(resource, "setrlimit", lambda r, v: seen.append(("cpu", r, v))), \
-                    mock.patch.object(signal, "alarm", lambda s: seen.append(("alarm", s))):
-                of_studio_cli.bound_render()
+                    mock.patch.object(faulthandler, "dump_traceback_later",
+                                      lambda t, exit, file: seen.append(("wall", t, exit, file))):
+                of_studio_cli.bound_render(log)
             self.assertEqual(seen, [("nice", of_studio.REFRESH_NICE), ("cpu", resource.RLIMIT_CPU, (soft, hard)),
-                                    ("alarm", of_studio.REFRESH_MAX_S)])
+                                    ("wall", of_studio.REFRESH_MAX_S, True, log)])
+        # the wall bound for real, in a child, with a main thread asleep: its stack in the output, the process ended
+        here = os.path.dirname(os.path.abspath(of_studio_cli.__file__))
+        code = ("import sys, time; sys.path.insert(0, sys.argv[1]); import of_studio, of_studio_cli; "
+                "of_studio.REFRESH_MAX_S = 1; of_studio_cli.bound_render(); time.sleep(30)")
+        r = subprocess.run([sys.executable, "-c", code, here], capture_output=True, text=True, timeout=25)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Timeout (0:00:01)!", r.stderr)
+        self.assertIn("<module>", r.stderr)
         self.assertGreater(of_studio.REFRESH_CPU_S, 3 * 267)              # the most CPU a logged render used
         self.assertGreater(of_studio.REFRESH_MAX_S, of_studio.REFRESH_CPU_S)
 
@@ -2025,6 +2050,10 @@ class LoopTest(unittest.TestCase):
             y.conn.close()
             with mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "missing", "of.db")}):
                 self.assertEqual(of_loops.log_resolver(org="lab")(y.prompt), of_loops.UNREAD)
+            # bin/of mid-edit (2026-11-17: an AttributeError from its registry read stopped a whole render): UNREAD
+            broken = type("Of", (), {"registry_docs": staticmethod(lambda: (_ for _ in ()).throw(AttributeError("x")))})
+            with mock.patch.object(of_loops, "of_cli", return_value=broken):
+                self.assertEqual(of_loops.log_resolver(conn=object(), org="lab")(y.prompt), of_loops.UNREAD)
         # the model, Studio's own cards and of works ask it for the work's organization
         seen = []
         doc = dict(DOC, works={"w1": {"title": "Search", "owner": "colleague", "doers": ["bot_search"], "loop": self.OWN}})

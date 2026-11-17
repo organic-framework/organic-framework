@@ -2881,9 +2881,11 @@ def _queues_table(qs):
 
 PAGE_STALE_S = 300
 PERIODIC_RENDER_S = 1800   # the listener's tick (every 10 min) renders at most this often; a viewer's stale page at once
-PAGE_CACHE_LAG_OK_S = 2700   # the cache's declared lag (docs/health.md, view.age): a periodic render's spacing and its time
+PAGE_CACHE_LAG_OK_S = 2700   # the cache's declared lag (docs/health.md, view.age): a periodic render's spacing and its
+# usual time. A render the load starves may run up to REFRESH_MAX_S, and the age then shows degraded, which is the truth
+# (of_review on organic-framework PR 295).
 REFRESH_LOCK_S = 600   # at most one start per this many seconds; the render's flock keeps a second one out
-REFRESH_MAX_S = 3600   # wall time: a render that waits on nothing (a hang) is stopped (SIGALRM), its lock with it
+REFRESH_MAX_S = 3600   # wall time: a render still running is stopped, every thread's stack in the log, its lock with it
 REFRESH_CPU_S = 900    # CPU time: a render past this is a runaway and is stopped (SIGXCPU), its lock with it
 # 2026-11-17: at a load of 62 to 73 on the founder's 10 cores, the old 1200 s of wall time stopped 4 of the last 20
 # renders while they still worked, so the pages and the escalations stayed over 2 hours old. A render at nice 10 there
@@ -2964,6 +2966,11 @@ def _render_cache(orgs_file=None, log=None):
         except (KeyError, OSError) as exc:
             if log:
                 log(f"{o['name']}: not computed: {exc}")
+            continue
+        except Exception:  # noqa: BLE001 - one organization failing never stops the others' pages (2026-11-17)
+            if log:
+                import traceback
+                log(f"{o['name']}: not computed:\n{traceback.format_exc()}")
             continue
         parts.append(d)
         try:
