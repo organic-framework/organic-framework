@@ -6245,6 +6245,24 @@ def cmd_tempo(args):
                     print(f"{ts[:16]}Z {pos:<24} {x.get('source'):<10} {x.get('verdict'):<13} "
                           f"{x.get('basis_kind'):<12} {of_tempo._one_line(x.get('quote'), 90)}")
             return 0
+        if action == "sample":   # a blind sample of a day's judged items, labelled before the verdicts are seen
+            day = (args.since or of_tempo._iso(time.time() - 86400))[:10]
+            rows = of_tempo.sample(conn, day)
+            out = args.out or os.path.join(of_tempo.of_events.STATE_DIR, "tempo", f"sample-{day}.json")
+            os.makedirs(os.path.dirname(out), mode=0o700, exist_ok=True)
+            with open(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                json.dump(rows, fh, ensure_ascii=False, indent=1)
+            print(f"{len(rows)} items of {day} in {out}: set each label to no_basis or passes by the rule's text, then "
+                  f"of tempo score --out {out}")
+            return 0
+        if action == "score":
+            if not args.out:
+                raise OfError("of tempo score needs --out <the labelled sample file>")
+            p, r, flagged, n = of_tempo.score(conn, json.load(open(args.out)))
+            print(f"{n} labelled, {flagged} flagged: precision " + (f"{p:.2f}" if p is not None else "n/a")
+                  + ", recall " + (f"{r:.2f}" if r is not None else "n/a")
+                  + ("; under 0.75: hold the notes (NOTES_LIVE) and tell of_architect" if p is not None and p < 0.75 else ""))
+            return 0
         if action == "outcomes":
             since = args.since or of_tempo._iso(time.time() - args.days * 86400)
             rows = of_tempo.outcomes(conn, since, args.until)
@@ -7144,7 +7162,8 @@ def main(argv=None):
     te = sub.add_parser("tempo", help="work booked for later, judged for a basis (hand-over 277de578): list | judge | replay | outcomes",
                         description="of tempo [list|judge|replay|outcomes] [--days N] [--dry-run] [--since ISO "
                                     "--until ISO [--org O]]")
-    te.add_argument("action", nargs="?", choices=["list", "judge", "replay", "outcomes"])
+    te.add_argument("action", nargs="?", choices=["list", "judge", "replay", "outcomes", "sample", "score"])
+    te.add_argument("--out", help="sample: the file to write (default under the state folder); score: the labelled file")
     te.add_argument("--days", type=int, default=1, help="list: this many days back")
     te.add_argument("--dry-run", action="store_true", help="judge: print, record nothing")
     te.add_argument("--since", help="replay, outcomes: from this time")
