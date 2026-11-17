@@ -127,6 +127,46 @@ class HandleTest(unittest.TestCase):
             open(kw["transcript_path"], "a").close()
         of_hook.handle(name, dict(hook_event_name=name, session_id="S1", cwd="/x", **kw))
 
+    def test_a_turn_end_starts_the_delivery_only_while_no_listener_keeps_the_views(self):
+        """The founder, 2026-11-17 (prompt 01a1eae5-4583, via of_conductor): an answer he gave a busy agent waited for
+        the listener's start. With no fresh listener heartbeat, the agent's own turn end starts `of asks deliver`."""
+        import subprocess
+        import time as _t
+        import of_listen
+        import of_store
+        self.assertEqual(of_hook.LISTENER_STALE_S, of_listen.STALE_S)
+        started = []
+
+        class Child:
+            def __init__(self, argv, **kw):
+                started.append((argv, kw.get("env") or {}))
+        saved, saved_env = subprocess.Popen, dict(os.environ)
+        subprocess.Popen = Child
+        os.environ.update(HERDR_PANE_ID="p1", CLAUDE_CODE_SESSION_ID="S1")
+        try:
+            self.fire("Stop", last_assistant_message="ok")
+            self.assertEqual(started, [])  # no listener on this machine: nothing to stand in for
+            conn = of_store.connect()
+            conn.executescript(of_listen.DDL)
+            conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', ?)", (str(_t.time()),))
+            conn.commit()
+            self.fire("Stop", last_assistant_message="ok")
+            self.assertEqual(started, [])  # a listener keeps the views: its DeliverProcessor delivers
+            conn.execute("INSERT OR REPLACE INTO listener_meta VALUES ('heartbeat', ?)", (str(_t.time() - 600),))
+            conn.commit()
+            conn.close()
+            self.fire("Stop", last_assistant_message="ok")
+            self.fire("Stop", last_assistant_message="ok")  # within DELIVER_GAP_S: not twice
+            self.assertEqual(len(started), 1)
+            argv, env = started[0]
+            self.assertEqual(argv[-3:], ["asks", "deliver", "of_a"])
+            self.assertEqual((env.get("OF_AUTOMATION"), env.get("SSH_AUTH_SOCK")), ("1", ""))
+            self.assertFalse([k for k in env if k.startswith("HERDR_") or k == "CLAUDE_CODE_SESSION_ID"])
+        finally:
+            subprocess.Popen = saved
+            os.environ.clear()
+            os.environ.update(saved_env)
+
     def test_a_watch_on_a_scratchpad_file_gets_a_note(self):
         """2026-11-15, a user organization's structure keeper: macOS's tmp_cleaner deleted a watch's scripts in the
         scratchpad and the watch printed "none new" for about 11 hours."""
