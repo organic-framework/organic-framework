@@ -76,18 +76,18 @@ class FilterTest(unittest.TestCase):
             ev("of.agent_question", {"detected_by": "declared", "to": "founder",
                                      "questions": [{"question": "Ship it tomorrow?"}]}, "obs_keeper", eid="a1"),
         ]
-        got = of_tempo.items(rows, POSITIONS, before=lambda sid, rid: set())   # an empty manifest before them
+        got = of_tempo.items(rows, POSITIONS, before=lambda sid, rid, ts: set())   # an empty manifest before them
         self.assertEqual([(i["source"], i["position"], i.get("times")) for i in got], [
             ("cron", "k8s_keeper", []), ("clock_wait", "k8s_keeper", []),
             ("message", "k8s_keeper", ["14:25"]), ("message", "k8s_keeper", ["18:45"]),
             ("ask", "obs_keeper", ["tomorrow"])])
         self.assertEqual(got[2]["to"], "platform_owner")
         judged = {k for i in got for k in i.get("keys") or [i["key"]]}
-        self.assertEqual(of_tempo.items(rows, POSITIONS, judged, before=lambda sid, rid: set()), [])  # each once
+        self.assertEqual(of_tempo.items(rows, POSITIONS, judged, before=lambda sid, rid, ts: set()), [])  # each once
         # a session's standing crons, booked before the judge started, are no new booking (2026-11-17, going live)
-        standing = of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid: {"c1", "b1"})
+        standing = of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid, ts: {"c1", "b1"})
         self.assertEqual(standing, [])
-        self.assertEqual(of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid: None), [])  # unknown: none
+        self.assertEqual(of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid, ts: None), [])  # unknown: none
 
     def test_one_call_per_position_and_a_basis_it_cannot_name_is_none(self):
         group = [{"key": "k1", "source": "cron", "position": "p", "ts": "2026-11-17T13:18:00Z", "ref": "c1",
@@ -217,6 +217,26 @@ class OutcomeTest(JudgeTest):
         self.assertEqual(of_tempo._iso(at), "2026-11-17T14:18:00Z")
         self.assertEqual(of_tempo.booked_at({"source": "cron", "quote": "schedule 17 * * * *, recurring True: x"}),
                          (None, True))
+        at, _ = of_tempo.booked_at({"source": "clock_wait", "ts": "2026-11-17T13:18:00Z",   # of_review on PR 294
+                                    "quote": 'while [ "$(date -u +%H%M)" -lt 1450 ]; do sleep 30; done'})
+        self.assertEqual(of_tempo._iso(at), "2026-11-17T14:50:00Z")
+        at, _ = of_tempo.booked_at({"source": "clock_wait", "ts": "2026-11-17T13:18:00Z",   # the machine's local time
+                                    "quote": 'until [ "$(date +%H%M)" -ge 1850 ]; do sleep 30; done'})
+        import time as _t
+        self.assertEqual(_t.strftime("%H:%M", _t.localtime(at)), "18:50")
+
+    def test_a_new_sessions_first_manifest_is_all_new(self):
+        """of_review on PR 294: a session that started after the judge's first run had its first manifest skipped."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        conn = of_store.connect(os.path.join(tmp.name, "of.db"))
+        self.addCleanup(conn.close)
+        for kind, sid in (("pulse", "S-0"), ("session_start", "S-new")):
+            rec = of_events.record(kind, {}, position="p", session=sid)
+            of_store.add_event(conn, rec)
+        began = conn.execute("SELECT rowid FROM event WHERE name = 'of.pulse'").fetchone()[0]
+        self.assertEqual(of_tempo.before(conn, "S-new", 10 ** 9, "9999", began), set())
+        self.assertIsNone(of_tempo.before(conn, "S-old", 10 ** 9, "9999", began))
 
 
 class TempoKindTest(unittest.TestCase):

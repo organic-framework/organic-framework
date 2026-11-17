@@ -134,7 +134,7 @@ def items(rows, positions, judged=(), before=None):
                    if isinstance(x, dict)}
             had = last.get(sid)
             if had is None and before:
-                had = before(sid, r.get("rowid"))
+                had = before(sid, r.get("rowid"), ts)
             last[sid] = ids
             if had is None:
                 continue   # no earlier manifest known: what it lists may be old; the next one tells what is new
@@ -314,6 +314,7 @@ def load_state():
     st.setdefault("cursor", None)   # the last rowid read; None: the first run starts at the log's end
     st.setdefault("judged", {})     # item key -> [verdict, at]
     st.setdefault("retry", [])      # items whose call failed: judged again at the next run
+    st.setdefault("began", None)    # the rowid where the first run started: a session started after it is all new
     return st
 
 
@@ -351,11 +352,19 @@ def fetch(conn, after=None, since=None, until=None, limit=FETCH_MAX):
 PER_CALL = 10   # items in one call: a position with forty new items timed out in one (2026-11-17, lab-tempo-v0)
 
 
-def before(conn, session, rowid):
-    """The ids of SESSION's manifest before ROWID (its crons and background tasks), or None when it has none."""
-    r = conn.execute("SELECT payload FROM event WHERE name = 'of.continuation' AND session_id = ? AND rowid < ? "
-                     "ORDER BY rowid DESC LIMIT 1", (session, rowid or 0)).fetchone()
+def before(conn, session, rowid, ts=None, began=None):
+    """The ids of SESSION's manifest before ROWID (its crons and background tasks); an empty set for a session that
+    started after the judge's first run (rowid BEGAN), whose first manifest is all new; None when unknown. By ts on
+    the event_session_ts index: ORDER BY rowid sorted the session's whole history (of_review on PR 294: 22.5 s for
+    eight lookups at load 100, 0.09 s by ts)."""
+    r = conn.execute("SELECT payload FROM event WHERE name = 'of.continuation' AND session_id = ? AND ts <= ? "
+                     "AND rowid < ? ORDER BY ts DESC LIMIT 1", (session, ts or "9999", rowid or 0)).fetchone()
     if not r:
+        if began is not None:
+            s = conn.execute("SELECT rowid FROM event WHERE name = 'of.session_start' AND session_id = ? "
+                             "ORDER BY ts DESC LIMIT 1", (session,)).fetchone()
+            if s and s[0] > began:
+                return set()
         return None
     p = json.loads(r[0] or "{}")
     return {x.get("id") for x in (p.get("session_crons") or []) + (p.get("background_tasks") or [])
@@ -399,13 +408,14 @@ def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=pr
         return []
     st = load_state()
     if st["cursor"] is None:   # the first run starts now: a day of old bookings typed into panes is noise
-        st["cursor"] = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
+        st["cursor"] = st["began"] = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
         if emit:
             save_state(st, now)
         return []
     rows = fetch(conn, after=st["cursor"])
     todo = [it for it in st["retry"] if it["key"] not in st["judged"]] + items(rows, positions, st["judged"],
-                                                                                 before=lambda sid, rid: before(conn, sid, rid))
+                                                                                 before=lambda sid, rid, ts: before(
+                                                                                     conn, sid, rid, ts, st["began"]))
     out = judge_items(todo, positions, runner, log)
     for pos, group, v in out:
         if "error" in v:
@@ -429,7 +439,8 @@ def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=pr
 def replay(conn, since, until, positions=(), org=None, runner=subprocess.run, log=print):
     """Judge a past window without recording: [(position, group, result)]."""
     rows = [r for r in fetch(conn, since=since, until=until, limit=10 ** 7) if not org or r.get("org") == org]
-    return judge_items(items(rows, positions, before=lambda sid, rid: before(conn, sid, rid)), positions, runner, log)
+    return judge_items(items(rows, positions, before=lambda sid, rid, ts: before(conn, sid, rid, ts)), positions,
+                       runner, log)
 
 
 # ------------------------------------------------------------------ the live measure
@@ -438,7 +449,7 @@ OUTCOME_S = 2 * 3600   # what a position does within this after a note is its ou
 
 
 _CRON = re.compile(r"schedule (\S+) (\S+) (\S+) (\S+) (\S+), recurring (True|False)")
-_UNTIL = re.compile(r"-g[et]\s+(\d{14}|\d{12}|\d{6}|\d{4})\b")
+_UNTIL = re.compile(r"-(?:g[et]|l[te])\s+[\"']?\$?\{?(\d{14}|\d{12}|\d{6}|\d{4})\b")
 _ISO = re.compile(r"(20\d\d-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z)")
 
 
@@ -458,10 +469,13 @@ def booked_at(item):
         return time.mktime((year, int(mo), int(d), int(h), int(mi), 0, 0, 0, -1)), False
     m = _UNTIL.search(q)
     if m:
-        v, day = m.group(1), time.strftime("%Y%m%d", time.gmtime(base or time.time()))
+        utc = bool(re.search(r"date\s+(?:-\w\s+)*-u\b|date\s+-u|TZ=UTC", q))   # else the machine's local time
+        v = m.group(1)
+        day = time.strftime("%Y%m%d", (time.gmtime if utc else time.localtime)(base or time.time()))
         full = {14: v, 12: v + "00", 6: day + v, 4: day + v + "00"}[len(v)]
         import calendar
-        return calendar.timegm(time.strptime(full, "%Y%m%d%H%M%S")), False
+        t = time.strptime(full, "%Y%m%d%H%M%S")
+        return (calendar.timegm(t) if utc else time.mktime(t[:8] + (-1,))), False
     m = _ISO.search(q)
     if m:
         return _epoch(m.group(1)), False
