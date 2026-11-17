@@ -40,6 +40,8 @@ class CardIdTest(unittest.TestCase):
         imported = of_events.record("agent_question", {"questions": []}, org="acme-shop", source="import")
         self.assertNotIn("ref", imported["of.payload"])          # history imported from transcripts: no card
         candidate = of_events.record("agent_question", {"detected_by": "heuristic", "questions": []}, org="acme-shop")
+        side = of_events.record("agent_question", {"subagent": True, "questions": []}, org="acme-shop")
+        self.assertNotIn("ref", side["of.payload"])              # a subagent's question is no card either
         self.assertNotIn("ref", candidate["of.payload"])         # no card until the judge files it (of_asks, PR 300)
         given = of_events.record("agent_question", {"ref": "AS-77"}, org="acme-shop")
         self.assertEqual(given["of.payload"]["ref"], "AS-77")    # a writer's own id is kept
@@ -82,6 +84,7 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual(of_asks.ref_id(self.conn, "AS-1b"), later)
         shown = {x["event_id"]: x["ref"] for x in of_asks.project(of_asks.load(self.conn))}
         self.assertEqual((shown[first], shown[later]), ("AS-1", "AS-1b"))   # shown as resolved (of_review, PR 300)
+        self.assertEqual((of_asks.card_name(self.conn, first), of_asks.card_name(self.conn, later)), ("AS-1", "AS-1b"))
 
     def test_a_chat_answer_names_the_card_by_its_id(self):
         """of_review on PR 300: the chat shows only the card id, and an answer citing it was refused."""
