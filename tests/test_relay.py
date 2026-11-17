@@ -487,7 +487,16 @@ class RelayTest(unittest.TestCase):
                            (["❯ ⏵⏵ bypass permissions on · 1 shell", "", "  ⏵⏵ bypass permissions on"], ""),
                            (["❯ half typed", "", "  ⏵⏵ bypass permissions on"], "half typed"),
                            (["❯ first", "  second", "", "  ⏵⏵ bypass permissions on"], "first\n  second"),
-                           (["❯ ", "  ⏸ plan mode on"], "")):
+                           (["❯ ", "  ⏸ plan mode on"], ""),
+                           # of_review on organic-framework PR 285: typed text after an empty line, and typed text
+                           # that starts like a footer, are typed
+                           (["❯", "", "  the actual request", "", "  ⏵⏵ bypass permissions on"], "the actual request"),
+                           (["❯ ? for shortcuts, what are they", "", "  ⏵⏵ bypass permissions on"],
+                            "? for shortcuts, what are they"),
+                           (["❯ ⏸ pause the deploy", rule, "  ⏵⏵ bypass permissions on"], "⏸ pause the deploy"),
+                           (["❯ ", rule, "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent"], ""),
+                           (["❯ ⏵⏵ bypass permissions on · 20 shells · ← 1 agent · ↓ to manage", "",
+                             "     1 agent running"], "")):
             screen = "\n".join(convo + [rule] + tail)
             self.assertEqual(of_relay.input_box_text(screen), want, tail)
 

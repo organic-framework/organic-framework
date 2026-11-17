@@ -131,8 +131,11 @@ def _is_rule(line):
 _RIGHT_ALIGNED = re.compile(r" {10,}\S[^\n]*$")
 
 
-# Claude Code's footer under the box ('⏵⏵ bypass permissions on', '⏸ plan mode on', '? for shortcuts'): never typed text
-_FOOTER = re.compile(r"(?:⏵⏵|⏸|\? for shortcuts)")
+# Claude Code's footer under the box, matched whole as it is drawn: '⏵⏵ bypass permissions on (shift+tab to cycle)', with
+# ' · 2 shells · ← 1 agent · ↓ to manage' and the like after it; '⏸ plan mode on'; '? for shortcuts'. A typed line that
+# only starts like one ('⏸ pause the deploy', '? for shortcuts, what are they') is not it (of_review on PR 285).
+_FOOTER = re.compile(r"(?:⏵⏵ [a-z][a-z -]* on|⏸ plan mode on)(?: \(shift\+tab to cycle\))?(?: ·.*)?"
+                     r"|\? for shortcuts(?: ·.*)?")
 
 
 def input_box_text(screen):
@@ -143,10 +146,11 @@ def input_box_text(screen):
     in typed text never is), and runs down to the next rule, empty line or footer. A side view drawn beside the
     conversation (a diff, a subagent) breaks the box's rules: on 2026-11-17 its own rules made the box read 2,989
     characters, and later its bottom rule was not drawn at all and 4,277 characters were read (a user organization's
-    structure keeper, msgs 01a1e907-653e and 01a1e94f-2ad8). On the prompt line, text after a wide gap that ends at the
-    pane's edge is Claude Code's status, and a footer drawn over the prompt line is the footer (of_review on
-    organic-framework PR 280: text after a gap that stops short of the edge is typed). With no prompt line, the box is
-    read between the last two rules."""
+    structure keeper, msgs 01a1e907-653e and 01a1e94f-2ad8). Empty lines inside the box are passed over: it ends only at
+    a rule or a footer line, matched whole (of_review on organic-framework PR 285: a request typed after an empty line
+    read as empty). On the prompt line, text after a wide gap that ends at the pane's edge is Claude Code's status, and a
+    footer drawn over the prompt line means the box is empty and the footer follows (of_review on PR 280: text after a
+    gap that stops short of the edge is typed). With no prompt line, the box is read between the last two rules."""
     lines = (screen or "").replace("\r", "").split("\n")
     plain = [_ANSI.sub("", _DIM.sub("", l)).replace("\xa0", " ") for l in lines]
     prompt = next((i for i in range(len(lines) - 1, -1, -1) if plain[i].startswith("❯")), None)
@@ -155,18 +159,16 @@ def input_box_text(screen):
         if len(rules) < 2:
             return None
         return "\n".join(plain[rules[-2] + 1:rules[-1]]).strip().lstrip("❯>").strip()
-    stop = prompt + 1
-    while stop < len(lines) and plain[stop].strip() and not _is_rule(lines[stop]) and \
-            not _FOOTER.match(plain[stop].strip()):
-        stop += 1
     width = max((len(t.rstrip()) for t in plain), default=0)
     first = plain[prompt]
     m = _RIGHT_ALIGNED.search(first)
     if m and len(first.rstrip()) >= width - 3:
         first = first[:m.start()]
-    rest = first[1:].strip()
-    if _FOOTER.match(rest):  # the footer drawn over the prompt line
-        first = "❯"
+    if _FOOTER.fullmatch(first[1:].strip()):  # the footer drawn over the prompt line: an empty box, the footer below
+        return ""
+    stop = prompt + 1
+    while stop < len(lines) and not _is_rule(lines[stop]) and not _FOOTER.fullmatch(plain[stop].strip()):
+        stop += 1
     return "\n".join([first] + plain[prompt + 1:stop]).strip().lstrip("❯>").strip()
 
 
