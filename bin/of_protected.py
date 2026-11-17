@@ -75,6 +75,8 @@ def ff_problems(item):
         vals = ff.get(key, [])
         if not isinstance(vals, list) or not all(_rel_ok(v) for v in vals):
             out.append(f"ff: {key} must be a list of paths relative to the tree, with no .. and no leading /")
+        elif any(re.search(r"[*?\[]", v) for v in vals):
+            out.append(f"ff: {key} names paths, not globs (a glob would cover nothing)")
     if not ff.get("human") and not ff.get("human_lists"):
         out.append("ff: name the human set (human or human_lists): a tree with none would move whatever changed")
     return out
@@ -105,8 +107,12 @@ def entries(orgs_file=None):
 
 
 def _env():
-    return {"PATH": "/usr/bin:/bin", "HOME": os.environ.get("HOME", "/"), "GIT_TERMINAL_PROMPT": "0",
-            "GIT_OPTIONAL_LOCKS": "0", "GIT_CONFIG_NOSYSTEM": "1", "GIT_NO_LAZY_FETCH": "1"}
+    """git's environment: no system or global configuration (the caller's HOME is not read), no replace objects (a
+    `git replace` in the shared refs would show other content under the vouched commit id: of_architect on
+    organic-framework PR 306), no lazy fetch, no prompt."""
+    return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0"}
 
 
 def _git(tree, *args, check=True, extra=()):
@@ -115,7 +121,8 @@ def _git(tree, *args, check=True, extra=()):
     if not os.path.isfile(SYSTEM_GIT):
         raise Refused("no system git (/usr/bin/git) on this machine")
     cmd = [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-           "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", *extra]
+           "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
+           "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", *extra]
     r = subprocess.run(cmd + list(args), capture_output=True, text=True, timeout=30, env=_env())
     if check and r.returncode != 0:
         raise Refused(f"git {args[0]} failed: {(r.stderr or r.stdout).strip()[:200]}")
@@ -158,18 +165,18 @@ def _owned(tree):
 
 
 def _listed(text):
-    """The relative paths a list file names: every word with a / in it, normalized (fails closed: a word that is not a
-    path only adds a name that never changes; a path that leaves the tree or is absolute names nothing in it)."""
-    import posixpath
+    """The relative paths a list file names, normalized: every word, every field between tabs, commas, semicolons or
+    bars (a path with a space in it), and every line whole. It fails closed: a word that is not a path only adds a
+    name that never changes; a path that leaves the tree or is absolute names nothing in it (of_review and
+    of_architect on organic-framework PR 306: a top-level name, a folder's trailing / and a path with a space were
+    dropped)."""
     out = set()
     for line in (text or "").splitlines():
-        line = line.split("#", 1)[0]
-        for w in re.split(r"[\s,;|]+", line):
-            w = w.strip().strip("'\"")
-            if "/" not in w or w.startswith("/"):
-                continue
-            n = posixpath.normpath(w)
-            if n != ".." and not n.startswith("../"):
+        line = line.split("#", 1)[0].strip()
+        words = set(re.split(r"\s+", line)) | set(re.split(r"[\t,;|]+", line)) | {line}
+        for w in words:
+            n = _norm(w.strip().strip("'\""))
+            if n:
                 out.add(n)
     return out
 
@@ -178,9 +185,12 @@ def human_set(tree, ff, revs):
     """The human paths: ff.human, ff.human_lists, and what the lists name at each of REVS (HEAD and the target). A list
     that cannot be read at either is no answer, so the fast-forward is the owner's (fails closed; of_architect on the
     field, msg 01a1eaa7-2645)."""
-    paths = set(ff.get("human") or []) | set(ff.get("human_lists") or [])
+    paths = {n for n in (_norm(p) for p in list(ff.get("human") or []) + list(ff.get("human_lists") or [])) if n}
     for lst in ff.get("human_lists") or []:
         for rev in revs:
+            mode = _git(tree, "ls-tree", rev, "--", lst, check=False).stdout.split(" ", 1)[0]
+            if mode == "120000":  # a link's blob is its target's name, not the list (of_architect on PR 306)
+                raise Refused(f"the list {lst} is a link at {rev[:12]}: the owner's")
             data = _blob(tree, rev, lst)
             if data is None:
                 raise Refused(f"the list {lst} cannot be read at {rev[:12]}, so the human set is not known: the owner's")
@@ -188,18 +198,53 @@ def human_set(tree, ff, revs):
     return paths
 
 
+def _fold(path):
+    """A path as the Mac's volume compares it: Unicode-normalized and without case (of_architect on PR 306: NFD/NFC
+    and case variants are one file there)."""
+    import unicodedata
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def _norm(p):
+    """A relative path, normalized: no ./, no doubled or trailing /. None for one that leaves the tree or is absolute."""
+    import posixpath
+    if not p or p.startswith("/"):
+        return None
+    n = posixpath.normpath(p)
+    return None if n in (".", "..") or n.startswith("../") else n
+
+
 def _covered(path, human):
-    """Is PATH a human path or under one? Without case (the Mac's volume ignores it), and any entry is itself and
-    everything under it, with or without a trailing / (of_secrets-review on organic-framework PR 306)."""
-    p = path.casefold()
+    """Is PATH a human path or under one? Without case or Unicode form, and any entry is itself and everything under
+    it, with or without a trailing / (of_secrets-review and of_architect on organic-framework PR 306)."""
+    p = _fold(path)
     for h in human:
-        h = h.rstrip("/").casefold()
+        h = _fold(h.rstrip("/"))
         if p == h or p.startswith(h + "/"):
             return True
     return False
 
 
-def _hits(changes, human, link_target=None):
+def _link_dest(path, link_target, links, hops=8):
+    """Where a link at PATH points, inside the tree, following links of the target tree (LINKS) up to HOPS; '' for the
+    tree's root, None when it leaves the tree or cannot be read."""
+    import posixpath
+    for _ in range(hops):
+        t = link_target(path)
+        if t is None or t.startswith("/"):
+            return None
+        dest = posixpath.normpath(posixpath.join(posixpath.dirname(path), t))
+        if dest == ".":
+            return ""
+        if dest.startswith("../") or dest == "..":
+            return None
+        if _fold(dest) not in links:
+            return dest
+        path = links[_fold(dest)]
+    return None
+
+
+def _hits(changes, human, link_target=None, links=None):
     """The changes the owner keeps: a human path's change of any kind (content, mode, deletion; renames are read as a
     deletion and an addition), one under a human entry, every .gitattributes and .gitmodules, any submodule pointer,
     and a symbolic link, added or changed anywhere, that points at a human path (of_architect, msg 01a1eaa7-2645).
@@ -207,15 +252,13 @@ def _hits(changes, human, link_target=None):
     import posixpath
     out = []
     for path, old, new in changes:
-        hit = _covered(path, human) or os.path.basename(path).casefold() in ALWAYS or "160000" in (old, new)
+        hit = _covered(path, human) or _fold(os.path.basename(path)) in ALWAYS or "160000" in (old, new)
         if not hit and new == "120000" and link_target:
-            t = link_target(path)
-            if t is None:
-                hit = True  # a link whose target cannot be read is not known to be harmless
-            else:
-                dest = posixpath.normpath(posixpath.join(posixpath.dirname(path), t)) if not t.startswith("/") else t
-                hit = dest.startswith("/") or dest.startswith("../") or _covered(dest, human) or \
-                    any(h.rstrip("/").casefold().startswith(dest.rstrip("/").casefold() + "/") for h in human)
+            dest = _link_dest(path, link_target, links or {})
+            # a link out of the tree, to its root, to a human path, or to a folder holding one (of_architect on PR 306:
+            # `x -> .` and chains of links)
+            hit = dest is None or dest == "" or _covered(dest, human) or \
+                any(_fold(h.rstrip("/")).startswith(_fold(dest) + "/") for h in human)
         if hit:
             out.append(path)
     return sorted(set(out))
@@ -223,7 +266,7 @@ def _hits(changes, human, link_target=None):
 
 def _raw_changes(tree, head, to):
     """[(path, old mode, new mode)] between HEAD and the target, renames read as a deletion and an addition."""
-    raw = _git(tree, "diff", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", head, to).stdout
+    raw = _git(tree, "diff-tree", "-r", "--raw", "--no-renames", "--ignore-submodules=none", "-z", head, to).stdout
     parts, out, i = raw.split("\0"), [], 0
     while i < len(parts) - 1:
         meta = parts[i]
@@ -240,12 +283,41 @@ def _tree_paths(tree, rev):
     return [p for p in _git(tree, "ls-tree", "-r", "-z", "--name-only", rev).stdout.split("\0") if p]
 
 
+def _tree_links(tree, rev):
+    """{folded path: path} of every symbolic link in REV's tree."""
+    out = {}
+    for item in _git(tree, "ls-tree", "-r", "-z", rev).stdout.split("\0"):
+        meta, _, path = item.partition("\t")
+        if path and meta.startswith("120000 "):
+            out[_fold(path)] = path
+    return out
+
+
+def _trusted(path):
+    """PATH (the organizations list or a registry, which name the human set) belongs to the user running this and no one
+    else may write it; else Refused."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        raise Refused(f"{path} cannot be read")
+    if st.st_uid != os.geteuid() or st.st_mode & 0o022:
+        raise Refused(f"{path} belongs to another user or others may write it: the human set it names is not this "
+                      "user's to trust")
+
+
+def _under_sudo():
+    """Run through sudo (or as root): the boundary mode, which needs a registry and a gh the caller cannot write. Not
+    built; until it is, the command refuses there (of_review on organic-framework PR 306: under sudo, the caller's HOME
+    named the registry and the human set)."""
+    return os.geteuid() == 0 or bool(os.environ.get("SUDO_UID"))
+
+
 def _case_twins(paths):
     """Paths of one tree that differ only in case (one file on the Mac's volume), as 'a = b'."""
     seen, out = {}, []
     for p in paths:
         for part in _prefixes(p):
-            k = part.casefold()
+            k = _fold(part)
             if k in seen and seen[k] != part:
                 out.append(f"{seen[k]} = {part}")
             seen.setdefault(k, part)
@@ -320,18 +392,16 @@ def github_proof(repo, sha, branch, api=gh_api, checks=None):
     if st != 200 or (cmp or {}).get("status") not in ("ahead", "identical"):  # the branch is SHA or past it
         raise Refused(f"{repo}'s {branch} does not hold {sha[:12]} (GitHub's compare), so it is not known to be on it")
     st, runs = api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
-    st2, status = api(f"repos/{repo}/commits/{sha}/status")
     green = {}
+    # check runs alone, and only success: a commit status may be posted by anyone who can write the repository, the
+    # agents' own access included, and a skipped or neutral check ran nothing (of_architect on PR 306)
     for r in (runs or {}).get("check_runs") or []:
-        ok = r.get("status") == "completed" and r.get("conclusion") in ("success", "neutral", "skipped")
+        ok = r.get("status") == "completed" and r.get("conclusion") == "success"
         app = (r.get("app") or {}).get("id")
         green.setdefault((r.get("name"), None), True)
         green[(r.get("name"), None)] &= ok
         green.setdefault((r.get("name"), app), True)
         green[(r.get("name"), app)] &= ok
-    for s in (status or {}).get("statuses") or []:
-        k = (s.get("context"), None)
-        green[k] = green.get(k, True) and s.get("state") == "success"
     st3, req = api(f"repos/{repo}/branches/{branch}/protection/required_status_checks")
     required = {(c, None) for c in checks or []}
     if st3 == 200 and isinstance(req, dict):
@@ -349,13 +419,28 @@ def github_proof(repo, sha, branch, api=gh_api, checks=None):
 
 def _remote_repo(tree):
     url = _git(tree, "config", "--get", "remote.origin.url", check=False).stdout.strip()
-    m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    m = re.fullmatch(r"(?:https://(?:[^@/]+@)?github\.com/|ssh://git@github\.com/|git@github\.com:)([^/]+)/([^/]+?)"
+                     r"(?:\.git)?/?", url)
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
 def ff(tree, ff_spec, target, api=gh_api, log=print):
-    """Fast-forward TREE to TARGET under FF_SPEC; returns {from, to, pr, changed, human, human_lists}. Raises Refused,
-    with the tree as it was (or saying plainly that it is not), when any check fails or a human path changed."""
+    """Fast-forward TREE to TARGET under FF_SPEC, holding the tree's lock; returns {from, to, pr, changed, human,
+    human_lists}. Raises Refused, with the tree as it was (or saying plainly that it is not), when any check fails or a
+    human path changed."""
+    import fcntl
+    if not SHA.fullmatch(target or ""):
+        raise Refused("give the target as a commit id, not a branch or a name, so nothing moves between check and use")
+    gitdir = _git(tree, "rev-parse", "--path-format=absolute", "--git-dir").stdout.strip()
+    with open(os.open(os.path.join(gitdir, "of-protected-ff.lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)) as lk:
+        try:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Refused("another fast-forward of this tree is running")
+        return _ff(tree, ff_spec, target, api)
+
+
+def _ff(tree, ff_spec, target, api):
     if not SHA.fullmatch(target or ""):
         raise Refused("give the target as a commit id, not a branch or a name, so nothing moves between check and use")
     repo, branch = ff_spec["repo"], ff_spec["branch"]
@@ -382,12 +467,14 @@ def ff(tree, ff_spec, target, api=gh_api, log=print):
     def link_target(path):
         data = _blob(tree, to, path)
         return None if data is None else data.decode("utf-8", "replace")
-    hits = _hits(changes, human, link_target)
+    hits = _hits(changes, human, link_target, _tree_links(tree, to))
     if hits:
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
     pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
     guarded = [p for p in set(_tree_paths(tree, to)) | set(_tree_paths(tree, head)) if _covered(p, human)]
     off = _no_filters(tree)
+    if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
+        raise Refused("the tree moved while it was checked; run the command again")
     _git(tree, "checkout", "--quiet", "--detach", to, extra=off)
     bad = _differs(tree, to, guarded)
     if bad:  # on disk not the target's: move back and say whether the tree is as it was
@@ -403,12 +490,18 @@ def ff(tree, ff_spec, target, api=gh_api, log=print):
 def run(entry, target, position=None, orgs_file=None, api=gh_api, emit=None):
     """`of protected ff`: find ENTRY among the registries' protected_code entries with ff, move it, record it."""
     import of_events
+    import of_credentials
+    if _under_sudo():
+        raise Refused("run through sudo or as root: that mode needs a registry and a gh the caller cannot write, and is "
+                      "not built yet")
     want = os.path.normpath(os.path.expanduser(entry))
+    _trusted(of_credentials._orgs_file(orgs_file))
     found = next(((o, p, f) for o, p, f in entries(orgs_file) if os.path.realpath(p) == os.path.realpath(want)), None)
     if not found:
         raise Refused(f"{entry} is no protected_code entry with ff: in any registry here (docs/registry.md, Protected "
                       "code): its fast-forward is the owner's")
     org, path, spec = found
+    _trusted(dict(of_credentials._registries(orgs_file))[org])
     res = ff(path, spec, target, api=api)
     (emit or of_events.emit)("protected_ff", {"entry": path.replace(os.path.expanduser("~"), "~", 1), "from": res["from"],
                                               "to": res["to"], "pr": res["pr"], "changed": res["changed"],

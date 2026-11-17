@@ -186,6 +186,53 @@ class ProtectedFfTest(unittest.TestCase):
         os.remove(os.path.join(self.wt, "scripts", "vault.sh"))                     # what a move back is checked for
         self.assertEqual(P._differs(self.wt, self.a, ["scripts/vault.sh", "scripts/other.sh"]), ["scripts/vault.sh"])
 
+    def test_replace_objects_submodules_and_checks_of_architect_found(self):
+        """of_architect on organic-framework PR 306: a `git replace` showed unreviewed content under the vouched id,
+        diff.ignoreSubmodules=all hid a gitlink, and a commit status or a skipped check counted as green."""
+        self.write("scripts/vault.sh", "#!/bin/sh\ncat \"$TOKEN\"\n")
+        evil = self.commit("evil", publish=False)
+        self.g("checkout", "-q", "--detach", self.a)
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        self.g("replace", b, evil)
+        self.ff(b)
+        with open(os.path.join(self.wt, "scripts", "vault.sh")) as fh:
+            self.assertNotIn("TOKEN", fh.read())                                    # the vouched content, not the replacement
+        self.g("replace", "-d", b)
+        self.g("config", "diff.ignoreSubmodules", "all")
+        self.g("update-index", "--add", "--cacheinfo", f"160000,{self.a},sub")
+        self.g("commit", "-qm", "a gitlink")
+        sub = self.g("rev-parse", "HEAD")
+        self.g("update-ref", "refs/remotes/origin/main", sub)
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(sub)
+        self.assertIn("sub", str(cm.exception))
+        for runs in ([{"name": "unit", "status": "completed", "conclusion": "skipped"}], []):
+            with self.assertRaises(P.Refused):
+                P.github_proof("acme/vault", b, "main", api=green({b: 7}, runs=runs,
+                                                                  statuses=[{"context": "unit", "state": "success"}]),
+                               checks=["unit"])
+
+    def test_a_list_that_is_a_link_and_the_sudo_mode_are_refused(self):
+        os.remove(os.path.join(self.work, "scripts", "run-allow.tsv"))
+        os.symlink("other.sh", os.path.join(self.work, "scripts", "run-allow.tsv"))
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        c = self.commit("the list a link")
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(c)
+        self.assertIn("is a link", str(cm.exception))                               # read as its target's name
+        old = os.environ.get("SUDO_UID")
+        os.environ["SUDO_UID"] = "501"
+        try:
+            with self.assertRaises(P.Refused) as cm:
+                P.run(self.wt, c, orgs_file=os.path.join(self.d, "none.yaml"), api=green({c: 7}))
+            self.assertIn("sudo", str(cm.exception))
+        finally:
+            if old is None:
+                os.environ.pop("SUDO_UID", None)
+            else:
+                os.environ["SUDO_UID"] = old
+
     def test_a_list_that_drops_a_script_cannot_free_it(self):
         """The set is read at HEAD and at the target and united: a target whose list no longer names allowed.sh still
         counts its change (the list's own change counts too)."""
@@ -270,8 +317,17 @@ class ProtectedFfTest(unittest.TestCase):
                     {"branch": "main", "human": ["a/../b"]}, {"branch": "main", "human": ["a"], "extra": 1}, "yes",
                     {"branch": "main", "human": ["a"], "checks": "unit"}):
             self.assertTrue(P.ff_problems({"path": "~/x/y", "ff": bad}), bad)
-        self.assertEqual(P._listed("scripts/a.sh\tsha\n# scripts/c.sh\n./scripts/b.sh, ../out/x /abs/y"),
-                         {"scripts/a.sh", "scripts/b.sh"})
+        got = P._listed("scripts/a.sh\tsha\n# scripts/c.sh\n./scripts/b.sh, ../out/x /abs/y\nscripts/hooks/\ndeploy.sh\n"
+                        "scripts/my file.sh\tsha256:x")
+        self.assertTrue({"scripts/a.sh", "scripts/b.sh", "scripts/hooks", "deploy.sh", "scripts/my file.sh"} <= got, got)
+        self.assertFalse({"scripts/c.sh", "../out/x", "/abs/y"} & got)
+        self.assertTrue(P.ff_problems({"path": "~/x/y", "ff": dict(SPEC, human=["scripts/*.sh"])}))   # a glob
+        self.assertTrue(P._covered("scripts/cafe\u0301.sh", {"scripts/caf\u00e9.sh"}))         # NFD and NFC
+        self.assertTrue(P._covered("scripts/hooks/x", {"scripts/hooks"}))
+        links = {"a": ".", "b": "c", "c": "scripts/vault.sh"}
+        hits = P._hits([("a", "000000", "120000"), ("b", "000000", "120000")], {"scripts/vault.sh"},
+                       lambda path: links.get(path), {"c": "c"})
+        self.assertEqual(hits, ["a", "b"])                                          # the root, a chain of links
 
 
 if __name__ == "__main__":
