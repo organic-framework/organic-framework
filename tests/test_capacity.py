@@ -1699,6 +1699,15 @@ class LimitDialog(unittest.TestCase):
         self.assertFalse(of_capacity.limit_cursor(moved))  # never Enter on the paid option
         self.assertFalse(of_capacity.limit_cursor(INPUT_BOX))
 
+    def test_only_the_live_dialog_counts(self):
+        # of_server on PR 318: a copy printed higher up, cursor on "Stop and wait", above the live dialog whose
+        # cursor is on the paid option, passed
+        live = [x.replace("❯", " ") for x in self.SCREEN]
+        live[5] = "   ❯ 3. Switch to usage credits"
+        self.assertFalse(of_capacity.limit_cursor(self.SCREEN + ["", "  ⏺ later output"] + live))
+        self.assertFalse(of_capacity.limit_cursor(self.SCREEN + ["  ⏺ the dialog is gone; output below it"]))
+        self.assertTrue(of_capacity.limit_cursor(["old output"] * 30 + self.SCREEN + ["", "  "]))  # trailing blanks
+
 
 class ReliefTakesStoppedSessions(unittest.TestCase):
     def test_relief_takes_shell_and_limit_stopped_sessions_fill_does_not(self):
@@ -2205,6 +2214,23 @@ class WakeStopped(unittest.TestCase):
         self.assertEqual(self.run_it(self.DIALOG, account_ok=False)[2], [])  # still exhausted: rescue's case
         self.assertEqual(self.run_it(self.DIALOG, stop=None)[2], [])  # not stopped
         self.assertEqual(self.run_it(self.DIALOG, status="busy")[2], [])
+
+    def test_the_screen_is_read_again_before_the_key(self):
+        from unittest import mock
+        credits = [ln.replace("❯ 1.", "  1.").replace("  3. Switch", "❯ 3. Switch") for ln in self.DIALOG]
+        screens = [self.DIALOG, credits]
+        rows = [{"config_dir": "/m", "logged_in": True, "observed_at": of_capacity._iso(self.T0),
+                 "windows": {"seven_day": {"utilization": 0}}}]
+        pressed, typed = [], []
+        with mock.patch.object(of_capacity, "load_cache", return_value={}), \
+                mock.patch.object(of_capacity, "save_cache"), mock.patch.object(of_capacity, "actor", return_value="x"):
+            of_capacity.wake_stopped(rows, {"/m": [{"session": "s1", "status": "idle"}]},
+                                     [{"name": "sec", "holder": {"session": "s1"}}], now=self.T0 + 60, log=lambda m: None,
+                                     agent=lambda sid: {"pane_id": "p1"}, read=lambda pane: screens.pop(0),
+                                     keys=lambda pane, k: pressed.append(k),
+                                     deliver=lambda pane, text, sid: typed.append(text) or (True, None),
+                                     stopped=lambda d, sid: self.T0 - 60, sleep=lambda s: None)
+        self.assertEqual((pressed, typed), ([], []))  # the cursor moved to the paid option: no key
 
     def test_only_an_agent_positions_holder(self):
         # of_review on PR 318: a session no position claims (a person's own) or a position a person holds is theirs
