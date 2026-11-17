@@ -749,8 +749,9 @@ def card_rows(c, item, width, overlay_note=None, context=True):
     rows += [(ln, "title") for ln in wrap(first, width)]
     who = ", ".join(c.get("who") or item.get("who") or []) or c.get("position") or "?"
     org = c.get("org") or ""
-    head = who + (f" · {org}" if org else "") + (f" · {tr('waits {age}', age=T._age(item.get('since')))}"
-                                                  if item.get("since") else "")
+    ref = T.card_ref(item)  # the id he cites the card by, first in its byline
+    head = (f"{ref} · " if ref else "") + who + (f" · {org}" if org else "") + (
+        f" · {tr('waits {age}', age=T._age(item.get('since')))}" if item.get("since") else "")
     rows += [(ln, "dim") for ln in wrap(head, width)]
     why = []
     kind = item.get("kind") or ""
@@ -992,7 +993,8 @@ class Inbox:
         if self.search is not None:
             q = self.search.casefold()
             g["search"] = [x for x in visible if q in (x.get("text") or "").casefold()
-                           or any(q in w.casefold() for w in x.get("who") or [])]
+                           or any(q in w.casefold() for w in x.get("who") or [])
+                           or q in T.card_ref(x).casefold()]  # a card found by its id, as cited in chat
         return g
 
     def tabs(self, g):
@@ -1153,6 +1155,7 @@ class Inbox:
             top = idx - height + 1
         self.row[self.cur], self.row[("anchor", self.cur)] = top, (k, idx - top)
         self.row[("more", self.cur)] = (top, max(0, len(its) - top - height))
+        ref_w = max((T.dwidth(T.card_ref(x)) for x in its), default=0)  # the ids' column, as wide as the longest
         for i, x in enumerate(its[top:top + height]):
             k = key_of(x)
             st = self.out.state(k)
@@ -1161,6 +1164,9 @@ class Inbox:
             if width >= WHO_W:  # room for who asks
                 who = T.cut(", ".join(x.get("who") or []), 14)
                 title = who + " " * (15 - T.dwidth(who)) + title
+            if ref_w:  # the card's id first, at any width: he cites the card by it (T.card_ref)
+                ref = T.card_ref(x)
+                title = ref + " " * (ref_w + 1 - T.dwidth(ref)) + title
             tail = ""
             a = 0
             if st and st[0] in ("pending", "sending"):

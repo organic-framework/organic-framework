@@ -254,13 +254,16 @@ class Panel:
                     y += 1
         if s["oldest"] and y < h - 2:
             o = s["oldest"]
+            ref = T.card_ref(o)  # the card's id, as he cites it in chat (T.card_ref)
             self.put(y, 0, T.cut(tr("Longest wait: {age} · {who}: {text}", age=T._age(o.get("since")),
-                                    who=", ".join(o.get("who") or []), text=" ".join((o.get("text") or "").split())),
-                                 w - 1), curses.A_DIM)
+                                    who=(f"{ref} · " if ref else "") + ", ".join(o.get("who") or []),
+                                    text=" ".join((o.get("text") or "").split())), w - 1), curses.A_DIM)
             y += 1
         if s["top"] and s["top"] is not s["oldest"] and y < h - 2:
             t = s["top"]
-            self.put(y, 0, T.cut(tr("First: {text}", text=" ".join((t.get("text") or "").split())), w - 1))
+            ref = T.card_ref(t)
+            self.put(y, 0, T.cut(tr("First: {text}", text=(f"{ref} " if ref else "")
+                                    + " ".join((t.get("text") or "").split())), w - 1))
             y += 1
         if not s["oldest"] and y < h - 2:
             self.put(y, 0, tr("Nothing waits on you."), curses.A_DIM)
@@ -285,6 +288,7 @@ class Panel:
                     quota[st] += 1
                     room -= 1
         who_w = max(10, min(20, lw // 6))
+        ref_w = max((T.dwidth(T.card_ref(x)) for st in streams for x in g[st][:quota[st]]), default=0)
         for st in streams:
             if y > bottom:
                 break
@@ -296,7 +300,9 @@ class Panel:
                 if y > bottom:
                     break
                 who = T.cut(", ".join(x.get("who") or []), who_w)
-                row = f"  {I.row_age(x):>4}  {who}{' ' * (who_w - T.dwidth(who))}  " + " ".join((x.get("text") or "").split())
+                ref = T.card_ref(x)  # the card's id, as he cites it in chat (T.card_ref)
+                ref = ref + " " * (ref_w + 2 - T.dwidth(ref)) if ref_w else ""
+                row = f"  {I.row_age(x):>4}  {ref}{who}{' ' * (who_w - T.dwidth(who))}  " + " ".join((x.get("text") or "").split())
                 self.put(y, 0, T.cut(row, lw - 1))
                 self.cards[y] = (0, lw)
                 y += 1

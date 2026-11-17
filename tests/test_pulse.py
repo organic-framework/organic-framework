@@ -579,8 +579,8 @@ class AskTokensTest(unittest.TestCase):
             asks = of_asks.project([ask])
             of_herdr_asks.refresh_ask_tokens(positions, agents, asks, fake_bind, ws)
             self.assertEqual(calls[-1], ("ws", {"w1": 1, "w2": 0}))
-            self.assertIn("ask=q?", calls[0])
-            agents[0]["tokens"] = {"ask": "q?"}
+            self.assertIn("ask=e01 · q?", calls[0])  # the card's id first (of_asks_tui.card_ref; no ref: the hex tail)
+            agents[0]["tokens"] = {"ask": "e01 · q?"}
             calls.clear()
             done = of_asks.project([ask, ev(2, "of.agent_question_answered", None, 1, "x", ask_ids=["e01"], by="owner")])
             of_herdr_asks.refresh_ask_tokens(positions, agents, done, fake_bind, ws)
