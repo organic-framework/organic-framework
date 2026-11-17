@@ -247,11 +247,23 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("kubectl get secret arc -o custom-columns=K:.data"))
         self.assertTrue(deny("kubectl get secret arc -o wide"))
         self.assertTrue(deny("kubectl get secret -A -w"))
-        # of_architect simplified it: no jq exception. For a Secret, only -o name / default table / describe.
+        # of_architect simplified it: no jq exception. For a Secret, only the default table (2026-11-17: -o name and
+        # describe fetch the whole Secret into kubectl on this machine; a user organization's finding, msg 01a1e8ad-767a)
         self.assertTrue(deny("kubectl get secret arc -o json | jq '.data | keys'"))
         self.assertTrue(deny("kubectl get secret -A -o json | jq -r '.items[].data | keys'"))
-        self.assertIsNone(deny("kubectl get secret arc -o name"))
+        for cmd in ("kubectl get secret arc -o name", "kubectl get secret arc --ignore-not-found -o name",
+                    "kubectl get secrets -oNAME", "kubectl describe secret app-key -n ci", "kubectl describe secrets"):
+            hit = deny(cmd)
+            self.assertTrue(hit, cmd)
+            self.assertTrue(hit[0].startswith(of_guard.SECRET_FETCH_DENY) and of_guard.owns_advice(hit[0]), cmd)
+        # --template with no -o prints as a go-template (kubectl 1.36.1 printed a dry-run Secret's value so)
+        self.assertTrue(deny("kubectl get secret arc --template='{{.data.password}}'"))
+        self.assertTrue(deny("kubectl get secret arc --template '{{.data}}'"))
+        self.assertTrue(deny("kubectl create secret generic x --from-literal=a=b --dry-run=client --template='{{.data.a}}'"))
         self.assertIsNone(deny("kubectl get secret arc"))  # default table
+        for cmd in ("kubectl get secret arc --no-headers", "kubectl get secret arc --ignore-not-found --no-headers",
+                    "kubectl get secrets -A --show-labels", "kubectl get secrets -l app=x -n ci"):
+            self.assertIsNone(deny(cmd), cmd)
         self.assertTrue(deny("kubectl edit secret app-key -n ci"))
         self.assertTrue(deny("kubectl apply view-last-applied secret x -o yaml"))
         self.assertTrue(deny("kubectl create secret generic x --from-literal=a=b --dry-run=client -o yaml"))
@@ -266,10 +278,13 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("kubectl -n evm exec pod-0 -- helm get manifest sub"))
         # allowed: names/metadata, a filtered kind, and a write to a file (the owner's to grant)
         self.assertIsNone(deny("kubectl get secret acme-inc-arc -n ci"))
-        self.assertIsNone(deny("kubectl get secret -o name"))
-        self.assertIsNone(deny("kubectl describe secret app-key -n ci"))
         self.assertIsNone(deny("kubectl get deploy arc -o yaml"))  # a non-secret kind (G6.1 warns)
-        self.assertIsNone(deny("kubectl get secret arc -o yaml > /tmp/claude-501/x/s.yaml"))
+        # written to a file, a Secret read still fetches the whole Secret onto this machine (2026-11-17)
+        for cmd in ("kubectl get secret arc -o yaml > /tmp/claude-501/x/s.yaml",
+                    "kubectl get secret arc -o name > /tmp/claude-501/x/n", "kubectl describe secret arc > /tmp/claude-501/x/d"):
+            self.assertTrue(deny(cmd), cmd)
+        self.assertIsNone(deny("kubectl get secret arc --no-headers > /tmp/claude-501/x/t"))
+        self.assertIsNone(deny("kubectl get deploy arc -o yaml > /tmp/claude-501/x/d.yaml"))
         self.assertIsNone(deny("sops -d -i secrets.enc.yaml"))  # decrypted in place, not to stdout
         self.assertIsNone(deny("vault kv get -field=pw secret/app > /tmp/claude-501/x/pw"))
 

@@ -1249,6 +1249,33 @@ def _kube_pod_spec_read(sub, nonopt, args, out, line_vars=None):
     return None
 
 
+# `kubectl get secret -o name` and `describe secret` print no value, but kubectl fetches the whole Secret, data included,
+# into its own memory on this machine to make them; the default table is the API server's own Table, names and counts
+# only (a user organization's security finding, through its structure keeper, msg 01a1e8ad-767a: its rule that no Secret
+# value enters a process on the Mac; RFC 0002 §4.1, "Where the script runs")
+SECRET_FETCH_DENY = "a command that fetches a Secret's values onto this machine"
+SECRET_FETCH_ADVICE = ("for its name, type and key count use the table, which the API server makes and which holds no "
+                       "value: `kubectl get secret NAME --no-headers` (`--ignore-not-found` to test that it exists); a "
+                       "value is read where it lives (docs/guard.md G6)")
+
+
+def _kubectl_secret_fetch(args):
+    """G6 for a Secret read written to a file: any -o, --template or -w, and describe, still fetch the whole Secret,
+    data included, into kubectl on this machine; only the default table does not."""
+    nonopt = _positional(args, _KUBECTL_VALUE)
+    sub = nonopt[0] if nonopt else None
+    if not any(p in ("secret", "secrets", "all") for a in nonopt for p in re.split(r"[,/]", a)):
+        return None
+    out = (_opt_value(args, ("-o", "--output")) or "").split("=")[0].lower()
+    if sub == "get" and (out or _opt_value(args, ("--template",)) is not None or any(a in ("-w", "--watch") for a in args)):
+        token = f"kubectl get secret -o {out or 'go-template'} > file"
+    elif sub == "describe":
+        token = "kubectl describe secret > file"
+    else:
+        return None
+    return f"{SECRET_FETCH_DENY} ({token}): {SECRET_FETCH_ADVICE}", token
+
+
 def _kubectl_secret_deny(args, line_vars=None):
     """Cluster reads that print a stored Secret's values (of_architect, 2026-11-06, after three real leaks,
     the last from a go-template/jsonpath that fell back to printing the whole object). For a Secret kind
@@ -1271,13 +1298,22 @@ def _kubectl_secret_deny(args, line_vars=None):
         return _prints("kubectl edit secret")
     if sub == "apply" and "view-last-applied" in args and has_secret:
         return _prints("kubectl apply view-last-applied secret")
-    if sub == "create" and "secret" in nonopt and any(a.startswith("--dry-run") for a in args) and out in ("yaml", "json"):
-        return _prints("kubectl create secret --dry-run -o " + out)
+    # kubectl prints --template as a go-template when no -o is given (checked with kubectl 1.36.1, 2026-11-17)
+    template = _opt_value(args, ("--template",)) is not None
+    if sub == "create" and "secret" in nonopt and any(a.startswith("--dry-run") for a in args) and \
+            (out not in ("", "name") or template):
+        return _prints("kubectl create secret --dry-run -o " + (out or "go-template"))
     if sub == "get" and has_secret:
         if any(a in ("-w", "--watch") for a in args):
             return _prints("kubectl get secret --watch")
-        if out and out != "name":  # only -o name and the default table; describe (sizes) is allowed separately
-            return _prints(f"kubectl get secret -o {out}")  # jsonpath/go-template fall back to the whole object
+        if template and not out:
+            return _prints("kubectl get secret --template")
+        if out and out != "name":  # jsonpath/go-template fall back to the whole object
+            return _prints(f"kubectl get secret -o {out}")
+        if out == "name":  # kubectl takes the whole Secret for it; only the default table is the server's own
+            return f"{SECRET_FETCH_DENY} (kubectl get secret -o name): {SECRET_FETCH_ADVICE}", "kubectl get secret -o name"
+    if sub == "describe" and has_secret:
+        return f"{SECRET_FETCH_DENY} (kubectl describe secret): {SECRET_FETCH_ADVICE}", "kubectl describe secret"
     if sub in ("get", "describe") and has_pod and out in ("yaml", "json"):  # the pod spec carries env values (kyaml and
     # any other output that prints the object: _kube_pod_spec_read)
         return _prints(f"kubectl {sub} pod -o {out}")
@@ -1293,8 +1329,8 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         if args[:1] == ["show"] and any(a in ("private-key", "preshared-key", "preshared-keys") for a in args):
             return _prints(f"{head} show private-key")
         return None
-    if to_file:
-        return None
+    if to_file:  # kubectl still fetches the whole Secret onto this machine to write it (SECRET_FETCH_DENY)
+        return _kubectl_secret_fetch(args) if head == "kubectl" else None
     if head == "kubectl":
         return _kubectl_secret_deny(args, line_vars)
     if head == "helm":
@@ -3225,7 +3261,7 @@ UNSET_TARGET_DENY = ("{what} whose target rests on a variable that may be unset 
 UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git": "warn"}
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
 OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target",
-              POD_ENV_DENY)
+              POD_ENV_DENY, SECRET_FETCH_DENY)
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
 _LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)
