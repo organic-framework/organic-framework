@@ -1543,9 +1543,10 @@ def ran_in_bypass(transcript):
         return False
 
 
-def check_bypass_after_start(pane, log=print, wait=20, step=2, herdr=None):
+def check_bypass_after_start(pane, log=print, wait=20, step=2, herdr=None, sleep=time.sleep, clock=time.time):
     """After a start with --dangerously-skip-permissions: the footer must say bypass; turn it back if not. Never
-    fails the start: an error is logged, and the next balance run heals the pane. `herdr` as in _herdr (tests)."""
+    fails the start: an error is logged, and the next balance run heals the pane. `herdr` as in _herdr; `sleep` and
+    `clock` for tests (a wall-clock wait made one timing-flaky under load: of_release, 2026-11-17)."""
     herdr = herdr or _herdr
 
     def read():
@@ -1553,17 +1554,17 @@ def check_bypass_after_start(pane, log=print, wait=20, step=2, herdr=None):
         text = ((r or {}).get("read") or {}).get("text") if isinstance(r, dict) else r
         return (text or "").splitlines()
     try:
-        end = time.time() + wait
+        end = clock() + wait
         while True:
             mode = perm_mode(read())
             # "default" is also an input box drawn before its footer's mode line: wait for a named mode, never press
             # on it (2026-11-14: shift+tab on such a read cycled a resumed session out of bypass into auto)
-            if mode not in (None, "default") or time.time() >= end:
+            if mode not in (None, "default") or clock() >= end:
                 break
-            time.sleep(step)
+            sleep(step)
         if mode in (None, "bypass", "default"):
             return mode
-        after = ensure_bypass(read, lambda k: herdr("pane", "send-keys", pane, k), log=log)
+        after = ensure_bypass(read, lambda k: herdr("pane", "send-keys", pane, k), log=log, sleep=sleep)
         log(f"  permission mode after start: {mode} -> {after}")
         return after
     except Exception as e:
