@@ -231,8 +231,13 @@ class ChecksTest(StateDir):
             fh.write(f"{of_health.iso(now - 900)} Stop spooled: old\n")
             fh.write(f"{of_health.iso(now - 30)} Stop spooled: spooled raw payload (OperationalError)\n")
             fh.write(f"{of_health.iso(now - 20)} store ingest chunk held the write lock 28.8 s\n")
-        share, worst, p99, calls = of_health.hook_readings(now)
-        self.assertEqual((calls, share), (100, 0.01))
+            fh.write(f"{of_health.iso(now - 10)} PostToolUse ERROR: KeyError 'x'\n")
+        share, worst, p99, calls, spooled = of_health.hook_readings(now)
+        # a spooled call is its own check, apart from a failed one (of_architect, 2026-11-17, message 01a1ea91-7683)
+        self.assertEqual((calls, share, spooled), (100, 0.01, 0.01))
+        r = of_health.measure(now=1.0, server="none", lags={}, views={}, hooks=(0.0, 0.1, {}, 100, 0.6), swap=0.1,
+                              disk=50, smoke={"head": "x", "ok": True}, served={}, homegit=None)
+        self.assertEqual((r["hooks.errors"]["state"], r["hooks.spooled"]["state"]), ("ok", "failed"))
         self.assertEqual(worst, 2.0)
 
 
