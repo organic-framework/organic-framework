@@ -379,23 +379,21 @@ class ListenTest(unittest.TestCase):
 
     def test_a_working_start_keeps_the_watchdogs_file_and_a_waiting_one_does_not(self):
         """2026-11-17: at load 45 to 103 the start (the asks view's state from the log) passed the watchdog's 180 s,
-        and each restart began it again."""
+        and each restart began it again. With the real CPU reading: the beat's own wake-ups never count (of_review on
+        organic-framework PR 274: the whole process's CPU grew with them, so a hung start was never restarted)."""
         import time as _t
-        path = of_listen.heartbeat_path()
-        clock = [0.0]
-
-        def cpu():
-            return clock[0]
-        done = of_listen.starting_beat(every=0.02, cpu=cpu)
+        path, ticks = of_listen.heartbeat_path(), of_listen.ticks_path()
+        done = of_listen.starting_beat(every=0.02)
         try:
-            _t.sleep(0.1)
-            self.assertFalse(os.path.exists(path))         # no CPU spent: waits on nothing, never touched
-            self.assertFalse(os.path.exists(of_listen.ticks_path()))
-            for _ in range(10):
-                clock[0] += 1
-                _t.sleep(0.02)
-            self.assertTrue(os.path.exists(path))          # working: the watchdog sees it alive
-            self.assertTrue(os.path.exists(of_listen.ticks_path()))  # its timers' file too (they start after)
+            _t.sleep(0.4)                                   # the start waits on nothing: twenty beats, no touch
+            self.assertFalse(os.path.exists(path))
+            self.assertFalse(os.path.exists(ticks))
+            end = _t.process_time() + 0.3
+            while _t.process_time() < end:                  # the start works
+                sum(range(1000))
+            _t.sleep(0.05)
+            self.assertTrue(os.path.exists(path))
+            self.assertTrue(os.path.exists(ticks))          # its timers' file too (they start after)
         finally:
             done.set()
 
