@@ -110,6 +110,21 @@ class ListenTest(unittest.TestCase):
         finally:
             done.set()
 
+    def test_the_spool_drains_during_a_start(self):
+        """of_asks, message 01a1eaeb-1f42: spool drains up to an hour old came after each long start, when only the
+        main loop drained the spool."""
+        import time as _t
+        drained = []
+        saved = of_listen.SPOOL_S
+        of_listen.SPOOL_S = 0.01
+        done = of_listen.starting_beat(every=0.02, cpu=lambda: 0.0, drain=lambda: drained.append(1))
+        try:
+            _t.sleep(0.2)
+            self.assertGreaterEqual(len(drained), 3)
+        finally:
+            done.set()
+            of_listen.SPOOL_S = saved
+
     def test_one_stuck_timer_stops_the_timers_file(self):
         """of_review on organic-framework PR 294: with a thread per timer, the others kept the timers' file fresh; the
         listener now computes its stuck timers and touches the file only while none is stuck (the watchdog stays
