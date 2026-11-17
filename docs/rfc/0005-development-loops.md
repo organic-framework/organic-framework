@@ -97,7 +97,7 @@ works:
   of loop run <work> --rung day_pass --hypothesis <id> --result "325.8" --evidence "RFC §S2aq"
   ```
 
-  It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events (cbx runs), `of loop` derives them instead of asking the doer.
+  It is one `of.loop_run` event, with the cost from `of_capacity`'s spend and the runner's own record. Where the runner already writes events, `of loop` derives them instead of asking the doer.
 - **A decision is one `of.loop_decision` event:** keep, drop, park, reopen, step up a rung, step back (reframe), or change the objective. `reopen` puts a parked, dropped or kept hypothesis back to `open`, with a note that names what changed or whose word reopened it (`of loop` and its register, `of_platform`; the loop card, `of_studio`; organic-framework PR 168). Why: on 2026-11-14 a user organization's owner revived a parked hypothesis, and it was recorded as `keep` (loop decision `01a1d96b-3945`), which reads as a hypothesis that won and counts in the hit rate. A change of objective must name its money metric (§6). On a target the owner decided, a doer records none: the structure keeper rewrites the target in the registry on the owner's yes (§4.2). Keep and drop are refused on a hypothesis that has runs, all of them proxies not shown to hold (§4.3).
 - **A stated wait is one `of.loop_wait` event** (2026-11-16):
 
@@ -200,7 +200,7 @@ The card answers "how is it going" without a prompt.
 | Step | What | Owner |
 |---|---|---|
 | 1 | Schema: `loop:` on a work, `loop.yaml`, and the checks | `of_architect` (schema), `of_platform` (check) |
-| 2 | `of loop hypothesis/run/decision`, the events, and derivation from runner records (cbx) where they exist | `of_platform` |
+| 2 | `of loop hypothesis/run/decision`, the events, and derivation from runner records where they exist | `of_platform` |
 | 3 | Loop metrics, and the loop card in Studio | `of_studio` |
 | 4 | The eight rules as diagnose anti-patterns, with fixtures | `of_field-analyst`, with `of_lab` for the drift harness |
 | 5 | Cost per cycle and babysitting-model routing | `of_capacity` |
