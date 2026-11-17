@@ -13,10 +13,12 @@ the panel" (ci_keeper; `reports/asks-losses-2026-11-07-10.md`).
 file holds no text; `run.py` reads the store and the transcripts on the Mac (docs/lab.md, Level 2) and prints only
 scores and event ids.
 
-117 cases, 35 positive. 116 were drawn on 2026-11-10 (`run.py sample --since 2026-11-08 --n 60 --seed 1110`): every
+126 cases, 35 positive. 116 were drawn on 2026-11-10 (`run.py sample --since 2026-11-08 --n 60 --seed 1110`): every
 candidate the judge called `owner_question` (41) or skipped (8) since 2026-11-08, 60 of its 465 `not_a_question`
 at random, and 7 messages from the founder's reports (5 he named, 2 later notes repeating ci_keeper's questions). `asks-117` was added on 2026-11-11: of_capacity's
-proposal that he reported lost (hand-over `cc2ed950`, `reports/asks-pane-questions-2026-11-11.md`). Positives are oversampled, so the scores
+proposal that he reported lost (hand-over `cc2ed950`, `reports/asks-pane-questions-2026-11-11.md`).
+`asks-118` to `asks-126` were added on 2026-11-17: pane cards for decisions another position already carried (j-v6
+below). Positives are oversampled, so the scores
 describe this set, not the daily stream; the results below were measured on the first 116.
 
 | Source | Cases | What it is |
@@ -25,6 +27,8 @@ describe this set, not the daily stream; the results below were measured on the 
 | acme_org | 1 | Its report behind a953a7d: a reminder of its filed card, typed in as a new question |
 | of_asks | 21 | An agent's reading where the recorded verdict and Opus disagreed (acme_org to check) |
 | silver | 89 | The recorded verdict and Opus (the j-v3 prompt) agree; no one checked |
+| a user organization's structure keeper | 6 | Pane cards for a decision its unit owner already carried to the founder, one of them its own (2026-11-17) |
+| of_asks | 3 | Three more cards of the same keeper, unit owner and hour; not checked by the keeper |
 
 Labelling rule: `owner_question` when the agent waits on the founder's answer to something not filed with
 `of ask`, also when it only points at it ("a question about 1Password" in a WAITING ON line, a status note "awaiting
@@ -68,6 +72,8 @@ The judge:
 | j-v3 | haiku | none (`--model-only`) | 0.68 | 0.76 | $0.067 |
 | j-v3 | haiku | replayed | 0.81 | 0.74 | $0.023 |
 | j-v4 | haiku | replayed, 117 cases | 0.82 | 0.91 | $0.052 |
+| j-v5 | haiku | replayed, 117 cases, 2 runs | 0.82, 0.82 | 0.89, 0.94 | $0.052, $0.026 |
+| j-v6 | haiku | replayed, 117 cases, the same 2 runs | 0.86, 0.87 | 0.89, 0.94 | the same calls |
 
 j-v4 (2026-11-11, hand-over `cc2ed950`): a proposal that waits on the owner's yes is a question; other positions'
 asks the message names are listed; the filed-ids rule clears a message only when it asks nothing else, also not
@@ -82,6 +88,26 @@ names. A diff is decided on its own card, and an answer to any other card approv
 structure keeper reported the duplicate (message `01a1e0f6-0eab`): a pane card asking the founder to approve a diff
 he had approved on its card 74 s before. The model's prompt is j-v4's, and none of the 117 cases names a diff id, so
 j-v4's scores stand for j-v5. Replayed on the 70 pane cards filed to 2026-11-16, the rule clears one: that duplicate.
+
+j-v6 (2026-11-17): a turn in which the agent declared `of status waiting --on` the very position its card would go to,
+its unit owner, is skipped before the model (rule `waits-on-receiver`): that position already sees the wait, and the
+pulse nudges it. A user organization's structure keeper reported (message `01a1e998-1041`, through `of_server`) five
+pane cards from one keeper's closing messages in a delegated unit, all for decisions its unit owner was already
+bringing to the founder, and a founder card from its own closing line that it withdrew as a duplicate; with three more
+cards of the same hour they are `asks-118` to `asks-126`. On j-v5's model calls (two runs, the same inputs), the rule
+clears three labelled non-questions (`asks-041`, `asks-054`, `asks-094`) and no question; of the nine new cases, j-v5
+filed 8 and 7, j-v6 files 6 and 6. A wait declared on another position, or a message to the receiver in the turn, is
+no such rule: questions for the founder stood beside them (`asks-034`, `asks-076`; `asks-113`, which he reported
+lost).
+
+Two prompt changes were measured and dropped. With the turn's last `of status`, the open founder asks of the unit
+owner and of the waited-on position, an item "a decision another position already carries", and a line saying where
+the card goes ("its unit owner, who decides its questions or brings them to the founder"): precision 0.89 and 0.90,
+recall 0.71 and 0.80: the model read a delegated unit's questions as questions to another position, and missed ten and
+seven, `asks-113` among them. Without that line: precision 0.91 and 0.83, recall 0.91 and 0.86, within Haiku's noise,
+`asks-014` lost in both runs, and six of the nine new cases still filed. The cards left are a keeper's "the scripts
+wait for your yes" in turns that declared no wait; the decision travelled through the unit owner's messages and the
+founder's conductor, not through an ask, so nothing the judge reads shows it carried.
 
 Haiku's verdicts vary between runs by a few cases; compare versions on more than one run.
 

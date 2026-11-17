@@ -35,7 +35,7 @@ import time
 
 import of_events
 
-VERSION = "j-v5"  # j-v5: a message naming only proposed structural diffs is cleared, and a diff's open card is listed as named; j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
+VERSION = "j-v6"  # j-v6: a turn that declared a wait on the position its card would go to is skipped before the model; j-v5: a message naming only proposed structural diffs is cleared, and a diff's open card is listed as named; j-v4: a proposal that waits on his yes is a question; other positions' named asks are listed; j-v3: an ask is known by its first 8 characters too; j-v2: a message naming only filed asks is cleared
 MODEL = "haiku"
 TIMEOUT_S = 60
 SLOTS = 2                 # judges running at once on this machine (each is a short `claude -p`)
@@ -437,6 +437,37 @@ def named_asks(asks, text, position=None):
             if a.get("position") != position and (ids & _short(a["event_id"]) or a.get("diff_id") in diffs)]
 
 
+def _bare(name):
+    """A position's bare name: `of status --on` and the relay may qualify it with its organization."""
+    return str(name or "").split(":")[-1]
+
+
+def declared_in_turn(conn, session, since, until=None):
+    """The agent's last `of status` in this turn, {state, waiting_on, note}, or None: declared in its session at or after
+    the turn's start and, since a judge may run after the session went on, at or before the closing message."""
+    if not session or not since:
+        return None
+    row = conn.execute("SELECT payload FROM event WHERE session_id = ? AND name = 'of.state_declared' AND ts >= ?"
+                       + (" AND ts <= ?" if until else "") + " ORDER BY ts DESC LIMIT 1",
+                       (session, since) + ((until,) if until else ())).fetchone()
+    if not row:
+        return None
+    p = json.loads(row[0] or "{}")
+    return {"state": p.get("state"), "waiting_on": p.get("waiting_on"), "note": p.get("note") or p.get("reason") or ""}
+
+
+def waits_on_receiver(declared, to):
+    """Did the agent declare in this turn that it waits on the very position its card would go to (its unit owner)?
+    That position already sees the wait: the pulse nudges it and `of who` lists it, so a card would show it the same
+    wait twice (j-v6; a user organization's report through its structure keeper, message 01a1e998-1041: a keeper that
+    had declared `waiting --on` its unit owner, which was bringing the founder's yes, got a card for that owner).
+    lab-asks-v0: it clears three labelled non-questions and no question. A wait declared on another position stays the
+    model's: two questions for the founder stood beside such a wait (asks-034, asks-076), and so did one beside a
+    message to the receiver (asks-113, which the founder reported lost)."""
+    return bool(declared and declared.get("state") == "waiting" and _bare(to) not in ("", "founder", "owner")
+                and _bare(declared.get("waiting_on")) == _bare(to))
+
+
 # A structural diff is decided on its own card (`of diff propose` files it, with `diff_id`) or by `of diff approve`;
 # an answer to any other card approves nothing (bin/of _diff_approved_by_answer). A user organization's structure
 # keeper, message 01a1e0f6-0eab (2026-11-15): an architect closed its turn with "it starts when you approve diff
@@ -655,11 +686,15 @@ def judge_one(conn, c, runner=subprocess.run, deliver=None, log=print, now=None)
         return None
     if any(v in ("owner_question", "not_a_question", "skipped") for v in judged(conn, c["ask_id"])):
         return None
+    to = route(c["position"])[0] if c.get("position") else "founder"
     if c.get("position") and c["position"] in owner_chat():
         v = {"verdict": "skipped", "rule": "owner-chat",
              "reason": "the owner converses with this position in its pane and reads its questions there"}
     elif c.get("position") and c.get("turn_start") and filed(conn, c["position"], since=c["turn_start"]):
         v = {"verdict": "skipped", "reason": "the agent filed an of ask in this turn"}
+    elif waits_on_receiver(declared_in_turn(conn, c.get("session"), c.get("turn_start"), c.get("ts")), to):
+        v = {"verdict": "skipped", "rule": "waits-on-receiver",
+             "reason": f"the agent declared in this turn that it waits on {_bare(to)}, where its question would go"}
     elif (named := only_filed_ids(conn, c.get("text") or "", now)):
         v = {"verdict": "not_a_question", "rule": "filed-ids",
              "reason": f"it names only asks already filed ({', '.join(named)}) and asks nothing new"}

@@ -23,9 +23,10 @@ runs on the Mac only (docs/lab.md, Level 2); it prints only scores and event ids
     run.py silver --ids F [--model opus]   a stronger model's labels for the ids in F, to a local file for review;
                                            never committed as labels without a person's check
 
-The judge's rules before the model (a candidate in a turn that filed an of ask is skipped; a message naming only
-filed asks, or only proposed structural diffs, is cleared) are replayed with the queue as it stood at the case's time;
---model-only scores the model alone.
+The judge's rules before the model (a candidate in a turn that filed an of ask, or that declared a wait on the position
+its card would go to, is skipped; a message naming only filed asks, or only proposed structural diffs, is cleared) are
+replayed with the queue as it stood at the case's time; --model-only scores the model alone. Where a card would go is
+read from today's registries, so a unit made since a case's day routes it as it would route today.
 """
 
 import argparse
@@ -108,7 +109,9 @@ def case_input(conn, event_id):
     return {"event_id": event_id, "ts": ts, "position": pos, "text": text, "origin": origin, "peer": peer,
             "filed": [(a["event_id"], a["text"]) for a in filed],
             "named": of_judge.named_asks(founders, text, pos),
-            "rule": rule_at(conn, text, ts, asks, filed, start)}
+            "rule": rule_at(conn, text, ts, asks, filed, start,
+                            of_judge.declared_in_turn(conn, sid, start, ts),
+                            of_judge.route(pos)[0] if pos else "founder")}  # today's registries route it
 
 
 _ASKS = {}
@@ -123,13 +126,16 @@ def asks_at(conn, ts):
     return _ASKS[ts]
 
 
-def rule_at(conn, text, ts, asks, filed, turn_start):
+def rule_at(conn, text, ts, asks, filed, turn_start, declared=None, to=None):
     """The judge's rules before the model (of_judge.judge_one), with the queue as it stood at ts: an of ask filed in
-    the same turn skips the candidate; a message naming only known asks, one at least open for the founder, no "?",
+    the same turn skips the candidate, and so does a turn that declared a wait on the position its card would go to
+    (of_judge.waits_on_receiver, j-v6); a message naming only known asks, one at least open for the founder, no "?",
     and nothing else asked of the owner is cleared (of_judge.only_filed_ids); so is one naming only structural diffs
     proposed by then (of_judge.only_proposed_diffs, j-v5)."""
     if turn_start and any(a["ts"] >= turn_start for a in filed):
         return "skipped"
+    if of_judge.waits_on_receiver(declared, to):
+        return "waits-on-receiver"
     if _filed_ids_at(conn, text, ts, asks):
         return "filed-ids"
     from datetime import datetime
