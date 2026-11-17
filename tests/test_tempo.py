@@ -76,14 +76,18 @@ class FilterTest(unittest.TestCase):
             ev("of.agent_question", {"detected_by": "declared", "to": "founder",
                                      "questions": [{"question": "Ship it tomorrow?"}]}, "obs_keeper", eid="a1"),
         ]
-        got = of_tempo.items(rows, POSITIONS)
+        got = of_tempo.items(rows, POSITIONS, before=lambda sid, rid: set())   # an empty manifest before them
         self.assertEqual([(i["source"], i["position"], i.get("times")) for i in got], [
             ("cron", "k8s_keeper", []), ("clock_wait", "k8s_keeper", []),
             ("message", "k8s_keeper", ["14:25"]), ("message", "k8s_keeper", ["18:45"]),
             ("ask", "obs_keeper", ["tomorrow"])])
         self.assertEqual(got[2]["to"], "platform_owner")
         judged = {k for i in got for k in i.get("keys") or [i["key"]]}
-        self.assertEqual(of_tempo.items(rows, POSITIONS, judged), [])         # each item once
+        self.assertEqual(of_tempo.items(rows, POSITIONS, judged, before=lambda sid, rid: set()), [])  # each once
+        # a session's standing crons, booked before the judge started, are no new booking (2026-11-17, going live)
+        standing = of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid: {"c1", "b1"})
+        self.assertEqual(standing, [])
+        self.assertEqual(of_tempo.items(rows[:2], POSITIONS, before=lambda sid, rid: None), [])  # unknown: none
 
     def test_one_call_per_position_and_a_basis_it_cannot_name_is_none(self):
         group = [{"key": "k1", "source": "cron", "position": "p", "ts": "2026-11-17T13:18:00Z", "ref": "c1",

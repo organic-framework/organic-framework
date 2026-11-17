@@ -112,10 +112,14 @@ def up_of(position, positions):
     return {x for x in up if x and x != position}
 
 
-def items(rows, positions, judged=()):
+def items(rows, positions, judged=(), before=None):
     """The new items in ROWS (event dicts: rowid, event_id, ts, name, session_id, position, org, payload), not in
-    JUDGED (keys). [{key, source, position, session, org, ts, ref, text, times}], in log order."""
+    JUDGED (keys). [{key, source, position, session, org, ts, ref, text, times}], in log order. BEFORE(session,
+    rowid) -> the ids of that session's manifest before this one (a set, or None when unknown): a cron or task already
+    there is no new booking (the judge started at the log's end and took a session's standing crons, booked days
+    earlier, for new ones)."""
     out, seen = [], set(judged)
+    last = {}   # session -> the ids of its last manifest in ROWS
 
     def add(it):
         if it["key"] not in seen:
@@ -125,13 +129,24 @@ def items(rows, positions, judged=()):
         p, pos, ts = r.get("payload") or {}, r.get("position"), r.get("ts") or ""
         base = {"session": r.get("session_id"), "org": r.get("org"), "ts": ts}
         if r["name"] == "of.continuation" and pos:
+            sid = r.get("session_id")
+            ids = {x.get("id") for x in (p.get("session_crons") or []) + (p.get("background_tasks") or [])
+                   if isinstance(x, dict)}
+            had = last.get(sid)
+            if had is None and before:
+                had = before(sid, r.get("rowid"))
+            last[sid] = ids
+            if had is None:
+                continue   # no earlier manifest known: what it lists may be old; the next one tells what is new
             for c in p.get("session_crons") or []:
+                if isinstance(c, dict) and c.get("id") in had:
+                    continue
                 if isinstance(c, dict) and c.get("id"):
                     add(dict(base, key=f"cron:{pos}:{c['id']}", source="cron", position=pos, ref=c["id"],
                              text=f"schedule {c.get('schedule')!s}, recurring {bool(c.get('recurring'))}: "
                                   f"{c.get('prompt') or ''}", times=[]))
             for t in p.get("background_tasks") or []:
-                if isinstance(t, dict) and t.get("id") and t.get("type") == "shell" \
+                if isinstance(t, dict) and t.get("id") and t.get("id") not in had and t.get("type") == "shell" \
                         and waits_on_clock(t.get("command")):
                     add(dict(base, key=f"bg:{pos}:{t['id']}", source="clock_wait", position=pos, ref=t["id"],
                              text=f"{t.get('description') or ''}: {t.get('command') or ''}", times=[]))
@@ -336,6 +351,17 @@ def fetch(conn, after=None, since=None, until=None, limit=FETCH_MAX):
 PER_CALL = 10   # items in one call: a position with forty new items timed out in one (2026-11-17, lab-tempo-v0)
 
 
+def before(conn, session, rowid):
+    """The ids of SESSION's manifest before ROWID (its crons and background tasks), or None when it has none."""
+    r = conn.execute("SELECT payload FROM event WHERE name = 'of.continuation' AND session_id = ? AND rowid < ? "
+                     "ORDER BY rowid DESC LIMIT 1", (session, rowid or 0)).fetchone()
+    if not r:
+        return None
+    p = json.loads(r[0] or "{}")
+    return {x.get("id") for x in (p.get("session_crons") or []) + (p.get("background_tasks") or [])
+            if isinstance(x, dict)}
+
+
 def groups(todo):
     """[(position, [items])] in first-seen order: one call per position and run with its new items, PER_CALL a call."""
     by = {}
@@ -378,7 +404,8 @@ def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=pr
             save_state(st, now)
         return []
     rows = fetch(conn, after=st["cursor"])
-    todo = [it for it in st["retry"] if it["key"] not in st["judged"]] + items(rows, positions, st["judged"])
+    todo = [it for it in st["retry"] if it["key"] not in st["judged"]] + items(rows, positions, st["judged"],
+                                                                                 before=lambda sid, rid: before(conn, sid, rid))
     out = judge_items(todo, positions, runner, log)
     for pos, group, v in out:
         if "error" in v:
@@ -402,7 +429,7 @@ def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=pr
 def replay(conn, since, until, positions=(), org=None, runner=subprocess.run, log=print):
     """Judge a past window without recording: [(position, group, result)]."""
     rows = [r for r in fetch(conn, since=since, until=until, limit=10 ** 7) if not org or r.get("org") == org]
-    return judge_items(items(rows, positions), positions, runner, log)
+    return judge_items(items(rows, positions, before=lambda sid, rid: before(conn, sid, rid)), positions, runner, log)
 
 
 # ------------------------------------------------------------------ the live measure
