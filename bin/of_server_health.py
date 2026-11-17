@@ -156,7 +156,7 @@ class Health:
             elif state == "failed" and told and now - epoch(since) >= REMIND_EVERY and \
                     now - epoch(reminded or since) >= REMIND_EVERY:
                 days = (now - epoch(since)) / 86400
-                if self.tell(OWNER, f"Health: of-server's {name} has been failed since {since} ({days:.1f} days): "
+                if self.tell(OWNER, f"Health: of-server's {name} has been failing since {since} ({days:.1f} days): "
                                     f"value {value} s, limit {limit} s. You are its owner: fix it, or say why it stays "
                                     f"(docs/health.md §3; `of health`). Reminded once a day while it stays failed.",
                              True):
