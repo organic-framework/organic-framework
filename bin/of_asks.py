@@ -141,6 +141,21 @@ def card_name(conn, ask_id):
     return str(r[0]) if r and r[0] else str(ask_id or "")[-8:]
 
 
+def suffix_refs(asks):
+    """Asks two machines numbered alike (each from its own counter within one sync): the first by event id keeps the
+    plain id, the next ones read AS-412b, AS-412c, as ref_id resolves them (of_review on PR 300: both showed the plain
+    id, and acting on the later card's id hit the earlier one). The plain id stays in ref_plain."""
+    by = {}
+    for a in asks:
+        plain = a.get("ref_plain") or a.get("ref")
+        if plain:
+            a["ref_plain"] = plain
+            by.setdefault(plain, []).append(a)
+    for plain, same in by.items():
+        for k, a in enumerate(sorted(same, key=lambda x: x["event_id"])):
+            a["ref"] = plain if k == 0 else plain + chr(ord("a") + k)
+
+
 def ref_id(conn, ref):
     """The event id of the ask whose card id is REF (AS-412, any case), or None. A suffixed one (AS-412b) is the
     later of two asks two machines numbered alike, by event id."""
@@ -421,6 +436,7 @@ def project(rows, state=None):
             continue
         cur.update(state=state, closed_by=r["event_id"], closed_at=r["ts"])
         open_by_session.pop(sid, None)
+    suffix_refs(asks)
     return asks
 
 

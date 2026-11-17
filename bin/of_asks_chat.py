@@ -178,10 +178,15 @@ def quoted_options(text, opts, elsewhere=()):
     return sorted(keep)
 
 
-def names_card(text, ask_ids, who, other_who=()):
-    """What in the prompt names the card: an id of one of its asks (the 8 characters OF shows, or the whole id), or
-    its asker when that asker has no other open card of this person. None when nothing does."""
+def names_card(text, ask_ids, who, other_who=(), refs=()):
+    """What in the prompt names the card: its card id (REFS: AS-412, or AS-412b, as the chat shows it), an id of one
+    of its asks (the 8 characters OF shows, or the whole id), or its asker when that asker has no other open card of
+    this person. None when nothing does. (of_review on PR 300: the chat showed only the card id, which this did not
+    take.)"""
     t = str(text or "").lower()
+    for ref in refs:
+        if ref and re.search(r"(?<![\w-])" + re.escape(str(ref).lower()) + r"(?![\w])", t):
+            return f"its card id {ref}"
     for aid in ask_ids:
         for frag in (aid, aid[-8:]):
             if re.search(r"(?<![0-9a-f])" + re.escape(frag.lower()) + r"(?![0-9a-f])", t):
@@ -299,7 +304,8 @@ def check(conn, asks, positions, ask_ref, prompt_ref, option=None, text=None, no
             other_labels.update({_norm(o), _label(o)})
     other_who = {a.get("position") for a in others}
     opts = _options_of(conn, first)
-    named = names_card(p["text"], g["ask_ids"], g["who"], other_who)
+    refs = [a.get("ref") for a in asks if a["event_id"] in g["ask_ids"] and a.get("ref")]
+    named = names_card(p["text"], g["ask_ids"], g["who"], other_who, refs)
     quoted = quoted_options(p["text"], opts, other_labels)
     if option is not None:
         if not opts:

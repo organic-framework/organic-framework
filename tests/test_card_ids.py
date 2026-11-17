@@ -80,6 +80,17 @@ class CardIdTest(unittest.TestCase):
         first, later = sorted([a["of.event.id"], twin["of.event.id"]])
         self.assertEqual(of_asks.ref_id(self.conn, "AS-1"), first)
         self.assertEqual(of_asks.ref_id(self.conn, "AS-1b"), later)
+        shown = {x["event_id"]: x["ref"] for x in of_asks.project(of_asks.load(self.conn))}
+        self.assertEqual((shown[first], shown[later]), ("AS-1", "AS-1b"))   # shown as resolved (of_review, PR 300)
+
+    def test_a_chat_answer_names_the_card_by_its_id(self):
+        """of_review on PR 300: the chat shows only the card id, and an answer citing it was refused."""
+        import of_asks_chat
+        self.assertEqual(of_asks_chat.names_card("AS-12: yes, ship it", ["01a1aaaa-bbbb-cccc"], ["p"], refs=["AS-12"]),
+                         "its card id AS-12")
+        self.assertIsNone(of_asks_chat.names_card("AS-120: yes", ["01a1aaaa-bbbb-cccc"], ["q"], refs=["AS-12"]))
+        self.assertEqual(of_asks_chat.names_card("as-12b: yes", ["01a1aaaa"], ["q"], refs=["AS-12b"]),
+                         "its card id AS-12b")
 
 
 if __name__ == "__main__":
