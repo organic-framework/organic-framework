@@ -10,10 +10,10 @@ The person's machine records `surface: remote` in `~/.config/of/owner.yaml` (bes
 
 ## 2. Today, with what already works
 
-- **Questions.** The conductor runs `of asks --json` and presents each open card in the person's language, with its options and the asker's recommendation. When the person answers in the chat, the conductor sends the answer to the asking agent quoting the person verbatim, with the time of their message; the asker closes the card with `of status working --answered <id>` (AGENTS.md allows an answer that reached it this way). The conductor never answers for the person.
+- **Questions.** The conductor runs `of asks --chat` and presents each open card in the person's language, with its options and the asker's recommendation. When the person answers in the chat, the conductor records it with `of asks answer <id> --option <n> | --text "<words>" --prompt <event id>` (§3, row 1): OF checks that the prompt is the person's own and closes the card, and the asker sees the answer with the person's words. The conductor never answers for the person.
 - **States and stuck threads.** `of who`, `of handover list` and `of conductor panel --once` print text; the conductor reads them and tells the person what waits on them.
 - **Structure during onboarding.** A provisional position on the person's yes in the conductor's chat (docs/registry.md, Fields, `provisional`) starts work without a diff card.
-- **Agents started without herdr** run in a terminal from the lines `of init` prints. Messages to them wait in `of inbox`; until delivery without herdr exists (§3, row 5), each such agent must read `of inbox --mine` at the start of every turn, and `of_onboarding` puts that line into the package's briefs today.
+- **Agents started without herdr** run in a detached tmux or screen session from the lines `of init` prints, and the relay delivers into it as into a herdr pane (§3, row 5). An agent in a plain terminal gets nothing typed in: its messages wait in `of inbox`, and it reads `of inbox --mine` at the start of every turn.
 - **Waits for the machine:** approving a diff (`of diff approve` runs in a plain shell on the owner's machine, until the passkey approval of §6 ships), signing a grant, a task that makes a secret, Claude Code's folder-trust dialog. The conductor lists them and says they wait until the person is at the machine.
 
 ## 3. What to build
