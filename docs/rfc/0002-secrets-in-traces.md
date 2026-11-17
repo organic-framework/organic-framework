@@ -75,7 +75,15 @@ The critical deny parses a Bash command once, with quotes tracked, and denies wh
 - is re-reviewed after any change before it runs against production again.
 
 **Where the script runs** (`of_architect`, 2026-11-17, from a user organization's rule of 2026-11-16). The pattern above is the floor every organization holds, not a permission. An organization may require more in its own rules, and its stricter rule holds for its positions.
-- **Prefer running the script where the secret lives.** For a Kubernetes Secret, that is a pod in the cluster that mounts the Secret, compares it there with the other side of the check, and prints only match or no-match. No value then reaches the agent's machine at all, not even a process's memory or a pipe. Kernel and process memory follow the same rule (above).
+- **Prefer running the script where the secret lives.** For a Kubernetes Secret, that is a pod in the cluster that mounts the Secret, compares it there with the other side of the check, and prints only match or no-match. No value then reaches the agent's machine, not even a process's memory or a pipe, provided the other side does not cross it either:
+  - **The other side reaches the pod only from a source the pod reads itself** (a Secret it also mounts, or the vault through the pod's own identity) or as its fingerprint. Never pipe it in from the agent's machine.
+  - **Never put it in the pod's command, arguments or environment.** The API server stores the Pod's spec, and `kubectl describe pod` or `-o jsonpath` print it to anyone who reads the Pod.
+  - **Where the pod cannot read the other side,** fingerprint each side where it lives and compare only the fingerprints.
+  - **A rotation run in place** prints the new value's fingerprint or nothing.
+  - **The pod's script holds to the same floor:** a fixed message on error, no tracing. Its output, logs included, stays in the cluster's log store.
+  - **The pod is deleted when the check ends.** The pod and its script are reviewed by the organization's own positions.
+  - **The right to create a pod in a Secret's namespace is the right to read every Secret there.** So prefer a check pod from the organization's reviewed manifests, started by its own deploy, so that the agent only reads its log.
+  - Kernel and process memory follow the same rule: read where they live, never carried off the host (above).
 - **Read the value onto the agent's machine** and fingerprint it there only where the secret's host cannot run the script.
 - **An organization may forbid that fallback**, or allow a stored value's fingerprint only as a named exception. Its rule then holds, whatever this section allows.
 
