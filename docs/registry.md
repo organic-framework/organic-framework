@@ -381,6 +381,21 @@ subagents:
 - **`of registry check`** names a `decided` that does not resolve as a problem, or as a warning when it cannot read the log, and a `subagents:` without `words` as a problem.
 - **Why a key, not a line for everyone.** The start context would otherwise tell every position of every organization that its owner asked, citing another person's prompt. An owner's words carry no authority outside the organization they own (organic-framework PR 241 review). The first organizations' owner said it twice on 2026-11-16 (prompts `01a1e393-ded4` and `01a1e395-8d97`; docs/method.md).
 
+## Where the binding rules come from (2026-11-18, hand-over 83b08e7b)
+
+The binding sections of an organization's `AGENTS.md` reach its positions whole. OF (`of apply` and the pulse,
+`bin/of_context.py`) writes them as `.claude/rules/of-<org>.md` into each folder the organization's active positions
+run in. That folder is the one `of spawn` would start a position in, by the systems map and the organization's paths
+in `orgs.yaml`. Claude Code loads the file at every session's start and again after a compaction. The folder's git
+`info/exclude` keeps the file out of every commit. OF writes it again whenever `AGENTS.md` changes; edit `AGENTS.md`,
+never the file.
+
+A folder where positions of two organizations run gets no rules file. OF tells such a folder by the registry or by
+the sessions started there in the last 7 days. Claude Code loads every rules file of a folder into every session in
+it. A position in such a folder, or with no folder, gets its rules only in the capped start context. `of registry
+check` warns on each such position. The start context names the rules file instead of the rules when the session's
+folder holds the current one.
+
 ## Card ids (2026-11-17, `of_architect`; the founder, prompt `01a1ea59-aeb7`)
 
 A top-level `card_prefix:` sets the prefix of the organization's card ids, such as `OF` for `OF-57`: 2 to 5 capital

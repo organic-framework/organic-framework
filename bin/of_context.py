@@ -47,8 +47,8 @@ def rules_file_text(org, agents_md):
     if not r:
         return None
     return (f"# Binding rules of the organization `{org}`\n\n"
-            f"Written by `of apply` from {agents_md} (hand-over 83b08e7b); edit that file, not this one: the next "
-            f"`of apply` writes this one again.\n\n{r}\n")
+            f"These rules bind the positions of `{org}` that run in this folder. Written by OF (of apply and the pulse) "
+            f"from {agents_md} (hand-over 83b08e7b); edit that file, not this one: OF writes this one again.\n\n{r}\n")
 
 
 def rules_folders(positions, org_paths, work_dir=None):
@@ -90,17 +90,77 @@ def _exclude(folder, run=None):
     return True
 
 
-def write_rules(positions, org_paths, dry_run=False, log=print, run=None):
-    """Write each organization's rules file into each folder its positions run in, when it changed. Returns the paths
-    written (or that would be)."""
+def session_orgs(conn=None, days=7):
+    """{folder: {organizations}} of the sessions started in the last DAYS (of.session_start's cwd and org): where the
+    positions really run, which the registry may not say."""
+    import time as _t
+    own = conn is None
+    try:
+        if own:
+            import of_fold
+            conn = of_fold.reader()
+        if conn is None:
+            return {}
+        since = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(_t.time() - days * 86400))
+        out = {}
+        for org, cwd in conn.execute("SELECT DISTINCT org, cwd FROM event WHERE name = 'of.session_start' AND ts >= ? "
+                                     "AND cwd IS NOT NULL AND org IS NOT NULL", (since,)):
+            out.setdefault(os.path.realpath(os.path.expanduser(cwd)), set()).add(org)
+        return out
+    except Exception:  # noqa: BLE001 - no store: the registry's folders alone
+        return {}
+    finally:
+        if own and conn is not None:
+            conn.close()
+
+
+def shared_folders(folders, sessions):
+    """{folder: {organizations}} of the folders where more than one organization's positions run, by the registry
+    (FOLDERS, from rules_folders) or by the sessions started there or below (SESSIONS, from session_orgs). Claude Code
+    loads every rules file of a folder into every session there, so such a folder gets none (of_review and
+    of_architect on organic-framework PR 320: a user organization's sessions in the framework's folder loaded the OF
+    team's rules)."""
+    by = {}
+    for org, dirs in folders.items():
+        for d in dirs:
+            by.setdefault(os.path.realpath(d), set()).add(org)
+    for d in list(by):
+        for cwd, orgs in sessions.items():
+            if cwd == d or cwd.startswith(d + os.sep):
+                by[d] |= orgs
+    return {d: orgs for d, orgs in by.items() if len(orgs) > 1}
+
+
+def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessions=None):
+    """Write each organization's rules file into each folder its positions run in, when it changed; in a folder shared
+    by two organizations, none, and an earlier one is removed. Returns the paths written (or that would be)."""
     folders = rules_folders(positions, org_paths)
+    shared = shared_folders(folders, session_orgs() if sessions is None else sessions)
     roots = {(p.get("_orgid") or p.get("_org")): p.get("_root") for p in positions}
     written = []
+    for d, orgs in shared.items():
+        for org in orgs:
+            old = os.path.join(d, RULES_FILE.format(org=org))
+            if os.path.exists(old) and not dry_run:
+                os.remove(old)
+                log(f"  removed {old}: {d} is shared by {', '.join(sorted(orgs))}")
     for org, dirs in folders.items():
         text = rules_file_text(org, os.path.join(roots.get(org) or "", "AGENTS.md"))
         if not text:
             continue
+        mine = [os.path.realpath(d) for d in dirs if os.path.realpath(d) not in shared]
         for d in dirs:
+            r = os.path.realpath(d)
+            if r in shared:
+                continue
+            # Claude Code loads a parent folder's rules too: a folder below another of this organization's gets none,
+            # or a session there loads the rules twice
+            if any(a != r and r.startswith(a + os.sep) for a in mine):
+                inner = os.path.join(d, RULES_FILE.format(org=org))
+                if os.path.exists(inner) and not dry_run:
+                    os.remove(inner)
+                    log(f"  removed {inner}: the folder above holds the same rules")
+                continue
             path = os.path.join(d, RULES_FILE.format(org=org))
             if _read(path, 10 ** 7) == text:
                 continue
@@ -118,13 +178,20 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None):
 
 
 def rules_loaded_from(cwd, org, agents_md):
-    """The rules file Claude Code loads for a session in CWD, when it holds ORG's rules as of_apply would write them now;
-    else None (the start context then carries the rules itself)."""
+    """The rules file Claude Code loads for a session in CWD (in CWD or a folder above it, as Claude Code reads them),
+    when it holds ORG's rules as OF would write them now; else None (the start context then carries the rules)."""
     text = rules_file_text(org, agents_md)
     if not text or not cwd:
         return None
-    path = os.path.join(cwd, RULES_FILE.format(org=org))
-    return path if _read(path, 10 ** 7) == text else None
+    d = os.path.realpath(os.path.expanduser(cwd))
+    while True:
+        path = os.path.join(d, RULES_FILE.format(org=org))
+        if _read(path, 10 ** 7) == text:
+            return path
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
 
 
 def rules(agents_md, limit=RULES_MAX):
