@@ -70,7 +70,7 @@ ALLOWED = {
     ('of_judge.py', 'noted', "SELECT count(*) FROM event WHERE name = 'of.nudge_sent' AND "): RARE,
     ('of_listen.py', 'open_asks', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): RARE,
     ('of_listen.py', 'open_asks', "SELECT event_id, payload FROM event WHERE name = 'of.agent_q"): RARE,
-    ('of_listen.py', 'load_state', 'of_asks.load(conn)'): ASKS,
+    ('of_listen.py', '_read_all', 'of_asks.load(conn)'): ASKS,  # a start carries on from the view and its checkpoint when stored
     ('of_listen.py', 'step', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
     ('of_listen.py', 'prepare', 'SELECT COALESCE(MAX(rowid), 0) FROM event'): CONST,
     ('of_paste.py', 'pending', "SELECT json_extract(payload, '$.prompt_id') FROM event WHERE"): RARE,
