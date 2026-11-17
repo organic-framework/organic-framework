@@ -165,6 +165,12 @@ class ProtectedFfTest(unittest.TestCase):
             fh.write("scripts/other.sh filter=x\n")
         self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
         b = self.commit("other")
+        if os.path.exists(marker):
+            os.remove(marker)                                                       # the test's own commit ran it
+        self.g("config", "filter.x.clean", spy)                                     # status runs a clean driver
+        self.g("config", "filter.x.process", spy)
+        st = os.stat(os.path.join(self.wt, "scripts", "other.sh"))                  # its stat changed: status reads it
+        os.utime(os.path.join(self.wt, "scripts", "other.sh"), (st.st_atime, st.st_mtime + 5))
         self.ff(b)
         self.assertEqual(self.head(), b)
         self.assertFalse(os.path.exists(marker))

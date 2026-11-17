@@ -115,15 +115,19 @@ def _env():
             "GIT_OPTIONAL_LOCKS": "0"}
 
 
+def _git_cmd(tree, extra=()):
+    """The system's git in TREE with every setting that keeps the repository's programs from running (_git, _blob)."""
+    if not os.path.isfile(SYSTEM_GIT):
+        raise Refused("no system git (/usr/bin/git) on this machine")
+    return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+            "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
+            "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", *extra]
+
+
 def _git(tree, *args, check=True, extra=()):
     """The system's git in TREE, never one found on PATH, with no program the repository names: fsmonitor, hooks, an
     external diff, a pager, lazy fetch and every transport off. EXTRA: more `-c` settings (the filter drivers)."""
-    if not os.path.isfile(SYSTEM_GIT):
-        raise Refused("no system git (/usr/bin/git) on this machine")
-    cmd = [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-           "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
-           "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", *extra]
-    r = subprocess.run(cmd + list(args), capture_output=True, text=True, timeout=30, env=_env())
+    r = subprocess.run(_git_cmd(tree, extra) + list(args), capture_output=True, text=True, timeout=30, env=_env())
     if check and r.returncode != 0:
         raise Refused(f"git {args[0]} failed: {(r.stderr or r.stdout).strip()[:200]}")
     return r
@@ -131,8 +135,8 @@ def _git(tree, *args, check=True, extra=()):
 
 def _blob(tree, rev, path):
     """The bytes of PATH at REV, or None when it is not there (no filter, no textconv)."""
-    r = subprocess.run([SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "protocol.allow=never",
-                        "cat-file", "blob", f"{rev}:{path}"], capture_output=True, timeout=30, env=_env())
+    r = subprocess.run(_git_cmd(tree) + ["cat-file", "blob", f"{rev}:{path}"], capture_output=True, timeout=30,
+                       env=_env())
     return r.stdout if r.returncode == 0 else None
 
 
@@ -456,7 +460,8 @@ def _ff(tree, ff_spec, target, api):
         raise Refused(f"the tree is at {to[:12]} already")
     if _git(tree, "merge-base", "--is-ancestor", head, to, check=False).returncode != 0:
         raise Refused(f"{to[:12]} does not fast-forward the tree's {head[:12]}")
-    if _git(tree, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+    off = _no_filters(tree)  # status runs a clean driver on a file whose stat changed (of_secrets-review on PR 306)
+    if _git(tree, "status", "--porcelain", "--untracked-files=no", extra=off).stdout.strip():
         raise Refused("the tree has changes of its own: someone wrote it; the owner looks before anything moves")
     twins = _case_twins(_tree_paths(tree, to))
     if twins:
@@ -472,7 +477,6 @@ def _ff(tree, ff_spec, target, api):
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
     pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
     guarded = [p for p in set(_tree_paths(tree, to)) | set(_tree_paths(tree, head)) if _covered(p, human)]
-    off = _no_filters(tree)
     if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
         raise Refused("the tree moved while it was checked; run the command again")
     _git(tree, "checkout", "--quiet", "--detach", to, extra=off)
