@@ -535,7 +535,7 @@ def smoke(repo, ref=None, index=False, timeout=120):
     `of hook` takes a synthetic payload of each event kind, and `of status`, `of asks` and `of who` answer.
     ref: a commit to check; index: the content being committed (the pre-commit gate, which sets GIT_INDEX_FILE)."""
     import tempfile
-    with tempfile.TemporaryDirectory(prefix="of-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="of-smoke-", ignore_cleanup_errors=True) as tmp:
         tree = os.path.join(tmp, "tree")
         os.makedirs(tree)
         try:
@@ -561,6 +561,7 @@ def smoke(repo, ref=None, index=False, timeout=120):
             fh.write(f"orgs:\n  - name: smoke\n    path: {tmp}/org\n    workspace: smoke\n")
         import site
         env = dict(os.environ, OF_STATE=state, OF_ORGS=orgs, HOME=home, OF_AUTOMATION="1", SSH_AUTH_SOCK="",
+                   OF_NO_DETACH="1",   # no hook child writes into this folder after the steps (of_hook._no_detach)
                    PYTHONUSERBASE=site.getuserbase(),  # PyYAML may be a user install: a scratch HOME must not hide it
                    OF_CONFIG_DIR=os.path.join(tmp, "claude"), GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         for k in ("CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_ENV", "GIT_INDEX_FILE",
