@@ -390,10 +390,12 @@ class ListenTest(unittest.TestCase):
         try:
             _t.sleep(0.1)
             self.assertFalse(os.path.exists(path))         # no CPU spent: waits on nothing, never touched
+            self.assertFalse(os.path.exists(of_listen.ticks_path()))
             for _ in range(10):
                 clock[0] += 1
                 _t.sleep(0.02)
             self.assertTrue(os.path.exists(path))          # working: the watchdog sees it alive
+            self.assertTrue(os.path.exists(of_listen.ticks_path()))  # its timers' file too (they start after)
         finally:
             done.set()
 
