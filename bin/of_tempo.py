@@ -397,3 +397,45 @@ def replay(conn, since, until, positions=(), org=None, runner=subprocess.run, lo
     """Judge a past window without recording: [(position, group, result)]."""
     rows = [r for r in fetch(conn, since=since, until=until, limit=10 ** 7) if not org or r.get("org") == org]
     return judge_items(items(rows, positions), positions, runner, log)
+
+
+# ------------------------------------------------------------------ the live measure
+
+OUTCOME_S = 2 * 3600   # what a position does within this after a note is its outcome
+
+
+def outcomes(conn, since, until=None, window_s=OUTCOME_S):
+    """Each note the pulse typed (of.nudge_sent, kind booking_no_basis) since SINCE, with its outcome within WINDOW_S
+    (of_architect, message 01a1ea20-1fa7: the live precision from each note's outcome):
+      ran     a booked cron or clock wait of the note is gone from the position's next manifest (run now, or dropped);
+      basis   the position declared what it waits on (of status waiting --on, of loop wait);
+      neither none of these (a message or an ask item has no other sign).
+    [{event_id, ts, position, items, outcome}]."""
+    q = ("SELECT event_id, ts, position, session_id, payload FROM event WHERE name = 'of.nudge_sent' AND ts >= ? "
+         + ("AND ts < ? " if until else "") + "AND json_extract(payload, '$.kind') = 'booking_no_basis' ORDER BY ts")
+    out = []
+    for eid, ts, pos, sid, pl in conn.execute(q, (since, until) if until else (since,)):
+        p = json.loads(pl or "{}")
+        j = conn.execute("SELECT session_id, payload FROM event WHERE event_id = ?", (p.get("judgement"),)).fetchone()
+        items = (json.loads(j[1] or "{}").get("items") or []) if j else []
+        items = [x for x in items if x.get("verdict") == "no_basis"]
+        end = _iso(_epoch(ts) + window_s)
+        basis = conn.execute(
+            "SELECT 1 FROM event WHERE position = ? AND ts > ? AND ts <= ? AND ((name = 'of.state_declared' AND "
+            "json_extract(payload, '$.state') = 'waiting' AND coalesce(json_extract(payload, '$.waiting_on'), '') "
+            "!= '') OR name = 'of.loop_wait') LIMIT 1", (pos, ts, end)).fetchone()
+        booked = {x["ref"] for x in items if x.get("source") in ("cron", "clock_wait")}
+        ran = False
+        if booked:
+            last = conn.execute("SELECT payload FROM event WHERE name = 'of.continuation' AND position = ? AND ts > ? "
+                                "AND ts <= ? ORDER BY ts DESC LIMIT 1", (pos, ts, end)).fetchone()
+            if last:
+                m = json.loads(last[0] or "{}")
+                live = {c.get("id") for c in m.get("session_crons") or [] if isinstance(c, dict)} | \
+                       {t.get("id") for t in m.get("background_tasks") or []
+                        if isinstance(t, dict) and t.get("status") in (None, "running")}
+                ran = bool(booked - live)
+        out.append({"event_id": eid, "ts": ts, "position": pos, "items": items,
+                    "outcome": "ran" if ran else "basis" if basis else "neither"})
+    return out
+

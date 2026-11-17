@@ -6167,6 +6167,17 @@ def cmd_tempo(args):
                     print(f"{ts[:16]}Z {pos:<24} {x.get('source'):<10} {x.get('verdict'):<13} "
                           f"{x.get('basis_kind'):<12} {of_tempo._one_line(x.get('quote'), 90)}")
             return 0
+        if action == "outcomes":
+            since = args.since or of_tempo._iso(time.time() - args.days * 86400)
+            rows = of_tempo.outcomes(conn, since, args.until)
+            n = {k: sum(1 for r in rows if r["outcome"] == k) for k in ("ran", "basis", "neither")}
+            for r in rows:
+                print(f"{r['ts'][:16]}Z {r['position']:<24} {r['outcome']:<8} "
+                      + "; ".join(of_tempo._one_line(x.get("quote"), 60) for x in r["items"]))
+            judged = n["ran"] + n["basis"]
+            print(f"{len(rows)} notes: {n['ran']} ran, {n['basis']} named a basis, {n['neither']} neither; precision "
+                  + (f"{n['ran'] / judged:.2f} (ran / (ran + basis))" if judged else "n/a"))
+            return 0
         positions = _load_quiet()
         if action == "replay":
             if not args.since or not args.until:
@@ -7051,14 +7062,14 @@ def main(argv=None):
     co.add_argument("--force", action="store_true", help="digest: send now, also before the hour or a second time")
     co.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     co.set_defaults(fn=cmd_corrections)
-    te = sub.add_parser("tempo", help="work booked for later, judged for a basis (hand-over 277de578): list | judge | replay",
-                        description="of tempo [list|judge|replay] [--days N] [--dry-run] [--since ISO --until ISO "
-                                    "[--org O]]")
-    te.add_argument("action", nargs="?", choices=["list", "judge", "replay"])
+    te = sub.add_parser("tempo", help="work booked for later, judged for a basis (hand-over 277de578): list | judge | replay | outcomes",
+                        description="of tempo [list|judge|replay|outcomes] [--days N] [--dry-run] [--since ISO "
+                                    "--until ISO [--org O]]")
+    te.add_argument("action", nargs="?", choices=["list", "judge", "replay", "outcomes"])
     te.add_argument("--days", type=int, default=1, help="list: this many days back")
     te.add_argument("--dry-run", action="store_true", help="judge: print, record nothing")
-    te.add_argument("--since", help="replay: from this time")
-    te.add_argument("--until", help="replay: to this time")
+    te.add_argument("--since", help="replay, outcomes: from this time")
+    te.add_argument("--until", help="replay, outcomes: to this time")
     te.add_argument("--org", help="replay: only this organization's events")
     te.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     te.set_defaults(fn=cmd_tempo)
