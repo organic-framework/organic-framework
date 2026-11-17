@@ -2281,7 +2281,9 @@ def _launch_targets():
 
 
 def _launch_file(path, cwd=None):
-    """Does PATH name LAUNCH_FILE or the executable it names? By real path, and by pattern for a glob."""
+    """Does PATH name LAUNCH_FILE or the executable it names? By pattern for a glob; else by device and inode when it
+    exists (a hard link made earlier is the same file), and by real path compared without case (the Mac's volume
+    ignores case: `~/.CONFIG/of/claude-bin` is the file; of_secrets-review on organic-framework PR 273)."""
     p = str(path or "").strip("'\"")
     if not p:
         return False
@@ -2292,8 +2294,42 @@ def _launch_file(path, cwd=None):
     if any(ch in p for ch in "*?["):
         import fnmatch
         rp = _real_pattern(p)
-        return any(fnmatch.fnmatchcase(t, rp) for t in targets)
-    return os.path.realpath(p) in targets
+        return any(fnmatch.fnmatchcase(t.casefold(), rp.casefold()) for t in targets)
+    try:
+        st = os.stat(p)
+        for t in targets:
+            try:
+                ts = os.stat(t)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == (ts.st_dev, ts.st_ino):
+                return True
+    except OSError:
+        pass
+    return os.path.realpath(p).casefold() in {t.casefold() for t in targets}
+
+
+# > 0 while _bash_deny reads a command another machine runs: there `~` is that machine's home (G29 reads only this one's)
+_REMOTE_BODY = [0]
+
+
+def _launch_write(head, args, cwd, files, removal):
+    """G29 as G21 reads a write, with the two targets as its protected entries: a folder above them removed, moved
+    or replaced by a link (`ln -f`, `-n`), and a recursive copy or an extraction into a folder that holds one, count
+    too (of_secrets-review and of_review on organic-framework PR 273). The path it hit, else None. A command another
+    machine runs (ssh, a container's or a VM's exec: a lab VM resets its own `~/.config/of`) is not this Mac's."""
+    if _REMOTE_BODY[0]:
+        return None
+    replacing = removal or (head == "ln" and any(
+        a == "--force" or a == "--no-dereference" or (a.startswith("-") and not a.startswith("--") and
+                                                       ("f" in a[1:] or "n" in a[1:])) for a in args))
+    saved = _ORG_PROTECTION["code"]
+    _ORG_PROTECTION["code"] = tuple(_launch_targets())
+    try:
+        return next((t for t in _tree_targets(head, args, cwd) if _protected_code(t, cwd, removal=True)), None) or \
+            next((f for f in files if _launch_file(f, cwd) or _protected_code(f, cwd, replacing)), None)
+    finally:
+        _ORG_PROTECTION["code"] = saved
 
 
 def _guard_state_file(path, cwd=None):
@@ -2932,11 +2968,9 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     state = next((f for f in files if _guard_state_file(f, cwd)), None)
     if state:
         return GUARD_STATE_DENY, state
-    launch = next((f for f in files if _launch_file(f, cwd)), None)
-    if launch:
-        return LAUNCH_DENY, launch
     if not _ORG_PROTECTION["code"]:
-        return None
+        launch = _launch_write(head, args, cwd, files, removal)
+        return (LAUNCH_DENY, launch) if launch else None
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -2950,7 +2984,10 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     if hit:
         return PROTECTED_CODE_DENY, hit
     hit = next((f for f in files if _protected_code(f, cwd, removal)), None)
-    return (PROTECTED_CODE_DENY, hit) if hit else None
+    if hit:
+        return PROTECTED_CODE_DENY, hit
+    launch = _launch_write(head, args, cwd, files, removal)  # G29 after G21: where both hold, G21 names it
+    return (LAUNCH_DENY, launch) if launch else None
 
 
 def _herdr_lab(path):
@@ -3270,8 +3307,13 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     hit = None
                 if hit:
                     return hit
+            remote_body = head in _REMOTE_HEADS  # ssh's remote command, a container's or a VM's exec
             for body in _nested(head, args):
-                hit = _bash_deny(body, depth + 1)
+                _REMOTE_BODY[0] += remote_body
+                try:
+                    hit = _bash_deny(body, depth + 1)
+                finally:
+                    _REMOTE_BODY[0] -= remote_body
                 if hit:
                     return hit
             if head in _INTERPRETERS:
@@ -3807,6 +3849,7 @@ def critical_deny(tool, tool_input, cwd=None):
     """(reason, subject) for a call to deny, or None. Examples (.env.example, *.pub) stay allowed."""
     ti = tool_input or {}
     _WARNINGS.clear()
+    _REMOTE_BODY[0] = 0
     if tool == "Bash":
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
