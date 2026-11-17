@@ -3855,9 +3855,16 @@ _ESCAPE_GNU = re.compile(r"(?<!\\)\\[dD]")
 _FLAVOURS = {}  # the command word -> "gnu" or "bsd", once per process
 
 
+_SYSTEM_BIN = ("/usr/bin/", "/bin/")  # the system's own programs: macOS keeps /usr/bin read-only, Linux root-owned
+
+
 def _flavour(word):
-    """'gnu' or 'bsd' for a sed or awk command word (`gsed` and `gawk` are GNU's), by what it answers to --version;
-    None for another command."""
+    """'gnu' or 'bsd' for a sed or awk command word, else None. The guard never runs a program the command names
+    (of_secrets-review on organic-framework PR 283: `<folder>/sed --version`, run here to tell the flavour, ran an
+    agent's own script before any decision): `gsed` and `gawk` are GNU's by name, a word that resolves (by real path,
+    PATH looked up without running anything) to a program in /usr/bin or /bin is asked its --version there, one
+    installed as Homebrew's gnu-sed or gawk is GNU's by its path, and anything else is read as BSD's, the cautious
+    reading."""
     name = os.path.basename(word)
     if name in ("gsed", "gawk"):
         return "gnu"
@@ -3865,12 +3872,17 @@ def _flavour(word):
         return None
     if word not in _FLAVOURS:
         import shutil
-        import subprocess
-        path = word if "/" in word else shutil.which(name)
-        try:
-            out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=3).stdout if path else ""
-        except (OSError, subprocess.SubprocessError):
-            out = ""
+        found = word if "/" in word else shutil.which(name)
+        real = os.path.realpath(found) if found else ""
+        out = ""
+        if real.startswith(_SYSTEM_BIN) and os.path.basename(real) in ("sed", "awk", "gawk", "mawk", "nawk", "gsed"):
+            import subprocess
+            try:
+                out = subprocess.run([real, "--version"], capture_output=True, text=True, timeout=3).stdout
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+        elif re.search(r"/Cellar/(?:gnu-sed|gawk)/", real):
+            out = "GNU"
         _FLAVOURS[word] = "gnu" if "GNU" in out else "bsd"
     return _FLAVOURS[word]
 

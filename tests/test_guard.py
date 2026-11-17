@@ -435,6 +435,29 @@ class GuardBashTest(unittest.TestCase):
             of_guard._FLAVOURS.clear()
             of_guard._FLAVOURS.update(saved)
 
+    def test_the_guard_never_runs_the_sed_a_command_names(self):
+        """of_secrets-review on organic-framework PR 283: telling the flavour ran `<folder>/sed --version`, an agent's
+        own script, inside the hook before any decision. A sed outside /usr/bin and /bin is read as BSD's, unrun."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "ran")
+            for name in ("sed", "awk"):
+                fake = os.path.join(d, name)
+                with open(fake, "w") as fh:
+                    fh.write(f"#!/bin/sh\necho \"$@\" >> {marker}\necho GNU\n")
+                os.chmod(fake, 0o755)
+            saved_path, saved = os.environ.get("PATH", ""), dict(of_guard._FLAVOURS)
+            of_guard._FLAVOURS.clear()
+            try:
+                os.environ["PATH"] = d + os.pathsep + saved_path
+                for cmd in (f"{d}/sed -E 's/\\s+//' f", "sed -E 's/\\s+//' f", f"{d}/awk '/\\s/' f"):
+                    self.assertTrue(deny(cmd), cmd)                          # read as BSD's: denied
+                self.assertFalse(os.path.exists(marker))                     # and never run
+            finally:
+                os.environ["PATH"] = saved_path
+                of_guard._FLAVOURS.clear()
+                of_guard._FLAVOURS.update(saved)
+
     def test_proc_environ_and_process_env_listings(self):
         # of_architect, 2026-11-06: /proc/<pid>/environ holds a process's env (a DSN+password leaked this way)
         self.assertTrue(deny("cat /proc/1/environ"))
