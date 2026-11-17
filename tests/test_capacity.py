@@ -197,6 +197,15 @@ class StatusAndTarget(unittest.TestCase):
                              [("/d1", 1), ("/d2", 2), ("/d3", 3)])  # each reading on its own account, in order
             self.assertEqual(sorted(k for k in of_capacity.load_cache() if k.startswith("/")), ["/d1", "/d2", "/d3"])
 
+    def test_readings_two_periods_old_are_behind(self):
+        # of_review on PR 297: with the detached balancer stalled, the pulse probes for itself
+        t0 = 1_800_000_000
+        cache = {"/a": {"observed_at": of_capacity._iso(t0 - 59 * 60)}, "/b": {"observed_at": of_capacity._iso(t0 - 61 * 60)},
+                 "/c": {"error": "not probed yet"}}
+        from unittest import mock
+        with mock.patch.object(of_capacity, "load_cache", return_value=cache):
+            self.assertEqual(of_capacity.readings_behind(["/a", "/b", "/c"], now=t0), ["/b", "/c"])
+
     def test_snapshot_event_per_fresh_probe(self):
         events = []
         with tempfile.TemporaryDirectory() as state:

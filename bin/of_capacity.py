@@ -266,6 +266,20 @@ def save_cache(c):
     os.replace(tmp, _cache_path())
 
 
+def readings_behind(dirs=None, now=None, factor=2, home=None):
+    """The config dirs whose last reading is older than `factor` probe periods (or missing): a detached balancer that
+    stalls or fails stops probing, and the pulse then probes for itself (of_review on PR 297)."""
+    now = now or time.time()
+    cache = load_cache()
+    out = []
+    for d in (dirs if dirs is not None else config_dirs(home)):
+        snap = cache.get(d) or {}
+        t = _ts(snap.get("observed_at") or "")
+        if t is None or now - t >= factor * PROBE_EVERY_MIN * 60:
+            out.append(d)
+    return out
+
+
 def _stale(snap, now):
     """A reading is good for PROBE_EVERY_MIN minutes; a failed probe (no reading) is retried next time."""
     t = _ts(snap.get("observed_at") or "")
