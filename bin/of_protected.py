@@ -19,16 +19,19 @@ The command moves only when:
   submodule pointer, the lists themselves, a human path's change of any kind, and a link that points at a human path.
 Paths are compared without case (the Mac's volume ignores it). Any check that cannot be made refuses.
 
-It reads the commit and every tree of HEAD and of the target itself, from the root down, and hashes each: git checks the
-root tree as it reads it, not the trees below it or the blobs (of_architect on organic-framework PR 306). The changes,
-the lists, the links and the case check come from those verified trees, and each changed path's new blob is hashed
-before the checkout. Then it checks the target out by its id. The system's git runs it, with fsmonitor, hooks, the
-external diff, submodule recursion, every filter driver the configuration names and the attributes file off, and no
-fetch; the status before it never reads a submodule's work tree: no program the repository's configuration, or a
-submodule's own, names runs. After the checkout it hashes, on disk, every file it wrote and every human file against
-the id the verified target names for its path, so an object swapped in the shared store between the check and the
-checkout is caught; on a mismatch it moves back, checks the same files against HEAD's verified trees, and says whether
-the tree is as it was. It records `of.protected_ff`.
+It reads the commit and every tree of HEAD and of the target itself, from the root down, and hashes each, and every blob
+either checkout would write (each changed path's, each human path's, every .gitattributes and .gitmodules), and holds
+those bytes: git checks the root tree as it reads it, not the trees below it or the blobs (of_architect on
+organic-framework PR 306). The changes, the lists, the links and the case check come from those verified trees. Then
+it checks the target out by its id from a private object folder that holds only the verified objects, with no
+alternates, so from the check on git reads no object from the repository's shared store, where a program on the same
+OS user could swap one (of_architect's fourth pass). The system's git runs it, with fsmonitor, hooks, the external
+diff, submodule recursion, every filter driver the configuration names and the attributes file off, and no fetch; the
+status before it never reads a submodule's work tree: no program the repository's configuration, or a submodule's
+own, names runs. After the checkout the whole index must be the verified target, and every file it wrote and every
+human file must hash on disk to the target's ids; otherwise it moves back from the same private folder, checks the
+index and those files against HEAD's verified trees, and says whether the tree is as it was. It records
+`of.protected_ff`.
 
 The guard's G21 still denies every git write into the tree from an agent's command line; this command is the one way
 agents move such a tree. On one OS user it is a convention, not a boundary (G21's known limit): any program an agent
@@ -132,10 +135,12 @@ def _git_cmd(tree, extra=()):
             *extra]
 
 
-def _git(tree, *args, check=True, extra=()):
+def _git(tree, *args, check=True, extra=(), store=None):
     """The system's git in TREE, never one found on PATH, with no program the repository names: fsmonitor, hooks, an
-    external diff, a pager, lazy fetch and every transport off. EXTRA: more `-c` settings (the filter drivers)."""
-    r = subprocess.run(_git_cmd(tree, extra) + list(args), capture_output=True, text=True, timeout=30, env=_env())
+    external diff, a pager, lazy fetch and every transport off. EXTRA: more `-c` settings (the filter drivers). STORE: a
+    private object folder git reads instead of the repository's (and of no alternates)."""
+    env = dict(_env(), GIT_OBJECT_DIRECTORY=store) if store else _env()
+    r = subprocess.run(_git_cmd(tree, extra) + list(args), capture_output=True, text=True, timeout=30, env=env)
     if check and r.returncode != 0:
         raise Refused(f"git {args[0]} failed: {(r.stderr or r.stdout).strip()[:200]}")
     return r
@@ -143,9 +148,11 @@ def _git(tree, *args, check=True, extra=()):
 
 class _Snap(dict):
     """{path: (mode, id)} of every entry but folders in one commit, read and hashed by this command from the commit
-    down. .fmt: the repository's object format; .rev: the commit."""
+    down. .fmt: the repository's object format; .rev: the commit; .objects: {id: (kind, bytes)} of the commit and every
+    tree, as verified."""
     fmt = "sha1"
     rev = ""
+    objects = None
 
 
 FORGED = "these objects do not hash to their ids, so the content is not the reviewed commit's: "
@@ -193,13 +200,14 @@ def _snapshot(tree, commit):
     """COMMIT's entries as a _Snap, every object on the way (the commit and each tree) read here and hashed; a forged
     one is Refused (of_architect's third pass on organic-framework PR 306: a forged subtree under a genuine id)."""
     snap = _Snap()
-    snap.rev = commit
+    snap.rev, snap.objects = commit, {}
     snap.fmt = _git(tree, "rev-parse", "--show-object-format", check=False).stdout.strip() or "sha1"
     width = 32 if snap.fmt == "sha256" else 20
     raw = _objects(tree, snap.fmt, [commit], "commit").get(commit)
     m = re.match(rb"tree ([0-9a-f]+)\n", raw or b"")
     if not m:
         raise Refused(FORGED + f"the commit {commit[:12]}")
+    snap.objects[commit] = ("commit", raw)
     level = {"": m.group(1).decode()}
     while level:
         got, nxt = _objects(tree, snap.fmt, list(level.values()), "tree"), {}
@@ -207,6 +215,7 @@ def _snapshot(tree, commit):
             if oid not in got:
                 raise Refused(FORGED + f"the folder {prefix or '(the root)'} at {commit[:12]}")
             data, i = got[oid], 0
+            snap.objects[oid] = ("tree", data)
             while i < len(data):
                 sp = data.index(b" ", i)
                 nul = data.index(b"\0", sp)
@@ -232,6 +241,54 @@ def _read(tree, snap, path):
     if data is None:
         raise Refused(FORGED + path)
     return data
+
+
+def _held(tree, snaps, paths):
+    """{id: bytes} of the blob at each of PATHS (and of every .gitattributes and .gitmodules, which git reads from the
+    index) in each of SNAPS, read and hashed; a forged one is Refused, naming its paths."""
+    want = {}
+    for snap in snaps:
+        for p, (mode, oid) in snap.items():
+            if mode != "160000" and (p in paths or _fold(os.path.basename(p)) in ALWAYS):
+                want.setdefault(oid, set()).add(p)
+    got = _objects(tree, snaps[0].fmt, list(want), "blob")
+    forged = sorted(p for oid, ps in want.items() if oid not in got for p in ps)
+    if forged:
+        raise Refused(FORGED + ", ".join(forged[:20]))
+    return got
+
+
+def _private_store(snaps, blobs):
+    """A fresh object folder (mode 700) holding only the verified commits, trees and blobs, with no alternates: git
+    reads it in place of the repository's shared store, so an object swapped there after the check is never read
+    (of_architect's fourth pass on organic-framework PR 306). The caller removes it."""
+    import tempfile
+    import zlib
+    d = tempfile.mkdtemp(prefix="of-protected-ff-")
+    os.makedirs(os.path.join(d, "info"))
+    os.makedirs(os.path.join(d, "pack"))
+    objs = {oid: v for snap in snaps for oid, v in snap.objects.items()}
+    objs.update({oid: ("blob", body) for oid, body in blobs.items()})
+    for oid, (kind, body) in objs.items():
+        os.makedirs(os.path.join(d, oid[:2]), exist_ok=True)
+        fd = os.open(os.path.join(d, oid[:2], oid[2:]), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(zlib.compress(b"%s %d\0" % (kind.encode(), len(body)) + body))
+    return d
+
+
+def _index_differs(tree, snap):
+    """The paths where the tree's index is not SNAP (another id or mode, an entry missing or added, a conflict)."""
+    seen, out = {}, []
+    for item in _git(tree, "ls-files", "-s", "-z").stdout.split("\0"):
+        meta, _, path = item.partition("\t")
+        if not path:
+            continue
+        mode, oid, stage = (meta.split() + ["", "", ""])[:3]
+        if stage != "0":
+            out.append(path)
+        seen[path] = (mode, oid)
+    return sorted(set(out) | {p for p in set(seen) | set(snap) if seen.get(p) != snap.get(p)})
 
 
 def _changes(old, new):
@@ -605,30 +662,31 @@ def _ff(tree, ff_spec, target, api):
     hits = _hits(changes, human, link_target, {_fold(p): p for p, (m, _) in new.items() if m == "120000"})
     if hits:
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
-    pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
-    blobs = {p: new[p][1] for p, _, m in changes if m not in ("000000", "160000")}
-    got = _objects(tree, new.fmt, list(blobs.values()), "blob")
-    forged = sorted(p for p, o in blobs.items() if o not in got)
-    if forged:
-        raise Refused(FORGED + ", ".join(forged[:20]))
     checked = {p for p, _, _ in changes} | {p for p in set(new) | set(old) if _covered(p, human)}
-    if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
-        raise Refused("the tree moved while it was checked; run the command again")
-    _git(tree, "checkout", "--quiet", "--detach", to, extra=off)
-    # every file it wrote and every human file, hashed on disk against the verified target: an object swapped in the
-    # shared store after it was checked is caught here (of_architect's third pass on PR 306)
-    bad = _differs(tree, new, checked)
-    if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != to:
-        bad = ["HEAD"] + bad
-    if bad:  # on disk not the target's: move back and say whether the tree is as it was
-        _git(tree, "checkout", "--quiet", "--force", "--detach", head, extra=off, check=False)
-        still = _differs(tree, old, checked)
-        if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != head:
-            still = ["HEAD"] + still
-        raise Refused(f"{', '.join(bad[:20])} on disk was not the target's verified content after the checkout (an "
-                      f"object changed in the store since it was checked?); moved back to {head[:12]}"
-                      + (f", but {', '.join(still[:20])} still differ from it: the tree is not as it was, the owner "
-                         "must look" if still else ", and those files are HEAD's again"))
+    blobs = _held(tree, (old, new), checked)  # every blob either checkout writes, verified and held from here on
+    pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
+    store = _private_store((old, new), blobs)  # from here git reads no object from the shared store
+    try:
+        if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
+            raise Refused("the tree moved while it was checked; run the command again")
+        _git(tree, "checkout", "--quiet", "--detach", to, extra=off, store=store)
+        # the whole index is the verified target, and every file it wrote and every human file hashes on disk to the
+        # target's ids (of_architect's third and fourth passes on PR 306)
+        bad = _index_differs(tree, new) + _differs(tree, new, checked)
+        if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != to:
+            bad = ["HEAD"] + bad
+        if bad:  # not the target's: move back from the same verified objects, and say whether the tree is as it was
+            _git(tree, "checkout", "--quiet", "--force", "--detach", head, extra=off, store=store, check=False)
+            still = _index_differs(tree, old) + _differs(tree, old, checked)
+            if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != head:
+                still = ["HEAD"] + still
+            raise Refused(f"{', '.join(sorted(set(bad))[:20])} was not the target's verified content after the "
+                          f"checkout; moved back to {head[:12]}"
+                          + (f", but {', '.join(sorted(set(still))[:20])} still differ from it: the tree is not as it "
+                             "was, the owner must look" if still else ", and those files are HEAD's again"))
+    finally:
+        import shutil
+        shutil.rmtree(store, ignore_errors=True)
     return {"from": head, "to": to, "pr": pr, "changed": len(changes), "human": sorted(human),
             "human_lists": list(ff_spec.get("human_lists") or [])}
 
