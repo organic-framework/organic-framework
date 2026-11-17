@@ -187,15 +187,32 @@ class OutcomeTest(JudgeTest):
         def note(pos, items, minutes):
             j = self.ev("booking_judged", {"position": pos, "items": items}, pos, minutes)
             self.ev("nudge_sent", {"kind": "booking_no_basis", "judgement": j, "to_position": pos}, pos, minutes + 1)
-        cron = {"source": "cron", "ref": "c1", "verdict": "no_basis", "quote": "at 18:45Z"}
+        cron = {"source": "cron", "ref": "c1", "verdict": "no_basis", "ts": "2026-11-17T13:18:00Z",
+                "quote": "schedule 45 23 17 11 *, recurring False: item 7"}
         note("k8s_keeper", [cron], 0)
         self.ev("continuation", {"session_crons": [], "background_tasks": []}, "k8s_keeper", 10)    # gone: ran
         note("obs_keeper", [dict(cron, ref="c2")], 0)
         self.ev("state_declared", {"state": "waiting", "waiting_on": "platform_owner"}, "obs_keeper", 20)
         note("acme_org", [{"source": "message", "ref": "m1", "verdict": "no_basis", "quote": "tomorrow"}], 0)
         self.ev("state_declared", {"state": "waiting", "waiting_on": "acme_org"}, "acme_org", 200)  # past the window
+        # a wait whose own time came (13:25Z) and then left is no sign it ran early (of_review on PR 294)
+        note("alex", [{"source": "clock_wait", "ref": "b1", "verdict": "no_basis", "ts": "2026-11-17T13:18:00Z",
+                       "quote": 'Alarm: until [ "$(date -u +%Y%m%d%H%M%S)" -ge 20261117132500 ]; do sleep 30; done'}], 0)
+        self.ev("continuation", {"session_crons": [], "background_tasks": []}, "alex", 10)            # 13:28Z
         got = {r["position"]: r["outcome"] for r in of_tempo.outcomes(self.conn, "2026-11-17T00:00:00Z")}
-        self.assertEqual(got, {"k8s_keeper": "ran", "obs_keeper": "basis", "acme_org": "neither"})
+        self.assertEqual(got, {"k8s_keeper": "ran", "obs_keeper": "basis", "acme_org": "neither", "alex": "neither"})
+
+    def test_an_items_own_booked_time(self):
+        at, rec = of_tempo.booked_at({"source": "clock_wait", "ts": "2026-11-17T13:18:00Z",
+                                      "quote": "until [ $(date -u +%Y%m%d%H%M) -ge 202611171450 ]; do sleep 60; done"})
+        self.assertEqual((of_tempo._iso(at), rec), ("2026-11-17T14:50:00Z", False))
+        at, _ = of_tempo.booked_at({"source": "clock_wait", "ts": "2026-11-17T13:18:00Z",
+                                    "quote": "t=$(date -u -j -f X '2026-11-17T14:03:00Z' +%s); sleep $(( t - 1 ))"})
+        self.assertEqual(of_tempo._iso(at), "2026-11-17T14:03:00Z")
+        at, _ = of_tempo.booked_at({"source": "clock_wait", "ts": "2026-11-17T13:18:00Z", "quote": "sleep 3600; go"})
+        self.assertEqual(of_tempo._iso(at), "2026-11-17T14:18:00Z")
+        self.assertEqual(of_tempo.booked_at({"source": "cron", "quote": "schedule 17 * * * *, recurring True: x"}),
+                         (None, True))
 
 
 class TempoKindTest(unittest.TestCase):

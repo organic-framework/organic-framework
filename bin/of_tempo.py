@@ -410,10 +410,46 @@ def replay(conn, since, until, positions=(), org=None, runner=subprocess.run, lo
 OUTCOME_S = 2 * 3600   # what a position does within this after a note is its outcome
 
 
+_CRON = re.compile(r"schedule (\S+) (\S+) (\S+) (\S+) (\S+), recurring (True|False)")
+_UNTIL = re.compile(r"-g[et]\s+(\d{14}|\d{12}|\d{6}|\d{4})\b")
+_ISO = re.compile(r"(20\d\d-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z)")
+
+
+def booked_at(item):
+    """(epoch of the item's own booked time or None, recurring): a one-shot cron's schedule (the machine's local time,
+    as the harness runs it), or a clock wait's target (a date compared with -ge or -gt, an ISO time, or a sleep from
+    the item's time). None when it cannot be read."""
+    q, base = item.get("quote") or "", _epoch(item.get("ts") or "")
+    m = _CRON.search(q)
+    if item.get("source") == "cron":
+        if not m:
+            return None, False
+        mi, h, d, mo, _, rec = m.groups()
+        if rec == "True" or not all(x.isdigit() for x in (mi, h, d, mo)):
+            return None, True
+        year = time.gmtime(base or time.time()).tm_year
+        return time.mktime((year, int(mo), int(d), int(h), int(mi), 0, 0, 0, -1)), False
+    m = _UNTIL.search(q)
+    if m:
+        v, day = m.group(1), time.strftime("%Y%m%d", time.gmtime(base or time.time()))
+        full = {14: v, 12: v + "00", 6: day + v, 4: day + v + "00"}[len(v)]
+        import calendar
+        return calendar.timegm(time.strptime(full, "%Y%m%d%H%M%S")), False
+    m = _ISO.search(q)
+    if m:
+        return _epoch(m.group(1)), False
+    for n, unit in _SLEEP.findall(q):
+        secs = float(n) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+        if secs >= SLEEP_MIN_S and base:
+            return base + secs, False
+    return None, False
+
+
 def outcomes(conn, since, until=None, window_s=OUTCOME_S):
     """Each note the pulse typed (of.nudge_sent, kind booking_no_basis) since SINCE, with its outcome within WINDOW_S
     (of_architect, message 01a1ea20-1fa7: the live precision from each note's outcome):
-      ran     a booked cron or clock wait of the note is gone from the position's next manifest (run now, or dropped);
+      ran     a booked cron or clock wait of the note left the position's manifest before its own booked time (run now),
+              or a recurring cron of it was removed (the booking dropped);
       basis   the position declared what it waits on (of status waiting --on, of loop wait);
       neither none of these (a message or an ask item has no other sign).
     [{event_id, ts, position, items, outcome}]."""
@@ -430,17 +466,25 @@ def outcomes(conn, since, until=None, window_s=OUTCOME_S):
             "SELECT 1 FROM event WHERE position = ? AND ts > ? AND ts <= ? AND ((name = 'of.state_declared' AND "
             "json_extract(payload, '$.state') = 'waiting' AND coalesce(json_extract(payload, '$.waiting_on'), '') "
             "!= '') OR name = 'of.loop_wait') LIMIT 1", (pos, ts, end)).fetchone()
-        booked = {x["ref"] for x in items if x.get("source") in ("cron", "clock_wait")}
+        # ran: a booked item left the manifest before its own booked time (a one-shot cron that fired, or a wait whose
+        # time came, is no sign: of_review on organic-framework PR 294); a recurring cron removed is a booking dropped
+        booked = [x for x in items if x.get("source") in ("cron", "clock_wait")]
         ran = False
         if booked:
-            last = conn.execute("SELECT payload FROM event WHERE name = 'of.continuation' AND position = ? AND ts > ? "
-                                "AND ts <= ? ORDER BY ts DESC LIMIT 1", (pos, ts, end)).fetchone()
-            if last:
-                m = json.loads(last[0] or "{}")
+            gone = {}
+            for mts, mpl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.continuation' AND position = ? "
+                                         "AND ts > ? AND ts <= ? ORDER BY ts LIMIT 500", (pos, ts, end)):
+                m = json.loads(mpl or "{}")
                 live = {c.get("id") for c in m.get("session_crons") or [] if isinstance(c, dict)} | \
                        {t.get("id") for t in m.get("background_tasks") or []
                         if isinstance(t, dict) and t.get("status") in (None, "running")}
-                ran = bool(booked - live)
+                for x in booked:
+                    if x["ref"] not in live and x["ref"] not in gone:
+                        gone[x["ref"]] = _epoch(mts)
+            for x in booked:
+                if x["ref"] in gone:
+                    at, recurring = booked_at(x)
+                    ran = ran or (recurring if at is None else gone[x["ref"]] < at - 60)
         out.append({"event_id": eid, "ts": ts, "position": pos, "items": items,
                     "outcome": "ran" if ran else "basis" if basis else "neither"})
     return out

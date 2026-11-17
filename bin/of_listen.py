@@ -1288,7 +1288,8 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
                 except OSError:
                     return None
             hb, ticks = age(heartbeat_path()), age(ticks_path())
-            return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"])
+            return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"]) \
+                and not stuck_timers(now, s["ticks_stale"])
     pid_of = (lambda: pid) if pid is not None else (lambda: of_relay_client.launchd_pid(label, domain))
 
     def stamp(m):
@@ -1316,6 +1317,23 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
 
 SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat while one of them is held
 LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
+
+
+def stuck_timers(now, slack, path=None):
+    """The timers whose last start is older than their period plus SLACK, from listen-ticks.json: with a thread per
+    timer any one of them touches the timers' file, so the file alone no longer shows one stuck timer (of_review on
+    organic-framework PR 294). Only a regular file is read (never a FIFO); unreadable says none."""
+    import stat
+    path = path or os.path.join(of_events.STATE_DIR, "listen-ticks.json")
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return []
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return sorted(k for k, v in data.items() if isinstance(v, dict) and v.get("every")
+                  and now - float(v.get("at") or 0) > float(v["every"]) + slack)
 
 
 def _save_ticks(ticks, processors):
@@ -1415,7 +1433,7 @@ def heartbeat(conn):
 START_CPU_S = 0.01  # the CPU the other threads must spend in a beat's interval for the start to count as working
 
 
-def starting_beat(every=None, cpu=None):
+def starting_beat(every=None, cpu=None, on_beat=None):
     """Until the returned event is set, touch the watchdog's files every HEARTBEAT_S while the start spends CPU: a start
     that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that waits on
     nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart began it
@@ -1430,9 +1448,14 @@ def starting_beat(every=None, cpu=None):
         last = cpu()
         while not done.wait(every or HEARTBEAT_S):
             now = cpu()
-            if now - last >= START_CPU_S:   # both files the watchdog reads: the timers turn only after the start
+            if now - last >= START_CPU_S:   # the files the watchdog reads: the timers turn only after the start
                 _touch(heartbeat_path())
                 _touch(ticks_path())
+                if on_beat:
+                    try:
+                        on_beat()   # the timers' starts too (stuck_timers): none has started yet
+                    except Exception:  # noqa: BLE001
+                        pass
             last = now
     threading.Thread(target=loop, name="of-listen-start", daemon=True).start()
     return done
@@ -1444,9 +1467,12 @@ def run(stop=None, log=print, rebuild=False):
         import faulthandler
         import signal
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
-    starting = starting_beat()
+    held = []
+    starting = starting_beat(on_beat=lambda: held and _save_ticks(
+        {p.name: time.time() - (p.tick_s or 0) + 20 for p in held}, held))
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
+    held.extend(processors)
     folds_ok = False
     try:  # the fold views (bin/of_fold.py): one processor each, by its own cursor
         import of_fold
