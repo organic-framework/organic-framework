@@ -1598,12 +1598,23 @@ def _mandate_context(hook, index, sess):
                                       positions, me.get("_org"), fallback="all")
         except Exception:  # noqa: BLE001 - never costs the session its context
             resolve = of._decided_resolver(positions=positions)
+    info = {}
     ctx = of_context.build(name, positions, loops, resolve, runs,
-                           clocks, subagents)
+                           clocks, subagents, info=info)
     if not ctx:
         return
+    if info.get("full"):  # cut to fit Claude Code's cap: the whole context where the first line says (hand-over b460c5ed)
+        try:
+            os.makedirs(os.path.dirname(info["file"]), mode=0o700, exist_ok=True)
+            with open(os.open(info["file"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                fh.write(info["full"])
+        except OSError:
+            pass
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
-    write("context_injected", {"position": name, "source": hook.get("source"), "chars": len(ctx)}, hook, sess, index)
+    write("context_injected", {"position": name, "source": hook.get("source"), "chars": len(ctx),
+                               "whole": info.get("whole"),
+                               "cut": [{"section": n, "kept": k, "whole": w} for n, k, w in info.get("cut") or []]},
+          hook, sess, index)
 
 
 def _memory_warning(hook, index, now=None):

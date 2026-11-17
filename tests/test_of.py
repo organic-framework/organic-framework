@@ -157,6 +157,17 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(positions, [])  # no commit to stand in: skipped, as before
             self.assertIn("its positions are skipped", "\n".join(problems))
 
+    def test_an_active_briefed_position_not_enrolled_is_a_warning(self):
+        """Hand-over b460c5ed: such a position's sessions get no start context."""
+        ps = [{"name": "a", "_org": "o", "_file": "o:registry/positions.yaml", "mandate": "registry/briefs/a.md"},
+              {"name": "b", "_org": "o", "mandate": "registry/briefs/b.md", "enrolled": True},
+              {"name": "c", "_org": "o", "mandate": "registry/briefs/c.md", "status": "parked"},
+              {"name": "d", "_org": "o", "mandate": "registry/briefs/d.md", "holder": {"runtime": "human"}},
+              {"name": "e", "_org": "o"}]
+        out = of.check_enrolled(ps)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0].startswith(of.WARN + "o:registry/positions.yaml: a: an active position with a brief"))
+
     def test_a_successor_is_an_active_position_of_the_organization(self):
         """docs/registry.md, positions, successor (hand-over f453d71d from of_architect, 2026-11-15)."""
         with tempfile.TemporaryDirectory() as root:

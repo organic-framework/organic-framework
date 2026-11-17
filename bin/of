@@ -233,6 +233,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                     seen[key] = name
             positions.append(p)
     problems += [pr for pr in check_successors(positions) if deep or not pr.startswith(WARN)]
+    problems += [pr for pr in check_enrolled(positions) if deep]
     for org, path, _ in org_registries(orgs_file) if deep else ():  # the systems map: `of registry check` only
         if os.path.exists(path) and org not in BROKEN:
             with open(path) as fh:
@@ -394,6 +395,15 @@ def check_mandate_fields(p):
 
 STRING_FIELDS = ("name", "system", "role", "kind", "owner", "summary", "status", "waiting_on", "note",
                  "mandate", "throughput", "serves", "successor")
+
+
+def check_enrolled(positions):
+    """An active position with a brief and no `enrolled: true` gets no start context, so its sessions never read their
+    mandate, rules or team at start (hand-over b460c5ed from of_architect): a warning."""
+    return [f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: an active position with a brief "
+            f"({p['mandate']}) and no enrolled: true, so its sessions get no start context"
+            for p in positions if p.get("mandate") and not p.get("enrolled") and (p.get("status") or "active") == "active"
+            and (p.get("holder") or {}).get("runtime") != "human"]
 
 
 def check_successors(positions):
