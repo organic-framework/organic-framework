@@ -313,6 +313,56 @@ class SharedServerTest(unittest.TestCase):
                 with self.assertRaises(of_tools.ToolsError, msg=anc):
                     of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=anc, state_dir=st)
 
+    def test_the_helper_reads_the_url_through_a_cache_of_the_registry(self):
+        # 2026-11-17: the helper parsed a large registry at every connect, ran past Claude Code's wait on a loaded
+        # machine, and three sessions fell back to OAuth (DCR 404)
+        import tempfile
+        import yaml
+        d = self.doc()
+        with tempfile.TemporaryDirectory() as root:
+            st, reg = os.path.join(root, "state"), os.path.join(root, "acme", "registry", "positions.yaml")
+            os.makedirs(os.path.dirname(reg))
+            orgs = os.path.join(root, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                yaml.safe_dump({"orgs": [{"name": "acme", "path": os.path.join(root, "acme")}]}, fh)
+            with open(reg, "w") as fh:
+                yaml.safe_dump(d, fh)
+            url = of_tools.shared_url("acme", "grafana-read", orgs_file=orgs, state_dir=st)
+            self.assertEqual(url, "http://127.0.0.1:18310/mcp")
+            cache = os.path.join(st, "tools", "shared", "urls.json")
+            self.assertEqual(os.stat(cache).st_mode & 0o777, 0o600)
+            with open(cache) as fh:
+                doc = json.load(fh)
+            doc["acme"]["urls"]["grafana-read"] = "http://127.0.0.1:1/cached"
+            with open(cache, "w") as fh:
+                json.dump(doc, fh)
+            self.assertEqual(of_tools.shared_url("acme", "grafana-read", orgs_file=orgs, state_dir=st),
+                             "http://127.0.0.1:1/cached")  # an unchanged registry is not parsed again
+            d["tools"]["grafana-read"]["shared"]["port"] = 18399
+            with open(reg, "w") as fh:
+                yaml.safe_dump(d, fh)
+            self.assertEqual(of_tools.shared_url("acme", "grafana-read", orgs_file=orgs, state_dir=st),
+                             "http://127.0.0.1:18399/mcp")  # a changed registry is read again
+            with open(cache, "w") as fh:
+                fh.write("{not json")
+            self.assertEqual(of_tools.shared_url("acme", "grafana-read", orgs_file=orgs, state_dir=st),
+                             "http://127.0.0.1:18399/mcp")  # a broken cache is rebuilt
+            for org, tid in (("acme", "nope"), ("other", "grafana-read")):
+                with self.assertRaises(of_tools.ToolsError):
+                    of_tools.shared_url(org, tid, orgs_file=orgs, state_dir=st)
+            # the helper without docs takes the same path, and still checks the calling session's file
+            tok = of_tools.shared_token("acme", "grafana-read", create=True, state_dir=st)
+            mine = os.path.join(st, "tools", "s-1.mcp.json")
+            with open(mine, "w") as fh:
+                json.dump({"mcpServers": {"grafana-read": {"url": "http://127.0.0.1:18399/mcp"}}}, fh)
+            anc = [(10, f"claude --session-id s-1 --mcp-config {mine}")]
+            self.assertEqual(of_tools.header("acme", "grafana-read", ancestors=anc, state_dir=st, orgs_file=orgs),
+                             {"Authorization": f"Bearer {tok}"})
+            with open(mine, "w") as fh:
+                json.dump({"mcpServers": {"grafana-read": {"url": "http://127.0.0.1:18310/mcp"}}}, fh)
+            with self.assertRaises(of_tools.ToolsError):  # a stale port in the session's file
+                of_tools.header("acme", "grafana-read", ancestors=anc, state_dir=st, orgs_file=orgs)
+
     def test_check_shared(self):
         d = self.doc()
         self.assertEqual(of_tools.check({"acme": d}), [])
