@@ -27,7 +27,7 @@ import time
 
 import of_events
 
-VERSION = "tb-v2"
+VERSION = "tb-v3"
 MODEL = "haiku"
 TIMEOUT_S = 90
 AHEAD_MIN = 15            # a clock time this many minutes after the item's own time is a booking's candidate
@@ -37,10 +37,9 @@ KEEP_S = 3 * 24 * 3600    # judged keys kept this long in the state file
 FETCH_MAX = 5000          # events read per run; the rest is the next run's
 TEXT_MAX = 700            # of one item's text in the prompt
 NAMES = ("of.continuation", "of.agent_message_in", "of.agent_question")
-# The pulse types the notes only once the lab's precision is accepted (lab/scenarios/lab-tempo-v0; of_architect): until
-# then the judge records its verdicts, and nothing is typed into a pane (the first replay, 2026-11-17, judged an hourly
-# check-in a booking with no basis).
-NOTES_LIVE = False
+# The pulse types the notes (of_architect, message 01a1ea20-1fa7, 2026-11-17: live, measured by each note's outcome;
+# back to False when the first day's precision falls under 0.75).
+NOTES_LIVE = True
 BASIS_KINDS = ("position", "owner_card", "window", "runner", "data_not_yet", "conflict", "owner_limit", "condition",
                "none")
 VERDICTS = ("basis", "no_basis", "not_a_booking")
@@ -183,9 +182,11 @@ A clock time holds only when it is the basis's own time: a window's start, a boo
 expected end. A wait on a position, a decision or a run waits for that event, not for a time picked ahead of it: an \
 alarm at 16:10Z before a 16:40Z roll that waits on another position's decision is a booking with no basis \
 (of_architect, AGENTS.md and docs/method.md, "Work starts when it is ready", 2026-11-17).
-Basis's own times: a window's or a booked slot's start (a release slot, a maintenance or host window), the hours a \
-named person or operator is on hand, a limit's reset, a run's expected end, and a short lead before such a time (T-5 \
-minutes, a prep step shortly before a booked slot). Not a booking: a run on the role's own cadence (a weekly batch, a \
+Basis's own times: a booked slot's or window's start, the hours a named person or operator is on hand, a limit's \
+reset, a run's expected end. A slot holds when it has a source (a release calendar, a window the owner or a third \
+party booked); a slot a position picks for itself is a booking. A step before a booked slot (a preparation, a kit, a \
+check) runs as soon as it can, unless it names why it cannot run earlier: what it makes expires or goes stale, or the \
+people it needs are there only from then (of_architect, 2026-11-17). Not a booking: a run on the role's own cadence (a weekly batch, a \
 daily note, four runs a month by its role design) at that cadence's time, and a check of data for a period that ends \
 then (a weekly check of the week's data). A run the item itself says should start as soon as something ends, booked \
 for hours after it, is a booking with no basis.

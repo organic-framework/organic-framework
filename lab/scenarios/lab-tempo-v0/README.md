@@ -55,3 +55,10 @@ inference like the first 10. All five false flags of the real run are items wher
 lead before a booked slot, or a booked hour, as a basis. Read strictly, the rule's text does not say that. The
 synthetic s11 and s16 wait on a lock or a position and then name a fixed hour, and were labelled before the rule;
 the judge flags them by it.
+
+tb-v3 (2026-11-17) adds of_architect's next rule line, which the README of AGENTS.md and docs/method.md also gives
+(message `01a1ea20-1fa7`). A step before a booked slot runs as soon as it can, unless it names why it cannot run
+earlier. A slot holds only when it has a source; a slot a position picks for itself is a booking. By that line the
+five disputed real items are bookings, and they were relabelled `no_basis` after the tb-v2 verdicts had been seen.
+Their labels say so. From tb-v3 the notes are live, and each note's outcome measures the precision: the position runs
+the work, names a basis, or does neither.
