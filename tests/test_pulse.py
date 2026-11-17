@@ -1766,6 +1766,57 @@ positions:
             "SELECT payload FROM event WHERE name = 'of.agent_question_judged'")]
         self.assertEqual([(r["ask_id"], r["verdict"], r["rule"]) for r in rows], [(old, "skipped", "never-judged")])
 
+    def test_a_wait_declared_on_the_receiver_files_no_card(self):
+        """A user organization's report through its structure keeper (message 01a1e998-1041): a keeper whose unit owner
+        was bringing the founder's yes, and that had declared `waiting --on` that owner, got pane cards for it. Only a
+        wait declared in this turn, on the very position the card would go to, skips the model (j-v6)."""
+        import subprocess
+        calls = []
+
+        def runner(argv, **k):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, self.json.dumps({"structured_output": {
+                "waits_owner": False, "question": "", "options": [], "reason": "a report"}}), "")
+
+        def turn(session, waiting_on, state="waiting", when="in", position="k8s_keeper"):
+            if when == "before":
+                self.add("state_declared", {"state": state, "waiting_on": waiting_on}, position, session)
+                time.sleep(0.002)
+            start = of_events.now_iso()
+            self.add("agent_message_in", {"from": "org:plat_owner", "delivery": "delivered"}, position, session)
+            if when == "in":
+                self.add("state_declared", {"state": state, "waiting_on": waiting_on,
+                                            "note": "plat_owner sends the founder's yes with the ids"}, position, session)
+            cand = self.add("agent_question", {"detected_by": "heuristic", "questions": [{"question": "…"}]},
+                            position, session)
+            ts = of_events.now_iso()
+            if when == "after":  # the session went on before the judge ran: a later turn's status is not this turn's
+                time.sleep(0.002)
+                self.add("state_declared", {"state": state, "waiting_on": waiting_on}, position, session)
+            n = len(calls)
+            v = self.oj.judge_one(self.conn, {"ask_id": cand, "position": position, "session": session, "org": "org",
+                                              "ts": ts, "turn_start": start, "origin": "peer", "pane": "p1",
+                                              "peer": "org:plat_owner", "text": "Скрипты готовы, ждут вашего «да»."},
+                                  runner=runner, deliver=lambda p, t: self.typed.append(t) or (True, ""),
+                                  log=lambda m: None)
+            return v, len(calls) - n
+
+        for on in ("plat_owner", "org:plat_owner"):  # `of status --on` may qualify the name
+            v, model = turn("K-" + on, on)
+            self.assertEqual((v["verdict"], v.get("rule"), model), ("skipped", "waits-on-receiver", 0), on)
+            self.assertIn("waits on plat_owner, where its question would go", v["reason"])
+        self.assertEqual(self.typed, [])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question' AND "
+                                           "json_extract(payload, '$.source') = 'pane'").fetchone()[0], 0)
+        # the model judges the rest: a wait on another position (lab-asks-v0: asks-034, asks-076 asked the founder
+        # beside one), a status before the turn or after the closing message, a state that is no wait, and a
+        # position whose questions go to the founder
+        for args in (("K-other", "of_capacity"), ("K-before", "plat_owner", "waiting", "before"),
+                     ("K-after", "plat_owner", "waiting", "after"), ("K-idle", "plat_owner", "idle"),
+                     ("C-founder", "founder", "waiting", "in", "of_capacity")):
+            v, model = turn(*args)
+            self.assertEqual((v["verdict"], v.get("rule"), model), ("not_a_question", None, 1), args)
+
     def test_a_message_pulled_mid_turn_does_not_start_the_turn(self):
         self.add("human_prompt", {"origin": "human", "text": "почему никто не перенёс сессию?"})
         self.add("agent_message_in", {"from": "of_platform", "delivery": "pulled"})
