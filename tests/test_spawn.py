@@ -156,6 +156,27 @@ class SpawnPlanTest(unittest.TestCase):
         self.assertEqual(len(typed), 4)
 
 
+    def test_a_brief_left_in_the_input_box_gets_one_enter(self):
+        """A user organization's structure keeper, message 01a1e8ce-44ee: a spawn's brief sat typed and unsent for 17
+        minutes at a busy moment, until Enter was pressed by hand."""
+        brief = "Message from of_spawn (via of spawn, authority: none) You hold the position x."
+        clock, pressed = [0.0], []
+
+        def sleep(s):
+            clock[0] += s
+        held = lambda boxes: of_spawn.submit_held("wF:p2", lambda p: boxes.pop(0) if len(boxes) > 1 else boxes[0],
+                                                  lambda p: pressed.append(p) or True, wait_s=3, sleep=sleep,
+                                                  clock=lambda: clock[0])
+        self.assertEqual(held([brief, ""]), "sent")                       # it left the box: nothing pressed
+        self.assertEqual(pressed, [])
+        self.assertEqual(held([brief]), "pressed")                         # still there after the wait: Enter once
+        self.assertEqual(pressed, ["wF:p2"])
+        self.assertEqual(held(["[Pasted text #1 +3 lines]"]), "pressed")  # Claude Code's paste placeholder
+        self.assertEqual(held(["half a sentence someone typed"]), "unknown")  # not the brief: never pressed
+        self.assertEqual(held([None]), "unknown")                          # the pane cannot be read
+        self.assertEqual(len(pressed), 2)
+
+
 CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
     "acme": {"roots": ["/h/.config/acme"],
            "credentials": {"graf": {"paths": ["/h/.config/acme/grafana/viewer.token"], "keeper": "obs_keeper"},

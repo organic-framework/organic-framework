@@ -2231,6 +2231,9 @@ def cmd_spawn(args):
     try:
         pane = of_spawn.run(pl, herdr,
                             deliver=lambda pane, text, sid: of_relay_client.herdr_deliver(pane, text, sid, "of_spawn", wait_s=120, via="of spawn"),
+                            held=lambda pane: of_spawn.submit_held(
+                                pane, of_relay_client.pane_input,
+                                lambda p: of_relay_client.press_held_enter(p, of_relay_client._read_typed().get(p) or {})),
                             rename=of_capacity.rename_agent,
                             wait_session=lambda sid, t: of_spawn.wait_for(lambda: of_capacity._agent_by_session(sid), t),
                             of_bin=os.path.realpath(__file__))
