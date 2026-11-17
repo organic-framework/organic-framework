@@ -686,7 +686,7 @@ An organization's own policy on what its positions may run ([`guard.md`](guard.m
     critical: false                    # false: the guard warns; true: it denies
     scope:
       kubectl: {verbs: [exec, cp, attach, debug, port-forward], namespaces: [runners-jobs]}   # the O1 matcher's keys
-    note: "Runner work goes only through the cbx gate (founder, ask ac3b43dc, 2026-11-06)"   # shown to the agent
+    note: "Runner work goes only through the runner gate (founder, ask ac3b43dc, 2026-11-06)"   # shown to the agent
 ```
 
 - **Subject set.** `subject: "*"` with `except:` applies to every position of the organization except those listed, and to its sessions without a position (they get no exception).
