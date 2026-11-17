@@ -87,12 +87,15 @@ class ProtectedCodeTest(unittest.TestCase):
         os.makedirs(os.path.join(home, rel), exist_ok=True)
         of_guard.use_protection(code=["~/" + rel])
         try:
-            for var in ("$HOME", "${HOME}"):
+            # with an operator that gives HOME while it is set (of_secrets-review on organic-framework PR 268)
+            for var in ("$HOME", "${HOME}", "${HOME:?}", "${HOME?}", "${HOME:-/x}", "${HOME:=/x}", "${HOME%/}",
+                        "${HOME##*/x}"):
                 for cmd in (f'bash "{var}/{rel}/run.sh"', f'source "{var}/{rel}/run.sh"',
                             f'echo x > "{var}/{rel}/run.sh"', f'rm -rf "{var}/Library/Application Support/acme-backup"',
                             f'cp evil.sh "{var}/{rel}/run.sh"', f'chmod +x "{var}/{rel}/run.sh"'):
                     self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
             for cmd in (f'"$HOME/{rel}/run.sh"', f'cat "$HOME/{rel}/run.sh"', f'bash "$HOMEX/{rel}/run.sh"',
+                        f'bash "${{HOME:+/x}}/{rel}/run.sh"',
                         f'cp "$HOME/{rel}/run.sh" /tmp/claude-501/x/copy.sh'):
                 self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
         finally:
