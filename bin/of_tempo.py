@@ -37,9 +37,11 @@ KEEP_S = 3 * 24 * 3600    # judged keys kept this long in the state file
 FETCH_MAX = 5000          # events read per run; the rest is the next run's
 TEXT_MAX = 700            # of one item's text in the prompt
 NAMES = ("of.continuation", "of.agent_message_in", "of.agent_question")
-# The pulse types the notes (of_architect, message 01a1ea20-1fa7, 2026-11-17: live, measured by each note's outcome;
-# back to False when the first day's precision falls under 0.75).
-NOTES_LIVE = True
+# The pulse types the notes only when True. Held again at 19:30Z on 2026-11-17 (of_architect's rule, message
+# 01a1ea20-1fa7: under 0.75 the notes stop): the outcome measure read 0.11, but it counts as "basis" any waiting a
+# position declares, which every turn's end does, and 9 of 17 notes came after their booked time had passed, typed
+# late while the listener was down. Back to True on of_architect's word.
+NOTES_LIVE = False
 BASIS_KINDS = ("position", "owner_card", "window", "runner", "data_not_yet", "conflict", "owner_limit", "condition",
                "none")
 VERDICTS = ("basis", "no_basis", "not_a_booking")

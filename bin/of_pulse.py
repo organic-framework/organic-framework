@@ -1204,6 +1204,14 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
 
 
 TEMPO_KEEP_S = 24 * 3600   # a note not typed yet (its position busy or away) is dropped after this
+def _passed(item, now):
+    """Has the booking's own time passed (a cron that fired, a wait whose time came)? A note then is noise: on
+    2026-11-17, 9 of 17 notes were typed after it, while the listener was down (of_tempo.booked_at)."""
+    import of_tempo
+    at, _ = of_tempo.booked_at(item)
+    return at is not None and at <= now
+
+
 TEMPO_FRESH_S = 2 * 3600   # an item booked longer ago than this is not typed: the note is for the turn that booked it
 
 
@@ -1248,7 +1256,7 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
         st["cursor"] = rid
         try:
             items = [x for x in json.loads(pl or "{}").get("items") or [] if x.get("verdict") == "no_basis"
-                     and now - _epoch_iso(x.get("ts") or ts) <= TEMPO_FRESH_S]
+                     and now - _epoch_iso(x.get("ts") or ts) <= TEMPO_FRESH_S and not _passed(x, now)]
         except ValueError:
             continue
         if items and pos:
@@ -1261,7 +1269,8 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
     told, keep = 0, []
     for x in st["pending"]:
         a = live.get(x["position"]) or {}
-        if x["position"] in people or now - x["at"] > TEMPO_KEEP_S:
+        x["items"] = [i for i in x["items"] if not _passed(i, now)]   # waited for an idle pane past its time: noise
+        if x["position"] in people or now - x["at"] > TEMPO_KEEP_S or not x["items"]:
             continue
         if not prompt or x["position"] in away or not a.get("pane_id") or a.get("agent_status") not in ("idle", "done"):
             keep.append(x)

@@ -239,6 +239,21 @@ class OutcomeTest(JudgeTest):
         self.assertIsNone(of_tempo.before(conn, "S-old", 10 ** 9, "9999", began))
 
 
+class PassedTest(JudgeTest):
+    def test_a_booking_whose_time_passed_is_never_typed(self):
+        """2026-11-17: 9 of 17 notes were typed after their booked time, while the listener was down."""
+        mem, typed = {}, []
+        bind = lambda positions, agents: ([(p, {"pane_id": "w:1", "agent_status": "idle"})  # noqa: E731
+                                           for p in positions if p["name"] == "k8s_keeper"], [])
+        of_pulse.booking_notes(POSITIONS, [], bind, mem, T0, self.conn, prompt=lambda *a: True)
+        wait = {"source": "clock_wait", "ref": "b1", "verdict": "no_basis", "ts": "2026-11-17T13:18:00Z",
+                "quote": 'Alarm: until [ "$(date -u +%Y%m%d%H%M)" -ge 202611171330 ]; do sleep 30; done'}
+        self.ev("booking_judged", {"position": "k8s_keeper", "items": [wait]}, "k8s_keeper", 1)
+        of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 20 * 60, self.conn,     # 13:38Z: past 13:30Z
+                               prompt=lambda *a: typed.append(a) or True, log=lambda m: None)
+        self.assertEqual(typed, [])
+
+
 class TempoKindTest(unittest.TestCase):
     def test_the_digest_counts_pushes_on_tempo(self):
         rows = [{"position": "k8s_keeper", "ts": "2026-11-17T13:00:00Z", "kind": "tempo", "rule": "Start when ready.",
