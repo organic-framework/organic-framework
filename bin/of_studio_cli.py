@@ -975,19 +975,34 @@ def _position_of_session(sid):
     return None
 
 
+def bound_render():
+    """A cache render's bounds (docs/studio.md 5.1a): it runs below the founder's own work, and the kernel stops it after
+    REFRESH_CPU_S of CPU (a runaway) or REFRESH_MAX_S of wall time (a hang uses no CPU); its flock goes with it. A
+    render the load starves is not stopped while it still works."""
+    import resource
+    import signal
+    try:
+        os.nice(of_studio.REFRESH_NICE)
+    except OSError:
+        pass
+    try:
+        hard = resource.getrlimit(resource.RLIMIT_CPU)[1]
+        cap = of_studio.REFRESH_CPU_S if hard == resource.RLIM_INFINITY else min(of_studio.REFRESH_CPU_S, hard)
+        resource.setrlimit(resource.RLIMIT_CPU, (cap, hard))
+    except (ValueError, OSError):
+        pass
+    signal.alarm(of_studio.REFRESH_MAX_S)
+
+
 def cmd_studio(args):
     """Ask the organization's of-server for a one-time link (POST /v1/studio/link) and open it (docs/studio.md §5.1)."""
     if args.file:
         print(of_studio.write_file(args.file, org=args.org, view=args.view))
         return 0
     if args.render_cache:   # of-server's page cache (docs/studio.md 5.1a); of-server and the listener start it
-        import signal
-        try:
-            os.nice(of_studio.REFRESH_NICE)
-        except OSError:
-            pass
-        signal.alarm(of_studio.REFRESH_MAX_S)   # a hung render dies, and its flock with it
-        print(of_studio.render_cache(log=lambda m: print(m, file=sys.stderr)))
+        bound_render()
+        summary = of_studio.render_cache(log=lambda m: print(m, file=sys.stderr))
+        print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {summary}")
         return 0
     import of_client
     import of_ship

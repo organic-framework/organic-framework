@@ -1675,6 +1675,25 @@ class PageCacheTest(unittest.TestCase):
         self.assertIsNotNone(again)
         again.close()
 
+    def test_a_render_is_bounded_by_cpu_and_by_a_hang(self):
+        """2026-11-17: 1200 s of wall time stopped renders the load starved while they still worked. The kernel now stops
+        a render after REFRESH_CPU_S of CPU or REFRESH_MAX_S of wall time, under any lower hard CPU limit."""
+        import resource
+        import signal
+        from unittest import mock
+        import of_studio_cli
+        for hard, soft in ((resource.RLIM_INFINITY, of_studio.REFRESH_CPU_S), (60, 60)):
+            seen = []
+            with mock.patch.object(os, "nice", lambda n: seen.append(("nice", n))), \
+                    mock.patch.object(resource, "getrlimit", lambda r: (resource.RLIM_INFINITY, hard)), \
+                    mock.patch.object(resource, "setrlimit", lambda r, v: seen.append(("cpu", r, v))), \
+                    mock.patch.object(signal, "alarm", lambda s: seen.append(("alarm", s))):
+                of_studio_cli.bound_render()
+            self.assertEqual(seen, [("nice", of_studio.REFRESH_NICE), ("cpu", resource.RLIMIT_CPU, (soft, hard)),
+                                    ("alarm", of_studio.REFRESH_MAX_S)])
+        self.assertGreater(of_studio.REFRESH_CPU_S, 3 * 267)              # the most CPU a logged render used
+        self.assertGreater(of_studio.REFRESH_MAX_S, of_studio.REFRESH_CPU_S)
+
     def test_what_the_cache_does_not_hold(self):
         self.put("acme", "works", 10)
         self.assertIsNone(of_studio.cached_page("works", {"org": "acme", "w": "rfc-1"}))   # a work's card
