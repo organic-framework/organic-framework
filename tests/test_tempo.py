@@ -178,6 +178,23 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(len(typed), 1)
 
 
+class OutcomeTest(JudgeTest):
+    def test_each_notes_outcome_ran_basis_or_neither(self):
+        """of_architect, message 01a1ea20-1fa7: the live precision from each note's outcome."""
+        def note(pos, items, minutes):
+            j = self.ev("booking_judged", {"position": pos, "items": items}, pos, minutes)
+            self.ev("nudge_sent", {"kind": "booking_no_basis", "judgement": j, "to_position": pos}, pos, minutes + 1)
+        cron = {"source": "cron", "ref": "c1", "verdict": "no_basis", "quote": "at 18:45Z"}
+        note("k8s_keeper", [cron], 0)
+        self.ev("continuation", {"session_crons": [], "background_tasks": []}, "k8s_keeper", 10)    # gone: ran
+        note("obs_keeper", [dict(cron, ref="c2")], 0)
+        self.ev("state_declared", {"state": "waiting", "waiting_on": "platform_owner"}, "obs_keeper", 20)
+        note("acme_org", [{"source": "message", "ref": "m1", "verdict": "no_basis", "quote": "tomorrow"}], 0)
+        self.ev("state_declared", {"state": "waiting", "waiting_on": "acme_org"}, "acme_org", 200)  # past the window
+        got = {r["position"]: r["outcome"] for r in of_tempo.outcomes(self.conn, "2026-11-17T00:00:00Z")}
+        self.assertEqual(got, {"k8s_keeper": "ran", "obs_keeper": "basis", "acme_org": "neither"})
+
+
 class TempoKindTest(unittest.TestCase):
     def test_the_digest_counts_pushes_on_tempo(self):
         rows = [{"position": "k8s_keeper", "ts": "2026-11-17T13:00:00Z", "kind": "tempo", "rule": "Start when ready.",
