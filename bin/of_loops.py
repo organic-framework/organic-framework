@@ -108,35 +108,57 @@ def decided_of(target):
     return d.strip() if isinstance(d, str) and d.strip() else None
 
 
-def log_resolver(conn=None, conductors=None):
-    """(id, work) -> the person's yes it names in this machine's log, as of_platform's of_loop.resolve_decided finds it
-    (docs/registry.md, Works, "Where it is read, and how it is checked"): an ask as `<ask id>#<option>`, filed for WORK
-    with that option as its yes (`of ask --work W --yes N`) and chosen by the person's answer; or a prompt a person
-    typed in the session of a conductor (CONDUCTORS, by default every listed organization's positions with role
-    conductor, read when a prompt is first checked). Each lookup once, through a read-only connection opened on the
-    first; UNREAD when the store will not open, or this host has no of_loop (of-server's image). for_work binds it to
-    one work."""
+def log_resolver(conn=None, org=None, docs=None, positions=None):
+    """(id, work) -> the person's yes it names in this machine's log for ORG, resolved as `of` resolves it, by
+    bin/of's org_resolver itself (docs/registry.md, Works, "Where it is read, and how it is checked"; People, "A
+    person's conductor"; hand-over f4ec11bc from of_architect): an ask as `<ask id>#<option>`, filed for WORK with that
+    option as its yes (`of ask --work W --yes N`) and chosen by the person's answer; or a prompt typed in a conductor
+    that ORG lists for its `owner` (`people.<owner>.conductors`), on one of that person's machines when listed, or on
+    WORK for a person who holds one of its units' owner positions. Without ORG, or without those keys, no prompt
+    counts. DOCS and POSITIONS: the listed organizations' registries and positions, read from the list on the first
+    lookup when not given. Each lookup once, through a read-only connection opened on the first; UNREAD when the store
+    will not open, or this host has no of_loop or no bin/of (of-server's image). for_work binds it to one work."""
     import sqlite3
-    held, memo = {"conn": conn, "conductors": conductors}, {}
-
-    def typed_by_person(position, host):
-        if held["conductors"] is None:
-            held["conductors"] = conductor_positions()
-        return position in held["conductors"]
+    held, memo = {"conn": conn, "resolve": None}, {}
 
     def resolve(did, work=None):
         key = (did, work)
         if key not in memo:
             try:
-                import of_loop
+                import of_loop  # noqa: F401 - org_resolver reads the log through it; without it nothing resolves
                 if held["conn"] is None:
                     import of_fold
                     held["conn"] = of_fold.reader() or False
-                memo[key] = of_loop.resolve_decided(held["conn"], did, typed_by_person, work) if held["conn"] else UNREAD
-            except (ImportError, sqlite3.Error, ValueError):
+                if not held["conn"]:
+                    memo[key] = UNREAD
+                else:
+                    if held["resolve"] is None:
+                        of = of_cli()
+                        held["resolve"] = of.org_resolver(of.registry_docs() if docs is None else docs,
+                                                          of.load_positions()[0] if positions is None else positions,
+                                                          org, held["conn"])
+                    memo[key] = held["resolve"](did, work)
+            except (ImportError, OSError, sqlite3.Error, ValueError):
                 memo[key] = UNREAD
         return memo[key]
     return resolve
+
+
+_CLI = []
+
+
+def of_cli():
+    """bin/of as a module, loaded once (as of_hook and of_github load it): the one org_resolver."""
+    if not _CLI:
+        import importlib.machinery
+        import importlib.util
+        import os
+        here = os.path.dirname(os.path.realpath(__file__))
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(here, "of"))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli", loader))
+        loader.exec_module(mod)
+        _CLI.append(mod)
+    return _CLI[0]
 
 
 ASK_WAITING = ("open", "candidate", "escalated")   # of_asks' states of an ask that still waits on an answer
@@ -180,22 +202,6 @@ def ask_ends(conn=None, asks=None):
 def for_work(resolve, work):
     """RESOLVE (id, work) bound to one work: id -> its yes. An ask counts only when filed for that work."""
     return (lambda did: resolve(did, work)) if resolve else None
-
-
-def conductor_positions(orgs_file=None):
-    """The positions with role conductor in every organization this machine lists, from their registries' working
-    files: the sessions where only a person types (bin/of's _decided_resolver reads the same). Empty when the list
-    will not read."""
-    try:
-        import of_model
-        import of_studio
-        out = set()
-        for o in of_studio.orgs(orgs_file):
-            doc = of_model.registry_at(o["repo"])[0] or {}
-            out |= {str(x.get("name")) for x in doc.get("positions") or [] if isinstance(x, dict) and x.get("role") == "conductor"}
-        return out
-    except Exception:  # noqa: BLE001 - no list, or a registry that will not read: no prompt counts
-        return set()
 
 
 def owners_yes(did, resolve):

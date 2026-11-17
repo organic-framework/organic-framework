@@ -1980,14 +1980,22 @@ class LoopTest(unittest.TestCase):
         self.assertIn("decided 0a1b2c3d does not resolve as the owner&#x27;s yes: priced in money", table)
 
     def test_the_log_resolver(self):
-        # of_platform's of_loop.resolve_decided over a store, each id looked up once; UNREAD when the store will not open
+        # resolved as `of` resolves it, by bin/of's own org_resolver over of_platform's of_loop.resolve_decided (hand-over
+        # f4ec11bc from of_architect; docs/registry.md, People, "A person's conductor"): each id looked up once; UNREAD
+        # when the store will not open
         import tempfile
         from unittest import mock
         import of_loops
         from tests.test_loop import Yeses
+        docs = {"lab": {"tenant": "t1", "owner": "pat", "people": {"pat": {"conductors": ["lab_conductor"]}},
+                        "positions": [{"name": "lab_conductor", "role": "conductor"}, {"name": "lab_doer"}]},
+                "other": {"tenant": "t1", "owner": "lee", "people": {"lee": {"conductors": ["other_conductor"]}},
+                          "positions": [{"name": "other_conductor", "role": "conductor"}]}}
+        positions = [dict(p, _org=o) for o, x in docs.items() for p in x["positions"]]
         with tempfile.TemporaryDirectory() as d:
             y = Yeses(d)
-            r = of_loops.log_resolver(y.conn, conductors={"lab_conductor"})
+            resolver = lambda org, docs=docs: of_loops.log_resolver(y.conn, org=org, docs=docs, positions=positions)
+            r = resolver("lab")
             got = of_loops.for_work(r, "w-speed")(y.ask + "#1")                # an ask filed for the work, its option chosen
             self.assertEqual(got, ("ask", y.ask))
             self.assertIn('chose option 1 "yes, p50 is the target"', got.words)
@@ -1996,30 +2004,34 @@ class LoopTest(unittest.TestCase):
             self.assertIsNone(of_loops.for_work(r, "w-speed")(y.refused + "#1"))   # the owner chose another option
             self.assertIsNone(of_loops.for_work(r, "w-speed")(y.other + "#1"))     # another work's ask
             self.assertIsNone(of_loops.for_work(r, "w-speed")(y.unmarked + "#1"))  # filed without its yes option
-            self.assertEqual(r(y.prompt), ("prompt", y.prompt))                # typed in a conductor's session
+            self.assertEqual(r(y.prompt), ("prompt", y.prompt))                # typed in the owner's listed conductor
             self.assertIsNone(r(y.elsewhere))                                  # typed in a doer's pane
             self.assertIsNone(r(y.injected))
             with mock.patch("of_loop.resolve_decided", side_effect=AssertionError("looked up twice")):
                 self.assertEqual(r(y.prompt), ("prompt", y.prompt))
-            self.assertIsNone(of_loops.log_resolver(y.conn, conductors=set())(y.prompt))
+            # where Studio and `of` used to differ: Studio took a prompt typed in any listed organization's conductor,
+            # `of` only one its organization lists for its owner. Another organization's conductor counts for nothing
+            # here, and the two now agree for every organization
+            self.assertIsNone(resolver("other")(y.prompt))
+            of = of_loops.of_cli()
+            for org in ("lab", "other"):
+                for did in (y.prompt, y.elsewhere):
+                    self.assertEqual(bool(resolver(org)(did)), bool(of.org_resolver(docs, positions, org, y.conn)(did)))
+            # no owner named, or no organization: no prompt counts, and an ask filed for the work still does
+            bare = dict(docs, lab={k: v for k, v in docs["lab"].items() if k != "owner"})
+            self.assertIsNone(resolver("lab", bare)(y.prompt))
+            self.assertEqual(of_loops.for_work(resolver("lab", bare), "w-speed")(y.ask + "#1"), ("ask", y.ask))
+            self.assertIsNone(resolver(None)(y.prompt))
             y.conn.close()
             with mock.patch.dict(os.environ, {"OF_DB": os.path.join(d, "missing", "of.db")}):
-                self.assertEqual(of_loops.log_resolver()(y.prompt), of_loops.UNREAD)
-
-    def test_conductor_positions(self):
-        import tempfile
-        import yaml
-        import of_loops
-        with tempfile.TemporaryDirectory() as d:
-            for org, pos in (("a", [{"name": "a_conductor", "role": "conductor"}, {"name": "a_doer", "role": "doer"}]),
-                             ("b", [{"name": "b_conductor", "role": "conductor"}])):
-                os.makedirs(os.path.join(d, org, "registry"))
-                with open(os.path.join(d, org, "registry", "positions.yaml"), "w") as fh:
-                    yaml.safe_dump({"organization": org, "positions": pos}, fh)
-            with open(os.path.join(d, "orgs.yaml"), "w") as fh:
-                yaml.safe_dump({"orgs": [{"name": "a", "path": "a"}, {"name": "b", "path": "b"}]}, fh)
-            self.assertEqual(of_loops.conductor_positions(os.path.join(d, "orgs.yaml")), {"a_conductor", "b_conductor"})
-            self.assertEqual(of_loops.conductor_positions(os.path.join(d, "missing.yaml")), set())
+                self.assertEqual(of_loops.log_resolver(org="lab")(y.prompt), of_loops.UNREAD)
+        # the model, Studio's own cards and of works ask it for the work's organization
+        seen = []
+        doc = dict(DOC, works={"w1": {"title": "Search", "owner": "colleague", "doers": ["bot_search"], "loop": self.OWN}})
+        with mock.patch.object(of_loops, "log_resolver", side_effect=lambda **kw: seen.append(kw.get("org")) or (lambda did, work=None: self.YES(did))):
+            of_model.build(doc, self.rows(), at=self.NOW, org="lab")
+            of_model.build(dict(doc, organization="acme"), self.rows(), at=self.NOW)
+        self.assertEqual(seen, ["lab", "acme"])
 
     def html(self, c, w=None, spend=None):
         class D:
