@@ -19,11 +19,16 @@ The command moves only when:
   submodule pointer, the lists themselves, a human path's change of any kind, and a link that points at a human path.
 Paths are compared without case (the Mac's volume ignores it). Any check that cannot be made refuses.
 
-Then it checks the target out by its id. The system's git runs it, with fsmonitor, hooks, the external diff, every
-filter driver the configuration names and the attributes file off, and no fetch: no program the repository's
-configuration names runs. It checks that every human file, and every file under a human folder, is on disk the
-target's byte for byte; otherwise it moves back, checks the same files against HEAD, and says whether the tree is as
-it was. It records `of.protected_ff`.
+It reads the commit and every tree of HEAD and of the target itself, from the root down, and hashes each: git checks the
+root tree as it reads it, not the trees below it or the blobs (of_architect on organic-framework PR 306). The changes,
+the lists, the links and the case check come from those verified trees, and each changed path's new blob is hashed
+before the checkout. Then it checks the target out by its id. The system's git runs it, with fsmonitor, hooks, the
+external diff, submodule recursion, every filter driver the configuration names and the attributes file off, and no
+fetch; the status before it never reads a submodule's work tree: no program the repository's configuration, or a
+submodule's own, names runs. After the checkout it hashes, on disk, every file it wrote and every human file against
+the id the verified target names for its path, so an object swapped in the shared store between the check and the
+checkout is caught; on a mismatch it moves back, checks the same files against HEAD's verified trees, and says whether
+the tree is as it was. It records `of.protected_ff`.
 
 The guard's G21 still denies every git write into the tree from an agent's command line; this command is the one way
 agents move such a tree. On one OS user it is a convention, not a boundary (G21's known limit): any program an agent
@@ -31,9 +36,11 @@ starts can write there, and the registry that names `ff:` is written by agents, 
 is the tree owned by another user, with a sudo rule that runs only this command.
 """
 
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 
 SYSTEM_GIT = "/usr/bin/git"
@@ -121,7 +128,8 @@ def _git_cmd(tree, extra=()):
         raise Refused("no system git (/usr/bin/git) on this machine")
     return [SYSTEM_GIT, "-C", tree, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
             "-c", "diff.external=", "-c", "core.pager=cat", "-c", "protocol.allow=never", "-c", "gc.auto=0",
-            "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", *extra]
+            "-c", "maintenance.auto=false", "-c", "diff.ignoreSubmodules=none", "-c", "submodule.recurse=false",
+            *extra]
 
 
 def _git(tree, *args, check=True, extra=()):
@@ -133,11 +141,107 @@ def _git(tree, *args, check=True, extra=()):
     return r
 
 
-def _blob(tree, rev, path):
-    """The bytes of PATH at REV, or None when it is not there (no filter, no textconv)."""
-    r = subprocess.run(_git_cmd(tree) + ["cat-file", "blob", f"{rev}:{path}"], capture_output=True, timeout=30,
-                       env=_env())
-    return r.stdout if r.returncode == 0 else None
+class _Snap(dict):
+    """{path: (mode, id)} of every entry but folders in one commit, read and hashed by this command from the commit
+    down. .fmt: the repository's object format; .rev: the commit."""
+    fmt = "sha1"
+    rev = ""
+
+
+FORGED = "these objects do not hash to their ids, so the content is not the reviewed commit's: "
+
+
+def _hash(fmt, kind, data):
+    h = hashlib.new("sha256" if fmt == "sha256" else "sha1")
+    h.update(b"%s %d\0" % (kind, len(data)) + data)
+    return h.hexdigest()
+
+
+def _objects(tree, fmt, oids, kind):
+    """{id: bytes} of the objects of KIND among OIDS whose content hashes to their id; any other (missing, of another
+    kind, or content that is not its id's) is left out, for the caller to refuse."""
+    oids = list(dict.fromkeys(oids))
+    if not oids:
+        return {}
+    r = subprocess.run(_git_cmd(tree) + ["cat-file", "--batch"], input="".join(f"{o}\n" for o in oids).encode(),
+                       capture_output=True, timeout=120, env=_env())
+    data, pos, out = r.stdout, 0, {}
+    for oid in oids:
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            break
+        head, pos = data[pos:nl].split(), nl + 1
+        if len(head) != 3 or not head[2].isdigit():
+            continue                                                    # "<id> missing" and the like
+        size = int(head[2])
+        body, pos = data[pos:pos + size], pos + size + 1
+        if head[0].decode() == oid and head[1].decode() == kind and _hash(fmt, kind.encode(), body) == oid:
+            out[oid] = body
+    return out
+
+
+def _mode(m):
+    m = m.decode()
+    if m in ("40000", "040000"):
+        return "040000"
+    if m in ("120000", "160000"):
+        return m
+    return "100755" if int(m, 8) & 0o111 else "100644"
+
+
+def _snapshot(tree, commit):
+    """COMMIT's entries as a _Snap, every object on the way (the commit and each tree) read here and hashed; a forged
+    one is Refused (of_architect's third pass on organic-framework PR 306: a forged subtree under a genuine id)."""
+    snap = _Snap()
+    snap.rev = commit
+    snap.fmt = _git(tree, "rev-parse", "--show-object-format", check=False).stdout.strip() or "sha1"
+    width = 32 if snap.fmt == "sha256" else 20
+    raw = _objects(tree, snap.fmt, [commit], "commit").get(commit)
+    m = re.match(rb"tree ([0-9a-f]+)\n", raw or b"")
+    if not m:
+        raise Refused(FORGED + f"the commit {commit[:12]}")
+    level = {"": m.group(1).decode()}
+    while level:
+        got, nxt = _objects(tree, snap.fmt, list(level.values()), "tree"), {}
+        for prefix, oid in level.items():
+            if oid not in got:
+                raise Refused(FORGED + f"the folder {prefix or '(the root)'} at {commit[:12]}")
+            data, i = got[oid], 0
+            while i < len(data):
+                sp = data.index(b" ", i)
+                nul = data.index(b"\0", sp)
+                name = data[sp + 1:nul].decode("utf-8", "surrogateescape")
+                ent, mode, i = data[nul + 1:nul + 1 + width].hex(), _mode(data[i:sp]), nul + 1 + width
+                if not name or name in (".", "..") or "/" in name or _fold(name) == ".git":
+                    raise Refused(f"{commit[:12]} names a path git would refuse: {prefix}/{name!r}")
+                path = f"{prefix}/{name}" if prefix else name
+                if mode == "040000":
+                    nxt[path] = ent
+                else:
+                    snap[path] = (mode, ent)
+        level = nxt
+    return snap
+
+
+def _read(tree, snap, path):
+    """The verified bytes of PATH in SNAP, or None when it holds no file there."""
+    ent = snap.get(path)
+    if ent is None or ent[0] == "160000":
+        return None
+    data = _objects(tree, snap.fmt, [ent[1]], "blob").get(ent[1])
+    if data is None:
+        raise Refused(FORGED + path)
+    return data
+
+
+def _changes(old, new):
+    """[(path, old mode, new mode)] between two _Snaps, a rename read as a deletion and an addition."""
+    out = []
+    for path in sorted(set(old) | set(new)):
+        a, b = old.get(path), new.get(path)
+        if a != b:
+            out.append((path, a[0] if a else "000000", b[0] if b else "000000"))
+    return out
 
 
 def _no_filters(tree):
@@ -190,19 +294,19 @@ def _listed(text):
     return out
 
 
-def human_set(tree, ff, revs):
-    """The human paths: ff.human, ff.human_lists, and what the lists name at each of REVS (HEAD and the target). A list
-    that cannot be read at either is no answer, so the fast-forward is the owner's (fails closed; of_architect on the
-    field, msg 01a1eaa7-2645)."""
+def human_set(tree, ff, snaps):
+    """The human paths: ff.human, ff.human_lists, and what the lists name in each of SNAPS (HEAD's and the target's
+    verified trees). A list that cannot be read in either is no answer, so the fast-forward is the owner's (fails
+    closed; of_architect on the field, msg 01a1eaa7-2645)."""
     paths = {n for n in (_norm(p) for p in list(ff.get("human") or []) + list(ff.get("human_lists") or [])) if n}
     for lst in ff.get("human_lists") or []:
-        for rev in revs:
-            mode = _git(tree, "ls-tree", rev, "--", lst, check=False).stdout.split(" ", 1)[0]
-            if mode == "120000":  # a link's blob is its target's name, not the list (of_architect on PR 306)
-                raise Refused(f"the list {lst} is a link at {rev[:12]}: the owner's")
-            data = _blob(tree, rev, lst)
+        for snap in snaps:
+            if (snap.get(_norm(lst) or lst) or ("",))[0] == "120000":  # a link's blob is its target's name, not the list
+                raise Refused(f"the list {lst} is a link at {snap.rev[:12]}: the owner's")
+            data = _read(tree, snap, _norm(lst) or lst)
             if data is None:
-                raise Refused(f"the list {lst} cannot be read at {rev[:12]}, so the human set is not known: the owner's")
+                raise Refused(f"the list {lst} cannot be read at {snap.rev[:12]}, so the human set is not known: the "
+                              "owner's")
             paths |= _listed(data.decode("utf-8", "replace"))
     return paths
 
@@ -287,68 +391,6 @@ def _hits(changes, human, link_target=None, links=None):
     return sorted(set(out))
 
 
-def _raw_changes(tree, head, to, ids=None):
-    """[(path, old mode, new mode)] between HEAD and the target, renames read as a deletion and an addition. IDS, when
-    given, gets {path: new object id} of every path that has one."""
-    raw = _git(tree, "diff-tree", "-r", "--raw", "--no-renames", "--ignore-submodules=none", "-z", head, to).stdout
-    parts, out, i = raw.split("\0"), [], 0
-    while i < len(parts) - 1:
-        meta = parts[i]
-        if not meta.startswith(":"):
-            i += 1
-            continue
-        fields = meta[1:].split()
-        out.append((parts[i + 1], fields[0], fields[1]))
-        if ids is not None and fields[1] not in ("000000", "160000"):
-            ids[parts[i + 1]] = fields[3]
-        i += 2
-    return out
-
-
-def _forged_blobs(tree, ids):
-    """The paths whose new blob does not hash to its id. git re-hashes commits and trees as it reads them, not blobs,
-    so a loose object overwritten in place would put other content under the reviewed id (of_architect on PR 306)."""
-    import hashlib
-    if not ids:
-        return []
-    fmt = _git(tree, "rev-parse", "--show-object-format", check=False).stdout.strip() or "sha1"
-    r = subprocess.run(_git_cmd(tree) + ["cat-file", "--batch"], input="".join(f"{o}\n" for o in ids.values()).encode(),
-                       capture_output=True, timeout=120, env=_env())
-    data, pos, bad = r.stdout, 0, []
-    for path, oid in ids.items():
-        nl = data.find(b"\n", pos)
-        head = data[pos:nl].split()
-        if len(head) != 3 or head[0].decode() != oid or head[1] != b"blob":
-            bad.append(path)
-            pos = nl + 1 if nl >= 0 else len(data)
-            if len(head) != 3:
-                continue
-            pos += int(head[2]) + 1
-            continue
-        size = int(head[2])
-        content = data[nl + 1:nl + 1 + size]
-        pos = nl + 1 + size + 1
-        h = hashlib.new("sha256" if fmt == "sha256" else "sha1")
-        h.update(b"blob %d\0" % size + content)
-        if h.hexdigest() != oid:
-            bad.append(path)
-    return bad
-
-
-def _tree_paths(tree, rev):
-    return [p for p in _git(tree, "ls-tree", "-r", "-z", "--name-only", rev).stdout.split("\0") if p]
-
-
-def _tree_links(tree, rev):
-    """{folded path: path} of every symbolic link in REV's tree."""
-    out = {}
-    for item in _git(tree, "ls-tree", "-r", "-z", rev).stdout.split("\0"):
-        meta, _, path = item.partition("\t")
-        if path and meta.startswith("120000 "):
-            out[_fold(path)] = path
-    return out
-
-
 def _trusted(path):
     """PATH (the organizations list or a registry, which name the human set) belongs to the user running this and no one
     else may write it; else Refused."""
@@ -385,28 +427,62 @@ def _prefixes(path):
     return ["/".join(bits[:i]) for i in range(1, len(bits) + 1)]
 
 
-def _differs(tree, rev, paths):
-    """The PATHS whose bytes on disk are not REV's: a file missing where REV has one, or other content."""
+def _differs(tree, snap, paths):
+    """The PATHS whose state on disk is not SNAP's: content that does not hash to the id SNAP's verified tree names, a
+    link that is no link or a file that is one, another executable bit, a file missing where SNAP has one, a file still
+    there where SNAP has none, or a link among its folders."""
     out = []
-    for path in sorted(paths):
-        want = _blob(tree, rev, path)
+    for path in sorted(set(paths)):
+        want = snap.get(path)
+        if want and want[0] == "160000":
+            continue
         full = os.path.join(tree, path)
-        if want is None:
+        if _leading_link(tree, path):
+            out.append(path)
             continue
         try:
-            with open(full, "rb") as fh:
-                got = fh.read()
+            st = os.lstat(full)
         except FileNotFoundError:
-            if _sparse_out(tree, path):
-                continue
-            out.append(path)
+            if want and not _sparse_out(tree, path):
+                out.append(path)
             continue
         except OSError:
             out.append(path)
             continue
-        if got != want:
+        if want is None:
+            if not stat.S_ISDIR(st.st_mode):
+                out.append(path)
+            continue
+        try:
+            if want[0] == "120000":
+                if not stat.S_ISLNK(st.st_mode):
+                    out.append(path)
+                    continue
+                data = os.fsencode(os.readlink(full))
+            else:
+                if not stat.S_ISREG(st.st_mode) or (want[0] == "100755") != bool(st.st_mode & 0o100):
+                    out.append(path)
+                    continue
+                with os.fdopen(os.open(full, os.O_RDONLY | os.O_NOFOLLOW), "rb") as fh:
+                    data = fh.read()
+        except OSError:
+            out.append(path)
+            continue
+        if _hash(snap.fmt, b"blob", data) != want[1]:
             out.append(path)
     return out
+
+
+def _leading_link(tree, path):
+    """Is one of PATH's folders a link on disk (so a file read there is not the tree's)?"""
+    bits = path.split("/")
+    for i in range(1, len(bits)):
+        try:
+            if stat.S_ISLNK(os.lstat(os.path.join(tree, *bits[:i])).st_mode):
+                return True
+        except OSError:
+            return False
+    return False
 
 
 def _sparse_out(tree, path):
@@ -513,37 +589,46 @@ def _ff(tree, ff_spec, target, api):
     if _git(tree, "merge-base", "--is-ancestor", head, to, check=False).returncode != 0:
         raise Refused(f"{to[:12]} does not fast-forward the tree's {head[:12]}")
     off = _no_filters(tree)  # status runs a clean driver on a file whose stat changed (of_secrets-review on PR 306)
-    if _git(tree, "status", "--porcelain", "--untracked-files=no", extra=off).stdout.strip():
+    # never into a submodule's work tree, whose own config names its own drivers (of_architect's third pass on PR 306)
+    if _git(tree, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty", extra=off).stdout.strip():
         raise Refused("the tree has changes of its own: someone wrote it; the owner looks before anything moves")
-    twins = _case_twins(_tree_paths(tree, to))
+    old, new = _snapshot(tree, head), _snapshot(tree, to)
+    twins = _case_twins(list(new))
     if twins:
         raise Refused("the target holds paths that differ only in case, one file on this volume: " + "; ".join(twins))
-    new_ids = {}
-    changes = _raw_changes(tree, head, to, new_ids)
-    human = human_set(tree, ff_spec, (head, to))
+    changes = _changes(old, new)
+    human = human_set(tree, ff_spec, (old, new))
 
     def link_target(path):
-        data = _blob(tree, to, path)
+        data = _read(tree, new, path)
         return None if data is None else data.decode("utf-8", "replace")
-    hits = _hits(changes, human, link_target, _tree_links(tree, to))
+    hits = _hits(changes, human, link_target, {_fold(p): p for p, (m, _) in new.items() if m == "120000"})
     if hits:
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
     pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
-    forged = _forged_blobs(tree, new_ids)
+    blobs = {p: new[p][1] for p, _, m in changes if m not in ("000000", "160000")}
+    got = _objects(tree, new.fmt, list(blobs.values()), "blob")
+    forged = sorted(p for p, o in blobs.items() if o not in got)
     if forged:
-        raise Refused("these objects do not hash to their ids, so the content is not the reviewed commit's: "
-                      + ", ".join(sorted(forged)[:20]))
-    guarded = [p for p in set(_tree_paths(tree, to)) | set(_tree_paths(tree, head)) if _covered(p, human)]
+        raise Refused(FORGED + ", ".join(forged[:20]))
+    checked = {p for p, _, _ in changes} | {p for p in set(new) | set(old) if _covered(p, human)}
     if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
         raise Refused("the tree moved while it was checked; run the command again")
     _git(tree, "checkout", "--quiet", "--detach", to, extra=off)
-    bad = _differs(tree, to, guarded)
+    # every file it wrote and every human file, hashed on disk against the verified target: an object swapped in the
+    # shared store after it was checked is caught here (of_architect's third pass on PR 306)
+    bad = _differs(tree, new, checked)
+    if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != to:
+        bad = ["HEAD"] + bad
     if bad:  # on disk not the target's: move back and say whether the tree is as it was
         _git(tree, "checkout", "--quiet", "--force", "--detach", head, extra=off, check=False)
-        still = _differs(tree, head, guarded)
-        raise Refused(f"{', '.join(bad)} on disk was not the target's after the checkout; moved back to {head[:12]}"
-                      + (f", but {', '.join(still)} still differ from it: the tree is not as it was, the owner must "
-                         "look" if still else ", and the human files are HEAD's again"))
+        still = _differs(tree, old, checked)
+        if _git(tree, "rev-parse", "--verify", "HEAD", check=False).stdout.strip() != head:
+            still = ["HEAD"] + still
+        raise Refused(f"{', '.join(bad[:20])} on disk was not the target's verified content after the checkout (an "
+                      f"object changed in the store since it was checked?); moved back to {head[:12]}"
+                      + (f", but {', '.join(still[:20])} still differ from it: the tree is not as it was, the owner "
+                         "must look" if still else ", and those files are HEAD's again"))
     return {"from": head, "to": to, "pr": pr, "changed": len(changes), "human": sorted(human),
             "human_lists": list(ff_spec.get("human_lists") or [])}
 
