@@ -235,6 +235,11 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             positions.append(p)
     problems += [pr for pr in check_successors(positions) if deep or not pr.startswith(WARN)]
     problems += [pr for pr in check_enrolled(positions) if deep]
+    if deep:   # the binding rules reach each position whole by a file (hand-over 83b08e7b)
+        try:
+            problems += check_rules_files(positions, _org_paths(orgs_file))
+        except Exception:  # noqa: BLE001 - no orgs.yaml paths here: nothing to check
+            pass
     for org, path, _ in org_registries(orgs_file) if deep else ():  # the systems map: `of registry check` only
         if os.path.exists(path) and org not in BROKEN:
             with open(path) as fh:
@@ -406,6 +411,34 @@ def check_enrolled(positions):
             f"({p['mandate']}) and no enrolled: true, so its sessions get no start context"
             for p in positions if p.get("mandate") and not p.get("enrolled") and (p.get("status") or "active") == "active"
             and (p.get("holder") or {}).get("runtime") != "human"]
+
+
+def check_rules_files(positions, org_paths, work_dir=None):
+    """Hand-over 83b08e7b: a position whose folder holds no current rules file of its organization gets the binding rules
+    only through the capped start context: a warning, with `of apply` as the remedy. So does one with no folder."""
+    import of_context
+    import of_spawn
+    work_dir = work_dir or of_spawn.work_dir
+    out = []
+    for p in positions:
+        if p.get("status") not in (None, "active") or (p.get("holder") or {}).get("runtime") == "human":
+            continue
+        org = p.get("_orgid") or p.get("_org")
+        agents = os.path.join(p.get("_root") or "", "AGENTS.md")
+        if not of_context.rules_file_text(org, agents):
+            continue
+        try:
+            d = work_dir(p, p.get("_systems") or {}, org_paths.get(p.get("_org")) or [])
+        except Exception:  # noqa: BLE001
+            d = None
+        if not d:
+            out.append(f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: no folder to run in, so no rules file "
+                       f"reaches it: its binding rules come only through the capped start context")
+        elif not of_context.rules_loaded_from(d, org, agents):
+            out.append(f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: {d} holds no current "
+                       f"{of_context.RULES_FILE.format(org=org)}: run of apply, else its binding rules come only "
+                       f"through the capped start context")
+    return out
 
 
 def check_successors(positions):
@@ -1943,6 +1976,11 @@ def cmd_apply(args):
         print("herdr already matches the registry.")
     for n in notes:
         print(n)
+    try:  # each organization's binding rules, whole, in the folders its positions run in (hand-over 83b08e7b)
+        import of_context
+        of_context.write_rules(positions, _org_paths(), dry_run=args.dry_run)
+    except Exception as e:  # noqa: BLE001 - the panes are laid out; the rules wait for the next run
+        print(f"rules files: {type(e).__name__}: {e}", file=sys.stderr)
     return 0 if ok and not problems else 1
 
 
