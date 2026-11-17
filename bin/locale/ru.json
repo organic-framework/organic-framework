@@ -263,5 +263,7 @@
  "the due time": "срок",
  "blocking": "блокирующий",
  "the steps": "шаги",
+ "the command": "команда",
+ "where to do it": "где это сделать",
  "{who} changed this card after you saw it: look at the new version": "{who}: карточка изменена уже после показа, посмотри новую версию"
 }

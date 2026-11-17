@@ -5022,20 +5022,19 @@ def _deliver_ask(positions, me, to, ask_id, text, opts, blocking, escalated=None
 
 def _amend_ask(args, positions, me):
     """of ask --amend <id>: a new version of an open ask this position filed, with no answer yet (docs/events.md,
-    of.ask_amended): new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, --task (a task's
-    steps). The ask keeps its id and filing time; one decision stays one card. A different decision is a new ask, with
+    of.ask_amended): new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, and on a task with
+    no done yet --task (its steps), --command (`none` drops it) and --where. The ask keeps its id and filing time; one decision stays one card. A different decision is a new ask, with
     this one withdrawn (of_field-analyst's review of a user organization's delegated unit, message 01a1dba9-6182: 83 of
     252 founder asks withdrawn or superseded before an answer, corrections refiled as replacement cards)."""
     import of_asks
     import of_asks_answer
     import of_events
     import of_store
-    for flag, val in (("--command", args.command), ("--where", getattr(args, "where", None)), ("--work", args.work),
-                      ("--to", args.to), ("--escalates", args.escalates)):
+    for flag, val in (("--work", args.work), ("--to", args.to), ("--escalates", args.escalates)):
         if val:
             raise OfError(f"--amend keeps the ask's {flag[2:]}: it changes the text, --options, --yes, --tags, --due, "
-                          "--blocking/--no-blocking and --task (a task's steps). Another one is a new decision: a new "
-                          "ask (of ask), with this one withdrawn (of asks withdraw <id>)")
+                          "--blocking/--no-blocking, and a task's --task (its steps), --command and --where. Another "
+                          "one is a new decision: a new ask (of ask), with this one withdrawn (of asks withdraw <id>)")
     ref = args.amend.strip()
     conn = of_store.connect()
 
@@ -5073,14 +5072,17 @@ def _amend_ask(args, positions, me):
     if payload.get("detected_by") != "declared" or payload.get("from_position") not in (None, me["name"]):
         raise OfError(f"--amend: ask {short} was not filed by {me['name']} with of ask")
     is_task = bool(payload.get("task"))
-    if args.task and not is_task:
-        raise OfError(f"--amend --task: ask {short} is a question; work for the founder's hands is another decision: "
-                      "file it as a task (of ask --task) and withdraw this one (of asks withdraw)")
+    where = getattr(args, "where", None)
+    for flag, val in (("--task", args.task), ("--command", args.command), ("--where", where)):
+        if val is not None and not is_task:
+            raise OfError(f"--amend {flag}: ask {short} is a question; work for the founder's hands is another "
+                          "decision: file it as a task (of ask --task) and withdraw this one (of asks withdraw)")
     q = (payload.get("questions") or [{}])[0] if isinstance((payload.get("questions") or [{}])[0], dict) else {}
     cur_opts = of_asks_answer.options(payload)
     current = {"text": q.get("question") or "", "options": cur_opts, "yes_option": payload.get("yes_option"),
                "tags": list(payload.get("tags") or []), "due": payload.get("due"),
-               "blocking": bool(payload.get("blocking")), "task": payload.get("steps")}
+               "blocking": bool(payload.get("blocking")), "task": payload.get("steps"),
+               "command": payload.get("command"), "where": payload.get("where") or "machine"}
     new = {}
     if args.question:
         new["text"] = of_hook_mask(args.question)
@@ -5088,6 +5090,17 @@ def _amend_ask(args, positions, me):
         new["options"] = [o.strip() for o in args.options.split("|") if o.strip()]
     if args.task:
         new["task"] = of_hook_mask(args.task)
+    # a task's command and where it is done belong to its steps, the same decision (of_architect, message
+    # 01a1e8ed-cc9e: a task whose Homebrew command changed was withdrawn and filed again, a replacement card)
+    if args.command is not None:
+        new["command"] = None if args.command.strip().lower() in ("", "none") else of_hook_mask(args.command)
+    if where:
+        new["where"] = where
+    if new.get("command", current["command"]):
+        if new.get("where", "machine") != "machine":
+            raise OfError(f"--amend --where {where}: task {short} has a command to paste, typed in a terminal: keep "
+                          "--where machine, or drop the command (--command none)")
+        new["where"] = "machine"
     opts = new.get("options", cur_opts)
     import of_ask_text  # no estimate of effort or duration (founder, 2026-11-11), in the new version as in the first
     refusal = of_ask_text.check(new.get("text", current["text"]), opts, new.get("task"))
@@ -6767,9 +6780,9 @@ def main(argv=None):
     ak2.add_argument("--escalates", help="a unit owner's rewrite for the founder of an ask routed to it (its id): it "
                      "replaces OF's escalated copy, or escalates it now; his answer reaches you and the asker")
     ak2.add_argument("--amend", metavar="ID", help="correct your open ask with no answer in place: a new version with the "
-                     "new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, --task; it keeps "
-                     "its id and filing time. Never a replacement card; a different decision is a new ask, with the "
-                     "old one withdrawn")
+                     "new text and any of --options, --yes, --tags, --due, --blocking/--no-blocking, and on a task "
+                     "--task, --command (none drops it), --where; it keeps its id and filing time. Never a replacement "
+                     "card; a different decision is a new ask, with the old one withdrawn")
     ak2.add_argument("--reason", help="with --amend: why it changed, in a few words (kept on the event)")
     ak2.add_argument("--from", dest="sender")
     ak2.set_defaults(fn=cmd_ask)

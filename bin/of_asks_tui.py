@@ -283,7 +283,8 @@ def copy_target(c, item):
 
 
 AMEND_WORDS = {"text": "the question", "options": "the options", "yes_option": "the yes option", "tags": "the tags",
-               "due": "the due time", "blocking": "blocking", "task": "the steps"}
+               "due": "the due time", "blocking": "blocking", "task": "the steps", "command": "the command",
+               "where": "where to do it"}
 
 
 def amended_line(c, item):
