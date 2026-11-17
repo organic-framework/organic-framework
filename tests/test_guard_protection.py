@@ -107,6 +107,34 @@ class LaunchFileTest(unittest.TestCase):
         for cmd in (f"{q} --version", f"cat {q}", "echo x > ~/bin/other"):
             self.assertIsNone(self.deny(cmd), cmd)
 
+    def test_a_folder_above_either_file_and_a_write_into_one(self):
+        """of_secrets-review and of_review on organic-framework PR 273: G29 matched only the two paths, so removing,
+        moving or relinking a folder above them, or extracting or copying into one, passed; G21 reads these so."""
+        with open(self.wrap, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        with open(self.cfg, "w") as fh:
+            fh.write(self.wrap + "\n")
+        for cmd in ("rm -rf ~/.config/of", "mv ~/.config/of ~/.config/of.old", "mv /tmp/claude-501/x/of ~/.config/of",
+                    "cp -R /tmp/claude-501/x/of ~/.config/", "rsync -a /tmp/claude-501/x/of/ ~/.config/of/",
+                    "tar -xf /tmp/claude-501/x/t.tar -C ~/.config/of", "rm -rf ~/bin", "mv /tmp/claude-501/x/bin ~/bin",
+                    "mv ~/bin ~/bin.old", "ln -sfn /tmp/claude-501/x/bin ~/bin", "unzip -o z.zip -d ~/bin",
+                    "echo /x > ~/.CONFIG/of/claude-bin", "echo x > ~/BIN/claude\\ wrapper"):
+            hit = self.deny(cmd)
+            self.assertTrue(hit and hit[0] == of_guard.LAUNCH_DENY, cmd)
+        link = os.path.join(self.home, "h")
+        os.link(self.cfg, link)                                          # a hard link made by an earlier call
+        try:
+            self.assertTrue(self.deny("echo /x > ~/h"))
+        finally:
+            os.remove(link)
+        # a command another machine runs: its `~` is its own (of_lab resets a VM's ~/.config/of so)
+        for cmd in ("limactl shell lab bash -c 'rm -rf ~/.config/of; mkdir -p ~/.config/of'",
+                    "ssh host 'rm -rf ~/.config/of'", "docker exec c sh -c 'mv ~/bin ~/bin.old'"):
+            self.assertIsNone(self.deny(cmd), cmd)
+        for cmd in ("ls ~/.config/of", "mkdir -p ~/.config/of/x", "cp a ~/.config/of/other.yaml",
+                    "ln -s /tmp/claude-501/x/tool ~/bin/", "tar -cf /tmp/claude-501/x/t.tar -C ~/.config/of ."):
+            self.assertIsNone(self.deny(cmd), cmd)
+
 
 class ProtectedCodeTest(unittest.TestCase):
     def setUp(self):
