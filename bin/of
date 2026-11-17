@@ -3564,8 +3564,14 @@ def cmd_send(args):
     body = of_relay_client.presence_bodies(local, servers, default).get(server, [])
     if not any(f"{h['org']}:{h['position']}" == sender for h in body):
         org, pos = sender.split(":", 1)
-        body.append({"org": org, "position": pos, "session_id": os.environ.get("CLAUDE_CODE_SESSION_ID"),
-                     "state": "working", "pane": os.environ.get("HERDR_PANE_ID"), "kind": "agent"})
+        # the calling session only when it is the sender's registered holder: another session sending --from a
+        # position (`of capacity balance`, a job) would replace the live holder's row, and its `of inbox --mine` be
+        # refused not_holder until the relay's next PUT (of_secrets-review on organic-framework PR 251)
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        own = sid if sid and any(p.get("_org") == org and p.get("name") == pos and session_of(p) == sid
+                                 for p in positions) else None
+        body.append({"org": org, "position": pos, "session_id": own, "state": "working",
+                     "pane": os.environ.get("HERDR_PANE_ID") if own else None, "kind": "agent"})
     # A merge: it adds or updates the rows it carries and drops none. A plain PUT replaces this machine's whole set on
     # that server, so a send that read no agents (a launchd job that cannot reach herdr) dropped every other position
     # here until the relay's next PUT, up to a minute (a user organization's structure keeper, msg 01a1e766-e334,

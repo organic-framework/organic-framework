@@ -1380,7 +1380,7 @@ class SendPresenceTest(unittest.TestCase):
     POS = [{"name": "sec_keeper", "_org": "acme", "holder": {"session": "S-SEC"}},
            {"name": "k8s_keeper", "_org": "acme", "holder": {"session": "S-K8S"}}]
 
-    def send(self, agents, relay, fyi=False, holders=None, automation=None, streams=None):
+    def send(self, agents, relay, fyi=False, holders=None, automation=None, streams=None, sid=None):
         import contextlib
         import io
         import types
@@ -1417,6 +1417,8 @@ class SendPresenceTest(unittest.TestCase):
                if k in os.environ}
         if automation:
             os.environ["OF_AUTOMATION"] = automation
+        if sid:
+            os.environ["CLAUDE_CODE_SESSION_ID"], os.environ["HERDR_PANE_ID"] = sid, "p-caller"
         out, err = io.StringIO(), io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -1425,7 +1427,8 @@ class SendPresenceTest(unittest.TestCase):
         finally:
             (of._load_quiet, of.live_agents_or_none, of.relay_alive, of_client.Client, of_ship.config,
              of_ship.org_servers, of_events.emit) = saved
-            os.environ.pop("OF_AUTOMATION", None)
+            for k in ("OF_AUTOMATION", "CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID"):
+                os.environ.pop(k, None)
             os.environ.update(env)
         if streams is not None:
             streams.extend([out.getvalue(), err.getvalue()])
@@ -1442,6 +1445,14 @@ class SendPresenceTest(unittest.TestCase):
         self.assertTrue(merge)
         self.assertEqual(sorted((h["position"], h["session_id"]) for h in body),
                          [("k8s_keeper", "S-K8S"), ("sec_keeper", "S-SEC")])
+
+    def test_the_added_sender_row_carries_the_calling_session_only_when_it_holds_the_position(self):
+        """of_secrets-review on organic-framework PR 251: a session sending --from another position live here, with
+        herdr unread, presented that position with its own session, and the merge replaced the live holder's row."""
+        (body, _), = self.send([], True, sid="S-SEC")                         # the sender's own holder
+        self.assertEqual([(h["position"], h["session_id"], h["pane"]) for h in body], [("sec_keeper", "S-SEC", "p-caller")])
+        (body, _), = self.send([], True, sid="S-OTHER")                       # another session: no session, no pane
+        self.assertEqual([(h["position"], h["session_id"], h["pane"]) for h in body], [("sec_keeper", None, None)])
 
     def test_the_fyi_note_goes_to_stderr_and_never_beside_a_no_relay_warning(self):
         """of_review on organic-framework PR 250: a job's log keeps stdout's `queued:` line; the note never contradicts
