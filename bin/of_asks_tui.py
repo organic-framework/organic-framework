@@ -1179,10 +1179,3 @@ def workspace_counts(positions, agents, asks, bind, workspaces, org_workspace, d
         if live_ws and live_ws != home:
             out[live_ws] = out.get(live_ws, 0) + n  # e.g. the desk, where the agent sits now
     return out
-
-
-def report_workspaces(counts):
-    for ws, n in counts.items():
-        subprocess.run(["herdr", "workspace", "report-metadata", ws, "--source", "of:asks",
-                        "--token", f"asks={n} ask{'s' if n != 1 else ''}" if n else "asks="],
-                       capture_output=True, timeout=10)
