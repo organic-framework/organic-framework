@@ -130,6 +130,8 @@ class JudgeTest(unittest.TestCase):
             "SELECT payload FROM event WHERE name = 'of.booking_judged' ORDER BY rowid")]
 
     def test_judged_once_recorded_and_typed_into_the_pane_once(self):
+        self.ev("agent_message_in", {"from": "k8s_keeper", "text": "Older: at 23:00Z."}, "platform_owner", -1)
+        self.assertEqual(of_tempo.judge(self.conn, POSITIONS, now=T0, runner=None, log=lambda m: None), [])  # starts now
         self.ev("agent_message_in", {"from": "k8s_keeper", "text": "Step 2 at 14:25Z, deadline tomorrow."},
                 "platform_owner", 0)
         calls = []
@@ -158,6 +160,7 @@ class JudgeTest(unittest.TestCase):
         busy = {"pane_id": "w:2", "agent_status": "working"}
         bind = lambda positions, agents: ([(p, busy) for p in positions], [])  # noqa: E731
         of_pulse.booking_notes(POSITIONS, [], bind, mem, T0, self.conn, prompt=lambda *a: True)
+        of_tempo.judge(self.conn, POSITIONS, now=T0, runner=None, log=lambda m: None)
         self.ev("agent_question", {"detected_by": "declared", "to": "founder",
                                    "questions": [{"question": "Do it tomorrow?"}]}, "obs_keeper", 0)
         bad = lambda argv, **kw: subprocess.CompletedProcess([], 1, stdout="", stderr="x")  # noqa: E731
