@@ -1203,6 +1203,71 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
     return told
 
 
+TEMPO_KEEP_S = 24 * 3600   # a note not typed yet (its position busy or away) is dropped after this
+
+
+def booking_note(items):
+    """What a position reads when it booked work for later with no basis (bin/of_tempo.py; organic-framework AGENTS.md
+    and docs/method.md, "Work starts when it is ready")."""
+    where = {"cron": "a cron you set", "clock_wait": "a background task that waits on the clock",
+             "message": "your message to {to}", "ask": "your question to the owner"}
+    lines = [f"- {where[x['source']].format(to=x.get('to'))}"
+             + (f" (later times: {', '.join(x['times'])})" if x.get("times") else "") + f": {x['quote'][:200]}"
+             for x in items]
+    return ("Message from of_pulse (via of pulse, authority: none; work put off with no named wait, \"Work starts when "
+            "it is ready\")\nYou put this off to a later time without naming what it waits on:\n" + "\n".join(lines)
+            + "\nRun it now, or name what it waits on: `of status waiting --on <position>`, or `of loop wait <work> "
+            "--on runner|window|release|holdout|ask|position|calendar --until <time>`. If a basis exists (a position, "
+            "the owner's card, a window with its source, a runner, data that does not exist yet, a named conflict, the "
+            "owner's limit with its ask id), say it where you booked it.\n[once per booking]")
+
+
+def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=print, elsewhere=None):
+    """Type each `of.booking_judged` with no_basis items into its position's pane once, one note per judgement (one
+    turn's items): hand-over 277de578. Only positions this machine holds, and only into an idle pane; a busy one is
+    tried at the next pulse for TEMPO_KEEP_S. A person's position gets nothing typed. Returns the number told."""
+    st = mem.setdefault("tempo", {"cursor": None, "pending": []})
+    if st["cursor"] is None:   # from now: what was judged before the pulse first ran is not typed in
+        st["cursor"] = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
+        return 0
+    for rid, eid, ts, pos, org, pl in conn.execute(
+            "SELECT rowid, event_id, ts, position, org, payload FROM event WHERE name = 'of.booking_judged' "
+            "AND rowid > ? ORDER BY rowid", (st["cursor"],)):
+        st["cursor"] = rid
+        try:
+            items = [x for x in json.loads(pl or "{}").get("items") or [] if x.get("verdict") == "no_basis"]
+        except ValueError:
+            continue
+        if items and pos:
+            st["pending"].append({"event_id": eid, "at": now, "position": pos, "org": org, "items": items})
+    if not st["pending"]:
+        return 0
+    live = {p["name"]: a for p, a in bind(positions, agents)[0]}
+    people = {p["name"] for p in positions if (p.get("holder") or {}).get("runtime") == "human"}
+    away = {n for _, n in (elsewhere or {})}
+    told, keep = 0, []
+    for x in st["pending"]:
+        a = live.get(x["position"]) or {}
+        if x["position"] in people or now - x["at"] > TEMPO_KEEP_S:
+            continue
+        if not prompt or x["position"] in away or not a.get("pane_id") or a.get("agent_status") not in ("idle", "done"):
+            keep.append(x)
+            continue
+        note = booking_note(x["items"])
+        res = prompt(a["pane_id"], note, "of_pulse")
+        if (res[0] if isinstance(res, tuple) else (res is None or res is True)) is not True:
+            keep.append(x)
+            continue
+        of_events.emit("nudge_sent", {"position": x["position"], "from_position": "of_pulse",
+                                      "to_position": x["position"], "about": note, "pane": a["pane_id"],
+                                      "kind": "booking_no_basis", "judgement": x["event_id"]},
+                       position=x["position"], org=x["org"])
+        told += 1
+        log(f"told {x['position']}: {len(x['items'])} booking(s) with no basis")
+    st["pending"] = keep
+    return told
+
+
 def long_waits(waits, now, esc_h):
     """The stated waits whose expect_at lies past the escalation threshold from their statement, still to come and
     stated within the last day: each reaches the work's owner once, when it is stated (docs/registry.md, Works, "A

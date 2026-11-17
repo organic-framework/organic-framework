@@ -5530,6 +5530,15 @@ def cmd_pulse(args):
         of_pulse.save_memory(mem)
     except Exception as e:  # noqa: BLE001
         print(f"loop stalls: {e}")
+    try:  # work booked for later with no basis, as of tempo judged it (bin/of_tempo.py; hand-over 277de578)
+        import time as _time
+        mem = of_pulse.load_memory()
+        of_pulse.booking_notes(positions, agents, bind, mem, _time.time(), conn,
+                               prompt=None if args.no_nudge else of_pulse.herdr_prompt,
+                               log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere)
+        of_pulse.save_memory(mem)
+    except Exception as e:  # noqa: BLE001
+        print(f"booking notes: {e}")
     try:  # capacity (of_capacity): ask the owner once when a position's account passes a threshold
         _capacity_watch(positions, (lambda m: None) if args.quiet else print)
         import of_capacity
@@ -6136,6 +6145,56 @@ def cmd_corrections(args):
             n = of_corrections.send_digests(conn, positions, force=args.force, dry_run=args.dry_run,
                                             log=lambda m: print(f"{stamp} {m}"))
             say(f"{n} digest(s) sent")
+        return 0
+    finally:
+        conn.close()
+
+
+def cmd_tempo(args):
+    """of tempo [list|judge|replay] (bin/of_tempo.py; hand-over 277de578): work a position booked for later, judged
+    for a basis; a booking with none is typed into its pane by the pulse."""
+    import fcntl
+    import time
+    import of_store
+    import of_tempo
+    action = args.action or "list"
+    conn = of_store.connect()
+    say = (lambda m: None) if args.quiet else print
+
+    def show(out):
+        for pos, group, v in out:
+            if "error" in v:
+                print(f"{pos}: {v['error']}")
+                continue
+            for it, x in zip(group, v["verdicts"]):
+                print(f"{it['ts'][:16]}Z {pos:<24} {it['source']:<10} {x['verdict']:<13} {x['basis_kind']:<12} "
+                      f"{of_tempo._one_line(it['text'], 90)}")
+    try:
+        if action == "list":
+            since = of_tempo._iso(time.time() - args.days * 86400)
+            for ts, pos, pl in conn.execute("SELECT ts, position, payload FROM event WHERE name = 'of.booking_judged' "
+                                            "AND ts >= ? ORDER BY rowid", (since,)):
+                for x in json.loads(pl or "{}").get("items") or []:
+                    print(f"{ts[:16]}Z {pos:<24} {x.get('source'):<10} {x.get('verdict'):<13} "
+                          f"{x.get('basis_kind'):<12} {of_tempo._one_line(x.get('quote'), 90)}")
+            return 0
+        positions = _load_quiet()
+        if action == "replay":
+            if not args.since or not args.until:
+                raise OfError("of tempo replay needs --since and --until (ISO times)")
+            show(of_tempo.replay(conn, args.since, args.until, positions, org=args.org))
+            return 0
+        os.makedirs(of_tempo.of_events.STATE_DIR, mode=0o700, exist_ok=True)
+        lock = open(os.path.join(of_tempo.of_events.STATE_DIR, "tempo-run.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0  # a run is going: it takes what is pending
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        out = of_tempo.judge(conn, positions, emit=not args.dry_run, log=lambda m: print(f"{stamp} {m}"))
+        if not args.quiet or args.dry_run:
+            show(out)
+        say(f"{sum(len(g) for _, g, v in out if 'error' not in v)} item(s) judged")
         return 0
     finally:
         conn.close()
@@ -7003,6 +7062,17 @@ def main(argv=None):
     co.add_argument("--force", action="store_true", help="digest: send now, also before the hour or a second time")
     co.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     co.set_defaults(fn=cmd_corrections)
+    te = sub.add_parser("tempo", help="work booked for later, judged for a basis (hand-over 277de578): list | judge | replay",
+                        description="of tempo [list|judge|replay] [--days N] [--dry-run] [--since ISO --until ISO "
+                                    "[--org O]]")
+    te.add_argument("action", nargs="?", choices=["list", "judge", "replay"])
+    te.add_argument("--days", type=int, default=1, help="list: this many days back")
+    te.add_argument("--dry-run", action="store_true", help="judge: print, record nothing")
+    te.add_argument("--since", help="replay: from this time")
+    te.add_argument("--until", help="replay: to this time")
+    te.add_argument("--org", help="replay: only this organization's events")
+    te.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
+    te.set_defaults(fn=cmd_tempo)
     cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
                                                   "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",

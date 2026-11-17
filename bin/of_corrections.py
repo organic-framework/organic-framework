@@ -24,7 +24,7 @@ import time
 
 import of_events
 
-VERSION = "fc-v1"
+VERSION = "fc-v2"
 MODEL = "haiku"
 TIMEOUT_S = 90
 TEXT_MAX = 3000        # of his prompt
@@ -34,7 +34,7 @@ LOOKBACK_S = 24 * 3600  # prompts older than this are never judged
 KEEP_S = 3 * 24 * 3600  # judged prompt ids kept this long in the state file
 DIGEST_HOUR = 5        # UTC: the daily digest goes at the first run at or after this hour
 DIGEST_MAX = 6000      # characters of one digest
-KINDS = ("output", "method", "scope", "fact", "process", "other")
+KINDS = ("output", "method", "scope", "fact", "process", "tempo", "other")
 SENDER = "organic-framework-build:of_platform"
 
 SYSTEM = """You read one message the founder typed to an AI agent that works for him. Decide whether it corrects \
@@ -55,7 +55,8 @@ characters, without this case's numbers ("State every total with its unit and wh
 region the bot trades in, not one."). Several corrections: the most important one.
 - kind: output (how results are presented: format, units, clarity), method (how the work is done: data, analysis, \
 checks), scope (what to work on, priorities, initiative), fact (a wrong fact or number), process (coordination, \
-asking, the organization's rules), other.
+asking, the organization's rules), tempo (a push on when work starts: "now", "why later", "don't wait", "why \
+tomorrow", work put off or waited on without reason), other.
 - repeat_of: the id of an earlier correction in the list that states the same rule in substance, else "".
 When it is not: rule "", kind "other", repeat_of "".
 reason: one short English sentence why."""
@@ -257,7 +258,9 @@ def digest_text(rows):
     for pos in sorted(by, key=lambda x: (-len(by[x]), x)):
         rs = by[pos]
         reps = sum(1 for r in rs if r["repeat_of"])
-        lines.append(f"{pos}: {len(rs)}" + (f", {reps} repeated" if reps else ""))
+        tempo = sum(1 for r in rs if r["kind"] == "tempo")   # pushes on tempo, counted (hand-over 277de578)
+        lines.append(f"{pos}: {len(rs)}" + (f", {reps} repeated" if reps else "")
+                     + (f", {tempo} on tempo (work put off)" if tempo else ""))
         for r in rs:
             lines.append(f"- {r['ts'][11:16]}Z [{r['kind']}] {r['rule']}"
                          + (f" (repeats {r['repeat_of'][-8:]})" if r["repeat_of"] else "") + f" ({r['event_id'][-8:]})")
