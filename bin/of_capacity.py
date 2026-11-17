@@ -1248,6 +1248,17 @@ HOLDER_LAG_NOTE = ("If `of inbox --mine` or `of send` answers `403 not_holder` r
                    "10 to 20 seconds, do not investigate.")
 
 
+def balance_why(reason):
+    """The sentence a balancer move's note gives for it, from the plan's reason (fill, relief or rescue)."""
+    kind = str(reason or "").split(":", 1)[0]
+    if kind == "fill":
+        return ("the balancer moved it to use model capacity that would otherwise expire unused "
+                "(founder, 2026-11-06).")
+    if kind == "rescue":
+        return "the old account stopped accepting work."
+    return "the old account is about to reach its model limits."
+
+
 def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False):
     """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
     restarted: a restart on the same account and model (move --restart)."""
@@ -1265,10 +1276,13 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
                  + "Same session, same pane, same name; your context, memory and files are carried, and your effort "
                    "and permissions are unchanged.", ""]
     else:
+        # the reason is the caller's when it gives one (2026-11-17: a move by hand to drop a tool said
+        # "near its model limits" and "nothing else changed", both untrue)
         lines = [f"# Account move: {name}, now on {account}", "",
                  f"`of_capacity` moved this session (`{sid}`) at {ts} from `{short(src)}` to `{short(dst)}` "
-                 f"({account}): the old account is near its model limits. Same session, same pane, same name; "
-                 "your context, memory and files are carried. Nothing else changed.", ""]
+                 f"({account}): " + (why.strip() if why else "the old account is near its model limits.")
+                 + " Same session, same pane, same name; your context, memory and files are carried."
+                 + ("" if why else " Nothing else changed."), ""]
     crons = (continuation or {}).get("session_crons") or []
     tasks = [t for t in (continuation or {}).get("background_tasks") or [] if t.get("status") == "running"]
     if crons or tasks:
@@ -5038,10 +5052,9 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         if dry_run or offline:
             continue
         p = next((x for x in positions if x["name"] == m["position"]), None)
-        note = ("of_capacity's balancer moved you to use model capacity that would otherwise expire unused "
-                "(founder, 2026-11-06). Nothing else changed: same session, pane and name. Carry on.")
+        why = balance_why(m.get("reason"))
         try:  # only idle holders are planned (no background shells); their scheduled tasks are in the note
-            r = move(p, m["to"], allow_shells=True, log=lambda s: None, extra_note=note, positions=positions,
+            r = move(p, m["to"], allow_shells=True, log=lambda s: None, why=why, positions=positions,
                      of_bin=os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"),
                      allow_unsigned=str(m.get("reason") or "").startswith("rescue"), ask=ask)
             m["done"] = True
