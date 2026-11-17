@@ -598,6 +598,16 @@ protected_code:
 
 - **Path form.** Each entry is an absolute path or one that starts with `~/`, `$HOME/` or `${HOME}/`, at least two folders deep (never `/` or the home folder itself), because such jobs live outside the repositories. The home is the home of the user the guard runs as. An entry may be a folder (everything under it), a file, or a glob (`*`, `?`, `[…]`), matched against real paths, so a link in a path does not get around it.
 - **How a change reaches it.** Only from a commit of the organization's repository that its reviewer approved: the owner applies it in a plain terminal, or runs an installer that copies the files out of that commit (`git show <commit>:<path>`), never out of a working copy. The guard does not see what a program writes, so an agent that runs an installer writes through it. Either the owner runs the installer, or an organization rule (Grants below, docs/guard.md O) names the one position that may.
+- **A worktree agents fast-forward** (2026-11-17, `of_server`; announced to `of_architect`; a user organization's structure keeper, msgs `01a1ea84-a0f4` and `01a1ea97-b59d`, on the founder's question why agents ask him to fast-forward such a tree). An entry may be a mapping: its `path`, and `ff:` naming the remote `branch` the target must be on and its human set, `human` (paths in the tree) and `human_lists` (files in the tree that name more paths, one or more per line). Agents then move it with `of protected ff <path> --to <commit>` (`bin/of_protected.py`): only to a commit on `origin/<branch>` that fast-forwards it, that GitHub shows as a merged PR's merge commit into `<branch>` with every required check green, in a tree with no change of its own, and only when no human path changed. The lists are read at the tree's HEAD and at the target and united, so a fast-forward cannot shrink its own set; every `.gitattributes` and the lists themselves always count. Anything else stays the owner's, as for a string entry. `of registry check` checks the mapping.
+
+```yaml
+protected_code:
+  - path: "~/acme/.worktrees/vault-main"
+    ff:
+      branch: main
+      human: [scripts/vault.sh, scripts/vault-layout.tsv]
+      human_lists: [scripts/run-allow.tsv]
+```
 
 ## Grants (proposal, 2026-11-05)
 

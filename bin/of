@@ -5871,6 +5871,22 @@ def cmd_passkey(args):
         raise OfError(str(e)) from None
 
 
+def cmd_protected(args):
+    """`of protected ff <entry> --to <commit>`: fast-forward a protected worktree to a reviewed commit when nothing that
+    can reach the secret changed (bin/of_protected.py; docs/guard.md G21)."""
+    import of_protected
+    try:
+        me = _me(_load_quiet(), args.sender)["name"]
+    except OfError:
+        me = None
+    try:
+        res = of_protected.run(args.entry, args.to, position=me)
+    except of_protected.Refused as e:
+        raise OfError(f"of protected ff: refused: {e}")
+    print(f"moved {args.entry} from {res['from'][:12]} to {res['to'][:12]} (PR #{res['pr']}, {res['changed']} file(s) "
+          "changed, none that reaches the secret)")
+
+
 def cmd_grant(args):
     """Issue or revoke a signed grant, or move every grant to the key in the owner's 1Password (rekey). Tenant only:
     it signs with the key file while one exists, else through 1Password's SSH agent (Touch ID)."""
@@ -6809,6 +6825,12 @@ def main(argv=None):
     pk.add_argument("--org", required=True)
     pk.add_argument("--ttl", type=int, default=600, help="enroll: how long the window stays open, in seconds")
     pk.set_defaults(fn=cmd_passkey)
+    pf = sub.add_parser("protected", help="fast-forward a protected worktree to a reviewed commit (docs/guard.md G21)")
+    pf.add_argument("action", choices=["ff"])
+    pf.add_argument("entry", help="the protected_code entry's path, as its registry names it")
+    pf.add_argument("--to", required=True, help="the target's commit id (not a branch)")
+    pf.add_argument("--from", dest="sender", help="the position you speak for, when the session cannot tell")
+    pf.set_defaults(fn=cmd_protected)
     gr = sub.add_parser("grant", help="issue or revoke a signed grant (tenant only)")
     gr.add_argument("action", choices=["issue", "revoke", "rekey"])
     gr.add_argument("--org")
