@@ -565,12 +565,10 @@ class DelegationAskTest(unittest.TestCase):
 
 class AskTokensTest(unittest.TestCase):
     def test_tokens_follow_the_projection_at_once(self):
-        import of_asks_tui
         import of_herdr_asks
         calls = []
-        saved = (of_herdr_asks._herdr, of_asks_tui.report_workspaces)
+        saved = of_herdr_asks._herdr
         of_herdr_asks._herdr = lambda *a: calls.append(("pane",) + a) or True
-        of_asks_tui.report_workspaces = lambda counts: calls.append(("ws", dict(counts)))
         try:
             positions = [{"name": "a", "_org": "o", "_workspace": "org-ws", "_home_ws": "org-ws"}]
             agents = [{"pane_id": "pa", "name": "a", "workspace_id": "w1", "tokens": {}}]
@@ -584,7 +582,7 @@ class AskTokensTest(unittest.TestCase):
             # the Spaces sidebar shows no count (the founder, 2026-11-17 ~17:15Z): an earlier build's is cleared, once
             self.assertIn(("pane", "workspace", "report-metadata", "w1", "--source", "of:asks", "--clear-token", "asks"),
                           calls)
-            self.assertFalse([c for c in calls if c[0] == "ws" or "w2" in c])
+            self.assertFalse([c for c in calls if "w2" in c])
             ws[0]["tokens"] = {}
             agents[0]["tokens"] = {"ask": "e01 · q?"}
             calls.clear()
@@ -592,9 +590,9 @@ class AskTokensTest(unittest.TestCase):
             counts = of_herdr_asks.refresh_ask_tokens(positions, agents, done, fake_bind, ws)
             self.assertEqual(counts, {"w1": 0, "w2": 0})
             self.assertIn("--clear-token", calls[0])  # the pane's question: gone at once, not at the next change
-            self.assertFalse([c for c in calls if c[0] == "ws" or "workspace" in c])
+            self.assertFalse([c for c in calls if "workspace" in c])
         finally:
-            of_herdr_asks._herdr, of_asks_tui.report_workspaces = saved
+            of_herdr_asks._herdr = saved
 
 
 class ReplyTest(unittest.TestCase):
