@@ -6535,7 +6535,7 @@ def main(argv=None):
     lp.add_argument("--started-at")
     lp.add_argument("--ended-at", help="run: default now")
     lp.add_argument("--run", help="run: the runner's id for this run (a job name); a run already recorded is skipped")
-    lp.add_argument("--source", help="run: the runner that measured it (default manual), e.g. cbx; wait: the runner "
+    lp.add_argument("--source", help="run: the runner that measured it (default manual), e.g. runner; wait: the runner "
                     "whose job start it records (a wait on the same job with no run since is skipped)")
     lp.add_argument("--note")
     lp.add_argument("--on", help="wait: " + " | ".join(("runner", "window", "release", "holdout", "ask", "position",
