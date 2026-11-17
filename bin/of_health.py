@@ -398,15 +398,15 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typ
         r["told"] = prev.get("told") if r["state"] == "failed" else None
         r["reminded"] = prev.get("reminded") if r["state"] == "failed" else None
         if r["state"] == "failed" and not r["told"] and now - _epoch(r["since"]) >= TELL_AFTER_S:
-            notes.setdefault(r["owner"], []).append(_fyi_text(check, r, prev))
-            r["told"] = iso(now)
+            notes.setdefault(r["owner"], []).append((_fyi_text(check, r, prev), r, iso(now)))
         elif r["state"] == "failed" and now - _epoch(r["since"]) >= REMIND_EVERY_S and \
                 now - _epoch(r["reminded"] or r["since"]) >= REMIND_EVERY_S:
             # one --fyi is easy to miss among health notes (2026-11-14: a check stayed failed three days): once a day,
             # typed into the owner's pane, from a day after the failure began
             reminders.setdefault(r["owner"], []).append((check, r))
         elif r["state"] != "failed" and prev.get("told"):
-            notes.setdefault(r["owner"], []).append(_fyi_text(check, r, prev))
+            r["told"] = prev["told"]   # kept until the note that it is over was sent
+            notes.setdefault(r["owner"], []).append((_fyi_text(check, r, prev), r, None))
     for check in set(old) - set(new):  # a check that stopped applying (a processor gone) leaves quietly
         pass
     for owner, due in reminders.items():
@@ -415,15 +415,20 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typ
             f"why they stay (docs/health.md §3; `of health`). Reminded once a day while they stay failed.\n"
             + "\n".join(f"- {c}: failed since {r['since']} ({(now - _epoch(r['since'])) / 86400:.1f} days), value "
                          f"{r['value']}, limit {r['limit']}" for c, r in due))
-        if typed(owner, text) is not False:
+        if _sent(typed, owner, text, log):
             for check, r in due:
                 r["reminded"] = iso(now)
                 log(f"of health: reminded {owner} of {check}, failed since {r['since']}")
 
-    for owner, texts in notes.items():
-        fyi(owner, texts[0] if len(texts) == 1 else
-            f"Health on this machine, {len(texts)} checks (docs/health.md §2; `of health`):\n"
-            + "\n".join("- " + t[len("Health: "):].replace(" (docs/health.md §2; `of health`)", "") for t in texts))
+    for owner, due in notes.items():
+        texts = [t for t, _, _ in due]
+        # a note the relay did not take is sent again at the next run (of_architect, message 01a1e8ee-5b44)
+        if _sent(fyi, owner, texts[0] if len(texts) == 1 else
+                 f"Health on this machine, {len(texts)} checks (docs/health.md §2; `of health`):\n"
+                 + "\n".join("- " + t[len("Health: "):].replace(" (docs/health.md §2; `of health`)", "")
+                              for t in texts), log):
+            for _, r, told in due:
+                r["told"] = told
     state = {"at": iso(now), "checks": new}
     with open(state_path() + ".tmp", "w") as fh:
         json.dump(state, fh, indent=1)
@@ -455,6 +460,17 @@ def _reminder_text(check, r, now):
             f"fix it, or say why it stays (docs/health.md §3; `of health`). Reminded once a day while it stays failed.")
 
 
+def _sent(send, owner, text, log):
+    """SEND(owner, text), never fatal: False (to be sent again at the next run) when it returned False or raised. A
+    slow `of send` raised TimeoutExpired out of the run before health.json was written, so the next run told the same
+    again (of_architect, message 01a1e8ee-5b44: on 2026-11-17 a run took 8.5 minutes)."""
+    try:
+        return send(owner, text) is not False
+    except Exception as e:  # noqa: BLE001
+        log(f"of health: not sent to {owner} ({type(e).__name__}); again at the next run")
+        return False
+
+
 def _typed(owner, text):
     """The reminder typed into the owner's pane by the relay (an `of send` without --fyi), from of_platform, when the OF
     team's organization is on this machine. False when it could not be sent (tried again at the next run)."""
@@ -467,12 +483,14 @@ def _typed(owner, text):
 
 
 def _fyi(owner, text):
-    """One --fyi to the check's owner, from of_platform, when the OF team's organization is on this machine."""
+    """One --fyi to the check's owner, from of_platform, when the OF team's organization is on this machine. False when
+    it could not be sent."""
     if TEAM_ORG not in _org_names():
-        return
-    subprocess.run([sys.executable, os.path.join(HERE, "of"), "send", f"{TEAM_ORG}:{owner}", "--from", FYI_FROM,
-                    "--fyi", text], capture_output=True, text=True, timeout=60,
-                   env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+        return None
+    r = subprocess.run([sys.executable, os.path.join(HERE, "of"), "send", f"{TEAM_ORG}:{owner}", "--from", FYI_FROM,
+                        "--fyi", text], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    return r.returncode == 0
 
 
 def _org_names():
