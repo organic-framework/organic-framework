@@ -367,6 +367,8 @@ class MovePieces(unittest.TestCase):
         self.assertIn("(b@x): it drops a tool the old account carries. Same session", own)
         self.assertNotIn("near its model limits", own)
         self.assertNotIn("Nothing else changed", own)
+        bare = of_capacity.handover_note("p", "sid", "/a", "/b", "b@x", {}, "t", why="it drops a tool")
+        self.assertIn("it drops a tool. Same session", bare)  # a reason gets its full stop (PR 269 review)
         self.assertIn("expire unused", of_capacity.balance_why("fill: its week resets first"))
         self.assertIn("stopped accepting work", of_capacity.balance_why("rescue: 429; ~/.claude-b accepts work"))
         self.assertIn("about to reach", of_capacity.balance_why("relief: the account is about to stall"))
