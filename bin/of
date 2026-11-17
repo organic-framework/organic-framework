@@ -413,12 +413,14 @@ def check_enrolled(positions):
             and (p.get("holder") or {}).get("runtime") != "human"]
 
 
-def check_rules_files(positions, org_paths, work_dir=None):
+def check_rules_files(positions, org_paths, work_dir=None, sessions=None):
     """Hand-over 83b08e7b: a position whose folder holds no current rules file of its organization gets the binding rules
     only through the capped start context: a warning, with `of apply` as the remedy. So does one with no folder."""
     import of_context
     import of_spawn
     work_dir = work_dir or of_spawn.work_dir
+    shared = of_context.shared_folders(of_context.rules_folders(positions, org_paths, work_dir),
+                                       of_context.session_orgs() if sessions is None else sessions)
     out = []
     for p in positions:
         if p.get("status") not in (None, "active") or (p.get("holder") or {}).get("runtime") == "human":
@@ -434,6 +436,10 @@ def check_rules_files(positions, org_paths, work_dir=None):
         if not d:
             out.append(f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: no folder to run in, so no rules file "
                        f"reaches it: its binding rules come only through the capped start context")
+        elif os.path.realpath(d) in shared:
+            out.append(f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: {d} is shared by "
+                       f"{', '.join(sorted(shared[os.path.realpath(d)]))}, so no rules file is written there: its "
+                       f"binding rules come only through the capped start context")
         elif not of_context.rules_loaded_from(d, org, agents):
             out.append(f"{WARN}{p.get('_file') or p.get('_org')}: {p['name']}: {d} holds no current "
                        f"{of_context.RULES_FILE.format(org=org)}: run of apply, else its binding rules come only "
@@ -5590,6 +5596,11 @@ def cmd_pulse(args):
         elsewhere = {}
         if not args.quiet:
             print(f"presence: {e}")
+    try:  # the binding rules files follow an organization's AGENTS.md within one pulse (of_architect on PR 320)
+        import of_context
+        of_context.write_rules(positions, _org_paths(), log=(lambda m: None) if args.quiet else print)
+    except Exception as e:  # noqa: BLE001
+        print(f"rules files: {type(e).__name__}: {e}")
     # early, before the slow parts: at load 90 (2026-11-17) a pulse took 342 s, the listener stops it at 240 s, and
     # notes placed after the capacity watch were never reached
     try:  # work booked for later with no basis, as of tempo judged it (bin/of_tempo.py; hand-over 277de578)
