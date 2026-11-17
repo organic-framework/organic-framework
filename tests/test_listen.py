@@ -87,6 +87,29 @@ class ListenTest(unittest.TestCase):
             stop.set()
             release.set()
 
+    def test_a_long_pass_that_works_keeps_the_watchdogs_file_and_a_stuck_one_does_not(self):
+        """2026-11-17 17:52Z: a flush of the asks view ran past the watchdog's 180 s at load 65 and the listener was
+        restarted, then read the whole asks log again for 17 minutes."""
+        import time as _t
+
+        class F:
+            def __init__(self, line):
+                self.f_code, self.f_lineno, self.f_back = type("C", (), {"co_filename": "x.py"}), line, None
+        line = [1]
+        path = of_listen.heartbeat_path()
+        if os.path.exists(path):
+            os.remove(path)
+        done = of_listen.working_beat(thread_id=7, every=0.02, frames=lambda: {7: F(line[0])})
+        try:
+            _t.sleep(0.15)
+            self.assertFalse(os.path.exists(path))          # one place: stuck, never touched
+            for i in range(10):
+                line[0] = i + 2
+                _t.sleep(0.02)
+            self.assertTrue(os.path.exists(path))           # the place moves: working
+        finally:
+            done.set()
+
     def test_one_stuck_timer_stops_the_timers_file(self):
         """of_review on organic-framework PR 294: with a thread per timer, the others kept the timers' file fresh; the
         listener now computes its stuck timers and touches the file only while none is stuck (the watchdog stays
@@ -123,8 +146,8 @@ class ListenTest(unittest.TestCase):
         ticks = {p.name: 0.0 for p in procs}
         stop = threading.Event()
         path = os.path.join(self.tmp.name, "of.db")
-        of_listen.tick_thread(procs, ticks, locks, threading.Event(), stop=stop, log=lambda m: None,
-                              connect=lambda: of_store.connect(path))
+        threads = of_listen.tick_thread(procs, ticks, locks, threading.Event(), stop=stop, log=lambda m: None,
+                                        connect=lambda: of_store.connect(path))
         try:
             for _ in range(50):
                 if len(turned) >= 3:
@@ -134,6 +157,8 @@ class ListenTest(unittest.TestCase):
         finally:
             stop.set()
             release.set()
+            for t in threads:   # none writes into the next test's state folder
+                t.join(5)
 
     def test_current_asks_reads_the_view_and_folds_its_tail_never_the_whole_log(self):
         """of_platform's log-readers design (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2-3.3):

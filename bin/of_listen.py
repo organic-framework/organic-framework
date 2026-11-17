@@ -1449,13 +1449,47 @@ def starting_beat(every=None, cpu=None):
     return done
 
 
+def working_beat(thread_id=None, every=None, frames=None, stop=None):
+    """For the listener's whole life: touch the watchdog's heartbeat file every HEARTBEAT_S while the main thread's
+    place in the code moves (its innermost frame and line differ from the last look), so a long pass that works is not
+    restarted; one that sits in one place (a lock wait, a stuck call) is, as before. Readers trust only listener_meta's
+    beat, which this never writes. 2026-11-17 17:52Z: a flush of the asks view ran past the watchdog's 180 s at load
+    65, the watchdog restarted the listener, and its start then read every ask event again for 17 minutes. (macOS gives
+    no CPU clock per thread, so the place in the code is the sign of work.) Returns the stop event."""
+    import sys as _sys
+    import threading
+    done = threading.Event()
+    tid = thread_id or threading.main_thread().ident
+    frames = frames or _sys._current_frames
+
+    def where():
+        f = frames().get(tid)
+        out = []
+        while f is not None and len(out) < 6:
+            out.append((f.f_code.co_filename, f.f_lineno))
+            f = f.f_back
+        return tuple(out)
+
+    def loop():
+        last = where()
+        while not done.wait(every or HEARTBEAT_S) and not (stop and stop.is_set()):
+            now = where()
+            if now != last:
+                _touch(heartbeat_path())
+            last = now
+    threading.Thread(target=loop, name="of-listen-working", daemon=True).start()
+    return done
+
+
 def run(stop=None, log=print, rebuild=False):
+    import threading
     import of_store
     if stop is None:  # the service: the watchdog asks for every thread's stack before it restarts a stuck one
         import faulthandler
         import signal
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     starting = starting_beat()
+    working_beat(threading.get_ident(), stop=stop)   # the loop's own thread (a test runs it in another)
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
     folds_ok = False
