@@ -411,6 +411,30 @@ class GuardBashTest(unittest.TestCase):
             of_guard.POD_SPEC_MODE.clear()
             of_guard.POD_SPEC_MODE.update(old)
 
+    def test_a_pattern_this_machines_sed_or_awk_reads_as_letters(self):
+        """docs/guard.md G30 (a user organization's security keeper, msg 01a1e8ec-f1aa): macOS's sed took \\s as the
+        letter s, a mask written with it did nothing, and a key pair printed into a transcript."""
+        saved = dict(of_guard._FLAVOURS)
+        try:
+            of_guard._FLAVOURS.update({"sed": "bsd", "awk": "bsd"})
+            for cmd in ("sed -E 's/=\\s*[a-z0-9]+/=MASKED/' app/s3.py", "cat f | sed 's/\\w\\+//'",
+                        "awk '{gsub(/\\s+/, \"\")}1' f", "sed -n '/^\\d/p' f", "gsed -E 's/\\d+/N/' f",
+                        "x=$(sed -E 's/\\S+$//' f); echo \"$x\"", "bash -c \"sed -E 's/\\s//' f\""):
+                hit = deny(cmd)
+                self.assertTrue(hit and hit[0].startswith(of_guard.ESCAPE_DENY), cmd)
+                self.assertTrue(of_guard.owns_advice(hit[0]), cmd)
+            for cmd in ("sed -E 's/=[[:space:]]*[a-z0-9]+/=MASKED/' f", "gsed -E 's/\\s+//' f", "gawk '/\\w+/' f",
+                        "ssh host \"sed -E 's/\\s+//' f\"", "kubectl exec p -- sed -E 's/\\s+//' f",
+                        "sed 's/\\\\s//' f", "perl -pe 's/\\s+//' f", "grep -E '\\s' f", "sed -n 's/\\n//p' f",
+                        "echo 'sed -E s/\\s//'"):
+                self.assertIsNone(deny(cmd), cmd)
+            of_guard._FLAVOURS.update({"sed": "gnu"})                       # a machine whose sed is GNU's
+            self.assertIsNone(deny("sed -E 's/\\s+//' f"))
+            self.assertTrue(deny("sed -E 's/\\d+//' f"))
+        finally:
+            of_guard._FLAVOURS.clear()
+            of_guard._FLAVOURS.update(saved)
+
     def test_proc_environ_and_process_env_listings(self):
         # of_architect, 2026-11-06: /proc/<pid>/environ holds a process's env (a DSN+password leaked this way)
         self.assertTrue(deny("cat /proc/1/environ"))
