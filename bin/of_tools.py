@@ -344,7 +344,63 @@ def _ancestors(pid=None):
     return out
 
 
-def header(org, tid, docs, ancestors=None, state_dir=None):
+def _want(e):
+    sh = _shared(e)
+    return f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}" if sh else None
+
+
+def shared_url(org, tid, orgs_file=None, state_dir=None):
+    """The shared server's URL from the organization's registry, through a cache kept beside the tokens.
+
+    The helper runs at every session's connect while Claude Code waits on it: in 2.1.326's own logs helpers that
+    took up to 10.6 s were accepted and those that took 11.6 s and 12.3 s were not. On 2026-11-17 parsing a
+    user organization's large registry on a loaded machine took that long, three sessions got no header, and Claude
+    Code fell back to OAuth (the DCR 404), with no retry. The cache holds only the URLs of one registry's shared
+    tools, keyed by that file's path, size and mtime, and is rebuilt from the registry whenever the file changes, so
+    the registry stays the one source (2026-11-18, of_tools)."""
+    import of_credentials
+    path = dict(of_credentials._registries(orgs_file)).get(org)
+    if not path:
+        raise ToolsError(f"no organization {org} in the listed registries")
+    try:
+        st = os.stat(path)
+    except OSError:
+        raise ToolsError(f"the registry of {org} cannot be read")
+    key = [os.path.realpath(path), st.st_size, st.st_mtime_ns]
+    d = os.path.join(state_dir or STATE_DIR, "tools", "shared")
+    cache = os.path.join(d, "urls.json")
+    try:
+        with open(cache) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        doc = {}
+    doc = doc if isinstance(doc, dict) else {}
+    hit = doc.get(org)
+    if not (isinstance(hit, dict) and hit.get("key") == key and isinstance(hit.get("urls"), dict)):
+        import yaml
+        try:
+            with open(path) as fh:
+                reg = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError):
+            raise ToolsError(f"the registry of {org} cannot be read")
+        cat = reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
+        hit = {"key": key, "urls": {t: _want(e) for t, e in cat.items() if _want(e)}}
+        doc[org] = hit
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            tmp = f"{cache}.{os.getpid()}.tmp"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                json.dump(doc, fh)
+            os.replace(tmp, cache)
+        except OSError:
+            pass  # no cache this time; the next call parses again
+    url = hit["urls"].get(tid)
+    if not url:
+        raise ToolsError(f"{org}/{tid} is not a shared tool")
+    return url
+
+
+def header(org, tid, docs=None, ancestors=None, state_dir=None, orgs_file=None):
     """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper).
 
     The token goes only to a Claude Code process that OF launched with this tool: the nearest parent started with
@@ -352,11 +408,12 @@ def header(org, tid, docs, ancestors=None, state_dir=None):
     URL. A position is never taken from the caller's word (of_review, PR 132: a named position handed the token to
     any caller). An agent's own shell command reaches its own session's file, so it gets the token only when its
     profile has the tool."""
-    doc = docs.get(org) or {}
-    sh = _shared((doc.get("tools") or {}).get(tid))
-    if not sh:
-        raise ToolsError(f"{org}/{tid} is not a shared tool")
-    want = f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}"
+    if docs is None:
+        want = shared_url(org, tid, orgs_file=orgs_file, state_dir=state_dir)
+    else:
+        want = _want(((docs.get(org) or {}).get("tools") or {}).get(tid))
+        if not want:
+            raise ToolsError(f"{org}/{tid} is not a shared tool")
     tools_dir = os.path.realpath(os.path.join(state_dir or STATE_DIR, "tools"))
     for _pid, args in (ancestors if ancestors is not None else _ancestors()):
         argv = args.split()
@@ -846,12 +903,12 @@ def main(argv=None):
     try:
         if a.cmd in ("serve", "header"):
             org, _, tid = a.tool.partition("/")
+            if a.cmd == "header":  # no registry parse on this path: the URL comes through shared_url's cache
+                print(json.dumps(header(org, tid)))
+                return 0
             docs = registries()
             if org not in docs:
                 raise ToolsError(f"no organization {org} in the listed registries")
-            if a.cmd == "header":
-                print(json.dumps(header(org, tid, docs)))
-                return 0
             argv_, env = serve_command(org, tid, docs[org])
             os.execvpe(argv_[0], argv_, env)
         if a.cmd == "shared":
