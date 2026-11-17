@@ -360,6 +360,16 @@ class MovePieces(unittest.TestCase):
         self.assertIn("Re-create", note)
         self.assertIn("run CronList first", note)  # scheduled tasks come back with a resume (2026-11-14)
         self.assertTrue(note.startswith("# Account move: of_lab, now on b@x\n"))  # the account in the first line
+        self.assertIn("near its model limits", note)  # no reason given: the default
+        # a move with its own reason says that reason, never the default one (2026-11-17)
+        own = of_capacity.handover_note("p", "sid", "/Users/alex/.claude-a", "/Users/alex/.claude-b", "b@x", {}, "t",
+                                        why="it drops a tool the old account carries.")
+        self.assertIn("(b@x): it drops a tool the old account carries. Same session", own)
+        self.assertNotIn("near its model limits", own)
+        self.assertNotIn("Nothing else changed", own)
+        self.assertIn("expire unused", of_capacity.balance_why("fill: its week resets first"))
+        self.assertIn("stopped accepting work", of_capacity.balance_why("rescue: 429; ~/.claude-b accepts work"))
+        self.assertIn("about to reach", of_capacity.balance_why("relief: the account is about to stall"))
         # a model change on the same account: says the model, the reason, and no account move
         mc = of_capacity.handover_note("p", "sid", "/Users/alex/.claude-a", "/Users/alex/.claude-a", "a@x", {},
                                        "2026-11-10T16:30:00Z", model=("claude-opus-5-5", "claude-fable-5-2"),

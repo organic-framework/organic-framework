@@ -7010,8 +7010,8 @@ def main(argv=None):
                     help="creds --adopt: read the token on stdin; it is hashed and never kept")
     cp.add_argument("--consumer", help="creds --adopt: who uses it, e.g. acme:discovery tax workers")
     cp.add_argument("--session", help="close, move, resume: the session id (the registry may not name it)")
-    cp.add_argument("--reason", help="close: why, e.g. 'wave 0, founder approved'; move --model or --restart: why, "
-                                     "said to the session in its note")
+    cp.add_argument("--reason", help="close: why, e.g. 'wave 0, founder approved'; move: why, said to the session "
+                                     "in its note (default for --to: its old account is near its model limits)")
     cp.add_argument("--model", help="move: restart the session on this model (its effort and permissions kept), "
                                     "on the same account unless --to names another")
     cp.add_argument("--restart", action="store_true",
