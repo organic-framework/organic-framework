@@ -5527,7 +5527,9 @@ def cmd_pulse(args):
         # with the balancer on and the listener running it, the probes are its own (detached, every 5 minutes): the
         # pulse reads their readings and never waits on a probe (of_platform, 2026-11-17: a pulse at load 90 took
         # 342 s, 50 s of it here, and the listener stops a pulse at 240 s)
-        detached = bool(of_capacity.load_policy().get("auto")) and _listener_runs_capacity()
+        # ... unless a reading is two probe periods old: the detached run stalled or failed (of_review on PR 297)
+        detached = bool(of_capacity.load_policy().get("auto")) and _listener_runs_capacity() \
+            and not of_capacity.readings_behind()
         _capacity_watch(positions, (lambda m: None) if args.quiet else print, probe=not detached)
         if of_capacity.load_policy().get("auto") and not detached:
             of_capacity.balance(positions, log=print, ask=_capacity_ask)  # spend first what expires first
