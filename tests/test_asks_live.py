@@ -78,6 +78,30 @@ class LiveTest(unittest.TestCase):
         finally:
             of_asks.load = saved
             conn.close()
+
+    def test_the_pulse_reconciles_from_the_asks_it_reads_and_never_projects_the_log(self):
+        """of_platform, message 01a1ea50-2317: at load 90 the pulse's pass projected the whole log, 101 of the pulse's
+        342 s, and the listener stopped the pulse at 240 s before its later steps."""
+        import sqlite3
+        import of_events
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (event_id TEXT, name TEXT, raw_ref TEXT)")
+        ask = {"event_id": "e1", "session_id": "S1", "state": "open", "kind": "question (heuristic)", "position": "p"}
+        saved = (of_asks.load, of_asks.current_asks, of_asks_live.live_sessions, of_events.emit)
+        emitted = []
+
+        def boom(*a, **k):
+            raise AssertionError("the log was projected")
+        of_asks.load = boom
+        of_asks.current_asks = lambda *a, **k: {"asks": [ask], "cursor": 1, "age_s": 0.0, "late": False}
+        of_asks_live.live_sessions = lambda: {}  # S1 is gone
+        of_events.emit = lambda *a, **k: emitted.append(a[1]["ask_id"])
+        try:
+            self.assertEqual(of_asks_live.run(conn, log=lambda m: None), [("e1", "orphaned")])
+            self.assertEqual(emitted, ["e1"])
+        finally:
+            of_asks.load, of_asks.current_asks, of_asks_live.live_sessions, of_events.emit = saved
+            conn.close()
         task = {"event_id": "t", "session_id": "S-gone", "kind": "task", "state": "open"}  # a view row: no task key
         self.assertIsNone(of_asks_live.decide(task, {}, set()))
 

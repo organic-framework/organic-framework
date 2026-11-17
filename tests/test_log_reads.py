@@ -49,7 +49,6 @@ ALLOWED = {
     ('of', 'cmd_listen', 'SELECT max(rowid) FROM event'): CONST,
     ('of_ask_text.py', 'open_asks', 'of_asks.load(conn)'): ASKS,
     ('of_asks_chat.py', 'recorded', "SELECT payload FROM event WHERE name = 'of.agent_question_an"): RARE,
-    ('of_asks_live.py', 'run', 'of_asks.load(conn)'): ASKS,
     ('of_asks_live.py', 'run', "SELECT event_id FROM event WHERE name = 'of.agent_question' "): RARE,
     ('of_asks_tui.py', 'load', 'of_asks.load(conn)'): ASKS,
     ('of_capacity.py', '_session_rows', "SELECT ts, payload FROM event WHERE name = 'of.holder_change"): CAPACITY,
