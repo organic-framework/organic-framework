@@ -447,8 +447,8 @@ def run(now=None, readings=None, emit=None, fyi=None, log=print, cards=None, typ
 
 def _fyi_text(check, r, prev):
     if r["state"] == "failed":
-        return (f"Health: {check} failed on this machine at {r['since']}: value {r['value']}, limit {r['limit']} "
-                f"{('(' + r['detail'] + ')') if r.get('detail') else ''} (docs/health.md §2; `of health`).")
+        return (f"Health: {check} failed on this machine at {r['since']}: value {r['value']}, limit {r['limit']}"
+                f"{(' (' + r['detail'] + ')') if r.get('detail') else ''} (docs/health.md §2; `of health`).")
     return f"Health: {check} is {r['state']} since {r['since']} (value {r['value']}); the failure you were told of " \
            f"is over."
 
