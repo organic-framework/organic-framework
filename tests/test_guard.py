@@ -309,6 +309,14 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl get pod web-1 -o go-template='{{with index .spec.containers 0}}{{range .env}}{{.value}}"
                     "{{end}}{{end}}'",
                     "kubectl get pod web-1 -o go-template='{{$c := index .spec.containers 0}}{{$c.env}}'",
+                    # Go runs a with's or a range's else with the outer dot (of_secrets-review, PR 264 head 4e8ec2b)
+                    "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{.name}}="
+                    "{{with .valueFrom}}ref{{else}}{{.value}}{{end}} {{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range (index .spec.containers 0).env}}{{with .valueFrom}}"
+                    "{{else}}{{.value}}{{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{with .valueFrom}}r"
+                    "{{else with .value}}{{.}}{{end}}{{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range .items}}{{else}}{{.spec}}{{end}}'",
                     "KUBE_EDITOR=cat kubectl edit pod web-1",
                     # an output name in any case, and kyaml, print the whole Pod; a union in one bracket is judged once
                     # per field (of_review on organic-framework PR 264)
@@ -317,7 +325,11 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*]['name','env']}\"",
                     "kubectl get pod web-0 -o jsonpath=\"{.spec['containers','volumes']}\"",
                     "kubectl get pod web-0 -o jsonpath=\"{['spec','status']}\"",
-                    "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*].env[*]['name','value']}\""):
+                    "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*].env[*]['name','value']}\"",
+                    # a quoted field with a dot is a path to kubectl (of_review, PR 264 head 4e8ec2b)
+                    "kubectl get pod web-0 -o jsonpath=\"{['spec.containers']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{['metadata.name','spec.containers']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{['metadata.annotations']}\""):
             hit = deny(cmd)
             self.assertTrue(hit, cmd)
             self.assertTrue(hit[0].startswith(of_guard.POD_ENV_DENY), cmd)
@@ -341,6 +353,10 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl get pod web-1 -o jsonpath='{.spec.containers[*].env}' > /tmp/claude-501/x/env.txt",
                     "kubectl get deploy web -o jsonpath='{.spec.template.spec.containers[*].image}'",
                     "kubectl get pod web-1 -o go-template='{{(index .spec.containers 0).image}}'",
+                    "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{.name}}="
+                    "{{with .valueFrom}}ref{{else}}literal{{end}} {{end}}{{end}}'",
+                    "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{if .valueFrom}}r"
+                    "{{else}}{{.name}}{{end}}{{end}}{{end}}'",
                     "kubectl get pod web-1 -o go-template='{{range .spec.containers}}{{range .env}}{{.name}} {{end}}"
                     "{{end}}'",
                     "kubectl get pods -o go-template='{{range $i, $p := .items}}{{$i}} {{$p.metadata.name}}{{end}}'",
@@ -349,6 +365,7 @@ class GuardBashTest(unittest.TestCase):
                     "kubectl edit deploy web", "kubectl get pod web-0 -o Wide", "kubectl get pods -o NAME",
                     "kubectl get pod web-0 -o jsonpath=\"{.status['phase','podIP']}\"",
                     "kubectl get pod web-0 -o jsonpath=\"{.spec.containers[*]['name','image']}\"",
+                    "kubectl get pod web-0 -o jsonpath=\"{['metadata.name','status.phase']}\"",
                     "kubectl set env deploy/web FOO=bar", "kubectl describe svc web", "kubectl describe node n1"):
             self.assertIsNone(deny(cmd), cmd)
             self.assertEqual(warned(), [], cmd)

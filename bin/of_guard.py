@@ -976,6 +976,13 @@ def _kube_kinds_named(nonopt, at=1):
     return out
 
 
+def _kube_field_segs(field, rec=False):
+    """A quoted bracket field is a path to kubectl (`['spec.containers']`): its segments, split on unescaped dots
+    (of_review on organic-framework PR 264)."""
+    parts = [x.replace("\\.", ".").lower() for x in re.split(r"(?<!\\)\.", field) if x]
+    return [(x, rec and i == 0) for i, x in enumerate(parts)] or [("", rec)]
+
+
 def _kube_segs(path):
     """[(field, recursive)] of a JSONPath-like path; indexes and filters dropped, a quoted bracket kept as a field."""
     out, rec = [], False
@@ -989,10 +996,10 @@ def _kube_segs(path):
             names = re.findall(r"'([^']*)'|\"([^\"]*)\"", inner)
             if len(names) > 1 and re.fullmatch(r"\s*(?:(?:'[^']*'|\"[^\"]*\")\s*,\s*)+(?:'[^']*'|\"[^\"]*\")\s*", inner):
                 # a union of fields in one bracket: judged once per field (of_review on organic-framework PR 264)
-                out.append(("|" + "|".join((a or b).lower() for a, b in names), rec))
+                out.append(("|" + "|".join(a or b for a, b in names), rec))
                 rec = False
             elif len(inner) > 1 and inner[0] in "'\"" and inner[-1] == inner[0]:
-                out.append((inner[1:-1].lower(), rec))
+                out.extend(_kube_field_segs(inner[1:-1], rec))
                 rec = False
         else:
             out.append((t.strip().lower(), rec))
@@ -1009,7 +1016,7 @@ def _kube_path_holds_env(segs):
     `env[*].valueFrom` name references only."""
     for i, (n, rec) in enumerate(segs):
         if n.startswith("|"):  # a union: any of its fields
-            return any(_kube_path_holds_env(segs[:i] + [(m, rec)] + segs[i + 1:]) for m in n[1:].split("|"))
+            return any(_kube_path_holds_env(segs[:i] + _kube_field_segs(m, rec) + segs[i + 1:]) for m in n[1:].split("|"))
     segs = [s for s in segs if s != _KUBE_ELEMENT]
     names = [n for n, _ in segs]
     for i, (n, rec) in enumerate(segs):
@@ -1085,9 +1092,25 @@ def _kube_gotemplate_paths(expr):
     an `if` condition and a `range`/`with` pipeline are not printed; `template`/`block` count as the root. A base the
     guard cannot read (a function, a string key: of_secrets-review on organic-framework PR 264) makes an unknown
     context, and a print inside it counts as the root."""
-    out, ctx, var = [], [[]], {}
+    out, ctx, var, blocks = [], [[]], {}, []  # blocks: (the keyword that opened it, the context outside it)
     for act in re.findall(r"\{\{-?(.*?)-?\}\}", expr, re.S):
         a = _kube_unquote(act).strip()
+        if a == "else" or a.startswith(("else ", "else\t", "else\n")):
+            # Go runs a with's or a range's else with the outer dot; `else with X` is a with on X from there, and an
+            # if's else keeps its dot (of_secrets-review on organic-framework PR 264)
+            kw, outer = blocks[-1] if blocks else ("if", ctx[-1])
+            rest = a[4:].strip()
+            if kw in ("range", "with") or rest.startswith("with "):
+                ctx[-1] = outer
+            if rest.startswith("with "):
+                m = re.match(r"(\$\w+)\s*:?=\s*(.*)", rest[5:], re.S)
+                base = _kube_go_base(m.group(2) if m else rest[5:], ctx, var)
+                if m:
+                    var[m.group(1)] = base
+                ctx[-1] = base
+            if blocks:
+                blocks[-1] = ("with" if rest.startswith("with ") else "if", outer)
+            continue
         if a.startswith(("range ", "with ")):
             kw, body = a.split(" ", 1)
             m = re.match(r"(\$\w+)\s*(?:,\s*(\$\w+))?\s*:?=\s*(.*)", body, re.S)
@@ -1098,11 +1121,14 @@ def _kube_gotemplate_paths(expr):
                 var[m.group(1)], var[m.group(2)] = ([_KUBE_KEY] if kw == "range" else base), base
             elif m:
                 var[m.group(1)] = base
+            blocks.append((kw, ctx[-1]))
             ctx.append(base)
         elif a.startswith("if "):
+            blocks.append(("if", ctx[-1]))
             ctx.append(ctx[-1])
         elif a == "end":
             ctx = ctx[:-1] if len(ctx) > 1 else ctx
+            blocks = blocks[:-1]
         elif a.startswith(("else", "/*")) or a in ("break", "continue"):
             continue
         elif a.startswith(("define ", "block ", "template ")):
