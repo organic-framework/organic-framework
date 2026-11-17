@@ -75,7 +75,9 @@ def record(kind, payload, *, position=None, org=None, session=None, source="of",
         rec["of.lab.run_id"] = run
         rec["of.org"] = f"lab-{run}"
     if kind in ("agent_question", "permission_request") and source != "import" and isinstance(rec["of.payload"], dict) \
-            and not rec["of.payload"].get("ref"):
+            and not rec["of.payload"].get("ref") and rec["of.payload"].get("detected_by") != "heuristic":
+        # a heuristic candidate is no card until the judge files it as one, which is stamped then (of_asks on PR 300:
+        # candidates took five numbers in six)
         try:  # the card's short id, stamped once when the ask is filed (every writer comes through here)
             rec["of.payload"]["ref"] = next_ref(rec.get("of.org"))
         except Exception:  # noqa: BLE001 - an ask is never lost for its id
