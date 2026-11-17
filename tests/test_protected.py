@@ -175,6 +175,39 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(self.head(), b)
         self.assertFalse(os.path.exists(marker))
 
+    def test_a_value_does_not_name_a_filter_and_a_forged_blob_is_refused(self):
+        """of_architect on organic-framework PR 306: a value holding ` x.clean ` made the parsing name another driver,
+        so x's smudge ran; and a loose object overwritten in place put other content under the reviewed id."""
+        import zlib
+        marker = os.path.join(self.d, "ran")
+        spy = os.path.join(self.d, "spy.sh")
+        with open(spy, "w") as fh:
+            fh.write(f"#!/bin/sh\necho ran >> {marker}\ncat\n")
+        os.chmod(spy, 0o755)
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        common = self.g("rev-parse", "--path-format=absolute", "--git-common-dir")
+        os.makedirs(os.path.join(common, "info"), exist_ok=True)
+        with open(os.path.join(common, "info", "attributes"), "w") as fh:
+            fh.write("scripts/other.sh filter=x\n")
+        self.g("config", "filter.x.smudge", f"{spy} x.clean y")
+        self.ff(b)
+        self.assertFalse(os.path.exists(marker))
+        self.g("config", "--unset", "filter.x.smudge")
+        self.g("checkout", "-q", "--detach", b)
+        self.write("scripts/other.sh", "#!/bin/sh\necho c\n")
+        c = self.commit("other again")
+        oid = self.g("rev-parse", f"{c}:scripts/other.sh")
+        path = os.path.join(common, "objects", oid[:2], oid[2:])
+        evil = b"#!/bin/sh\necho EVIL\n"
+        os.chmod(path, 0o644)
+        with open(path, "wb") as fh:
+            fh.write(zlib.compress(b"blob %d\0" % len(evil) + evil))
+        with self.assertRaises(P.Refused) as cm:
+            self.ff(c)
+        self.assertIn("do not hash", str(cm.exception))
+        self.assertEqual(self.head(), b)
+
     def test_the_registry_names_the_repository_and_the_git_folder_is_this_users(self):
         self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
         b = self.commit("other")
@@ -334,6 +367,10 @@ class ProtectedFfTest(unittest.TestCase):
         hits = P._hits([("a", "000000", "120000"), ("b", "000000", "120000")], {"scripts/vault.sh"},
                        lambda path: links.get(path), {"c": "c"})
         self.assertEqual(hits, ["a", "b"])                                          # the root, a chain of links
+        through = {"s": "scripts", "y": "s/vault.sh"}                               # a link inside the path
+        self.assertEqual(P._hits([("y", "000000", "120000")], {"scripts/vault.sh"}, lambda path: through.get(path),
+                                 {"s": "s", "y": "y"}), ["y"])
+        self.assertIn("scripts/a#b.sh", P._listed("scripts/a#b.sh\n"))
 
 
 if __name__ == "__main__":

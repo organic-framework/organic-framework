@@ -145,9 +145,11 @@ def _no_filters(tree):
     runs no smudge or process command (of_secrets-review on organic-framework PR 306: a smudge driver set in the main
     repository's config and named in its info/attributes ran during the checkout)."""
     out = ["-c", "core.attributesFile=/dev/null"]
-    r = _git(tree, "config", "--get-regexp", r"^filter\.", check=False)
-    names = {m.group(1) for line in r.stdout.splitlines()
-             for m in [re.match(r"filter\.(.+)\.(?:smudge|clean|process|required)\s", line + " ")] if m}
+    # key names only, each split at its last dot: a value never shapes a name (of_architect on PR 306: a value holding
+    # ` x.clean ` made the greedy match name another driver, and x's smudge ran)
+    r = _git(tree, "config", "--null", "--name-only", "--get-regexp", r"^filter\.", check=False)
+    names = {k[len("filter."):].rsplit(".", 1)[0] for k in r.stdout.split("\0")
+             if k.startswith("filter.") and k.count(".") >= 2}
     for n in sorted(names):
         out += ["-c", f"filter.{n}.smudge=", "-c", f"filter.{n}.clean=", "-c", f"filter.{n}.process=",
                 "-c", f"filter.{n}.required=false"]
@@ -175,9 +177,12 @@ def _listed(text):
     of_architect on organic-framework PR 306: a top-level name, a folder's trailing / and a path with a space were
     dropped)."""
     out = set()
-    for line in (text or "").splitlines():
-        line = line.split("#", 1)[0].strip()
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
         words = set(re.split(r"\s+", line)) | set(re.split(r"[\t,;|]+", line)) | {line}
+        whole = raw.strip()  # a # inside a path is part of it: the line read whole as well (of_architect on PR 306)
+        if whole and not whole.startswith("#"):
+            words |= set(re.split(r"\s+", whole)) | set(re.split(r"[\t,;|]+", whole)) | {whole}
         for w in words:
             n = _norm(w.strip().strip("'\""))
             if n:
@@ -242,6 +247,20 @@ def _link_dest(path, link_target, links, hops=8):
             return ""
         if dest.startswith("../") or dest == "..":
             return None
+        bits = dest.split("/")
+        through = next(("/".join(bits[:i]) for i in range(1, len(bits)) if _fold("/".join(bits[:i])) in links), None)
+        if through:  # a link inside the path (`y -> s/vault.sh` with `s -> scripts`: of_architect on PR 306)
+            lt = link_target(links[_fold(through)])
+            if lt is None or lt.startswith("/"):
+                return None
+            dest = posixpath.normpath(posixpath.join(posixpath.dirname(through), lt, dest[len(through) + 1:]))
+            if dest in (".", "") or dest.startswith("../"):
+                return "" if dest in (".", "") else None
+            path, t = dest, None
+            if _fold(dest) not in links:
+                return dest
+            path = links[_fold(dest)]
+            continue
         if _fold(dest) not in links:
             return dest
         path = links[_fold(dest)]
@@ -268,8 +287,9 @@ def _hits(changes, human, link_target=None, links=None):
     return sorted(set(out))
 
 
-def _raw_changes(tree, head, to):
-    """[(path, old mode, new mode)] between HEAD and the target, renames read as a deletion and an addition."""
+def _raw_changes(tree, head, to, ids=None):
+    """[(path, old mode, new mode)] between HEAD and the target, renames read as a deletion and an addition. IDS, when
+    given, gets {path: new object id} of every path that has one."""
     raw = _git(tree, "diff-tree", "-r", "--raw", "--no-renames", "--ignore-submodules=none", "-z", head, to).stdout
     parts, out, i = raw.split("\0"), [], 0
     while i < len(parts) - 1:
@@ -279,8 +299,40 @@ def _raw_changes(tree, head, to):
             continue
         fields = meta[1:].split()
         out.append((parts[i + 1], fields[0], fields[1]))
+        if ids is not None and fields[1] not in ("000000", "160000"):
+            ids[parts[i + 1]] = fields[3]
         i += 2
     return out
+
+
+def _forged_blobs(tree, ids):
+    """The paths whose new blob does not hash to its id. git re-hashes commits and trees as it reads them, not blobs,
+    so a loose object overwritten in place would put other content under the reviewed id (of_architect on PR 306)."""
+    import hashlib
+    if not ids:
+        return []
+    fmt = _git(tree, "rev-parse", "--show-object-format", check=False).stdout.strip() or "sha1"
+    r = subprocess.run(_git_cmd(tree) + ["cat-file", "--batch"], input="".join(f"{o}\n" for o in ids.values()).encode(),
+                       capture_output=True, timeout=120, env=_env())
+    data, pos, bad = r.stdout, 0, []
+    for path, oid in ids.items():
+        nl = data.find(b"\n", pos)
+        head = data[pos:nl].split()
+        if len(head) != 3 or head[0].decode() != oid or head[1] != b"blob":
+            bad.append(path)
+            pos = nl + 1 if nl >= 0 else len(data)
+            if len(head) != 3:
+                continue
+            pos += int(head[2]) + 1
+            continue
+        size = int(head[2])
+        content = data[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+        h = hashlib.new("sha256" if fmt == "sha256" else "sha1")
+        h.update(b"blob %d\0" % size + content)
+        if h.hexdigest() != oid:
+            bad.append(path)
+    return bad
 
 
 def _tree_paths(tree, rev):
@@ -466,7 +518,8 @@ def _ff(tree, ff_spec, target, api):
     twins = _case_twins(_tree_paths(tree, to))
     if twins:
         raise Refused("the target holds paths that differ only in case, one file on this volume: " + "; ".join(twins))
-    changes = _raw_changes(tree, head, to)
+    new_ids = {}
+    changes = _raw_changes(tree, head, to, new_ids)
     human = human_set(tree, ff_spec, (head, to))
 
     def link_target(path):
@@ -476,6 +529,10 @@ def _ff(tree, ff_spec, target, api):
     if hits:
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
     pr = github_proof(repo, to, branch, api=api, checks=ff_spec.get("checks"))
+    forged = _forged_blobs(tree, new_ids)
+    if forged:
+        raise Refused("these objects do not hash to their ids, so the content is not the reviewed commit's: "
+                      + ", ".join(sorted(forged)[:20]))
     guarded = [p for p in set(_tree_paths(tree, to)) | set(_tree_paths(tree, head)) if _covered(p, human)]
     if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
         raise Refused("the tree moved while it was checked; run the command again")
