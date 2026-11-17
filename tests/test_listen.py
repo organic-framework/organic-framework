@@ -322,6 +322,48 @@ class ListenTest(unittest.TestCase):
         self.assertIsNot(procs[0].state, carried)            # a correction: all rows again
         same()
 
+    def test_a_row_late_within_the_hold_folds_in_order_and_one_later_projects_all_rows_counted(self):
+        """of_platform, message 01a1eaab-8fbd: every row was projected again in 434 flush windows a day, nearly all for
+        hook events a minute or two older than the newest fed; a 600 s hold leaves 4.5 a day (AsksProcessor.HOLD_S)."""
+        import contextlib
+        import io
+        import time as _t
+
+        def at(s):
+            return _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - s))
+
+        def same():
+            want = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
+            self.assertEqual({a["event_id"]: a["state"] for a in of_listen.read_asks(self.conn)}, want)
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+        a1 = self.ask("Merge PR 2349 now?", ts=at(1200))
+        self.ask("Rotate the etcd keys?", position="b", ts=at(60))
+        of_listen.step(self.conn, procs, cur)
+        carried = procs[0].state
+        answer = of_events.record("agent_question_answered", {"ask_id": a1, "ask_ids": [a1], "by": "owner"},
+                                  position="a", session="S-a", org="ofb")
+        answer["timestamp"] = at(300)  # 240 s older than the newest row fed: a hook's event, late
+        of_store.add_event(self.conn, answer)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            of_listen.step(self.conn, procs, cur)
+        self.assertIs(procs[0].state, carried)               # folded in order, not every row again
+        self.assertEqual((procs[0].late, out.getvalue()), (0, ""))
+        same()                                               # the view has it at once
+        self.assertEqual(procs[0].state["by_id"][a1]["state"], "open")  # held: only the copy for the view has it
+        self.assertEqual(of_asks.current_asks(self.conn)["asks"][0]["state"], "answered")  # readers see it too
+        # a row older than the hold's mark (a spool drained after a long busy store): every row again, and counted
+        old = self.ask("Drain node 3?", position="c", ts=at(3000))
+        with contextlib.redirect_stdout(out):
+            of_listen.step(self.conn, procs, cur)
+        self.assertIsNot(procs[0].state, carried)
+        self.assertEqual(procs[0].late, 1)
+        self.assertIn("older than the hold's mark", out.getvalue())
+        same()
+        self.assertIn(old, {a["event_id"] for a in of_listen.read_asks(self.conn)})
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)
