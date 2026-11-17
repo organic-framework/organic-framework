@@ -473,6 +473,37 @@ def older_version(answered, ask):
     return isinstance(answered, int) and not isinstance(answered, bool) and answered < (ask.get("version") or 1)
 
 
+def closed_after_view(conn, ask_id, version=None):
+    """(what, ts) when an answer, a withdrawal or an escalation of ASK_ID came after the asks view's fold mark, else
+    None. A view that is behind (current_asks returns it late) still shows such an ask open, so a decision that acts
+    on an open ask reads the log since that mark for this ask alone (of_conductor, message 01a1ea94-7796: card MT-31,
+    answered at version 6 at 17:12:05Z, was amended at 17:18:51Z because the listener's view had stood since
+    17:11:02Z). An answer to a version older than VERSION closes nothing, as in project(). None too where no view is:
+    the caller projected the log."""
+    try:
+        meta = json.loads((conn.execute("SELECT value FROM listener_meta WHERE key = ?", (FOLD_KEY,)).fetchone()
+                           or ["{}"])[0])
+    except Exception:  # noqa: BLE001 - no listener tables on this machine
+        return None
+    mark = int(meta.get("rowid") or 0)
+    if not mark:
+        return None
+    what = {"of.agent_question_answered": "answered", "of.ask_withdrawn": "withdrawn", "of.ask_escalated": "escalated"}
+    for name, ts, pl in conn.execute("SELECT name, ts, payload FROM event WHERE rowid > ? AND name IN "
+                                     "('of.agent_question_answered', 'of.ask_withdrawn', 'of.ask_escalated') "
+                                     "ORDER BY rowid", (mark,)):
+        try:
+            p = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if ask_id not in (p.get("ask_ids") or [p.get("ask_id")]):
+            continue
+        if name == "of.agent_question_answered" and older_version(p.get("version"), {"version": version}):
+            continue
+        return what[name], ts
+    return None
+
+
 def amendments(conn, ask_id, ts, position, host, rowids=False):
     """[(ts, payload)] of the of.ask_amended events for one ask, by the position that filed it and from the machine
     that filed it (HOST, the ask's own host_id), in the projection's order (ts, then rowid); ROWIDS: [(ts, rowid,
