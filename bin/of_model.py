@@ -800,7 +800,7 @@ def build(doc, events=(), at=None, org=None, rev=None, window_h=None, half_life_
         "mandate": mandate, "orphan_work": orphan,
         "map_repos": sorted(map_repos),   # the repository names the map claims (area_of's repos; the rule surface)
         "work_records": {"total": len(wr_ids), "attributed": wr_attributed, "unmapped": unmapped, "by_system": wr_by_system},
-        "loops": loops_of(doc, events, at_s, resolve),
+        "loops": loops_of(doc, events, at_s, resolve, org=org or doc.get("organization")),
         "goals": goals, "conditions": conditions_of(doc, goals),   # docs/registry.md, Goals
         "cells": cells_of(positions, systems, methods_of(doc)),   # RFC 0007 §2.3
     }
@@ -810,11 +810,12 @@ LOOP_KINDS = ("of.loop_hypothesis", "of.loop_run", "of.loop_decision", "of.loop_
               "of.loop_wait")  # of_loops.KINDS
 
 
-def loops_of(doc, events, at_s, resolve=None, asks=None):
+def loops_of(doc, events, at_s, resolve=None, asks=None, org=None):
     """{work: the loop projection} for every registry work with a `loop:` or with loop events (RFC 0005; bin/of_loops.py),
     computed once for the loop card and the loop rules (docs/diagnose.md §4.1). A target's `decided` counts only when it
-    resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver() bound to each
-    work, which opens this machine's store only when some id is to be looked up. A wait on an ask ends when the ask
+    resolves in the log as a person's yes: RESOLVE (id -> that yes), by default of_loops.log_resolver(org=ORG) bound to
+    each work, which resolves as `of` does for that organization and opens this machine's store only when some id is to
+    be looked up. A wait on an ask ends when the ask
     stops waiting: ASKS (ref -> when), by default of_loops.ask_ends(), which reads the asks view only for such a wait."""
     works = doc.get("works") if isinstance(doc.get("works"), dict) else {}
     # only what a loop reads: its events, and the runner and monitor calls of its doers (of_loops.babysit); each work
@@ -827,7 +828,7 @@ def loops_of(doc, events, at_s, resolve=None, asks=None):
     if not ids:
         return {}
     import of_loops
-    base = None if resolve else of_loops.log_resolver()
+    base = None if resolve else of_loops.log_resolver(org=org)
     asks = asks or of_loops.ask_ends()
     return {w: of_loops.project(w, (works.get(w) or {}).get("loop"), rows, at_s, work=works.get(w) or {},
                                 resolve=resolve or of_loops.for_work(base, w), asks=asks)

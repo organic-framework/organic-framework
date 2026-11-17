@@ -779,7 +779,7 @@ class Data:
         cache = self.__dict__.setdefault("_loop_cards", {})
         if w["id"] not in cache:
             cache[w["id"]] = of_loops.project(w["id"], w.get("loop"), self.rows, self.now, work=w,
-                                              resolve=of_loops.for_work(of_loops.log_resolver(), w["id"]),
+                                              resolve=of_loops.for_work(of_loops.log_resolver(org=self.org), w["id"]),
                                               asks=of_loops.ask_ends())
         return cache[w["id"]]
 
