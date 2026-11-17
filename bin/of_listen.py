@@ -128,7 +128,7 @@ class AsksProcessor(Processor):
         # whose events this run has not read), the checkpoint's rowid (rows up to it are in the view), the
         # checkpoint a write stores beside the fold (CARRIED_KEY), kept for settle() in a shadow build
         self.stored, self.carried_upto, self.carried = {}, 0, None
-        # snapshots of the carried state (SNAP_S apart, SNAP_KEEP_S back): [(mark, JSON)], oldest first; rewind: the
+        # snapshots of the carried state (SNAP_S apart, SNAP_KEEP_S back): [(mark, file)], oldest first; rewind: the
         # earliest ts a late row or a correction needs projected again from; rewinds: how often one was used
         self.snaps, self.rewind, self.rewinds, self.late_rows = [], None, 0, (0, None)
         import of_asks
@@ -156,8 +156,41 @@ class AsksProcessor(Processor):
     # mark, SNAP_KEEP_S back (5.6 MB of JSON each for 7,704 asks, 0.03 s to take, 0.22 s to load), and redoes it from
     # the newest one before that ts with the rows since read again by ts: two hours of rows were 8,199 on 2026-11-17.
     # Only what is older than every snapshot (an import) reads the whole log.
+    # The snapshots are files (snap_dir), so a start carried on from the checkpoint keeps them (of_review on PR 316: in
+    # memory, a restart emptied them, and the first spool drain after it read the whole log again) and the listener
+    # holds no 50 MB of them on a machine in swap (of_platform on PR 316). A rewind deletes the snapshots after the
+    # one it takes, a projection of every row deletes them all, so a file never outlives the history it was cut from.
     SNAP_S = 900
     SNAP_KEEP_S = 2 * 3600
+
+    def snap_dir(self):
+        return os.path.join(of_events.STATE_DIR, "asks-snapshots", self.version)
+
+    def _drop_snaps(self, keep=lambda m: False):
+        """Delete the snapshot files whose mark KEEP refuses, and forget them."""
+        for m, path in self.snaps:
+            if not keep(m):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        self.snaps = [x for x in self.snaps if keep(x[0])]
+
+    def _load_snaps(self, upto):
+        """The snapshot files of this version at or before the mark UPTO, within SNAP_KEEP_S of it: a start carried on
+        from the checkpoint takes them up; the others are deleted."""
+        d, keep, out = self.snap_dir(), _minus_s(upto, self.SNAP_KEEP_S), []
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            path = os.path.join(d, name)
+            mark = name[:-5].replace("_", ":") if name.endswith(".json") else ""
+            if mark and keep <= mark <= upto:
+                out.append((mark, path))
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        self.snaps = out
 
     SHADOW = "__new"
     suffix = ""      # "__new" while a new version is built beside the view that keeps serving
@@ -180,6 +213,7 @@ class AsksProcessor(Processor):
         self.rows, self.defer, self.dirty = {}, True, True
         self.state, self.tail, self.written, self.max_rowid = None, [], {}, 0
         self.held, self.mark = [], ""
+        self._load_snaps("")
 
     def load_state(self, conn):
         """After a restart: the projection carries on from the stored view and the carried checkpoint beside it
@@ -198,6 +232,7 @@ class AsksProcessor(Processor):
         row = conn.execute("SELECT last_rowid FROM listener_cursor WHERE processor = ?", (self.name,)).fetchone()
         self.max_rowid = int(row[0]) if row else 0
         if not self._carry_on(conn):
+            self._load_snaps("")  # every row read again: no snapshot cut from another history stays
             self.rows = self._read_all(conn)
 
     @staticmethod
@@ -244,6 +279,7 @@ class AsksProcessor(Processor):
             self.handle(conn, rows)
             start = rows[-1]["rowid"]
         self.max_rowid = max(self.max_rowid, upto)
+        self._load_snaps(mark)
         return True
 
     def _rows_since(self, conn, ts, upto):
@@ -275,16 +311,21 @@ class AsksProcessor(Processor):
         """The carried state from the newest snapshot at or before self.rewind, and every row since it read again (by
         ts, up to the rows handled); False when no snapshot is that old."""
         import of_asks
-        snap = next(((m, blob) for m, blob in reversed(self.snaps) if m <= self.rewind), None)
+        snap = next(((m, path) for m, path in reversed(self.snaps) if m <= self.rewind), None)
         if snap is None:
             return False
-        m, blob = snap
-        data = json.loads(blob)
+        m, path = snap
+        self._drop_snaps(lambda x: x <= m)  # cut from the history this row changes: gone before it is redone
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            self._drop_snaps(lambda x: x < m)
+            return False
         self.state = of_asks.state_from(data["asks"], data["indexes"])
         rows = self._rows_since(conn, m, self.max_rowid)
         self.rows.update({r["event_id"]: r for r in rows})
         self.held, self.tail, self.mark = rows, [], m
-        self.snaps = [x for x in self.snaps if x[0] <= m]
         self.rewinds += 1
         print(f"of listen: asks: projected again from the snapshot at {m} ({len(rows)} rows since), for a row at "
               f"{self.rewind} ({self.rewinds} since the start)", flush=True)
@@ -370,7 +411,7 @@ class AsksProcessor(Processor):
                       flush=True)
         self.rewind, self.late_rows = None, (0, None)
         if self.state is None:
-            self.snaps = []
+            self._drop_snaps()
             if self.stored:  # carried on from the view, with only the rows since: every row, read now
                 self.rows = {**self._read_all(conn), **self.rows}
                 self.stored, self.carried_upto = {}, 0
@@ -390,10 +431,19 @@ class AsksProcessor(Processor):
         if self.mark and (not self.snaps or _minus_s(self.mark, self.SNAP_S) >= self.snaps[-1][0]):
             indexes = {k: v for k, v in of_asks.fold_meta(self.state, 0, "").items()
                        if k in ("open_by_session", "declared_turn", "waits_founder")}
-            self.snaps.append((self.mark, json.dumps({"asks": self.state["asks"], "indexes": indexes},
-                                                     ensure_ascii=False, default=str)))
+            d = self.snap_dir()
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            path = os.path.join(d, self.mark.replace(":", "_") + ".json")
+            tmp = path + ".tmp"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                json.dump({"asks": self.state["asks"], "indexes": indexes}, fh, ensure_ascii=False, default=str)
+            os.replace(tmp, path)
+            self.snaps.append((self.mark, path))
             keep = _minus_s(self.mark, self.SNAP_KEEP_S)
-            self.snaps = [x for x in self.snaps if x[0] >= keep]
+            self._drop_snaps(lambda m: m >= keep)
+            size = sum(os.path.getsize(p) for _, p in self.snaps if os.path.exists(p)) / 1e6
+            print(f"of listen: asks: snapshot at {self.mark}, {os.path.getsize(path) / 1e6:.1f} MB "
+                  f"({len(self.snaps)} kept, {size:.0f} MB on disk)", flush=True)
         view = self.state
         if self.held:  # the rows inside the hold, on a copy: the view is whole, the carried state waits for them
             t0 = time.time()

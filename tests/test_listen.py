@@ -535,6 +535,75 @@ class ListenTest(unittest.TestCase):
         self.assertIn("and every snapshot: every row projected again", out.getvalue())
         same()
 
+    def test_the_snapshots_outlive_a_restart_and_never_the_history_they_were_cut_from(self):
+        """of_review on PR 316: in memory, the snapshots died with a restart, and the first spool drain after it (2026-
+        11-17's pattern: a restart, then rows an hour old) read the whole log. They are files now, taken up by a start
+        carried on from the checkpoint, and deleted when the history before them changes."""
+        import contextlib
+        import io
+        import time as _t
+
+        def at(s):
+            return _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - s))
+
+        def same():
+            want = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
+            self.assertEqual({a["event_id"]: a["state"] for a in of_listen.read_asks(self.conn)}, want)
+            return want
+
+        def run(procs, cur):
+            with contextlib.redirect_stdout(out):
+                of_listen.step(self.conn, procs, cur)
+        out = io.StringIO()
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S, procs[0].SNAP_S = 0, 60
+        cur = of_listen.prepare(self.conn, procs)
+        self.ask("Merge PR 2349 now?", ts=at(6000))
+        run(procs, cur)
+        a2 = self.ask("Rotate the etcd keys?", position="b", ts=at(4000))
+        run(procs, cur)
+        self.ask("Open the gateway window?", position="c", ts=at(1000))
+        run(procs, cur)
+        files = sorted(os.listdir(procs[0].snap_dir()))
+        self.assertEqual(len(files), 3)
+
+        def a2_in(name):
+            with open(os.path.join(procs[0].snap_dir(), name)) as fh:
+                return next(a["state"] for a in json.load(fh)["asks"] if a["event_id"] == a2)
+        self.assertEqual(a2_in(files[-1]), "open")
+        self.assertIn("MB on disk", out.getvalue())  # each snapshot says its size (of_platform on PR 316)
+        procs2 = [of_listen.AsksProcessor()]  # a restart, carried on from the checkpoint
+        procs2[0].MIN_FLUSH_S, procs2[0].SNAP_S = 0, 60
+        cur2 = of_listen.prepare(self.conn, procs2)
+        self.assertEqual([os.path.basename(p) for _, p in procs2[0].snaps], files)
+        saved = of_asks.load
+
+        def whole(*a, **k):
+            raise AssertionError("every row read again after the restart")
+        of_asks.load = whole
+        try:
+            rec = of_events.record("agent_question_answered", {"ask_id": a2, "ask_ids": [a2], "by": "owner"},
+                                   position="b", session="S-b", org="ofb")
+            rec["timestamp"] = at(3000)  # a spool drained after the restart: older than the mark
+            of_store.add_event(self.conn, rec)
+            run(procs2, cur2)
+            self.assertEqual((procs2[0].rewinds, procs2[0].late), (1, 0))
+        finally:
+            of_asks.load = saved
+        self.assertEqual(same()[a2], "answered")
+        # the snapshot after the one it redid from was cut from the history that answer changed: it was deleted, and
+        # the one taken again at that mark holds the answer
+        self.assertEqual(a2_in(files[-1]), "answered")
+        # older than every snapshot: every row; the old files are deleted, and the one snapshot the write takes again
+        # holds the new history
+        old = self.ask("From imported history?", position="d", ts=at(20000))
+        run(procs2, cur2)
+        self.assertEqual(procs2[0].late, 1)
+        (left,) = os.listdir(procs2[0].snap_dir())
+        with open(os.path.join(procs2[0].snap_dir(), left)) as fh:
+            self.assertIn(old, {a["event_id"] for a in json.load(fh)["asks"]})
+        same()
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)
