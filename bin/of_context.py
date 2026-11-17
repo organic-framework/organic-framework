@@ -33,6 +33,100 @@ def _read(path, limit):
     return text if len(text) <= limit else text[:limit]
 
 
+# The binding rules reach a position whole through a file Claude Code loads itself, not through the capped start
+# context (hand-over 83b08e7b; checked on Claude Code 2.1.326): a project's .claude/rules/*.md without `paths:` loads
+# at a session's start, is re-read from disk after compaction, needs no approval when its text is in it, and keeps the
+# repository's own AGENTS.md loading (a CLAUDE.local.md would stop that). of apply writes one per organization into
+# each folder its positions run in, excluded from git there.
+RULES_FILE = os.path.join(".claude", "rules", "of-{org}.md")
+
+
+def rules_file_text(org, agents_md):
+    """The rules file's text for ORG from its AGENTS.md, or None when it has no binding sections."""
+    r = rules(agents_md)
+    if not r:
+        return None
+    return (f"# Binding rules of the organization `{org}`\n\n"
+            f"Written by `of apply` from {agents_md} (hand-over 83b08e7b); edit that file, not this one: the next "
+            f"`of apply` writes this one again.\n\n{r}\n")
+
+
+def rules_folders(positions, org_paths, work_dir=None):
+    """{org: [folders]}: the folders the organization's active positions run in (of_spawn.work_dir)."""
+    import of_spawn
+    work_dir = work_dir or of_spawn.work_dir
+    out = {}
+    for p in positions:
+        if p.get("status") not in (None, "active") or (p.get("holder") or {}).get("runtime") == "human":
+            continue
+        org = p.get("_orgid") or p.get("_org")
+        try:
+            d = work_dir(p, p.get("_systems") or {}, org_paths.get(p.get("_org")) or [])
+        except Exception:  # noqa: BLE001 - no folder for it: of registry check names it
+            continue
+        if d and d not in out.setdefault(org, []):
+            out[org].append(d)
+    return out
+
+
+def _exclude(folder, run=None):
+    """Keep the rules file out of the folder's git repository: one line in its info/exclude, never a commit."""
+    import subprocess
+    run = run or subprocess.run
+    r = run(["git", "-C", folder, "rev-parse", "--git-path", "info/exclude"], capture_output=True, text=True,
+            env=dict(os.environ, GIT_CEILING_DIRECTORIES=os.path.expanduser("~")))
+    if r.returncode != 0 or not r.stdout.strip():
+        return False
+    path = r.stdout.strip() if os.path.isabs(r.stdout.strip()) else os.path.join(folder, r.stdout.strip())
+    line = "/.claude/rules/of-*.md"
+    try:
+        have = open(path).read().splitlines() if os.path.exists(path) else []
+    except OSError:
+        return False
+    if line not in have:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(("\n" if have and have[-1] else "") + "# of apply's rules files (hand-over 83b08e7b)\n" + line + "\n")
+    return True
+
+
+def write_rules(positions, org_paths, dry_run=False, log=print, run=None):
+    """Write each organization's rules file into each folder its positions run in, when it changed. Returns the paths
+    written (or that would be)."""
+    folders = rules_folders(positions, org_paths)
+    roots = {(p.get("_orgid") or p.get("_org")): p.get("_root") for p in positions}
+    written = []
+    for org, dirs in folders.items():
+        text = rules_file_text(org, os.path.join(roots.get(org) or "", "AGENTS.md"))
+        if not text:
+            continue
+        for d in dirs:
+            path = os.path.join(d, RULES_FILE.format(org=org))
+            if _read(path, 10 ** 7) == text:
+                continue
+            written.append(path)
+            if dry_run:
+                log(f"  would write {path}")
+                continue
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".tmp", "w") as fh:
+                fh.write(text)
+            os.replace(path + ".tmp", path)
+            _exclude(d, run)
+            log(f"  wrote {path} ({len(text):,} characters of {org}'s binding rules)")
+    return written
+
+
+def rules_loaded_from(cwd, org, agents_md):
+    """The rules file Claude Code loads for a session in CWD, when it holds ORG's rules as of_apply would write them now;
+    else None (the start context then carries the rules itself)."""
+    text = rules_file_text(org, agents_md)
+    if not text or not cwd:
+        return None
+    path = os.path.join(cwd, RULES_FILE.format(org=org))
+    return path if _read(path, 10 ** 7) == text else None
+
+
 def rules(agents_md, limit=RULES_MAX):
     """The binding sections of an AGENTS.md (by heading), concatenated and cut to a limit."""
     text = _read(agents_md, 10 ** 6)
@@ -194,7 +288,7 @@ def fit(head, sections, cap=CAP, note=None):
 
 
 def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None, info=None, cap=CAP,
-          unwritten=False):
+          unwritten=False, cwd=None):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
     newest runs that are proxies whose condition did not hold (of_loop.blind_runs). The text is at most CAP characters
@@ -229,7 +323,8 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
     def section(parts):
         return "\n".join(parts).lstrip("\n") if parts else None
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
-    r = rules(os.path.join(root, "AGENTS.md"))
+    loaded = rules_loaded_from(cwd, org, os.path.join(root, "AGENTS.md"))
+    r = None if loaded else rules(os.path.join(root, "AGENTS.md"))
     # every active teammate: what does not fit is cut at a line and named in the note, never dropped silently
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]
             and x.get("status") in (None, "active")]
@@ -238,7 +333,9 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
         ("runs not observed", section(not_observed_runs(runs))),
         ("loops in testing", section(loop_clocks(clocks))),
         ("the brief", section(["## Brief", brief.strip()]) if brief else None),
-        ("the binding rules", section(["## Binding rules (AGENTS.md of the organization)", r]) if r else None),
+        ("the binding rules", section(["## Binding rules (AGENTS.md of the organization)", r]) if r else
+         (f"## Binding rules\nThe organization's binding rules reach you whole from {loaded}, which Claude Code loads "
+          "itself and reads again after a compaction." if loaded else None)),
         ("subagents", section(subagents_section(subagents))),
         ("your team", section(["## Your team (message them with `of send <name> \"…\"`; ask the founder only with "
                                "`of ask`)"] + [f"- `{x['name']}` ({x.get('role')}): {x.get('summary') or ''}"

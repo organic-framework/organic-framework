@@ -1657,7 +1657,7 @@ def _mandate_context(hook, index, sess):
             resolve = of._decided_resolver(positions=positions)
     info = {}
     ctx = of_context.build(name, positions, loops, resolve, runs,
-                           clocks, subagents, info=info)
+                           clocks, subagents, info=info, cwd=hook.get("cwd"))
     if not ctx:
         return
     if info.get("full"):  # cut to fit Claude Code's cap: the whole context where the first line says (hand-over b460c5ed)
@@ -1671,7 +1671,7 @@ def _mandate_context(hook, index, sess):
             except OSError:
                 pass
             ctx = of_context.build(name, positions, loops, resolve, runs, clocks, subagents, info=info,
-                                   unwritten=True)
+                                   unwritten=True, cwd=hook.get("cwd"))
             info["file"] = None
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
     write("context_injected", {"position": name, "source": hook.get("source"), "chars": len(ctx),
