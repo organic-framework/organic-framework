@@ -1262,6 +1262,8 @@ def balance_why(reason):
 def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, model=None, why=None, restarted=False):
     """model: (old, new) when the move changes the session's model; why: the reason, said to the session;
     restarted: a restart on the same account and model (move --restart)."""
+    if why and why.strip() and why.strip()[-1] not in ".!?":
+        why = why.strip() + "."  # a reason runs into the next sentence otherwise (PR 269 review)
     if restarted:
         lines = [f"# Restart: {name}, on {account}", "",
                  f"`of_capacity` restarted this session (`{sid}`) at {ts} on the same account, `{short(dst)}` "
@@ -2313,8 +2315,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
                                                   + (" --restart" if restarted else ""),
                                       "workplace": ws, "previous_workplace": prev,
                                       "model": model, "effort": effort, "files": [r for _, r in files],
-                                      **({"previous_model": ctx_model, "reason": why} if switch else {}),
-                                      **({"reason": why} if restarted and why else {}),
+                                      **({"previous_model": ctx_model} if switch else {}),
+                                      **({"reason": why} if why else {}),  # any move's reason (PR 269 review)
                                       "memory": mem, "registry_diff": diff_path,
                                       "trust": {"state": trust[0], "path": trust[1],
                                                 **({"from": src} if trust[0] == "carried" else {})},
