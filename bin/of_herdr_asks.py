@@ -71,53 +71,58 @@ def reconcile(positions, agents, asks, bind):
     return done_set, done_clear
 
 
+# The founder, 2026-11-17 ~17:15Z (via of_conductor, msg 01a1ea7d-76e1), translated: "Oh, now I see. Please remove the
+# questions in the panel at the top left, and also in the tab titles in herdr." Since then herdr shows an open question
+# only on its asker: the red line with the card's id in the Agents sidebar (the `ask` token) and the asker's frame. The
+# per-workspace count in the Spaces sidebar (the workspace token `asks`) and the tabs' `❓N` are no longer shown, and
+# whatever an earlier build left of them is cleared.
+
+
 def refresh_ask_tokens(positions, agents, asks, bind, workspaces=None, org_workspace=None):
-    """The one place the herdr ask display is written from: each pane's `ask` token and each
-    workspace's `asks` count, from the same projection the popup, `of asks`, `of who` and Studio
-    use (open asks to the owner). Called on every ask change (ask, answer, withdraw, reconcile,
-    status) and forced by every pulse, so the counts never drift. Returns {workspace: n}."""
+    """The one place the herdr ask display is written from: each pane's `ask` token and its frame, from the same
+    projection the popup, `of asks`, `of who` and Studio use (open asks to the owner). Called on every ask change (ask,
+    answer, withdraw, reconcile, status) and forced by every pulse. Clears a workspace `asks` count an earlier build
+    set (once: only where one is set). Returns {workspace: n open asks}, still computed for the callers."""
     import json as _j
     import of_asks_tui
     reconcile(positions, agents, asks, bind)
-    try:  # where the asks are: the asker's frame and its tab carry a marker
+    try:  # where the asks are: the asker's frame carries a marker; tabs lose an earlier build's
         apply_marks(positions, agents, asks, bind)
     except Exception:
         pass
     if workspaces is None:
         r = subprocess.run(["herdr", "workspace", "list"], capture_output=True, text=True, timeout=10)
         workspaces = _j.loads(r.stdout)["result"]["workspaces"] if r.returncode == 0 else []
+    for w in workspaces:
+        if (w.get("tokens") or {}).get("asks"):
+            _herdr("workspace", "report-metadata", w["workspace_id"], "--source", "of:asks", "--clear-token", "asks")
     org_ws = org_workspace or {p.get("_org"): p.get("_home_ws") or p.get("_workspace") for p in positions}
-    counts = of_asks_tui.workspace_counts(positions, agents, asks, bind, workspaces, org_ws)
-    of_asks_tui.report_workspaces(counts)
-    return counts
+    return of_asks_tui.workspace_counts(positions, agents, asks, bind, workspaces, org_ws)
 
 
 MARK_RX = __import__("re").compile(r"\s*·\s*❓ asks you|\s*❓\d+$")
 
 
 def marks(positions, agents, asks, bind, tabs, pane_labels):
-    """The herdr commands that show where the asks are: the asker's pane frame
-    `■ name · ❓ asks you ■`, and its tab `<label> ❓N` (N open asks in that tab). Only labels that
-    differ are rewritten; markers go away when the asks close. Pure."""
+    """The herdr commands that show where the asks are: the asker's pane frame `■ name · ❓ asks you ■`. A tab
+    carries no count any more (the founder, 2026-11-17, above): a tab label with an earlier build's `❓N` gets its
+    plain label back. Only labels that differ are rewritten; markers go away when the asks close. Pure."""
     import of_asks
     open_by = {}
     for a in of_asks.for_owner(asks):
         if a["state"] == "open" and a.get("position") and not counted_out(a):
             open_by[a["position"]] = open_by.get(a["position"], 0) + 1
-    cmds, per_tab = [], {}
+    cmds = []
     for p, a in bind(positions, agents)[0]:
         n = open_by.get(p["name"], 0)
         want = f"■ {p['name']} · ❓ asks you ■" if n else f"■ {p['name']} ■"
         have = pane_labels.get(a["pane_id"]) or ""
         if have.startswith("■") and have != want:  # only frames of apply has labelled
             cmds.append(["pane", "rename", a["pane_id"], want])
-        per_tab[a.get("tab_id")] = per_tab.get(a.get("tab_id"), 0) + n
     for t in tabs:
-        base = MARK_RX.sub("", (t.get("label") or "")).strip()
-        if not base:
+        want = MARK_RX.sub("", (t.get("label") or "")).strip()
+        if not want:
             continue
-        n = per_tab.get(t["tab_id"], 0)
-        want = f"{base} ❓{n}" if n else base
         if (t.get("label") or "") != want:
             cmds.append(["tab", "rename", t["tab_id"], want])
     return cmds

@@ -508,19 +508,19 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
 
 def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, configure=None):
     """Link OF's herdr plugin (of_herdr's, bin/of_herdr_plugin.py), which names each agent by its position when herdr
-    sees it and after every herdr restart, and give herdr's config the key for the questions screen and the
-    per-workspace question counter (configure, which a plugin cannot do). Both change the person's herdr, so they are
-    said first and asked once, like the hooks; the plugin is undone with `herdr plugin unlink organic-framework`, the
-    config from the backup configure keeps. Returns True when linked; never fails the init."""
+    sees it and after every herdr restart, and give herdr's config the key for the questions screen (configure, which a
+    plugin cannot do; no per-workspace counter since the founder had it removed, 2026-11-17). Both change the
+    person's herdr, so they are said first and asked once, like the hooks; the plugin is undone with `herdr plugin
+    unlink organic-framework`, the config from the backup configure keeps. Returns True when linked; never fails
+    the init."""
     if not which("herdr"):
         out("  herdr: not installed here, nothing to link")
         return False
     out("  herdr: OF's plugin names each agent by its position when herdr sees it and after every herdr restart. "
         "Linking adds it to your herdr; herdr plugin unlink organic-framework removes it. herdr's config also gets "
-        "prefix+a for the questions screen and a red count of open questions per workspace in the sidebar, after a "
-        "backup; a key or sidebar rows of your own are kept.")
+        "prefix+a for the questions screen, after a backup; a key of your own is kept.")
     try:
-        if not _ask("Link OF's plugin into herdr and add the questions key and counter?", yes):
+        if not _ask("Link OF's plugin into herdr and add the questions key?", yes):
             out("  not linked: of apply names the agents when you run it; "
                 f"{sys.executable} {os.path.join(HERE, 'of_herdr_plugin.py')} install links it later")
             return False

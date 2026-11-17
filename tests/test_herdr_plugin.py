@@ -151,7 +151,7 @@ class HookTest(unittest.TestCase):
                 self.returncode, self.stdout, self.stderr = rc, out, ""
         return lambda argv, **k: R("config: ok" if ok or argv[1:3] != ["config", "check"] else "bad key", 0 if ok else 1)
 
-    def test_configure_adds_the_key_and_the_counter_once(self):
+    def test_configure_adds_the_key_once_and_no_counter(self):
         import tomllib
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "config.toml")
@@ -164,7 +164,7 @@ class HookTest(unittest.TestCase):
             key = cfg["keys"]["command"][0]
             self.assertEqual((key["key"], key["type"], key["width"]), ("prefix+a", "popup", "90%"))
             self.assertIn("/py/python3 /of/bin/of asks --watch", key["command"])
-            self.assertIn("$asks", str(cfg["ui"]["sidebar"]["spaces"]["rows"]))
+            self.assertNotIn("sidebar", cfg["ui"])  # no Spaces counter (the founder, 2026-11-17 ~17:15Z)
             self.assertEqual(cfg["ui"]["status_indicators"], "symbols")  # the person's own settings stay
             self.assertEqual(len(os.listdir(os.path.join(d, "b"))), 1)  # backed up first
             before = open(path).read()
@@ -205,7 +205,6 @@ class HookTest(unittest.TestCase):
             self.assertTrue(ok)
             self.assertEqual(open(path).read(), own)
             self.assertTrue(any("bound to something else" in n for n in notes))
-            self.assertTrue(any("rows of its own" in n for n in notes))
 
     def test_configure_puts_the_file_back_when_herdr_refuses_it(self):
         with tempfile.TemporaryDirectory() as d:

@@ -217,12 +217,14 @@ QUESTIONS_KEY = "prefix+a"
 
 
 def configure(of_home=None, python=None, path=None, run=None, backups=None, now=None):
-    """Give a person's herdr OF's two config pieces, for `of init` beside install(): the key that opens the owner's
-    questions screen (prefix+a, a 90% x 85% popup running `of asks --watch`) and the red per-workspace question counter
-    in the Spaces sidebar (the `$asks` token, set by bin/of_herdr_asks.py). A plugin cannot set either: herdr takes keys
-    and sidebar rows only from config.toml. Idempotent; it never replaces a binding of prefix+a or sidebar rows the
-    person already has, and says so. It backs the file up first, runs `herdr config check`, puts the backup back if the
-    check fails, and reloads a running server. Returns (True, [notes]) or (False, reason)."""
+    """Give a person's herdr OF's config piece, for `of init` beside install(): the key that opens the owner's questions
+    screen (prefix+a, a 90% x 85% popup running `of asks --watch`). A plugin cannot set it: herdr takes keys only from
+    config.toml. Until 2026-11-17 it also added a red per-workspace question counter to the Spaces sidebar; the founder
+    had it removed ("Please remove the questions in the panel at the top left", ~17:15Z via of_conductor, msg
+    01a1ea7d-76e1), and bin/of_herdr_asks.py no longer sets its token, so it is not added. Idempotent; it never
+    replaces a binding of prefix+a the person already has, and says so. It backs the file up first, runs `herdr config
+    check`, puts the backup back if the check fails, and reloads a running server. Returns (True, [notes]) or
+    (False, reason)."""
     import shutil
     import tomllib
     run = run or subprocess.run
@@ -254,16 +256,6 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
         notes.append(f"{QUESTIONS_KEY} already opens the questions screen")
     else:
         notes.append(f"{QUESTIONS_KEY} is bound to something else; left alone (bind the questions screen by hand)")
-    spaces = ((cfg.get("ui") or {}).get("sidebar") or {}).get("spaces")
-    if spaces is None:
-        add.append("\n# Organic Framework: the number of open questions per workspace, red, hidden when none.\n"
-                   "[ui.sidebar.spaces]\nrows = [[\"state_icon\", \"workspace\", { token = \"$asks\", fg = \"#f55\", "
-                   "bold = true, rules = [{ equals = \"\", hide = true }] }], [\"branch\", \"git_status\"]]\n")
-        notes.append("the sidebar shows the open questions per workspace")
-    elif "$asks" in json.dumps(spaces):
-        notes.append("the sidebar already shows the question counter")
-    else:
-        notes.append("the sidebar has rows of its own; left alone (add the $asks token by hand)")
     if not add:
         return True, notes
     backup = None

@@ -574,18 +574,25 @@ class AskTokensTest(unittest.TestCase):
         try:
             positions = [{"name": "a", "_org": "o", "_workspace": "org-ws", "_home_ws": "org-ws"}]
             agents = [{"pane_id": "pa", "name": "a", "workspace_id": "w1", "tokens": {}}]
-            ws = [{"workspace_id": "w1", "label": "org-ws"}, {"workspace_id": "w2", "label": "desk"}]
+            ws = [{"workspace_id": "w1", "label": "org-ws", "tokens": {"asks": "1 ask"}},
+                  {"workspace_id": "w2", "label": "desk"}]
             ask = ev(1, "of.agent_question", "a", 0, "S", detected_by="declared", questions=[{"question": "q?"}])
             asks = of_asks.project([ask])
-            of_herdr_asks.refresh_ask_tokens(positions, agents, asks, fake_bind, ws)
-            self.assertEqual(calls[-1], ("ws", {"w1": 1, "w2": 0}))
+            counts = of_herdr_asks.refresh_ask_tokens(positions, agents, asks, fake_bind, ws)
+            self.assertEqual(counts, {"w1": 1, "w2": 0})  # still counted for the callers
             self.assertIn("ask=e01 · q?", calls[0])  # the card's id first (of_asks_tui.card_ref; no ref: the hex tail)
+            # the Spaces sidebar shows no count (the founder, 2026-11-17 ~17:15Z): an earlier build's is cleared, once
+            self.assertIn(("pane", "workspace", "report-metadata", "w1", "--source", "of:asks", "--clear-token", "asks"),
+                          calls)
+            self.assertFalse([c for c in calls if c[0] == "ws" or "w2" in c])
+            ws[0]["tokens"] = {}
             agents[0]["tokens"] = {"ask": "e01 · q?"}
             calls.clear()
             done = of_asks.project([ask, ev(2, "of.agent_question_answered", None, 1, "x", ask_ids=["e01"], by="owner")])
-            of_herdr_asks.refresh_ask_tokens(positions, agents, done, fake_bind, ws)
-            self.assertEqual(calls[-1], ("ws", {"w1": 0, "w2": 0}))  # gone at once, not at the next change
-            self.assertIn("--clear-token", calls[0])
+            counts = of_herdr_asks.refresh_ask_tokens(positions, agents, done, fake_bind, ws)
+            self.assertEqual(counts, {"w1": 0, "w2": 0})
+            self.assertIn("--clear-token", calls[0])  # the pane's question: gone at once, not at the next change
+            self.assertFalse([c for c in calls if c[0] == "ws" or "workspace" in c])
         finally:
             of_herdr_asks._herdr, of_asks_tui.report_workspaces = saved
 
@@ -678,11 +685,12 @@ class AskMarksTest(unittest.TestCase):
         cmds = of_herdr_asks.marks(positions, agents, asks, fake_bind, tabs, labels)
         self.assertIn(["pane", "rename", "p1", "■ k8s_keeper · ❓ asks you ■"], cmds)
         self.assertIn(["pane", "rename", "p2", "■ obs_keeper ■"], cmds)       # its ask closed: marker gone
-        self.assertIn(["tab", "rename", "t1", "k8s ❓1"], cmds)
+        # a tab carries no count (the founder, 2026-11-17 ~17:15Z): t1 keeps its label, t2 loses an earlier build's
+        self.assertFalse([c for c in cmds if c[:3] == ["tab", "rename", "t1"]])
         self.assertIn(["tab", "rename", "t2", "obs"], cmds)
         done = {"p1": "■ k8s_keeper · ❓ asks you ■", "p2": "■ obs_keeper ■"}
         self.assertEqual(of_herdr_asks.marks(positions, agents, asks, fake_bind,
-                                             [{"tab_id": "t1", "label": "k8s ❓1"}, {"tab_id": "t2", "label": "obs"}], done), [])
+                                             [{"tab_id": "t1", "label": "k8s"}, {"tab_id": "t2", "label": "obs"}], done), [])
 
 
 class AnsweredInPaneTest(unittest.TestCase):
