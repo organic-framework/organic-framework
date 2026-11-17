@@ -1608,8 +1608,14 @@ def _mandate_context(hook, index, sess):
             os.makedirs(os.path.dirname(info["file"]), mode=0o700, exist_ok=True)
             with open(os.open(info["file"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
                 fh.write(info["full"])
-        except OSError:
-            pass
+        except OSError:  # never a pointer to a missing or an earlier session's file (of_review on PR 254)
+            try:
+                os.unlink(info["file"])
+            except OSError:
+                pass
+            ctx = of_context.build(name, positions, loops, resolve, runs, clocks, subagents, info=info,
+                                   unwritten=True)
+            info["file"] = None
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
     write("context_injected", {"position": name, "source": hook.get("source"), "chars": len(ctx),
                                "whole": info.get("whole"),
