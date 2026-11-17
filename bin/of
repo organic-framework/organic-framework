@@ -3515,7 +3515,7 @@ def _fyi_idle_note(to, holders):
     if not mine or any((h.get("kind") or "agent") != "agent" or h.get("state") not in ("idle", "done") for h in mine):
         return None
     return (f"note: {to} is idle now and an --fyi message is never typed in, so it reads this only at its next "
-            f"turn, which nothing starts. If it must act on it or answer, send it without --fyi: that is typed in "
+            f"turn, which this message does not start. If it must act on it or answer, send it without --fyi: that is typed in "
             f"at once.")
 
 
@@ -3597,16 +3597,22 @@ def cmd_send(args):
             held = {h.get("position") for h in holders}
         except Exception:  # noqa: BLE001
             holders, held = [], None
+        warned = False
         if held is not None and pos not in held:
             print(f"warning: no running relay shows {to} as held on any machine, so nothing types this message in "
                   f"yet; it waits on the server until one does, and {pos} can read it now with `of inbox --mine`")
+            warned = True
         elif any(f"{h['org']}:{h['position']}" == to for h in body):
             w = _relay_warning()
             if w:
                 print(f"warning: {to} is held here and {w}")
-        note = _fyi_idle_note(to, holders) if priority == "fyi" else None
+                warned = True
+        # Not beside a warning that nothing types anything in, and not for a job (OF_AUTOMATION=1), which sends --fyi on
+        # purpose and whose log keeps stdout's `queued:` line; on stderr (of_review on organic-framework PR 250).
+        note = _fyi_idle_note(to, holders) if priority == "fyi" and not warned \
+            and os.environ.get("OF_AUTOMATION") != "1" else None
         if note:
-            print(note)
+            print(note, file=sys.stderr)
     return 0
 
 

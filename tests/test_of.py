@@ -1380,7 +1380,7 @@ class SendPresenceTest(unittest.TestCase):
     POS = [{"name": "sec_keeper", "_org": "acme", "holder": {"session": "S-SEC"}},
            {"name": "k8s_keeper", "_org": "acme", "holder": {"session": "S-K8S"}}]
 
-    def send(self, agents, unread, relay):
+    def send(self, agents, unread, relay, fyi=False, holders=None, automation=None, streams=None):
         import contextlib
         import io
         import types
@@ -1401,7 +1401,8 @@ class SendPresenceTest(unittest.TestCase):
                 return {"state": "queued", "msg_id": "m-1", "authority": "none", "authority_reason": "no grant"}
 
             def presence(self, org):
-                return {"holders": [{"position": "k8s_keeper", "kind": "agent", "state": "working"}]}
+                return {"holders": holders if holders is not None else
+                        [{"position": "k8s_keeper", "kind": "agent", "state": "working"}]}
 
         saved = (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
                  of_ship.org_servers, of_events.emit)
@@ -1412,15 +1413,22 @@ class SendPresenceTest(unittest.TestCase):
         of_ship.config = lambda: {"server_url": "http://192.0.2.10:18200"}
         of_ship.org_servers = lambda cfg: {}
         of_events.emit = lambda *a, **k: None
-        env = {k: os.environ.pop(k) for k in ("CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID") if k in os.environ}
+        env = {k: os.environ.pop(k) for k in ("CLAUDE_CODE_SESSION_ID", "HERDR_PANE_ID", "OF_AUTOMATION")
+               if k in os.environ}
+        if automation:
+            os.environ["OF_AUTOMATION"] = automation
+        out, err = io.StringIO(), io.StringIO()
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 of.cmd_send(types.SimpleNamespace(to="acme:k8s_keeper", sender="acme:sec_keeper", text="hi",
-                                                  reply_to=None, grant=None, fyi=False, urgent=False))
+                                                  reply_to=None, grant=None, fyi=fyi, urgent=False))
         finally:
             (of._load_quiet, of.live_agents_read, of.relay_alive, of_client.Client, of_ship.config,
              of_ship.org_servers, of_events.emit) = saved
+            os.environ.pop("OF_AUTOMATION", None)
             os.environ.update(env)
+        if streams is not None:
+            streams.extend([out.getvalue(), err.getvalue()])
         return puts
 
     def test_a_send_that_cannot_read_herdr_leaves_the_relays_presence(self):
@@ -1435,6 +1443,25 @@ class SendPresenceTest(unittest.TestCase):
         puts = self.send(live, None, True)                                    # herdr read: the whole set, as before
         self.assertEqual(len(puts), 1)
         self.assertEqual(sorted(h["position"] for h in puts[0]), ["k8s_keeper", "sec_keeper"])
+
+    def test_the_fyi_note_goes_to_stderr_and_never_beside_a_no_relay_warning(self):
+        """of_review on organic-framework PR 250: a job's log keeps stdout's `queued:` line; the note never contradicts
+        the warning that no relay runs here."""
+        live = [{"name": "k8s_keeper", "pane_id": "p2", "agent_session": {"value": "S-K8S"}, "agent_status": "idle"}]
+        idle = [{"position": "k8s_keeper", "kind": "agent", "state": "idle"}]
+        s = []
+        self.send(live, None, True, fyi=True, holders=idle, streams=s)
+        self.assertTrue(s[0].startswith("queued: m-1"), s[0])
+        self.assertNotIn("is idle now", s[0])
+        self.assertIn("acme:k8s_keeper is idle now", s[1])
+        self.assertIn("which this message does not start", s[1])
+        s = []
+        self.send(live, None, True, fyi=True, holders=idle, automation="1", streams=s)   # a job sends --fyi on purpose
+        self.assertNotIn("is idle now", s[0] + s[1])
+        s = []
+        self.send(live, None, False, fyi=True, holders=idle, streams=s)                  # held here, no relay runs
+        self.assertIn("is held here and no relay runs", s[0])
+        self.assertNotIn("is idle now", s[0] + s[1])
 
 
 class InboxMineFromTest(unittest.TestCase):
