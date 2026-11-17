@@ -419,6 +419,27 @@ class RelayTest(unittest.TestCase):
             self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "acme_x"}]})
         self.assertEqual(cm.exception.status, 403)
 
+    def test_a_merge_put_adds_and_never_drops_or_blanks_a_holder(self):
+        """A user organization's structure keeper, msg 01a1e766-e334, and of_review on organic-framework PR 251: `of send`
+        from a job that reads no agents PUT the sender alone, which replaced the machine's whole set. A merge adds or
+        updates only its rows; a row with no session never replaces one the machine presents now."""
+        a = self.machine("a", ["ofb"])
+        held = lambda: sorted((x["position"], x["session_id"]) for x in self.call(a, "GET", "/v1/presence?org=ofb")["holders"])
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"},
+                                                         {"org": "ofb", "position": "ofb_dev", "session_id": "S-dev"}]})
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead"}], "merge": True})
+        self.assertEqual(held(), [("ofb_dev", "S-dev"), ("ofb_lead", "S-lead")])     # nobody dropped, no session blanked
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_ops"}], "merge": True})
+        self.assertEqual(held(), [("ofb_dev", "S-dev"), ("ofb_lead", "S-lead"), ("ofb_ops", "")])   # a job's position
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_dev", "session_id": "S-dev2"}],
+                                             "merge": True})
+        self.assertIn(("ofb_dev", "S-dev2"), held())                                   # a row with a session updates
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
+        self.assertEqual(held(), [("ofb_lead", "S-lead")])                             # the relay's PUT still replaces
+        with self.assertRaises(of_client.ServerError) as cm:                           # the same joined checks
+            self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "zeta_x"}], "merge": True})
+        self.assertEqual(cm.exception.status, 403)
+
     def test_cross_org_needs_a_grant_and_the_sender_must_hold_the_position(self):
         a, b = self.machine("a", ["ofb", "zeta"]), self.machine("b", ["zeta"])
         msg = {"msg_id": "x1", "to": "zeta:acme_org", "from": "ofb:ofb_lead", "text": "hello"}
