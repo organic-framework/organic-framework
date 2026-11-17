@@ -158,8 +158,8 @@ WORKS = {"acme-nonces": {"title": "n", "kind": "rfc", "doc": "storefront:docs/rf
                        "match": {"prs": [20], "branches": ["claude/wallet-*"], "doc": "storefront:docs/rfc/nonces.md"}},
          "acme-core": {"title": "c", "kind": "rfc", "systems": ["contracts"],
                      "match": {"paths": ["storefront:contracts/**", "arb-contracts/**"]}},
-         "acme-cbx": {"title": "x", "kind": "project", "systems": ["runners"],
-                    "match": {"branches": ["claude/*cbx*"], "paths": ["devops-k8s:k8s/runners/**"]}},
+         "acme-runners": {"title": "x", "kind": "project", "systems": ["runners"],
+                    "match": {"branches": ["claude/*runner*"], "paths": ["devops-k8s:k8s/runners/**"]}},
          "acme-old": {"title": "o", "kind": "rfc", "state": "parked"}}
 
 
@@ -174,8 +174,8 @@ class WorksMatchTest(unittest.TestCase):
         self.assertEqual(m("M/storefront", 5, "b", ["docs/rfc/nonces.md"]), ["acme-nonces"])
         self.assertEqual(m("M/storefront", 5, "b", ["contracts/src/A.sol"]), ["acme-core"])
         self.assertEqual(m("M/arb-contracts", 5, "b", ["src/A.sol"], ()), ["acme-core"])   # a plain glob: '<repo dir>/<path>'
-        self.assertEqual(m("O/devops-k8s", 5, "b", ["k8s/runners/a.yaml"], ()), ["acme-cbx"])
-        self.assertEqual(m("O/devops-k8s", 5, "claude/cbx-guard", [], ("runners",)), ["acme-cbx"])
+        self.assertEqual(m("O/devops-k8s", 5, "b", ["k8s/runners/a.yaml"], ()), ["acme-runners"])
+        self.assertEqual(m("O/devops-k8s", 5, "claude/runner-guard", [], ("runners",)), ["acme-runners"])
         self.assertEqual(m("M/storefront", 5, "main", ["README.md"]), [])
         w = {"acme-core-v2": {"systems": ["contracts"], "match": {"branches": ["devops-k8s:claude/*core-v2*", "claude/*hop*"]}}}
         mw = lambda repo, br, rs=(): of_github.match_works(w, repo, 9, br, [], rs)

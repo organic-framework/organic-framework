@@ -557,7 +557,7 @@ class LocatedRunTest(unittest.TestCase):
             self.assertNotIn("proxy", p)
             h2 = run("hypothesis", "w-speed", "second", "--cost", "oracle, 0", "--voi", "low").stdout.split()[-1]
             r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", h2, "--metric", "edge_bps", "--value", "4",
-                    "--accepted", "yes", "--source", "cbx", "--run", "job-7")    # a runner's sync: recorded unlocated
+                    "--accepted", "yes", "--source", "runner", "--run", "job-7")    # a runner's sync: recorded unlocated
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("not recorded: --accepted; no reading point is named for 'edge_bps'", r.stdout)
             p = last()
@@ -616,16 +616,16 @@ class LocatedRunTest(unittest.TestCase):
                        ("--on", "position", "--ref", "lab_doer", "--until", "+1d", "--hypothesis", hid)):
                 self.assertEqual(run("wait", "w-speed", *ok).returncode, 0, ok)
             r = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+5h", "--hypothesis", hid,
-                    "--note", "queued behind the nightly replay", "--source", "cbx")
+                    "--note", "queued behind the nightly replay", "--source", "runner")
             self.assertEqual(r.returncode, 0, r.stderr)
-            again = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+6h", "--source", "cbx")
+            again = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+6h", "--source", "runner")
             self.assertIn("already waits on runner job-7; nothing written", again.stdout)   # a runner's re-sync
             db = sqlite3.connect(os.path.join(root, "state", "of.db"))
             p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait' ORDER BY rowid DESC "
                                       "LIMIT 1").fetchone()[0])
             expect = p.pop("expect_at")
             self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "hypothesis": hid,
-                                 "note": "queued behind the nightly replay", "by": "lab_doer", "source": "cbx"})
+                                 "note": "queued behind the nightly replay", "by": "lab_doer", "source": "runner"})
             self.assertAlmostEqual(of_loop._epoch(expect) - time.time(), 5 * 3600, delta=120)
             self.assertEqual(of_loop.clocks(db, [("w-speed", "doer", LOOP)]), {})   # nothing in testing yet
             r = run("run", "w-speed", "--rung", "oracle", "--hypothesis", hid, "--metric", "win_rate", "--value", "0.3",
@@ -1082,7 +1082,7 @@ class LoopCliTest(unittest.TestCase):
                                  "--from", "lab_doer").returncode, 0)
             self.assertNotEqual(run("run", "w-search", "--rung", "day_pass", "--value", "lots", "--from", "lab_doer").returncode, 0)
             for _ in range(2):  # a runner's job, synced twice, is recorded once
-                r = run("run", "w-search", "--rung", "offline", "--run", "cbx-job-1", "--source", "cbx", "--from", "lab_doer")
+                r = run("run", "w-search", "--rung", "offline", "--run", "runner-job-1", "--source", "runner", "--from", "lab_doer")
                 self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("already recorded", r.stdout)
             self.assertNotEqual(run("decision", "w-search", "change_objective", "--metric", "latency", "--from", "lab_doer").returncode, 0)
@@ -1095,9 +1095,9 @@ class LoopCliTest(unittest.TestCase):
             self.assertEqual((runp["value"], runp["accepted"], runp["metric"], runp["started_at"]),
                              (325.8, True, "day pass, STOREFRONT per day", "2026-11-07T08:00:00Z"))
             self.assertTrue(runp["ended_at"].endswith("Z") and runp["run"])
-            cbx = [json.loads(r[0]) for r in db.execute("SELECT payload FROM event WHERE name = 'of.loop_run' "
-                                                         "AND payload LIKE '%cbx-job-1%'")]
-            self.assertEqual([(c["run"], c["source"]) for c in cbx], [("cbx-job-1", "cbx")])
+            synced = [json.loads(r[0]) for r in db.execute("SELECT payload FROM event WHERE name = 'of.loop_run' "
+                                                         "AND payload LIKE '%runner-job-1%'")]
+            self.assertEqual([(c["run"], c["source"]) for c in synced], [("runner-job-1", "runner")])
             decp = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_decision' "
                                          "AND payload LIKE '%change_objective%'").fetchone()[0])
             self.assertEqual((decp["metric"], decp["to_money"], decp["money"]), ("p50 ms", "STOREFRONT per ms", "STOREFRONT per ms"))
