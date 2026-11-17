@@ -12,12 +12,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_protected as P  # noqa: E402
 
-SPEC = {"branch": "main", "human": ["scripts/vault.sh"], "human_lists": ["scripts/run-allow.tsv"], "checks": ["unit"]}
+SPEC = {"repo": "acme/vault", "branch": "main", "human": ["scripts/vault.sh"], "human_lists": ["scripts/run-allow.tsv"],
+        "checks": ["unit"]}
 
 
-def green(prs=None, runs=None, statuses=None, required=None):
-    """A GitHub stand-in: PRS {sha: number} merged into main; every check run green unless RUNS says otherwise."""
+def green(prs=None, runs=None, statuses=None, required=None, off_branch=()):
+    """A GitHub stand-in: PRS {sha: number} merged into main and on it (but OFF_BRANCH); every check run green unless
+    RUNS says otherwise."""
     def api(path):
+        if "/compare/" in path:
+            sha = path.split("/compare/")[1].split("...")[0]
+            return 200, {"status": "diverged" if sha in off_branch else "ahead"}
         sha = path.split("/commits/")[1].split("/")[0] if "/commits/" in path else None
         if path.endswith("/pulls"):
             n = (prs or {}).get(sha)
@@ -74,7 +79,7 @@ class ProtectedFfTest(unittest.TestCase):
         return self.g("rev-parse", "HEAD", cwd=self.wt)
 
     def ff(self, to, api=None, spec=None):
-        return P.ff(self.wt, spec or SPEC, to, api=api or green({to: 7}), fetch=False)
+        return P.ff(self.wt, spec or SPEC, to, api=api or green({to: 7}))
 
     def test_a_change_that_cannot_reach_the_secret_moves(self):
         self.write("scripts/other.sh", "#!/bin/sh\necho other v2\n")
@@ -127,6 +132,60 @@ class ProtectedFfTest(unittest.TestCase):
             self.ff(b, spec=dict(SPEC, human_lists=["scripts/run-allow.tsv", "scripts/missing.tsv"]))
         self.assertIn("cannot be read", str(cm.exception))
 
+    def test_paths_that_differ_only_in_case_and_folders_without_a_slash(self):
+        """of_secrets-review on organic-framework PR 306: on the Mac's case-insensitive volume a target adding
+        SCRIPTS/vault.sh beside the human scripts/vault.sh overwrote it on disk, and a human folder named without a
+        trailing / covered nothing under it."""
+        p = subprocess.run(["git", "-C", self.work, "hash-object", "-w", "--stdin"], input="echo EVIL\n", text=True,
+                           capture_output=True, check=True).stdout.strip()
+        self.g("update-index", "--add", "--cacheinfo", f"100644,{p},SCRIPTS/vault.sh")
+        self.g("commit", "-qm", "a case twin")
+        twin = self.g("rev-parse", "HEAD")
+        for spec in (SPEC, dict(SPEC, human=["scripts"])):
+            with self.assertRaises(P.Refused) as cm:
+                self.ff(twin, spec=spec)
+            self.assertIn("differ only in case", str(cm.exception))
+            self.assertEqual(self.head(), self.a)
+        self.assertEqual(P._hits([("SCRIPTS/Vault.sh", "100644", "100644"), ("scripts/lib/run.sh", "100644", "100644"),
+                                  ("x/.GitAttributes", "000000", "100644")], {"scripts/vault.sh", "scripts/lib"}),
+                         ["SCRIPTS/Vault.sh", "scripts/lib/run.sh", "x/.GitAttributes"])
+
+    def test_the_checkout_runs_no_filter_the_configuration_names(self):
+        """of_secrets-review on organic-framework PR 306: a smudge driver set in the main repository's config and named
+        in its info/attributes ran during the checkout."""
+        marker = os.path.join(self.d, "ran")
+        spy = os.path.join(self.d, "spy.sh")
+        with open(spy, "w") as fh:
+            fh.write(f"#!/bin/sh\necho smudge >> {marker}\ncat\n")
+        os.chmod(spy, 0o755)
+        self.g("config", "filter.x.smudge", spy)
+        common = self.g("rev-parse", "--path-format=absolute", "--git-common-dir")
+        os.makedirs(os.path.join(common, "info"), exist_ok=True)
+        with open(os.path.join(common, "info", "attributes"), "w") as fh:
+            fh.write("scripts/other.sh filter=x\n")
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        self.ff(b)
+        self.assertEqual(self.head(), b)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_registry_names_the_repository_and_the_git_folder_is_this_users(self):
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other")
+        with self.assertRaises(P.Refused) as cm:                                    # origin is another repository
+            self.ff(b, spec=dict(SPEC, repo="acme/other"))
+        self.assertIn("not acme/other", str(cm.exception))
+        common = self.g("rev-parse", "--path-format=absolute", "--git-common-dir")
+        os.chmod(os.path.join(common, "config"), 0o666)
+        try:
+            with self.assertRaises(P.Refused) as cm:                                # others may write its config
+                self.ff(b)
+            self.assertIn("others may write", str(cm.exception))
+        finally:
+            os.chmod(os.path.join(common, "config"), 0o644)
+        os.remove(os.path.join(self.wt, "scripts", "vault.sh"))                     # what a move back is checked for
+        self.assertEqual(P._differs(self.wt, self.a, ["scripts/vault.sh", "scripts/other.sh"]), ["scripts/vault.sh"])
+
     def test_a_list_that_drops_a_script_cannot_free_it(self):
         """The set is read at HEAD and at the target and united: a target whose list no longer names allowed.sh still
         counts its change (the list's own change counts too)."""
@@ -159,10 +218,10 @@ class ProtectedFfTest(unittest.TestCase):
 
     def test_the_target_must_be_published_and_a_fast_forward(self):
         self.write("scripts/other.sh", "#!/bin/sh\necho side\n")
-        side = self.commit("side", publish=False)                                   # not on origin/main
+        side = self.commit("side", publish=False)                                   # GitHub's main does not hold it
         with self.assertRaises(P.Refused) as cm:
-            self.ff(side)
-        self.assertIn("not on origin/main", str(cm.exception))
+            self.ff(side, api=green({side: 7}, off_branch=(side,)))
+        self.assertIn("does not hold", str(cm.exception))
         self.g("checkout", "-q", "--detach", self.a)
         self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
         b = self.commit("b")
@@ -185,7 +244,7 @@ class ProtectedFfTest(unittest.TestCase):
         os.makedirs(reg)
         with open(os.path.join(reg, "positions.yaml"), "w") as fh:
             fh.write(f"positions: []\nprotected_code:\n  - \"{self.d}/other\"\n  - path: \"{self.wt}\"\n    ff:\n"
-                     "      branch: main\n      human: [scripts/vault.sh]\n      human_lists: [scripts/run-allow.tsv]\n"
+                     "      repo: acme/vault\n      branch: main\n      human: [scripts/vault.sh]\n      human_lists: [scripts/run-allow.tsv]\n"
                      "      checks: [unit]\n")
         orgs = os.path.join(self.d, "orgs.yaml")
         with open(orgs, "w") as fh:
@@ -193,7 +252,7 @@ class ProtectedFfTest(unittest.TestCase):
         self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
         b = self.commit("b")
         said = []
-        res = P.run(self.wt, b, position="vault_keeper", orgs_file=orgs, api=green({b: 9}), fetch=False,
+        res = P.run(self.wt, b, position="vault_keeper", orgs_file=orgs, api=green({b: 9}),
                     emit=lambda name, data, **k: said.append((name, data, k)))
         self.assertEqual(res["pr"], 9)
         self.assertEqual([(n, d["to"], d["pr"], k["position"], k["org"]) for n, d, k in said],
@@ -201,10 +260,11 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual((said[0][1]["human_lists"], "scripts/allowed.sh" in said[0][1]["human"]),
                          (["scripts/run-allow.tsv"], True))                         # what the decision rested on
         with self.assertRaises(P.Refused):                                          # a string entry has no ff
-            P.run(os.path.join(self.d, "other"), b, orgs_file=orgs, api=green({b: 9}), fetch=False)
+            P.run(os.path.join(self.d, "other"), b, orgs_file=orgs, api=green({b: 9}))
 
     def test_the_registry_field_is_checked(self):
         self.assertEqual(P.ff_problems({"path": "~/x/y", "ff": SPEC}), [])
+        self.assertTrue(P.ff_problems({"path": "~/x/y", "ff": {k: v for k, v in SPEC.items() if k != "repo"}}))
         self.assertEqual(P.ff_problems("~/x/y"), [])
         for bad in ({"branch": "main"}, {"branch": "../x", "human": ["a/b"]}, {"branch": "main", "human": ["/abs"]},
                     {"branch": "main", "human": ["a/../b"]}, {"branch": "main", "human": ["a"], "extra": 1}, "yes",
