@@ -349,6 +349,33 @@ def _want(e):
     return f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}" if sh else None
 
 
+LOOPBACK_URL = re.compile(r"^http://127\.0\.0\.1:([0-9]{1,5})(/[A-Za-z0-9._~/-]*)?$")
+
+
+def _url_mac(token, org, tid, key, url):
+    """HMAC-SHA256 under the tool's own token over what a cache entry claims: only a holder of the token can make one."""
+    import hashlib
+    import hmac
+    msg = json.dumps([org, tid, key, url], separators=(",", ":")).encode()
+    return hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()
+
+
+def _cached_url(hit, org, tid, key, state_dir):
+    """The cached URL when it is a loopback URL in _want's shape and its HMAC checks under the tool's token; else None."""
+    import hmac
+    ent = (hit.get("urls") or {}).get(tid) if isinstance(hit, dict) and hit.get("key") == key else None
+    if not isinstance(ent, dict) or not isinstance(ent.get("url"), str) or not isinstance(ent.get("mac"), str):
+        return None
+    m = LOOPBACK_URL.match(ent["url"])
+    if not m or not 0 < int(m.group(1)) < 65536:
+        return None
+    try:
+        tok = shared_token(org, tid, state_dir=state_dir)
+    except ToolsError:
+        return None
+    return ent["url"] if hmac.compare_digest(ent["mac"], _url_mac(tok, org, tid, key, ent["url"])) else None
+
+
 def shared_url(org, tid, orgs_file=None, state_dir=None):
     """The shared server's URL from the organization's registry, through a cache kept beside the tokens.
 
@@ -357,7 +384,12 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
     user organization's large registry on a loaded machine took that long, three sessions got no header, and Claude
     Code fell back to OAuth (the DCR 404), with no retry. The cache holds only the URLs of one registry's shared
     tools, keyed by that file's path, size and mtime, and is rebuilt from the registry whenever the file changes, so
-    the registry stays the one source (2026-11-18, of_tools)."""
+    the registry stays the one source (2026-11-18, of_tools).
+
+    The cache is no trust root: an agent can write the file (of_server, PR 322 review: an edited entry sent the
+    token to an outside address). A cached URL is used only in _want's shape, http://127.0.0.1:<port>/<path>, and
+    only when its HMAC under the tool's own token checks over (org, tool, registry key, URL); anything else is read
+    from the registry again."""
     import of_credentials
     path = dict(of_credentials._registries(orgs_file)).get(org)
     if not path:
@@ -375,28 +407,36 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
     except (OSError, ValueError):
         doc = {}
     doc = doc if isinstance(doc, dict) else {}
-    hit = doc.get(org)
-    if not (isinstance(hit, dict) and hit.get("key") == key and isinstance(hit.get("urls"), dict)):
-        import yaml
-        try:
-            with open(path) as fh:
-                reg = yaml.safe_load(fh) or {}
-        except (OSError, yaml.YAMLError):
-            raise ToolsError(f"the registry of {org} cannot be read")
-        cat = reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
-        hit = {"key": key, "urls": {t: _want(e) for t, e in cat.items() if _want(e)}}
-        doc[org] = hit
-        try:
-            os.makedirs(d, mode=0o700, exist_ok=True)
-            tmp = f"{cache}.{os.getpid()}.tmp"
-            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-                json.dump(doc, fh)
-            os.replace(tmp, cache)
-        except OSError:
-            pass  # no cache this time; the next call parses again
-    url = hit["urls"].get(tid)
+    url = _cached_url(doc.get(org), org, tid, key, state_dir)
+    if url:
+        return url
+    import yaml
+    try:
+        with open(path) as fh:
+            reg = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        raise ToolsError(f"the registry of {org} cannot be read")
+    cat = reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
+    url = _want(cat.get(tid))
     if not url:
         raise ToolsError(f"{org}/{tid} is not a shared tool")
+    urls = {}
+    for t, e in cat.items():
+        u = _want(e)
+        try:
+            urls[t] = {"url": u, "mac": _url_mac(shared_token(org, t, state_dir=state_dir), org, t, key, u)} if u else None
+        except ToolsError:
+            pass  # a tool never started has no token, so no entry; its sessions cannot connect anyway
+    doc[org] = {"key": key, "urls": {t: v for t, v in urls.items() if v}}
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        tmp = f"{cache}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with open(fd, "w") as fh:
+            json.dump(doc, fh)
+        os.replace(tmp, cache)
+    except OSError:
+        pass  # no cache this time; the next call reads the registry again
     return url
 
 
