@@ -934,29 +934,29 @@ class CorrectionsProcessor(Processor):
 
 class TempoProcessor(Processor):
     """Work booked for later, judged for a basis (bin/of_tempo.py; hand-over 277de578). It reads only its own names (a
-    session's crons and background tasks, messages, asks), by its own cursor and within its time budget; once an item
-    of them came and QUIET_S passed, at most every GAP_S, it starts `of tempo judge` as a detached child (a small model
-    per position and run; the child holds a lock and skips what it judged). The pulse types a booking with no basis
-    into its position's pane."""
+    session's crons and background tasks, messages, asks), by its own cursor and within its time budget; once any of
+    them came, at most every GAP_S, it starts `of tempo judge` as a detached child (a small model per position and run;
+    the child holds a lock and skips what it judged). No quiet period: these names come at every turn end, so a busy
+    organization was never quiet for one (of_review on organic-framework PR 288); an item that comes during a run is
+    the next run's. The pulse types a booking with no basis into its position's pane."""
     name = "tempo"
     version = "1"
     from_now = True
     tick_s = 30
-    QUIET_S = 60
     GAP_S = 120
 
     def __init__(self):
         import of_tempo
         self.catch_up_names = tuple(of_tempo.NAMES)
-        self.last, self.pending, self.started = 0.0, False, 0.0
+        self.pending, self.started = False, 0.0
 
     def handle(self, conn, rows):
         if rows:
-            self.last, self.pending = time.time(), True
+            self.pending = True
         return False
 
     def tick(self, conn, now):
-        if self.pending and now - self.last >= self.QUIET_S and now - self.started >= self.GAP_S:
+        if self.pending and now - self.started >= self.GAP_S:
             self.pending, self.started = False, now
             import subprocess
             here = os.path.dirname(os.path.realpath(__file__))

@@ -12,7 +12,7 @@ Two sources, scored apart (as lab-fit-v0 does):
 A flag is the verdict `no_basis`. The scores are the flag's precision and recall on the labelled items; the real run
 also prints how many items of the window were flagged in all.
 
-    python3 lab/scenarios/lab-tempo-v0/run.py [synthetic|real|both]
+    python3 lab/scenarios/lab-tempo-v0/run.py [synthetic|real|both] [--out verdicts.json]
 """
 
 import json
@@ -67,7 +67,8 @@ def synthetic():
     report("synthetic", [(label[k], got.get(k)) for k in label], cost)
 
 
-def real():
+def real(out=None):
+    """OUT: a list to collect every verdict of the window into (`--out FILE` writes it, to label from)."""
     rc = real_cases()
     if not rc:
         print("real: no real_cases.json under lab-private/: skipped")
@@ -88,6 +89,8 @@ def real():
             n += 1
             flagged += bool(x and x["verdict"] == "no_basis")
             got[it["key"]] = x and x["verdict"]
+            if out is not None and x:
+                out.append({"key": it["key"], "ts": it["ts"], "source": it["source"], "text": it["text"][:600], **x})
             want = label.get(it["key"])
             if x and want and (x["verdict"] == "no_basis") != (want == "no_basis"):
                 print(f"  {it['key']} {want} -> {x['verdict']} ({x['basis_kind']}: {x['basis']}): {x['reason']}")
@@ -102,4 +105,8 @@ if __name__ == "__main__":
     if which in ("synthetic", "both"):
         synthetic()
     if which in ("real", "both"):
-        real()
+        dump = [] if "--out" in sys.argv else None
+        real(dump)
+        if dump is not None:
+            with open(sys.argv[sys.argv.index("--out") + 1], "w") as fh:
+                json.dump(dump, fh, ensure_ascii=False, indent=1)

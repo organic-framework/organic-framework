@@ -188,5 +188,27 @@ class TempoKindTest(unittest.TestCase):
         self.assertIn("tempo", of_corrections.KINDS)
 
 
+
+class ProcessorTest(unittest.TestCase):
+    def test_a_busy_organization_still_gets_its_runs(self):
+        """of_review on organic-framework PR 288: events of these names come at every turn end, so a quiet period never
+        came and the judge seldom started."""
+        import of_listen
+        p, started = of_listen.TempoProcessor(), []
+        import subprocess as sp
+        saved, state = sp.Popen, of_events.STATE_DIR
+        sp.Popen = lambda *a, **k: started.append(a)
+        tmp = tempfile.TemporaryDirectory()
+        of_events.STATE_DIR = tmp.name
+        try:
+            for t in range(0, 600, 30):                     # an event every 30 s, a tick every 30 s
+                p.handle(None, [{"name": "of.continuation"}])
+                p.tick(None, 1000.0 + t)
+        finally:
+            sp.Popen, of_events.STATE_DIR = saved, state
+            tmp.cleanup()
+        self.assertEqual(len(started), 5)                   # every GAP_S (120 s) over ten minutes
+
+
 if __name__ == "__main__":
     unittest.main()

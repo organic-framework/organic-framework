@@ -27,7 +27,7 @@ import time
 
 import of_events
 
-VERSION = "tb-v1"
+VERSION = "tb-v2"
 MODEL = "haiku"
 TIMEOUT_S = 90
 AHEAD_MIN = 15            # a clock time this many minutes after the item's own time is a booking's candidate
@@ -179,6 +179,16 @@ source), runner (a CI run, a build, a job running now), data_not_yet (data that 
 conflict (the same system, host, file or resource is in use, named), owner_limit (a limit the owner set, with its \
 ask id), condition (it waits for a named event or condition rather than a time), none (no reason given, or only \
 "later", "tomorrow", a round deadline, a guess at how long something takes).
+A clock time holds only when it is the basis's own time: a window's start, a booked slot, a limit's reset, a run's \
+expected end. A wait on a position, a decision or a run waits for that event, not for a time picked ahead of it: an \
+alarm at 16:10Z before a 16:40Z roll that waits on another position's decision is a booking with no basis \
+(of_architect, AGENTS.md and docs/method.md, "Work starts when it is ready", 2026-11-17).
+Basis's own times: a window's or a booked slot's start (a release slot, a maintenance or host window), the hours a \
+named person or operator is on hand, a limit's reset, a run's expected end, and a short lead before such a time (T-5 \
+minutes, a prep step shortly before a booked slot). Not a booking: a run on the role's own cadence (a weekly batch, a \
+daily note, four runs a month by its role design) at that cadence's time, and a check of data for a period that ends \
+then (a weekly check of the week's data). A run the item itself says should start as soon as something ends, booked \
+for hours after it, is a booking with no basis.
 A fixed clock time needs its own basis: when the item also waits for conditions (a merge, a check, another \
 step's end), ask whether the time itself is needed. If the conditions could be met earlier and nothing named requires \
 that hour, the time is a booking with no basis ("arm item 7 for 18:45Z with its merge gate": the merge gate does not \
