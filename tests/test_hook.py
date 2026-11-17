@@ -365,6 +365,11 @@ class HandleTest(unittest.TestCase):
             of_store.spool_append("events.jsonl", of_events.record("pulse", {"n": -1}, position="of_a"))
             self.assertEqual(of_store.drain_spool(conn), 0)                # another drainer runs: none here
         self.assertEqual(of_store.drain_spool(conn), 1)
+        # a budget spent keeps the rest for the next run (the listener's loop; of_review on PR 290)
+        for i in range(3):
+            of_store.spool_append("events.jsonl", of_events.record("pulse", {"b": i}, position="of_a"))
+        self.assertEqual(of_store.drain_spool(conn, budget_s=-1), 0)
+        self.assertEqual(of_store.drain_spool(conn), 3)
         # a run that stopped midway left a .draining file: the next run drains it (2026-11-06)
         left = of_store.spool_path("events.jsonl") + ".draining.99999"
         rec = of_events.record("pulse", {"n": 1}, position="of_a")

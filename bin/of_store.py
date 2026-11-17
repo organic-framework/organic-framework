@@ -826,14 +826,19 @@ def spool_append(name, obj):
         fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def drain_spool(conn, wait_s=0.0):
+class _Budget(Exception):
+    pass
+
+
+def drain_spool(conn, wait_s=0.0, budget_s=None):
     """Move spooled events and raw hook payloads into the database. Returns the count.
     Leftover .draining files (a run that stopped midway) are drained too, and a busy store keeps the unread
     rest of a file for the next run instead of stranding the whole file (2026-11-06: ~20 files with the
     founder's answers stayed on disk for 20 minutes while a long redaction held the lock). One drainer at
     a time, by the spool's own lock (spool/drain.lock), never the ingest worker's: on 2026-11-17 the worker crawled
     93 minutes inside one transcript at load 120 while holding that lock, and the founder's prompts stayed in the
-    spool (of_conductor, message 01a1ea04-a399). WAIT_S: how long to wait for another drainer; 0 returns 0 at once."""
+    spool (of_conductor, message 01a1ea04-a399). WAIT_S: how long to wait for another drainer; 0 returns 0 at once.
+    BUDGET_S: stop after it, the rest of the file kept for the next run (the listener's loop: of_review on PR 290)."""
     import fcntl
     lock = open(os.open(spool_path("drain.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
     end = time.time() + wait_s
@@ -847,12 +852,12 @@ def drain_spool(conn, wait_s=0.0):
                 return 0   # another drainer runs: it takes what is there
             time.sleep(0.2)
     try:
-        return _drain_spool(conn)
+        return _drain_spool(conn, time.time() + budget_s if budget_s is not None else None)
     finally:
         lock.close()
 
 
-def _drain_spool(conn):
+def _drain_spool(conn, until=None):
     import glob
     n = 0
     for name in ("events.jsonl", "hook-raw.jsonl"):
@@ -873,6 +878,8 @@ def _drain_spool(conn):
             done = 0
             try:
                 for line in lines:
+                    if until is not None and time.time() >= until:
+                        raise _Budget()
                     try:
                         obj = json.loads(line)
                     except Exception:
@@ -887,7 +894,7 @@ def _drain_spool(conn):
                     except (KeyError, TypeError, ValueError):
                         pass  # a malformed line never holds the rest back
                     done += 1
-            except sqlite3.OperationalError:  # busy: keep what is left of this file, try again next run
+            except (sqlite3.OperationalError, _Budget):  # busy or out of time: keep the rest of this file for next run
                 with open(work + ".tmp", "w") as fh:
                     fh.writelines(lines[done:])
                 os.replace(work + ".tmp", work)
