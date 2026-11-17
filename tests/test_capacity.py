@@ -2130,6 +2130,49 @@ class ConnectorsCache(unittest.TestCase):
                              [("plugin:cloudflare:cloudflare", "https://mcp.cloudflare.com/mcp", True)])
 
 
+class SigninTaskReconcile(unittest.TestCase):
+    """2026-11-17: two of the founder's sign-in tasks named an account both positions had left days before
+    (of_architect, msg 01a1e8df-76f1). The balancer withdraws a task once nobody needs it."""
+
+    def run_it(self, sessions, missing, dry_run=False):
+        from unittest import mock
+        title = "Sign in to linear in the account a@x"
+        cache = {"_signin_tasks": {"/ap": {"acme/linear": 1.0}},
+                 "_signin_open": [{"dir": "/ap", "position": "disp", "tools": ["acme/linear"], "title": title,
+                                   "at": 1.0}]}
+        asks = [{"event_id": "e-1", "state": "open", "kind": "task", "position": "of_capacity", "text": title,
+                 "session_id": "s"},
+                {"event_id": "e-2", "state": "open", "kind": "task", "position": "other", "text": title}]
+        emitted = []
+        with mock.patch.object(of_capacity, "load_cache", side_effect=lambda: json.loads(json.dumps(cache))), \
+                mock.patch.object(of_capacity, "save_cache", side_effect=lambda c: cache.update(c)), \
+                mock.patch.object(of_capacity, "actor", return_value="of_capacity"), \
+                mock.patch.object(of_capacity.of_events, "emit", side_effect=lambda *a, **k: emitted.append(a)):
+            out = of_capacity.reconcile_signin_tasks(sessions, now=5.0, log=lambda s: None, dry_run=dry_run,
+                                                     asks=asks, missing=lambda p, d, now=None: missing)
+        return out, emitted, cache
+
+    def test_a_position_that_left_the_account_drops_its_task(self):
+        out, emitted, cache = self.run_it({"/ap": [{"name": "else"}], "/ez": [{"name": "disp"}]}, [])
+        self.assertEqual(out, [("e-1", "disp no longer runs on /ap")])
+        self.assertEqual([(n, p["ask_id"]) for n, p in emitted], [("ask_withdrawn", "e-1")])  # only its own ask
+        self.assertEqual(cache["_signin_open"], [])
+        self.assertNotIn("acme/linear", cache["_signin_tasks"]["/ap"])  # a new need files at once
+
+    def test_a_tool_now_signed_in_drops_its_task(self):
+        out, emitted, _ = self.run_it({"/ap": [{"name": "disp"}]}, [])
+        self.assertEqual(out, [("e-1", "linear signed in on /ap")])
+
+    def test_a_task_still_needed_stays(self):
+        out, emitted, cache = self.run_it({"/ap": [{"name": "disp"}]}, [("acme/linear", {})])
+        self.assertEqual((out, emitted), ([], []))
+        self.assertEqual(len(cache["_signin_open"]), 1)
+
+    def test_a_dry_run_withdraws_nothing(self):
+        out, emitted, cache = self.run_it({}, [], dry_run=True)
+        self.assertEqual((len(out), emitted, len(cache["_signin_open"])), (1, [], 1))
+
+
 class LabelledSignins(unittest.TestCase):
     """2026-11-16: a sign-in that can create Cloudflare API tokens as the founder, on one account, for one position
     (capacity.yaml `signins:`, catalogue `signin:`; names agreed with of_tools). The accounts' other Cloudflare
