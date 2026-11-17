@@ -554,7 +554,7 @@ class ScreenTest(unittest.TestCase):
         self.assertIn("What the agent is doing:", side)
         self.assertIn("I checked the nodes.", side)
         self.assertNotIn("I checked the nodes.", {t for (y, x), t in frame.items() if x == card_x})
-        self.assertTrue(any(t.startswith("of_platform") for (y, x), t in frame.items() if x == 2))  # who, in the row
+        self.assertTrue(any(t.startswith("A ") and "of_platform" in t for (y, x), t in frame.items() if x == 2))  # id, who
 
     def test_left_and_right_switch_streams_and_a_click_on_a_tab_does_too(self):
         """The founder, ~21:10Z 2026-11-12: clickable tabs, and the left and right arrows between them."""
@@ -1010,6 +1010,56 @@ class AmendScreenTest(unittest.TestCase):
                             "amended": {"version": 2, "at": "2026-11-15T10:10:00Z", "changed": ["text", "blocking"]}},
                            new, 120)
         self.assertIn("Amended (version 2, at 10:10Z): the question, blocking", "\n".join(t for t, _ in rows))
+
+
+
+class CardIdTest(unittest.TestCase):
+    """A card's id (the founder, 2026-11-17, prompt 01a1ea59-aeb7, translated: "add an ID to the cards, as in Linear,
+    show it in the sidebar and the popup, and refer to them by it in chat, not by the hash")."""
+
+    def test_the_ref_else_the_hex_tail_and_none_for_a_registry_wait(self):
+        self.assertEqual(T.card_ref({"ref": "OF-57"}), "OF-57")
+        self.assertEqual(T.card_ref(item("019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2", "q?",
+                                         first={"ref": "MT-412", "event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"})),
+                         "MT-412")
+        self.assertEqual(T.card_ref(item("019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2", "q?")), "6e7fa1b2")  # no ref yet
+        self.assertEqual(T.card_ref({"event_id": "019a5c1e-77c3-7d2e-9b10-4c5d6e7fa1b2"}), "6e7fa1b2")
+        self.assertEqual(T.card_ref({"who": ["of_a"], "ids": [], "kind": "registry", "first": None}), "")
+
+
+class CardIdScreenTest(PanelTest):
+    """The id on the screen, in the panel and in the search; run once here (PanelTest's own tests run in PanelTest)."""
+
+    def run(self, result=None):  # only this class's own tests, not the inherited screens' ones a second time
+        if self._testMethodName not in CardIdScreenTest.__dict__:
+            return result
+        return super().run(result)
+
+    def cards(self):
+        return [item("e1", "First plain question?", who="of_platform", first={"ref": "OF-57", "text": "x"}),
+                item("e2", "Second plain question?", who="of_asks", first={"ref": "OF-112", "text": "y"})]
+
+    def test_the_list_and_the_card_show_the_id_first(self):
+        self.inbox([0.1], self.cards())
+        frame = self.frames[-1]
+        rows = [t for (y, x), t in frame.items() if x == 2]
+        self.assertTrue(any(t.startswith("OF-57  of_platform") for t in rows), rows)  # one column, as wide as OF-112
+        self.assertTrue(any(t.startswith("OF-112 of_asks") for t in rows), rows)
+        self.assertIn("OF-57 · of_platform", self.text(frame))  # the card's byline
+
+    def test_a_search_finds_a_card_by_its_id(self):
+        self.inbox([0.1, ord("/")] + list("of-112") + ["\n", 0.1], self.cards())
+        rows = [t for (y, x), t in self.frames[-1].items() if x == 2]
+        self.assertTrue(any(t.startswith("OF-112") for t in rows), rows)
+        self.assertFalse(any(t.startswith("OF-57") for t in rows), rows)
+
+    def test_the_panel_shows_the_id(self):
+        self.panel([0.05], self.cards(), size=(6, 140))
+        self.assertIn("OF-57 · of_platform", self.text(self.frames[0]))  # Longest wait: … · OF-57 · of_platform: …
+        self.panel([0.05], self.cards(), size=(30, 140))
+        tall = self.text(self.frames[-1])
+        self.assertIn("OF-57   of_platform", tall)
+        self.assertIn("OF-112  of_asks", tall)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 herdr decides a Claude pane's state from the screen (its detection manifest), and it ignores an
 outside `blocked` report on a live Claude pane (tested 2026-11-05). So the question is shown as a
-pane token instead: `ask` = the question's short text (60 characters), which the sidebar renders
+pane token instead: `ask` = the card's id and the question's short text (60 characters), which the sidebar renders
 in red, set by `of ask` and cleared when the position's open asks are answered, withdrawn or the
 agent declares `of status working|done`. `of pulse` reconciles the tokens every run, and the
 desk router treats a pane with an open ask like a blocked one.
@@ -28,13 +28,17 @@ def _herdr(*args):
         return False
 
 
-def short(text):
+def short(text, ref=""):
+    """The token's text: the card's id first (of_asks_tui.card_ref; he cites the card by it, 2026-11-17), so the
+    sidebar's cut never hides it, then the question, MAX characters in all."""
     t = " ".join((text or "").split())
+    if ref:
+        t = f"{ref} · {t}"
     return t if len(t) <= MAX else t[:MAX - 1] + "…"
 
 
-def set_ask(pane, text):
-    return _herdr("pane", "report-metadata", pane, "--source", SOURCE, "--token", f"ask={short(text)}")
+def set_ask(pane, text, ref=""):
+    return _herdr("pane", "report-metadata", pane, "--source", SOURCE, "--token", f"ask={short(text, ref)}")
 
 
 def clear_ask(pane):
@@ -48,17 +52,18 @@ def panes_by_position(positions, agents, bind):
 def reconcile(positions, agents, asks, bind):
     """Make every live pane's `ask` token match its position's open asks. Returns (set, cleared)."""
     import of_asks
+    import of_asks_tui
     want = {}
     for a in of_asks.for_owner(asks):  # the same asks the popup and `of asks` show
         if a["state"] == "open" and a.get("position") and not counted_out(a):
-            want.setdefault(a["position"], a["text"])  # the oldest open ask
+            want.setdefault(a["position"], (a["text"], of_asks_tui.card_ref(a)))  # the oldest open ask, and its id
     panes = panes_by_position(positions, agents, bind)
     have = {a["pane_id"]: (a.get("tokens") or {}).get("ask") for a in agents}
     done_set, done_clear = [], []
     for name, pane in panes.items():
-        text = want.get(name)
-        if text and have.get(pane) != short(text):
-            set_ask(pane, text)
+        text, ref = want.get(name) or (None, "")
+        if text and have.get(pane) != short(text, ref):
+            set_ask(pane, text, ref)
             done_set.append(name)
         elif not text and have.get(pane):
             clear_ask(pane)

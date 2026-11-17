@@ -155,6 +155,21 @@ def _age(since):
     return of_asks.age(since) if since else ""
 
 
+def card_ref(x):
+    """The id a card is cited by, in chat and in every command (the founder, 2026-11-17, prompt 01a1ea59-aeb7,
+    translated: "you tell me a card's hash, and in the popup and the sidebar the hash shows nowhere; add an ID to the
+    cards, as in Linear, show it in the sidebar and the popup, and refer to them by it in chat, not by the hash"): the
+    ask's `ref` (such as OF-57, stamped once when the ask is filed; of_platform), else the last 8 hex digits of its event
+    id, which every command takes too. X is a screen item (its first ask under `first`, its ids under `ids`) or an ask
+    (`event_id`); a card that merges several asks is cited by its first. A registry-declared wait has none: ""."""
+    first = x.get("first") or {}
+    ref = x.get("ref") or first.get("ref")
+    if ref:
+        return str(ref)
+    eid = first.get("event_id") or (x.get("ids") or [None])[0] or x.get("event_id")
+    return str(eid)[-8:] if eid else ""
+
+
 def _put(win, y, x, text, attr=0):
     h, w = win.getmaxyx()
     if 0 <= y < h - 1:
