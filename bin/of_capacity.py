@@ -4428,9 +4428,58 @@ def file_signin_task(d, missing, position, ask=None, of_bin=None, moved=False, n
         return []
     cache = load_cache()
     cache.setdefault("_signin_tasks", {}).setdefault(d, {}).update({i: now for i, _ in new})
+    # kept so that reconcile_signin_tasks withdraws it once nobody needs it
+    cache.setdefault("_signin_open", []).append({"dir": d, "position": position, "tools": [i for i, _ in missing],
+                                                 "title": title, "at": now})
     save_cache(cache)
     log(f"  founder's task: sign in to {', '.join(i for i, _ in new)} on {short(d)}")
     return [i for i, _ in new]
+
+
+def reconcile_signin_tasks(sessions, now=None, log=print, dry_run=False, asks=None, missing=None):
+    """Withdraw the sign-in tasks of_capacity filed that nobody needs any more: the position no longer runs on that
+    account, or its tools are signed in there now. 2026-11-17: two tasks still named an account that both positions
+    had left one and two days before (of_architect, from of_conductor's sweep of the founder's tasks,
+    msg 01a1e8df-76f1). sessions: {config dir: live_sessions(dir)}; asks: the asks view's rows (of_asks);
+    missing(position, dir): [(org/id, entry)] not signed in. Returns [(ask id, reason)] withdrawn."""
+    now = now or time.time()
+    recs = load_cache().get("_signin_open") or []
+    if not recs:
+        return []
+    if asks is None:
+        import of_asks
+        asks = of_asks.current_asks()["asks"]
+    me = actor()
+    open_ = {a.get("text"): a for a in asks
+             if a.get("state") == "open" and a.get("kind") == "task" and a.get("position") == me}
+    keep, out, gone = [], [], []
+    for r in recs:
+        a = open_.get(r.get("title"))
+        if not a:  # done, withdrawn or answered: nothing left to follow
+            continue
+        d, pos, tools = r.get("dir"), r.get("position"), set(r.get("tools") or [])
+        on = any(x.get("name") == pos for x in sessions.get(d) or [])
+        left = [i for i, _ in (missing or missing_signins)(pos, d, now=now) if i in tools] if on else []
+        if on and left:
+            keep.append(r)
+            continue
+        why = (f"{pos} no longer runs on {short(d)}" if not on else
+               f"{', '.join(sorted(i.split('/', 1)[-1] for i in tools))} signed in on {short(d)}")
+        out.append((a["event_id"], why))
+        gone.append(r)
+        log(f"balance: {'would withdraw' if dry_run else 'withdrew'} the founder's sign-in task "
+            f"{a['event_id'][:13]}: {why}")
+        if not dry_run:
+            of_events.emit("ask_withdrawn", {"ask_id": a["event_id"], "reason": why, "by": me},
+                           position=a.get("position"), session=a.get("session_id"))
+    if not dry_run:
+        cache = load_cache()
+        cache["_signin_open"] = keep
+        for r in gone:  # a new need on that account files a new task at once, not a day later
+            for i in r.get("tools") or []:
+                ((cache.get("_signin_tasks") or {}).get(r.get("dir")) or {}).pop(i, None)
+        save_cache(cache)
+    return out
 
 
 def add_bound(needs, seen, positions, dirs, docs=None, now=None, run=None):
@@ -5016,6 +5065,10 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                            log=log, dry_run=dry_run)
     except Exception as e:
         log(f"balance: move backups not pruned: {e}")
+    try:
+        reconcile_signin_tasks(sessions, now=now, log=log, dry_run=dry_run)
+    except Exception as e:
+        log(f"balance: sign-in tasks not reconciled: {e}")
     index = current_index(dirs, now)
     rates = burn_rates(dirs, now, index)
     calib = {r["config_dir"]: calibrate(r, now, index) for r in rows if r.get("logged_in")}
