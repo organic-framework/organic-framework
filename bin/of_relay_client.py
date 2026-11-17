@@ -138,20 +138,28 @@ def input_box_text(screen):
     rules = [i for i, l in enumerate(lines) if _is_rule(l)]
     if len(rules) < 2:
         return None
-    start, end = rules[-2], rules[-1]
-    # The box opens on its prompt line. A side view drawn beside the conversation (a diff, a subagent) has rules of
-    # its own, and the rule above the box may then be the view's, with the box's own top rule broken by the view: the
-    # box starts at the last prompt line above its bottom rule (2026-11-17: 2,989 characters of a side view were read
-    # as the box and three messages waited 22 minutes; a user organization's structure keeper, msg 01a1e907-653e).
+    start, end, prompt = rules[-2], rules[-1], None
+    # The box opens on its prompt line, `❯` at column 0 (its continuation lines are indented, so a `❯` in typed text
+    # never is). A side view drawn beside the conversation (a diff, a subagent) has rules of its own, and the rule
+    # above the box may then be the view's, with the box's own top rule broken by the view: the box starts at the
+    # prompt line above its bottom rule (2026-11-17: 2,989 characters of a side view were read as the box and three
+    # messages waited 22 minutes; a user organization's structure keeper, msg 01a1e907-653e).
     for j in range(end - 1, start, -1):
-        if _ANSI.sub("", lines[j]).replace("\xa0", " ").lstrip().startswith("❯"):
-            start = j - 1
+        if _ANSI.sub("", lines[j]).replace("\xa0", " ").startswith("❯"):
+            start, prompt = j - 1, j
             break
-    # Text drawn right-aligned on a box line, after a wide gap, is Claude Code's own (a status beside the prompt), not
-    # typed: the same pane's prompt line carried 38 such characters
-    box = "\n".join(_RIGHT_ALIGNED.sub("", _ANSI.sub("", _DIM.sub("", l)).replace("\xa0", " "))
-                    for l in lines[start + 1:end])
-    return box.strip().lstrip("❯>").strip()
+    width = len(_ANSI.sub("", lines[end]).rstrip())
+    out = []
+    for k in range(start + 1, end):
+        t = _ANSI.sub("", _DIM.sub("", lines[k])).replace("\xa0", " ")
+        m = _RIGHT_ALIGNED.search(t) if k == prompt else None
+        if m and len(t.rstrip()) >= width - 3:
+            # right-aligned to the pane's edge after a wide gap, on the prompt line: Claude Code's own status, not
+            # typed (the same pane's prompt line carried 38 such characters); text after a gap that stops short of
+            # the edge is typed (of_review on organic-framework PR 280)
+            t = t[:m.start()]
+        out.append(t)
+    return "\n".join(out).strip().lstrip("❯>").strip()
 
 
 # A dialog in the pane (of_capacity, 2026-11-07: Claude Code's 'Background work is running' exit dialog swallowed two

@@ -452,11 +452,24 @@ class RelayTest(unittest.TestCase):
         for box, want in (("", ""), ("abc", "abc"), ("first line\n  second line", "first line\n  second line")):
             screen = "\n".join(lines + ["❯\xa0" + box, "─" * (left + right), "  ⏵⏵ bypass permissions on"])
             self.assertEqual(of_relay.input_box_text(screen), want, box)
-            # Claude Code's own status drawn right-aligned on the prompt line is not typed text
+            # Claude Code's own status drawn right-aligned to the pane's edge on the prompt line is not typed text
             first, *rest = (box or "").split("\n")
-            prompt = ("❯\xa0" + first).ljust(left + right - 40) + "\x1b[38;2;78;186;101mmodel · 12% context\x1b[0m"
+            status = "model · 12% context"
+            prompt = ("❯\xa0" + first).ljust(left + right - 2 - len(status)) + "\x1b[38;2;78;186;101m" + status + "\x1b[0m"
             screen = "\n".join(lines + [prompt] + rest + ["─" * (left + right), "  ⏵⏵ bypass permissions on"])
             self.assertEqual(of_relay.input_box_text(screen), want, box)
+
+    def test_typed_text_after_a_gap_or_an_indented_prompt_mark_is_still_typed(self):
+        """of_review on organic-framework PR 280: text after a wide gap that stops short of the pane's edge, and a box
+        whose later line is an indented `❯` (a pasted shell prompt), read as empty, so OF would type into them."""
+        rule = "─" * 80
+        for box, want in (("❯" + " " * 11 + "hello", "hello"), ("❯ a          b", "a          b"),
+                          ("❯ first line\n  ❯", "first line\n  ❯"), ("❯ first line\n  ❯ ls -la", "first line\n  ❯ ls -la"),
+                          ("❯ fix the build", "fix the build")):
+            screen = "\n".join(["a reply", rule, box, rule, "  ⏵⏵ bypass permissions on"])
+            self.assertEqual(of_relay.input_box_text(screen), want, box)
+        screen = "\n".join(["a reply", rule, "❯".ljust(80 - 2 - 11) + "model · 12%", rule])   # right-aligned to the edge
+        self.assertEqual(of_relay.input_box_text(screen), "")
 
     def test_a_tools_text_is_framed_unless_it_is_the_owners(self):
         """of_architect, 2026-11-07: of_lab took a one-line tool text for the founder's words."""
