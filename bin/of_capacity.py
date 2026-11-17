@@ -4430,15 +4430,16 @@ def file_signin_task(d, missing, position, ask=None, of_bin=None, moved=False, n
     cache.setdefault("_signin_tasks", {}).setdefault(d, {}).update({i: now for i, _ in new})
     # kept so that reconcile_signin_tasks withdraws it once nobody needs it
     cache.setdefault("_signin_open", []).append({"dir": d, "position": position, "tools": [i for i, _ in missing],
-                                                 "title": title, "at": now})
+                                                 "title": title, "at": now, "moved": bool(moved)})
     save_cache(cache)
     log(f"  founder's task: sign in to {', '.join(i for i, _ in new)} on {short(d)}")
     return [i for i, _ in new]
 
 
 def reconcile_signin_tasks(sessions, now=None, log=print, dry_run=False, asks=None, missing=None):
-    """Withdraw the sign-in tasks of_capacity filed that nobody needs any more: the position no longer runs on that
-    account, or its tools are signed in there now. 2026-11-17: two tasks still named an account that both positions
+    """Withdraw the sign-in tasks of_capacity filed that nobody needs any more: its tools are signed in there now, or
+    the position is gone from that account (a task filed when a move put it there without them) or from every
+    account (a task filed for a move refused for want of them, where it never ran: of_review on PR 277). 2026-11-17: two tasks still named an account that both positions
     had left one and two days before (of_architect, from of_conductor's sweep of the founder's tasks,
     msg 01a1e8df-76f1). sessions: {config dir: live_sessions(dir)}; asks: the asks view's rows (of_asks);
     missing(position, dir): [(org/id, entry)] not signed in. Returns [(ask id, reason)] withdrawn."""
@@ -4458,13 +4459,14 @@ def reconcile_signin_tasks(sessions, now=None, log=print, dry_run=False, asks=No
         if not a:  # done, withdrawn or answered: nothing left to follow
             continue
         d, pos, tools = r.get("dir"), r.get("position"), set(r.get("tools") or [])
-        on = any(x.get("name") == pos for x in sessions.get(d) or [])
+        where = d if r.get("moved", True) else None  # None: any account
+        on = any(x.get("name") == pos for k, xs in sessions.items() if where in (None, k) for x in xs)
         left = [i for i, _ in (missing or missing_signins)(pos, d, now=now) if i in tools] if on else []
         if on and left:
             keep.append(r)
             continue
-        why = (f"{pos} no longer runs on {short(d)}" if not on else
-               f"{', '.join(sorted(i.split('/', 1)[-1] for i in tools))} signed in on {short(d)}")
+        why = (f"{', '.join(sorted(i.split('/', 1)[-1] for i in tools))} signed in on {short(d)}" if on else
+               f"{pos} no longer runs on {short(d)}" if where else f"{pos} no longer runs on any account")
         out.append((a["event_id"], why))
         gone.append(r)
         log(f"balance: {'would withdraw' if dry_run else 'withdrew'} the founder's sign-in task "
