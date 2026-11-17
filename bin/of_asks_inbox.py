@@ -80,6 +80,42 @@ def key_of(x):
     return (x.get("ids") or [None])[0] or ("registry", tuple(x.get("who") or ()))
 
 
+def search_rank(x, q):
+    """How well card X matches the search Q, the lower the better, or None (the founder, 2026-11-17 ~17:55Z via
+    of_conductor, translated: "Now that the cards have IDs, the popup needs a search by them too; please design and
+    build it"). 0: its id exactly, in any case, with or without the hyphen or a space (AS-31, as31, as 31), or a bare
+    number that is its id's (31 finds AS-31 and OF-31, never AS-310); 1: the start of its id (AS-3, or a bare 3);
+    2: every word of Q found in its question, who asks or its id."""
+    import re
+    from of_ask_text import fold  # case, and the Russian yo typed as ye
+    q = fold(q).strip()
+    if not q:
+        return None
+    ref = fold(T.card_ref(x))
+    m = re.match(r"^([^\W\d_]*)-?(\d+)([a-z]?)$", ref)
+    if m:
+        tight, num = re.sub(r"[\s-]+", "", q), m.group(2) + m.group(3)
+        if tight == m.group(1) + num or (tight.isdigit() and tight == m.group(2)):
+            return 0
+        if (m.group(1) + num).startswith(tight) or (tight.isdigit() and num.startswith(tight)):
+            return 1
+    hay = " ".join([fold(x.get("text")), fold(" ".join(x.get("who") or [])), ref])
+    return 2 if all(w in hay for w in q.split()) else None
+
+
+def looks_like_id(q):
+    """Q reads as a card's id (AS-31, as31, as 31, XO-9b): letters, then a number."""
+    import re
+    from of_ask_text import fold
+    return bool(re.match(r"^[^\W\d_]+[\s-]?\d+[a-z]?$", fold(q).strip()))
+
+
+def search(items, q):
+    """The cards Q finds, the best first (search_rank), each rank in the order the queue had them."""
+    ranked = [(r, i, x) for i, x in enumerate(items) for r in [search_rank(x, q)] if r is not None]
+    return [x for _, _, x in sorted(ranked, key=lambda t: (t[0], t[1]))]
+
+
 _RISK = {}
 
 
@@ -990,11 +1026,8 @@ class Inbox:
     def groups(self):
         visible = [x for x in self.items if key_of(x) not in self.out.hidden]
         g = split(visible, self.over)
-        if self.search is not None:
-            q = self.search.casefold()
-            g["search"] = [x for x in visible if q in (x.get("text") or "").casefold()
-                           or any(q in w.casefold() for w in x.get("who") or [])
-                           or q in T.card_ref(x).casefold()]  # a card found by its id, as cited in chat
+        if self.search is not None:  # by its id as cited in chat, or by words; the best first (search_rank)
+            g["search"] = search(visible, self.search)
         return g
 
     def tabs(self, g):
@@ -1119,8 +1152,11 @@ class Inbox:
                     if 0 <= j < len(its) and key_of(its[j]) not in self.cards:
                         self.card(its[j])
         elif not self.bg["busy"] or self.items:
-            self.put(body_top + 1, card_x, tr("Nothing here.") if self.cur != "search" else tr("No card matches."),
-                     curses.A_DIM)
+            empty = tr("Nothing here.") if self.cur != "search" else (
+                tr("No open card has the id {q}: it was answered or withdrawn, or it has not reached this list yet.",
+                   q=self.search.strip().upper()) if looks_like_id(self.search) else tr("No card matches."))
+            for i, ln in enumerate(T._wrap(empty, max(10, w - card_x - 1))[:3]):
+                self.put(body_top + 1 + i, card_x, ln, curses.A_DIM)
         else:
             self.put(body_top + 1, card_x, tr("loading…"), curses.A_DIM)
         # bottom: the status line, then the keys
@@ -1403,8 +1439,9 @@ class Inbox:
         return True
 
     # input
-    def line_input(self, prompt, suggest=None):
-        """One line of input on the status rows; Enter returns it, Esc None. suggest(text) -> names shown below."""
+    def line_input(self, prompt, suggest=None, on_change=None):
+        """One line of input on the status rows; Enter returns it, Esc None. suggest(text) -> names shown below.
+        on_change(text): called after each key, before the screen is drawn again (the search filters as he types)."""
         text = ""
         curses.curs_set(1)
         self.scr.timeout(-1)
@@ -1429,6 +1466,8 @@ class Inbox:
                     text += ch
                 elif isinstance(ch, int) and 32 <= ch < 127:
                     text += chr(ch)
+                if on_change:
+                    on_change(text)
         finally:
             curses.curs_set(0)
             self.scr.timeout(T.SEQ_POLL_MS)
@@ -1651,10 +1690,15 @@ class Inbox:
                             self.over[i] = ("handed", who)
                         self.msg = tr("handed to {p}: it gets the card in its pane", p=who)
                     self.save("ask_handed", {"ask_id": ids[0], "ask_ids": ids, "to": who, "by": "owner"}, handed)
-        elif ch == ord("/"):
-            q = self.line_input(tr("Search:"))
-            if q:
-                self.search, self.cur = q, "search"
+        elif ch == ord("/"):  # by a card's id or by words; the list follows each key, the best match selected
+            before = (self.search, self.cur)
+
+            def live(text):
+                self.search, self.cur = (text.strip(), "search") if text.strip() else before
+                self.sel.pop("search", None)
+            q = self.line_input(tr("Search (a card's id or words):"), on_change=live)
+            self.search, self.cur = (q, "search") if q else before  # Esc or nothing typed: back where he was
+            self.sel.pop("search", None)
         elif ch == ord("?"):
             self.mode = "help"
         elif ch in (ord("g"), ord("o")) and item and item.get("who"):  # g: the founder's key (2026-11-12); o too
@@ -1803,7 +1847,7 @@ def help_rows():
             "u            " + tr("take back the last answer while its seconds run"),
             "h            " + tr("snooze: in an hour, tomorrow at 9:00, next Monday at 9:00 (in Snoozed: back now)"),
             "d            " + tr("hand it to a position, which gets the card in its pane to settle"),
-            "/            " + tr("search the questions and who asks"),
+            "/            " + tr("search by a card's id (OF-31, of31, 31) or by words of the question or who asks"),
             "J K Space    " + tr("scroll the card"),
             "g o          " + tr("go to the asking agent's pane"),
             "a w n        " + tr("answered elsewhere, withdraw, not a question"),
