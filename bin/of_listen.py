@@ -1465,7 +1465,7 @@ def heartbeat(conn):
 START_CPU_S = 0.01  # the CPU the other threads must spend in a beat's interval for the start to count as working
 
 
-def starting_beat(every=None, cpu=None):
+def starting_beat(every=None, cpu=None, drain=None):
     """Until the returned event is set, touch the watchdog's files every HEARTBEAT_S while the start spends CPU: a start
     that works (the asks view's state loaded from the log, the first catch-up) is not restarted, one that waits on
     nothing is (2026-11-17: at load 45 to 103 a start took more than the watchdog's 180 s, and each restart began it
@@ -1477,8 +1477,14 @@ def starting_beat(every=None, cpu=None):
     cpu = cpu or (lambda: time.process_time() - time.thread_time())   # called in the beat's thread
 
     def loop():
-        last = cpu()
+        last, drained = cpu(), time.time()
         while not done.wait(every or HEARTBEAT_S):
+            if drain and time.time() - drained >= SPOOL_S:   # the hooks' spool lands during a start too (of_asks,
+                drained = time.time()                           # 01a1eaeb-1f42: drains up to an hour old came after
+                try:                                            # each long start)
+                    drain()
+                except Exception:  # noqa: BLE001 - the main loop drains it after the start
+                    pass
             now = cpu()
             if now - last >= START_CPU_S:   # the files the watchdog reads: the timers turn only after the start
                 _touch(heartbeat_path())
@@ -1528,7 +1534,13 @@ def run(stop=None, log=print, rebuild=False):
         import faulthandler
         import signal
         faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
-    starting = starting_beat()
+    spool_conn = []
+
+    def drain_during_start():   # its own connection: SQLite's objects stay in the thread that made them
+        if not spool_conn:
+            spool_conn.append(of_store.connect())
+        of_store.drain_spool(spool_conn[0], budget_s=BUDGET_S)
+    starting = starting_beat(drain=drain_during_start)
     working_beat(threading.get_ident(), stop=stop)   # the loop's own thread (a test runs it in another)
     conn = of_store.connect()
     processors = [cls() for cls in PROCESSORS]
