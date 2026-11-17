@@ -914,7 +914,7 @@ def _deliver_without_listener(hook, index):
     DELIVER_GAP_S."""
     sid = hook.get("session_id")
     pos = (((index.get("sessions") or {}).get(sid) or []) + [None])[0]
-    if not pos:
+    if not pos or _no_detach():
         return
     try:
         import subprocess
@@ -1776,10 +1776,19 @@ def _store_raw(event, hook, raw):
             _log_error(event, e2)
 
 
+def _no_detach():
+    """OF_NO_DETACH=1 (the pre-commit smoke check): the hook starts no background child, which would still write into
+    the check's scratch store after it returned (of_field-analyst, message 01a1eb95-c4e8: 3 of 8 smoke runs on
+    2026-11-18 failed on a temporary folder its children were still writing to)."""
+    return os.environ.get("OF_NO_DETACH") == "1"
+
+
 def _archive_detached(path):
     """`of archive --path <transcript>` in the background at SessionEnd (bin/of_archive.py; docs/storage.md, "Raw tier:
     every byte"): a running archive holds its lock, and the hourly run covers the file then."""
     import subprocess
+    if _no_detach():
+        return
     try:
         here = os.path.dirname(os.path.realpath(__file__))
         subprocess.Popen([sys.executable, os.path.join(here, "of"), "archive", "--quiet", "--budget", "60", "--path",
@@ -1794,6 +1803,8 @@ def _ingest_detached(path):
     One worker per machine: no lock fight between dozens of ingests (lab finding 3)."""
     import fcntl
     import subprocess
+    if _no_detach():
+        return
     try:
         pending = os.path.join(STATE, "pending")
         os.makedirs(pending, mode=0o700, exist_ok=True)
