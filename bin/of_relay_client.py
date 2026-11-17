@@ -128,6 +128,9 @@ def _is_rule(line):
                                   or bool(_NAMED_RULE_NARROW.fullmatch(t)))
 
 
+_RIGHT_ALIGNED = re.compile(r" {10,}\S[^\n]*$")
+
+
 def input_box_text(screen):
     """The text in Claude Code's input box on a pane screen read with ANSI codes (the lines between the last two
     horizontal rules), without the prompt mark and without a dim suggestion; '' when empty, None when no box."""
@@ -135,8 +138,20 @@ def input_box_text(screen):
     rules = [i for i, l in enumerate(lines) if _is_rule(l)]
     if len(rules) < 2:
         return None
-    box = "\n".join(_ANSI.sub("", _DIM.sub("", l)) for l in lines[rules[-2] + 1:rules[-1]])
-    return box.replace("\xa0", " ").strip().lstrip("❯>").strip()
+    start, end = rules[-2], rules[-1]
+    # The box opens on its prompt line. A side view drawn beside the conversation (a diff, a subagent) has rules of
+    # its own, and the rule above the box may then be the view's, with the box's own top rule broken by the view: the
+    # box starts at the last prompt line above its bottom rule (2026-11-17: 2,989 characters of a side view were read
+    # as the box and three messages waited 22 minutes; a user organization's structure keeper, msg 01a1e907-653e).
+    for j in range(end - 1, start, -1):
+        if _ANSI.sub("", lines[j]).replace("\xa0", " ").lstrip().startswith("❯"):
+            start = j - 1
+            break
+    # Text drawn right-aligned on a box line, after a wide gap, is Claude Code's own (a status beside the prompt), not
+    # typed: the same pane's prompt line carried 38 such characters
+    box = "\n".join(_RIGHT_ALIGNED.sub("", _ANSI.sub("", _DIM.sub("", l)).replace("\xa0", " "))
+                    for l in lines[start + 1:end])
+    return box.strip().lstrip("❯>").strip()
 
 
 # A dialog in the pane (of_capacity, 2026-11-07: Claude Code's 'Background work is running' exit dialog swallowed two

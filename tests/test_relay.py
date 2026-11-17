@@ -439,6 +439,25 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(of_relay.input_box_text(self._screen("abc", dim=True)), "")
         self.assertIsNone(of_relay.input_box_text("no box here\n"))
 
+    def test_a_side_view_beside_the_conversation_is_not_the_box(self):
+        """2026-11-17, a user organization's structure keeper (msg 01a1e907-653e): with a diff view drawn on the right
+        half, the rule above the box was the view's, 2,989 characters were read as the box, and three messages waited
+        22 minutes behind an empty prompt."""
+        left, right = 110, 100
+        view_rule = " " * left + "─" * 26
+        lines = ["agent reply line " * 3 + " " * 40 + "New file not yet staged", view_rule]
+        for k in range(12):
+            lines.append(f"  reply text {k} ".ljust(left) + ("diff +line" if k % 3 else "─" * right))
+        lines.append("✻ Working… · esc to interrupt".ljust(left) + "─" * right)   # the box's top rule broken by the view
+        for box, want in (("", ""), ("abc", "abc"), ("first line\n  second line", "first line\n  second line")):
+            screen = "\n".join(lines + ["❯\xa0" + box, "─" * (left + right), "  ⏵⏵ bypass permissions on"])
+            self.assertEqual(of_relay.input_box_text(screen), want, box)
+            # Claude Code's own status drawn right-aligned on the prompt line is not typed text
+            first, *rest = (box or "").split("\n")
+            prompt = ("❯\xa0" + first).ljust(left + right - 40) + "\x1b[38;2;78;186;101mmodel · 12% context\x1b[0m"
+            screen = "\n".join(lines + [prompt] + rest + ["─" * (left + right), "  ⏵⏵ bypass permissions on"])
+            self.assertEqual(of_relay.input_box_text(screen), want, box)
+
     def test_a_tools_text_is_framed_unless_it_is_the_owners(self):
         """of_architect, 2026-11-07: of_lab took a one-line tool text for the founder's words."""
         f = of_relay.frame
