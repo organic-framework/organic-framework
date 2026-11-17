@@ -238,8 +238,9 @@ def frame(ask_id, answer, version=None, question=None):
     version's question, never a bare answer (docs/events.md, of.ask_amended; of_review on PR 181)."""
     if version and question:
         q = " ".join(str(question).split())
-        return (f"Answer from the founder to your question {ask_id[-8:]}{_card_paren(ask_id)} (version {version}: \u00ab"
-                f"{q if len(q) <= 300 else q[:299] + '…'}\u00bb): {answer}")
+        # the card id after the version, which of_asks.ANSWER_FRAME reads right after the hex id
+        return (f"Answer from the founder to your question {ask_id[-8:]} (version {version}: \u00ab"
+                f"{q if len(q) <= 300 else q[:299] + '…'}\u00bb){_card_paren(ask_id)}: {answer}")
     return f"Answer from the founder to your question {ask_id[-8:]}{_card_paren(ask_id)}: {answer}"
 
 

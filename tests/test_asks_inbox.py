@@ -300,7 +300,7 @@ class StoreTest(unittest.TestCase):
                 if x["key"].startswith("handed:")]
         self.assertEqual([x["position"] for x in todo], ["of_b"])
         self.assertIn(f"handed to you; ask {a[-8:]}", todo[0]["text"])
-        self.assertIn(f"of asks answered {a[-8:]}", todo[0]["text"])
+        self.assertIn(f"of asks answered {of_asks_answer.card_id(a)}", todo[0]["text"])   # its card id
         self.assertIn("Options: yes | no", todo[0]["text"])
         # no fixed position name (of_herdr's review of PR 26): without a conductor in the registry, the owner himself
         self.assertNotIn("of_conductor", todo[0]["text"])

@@ -223,7 +223,8 @@ class AnswerTest(Store):
         self.assertTrue(ok, status)
         self.assertEqual([(a["answer"], a["version"]) for a in self.answers()], [("yes, tonight", 2)])
         self.assertEqual(self.typed, [("p1", f"Answer from the founder to your question {aid[-8:]} (version 2: "
-                                             "\u00abDeploy the relay today?\u00bb): yes, tonight")])  # never bare
+                                             f"\u00abDeploy the relay today?\u00bb){of_asks_answer._card_paren(aid)}: "
+                                             "yes, tonight")])  # never bare; the card id after the version
 
     def test_a_change_of_text_alone_refuses_it_too(self):
         """of_review on PR 181: a text amend turned staging into production, and the yes given to staging reached the
@@ -236,7 +237,8 @@ class AnswerTest(Store):
         self.assertEqual((self.answers(), self.typed), ([], []))
         ok, status = of_asks_answer.answer(self.conn, self.item(aid, 2), "yes", [{"name": "of_a"}], lambda p: "p1")
         self.assertTrue(ok, status)
-        self.assertIn("(version 2: \u00abDrain node 3 of the production cluster now?\u00bb): yes", self.typed[0][1])
+        self.assertIn(f"(version 2: \u00abDrain node 3 of the production cluster now?\u00bb){of_asks_answer._card_paren(aid)}: "
+                      "yes", self.typed[0][1])
 
     def test_an_answer_to_an_older_version_recorded_anyway_closes_nothing(self):
         """A path that cannot refuse it, or one that raced the amend: the newest version stays open on the card, and the
@@ -250,7 +252,8 @@ class AnswerTest(Store):
                                      now=of_asks_chat._epoch("2026-11-15T10:30:00Z"), min_age=0)
         (typed,) = [x["text"] for x in out if x["key"].startswith("answer:")]
         self.assertTrue(typed.startswith(f"Answer from the founder to your question {aid[-8:]} (version 1: \u00abDrain "
-                                         "node 3 of the staging cluster now?\u00bb): yes"), typed)
+                                         f"node 3 of the staging cluster now?\u00bb){of_asks_answer._card_paren(aid)}: yes"),
+                        typed)
         self.add("human_prompt", {"origin": "human", "text": typed}, "2026-11-15T10:31:00Z",  # typed into its pane
                  source="hook")
         self.assertEqual(self.asks()[aid]["state"], "open")
@@ -334,7 +337,8 @@ class ChatAmendTest(ChatTest):
                                   version=2, now=now_of("2026-11-11T10:06:00Z"))
         self.assertIn("answered:", out[0])
         self.assertTrue(self.typed[0][1].startswith(f"Answer from the founder to your question {aid[-8:]} (version 2: "
-                                                    "\u00abLift the hold today?\u00bb): yes"), self.typed[0][1])
+                                                    f"\u00abLift the hold today?\u00bb){of_asks_answer._card_paren(aid)}: "
+                                                    "yes"), self.typed[0][1])
 
 
 REG = """units:

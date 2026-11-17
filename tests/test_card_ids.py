@@ -39,6 +39,8 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual([r["of.payload"]["ref"] for r in (a, b, c)], ["AS-1", "AS-2", "OFB-1"])
         imported = of_events.record("agent_question", {"questions": []}, org="acme-shop", source="import")
         self.assertNotIn("ref", imported["of.payload"])          # history imported from transcripts: no card
+        candidate = of_events.record("agent_question", {"detected_by": "heuristic", "questions": []}, org="acme-shop")
+        self.assertNotIn("ref", candidate["of.payload"])         # no card until the judge files it (of_asks, PR 300)
         given = of_events.record("agent_question", {"ref": "AS-77"}, org="acme-shop")
         self.assertEqual(given["of.payload"]["ref"], "AS-77")    # a writer's own id is kept
         self.assertEqual(self.ask("acme-shop")["of.payload"]["ref"], "AS-3")
