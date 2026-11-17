@@ -715,7 +715,7 @@ class RedeliverTest(AnswerTest):
         self.assertEqual([d["key"] for d in got], [f"unrouted:{other}:of_unit", f"unrouted:{typo}:of_unit",
                                                    f"unrouted:{done}:of_unit", f"routed:{renamed}:of_owner"])
         self.assertIn("'acme:of_owner', no position of your organization", got[0]["text"])
-        self.assertIn(f"of asks withdraw {other[-8:]}", got[0]["text"])
+        self.assertIn(f"of asks withdraw {of_asks_answer.card_id(other)}", got[0]["text"])   # its card id
         self.assertIn("a finished position (its successor is of_owner)", got[2]["text"])
         self.assertEqual({d["sender"] for d in got[:3]}, {"of"})
         self.assertEqual([d["key"] for d in of_asks_answer.pending(
@@ -978,7 +978,7 @@ class RedeliverTest(AnswerTest):
         got = pend()
         self.assertEqual([(d["key"].split(":")[0], d["position"]) for d in got], [("escalated", "of_owner")])
         self.assertIn("the one typed in before", got[0]["text"])  # it saw the question: the note only
-        self.assertIn(f"--escalates {aid[-8:]}", got[0]["text"])
+        self.assertIn(f"--escalates {of_asks_answer.card_id(aid)}", got[0]["text"])
         self.add("human_prompt", {"origin": "injected", "text": got[0]["text"]}, "2026-11-01T12:05:00Z",
                  session="SO", position="of_owner")
         self.assertEqual(pend(), [])

@@ -85,10 +85,10 @@ READS = ("of.agent_message_in", "of.agent_message_out", "of.agent_question", "of
          "of.ask_escalated", "of.ask_withdrawn", "of.human_prompt", "of.mandate_check", "of.permission_denied",
          "of.permission_request", "of.permission_resolved", "of.session_end", "of.session_start",
          "of.state_declared", "of.turn_end", "of.turn_error", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-         "of.agent_question_judged", "of.ask_amended")
+         "of.agent_question_judged", "of.ask_amended", "of.ask_ref")
 ANY_SOURCE = ("of.ask_withdrawn", "of.agent_question_answered", "of.agent_question", "of.state_declared",
               "of.ask_escalated", "of.prompt_origin", "of.diff_approved", "of.diff_applied",
-              "of.agent_question_judged", "of.ask_amended")  # written by tools (of ask, of status, the popup,
+              "of.agent_question_judged", "of.ask_amended", "of.ask_ref")  # written by tools (of ask, of status, the popup,
 # reconcile), not only by hooks
 
 # What `of ask --amend` may change (docs/events.md, of.ask_amended): the payload carries the new value under each name
@@ -130,6 +130,33 @@ def new_state():
     """Where project() keeps what it has seen, so a caller can feed it more rows later (the listener's asks view)."""
     return {"asks": [], "open_by_session": {}, "by_id": {}, "declared": {}, "by_position": {}, "declared_turn": {},
             "waits_founder": {}}
+
+
+def card_name(conn, ask_id):
+    """ASK_ID's card id (its ref, or one an of.ask_ref gave it), else its event id's last 8 hex digits."""
+    r = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE event_id = ?", (ask_id,)).fetchone()
+    if not (r and r[0]):
+        r = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE name = 'of.ask_ref' AND "
+                         "json_extract(payload, '$.ask_id') = ? LIMIT 1", (ask_id,)).fetchone()
+    return str(r[0]) if r and r[0] else str(ask_id or "")[-8:]
+
+
+def ref_id(conn, ref):
+    """The event id of the ask whose card id is REF (AS-412, any case), or None. A suffixed one (AS-412b) is the
+    later of two asks two machines numbered alike, by event id."""
+    import of_events
+    m = of_events.REF_RE.match(str(ref or "").strip())
+    if not m:
+        return None
+    base = f"{m.group(1).upper()}-{int(m.group(2))}"
+    ids = [e for (e,) in conn.execute(
+        "SELECT event_id FROM event WHERE name IN ('of.agent_question', 'of.permission_request') AND "
+        "json_extract(payload, '$.ref') = ? "
+        "UNION SELECT json_extract(payload, '$.ask_id') FROM event WHERE name = 'of.ask_ref' AND "
+        "json_extract(payload, '$.ref') = ?", (base, base))]
+    ids = sorted(set(i for i in ids if i))
+    k = ord(m.group(3)) - ord("a") if m.group(3) else 0   # b: the second
+    return ids[k] if k < len(ids) else None
 
 
 def project(rows, state=None):
@@ -236,6 +263,11 @@ def project(rows, state=None):
                 if open_by_session.get(ask["session_id"]) is ask:
                     open_by_session.pop(ask["session_id"], None)
             continue
+        if name == "of.ask_ref":  # a card id given to an ask filed before ids existed (of asks refs --backfill)
+            ask = by_id.get((r["payload"] or {}).get("ask_id"))
+            if ask is not None and not ask.get("ref"):
+                ask["ref"] = (r["payload"] or {}).get("ref")
+            continue
         if name == "of.ask_amended":  # the asker corrects its open ask in place: a new version, never a closure
             amend(by_id.get((r["payload"] or {}).get("ask_id")), r)
             continue
@@ -263,6 +295,7 @@ def project(rows, state=None):
             # a blocking screen (bin/of_blocked.py): one ask per dialog, closed by an answer or when it goes
             pl_ = r["payload"] or {}
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
+                   "ref": (r.get("payload") or {}).get("ref"),
                    "kind": f"blocked:{pl_.get('blocked_type')}", "text": _text(r), "state": "open", "closed_by": None,
                    "closed_at": None, "to": bare_to(pl_.get("to"), r.get("org")), "tags": [], "pane": pl_.get("pane"),
                    "n_options": len(pl_.get("options") or [])}
@@ -286,6 +319,7 @@ def project(rows, state=None):
                 if old.get("source") == "pane" and old["state"] == "open" and old.get("session_id") == sid:
                     old.update(state="superseded", closed_by=r["event_id"], closed_at=r["ts"])
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
+                   "ref": (r.get("payload") or {}).get("ref"),
                    "kind": _kind(r), "text": _text(r), "state": "open", "closed_by": None, "closed_at": None,
                    "topic_key": key, "to": bare_to((r["payload"] or {}).get("to"), r.get("org")),
                    "tags": (r["payload"] or {}).get("tags") or [], "due": (r["payload"] or {}).get("due"),
@@ -312,6 +346,7 @@ def project(rows, state=None):
             # a heuristic question (the Stop hook's guess) is a candidate, shown to nobody until the judge confirms it
             heuristic = (r["payload"] or {}).get("detected_by") == "heuristic"
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
+                   "ref": (r.get("payload") or {}).get("ref"),
                    "kind": _kind(r), "text": _text(r), "state": "candidate" if heuristic else "open", "closed_by": None,
                    "closed_at": None, "n_options": 2 if name == "of.permission_request" else _n_options(r)}
             asks.append(ask)

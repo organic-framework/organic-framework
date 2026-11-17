@@ -381,6 +381,15 @@ subagents:
 - **`of registry check`** names a `decided` that does not resolve as a problem, or as a warning when it cannot read the log, and a `subagents:` without `words` as a problem.
 - **Why a key, not a line for everyone.** The start context would otherwise tell every position of every organization that its owner asked, citing another person's prompt. An owner's words carry no authority outside the organization they own (organic-framework PR 241 review). The first organizations' owner said it twice on 2026-11-16 (prompts `01a1e393-ded4` and `01a1e395-8d97`; docs/method.md).
 
+## Card ids (2026-11-17, `of_architect`; the founder, prompt `01a1ea59-aeb7`)
+
+A top-level `card_prefix:` sets the prefix of the organization's card ids, such as `OF` for `OF-57`: 2 to 5 capital
+letters. Without it, the prefix is the initials of the organization's name: `acme-shop` gets `AS`. Every ask gets
+its id when it is filed: the prefix, a hyphen and a running number (docs/events.md, `ref`). People and agents cite a
+card by its id in chat, cards and summaries; records a program reads keep the full event id. `of registry check`
+refuses a prefix that is not 2 to 5 capital letters, and a prefix that two organizations listed on the machine share,
+whether set or by default.
+
 ## Goals (2026-11-07, `of_architect`; the goal tree 2026-11-12)
 
 A top-level `goals:` map: the few outcomes the organization's owner wants, above the works. A goal may be broken into sub-goals, and those into sub-goals again, so the owner sees what the organization works toward, what matters first, and which agents work on each part, not a flat list of works. Goals are the owner's: an agent proposes them, and they enter the registry only with a yes whose ask id each goal records.

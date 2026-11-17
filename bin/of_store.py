@@ -270,6 +270,13 @@ def add_event(conn, rec, raw_ref=None):
         if conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
+    ref = (rec.get("of.payload") or {}).get("ref") if rec.get("event.name") in ("of.agent_question", "of.permission_request", "of.ask_ref") \
+        and isinstance(rec.get("of.payload"), dict) else None
+    if ref and cur.rowcount and rec.get("host.id") != of_events.machine_id():
+        try:  # a card id another machine used: this machine's next one comes after it
+            of_events.seen_ref(ref)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def add_hook_record(conn, hook_event, session_id, raw):
