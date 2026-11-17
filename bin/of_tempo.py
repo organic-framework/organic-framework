@@ -37,11 +37,10 @@ KEEP_S = 3 * 24 * 3600    # judged keys kept this long in the state file
 FETCH_MAX = 5000          # events read per run; the rest is the next run's
 TEXT_MAX = 700            # of one item's text in the prompt
 NAMES = ("of.continuation", "of.agent_message_in", "of.agent_question")
-# The pulse types the notes only when True. Held again at 19:30Z on 2026-11-17 (of_architect's rule, message
-# 01a1ea20-1fa7: under 0.75 the notes stop): the outcome measure read 0.11, but it counts as "basis" any waiting a
-# position declares, which every turn's end does, and 9 of 17 notes came after their booked time had passed, typed
-# late while the listener was down. Back to True on of_architect's word.
-NOTES_LIVE = False
+# The pulse types the notes only when True (of_architect, messages 01a1ea20-1fa7 and 01a1eb01-4c6f, 2026-11-17: live,
+# measured by a blind labelled sample of each day's judged items, of tempo sample and of tempo score; held again when
+# a day's precision falls under 0.75). Held from 19:30Z to 19:40Z that day while the measure was replaced.
+NOTES_LIVE = True
 BASIS_KINDS = ("position", "owner_card", "window", "runner", "data_not_yet", "conflict", "owner_limit", "condition",
                "none")
 VERDICTS = ("basis", "no_basis", "not_a_booking")
@@ -531,4 +530,43 @@ def outcomes(conn, since, until=None, window_s=OUTCOME_S):
         out.append({"event_id": eid, "ts": ts, "position": pos, "items": items,
                     "outcome": "ran" if ran else "basis" if basis else "neither"})
     return out
+
+
+# ------------------------------------------------------------------ the daily blind sample
+
+def sample(conn, day, flagged=20, passed=10, seed=None):
+    """A blind sample of DAY's judged items (YYYY-MM-DD): up to FLAGGED of those judged no_basis and PASSED of the
+    rest, shuffled, each with its key, source and quote and no verdict, to be labelled by the rule's text before the
+    verdicts are seen (of_architect, message 01a1eb01-4c6f). [{key, source, ts, quote}]."""
+    import random
+    rnd = random.Random(seed if seed is not None else day)
+    items = {}
+    for ts, pl in conn.execute("SELECT ts, payload FROM event WHERE name = 'of.booking_judged' AND ts >= ? AND ts < ?",
+                               (day, day + "T99")):
+        for x in json.loads(pl or "{}").get("items") or []:
+            items.setdefault(x.get("key"), dict(x, judged_at=ts))
+    no = [x for x in items.values() if x.get("verdict") == "no_basis"]
+    rest = [x for x in items.values() if x.get("verdict") != "no_basis"]
+    picked = rnd.sample(no, min(flagged, len(no))) + rnd.sample(rest, min(passed, len(rest)))
+    rnd.shuffle(picked)
+    return [{"key": x["key"], "source": x.get("source"), "ts": x.get("ts") or x["judged_at"], "quote": x.get("quote"),
+             "label": ""} for x in picked]
+
+
+def score(conn, labels):
+    """LABELS: [{key, label: no_basis | passes}] from a blind sample. (precision, recall, n flagged, n labelled) of the
+    judge's no_basis against them."""
+    verdict = {}
+    since = min((str(lab.get("ts") or "")[:10] for lab in labels if lab.get("ts")), default="") or "0000"
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.booking_judged' AND ts >= ?", (since,)):
+        for x in json.loads(pl or "{}").get("items") or []:
+            verdict.setdefault(x.get("key"), x.get("verdict"))
+    tp = fp = fn = 0
+    for lab in labels:
+        if lab.get("label") not in ("no_basis", "passes") or lab["key"] not in verdict:
+            continue
+        got, want = verdict[lab["key"]] == "no_basis", lab["label"] == "no_basis"
+        tp, fp, fn = tp + (got and want), fp + (got and not want), fn + (want and not got)
+    n = sum(1 for lab in labels if lab.get("label") in ("no_basis", "passes"))
+    return (tp / (tp + fp) if tp + fp else None, tp / (tp + fn) if tp + fn else None, tp + fp, n)
 

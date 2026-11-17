@@ -254,6 +254,21 @@ class PassedTest(JudgeTest):
         self.assertEqual(typed, [])
 
 
+class SampleTest(JudgeTest):
+    def test_a_blind_sample_hides_the_verdicts_and_scores_against_labels(self):
+        """of_architect, message 01a1eb01-4c6f: precision from a labelled sample of each day's judged items, labelled
+        before the verdicts are seen."""
+        items = [{"key": f"k{i}", "source": "cron", "quote": f"q{i}", "ts": "2026-11-17T13:00:00Z",
+                  "verdict": "no_basis" if i < 4 else "basis"} for i in range(8)]
+        self.ev("booking_judged", {"position": "p", "items": items}, "p", 0)
+        rows = of_tempo.sample(self.conn, "2026-11-17", flagged=3, passed=2, seed=1)
+        self.assertEqual(len(rows), 5)
+        self.assertTrue(all("verdict" not in r and r["label"] == "" for r in rows))     # blind
+        labels = [{"key": k, "label": lab, "ts": "2026-11-17T13:00:00Z"} for k, lab in
+                  (("k0", "no_basis"), ("k1", "passes"), ("k5", "no_basis"), ("k6", "passes"))]
+        self.assertEqual(of_tempo.score(self.conn, labels), (0.5, 0.5, 2, 4))
+
+
 class TempoKindTest(unittest.TestCase):
     def test_the_digest_counts_pushes_on_tempo(self):
         rows = [{"position": "k8s_keeper", "ts": "2026-11-17T13:00:00Z", "kind": "tempo", "rule": "Start when ready.",
