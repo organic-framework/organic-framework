@@ -329,6 +329,54 @@ class ListenTest(unittest.TestCase):
         finally:
             of_listen.BATCH = saved_batch
 
+    def test_a_processor_past_its_budget_yields_to_the_next_and_goes_on_next_step(self):
+        """organic-framework-build reports/of-log-readers-2026-11-14.md, 3.4: a catch-up past its processor's budget
+        commits what it folded, saves its cursor and yields; the first catch-up (no budget) runs to the end."""
+        class Count(of_listen.Processor):
+            version = "1"
+
+            def __init__(self, name, budget):
+                self.name, self.budget_s, self.seen = name, budget, []
+
+            def handle(self, conn, rows):
+                self.seen += [r["rowid"] for r in rows]
+                return True
+        busy, other = Count("busy", 0), Count("other", None)
+        procs = [busy, other]
+        cur = of_listen.prepare(self.conn, procs)
+        saved = of_listen.BATCH
+        of_listen.BATCH = 1
+        try:
+            for i in range(3):
+                of_events.emit("tool_use", {"i": i})
+            self.assertTrue(of_listen.step(self.conn, procs, cur, budget=True))
+            self.assertEqual((len(busy.seen), len(other.seen)), (1, 3))       # one batch, then the next processor
+            stored = self.conn.execute("SELECT last_rowid FROM listener_cursor WHERE processor = 'busy'").fetchone()[0]
+            self.assertEqual(stored, busy.seen[-1])                           # its cursor saved
+            of_listen.step(self.conn, procs, cur, budget=True)
+            self.assertEqual(len(busy.seen), 2)                               # goes on from it
+            of_listen.step(self.conn, procs, cur)                             # no budget: to the end
+            self.assertEqual(busy.seen, other.seen)
+        finally:
+            of_listen.BATCH = saved
+
+    def test_the_asks_shadow_is_swapped_in_only_once_caught_up_under_a_budget(self):
+        a = [self.ask(f"Question {i}?") for i in range(3)]
+        p = of_listen.AsksProcessor()
+        p.MIN_FLUSH_S, p.budget_s = 0, 0
+        cur = of_listen.prepare(self.conn, [p])
+        saved = of_listen.BATCH
+        of_listen.BATCH = 1
+        try:
+            of_listen.step(self.conn, [p], cur, budget=True)
+            self.assertTrue(p.defer)                                          # not caught up: not settled
+            for _ in range(3):
+                of_listen.step(self.conn, [p], cur, budget=True)
+            self.assertFalse(p.defer)
+            self.assertEqual({x["event_id"] for x in of_listen.read_asks(self.conn)}, set(a))
+        finally:
+            of_listen.BATCH = saved
+
     def test_the_view_is_projected_at_most_once_per_interval(self):
         # 2026-11-11: with ~40 agents the projection (5 to 57 s) ran almost back to back while Ghostty lagged
         procs = [of_listen.AsksProcessor()]

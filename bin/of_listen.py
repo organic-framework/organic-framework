@@ -21,6 +21,7 @@ import of_events
 
 POLL_S = 0.5
 BATCH = 2000
+BUDGET_S = 2  # a processor's share of one step, unless it names its own budget_s (step())
 HEARTBEAT_S = 5
 STALE_S = 120  # 2026-11-11: 15 s made every reader project the whole log itself whenever one asks projection
 # (5 to 57 s) held the loop; with ~40 agents that fallback was most of the Mac's load. A view at most 2 min old serves.
@@ -73,6 +74,7 @@ class Processor:
     name = "base"
     version = "0"
     tick_s = None
+    budget_s = None  # BUDGET_S; a step's catch-up past it commits what it folded and yields to the next processor
 
     def reset(self, conn):
         pass
@@ -1028,8 +1030,12 @@ def prepare(conn, processors, rebuild=False):
     return cursors
 
 
-def step(conn, processors, cursors, beat=None, locks=None):
+def step(conn, processors, cursors, beat=None, locks=None, budget=False):
     """One pass: every processor catches up from its cursor. Returns True if any view changed.
+    budget: each processor stops after the batch that takes it past its `budget_s`, its cursor saved and its view
+    flushed, and the next processor runs; it goes on from its cursor in the next step (organic-framework-build
+    reports/of-log-readers-2026-11-14.md, 3.4). The service's steps pass it; the first catch-up does not, since the
+    heartbeat after it tells readers every view is whole.
     beat(): called between batches, so a long catch-up keeps the heartbeat while the views it serves
     stay whole (the asks view rebuilds in shadow tables; without the beat, readers fell back to the
     slow projection for the length of the rebuild, 2026-11-06).
@@ -1052,7 +1058,9 @@ def step(conn, processors, cursors, beat=None, locks=None):
         if lock is not None and not lock.acquire(blocking=False):
             continue  # its tick runs in the tick thread: it catches up from its cursor on a later pass
         try:
-            changed |= _catch_up(conn, p, cursors, top, beat)
+            own = getattr(p, "budget_s", None)
+            changed |= _catch_up(conn, p, cursors, top, beat,
+                                 budget_s=(BUDGET_S if own is None else own) if budget else None)
         finally:
             if lock is not None:
                 lock.release()
@@ -1066,8 +1074,8 @@ def reads_events(p):
     return cls.handle is not Processor.handle or hasattr(p, "flush") or hasattr(p, "settle")
 
 
-def _catch_up(conn, p, cursors, top, beat):
-    changed = False
+def _catch_up(conn, p, cursors, top, beat, budget_s=None):
+    changed, began, yielded = False, time.time(), False
     while True:
         if beat:
             beat()
@@ -1096,7 +1104,12 @@ def _catch_up(conn, p, cursors, top, beat):
                          (cursors[p.name], of_events.now_iso(), p.name))
         except __import__("sqlite3").OperationalError:
             pass
-    if getattr(p, "defer", False):  # caught up after a reset or a restart: project once, swap the shadow in
+        if budget_s is not None and time.time() - began >= budget_s:
+            yielded = True   # the rest is the next step's, after the other processors had theirs
+            break
+    if yielded and getattr(p, "defer", False):
+        pass   # not caught up: the shadow is swapped in only once it is
+    elif getattr(p, "defer", False):  # caught up after a reset or a restart: project once, swap the shadow in
         t0 = time.time()
         changed |= bool(p.settle(conn))
         slow(p.name, "settle", t0)
@@ -1408,7 +1421,7 @@ def run(stop=None, log=print, rebuild=False):
     while not (stop and stop.is_set()):
         now = time.time()
         try:
-            changed = step(conn, processors, cursors, locks=locks)
+            changed = step(conn, processors, cursors, locks=locks, budget=True)
             if ticked.is_set():
                 ticked.clear()
                 changed = True
