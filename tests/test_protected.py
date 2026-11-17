@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_protected as P  # noqa: E402
 
-SPEC = {"branch": "main", "human": ["scripts/vault.sh"], "human_lists": ["scripts/run-allow.tsv"]}
+SPEC = {"branch": "main", "human": ["scripts/vault.sh"], "human_lists": ["scripts/run-allow.tsv"], "checks": ["unit"]}
 
 
 def green(prs=None, runs=None, statuses=None, required=None):
@@ -96,6 +96,37 @@ class ProtectedFfTest(unittest.TestCase):
             self.assertIn(rel, str(cm.exception))
             self.assertEqual(self.head(), self.a, rel)
 
+    def test_what_the_owner_always_keeps(self):
+        """of_architect on the field (msg 01a1eaa7-2645): .gitmodules, a human path renamed, a link anywhere that points
+        at a human path or the folder that holds one, and a list that cannot be read."""
+        def gitmodules():
+            self.write(".gitmodules", "[submodule \"x\"]\n\tpath = x\n")
+
+        def rename():
+            self.g("mv", "scripts/vault.sh", "scripts/vault-old.sh")
+
+        def link_file():
+            os.symlink("vault.sh", os.path.join(self.work, "scripts", "v.sh"))
+
+        def link_folder():
+            os.symlink("scripts", os.path.join(self.work, "s"))
+        for change, want in ((gitmodules, ".gitmodules"), (rename, "scripts/vault.sh"), (link_file, "scripts/v.sh"),
+                             (link_folder, "s")):
+            self.g("checkout", "-q", "--detach", self.a)
+            change()
+            c = self.commit(want)
+            with self.assertRaises(P.Refused) as cm:
+                self.ff(c)
+            self.assertIn("stays the owner's", str(cm.exception), want)
+            self.assertIn(want, str(cm.exception), want)
+            self.assertEqual(self.head(), self.a, want)
+        self.g("checkout", "-q", "--detach", self.a)
+        self.write("scripts/other.sh", "#!/bin/sh\necho b\n")
+        b = self.commit("other only")
+        with self.assertRaises(P.Refused) as cm:                                    # a list unread is no answer
+            self.ff(b, spec=dict(SPEC, human_lists=["scripts/run-allow.tsv", "scripts/missing.tsv"]))
+        self.assertIn("cannot be read", str(cm.exception))
+
     def test_a_list_that_drops_a_script_cannot_free_it(self):
         """The set is read at HEAD and at the target and united: a target whose list no longer names allowed.sh still
         counts its change (the list's own change counts too)."""
@@ -111,14 +142,19 @@ class ProtectedFfTest(unittest.TestCase):
         b = self.commit("other")
         cases = (("main", None, "commit id"),                                       # a branch name
                  (b, green({}), "no merged PR"),                                    # not a PR's merge commit
-                 (b, green({b: 7}, runs=[{"name": "unit", "status": "completed", "conclusion": "failure"}]), "not all green"),
-                 (b, green({b: 7}, runs=[]), "none ran"),
-                 (b, green({b: 7}, required=["lint"]), "required checks not green"))
+                 (b, green({b: 7}, runs=[{"name": "unit", "status": "completed", "conclusion": "failure"}]),
+                  "required checks not green"),
+                 (b, green({b: 7}, runs=[]), "required checks not green"),
+                 (b, green({b: 7}, required=["lint"]), "required checks not green"),
+                 (b, lambda path: (502, None), "GitHub did not answer"))           # fails closed
         for to, api, why in cases:
             with self.assertRaises(P.Refused) as cm:
                 self.ff(to, api=api or green({to: 7}))
             self.assertIn(why, str(cm.exception), why)
             self.assertEqual(self.head(), self.a, why)
+        with self.assertRaises(P.Refused) as cm:                                    # no required check known
+            self.ff(b, spec={k: v for k, v in SPEC.items() if k != "checks"})
+        self.assertIn("not known", str(cm.exception))
         self.assertEqual(self.ff(b, api=green({b: 7}, required=["unit"]))["to"], b)   # its required check is green
 
     def test_the_target_must_be_published_and_a_fast_forward(self):
@@ -149,7 +185,8 @@ class ProtectedFfTest(unittest.TestCase):
         os.makedirs(reg)
         with open(os.path.join(reg, "positions.yaml"), "w") as fh:
             fh.write(f"positions: []\nprotected_code:\n  - \"{self.d}/other\"\n  - path: \"{self.wt}\"\n    ff:\n"
-                     "      branch: main\n      human: [scripts/vault.sh]\n      human_lists: [scripts/run-allow.tsv]\n")
+                     "      branch: main\n      human: [scripts/vault.sh]\n      human_lists: [scripts/run-allow.tsv]\n"
+                     "      checks: [unit]\n")
         orgs = os.path.join(self.d, "orgs.yaml")
         with open(orgs, "w") as fh:
             fh.write(f"orgs:\n  - {{name: acme, path: {os.path.join(self.d, 'org')}}}\n")
@@ -161,6 +198,8 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(res["pr"], 9)
         self.assertEqual([(n, d["to"], d["pr"], k["position"], k["org"]) for n, d, k in said],
                          [("protected_ff", b, 9, "vault_keeper", "acme")])
+        self.assertEqual((said[0][1]["human_lists"], "scripts/allowed.sh" in said[0][1]["human"]),
+                         (["scripts/run-allow.tsv"], True))                         # what the decision rested on
         with self.assertRaises(P.Refused):                                          # a string entry has no ff
             P.run(os.path.join(self.d, "other"), b, orgs_file=orgs, api=green({b: 9}), fetch=False)
 
@@ -168,7 +207,8 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(P.ff_problems({"path": "~/x/y", "ff": SPEC}), [])
         self.assertEqual(P.ff_problems("~/x/y"), [])
         for bad in ({"branch": "main"}, {"branch": "../x", "human": ["a/b"]}, {"branch": "main", "human": ["/abs"]},
-                    {"branch": "main", "human": ["a/../b"]}, {"branch": "main", "human": ["a"], "extra": 1}, "yes"):
+                    {"branch": "main", "human": ["a/../b"]}, {"branch": "main", "human": ["a"], "extra": 1}, "yes",
+                    {"branch": "main", "human": ["a"], "checks": "unit"}):
             self.assertTrue(P.ff_problems({"path": "~/x/y", "ff": bad}), bad)
         self.assertEqual(P._listed("scripts/a.sh\tsha\n# scripts/c.sh\n./scripts/b.sh, ../out/x /abs/y"),
                          {"scripts/a.sh", "scripts/b.sh"})

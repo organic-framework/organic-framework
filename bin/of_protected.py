@@ -53,7 +53,10 @@ def ff_problems(item):
     ff = item["ff"]
     if not isinstance(ff, dict):
         return ["ff must be a mapping with branch, human and human_lists"]
-    out = [f"ff: unknown key {k!r}" for k in ff if k not in ("branch", "human", "human_lists")]
+    out = [f"ff: unknown key {k!r}" for k in ff if k not in ("branch", "human", "human_lists", "checks")]
+    if "checks" in ff and (not isinstance(ff["checks"], list) or not all(isinstance(c, str) and c.strip()
+                                                                          for c in ff["checks"])):
+        out.append("ff: checks must be a list of the required checks' names")
     if not isinstance(ff.get("branch"), str) or not BRANCH.fullmatch(ff["branch"]) or ".." in ff["branch"]:
         out.append("ff: branch must name the remote branch the target must be on, such as main")
     for key in ("human", "human_lists"):
@@ -137,25 +140,59 @@ def _listed(text):
 
 
 def human_set(tree, ff, revs):
-    """The human paths: ff.human, ff.human_lists, and what the lists name at each of REVS (HEAD and the target)."""
+    """The human paths: ff.human, ff.human_lists, and what the lists name at each of REVS (HEAD and the target). A list
+    that cannot be read at either is no answer, so the fast-forward is the owner's (fails closed; of_architect on the
+    field, msg 01a1eaa7-2645)."""
     paths = set(ff.get("human") or []) | set(ff.get("human_lists") or [])
     for lst in ff.get("human_lists") or []:
         for rev in revs:
             data = _blob(tree, rev, lst)
-            if data is not None:
-                paths |= _listed(data.decode("utf-8", "replace"))
+            if data is None:
+                raise Refused(f"the list {lst} cannot be read at {rev[:12]}, so the human set is not known: the owner's")
+            paths |= _listed(data.decode("utf-8", "replace"))
     return paths
 
 
-def _hits(changed, human):
-    """The changed paths the human set covers: a path itself, one under a listed folder (ending in /), and every
-    .gitattributes."""
+def _covered(path, human):
+    return path in human or any(h.endswith("/") and path.startswith(h) for h in human)
+
+
+def _hits(changes, human, link_target=None):
+    """The changes the owner keeps: a human path's change of any kind (content, mode, deletion; renames are read as a
+    deletion and an addition), one under a listed folder (ending in /), every .gitattributes and .gitmodules, any
+    submodule pointer, and a symbolic link, added or changed anywhere, that points at a human path (of_architect, msg
+    01a1eaa7-2645). CHANGES: [(path, old mode, new mode)]; LINK_TARGET(path) the link's target as stored."""
+    import posixpath
     out = []
-    for c in changed:
-        if c in human or os.path.basename(c) == ".gitattributes" or \
-                any(h.endswith("/") and c.startswith(h) for h in human):
-            out.append(c)
-    return sorted(out)
+    for path, old, new in changes:
+        hit = _covered(path, human) or os.path.basename(path) in (".gitattributes", ".gitmodules") \
+            or "160000" in (old, new)
+        if not hit and new == "120000" and link_target:
+            t = link_target(path)
+            if t is None:
+                hit = True  # a link whose target cannot be read is not known to be harmless
+            else:
+                dest = posixpath.normpath(posixpath.join(posixpath.dirname(path), t)) if not t.startswith("/") else t
+                hit = dest.startswith("/") or dest.startswith("../") or _covered(dest, human) or \
+                    any(h.startswith(dest.rstrip("/") + "/") for h in human)  # a link to a folder holding one
+        if hit:
+            out.append(path)
+    return sorted(set(out))
+
+
+def _raw_changes(tree, head, to):
+    """[(path, old mode, new mode)] between HEAD and the target, renames read as a deletion and an addition."""
+    raw = _git(tree, "diff", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", head, to).stdout
+    parts, out, i = raw.split("\0"), [], 0
+    while i < len(parts) - 1:
+        meta = parts[i]
+        if not meta.startswith(":"):
+            i += 1
+            continue
+        fields = meta[1:].split()
+        out.append((parts[i + 1], fields[0], fields[1]))
+        i += 2
+    return out
 
 
 def _github_repo(tree):
@@ -183,11 +220,13 @@ def gh_api(path):
         return 1, None
 
 
-def github_proof(owner, repo, sha, branch, api=gh_api):
+def github_proof(owner, repo, sha, branch, api=gh_api, checks=None):
     """The PR whose merge commit SHA is, merged into BRANCH, with every required check green. Returns the PR number,
-    or raises Refused with what is missing. Required checks are the branch protection's when this access may read it;
-    otherwise every check run and status on the commit, at least one of them, must be green."""
+    or raises Refused with what is missing. The required checks are the branch protection's when this access may read
+    it, and those the registry's ff names (CHECKS); with none known it refuses (fails closed)."""
     st, pulls = api(f"repos/{owner}/{repo}/commits/{sha}/pulls")
+    if st != 200:
+        raise Refused(f"GitHub did not answer for {sha[:12]}'s PR, so it is not known to be merged: the owner's")
     pr = next((p for p in pulls or [] if isinstance(p, dict) and p.get("merged_at")
                and (p.get("base") or {}).get("ref") == branch and p.get("merge_commit_sha") == sha), None)
     if not pr:
@@ -200,17 +239,15 @@ def github_proof(owner, repo, sha, branch, api=gh_api):
     for s in (status or {}).get("statuses") or []:
         green[s.get("context")] = green.get(s.get("context"), True) and s.get("state") == "success"
     st3, req = api(f"repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks")
-    required = None
+    required = set(checks or [])
     if st3 == 200 and isinstance(req, dict):
-        required = set(req.get("contexts") or []) | {c.get("context") for c in req.get("checks") or [] if c.get("context")}
-    if required:
-        missing = sorted(c for c in required if not green.get(c))
-        if missing:
-            raise Refused(f"required checks not green on {sha[:12]}: {', '.join(missing)}")
-    else:
-        if pending or not green or not all(green.values()):
-            bad = sorted(set(pending) | {k for k, v in green.items() if not v})
-            raise Refused(f"checks not all green on {sha[:12]}" + (f": {', '.join(bad)}" if bad else ": none ran"))
+        required |= set(req.get("contexts") or []) | {c.get("context") for c in req.get("checks") or [] if c.get("context")}
+    if not required:  # fails closed: with no required check known, no check vouches for the commit (of_architect)
+        raise Refused(f"the required checks are not known (branch protection unreadable here, and the registry's ff "
+                      f"names no checks), so nothing vouches for {sha[:12]}: the owner's")
+    missing = sorted(c for c in required if not green.get(c))
+    if missing:
+        raise Refused(f"required checks not green on {sha[:12]}: {', '.join(missing)}")
     return pr.get("number")
 
 
@@ -232,14 +269,17 @@ def ff(tree, ff_spec, target, api=gh_api, fetch=True, log=print):
         raise Refused(f"{to[:12]} does not fast-forward the tree's {head[:12]}")
     if _git(tree, "status", "--porcelain", "--untracked-files=no").stdout.strip():
         raise Refused("the tree has changes of its own: someone wrote it; the owner looks before anything moves")
-    changed = [c for c in _git(tree, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", head, to)
-               .stdout.split("\0") if c]
+    changes = _raw_changes(tree, head, to)
     human = human_set(tree, ff_spec, (head, to))
-    hits = _hits(changed, human)
+
+    def link_target(path):
+        data = _blob(tree, to, path)
+        return None if data is None else data.decode("utf-8", "replace")
+    hits = _hits(changes, human, link_target)
     if hits:
         raise Refused("it changes what can reach the secret, so this fast-forward stays the owner's: " + ", ".join(hits))
     owner, repo = _github_repo(tree)
-    pr = github_proof(owner, repo, to, branch, api=api)
+    pr = github_proof(owner, repo, to, branch, api=api, checks=ff_spec.get("checks"))
     _git(tree, "checkout", "--quiet", "--detach", to)
     for path in sorted(human):  # on disk, byte for byte the target's: a smudge filter from config changes nothing
         full = os.path.join(tree, path)
@@ -251,7 +291,8 @@ def ff(tree, ff_spec, target, api=gh_api, fetch=True, log=print):
                 _git(tree, "checkout", "--quiet", "--detach", head)
                 raise Refused(f"{path} on disk is not the target's after the checkout (a filter?); moved back to "
                               f"{head[:12]}")
-    return {"from": head, "to": to, "pr": pr, "changed": len(changed)}
+    return {"from": head, "to": to, "pr": pr, "changed": len(changes), "human": sorted(human),
+            "human_lists": list(ff_spec.get("human_lists") or [])}
 
 
 def run(entry, target, position=None, orgs_file=None, api=gh_api, fetch=True, emit=None):
@@ -266,5 +307,6 @@ def run(entry, target, position=None, orgs_file=None, api=gh_api, fetch=True, em
     res = ff(path, spec, target, api=api, fetch=fetch)
     (emit or of_events.emit)("protected_ff", {"entry": path.replace(os.path.expanduser("~"), "~", 1), "from": res["from"],
                                               "to": res["to"], "pr": res["pr"], "changed": res["changed"],
-                                              "branch": spec["branch"]}, position=position, org=org)
+                                              "branch": spec["branch"], "human": res["human"],  # what it rested on
+                                              "human_lists": res["human_lists"]}, position=position, org=org)
     return res
