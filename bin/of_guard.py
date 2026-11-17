@@ -170,6 +170,138 @@ def _reads(p):
     return (f"a command that reads a secret file ({os.path.basename(p.rstrip('/')) or p})", p) if p else None
 
 
+# G1.13 and G0.9 (2026-11-18; a user organization's security owner through its structure keeper, msg 01a1eb16-9ebf): a
+# subagent ran `for f in <kit>/*; do [ -f "$f" ] && head -40 "$f"; done` over its position's runner kit and printed the
+# kit's SSH private key into its tool output. No word on the line named the key: the shell expanded the glob, and the
+# loop handed each file to head as $f. So a reader's file arguments are expanded as the shell would (a glob, the words
+# of a `for` list the reader gets through its variable, a variable set on the line), and a file is a secret file by its
+# first bytes as well as by its name, so a copy under another name, in a scratch folder, is one too.
+_KEY_HEAD = re.compile(rb"\A(?:\xef\xbb\xbf)?\s*(?:-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----"
+                       rb"|PuTTY-User-Key-File-\d+:)")
+_GLOB = re.compile(r"[*?\[]")
+EXPAND_LIMIT = 256   # matches of one glob looked at; a glob over more is not followed further (docs/guard.md, Gaps)
+EXPAND_BUDGET = 4000  # folder entries one glob may read: the guard runs before every call, so a deep glob stops here
+KEY_READ_MODE = {"content": "deny", "expand": "deny"}
+KEY_NOTE = ("a private key is used through the program that needs it (ssh -i, ssh -F <config>, the tool's own command), "
+            "never read; list a folder's file names with ls (docs/guard.md G1.13, G0.9)")
+
+
+def _key_file(path):
+    """Does the regular file at PATH start with a private key's header (OpenSSH, PEM, PGP, PuTTY)? Reads at most its
+    first 96 bytes, kept nowhere and never printed; anything else (a folder, a FIFO, no file) is no."""
+    try:
+        if not path or not stat.S_ISREG(os.stat(path).st_mode):
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            head = os.read(fd, 96)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return False
+    return bool(_KEY_HEAD.match(head))
+
+
+def _local(word, here):
+    """WORD as a path on this machine (~ and $HOME read, relative to HERE), or None when it rests on a variable or a
+    substitution that is not known here, or is relative with no folder known."""
+    p = _expanduser(word)
+    if not p or "$" in p or "`" in p:
+        return None
+    if not os.path.isabs(p):
+        if not here:
+            return None
+        p = os.path.join(here, p)
+    return p
+
+
+def _loop_header(stext, loops):
+    """`for NAME in WORDS` (after do, then, else, {, !): record WORDS as what NAME holds in the loop's body."""
+    try:
+        toks = _tokens(_ansi_c(stext))
+    except ValueError:
+        return
+    while toks and toks[0] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "(", "time"):
+        toks = toks[1:]
+    if len(toks) >= 3 and toks[0] in ("for", "select") and re.fullmatch(r"[A-Za-z_]\w*", toks[1]) and toks[2] == "in":
+        loops[toks[1]] = [t for t in toks[3:] if t != "do"]
+
+
+def _glob(pattern):
+    """The paths an absolute PATTERN matches as bash matches them (case-sensitive, `*` and `?` never match a leading
+    dot), reading at most EXPAND_BUDGET folder entries and keeping at most EXPAND_LIMIT matches."""
+    import fnmatch
+    parts, paths, read = [x for x in pattern.split("/") if x], ["/"], 0
+    for i, part in enumerate(parts):
+        last, nxt = i == len(parts) - 1, []
+        if not _GLOB.search(part):
+            nxt = [q for q in (os.path.join(x, part) for x in paths) if last or os.path.isdir(q)]
+        else:
+            for x in paths:
+                try:
+                    with os.scandir(x) as it:
+                        for e in it:
+                            read += 1
+                            if read > EXPAND_BUDGET:
+                                return [q for q in nxt if os.path.lexists(q)][:EXPAND_LIMIT] if last else []
+                            if e.name.startswith(".") and not part.startswith("."):
+                                continue
+                            if fnmatch.fnmatchcase(e.name, part) and (last or e.is_dir()):
+                                nxt.append(os.path.join(x, e.name))
+                except OSError:
+                    continue
+        paths = nxt[:EXPAND_LIMIT * 4]
+        if not paths:
+            return []
+    return [q for q in paths if os.path.lexists(q)][:EXPAND_LIMIT]
+
+
+def _expanded(word, here, loops, shvars):
+    """[(by_shell, path)]: what a reader's WORD reaches on this machine as the shell expands it: a loop variable as each
+    word of its `for` list, then the line's variables, then a glob. BY_SHELL: the path came out of a glob or a loop's
+    list, which no word on the line names (G0.9). Nothing for an unknown part, or inside a remote command (ssh, a
+    container's or a VM's exec), whose files are not this machine's."""
+    if _REMOTE_BODY[0]:
+        return []
+    words, loop = [word], False
+    m = re.search(r"\$\{?([A-Za-z_]\w*)\}?", word)
+    if m and m.group(1) in loops:
+        words, loop = [word[:m.start()] + w + word[m.end():] for w in loops[m.group(1)]], True
+    out = []
+    for w in words:
+        p = _local(_expand_vars(w, shvars), here)
+        if p and _GLOB.search(p):
+            out += [(True, x) for x in _glob(p)]
+        elif p and (not loop or os.path.lexists(p)):  # a loop's word that is no file here is a name, not a path
+            out.append((loop, p))
+    return out
+
+
+def _key_hit(path, expanded):
+    """A secret file a reader reaches only through a glob or a loop's list (G0.9: by name or content), or a private key
+    by content (G1.13): (reason, path) to deny, None (a warning is noted when its mode warns). A path a variable set on
+    the line holds is judged by content only: by name it is G5's own reading of the word (Known limits)."""
+    if expanded and _secret_path(path) and not _NO_CRED.search(os.path.basename(path)):  # not kubeconfig.go
+        kind = "expand"
+    elif _key_file(path):
+        kind = "expand" if expanded else "content"
+    else:
+        return None
+    hit = _reads(path)
+    if KEY_READ_MODE[kind] == "deny":
+        return hit
+    _WARNINGS.append((hit[0], hit[1], KEY_NOTE))
+    return None
+
+
+def _reader_key(word, here, loops, shvars):
+    for expanded, p in _expanded(word, here, loops, shvars):
+        hit = _key_hit(p, expanded)
+        if hit:
+            return hit
+    return None
+
+
 def _prints(token):
     """Every deny names what it matched (of_architect, 2026-11-06)."""
     return f"a command that would print secrets ({token})", token
@@ -1540,7 +1672,9 @@ def _simple(stext):
             k += 2
         elif w and set(w) <= _REDIR:
             target = toks[k + 1] if k + 1 < len(toks) else ""
-            if "<" in w and "<<" not in w and (_secret_path(target) or _memory_path(target)):
+            if "<" in w and "<<" not in w and (_secret_path(target) or _memory_path(target)
+                                                or (_key_file(_local(target, _DENY_CWD[0]))
+                                                    and KEY_READ_MODE["content"] == "deny")):
                 return ("<read", target, None, None, None)  # `done < .env`, `nc h 9 < /proc/kcore`: deny now
             if ">" in w and not target.isdigit() and target not in _DEV_STREAMS and not w.endswith("&"):
                 to_file = True
@@ -2343,6 +2477,7 @@ def _launch_file(path, cwd=None):
 
 # > 0 while _bash_deny reads a command another machine runs: there `~` is that machine's home (G29 reads only this one's)
 _REMOTE_BODY = [0]
+_LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
 
 
 def _launch_write(head, args, cwd, files, removal):
@@ -3254,6 +3389,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
     # the folder they read before; of_review on PR 249)
     exported = {}        # what `export` set earlier on the line (G17: GIT_CONFIG_* variables)
     line_vars = {}       # shell variables a bare `NAME=value` set earlier on the line (G6: a --raw path)
+    loops = _LOOPS[0]    # `for NAME in WORDS` earlier on the line: what NAME holds in the body, a { } group or a
+    # subshell in it included (G0.9), shared by every depth of one check
     lab_link = False     # a link or a socket made under of_herdr's lab earlier on the line (G19)
     for pipe in pipes:
         last = len(pipe) - 1
@@ -3271,6 +3408,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if hit:
                     return hit
                 continue
+            _loop_header(stext, loops)
             s = _simple(stext)
             if not s:
                 line_vars.update(_assignments(stext))  # `P=…;` alone: a shell variable the line reads later
@@ -3371,6 +3509,9 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 for a in _data_args(head, args):
                     if _secret_path(a):
                         return _reads(a)
+                    hit = _reader_key(a, here, loops, {**line_vars, **exported, **_assignments(stext)})  # G0.9, G1.13
+                    if hit:
+                        return hit
         # the environment printed to the agent: a value-dump stage with no names-only reducer after it
         sink_to_file = False
         if pipe and pipe[last][0] == "cmd":
@@ -3949,6 +4090,7 @@ def critical_deny(tool, tool_input, cwd=None):
     ti = tool_input or {}
     _WARNINGS.clear()
     _REMOTE_BODY[0] = 0
+    _LOOPS[0] = {}
     if tool == "Bash":
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
@@ -3979,6 +4121,10 @@ def critical_deny(tool, tool_input, cwd=None):
         return LAUNCH_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
+    if tool in ("Read", "Edit", "MultiEdit", "Grep") and path and _key_file(_local(path, cwd)):  # G1.13
+        if KEY_READ_MODE["content"] == "deny":
+            return f"a secret file ({os.path.basename(path)}): a private key by its content", path
+        _WARNINGS.append((f"a secret file ({os.path.basename(path)}): a private key by its content", path, KEY_NOTE))
     if tool in ("Read", "Grep") and _memory_path(path):
         return f"memory or a core dump ({path})", path
     return None
