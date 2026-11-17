@@ -128,6 +128,26 @@ class CorrectionsTest(Store):
         self.assertIn("Units.", sent[1][1])
         self.assertNotIn("State every total", sent[1][1])
 
+    def test_cut_start_contexts_go_in_the_keepers_digest(self):
+        """Hand-over b460c5ed: once a day each structure keeper hears which of its positions' start contexts were cut
+        to fit Claude Code's hook cap, and by how much, so it can shorten the brief."""
+        positions = [{"name": "acme_org", "role": "org", "_org": "acme", "_orgid": "acme"},
+                     {"name": "thr", "role": "owner", "_org": "acme", "_orgid": "acme"},
+                     {"name": "of_x", "role": "x", "_org": "ofb", "_orgid": "ofb"}]
+        cut = [{"section": "the brief", "kept": 7768, "whole": 30120}, {"section": "your team", "kept": 0, "whole": 2100}]
+        self.ev("context_injected", {"position": "thr", "chars": 9438, "whole": 54623, "cut": cut}, "thr", 1)
+        self.ev("context_injected", {"position": "of_x", "chars": 9000, "whole": 40000, "cut": cut}, "of_x", 1, org="ofb")
+        self.ev("context_injected", {"position": "acme_org", "chars": 5000, "whole": 5000, "cut": []}, "acme_org", 2)
+        sent = []
+        of_corrections.send_digests(self.conn, positions, now=T0 + 600,
+                                    send=lambda to, text, log: sent.append((to, text)) or True, issues_of=lambda o: [])
+        acme = [t for to, t in sent if to == "acme:acme_org"]
+        self.assertEqual(len(acme), 1)
+        self.assertIn("- `thr`: 54,623 characters whole, 9,438 shown (the brief cut to 7,768 of 30,120; your team left "
+                      "out)", acme[0])
+        self.assertNotIn("of_x", acme[0])                                 # another organization's position: not here
+        self.assertNotIn("acme_org`", acme[0])                            # a context that fits: not named
+
     def test_structure_issues_go_in_the_same_digest_new_in_full_standing_in_one_line(self):
         """of_architect and of_field-analyst, 2026-11-10: structure issues reach the keeper in this digest."""
         positions = [{"name": "acme_org", "role": "org", "_org": "acme", "_orgid": "acme"},

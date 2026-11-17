@@ -15,9 +15,13 @@ import os
 import re
 import time
 
-BRIEF_MAX = 9000
-RULES_MAX = 4000
+BRIEF_MAX = 10 ** 6   # read whole: build() fits the context to CAP at paragraph and bullet boundaries
+RULES_MAX = 10 ** 6
 TEAM_MAX = 40
+# Claude Code saves a hook's injected output above 10,000 characters to a file and shows the agent a 2 KB preview,
+# which holds only the header and the mandate lines (hand-over b460c5ed from of_architect: 76 of 79 start contexts on
+# 2026-11-16 were over it). The context OF emits stays under CAP, with room to spare.
+CAP = 9500
 RULE_SECTIONS = ("Rules", "Working together", "Language", "Agent names", "No heavy local jobs on the Mac")
 
 
@@ -27,7 +31,7 @@ def _read(path, limit):
             text = fh.read()
     except OSError:
         return None
-    return text if len(text) <= limit else text[:limit] + f"\n…[cut at {limit} characters; read the file: {path}]"
+    return text if len(text) <= limit else text[:limit]
 
 
 def rules(agents_md, limit=RULES_MAX):
@@ -47,7 +51,7 @@ def rules(agents_md, limit=RULES_MAX):
     if keep and cur:
         parts.append("\n".join(cur))
     out = "\n\n".join(parts).strip()
-    return out[:limit] + ("\n…" if len(out) > limit else "") if out else None
+    return out[:limit] if out else None
 
 
 # What a position runs as subagents once its owner said yes (docs/method.md, "Subagents: the owner's standing yes"):
@@ -140,10 +144,61 @@ def loop_clocks(clocks, limit=8):
                "never lengthen it."])
 
 
-def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None):
+def context_path(org, position, state=None):
+    """Where the whole start context is kept when the injected one is cut: the position's state folder (mode 600)."""
+    import of_events
+    return os.path.join(state or of_events.STATE_DIR, "context", str(org), f"{position}.md")
+
+
+def fit(head, sections, cap=CAP, note=None):
+    """(text, cut) where text = HEAD and SECTIONS [(name, text)] in order, within CAP characters, each section whole,
+    cut at a line boundary (a paragraph or a bullet: never mid-sentence), or left out; CUT [(name, kept, whole)] for
+    each section not kept whole. NOTE(cut) -> the first line naming what was cut, which counts in CAP."""
+    def join(parts):
+        return "\n".join(x for x in parts if x is not None)
+    cut, keep = [], []
+    for _ in range(3):   # the note's own length depends on what is cut: settle it
+        first = note(cut) if (cut and note) else None
+        room = cap - len(join([first, head])) - (40 if first else 0)   # the note's numbers may still grow
+        keep, now = [], []
+        for name, text in sections:
+            if not text:
+                continue
+            block = "\n" + text
+            if len(block) + 1 <= room:
+                keep.append(block)
+                room -= len(block) + 1
+                continue
+            lines, taken = block.split("\n"), []
+            for ln in lines:
+                if len("\n".join(taken + [ln])) + 1 > room:
+                    break
+                taken.append(ln)
+            body = [ln for ln in taken if ln.strip()]
+            # a heading alone carries nothing: keep a part only when it holds more than the section's heading
+            if len(body) > 1:
+                part = "\n".join(taken).rstrip("\n")
+                keep.append(part)
+                room -= len(part) + 1
+                now.append((name, len(part), len(block)))
+            else:
+                now.append((name, 0, len(block)))
+        if [c[0] for c in now] == [c[0] for c in cut] and (not now or first is not None):
+            cut = now
+            break
+        cut = now
+    first = note(cut) if (cut and note) else None
+    return join([first, head] + keep), cut
+
+
+def build(position, positions, loops=None, resolve=None, runs=None, clocks=None, subagents=None, info=None, cap=CAP):
     """additionalContext for one enrolled position, or None. LOOPS: [(work id, owner|doer, loop)] of the works it owns
     or does (bin/of position_loops); RESOLVE: id -> the owner's yes in the log (bin/of _decided_resolver); RUNS: their
-    newest runs that are proxies whose condition did not hold (of_loop.blind_runs)."""
+    newest runs that are proxies whose condition did not hold (of_loop.blind_runs). The text is at most CAP characters
+    (hand-over b460c5ed): identity and mandate first, then the loop sections, the brief, the organization's binding
+    rules, the subagents section and the team, each cut at a paragraph or bullet boundary or left out, and when any is,
+    the first line names what and points to the whole context at context_path(), which INFO['full'] carries for the
+    hook to write; INFO['cut']: [(section, kept chars, whole chars)]."""
     p = next((x for x in positions if x["name"] == position), None)
     if not p or not p.get("enrolled"):
         return None
@@ -165,23 +220,39 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
         lines.append("- management functions covered: " + ", ".join(map(str, p["mandate_functions"])))
     if p.get("waiting_on"):
         lines.append(f"- registry says you wait on: {p['waiting_on']}")
-    lines += owner_measures(loops, resolve)
-    lines += not_observed_runs(runs)
-    lines += loop_clocks(clocks)
+    lines += ["- at the end of every turn: `of status working|waiting --on founder|<position>|idle|done`."]
+    head = "\n".join(lines)
+
+    def section(parts):
+        return "\n".join(parts).lstrip("\n") if parts else None
     brief = _read(os.path.join(root, p["mandate"]), BRIEF_MAX) if p.get("mandate") else None
-    if brief:
-        lines += ["", "## Brief", brief.strip()]
     r = rules(os.path.join(root, "AGENTS.md"))
-    if r:
-        lines += ["", "## Binding rules (AGENTS.md of the organization)", r]
-    lines += subagents_section(subagents)
     team = [x for x in positions if x.get("_org") == p.get("_org") and x["name"] != p["name"]
             and x.get("status") in (None, "active")][:TEAM_MAX]
-    if team:
-        lines += ["", "## Your team (message them with `of send <name> \"…\"`; ask the founder only with `of ask`)"]
-        lines += [f"- `{x['name']}` ({x.get('role')}): {x.get('summary') or ''}" for x in team]
-    lines += ["", "Your scratchpad sits under /private/tmp, which macOS's tmp_cleaner empties every night of files not "
-                  "accessed, modified or changed for 3 days: a script a cron, monitor or watch runs lives in a path "
-                  "that persists, and a watch that cannot run prints FAIL (a user organization, 2026-11-14)."]
-    lines += ["", "At the end of every turn: `of status working|waiting --on founder|<position>|idle|done`."]
-    return "\n".join(lines)
+    sections = [
+        ("the owner's measure", section(owner_measures(loops, resolve))),
+        ("runs not observed", section(not_observed_runs(runs))),
+        ("loops in testing", section(loop_clocks(clocks))),
+        ("the brief", section(["## Brief", brief.strip()]) if brief else None),
+        ("the binding rules", section(["## Binding rules (AGENTS.md of the organization)", r]) if r else None),
+        ("subagents", section(subagents_section(subagents))),
+        ("your team", section(["## Your team (message them with `of send <name> \"…\"`; ask the founder only with "
+                               "`of ask`)"] + [f"- `{x['name']}` ({x.get('role')}): {x.get('summary') or ''}"
+                                             for x in team]) if team else None),
+        ("the scratchpad note", "Your scratchpad sits under /private/tmp, which macOS's tmp_cleaner empties every night "
+                                "of files not accessed, modified or changed for 3 days: a script a cron, monitor or watch "
+                                "runs lives in a path that persists, and a watch that cannot run prints FAIL (a user "
+                                "organization, 2026-11-14)."),
+    ]
+    full = "\n".join([head] + ["\n" + t for _, t in sections if t])
+    path = context_path(org, p["name"])
+
+    def note(cut):
+        what = "; ".join(f"{n} cut to {k:,} of {w:,} characters" if k else f"{n} left out ({w:,} characters)"
+                         for n, k, w in cut)
+        return (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output ({what}). "
+                f"Read the whole context now, before anything else: {path}")
+    text, cut = fit(head, sections, cap, note)
+    if info is not None:
+        info.update(cut=cut, full=full if cut else None, file=path if cut else None, whole=len(full))
+    return text

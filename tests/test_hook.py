@@ -432,6 +432,58 @@ class HandleTest(unittest.TestCase):
         self.assertEqual(outs["S2"], "")                     # not enrolled: no context
         self.assertIn("of.context_injected", [e["event.name"] for e in self.events()])
 
+    def test_a_large_context_fits_the_cap_and_says_what_was_cut(self):
+        """Hand-over b460c5ed from of_architect: above 10,000 characters Claude Code saves a hook's output to a file and
+        shows a 2 KB preview; 76 of 79 start contexts on 2026-11-16 were over it, and the rules were cut mid-sentence."""
+        import io
+        import stat
+        import of_context
+        reg = os.path.join(self.tmp.name, "org", "registry", "positions.yaml")
+        os.makedirs(os.path.join(self.tmp.name, "org", "registry", "briefs"), exist_ok=True)
+        paras = [f"Paragraph {i}: " + "the work goes on as the owner said, sentence after sentence. " * 12
+                 for i in range(40)]
+        with open(os.path.join(self.tmp.name, "org", "registry", "briefs", "a.md"), "w") as fh:
+            fh.write("# Brief: of_a\n\n" + "\n\n".join(paras))
+        rules = "\n".join(f"- Rule {i}: do what your own tools can do, and check it before you say it is done."
+                           for i in range(80))
+        with open(os.path.join(self.tmp.name, "org", "AGENTS.md"), "w") as fh:
+            fh.write("# Org\n## Rules\n" + rules + "\n")
+        with open(reg, "w") as fh:
+            fh.write("organization: test-org\npositions:\n"
+                     "  - {name: of_a, system: of, role: a, summary: 'build it', status: active, enrolled: true,"
+                     " mandate: registry/briefs/a.md, holder: {session: S1}}\n"
+                     "  - {name: of_b, system: of, role: b, summary: 'review it', status: active, holder: {session: S2}}\n")
+        old_in, old_out = sys.stdin, sys.stdout
+        sys.stdin, sys.stdout = io.StringIO(json.dumps({"hook_event_name": "SessionStart", "session_id": "S1",
+                                                        "source": "startup", "cwd": "/x"})), io.StringIO()
+        of_hook.OUTPUT = None
+        try:
+            of_hook.main(["SessionStart"])
+            out = sys.stdout.getvalue()
+        finally:
+            sys.stdin, sys.stdout = old_in, old_out
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertLessEqual(len(ctx), of_context.CAP)
+        first = ctx.split("\n")[0]
+        self.assertTrue(first.startswith("OF: this start context is cut to fit Claude Code's 10,000-character limit"))
+        self.assertIn("the brief cut to", first)
+        path = first.rsplit(": ", 1)[1]
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        with open(path) as fh:
+            whole = fh.read()
+        self.assertIn(paras[-1].strip(), whole)                          # nothing lost: the whole is in the file
+        self.assertIn(rules.split("\n")[-1], whole)
+        self.assertIn("- at the end of every turn: `of status", ctx)    # identity and mandate are never cut
+        for ln in ctx.split("\n")[1:]:                                  # every line kept whole: never mid-sentence
+            self.assertTrue(ln in whole.split("\n"), ln[:80])
+        ev = [e for e in self.events() if e["event.name"] == "of.context_injected"][-1]["of.payload"]
+        self.assertEqual(ev["chars"], len(ctx))
+        self.assertEqual(ev["whole"], len(whole))
+        self.assertEqual(ev["cut"][0]["section"], "the brief")
+        # a small context is whole, with no note
+        small = of_context.fit("# head", [("a", "## A\none line")], 9500, lambda c: "NOTE")
+        self.assertEqual(small, ("# head\n\n## A\none line", []))
+
     def test_a_guard_warning_carries_its_rule_note(self):
         """docs/guard.md G1.9: an env file outside ~/.config/<org> is allowed with that rule's own note (not the
         bare-op one) and recorded as of.mandate_check {verdict: warn}."""

@@ -332,6 +332,33 @@ def structure_text(issues, sent, org, keeper):
     return "\n".join(lines)
 
 
+def context_text(conn, since_rowid, top, names, now):
+    """The digest's part on start contexts cut to fit Claude Code's hook cap (hand-over b460c5ed): for each position of
+    NAMES whose context was cut since the last digest (at most a day back), its whole size, what it was shown and what was
+    cut, so the structure keeper can shorten the brief. None when none was cut."""
+    latest = {}
+    for pos, pl in conn.execute(
+            "SELECT position, payload FROM event WHERE name = 'of.context_injected' AND rowid > ? AND rowid <= ? "
+            "AND ts >= ? ORDER BY rowid", (since_rowid, top, _iso(now - 86400))):
+        if pos in names:
+            try:
+                p = json.loads(pl or "{}")
+            except ValueError:
+                continue
+            if p.get("cut"):
+                latest[pos] = p
+    if not latest:
+        return None
+    lines = []
+    for pos, p in sorted(latest.items(), key=lambda x: -(x[1].get("whole") or 0)):
+        what = "; ".join(f"{c['section']} cut to {c['kept']:,} of {c['whole']:,}" if c.get("kept") else
+                         f"{c['section']} left out" for c in p["cut"])
+        lines.append(f"- `{pos}`: {p.get('whole') or 0:,} characters whole, {p.get('chars') or 0:,} shown ({what})")
+    return ("Start contexts cut to fit Claude Code's 10,000-character limit on a hook's output (each agent was told to "
+            "read its whole context from a file first; hand-over b460c5ed):\n"
+            + "\n".join(lines) + "\nShorten the brief, or move detail into files the brief names.")
+
+
 def due_digests(conn, positions, now=None, force=False, issues_of=structure_issues):
     """[(org, keeper, top rowid, text or None, structure issue ids)] for organizations whose digest is due: once per
     UTC day, at or after DIGEST_HOUR, with the corrections recorded since the last one (at most 7 days back) and the
@@ -355,8 +382,10 @@ def due_digests(conn, positions, now=None, force=False, issues_of=structure_issu
                 if r["org"] in (orgid, org)]
         keeper = of_pulse.structure_keeper(positions, org)
         issues = issues_of(org) if keeper else None
+        names = {p["name"] for p in positions if (p.get("_orgid") or p.get("_org")) == orgid}
         parts = [digest_text(rows) if rows else None,
-                 structure_text(issues, set(st["structure"].get(orgid) or []), org, keeper) if issues else None]
+                 structure_text(issues, set(st["structure"].get(orgid) or []), org, keeper) if issues else None,
+                 context_text(conn, last.get("rowid", 0), top, names, now) if keeper else None]
         text = "\n\n".join(x for x in parts if x) or None
         out.append((orgid, keeper, top, text, [i["issue_id"] for i in issues] if issues is not None else None))
     return out

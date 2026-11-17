@@ -46,6 +46,7 @@ Every notable change to Organic Framework, newest first. The format follows [Kee
 
 ### Fixed
 
+- Start context: it fits Claude Code's 10,000-character limit on a hook's output, above which the agent saw only a 2 KB preview (76 of 79 contexts on 2026-11-16). At most 9,500 characters: identity and mandate first, then the loop sections, the brief, the binding rules, the subagents section and the team, each cut at a paragraph or bullet boundary or left out, never mid-sentence. When anything is cut, the whole context is written to the position's state folder (mode 600) and the first line names what was cut and says to read that file first. `of.context_injected` records the cut; each structure keeper's daily digest names its positions' cut contexts; `of registry check` warns on an active position with a brief and no `enrolled: true` (2026-11-17, `of_platform`, hand-over `b460c5ed`).
 - The quickstart's PyYAML step: Homebrew's Python and recent Linux Pythons refuse a plain `pip install --user`.
 - On a new machine the relay never started, so agents' messages did not arrive. `of init` now installs the relay and the listener as user services and checks that each runs; it exits with code 2 when one does not. `of status` and `of send` warn when no relay runs on the machine, and `of relay on` installs the service when it is missing.
 - Capacity: a probe that got no reading (the network down) no longer moves sessions ahead of a stop, and `of capacity balance` makes no move while the API does not answer.
