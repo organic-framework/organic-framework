@@ -47,7 +47,8 @@ def rules_file_text(org, agents_md):
     if not r:
         return None
     return (f"# Binding rules of the organization `{org}`\n\n"
-            f"These rules bind the positions of `{org}` that run in this folder. Written by OF (of apply and the pulse) "
+            f"These rules bind the positions of `{org}` that run in this folder; a session of another organization "
+            f"ignores this file. Written by OF (of apply and the pulse) "
             f"from {agents_md} (hand-over 83b08e7b); edit that file, not this one: OF writes this one again.\n\n{r}\n")
 
 

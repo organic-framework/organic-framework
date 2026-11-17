@@ -44,6 +44,8 @@ class RulesFileTest(unittest.TestCase):
             text = open(out[0]).read()
             self.assertIn("- **Commit locally.** Never push.", text)          # whole, the binding section only
             self.assertNotIn("not binding", text)
+            self.assertIn("bind the positions of `acme`", text)                    # whom it binds (of_review, PR 320)
+            self.assertIn("a session of another organization ignores this file", text)
             self.assertEqual(of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={}), [])
             exclude = open(os.path.join(self.work, ".git", "info", "exclude")).read()
             self.assertIn("/.claude/rules/of-*.md", exclude)                     # never committed there
