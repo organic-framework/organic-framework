@@ -124,6 +124,10 @@ class AsksProcessor(Processor):
         # the hold (HOLD_S): rows at or after the mark wait here, projected on a copy for each write; rows before it
         # are in the carried state for good. late: projections of every row a row later than the hold caused
         self.held, self.mark, self.late = [], "", 0
+        # a start carried on from the stored view (_carry_on): its rows by event id (the columns a write keeps for asks
+        # whose events this run has not read), the checkpoint's rowid (rows up to it are in the view), the
+        # checkpoint a write stores beside the fold (CARRIED_KEY), kept for settle() in a shadow build
+        self.stored, self.carried_upto, self.carried = {}, 0, None
         import of_asks
         # a rebuild or a new version catches up on these names only (relevant() takes nothing else): a rebuild from
         # rowid 0 had read the whole log (the founder's read-path rule, 2026-11-14; seen on organic-framework PR 181)
@@ -141,6 +145,9 @@ class AsksProcessor(Processor):
     # drains after a busy store (670 rows at once, up to an hour old), counted in listen.log (of_platform's design
     # points, message 01a1eaab-8fbd).
     HOLD_S = 600
+    # the carried state at the hold's mark, stored beside the fold at each write so a start carries on from it: the
+    # mark, the asks the held rows added (absent from it) or changed (their carried versions), and its indexes
+    CARRIED_KEY = "asks_carried"
 
     SHADOW = "__new"
     suffix = ""      # "__new" while a new version is built beside the view that keeps serving
@@ -165,17 +172,81 @@ class AsksProcessor(Processor):
         self.held, self.mark = [], ""
 
     def load_state(self, conn):
-        """After a restart: the relevant rows up to the cursor, so the projection continues (a rebuild that
-        was interrupted continues from its cursor too; it then settles into the view directly)."""
-        import of_asks
+        """After a restart: the projection carries on from the stored view and the carried checkpoint beside it
+        (_carry_on), reading only the rows inside the hold and those after the checkpoint. Only where no whole view
+        and checkpoint of this version are stored does it read every relevant row up to the cursor (a rebuild that was
+        interrupted continues from its cursor too; it then settles into the view directly). The founder, 2026-11-17
+        (prompt 01a1eae5-4583, via of_conductor), translated: "it is damn inconvenient to wait; all these questions
+        must be lightweight and not wait for a start for minutes": that read took 16 to 17 minutes a start at load 60,
+        three times that day, the questions screen stale meanwhile."""
         conn.executescript(self.DDL)
         for t in ("view_asks", "view_ask_groups"):
             conn.execute(f"DROP TABLE IF EXISTS {t}{self.SHADOW}")
-        self.rows = {r["event_id"]: r for r in of_asks.load(conn)}
         self.defer, self.dirty = True, False  # the stored view is current up to the cursor
-        self.state, self.tail, self.written = None, [], {}
+        self.state, self.tail, self.written, self.held, self.mark = None, [], {}, [], ""
+        self.stored, self.carried_upto = {}, 0
         row = conn.execute("SELECT last_rowid FROM listener_cursor WHERE processor = ?", (self.name,)).fetchone()
         self.max_rowid = int(row[0]) if row else 0
+        if not self._carry_on(conn):
+            self.rows = self._read_all(conn)
+
+    @staticmethod
+    def _read_all(conn):
+        """Every relevant row of the log by event id: a start with no whole view and checkpoint stored, or a
+        projection of all rows again after one carried on from them (an event again under its id, a correction of a
+        prompt's origin, a row older than the hold's mark)."""
+        import of_asks
+        return {r["event_id"]: r for r in of_asks.load(conn)}
+
+    def _carry_on(self, conn):
+        """The carried state at the hold's mark, from the view's asks and the checkpoint (CARRIED_KEY); the rows inside
+        the hold (ts at or after the mark, up to the checkpoint's rowid) held again, and the rows the last run handled
+        after the checkpoint and never wrote, handled again. False when no whole view of this version with its fold
+        and checkpoint is stored."""
+        import of_asks
+        try:
+            def meta(key):
+                return json.loads((conn.execute("SELECT value FROM listener_meta WHERE key = ?", (key,)).fetchone()
+                                   or ["{}"])[0])
+            fold, ck = meta(of_asks.FOLD_KEY), meta(self.CARRIED_KEY)
+            stored = conn.execute("SELECT event_id, ts, org, session_id, position, kind, text, state, closed_by, "
+                                  "closed_at, closed_by_kind, to_, delegation, labels, view_version, ask FROM view_asks "
+                                  "ORDER BY ts, event_id").fetchall()
+        except Exception:  # noqa: BLE001 - no listener tables yet, or an older view: read the rows
+            return False
+        mark, upto = ck.get("mark"), int(ck.get("rowid") or 0)
+        if not (upto and mark and fold.get("rowid") == upto and stored) \
+                or any(r[14] != self.version or not r[15] for r in stored):
+            return False
+        added, changed = set(ck.get("added") or []), ck.get("changed") or {}
+        asks = [changed.get(r[0]) or json.loads(r[15]) for r in stored if r[0] not in added]
+        self.state = of_asks.state_from(asks, ck.get("indexes") or {})
+        self.mark, self.fed, self.carried_upto = mark, ck.get("fed") or "", upto
+        self.stored = {r[0]: r for r in stored}
+        self.written = dict(self.stored)  # the first write writes only what changed
+        held = []
+        for rid, e, ts, n, sid, pos, pl, org, src, host in conn.execute(
+                f"SELECT rowid, event_id, ts, name, session_id, position, payload, org, source, host_id FROM event "
+                f"WHERE ts >= ? AND name IN ({','.join('?' * len(self.catch_up_names))}) AND rowid <= ?",
+                (mark,) + tuple(self.catch_up_names) + (upto,)):
+            try:
+                pl = json.loads(pl) if pl else {}
+            except ValueError:
+                pl = {}
+            if of_asks.relevant(n, src, pl):
+                held.append({"event_id": e, "ts": ts, "name": n, "session_id": sid, "position": pos, "payload": pl,
+                             "org": org, "host_id": host})
+        self.held = sorted(held, key=lambda r: r["ts"] or "")
+        self.rows = {r["event_id"]: r for r in self.held}
+        start = upto
+        while start < self.max_rowid:  # handled before the restart and not yet in the view
+            rows = fetch(conn, start, top=self.max_rowid, names=self.catch_up_names)
+            if not rows:
+                break
+            self.handle(conn, rows)
+            start = rows[-1]["rowid"]
+        self.max_rowid = max(self.max_rowid, upto)
+        return True
 
     def settle(self, conn):
         """After the first catch-up: one projection, then the shadow tables replace the view at once."""
@@ -193,7 +264,8 @@ class AsksProcessor(Processor):
                 if self.fold:
                     import of_asks
                     conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (of_asks.FOLD_KEY, self.fold))
-                    self.fold = None
+                    conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (self.CARRIED_KEY, self.carried))
+                    self.fold = self.carried = None
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -204,7 +276,8 @@ class AsksProcessor(Processor):
     def handle(self, conn, rows):
         if rows:
             self.max_rowid = max(self.max_rowid, max(r.get("rowid") or 0 for r in rows))
-        new = [r for r in rows if self._relevant(r)]
+        # a start carried on from the view (_carry_on): rows up to its checkpoint are in it or held already
+        new = [r for r in rows if self._relevant(r) and (r.get("rowid") or 0) > self.carried_upto]
         if not new:
             return False
         late, oldest = 0, None
@@ -248,35 +321,58 @@ class AsksProcessor(Processor):
         import copy
         import of_asks
         if self.state is None:
+            if self.stored:  # carried on from the view, with only the rows since: every row, read now
+                self.rows = {**self._read_all(conn), **self.rows}
+                self.stored, self.carried_upto = {}, 0
             self.state, self.held = of_asks.new_state(), sorted(self.rows.values(), key=lambda r: r["ts"] or "")
             self.fed, self.mark = "", ""  # imported history can arrive late: every row, in order, through the hold
         else:  # only the rows since the last write, on the carried projection: the same asks (of_asks.project)
             self.held = sorted(self.held + self.tail, key=lambda r: r["ts"] or "")
         self.tail = []
         if self.held:
-            self.fed = max(self.fed, self.held[-1]["ts"] or "")
+            # never past now: a row stamped ahead (a wrong clock) would move the mark ahead and make every row after
+            # it late (of_platform on PR 310)
+            self.fed = max(self.fed, min(self.held[-1]["ts"] or "", of_events.now_iso()))
             self.mark = max(self.mark, _minus_s(self.fed, self.HOLD_S))
             k = bisect.bisect_left([r["ts"] or "" for r in self.held], self.mark)
             of_asks.project(self.held[:k], self.state)  # old enough: into the carried projection for good
             self.held = self.held[k:]
         view = self.state
         if self.held:  # the rows inside the hold, on a copy: the view is whole, the carried state waits for them
+            t0 = time.time()
             view = copy.deepcopy(self.state)
             of_asks.project(self.held, view)
+            if time.time() - t0 >= 1:  # 0.08 s for 7,643 asks when measured (of_platform on PR 310)
+                print(f"of listen: slow asks hold copy: {time.time() - t0:.1f} s ({len(self.held)} rows held)",
+                      flush=True)
+        carried = self.state["by_id"]
+        checkpoint = json.dumps({
+            "mark": self.mark, "fed": self.fed, "rowid": self.max_rowid,
+            "added": [a["event_id"] for a in view["asks"] if a["event_id"] not in carried],
+            "changed": {a["event_id"]: carried[a["event_id"]] for a in view["asks"] if view is not self.state
+                        and a["event_id"] in carried and carried[a["event_id"]] != a},
+            "indexes": {k: v for k, v in of_asks.fold_meta(self.state, 0, "").items()
+                        if k in ("open_by_session", "declared_turn", "waits_founder")}},
+            ensure_ascii=False, default=str)
         asks = view["asks"]
         groups = of_asks.group(of_asks.for_owner(asks))
         by_id = self.rows
         rows = []  # built before the write lock is taken
         for a in asks:
-            ev = by_id.get(a["event_id"]) or {}
-            pl = ev.get("payload") or {}
-            closer = by_id.get(a["closed_by"]) or {}
-            labels = {k: v for k, v in (pl.get("classifications") or {}).items() if isinstance(v, (bool, str))}
-            labels.update({k: pl.get(k) for k in ("detected_by", "classifier_version") if pl.get(k)})
-            rows.append((a["event_id"], a["ts"], ev.get("org"), a["session_id"], a["position"], a["kind"],
-                         a["text"], a["state"], a["closed_by"], a["closed_at"], closer.get("name"), a.get("to"),
-                         pl.get("delegation"), json.dumps(labels, ensure_ascii=False), self.version,
-                         json.dumps(a, ensure_ascii=False, default=str)))
+            ev, old = by_id.get(a["event_id"]), self.stored.get(a["event_id"])
+            if ev is None and old is not None:  # carried on from the view: its own columns, as written
+                org, delegation, labels = old[2], old[12], old[13]
+            else:
+                pl = (ev or {}).get("payload") or {}
+                lab = {k: v for k, v in (pl.get("classifications") or {}).items() if isinstance(v, (bool, str))}
+                lab.update({k: pl.get(k) for k in ("detected_by", "classifier_version") if pl.get(k)})
+                org, delegation, labels = (ev or {}).get("org"), pl.get("delegation"), json.dumps(lab, ensure_ascii=False)
+            closer = by_id.get(a["closed_by"])
+            closer_kind = closer.get("name") if closer else (
+                old[10] if old is not None and old[8] == a["closed_by"] else None)
+            rows.append((a["event_id"], a["ts"], org, a["session_id"], a["position"], a["kind"],
+                         a["text"], a["state"], a["closed_by"], a["closed_at"], closer_kind, a.get("to"),
+                         delegation, labels, self.version, json.dumps(a, ensure_ascii=False, default=str)))
         # every row on this run's first write and in a shadow build; after that only the rows that changed (a flush
         # rewrote all 5,700 rows in one transaction, 12 to 179 s behind the store's other writers on 2026-11-13)
         full = not self.written or bool(self.suffix)
@@ -297,9 +393,10 @@ class AsksProcessor(Processor):
             # in when settle() swaps it in
             fold = json.dumps(of_asks.fold_meta(view, self.max_rowid, self.fed), ensure_ascii=False)
             if self.suffix:
-                self.fold = fold
+                self.fold, self.carried = fold, checkpoint
             else:
                 conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (of_asks.FOLD_KEY, fold))
+                conn.execute("INSERT OR REPLACE INTO listener_meta VALUES (?, ?)", (self.CARRIED_KEY, checkpoint))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

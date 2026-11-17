@@ -389,6 +389,76 @@ class ListenTest(unittest.TestCase):
         same()
         self.assertIn(old, {a["event_id"] for a in of_listen.read_asks(self.conn)})
 
+    def test_a_start_carries_on_from_the_view_and_its_checkpoint_never_reading_the_whole_log(self):
+        """The founder, 2026-11-17 (prompt 01a1eae5-4583, via of_conductor), translated: "all these questions must be
+        lightweight and not wait for a start for minutes": a start read every relevant row of the log, 16 to 17
+        minutes at load 60. It now carries on from the view and the carried checkpoint beside it."""
+        import time as _t
+
+        def at(s):
+            return _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - s))
+
+        def answer(aid, s):
+            rec = of_events.record("agent_question_answered", {"ask_id": aid, "ask_ids": [aid], "by": "owner"},
+                                   position="a", session="S-a", org="ofb")
+            rec["timestamp"] = at(s)
+            of_store.add_event(self.conn, rec)
+
+        def same():
+            want = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
+            self.assertEqual({a["event_id"]: a["state"] for a in of_listen.read_asks(self.conn)}, want)
+            return want
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S = 0
+        cur = of_listen.prepare(self.conn, procs)
+        a1 = self.ask("Merge PR 2349 now?", ts=at(1200))
+        a2 = self.ask("Rotate the etcd keys?", position="b", ts=at(900))
+        answer(a1, 700)
+        a3 = self.ask("Open the gateway window?", position="c", ts=at(30))  # inside the hold
+        answer(a2, 100)  # inside the hold too: the view has a2 answered, the carried state still open
+        of_listen.step(self.conn, procs, cur)
+        self.assertTrue(procs[0].held)
+        cols = "event_id, org, state, closed_by_kind, labels, delegation"
+        before = {r[0]: r for r in self.conn.execute(f"SELECT {cols} FROM view_asks")}
+        # the last run handled one more row and stopped before writing it
+        procs[0].MIN_FLUSH_S, procs[0].last_flush = 3600, _t.time()
+        a4 = self.ask("Drain node 3?", position="d", ts=at(10))
+        of_listen.step(self.conn, procs, cur)
+        saved = of_asks.load
+
+        def whole(*a, **k):
+            raise AssertionError("a start read the whole log")
+        of_asks.load = whole
+        try:
+            procs2 = [of_listen.AsksProcessor()]
+            procs2[0].MIN_FLUSH_S = 0
+            cur2 = of_listen.prepare(self.conn, procs2)
+            of_listen.step(self.conn, procs2, cur2)
+            # late, but inside the hold: its asker withdrew it before the answer came, so in order it is withdrawn
+            # (the carried version from the checkpoint, not the view's answered one, takes it)
+            w = of_events.record("ask_withdrawn", {"ask_id": a2, "by": "b"}, position="b", session="S-b", org="ofb")
+            w["timestamp"] = at(300)
+            of_store.add_event(self.conn, w)
+            of_listen.step(self.conn, procs2, cur2)
+            self.assertEqual(procs2[0].late, 0)
+        finally:
+            of_asks.load = saved
+        want = same()
+        self.assertEqual((want[a2], want[a3], want[a4]), ("withdrawn", "open", "open"))
+        # the founder's queue is written whole at each write (view rows are only ever replaced): a3 and a4 are in it
+        queue = {i for g in of_listen.read_groups(self.conn) for i in g["ask_ids"]}
+        self.assertTrue({a3, a4} <= queue, queue)
+        after = {r[0]: r for r in self.conn.execute(f"SELECT {cols} FROM view_asks")}
+        self.assertEqual(after[a1], before[a1])  # its columns kept as written
+        self.assertEqual(after[a2][1:4], ("ofb", "withdrawn", "of.ask_withdrawn"))
+        # a row older than the hold's mark after such a start: every row is read, and the view is the same
+        self.ask("An old one?", position="e", ts=at(5000))
+        of_listen.step(self.conn, procs2, cur2)
+        self.assertEqual(procs2[0].late, 1)
+        same()
+        self.assertEqual(self.conn.execute(f"SELECT {cols} FROM view_asks WHERE event_id = ?", (a1,)).fetchone(),
+                         after[a1])
+
     def test_view_matches_projection_incrementally_and_after_replay(self):
         procs = [of_listen.AsksProcessor()]
         cur = of_listen.prepare(self.conn, procs)
