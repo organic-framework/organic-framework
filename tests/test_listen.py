@@ -86,6 +86,41 @@ class ListenTest(unittest.TestCase):
             stop.set()
             release.set()
 
+    def test_a_hung_timer_holds_no_other_timer(self):
+        """2026-11-17: the paste tick searched its sources for over an hour at load 90, and the pulse, which types the
+        notes, never turned: one thread per timer."""
+        import threading
+        import time as _t
+        release, turned = threading.Event(), []
+
+        class Hung(of_listen.Processor):
+            name, version, tick_s = "hung", "1", 0.01
+
+            def tick(self, conn, now):
+                release.wait(10)
+
+        class Pulse(of_listen.Processor):
+            name, version, tick_s = "pulse", "1", 0.01
+
+            def tick(self, conn, now):
+                turned.append(now)
+        procs = [Hung(), Pulse()]
+        locks = {p.name: threading.Lock() for p in procs}
+        ticks = {p.name: 0.0 for p in procs}
+        stop = threading.Event()
+        path = os.path.join(self.tmp.name, "of.db")
+        of_listen.tick_thread(procs, ticks, locks, threading.Event(), stop=stop, log=lambda m: None,
+                              connect=lambda: of_store.connect(path))
+        try:
+            for _ in range(50):
+                if len(turned) >= 3:
+                    break
+                _t.sleep(0.1)
+            self.assertGreaterEqual(len(turned), 3)           # the pulse turns while the other timer hangs
+        finally:
+            stop.set()
+            release.set()
+
     def test_current_asks_reads_the_view_and_folds_its_tail_never_the_whole_log(self):
         """of_platform's log-readers design (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.2-3.3):
         the asks view's read returns the asks with the cursor they reflect, their age and a late flag; it folds at most

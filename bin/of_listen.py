@@ -1331,35 +1331,39 @@ def _save_ticks(ticks, processors):
 
 
 def tick_thread(processors, ticks, locks, changed, stop=None, log=print, connect=None):
-    """Run the processors' timers in their own thread, on their own connection (of_asks msg 01a1d67e-8752,
+    """Run each processor's timer in a thread of its own, on a connection of its own (of_asks msg 01a1d67e-8752,
     2026-11-13: ticks of 442 s, 132 s and 71 s held the loop, the heartbeat went past STALE_S, and every reader fell
-    back to projecting the whole log). A processor's tick and its catch-up never run at once: each holds its lock."""
+    back to projecting the whole log). One thread per timer, not one for all: on 2026-11-17 the paste tick searched its
+    sources for over an hour at load 90 and no other timer turned, the pulse and its notes included
+    (organic-framework-build reports/of-log-readers-2026-11-14.md, 3.4). A processor's tick and its catch-up never run
+    at once: each holds its lock. Returns the threads."""
     import threading
-    conn = [None]
+    saving = threading.Lock()
 
-    def loop():
+    def loop(p):
+        conn = None
         while not (stop and stop.is_set()):
-            due = [p for p in processors if p.tick_s and time.time() - ticks[p.name] >= p.tick_s]
-            for p in due:
+            if time.time() - ticks[p.name] >= p.tick_s:
                 ticks[p.name] = time.time()
                 with locks[p.name]:
                     try:
-                        if conn[0] is None:
-                            conn[0] = (connect or __import__("of_store").connect)()
+                        if conn is None:
+                            conn = (connect or __import__("of_store").connect)()
                         t0 = time.time()
-                        if p.tick(conn[0], t0):
+                        if p.tick(conn, t0):
                             changed.set()
                         slow(p.name, "tick", t0)
                     except Exception as e:  # noqa: BLE001 - one timer failing never stops the others
                         log(f"of listen: {p.name} tick: {type(e).__name__}: {e}")
-            if due:
-                _save_ticks(ticks, processors)
-            _touch(ticks_path())  # the watchdog's sign that the timers still turn
+                with saving:
+                    _save_ticks(ticks, processors)
+                    _touch(ticks_path())  # the watchdog's sign that the timers still turn
             time.sleep(POLL_S)
-    t = threading.Thread(target=loop, name="of-listen-ticks", daemon=True)
-    t.start()
-    return t
-
+    threads = [threading.Thread(target=loop, args=(p,), name=f"of-listen-tick-{p.name}", daemon=True)
+               for p in processors if p.tick_s]
+    for t in threads:
+        t.start()
+    return threads
 
 SLOW_S = 5
 
