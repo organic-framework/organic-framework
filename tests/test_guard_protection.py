@@ -65,6 +65,49 @@ class KeychainTest(unittest.TestCase):
         self.assertIsNone(bash("security find-generic-password -s acme-backup-r2-key-id"))
 
 
+class LaunchFileTest(unittest.TestCase):
+    """docs/guard.md G29 (of_server's review of organic-framework PR 270): ~/.config/of/claude-bin names the program OF
+    starts in place of Claude Code for every session and probe; it and the executable it names are the owner's."""
+
+    def setUp(self):
+        self.home = os.path.realpath(os.path.expanduser("~"))
+        self.cfg = os.path.join(self.home, ".config", "of", "claude-bin")
+        self.wrap = os.path.join(self.home, "bin", "claude wrapper")
+        os.makedirs(os.path.dirname(self.cfg), exist_ok=True)
+        os.makedirs(os.path.dirname(self.wrap), exist_ok=True)
+
+    def tearDown(self):
+        for f in (self.cfg, self.wrap):
+            if os.path.exists(f):
+                os.remove(f)
+
+    def deny(self, cmd):
+        return of_guard.critical_deny("Bash", {"command": cmd})
+
+    def test_the_file_is_never_written_by_an_agent_even_before_it_exists(self):
+        for cmd in ("echo /tmp/claude-501/x/w > ~/.config/of/claude-bin", 'printf x >> "$HOME/.config/of/claude-bin"',
+                    "cp w ~/.config/of/claude-bin", "mv w ~/.config/of/claude-bin", "ln -sf /x ~/.config/of/claude-bin",
+                    "tee ~/.config/of/claude-bin < w"):
+            hit = self.deny(cmd)
+            self.assertTrue(hit and hit[0] == of_guard.LAUNCH_DENY, cmd)
+        self.assertTrue(of_guard.critical_deny("Write", {"file_path": self.cfg, "content": "/x"}))
+        self.assertIsNone(self.deny("cat ~/.config/of/claude-bin"))
+        self.assertIsNone(self.deny("echo x > ~/.config/of/other.yaml"))
+
+    def test_the_executable_it_names_is_never_written_by_an_agent(self):
+        with open(self.wrap, "w") as fh:
+            fh.write("#!/bin/sh\nexec claude \"$@\"\n")
+        with open(self.cfg, "w") as fh:
+            fh.write(self.wrap + "\n")
+        q = "~/bin/claude\\ wrapper"
+        for cmd in (f"echo x > {q}", f"cp evil.sh {q}", f"chmod 777 {q}", f"rm {q}", f"sed -i s/a/b/ {q}"):
+            hit = self.deny(cmd)
+            self.assertTrue(hit and hit[0] == of_guard.LAUNCH_DENY, cmd)
+        self.assertTrue(of_guard.critical_deny("Edit", {"file_path": self.wrap, "old_string": "a", "new_string": "b"}))
+        for cmd in (f"{q} --version", f"cat {q}", "echo x > ~/bin/other"):
+            self.assertIsNone(self.deny(cmd), cmd)
+
+
 class ProtectedCodeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

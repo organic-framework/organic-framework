@@ -2257,6 +2257,45 @@ GUARD_STATE_DENY = ("the guard's own cache of what organizations protect, which 
 _GUARD_STATE_NAMES = ("guard-credentials.json", "passkey-revoked.json")
 
 
+# G29: the program OF starts in place of Claude Code, for every session and probe with each account's sign-in, is the
+# machine owner's to name: `~/.config/of/claude-bin` and the executable it names are never written by agents
+# (of_server's review of organic-framework PR 270, which proposes that file)
+LAUNCH_FILE = "~/.config/of/claude-bin"
+LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session, with each account's sign-in, which "
+               "only the machine's owner names and writes (~/.config/of/claude-bin and the executable it names; "
+               "docs/guard.md G29)")
+
+
+def _launch_targets():
+    """The real paths of LAUNCH_FILE and of the executable its first line names, when it names one."""
+    f = os.path.realpath(_expanduser(LAUNCH_FILE))
+    out = [f]
+    try:
+        with open(f, errors="replace") as fh:
+            named = fh.readline(4096).strip()
+    except OSError:
+        return out
+    if named:
+        out.append(os.path.realpath(_expanduser(named)))
+    return out
+
+
+def _launch_file(path, cwd=None):
+    """Does PATH name LAUNCH_FILE or the executable it names? By real path, and by pattern for a glob."""
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    targets = _launch_targets()
+    if any(ch in p for ch in "*?["):
+        import fnmatch
+        rp = _real_pattern(p)
+        return any(fnmatch.fnmatchcase(t, rp) for t in targets)
+    return os.path.realpath(p) in targets
+
+
 def _guard_state_file(path, cwd=None):
     """Does PATH name one of the guard's own cache files? By its real path, so a link to the state folder counts, and
     by pattern, so a glob the shell would expand to one counts (of_secrets-review on organic-framework PR 65)."""
@@ -2893,6 +2932,9 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     state = next((f for f in files if _guard_state_file(f, cwd)), None)
     if state:
         return GUARD_STATE_DENY, state
+    launch = next((f for f in files if _launch_file(f, cwd)), None)
+    if launch:
+        return LAUNCH_DENY, launch
     if not _ORG_PROTECTION["code"]:
         return None
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
@@ -3789,6 +3831,8 @@ def critical_deny(tool, tool_input, cwd=None):
         return PROTECTED_CODE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _guard_state_file(path, cwd):
         return GUARD_STATE_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
+        return LAUNCH_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Grep") and _memory_path(path):
