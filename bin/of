@@ -5476,6 +5476,17 @@ def cmd_pulse(args):
         elsewhere = {}
         if not args.quiet:
             print(f"presence: {e}")
+    # early, before the slow parts: at load 90 (2026-11-17) a pulse took 342 s, the listener stops it at 240 s, and
+    # notes placed after the capacity watch were never reached
+    try:  # work booked for later with no basis, as of tempo judged it (bin/of_tempo.py; hand-over 277de578)
+        import time as _time
+        mem = of_pulse.load_memory()
+        of_pulse.booking_notes(positions, agents, bind, mem, _time.time(), conn,
+                               prompt=None if args.no_nudge else of_pulse.herdr_prompt,
+                               log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere)
+        of_pulse.save_memory(mem)
+    except Exception as e:  # noqa: BLE001
+        print(f"booking notes: {e}")
     out = of_pulse.run(positions, agents, rows, asks, bind, prompt=None if args.no_nudge else of_pulse.herdr_prompt,
                        log=(lambda m: None) if args.quiet else print, handovers=handovers,
                        offer=None if args.no_nudge else (lambda h: _handover_offer(h, positions, agents)),
@@ -5511,15 +5522,6 @@ def cmd_pulse(args):
         of_pulse.save_memory(mem)
     except Exception as e:  # noqa: BLE001
         print(f"loop stalls: {e}")
-    try:  # work booked for later with no basis, as of tempo judged it (bin/of_tempo.py; hand-over 277de578)
-        import time as _time
-        mem = of_pulse.load_memory()
-        of_pulse.booking_notes(positions, agents, bind, mem, _time.time(), conn,
-                               prompt=None if args.no_nudge else of_pulse.herdr_prompt,
-                               log=(lambda m: None) if args.quiet else print, elsewhere=elsewhere)
-        of_pulse.save_memory(mem)
-    except Exception as e:  # noqa: BLE001
-        print(f"booking notes: {e}")
     try:  # capacity (of_capacity): ask the owner once when a position's account passes a threshold
         _capacity_watch(positions, (lambda m: None) if args.quiet else print)
         import of_capacity
