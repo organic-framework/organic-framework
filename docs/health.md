@@ -41,6 +41,7 @@ A limit here is the starting value. Its owner tunes it in this table with the ev
 - **The command.** `of health` prints the table.
 - **The page.** Studio's Health tab shows the table, with each failed check's owner and the time since it failed (`of_studio`).
 - **The owner of a check** gets one `--fyi` once it has failed for 5 minutes, and one when that failure is over; a check that fails and recovers within 5 minutes tells nobody (2026-11-14: swap around its limit failed and recovered every few minutes, one `--fyi` each time).
+- **A failure that lasts is told again** (2026-11-17, `of_architect`, on `of_platform`'s proposal, message `01a1e82f-f81e`). While a check stays failed, its owner is told once a day. The first reminder, a day after the failure began, is typed into the owner's pane, not `--fyi`. One `--fyi` is easy to miss among health notes: on 2026-11-14 a check failed, its owner missed the one `--fyi`, and the check stayed failed for three days until a hand-over check found it on the Health tab. It was a stale cursor, not a real lag. The same holds for of-server's own checks: of-server tells their owners in the same way.
 - **The person.** A card goes to the organization's owner only when his own work is hit, after 5 minutes failed:
   - `server.health`;
   - `relay.oldest`;
