@@ -106,6 +106,42 @@ class ProjectionTest(Store):
         self.amend(task, 3, "2026-11-15T10:32:00Z", task="Changed after his done?")
         self.assertEqual(self.asks()[task]["version"], 2)
 
+    def test_a_tasks_command_and_where_are_amended_with_its_steps(self):
+        """of_architect, message 01a1e8ed-cc9e: a task whose Homebrew command changed could only be withdrawn and filed
+        again, a replacement card. Its command and where it is done are part of its steps."""
+        task = self.ask("Install the runner", options=(), task=True, steps="1. Open a terminal.",
+                        command="brew install runner", where="machine")
+        self.amend(task, 2, "2026-11-15T10:10:00Z", command="curl -fsSL https://example.org/runner | sh")
+        a = self.asks()[task]
+        self.assertEqual((a["command"], a["where"], a["amended"]["changed"]),
+                         ("curl -fsSL https://example.org/runner | sh", "machine", ["command"]))
+        self.amend(task, 3, "2026-11-15T10:20:00Z", where="phone")  # a command stays: typed in a terminal
+        self.assertEqual(self.asks()[task]["where"], "machine")
+        self.amend(task, 4, "2026-11-15T10:30:00Z", command=None, where="browser", task="1. Open the page.")
+        a = self.asks()[task]
+        self.assertEqual((a["command"], a["where"], a["steps"], a["amended"]["all"]),
+                         (None, "browser", "1. Open the page.", ["task", "command", "where"]))
+        p = of_asks_answer.ask_details(self.conn, task)[0]
+        self.assertEqual((p["version"], p["command"], p["where"], p["steps"]), (4, None, "browser", "1. Open the page."))
+        raw = json.loads(self.conn.execute("SELECT payload FROM event WHERE event_id = ?", (task,)).fetchone()[0])
+        v2 = of_asks.at_version(self.conn, task, raw, "2026-11-15T10:00:00Z", "of_a", of_asks.ask_host(self.conn, task),
+                                version=2)
+        self.assertEqual((v2["command"], v2["where"]), ("curl -fsSL https://example.org/runner | sh", "machine"))
+        question = self.ask("Deploy the relay?", ts="2026-11-15T10:35:00Z", topic_key="k2")  # another decision
+        self.amend(question, 2, "2026-11-15T10:40:00Z", command="rm -rf /tmp/x")  # a question has no command
+        self.assertIsNone(self.asks()[question].get("command"))
+        of_locale.set_language("en")
+        try:
+            self.assertEqual(of_asks_tui.amended_line({"amended": {"version": 4, "at": "2026-11-15T10:30:00Z",
+                                                                   "changed": ["task", "command", "where"]}}, None),
+                             "Amended (version 4, at 10:30Z): the steps, the command, where to do it")
+        finally:
+            of_locale.set_language(None)
+        self.add("agent_question_answered", {"ask_id": task, "ask_ids": [task], "answer": "done", "via": "asks-ui",
+                                             "by": "owner"}, "2026-11-15T10:50:00Z")  # he said done: no more amends
+        self.amend(task, 5, "2026-11-15T10:51:00Z", command="brew install runner")
+        self.assertIsNone(self.asks()[task]["command"])
+
     def test_at_version_gives_each_version(self):
         aid = self.ask(yes_option=1, work="w")
         self.amend(aid, 2, "2026-11-15T10:10:00Z", options=["no", "yes"], yes_option=2)
@@ -393,6 +429,31 @@ class CliTest(unittest.TestCase):
         self.run_of("asks", "withdraw", short)
         r = self.run_of("ask", "Lift it now?", "--amend", short, "--from", "of_a")
         self.assertIn("is withdrawn: only an open ask with no answer is amended", r.stderr)
+
+    def test_a_tasks_command_and_where_through_the_cli(self):
+        r = self.run_of("ask", "Install the runner", "--task", "1. Open a terminal.", "--command", "brew install runner",
+                        "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        tid = self.events("of.agent_question")[-1][0]
+        short = tid[-8:]
+        r = self.run_of("ask", "Install the runner", "--amend", short, "--where", "phone", "--from", "of_a")
+        self.assertIn("has a command to paste, typed in a terminal", r.stderr)
+        r = self.run_of("ask", "Install the runner", "--amend", short, "--command", "port install runner",
+                        "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"amended ask {short}: version 2 (command changed)", r.stdout)
+        r = self.run_of("ask", "Install the runner", "--amend", short, "--command", "none", "--where", "browser",
+                        "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        p = self.events("of.ask_amended")[-1][1]
+        self.assertEqual((p["version"], p["changed"], p["command"], p["where"]),
+                         (3, ["command", "where"], None, "browser"))
+        r = self.run_of("ask", "Lift the hold on the relay?", "--options", "yes|no", "--from", "of_a")
+        qid = self.events("of.agent_question")[-1][0]
+        for flag in (("--command", "ls"), ("--where", "phone")):
+            r = self.run_of("ask", "Lift the hold on the relay?", "--amend", qid[-8:], *flag, "--from", "of_a")
+            self.assertIn("is a question; work for the founder's hands is another decision", r.stderr, flag)
+        self.assertEqual(len(self.events("of.ask_amended")), 2)
 
     def test_a_new_blocking_on_a_routed_ask_escalates_it_once(self):
         r = self.run_of("ask", "Drain node 3?", "--options", "yes|no", "--from", "k8s_keeper")

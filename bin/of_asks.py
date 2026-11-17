@@ -92,7 +92,7 @@ ANY_SOURCE = ("of.ask_withdrawn", "of.agent_question_answered", "of.agent_questi
 # reconcile), not only by hooks
 
 # What `of ask --amend` may change (docs/events.md, of.ask_amended): the payload carries the new value under each name
-AMENDABLE = ("text", "options", "yes_option", "tags", "due", "blocking", "task")
+AMENDABLE = ("text", "options", "yes_option", "tags", "due", "blocking", "task", "command", "where")
 
 
 def relevant(name, source, payload=None):
@@ -419,6 +419,10 @@ def amend(ask, r):
         ask["kind"] = "question (declared)" + (" blocking" if p.get("blocking") else "")
     if "task" in ch and ask.get("task"):
         ask["steps"] = str(p.get("task") or "")[:4000]
+    if ask.get("task") and {"command", "where"} & set(ch):  # its command to paste and where it is done, as filed
+        cmd = p.get("command") if "command" in ch else ask.get("command")
+        where = p.get("where") if "where" in ch else ask.get("where")
+        ask.update(command=cmd, where="machine" if cmd or where not in ("phone", "browser") else where)
     before = (ask.get("amended") or {}).get("all") or []
     ask["version"] = v
     ask["amended"] = {"version": v, "at": r["ts"], "changed": ch, "all": [c for c in AMENDABLE if c in ch or c in before]}
@@ -496,7 +500,7 @@ def ask_host(conn, ask_id):
 
 def at_version(conn, ask_id, payload, ts, position, host, version=None):
     """The ask's payload (its of.agent_question's) as of `version`, the newest when None: its question, options,
-    yes_option, tags, due, blocking and steps after each amend up to it, with `version` (1 when never amended) and
+    yes_option, tags, due, blocking, and a task's steps, command and where after each amend up to it, with `version` (1 when never amended) and
     `amended` ({version, at, changed, all}). Only the amends of its own position and machine (HOST: the ask's host_id)
     count (docs/events.md, of.ask_amended)."""
     out = dict(payload or {})
@@ -518,6 +522,9 @@ def at_version(conn, ask_id, payload, ts, position, host, version=None):
                 out[k] = p.get(k)
         if "task" in ch and out.get("task"):
             out["steps"] = p.get("task")
+        for k in ("command", "where"):
+            if k in ch and out.get("task"):
+                out[k] = p.get(k)
         before = (out.get("amended") or {}).get("all") or []
         out.update(version=v, amended={"version": v, "at": ets, "changed": ch,
                                        "all": [c for c in AMENDABLE if c in ch or c in before]})
