@@ -1327,11 +1327,21 @@ SCENARIOS += [
 
 # ---- loop-stalled, diagnose.md 2.29 (of_field-analyst, v0 2026-11-16; the founder's prompt 01a1e116-e3de, relayed by
 # of_conductor, message 01a1e117-3301): a hypothesis in testing, and no run, decision or stated wait for 4 h at the
-# window's end (2026-11-08T00:00Z). Stated waits (of.loop_wait) are not in the projection yet: their parts are tested on
-# a card in tests/test_diagnose_rules.py until of_studio projects them.
+# window's end (2026-11-08T00:00Z). Stated waits (of.loop_wait) hold the clock until their expect_at; no scenario waits
+# on an ask, whose end the projection reads from this machine's asks (tests/test_diagnose_rules.py covers it).
 def _ltesting(i, ts, hid):
     return ev(f"lt{i}", ts, "of.loop_hypothesis", "s-bot_search",
               {"work": _LW, "id": hid, "change": hid, "status": "testing"}, position="bot_search")
+
+
+def _lwait(i, ts, on, until, ref=None):
+    pl = {"work": _LW, "on": on, "expect_at": until, "by": "bot_search"}
+    if ref:
+        pl["ref"] = ref
+    return ev(f"lw{i}", ts, "of.loop_wait", "s-bot_search", pl, position="bot_search")
+
+
+_LSTART = [_ltesting(1, "2026-11-07T08:00Z", "h1"), _lrun(1, "2026-11-07T09:00Z", "offline", "h1")]
 
 
 SCENARIOS += [
@@ -1357,5 +1367,31 @@ SCENARIOS += [
                "negative", rule="ap.loop-stalled"),
     _loop_case("loop-stalled/negative-nothing-in-testing",
                [_lhyp(1, "2026-11-05T09:00Z", "h1", "an open hypothesis waits for its first run")],
+               "negative", rule="ap.loop-stalled"),
+    # part wait_over: the runner was expected by 12:00, and nothing followed for 12 h
+    _loop_case("loop-stalled/positive-wait-over",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-07T12:00Z", "job-7")],
+               "positive", rule="ap.loop-stalled"),
+    # part calendar: a wait on the calendar holds nothing, so the clock runs from the 09:00 run
+    _loop_case("loop-stalled/positive-calendar-only",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "calendar", "2026-11-09T10:00Z")],
+               "positive", rule="ap.loop-stalled"),
+    # a restatement of the same wait with a later end counts for nothing: the first one's 12:00 holds
+    _loop_case("loop-stalled/positive-wait-lengthened",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-07T12:00Z", "job-7"),
+                          _lwait(2, "2026-11-07T18:00Z", "runner", "2026-11-08T06:00Z", "job-7")],
+               "positive", rule="ap.loop-stalled"),
+    # of two current waits, the earliest promise holds: the window was due at 14:00, the runner later
+    _loop_case("loop-stalled/positive-earliest-wait-over",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-08T06:00Z", "job-7"),
+                          _lwait(2, "2026-11-07T11:00Z", "window", "2026-11-07T14:00Z", "w-1")],
+               "positive", rule="ap.loop-stalled"),
+    # part held: the runner is expected after the window's end
+    _loop_case("loop-stalled/negative-held",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-08T06:00Z", "job-7")],
+               "negative", rule="ap.loop-stalled"),
+    # wait_over below the 4 h threshold: expected by 22:00, 2 h before the window's end
+    _loop_case("loop-stalled/negative-wait-just-over",
+               _LSTART + [_lwait(1, "2026-11-07T10:00Z", "runner", "2026-11-07T22:00Z", "job-7")],
                "negative", rule="ap.loop-stalled"),
 ]
