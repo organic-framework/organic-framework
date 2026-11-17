@@ -419,8 +419,6 @@ class ListenTest(unittest.TestCase):
         self.assertTrue(of_listen.fresh(self.conn))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class DeliverProcessorTest(ListenTest):
@@ -638,3 +636,29 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(out, [f"{of_listen.LAUNCHD_LABEL}: loaded", f"{of_listen.WATCHDOG_LABEL}: loaded"])
         self.assertEqual(of_listen.install_launchd(run=run, plists=units, agents_dir=self.tmp.name),
                          [f"{of_listen.LAUNCHD_LABEL}: unchanged", f"{of_listen.WATCHDOG_LABEL}: unchanged"])
+
+
+class PruneTest(unittest.TestCase):
+    def test_a_processor_that_no_longer_runs_loses_its_cursor_and_its_rows(self):
+        """2026-11-17 (of_architect, message 01a1e82c-d448): fold:escalated, removed from the code, kept its cursor,
+        and the health check read it as three days behind."""
+        import sqlite3
+        import of_listen
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(of_listen.DDL)
+        conn.execute("CREATE TABLE view_fold_meta (view TEXT PRIMARY KEY, version TEXT, cursor INTEGER, at REAL)")
+        conn.execute("CREATE TABLE view_fold (view TEXT, key TEXT, row TEXT, PRIMARY KEY (view, key))")
+        for name in ("asks", "fold:answers", "fold:escalated", "gone"):
+            conn.execute("INSERT INTO listener_cursor VALUES (?, '1', 5, 'x')", (name,))
+        conn.execute("INSERT INTO view_fold_meta VALUES ('escalated', '1', 5, 0), ('answers', '1', 5, 0)")
+        conn.execute("INSERT INTO view_fold VALUES ('escalated', 'A1', '{}'), ('answers', 'A2', '{}')")
+        running = [type("P", (), {"name": n})() for n in ("asks", "fold:answers")]
+        self.assertEqual(sorted(of_listen.prune(conn, running)), ["fold:escalated", "gone"])
+        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT processor FROM listener_cursor")),
+                         ["asks", "fold:answers"])
+        self.assertEqual(conn.execute("SELECT view FROM view_fold_meta").fetchall(), [("answers",)])
+        self.assertEqual(conn.execute("SELECT view FROM view_fold").fetchall(), [("answers",)])
+
+
+if __name__ == "__main__":
+    unittest.main()

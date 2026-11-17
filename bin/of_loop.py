@@ -5,7 +5,8 @@ and the hypothesis register and decision log as events.
 - of.loop_hypothesis {work, hypothesis, change, predict, cost, cost_h, voi}: recorded before its test.
 - of.loop_run {work, rung, hypothesis, result, evidence, source}: recorded when a run on a rung ends.
 - of.loop_decision {work, decision, hypothesis, rung, money, decided, note}: keep, drop, park, reopen, step_up, step_back,
-  change_objective (which names its money metric, or on a target the owner decided, the owner's yes on the new one).
+  change_objective (which names its new metric and its chain to money; refused on a target the owner decided, whose
+  measure changes only in the registry).
 - of.loop_wait {work, on, ref, expect_at, hypothesis, note, by}: a stated wait (`of loop wait`), what the loop waits on
   and by when; it holds the stall clock until expect_at (docs/diagnose.md 2.29), never on the calendar.
 - register(rows, work): the hypotheses with their derived status (open, testing, kept, dropped, parked), the next one

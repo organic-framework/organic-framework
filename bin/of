@@ -6506,7 +6506,8 @@ def main(argv=None):
                         "locate | wait")
     lp.add_argument("action", choices=["hypothesis", "run", "decision", "show", "locate", "wait"])
     lp.add_argument("work")
-    lp.add_argument("text", nargs="?", help="hypothesis: the change; decision: keep|drop|park|step_up|step_back|change_objective")
+    lp.add_argument("text", nargs="?", help="hypothesis: the change; decision: "
+                    "keep|drop|park|reopen|step_up|step_back|change_objective")
     lp.add_argument("--predict")
     lp.add_argument("--cost", help='the rung and runner-hours, e.g. "day_pass, 6 runner-h"')
     lp.add_argument("--voi", help="value of information: low | med | high (optional on a target the owner decided; "
