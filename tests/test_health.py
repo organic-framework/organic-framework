@@ -120,6 +120,39 @@ class ChecksTest(StateDir):
         self.assertIn("the failure you were told of is over", told[1][1])
         self.assertIsNone(state["checks"]["hooks.errors"]["reminded"])
 
+    def test_a_note_not_sent_is_sent_at_the_next_run_and_never_stops_the_run(self):
+        """of_architect, message 01a1e8ee-5b44: a slow `of send` raised TimeoutExpired out of the run before health.json
+        was written, and `told` was set although the note was not sent."""
+        import subprocess
+        told, logged = [], []
+
+        def fyi(o, t, fail=[True]):
+            if fail[0]:
+                raise subprocess.TimeoutExpired("of send", 60)
+            told.append(t)
+        run = lambda r, now: of_health.run(  # noqa: E731
+            now=now, readings=r, emit=lambda k, p, **kw: None, fyi=fyi, typed=lambda o, t: None,
+            log=logged.append, cards=lambda state: None)
+        t0 = 30_000.0
+        run(self.readings(errors=0.2), t0)
+        state = run(self.readings(errors=0.2), t0 + of_health.TELL_AFTER_S)    # the send times out
+        self.assertIsNone(state["checks"]["hooks.errors"]["told"])
+        with open(of_health.state_path()) as fh:                                # the run still wrote its state
+            self.assertEqual(json.load(fh)["at"], of_health.iso(t0 + of_health.TELL_AFTER_S))
+        self.assertTrue(any("again at the next run" in m for m in logged))
+        fyi.__defaults__[0][0] = False
+        state = run(self.readings(errors=0.2), t0 + of_health.TELL_AFTER_S + 60)  # sent now
+        self.assertEqual(len(told), 1)
+        fyi.__defaults__[0][0] = True
+        state = run(self.readings(), t0 + of_health.TELL_AFTER_S + 120)          # "over" lost: kept to send again
+        self.assertTrue(state["checks"]["hooks.errors"]["told"])
+        fyi.__defaults__[0][0] = False
+        state = run(self.readings(), t0 + of_health.TELL_AFTER_S + 180)
+        self.assertIn("is over", told[-1])
+        self.assertIsNone(state["checks"]["hooks.errors"]["told"])
+        run(self.readings(), t0 + of_health.TELL_AFTER_S + 240)
+        self.assertEqual(len(told), 2)                                           # once
+
     def test_a_failure_that_lasts_is_typed_to_its_owner_once_a_day(self):
         """docs/health.md §3, "A failure that lasts is told again" (hand-over 4575c97a): on 2026-11-14 a check failed,
         its owner missed the one --fyi, and it stayed failed three days."""
