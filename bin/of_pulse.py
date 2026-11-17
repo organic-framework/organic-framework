@@ -1204,6 +1204,15 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
 
 
 TEMPO_KEEP_S = 24 * 3600   # a note not typed yet (its position busy or away) is dropped after this
+TEMPO_FRESH_S = 2 * 3600   # an item booked longer ago than this is not typed: the note is for the turn that booked it
+
+
+def _epoch_iso(ts):
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return 0.0
 
 
 def booking_note(items):
@@ -1238,7 +1247,8 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
             "AND rowid > ? ORDER BY rowid", (st["cursor"],)):
         st["cursor"] = rid
         try:
-            items = [x for x in json.loads(pl or "{}").get("items") or [] if x.get("verdict") == "no_basis"]
+            items = [x for x in json.loads(pl or "{}").get("items") or [] if x.get("verdict") == "no_basis"
+                     and now - _epoch_iso(x.get("ts") or ts) <= TEMPO_FRESH_S]
         except ValueError:
             continue
         if items and pos:

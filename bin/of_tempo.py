@@ -296,7 +296,7 @@ def load_state():
             st = json.load(fh)
     except (OSError, ValueError):
         st = {}
-    st.setdefault("cursor", None)   # the last rowid read; None: start LOOKBACK_S back
+    st.setdefault("cursor", None)   # the last rowid read; None: the first run starts at the log's end
     st.setdefault("judged", {})     # item key -> [verdict, at]
     st.setdefault("retry", [])      # items whose call failed: judged again at the next run
     return st
@@ -358,7 +358,8 @@ def judge_items(todo, positions=(), runner=subprocess.run, log=print):
 
 def payload_of(pos, group, v):
     return {"position": pos, "items": [
-        {"key": it["key"], "source": it["source"], "ref": it["ref"], "to": it.get("to"), "times": it.get("times") or [],
+        {"key": it["key"], "source": it["source"], "ref": it["ref"], "ts": it["ts"], "to": it.get("to"),
+         "times": it.get("times") or [],
          "quote": _one_line(it["text"], 300), **x} for it, x in zip(group, v["verdicts"])],
         "judge": VERSION, "model": v["model"], "ms": v["ms"], "cost_usd": v["cost_usd"]}
 
@@ -371,7 +372,12 @@ def judge(conn, positions=(), now=None, runner=subprocess.run, emit=True, log=pr
         log("of tempo: the model API is unreachable; the items wait for the next run")
         return []
     st = load_state()
-    rows = fetch(conn, after=st["cursor"], since=_iso(now - LOOKBACK_S) if st["cursor"] is None else None)
+    if st["cursor"] is None:   # the first run starts now: a day of old bookings typed into panes is noise
+        st["cursor"] = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM event").fetchone()[0]
+        if emit:
+            save_state(st, now)
+        return []
+    rows = fetch(conn, after=st["cursor"])
     todo = [it for it in st["retry"] if it["key"] not in st["judged"]] + items(rows, positions, st["judged"])
     out = judge_items(todo, positions, runner, log)
     for pos, group, v in out:
