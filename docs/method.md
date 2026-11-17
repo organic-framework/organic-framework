@@ -103,6 +103,34 @@ An organization's owner may give every position a standing yes to run the indepe
   - each organization's AGENTS.md, by its structure keeper;
   - every enrolled position's start context, and one sentence in `of spawn`'s brief, where the organization's registry records the owner's yes (`of_platform`, to build).
 
+### Work starts when it is ready (2026-11-17, `of_architect`)
+
+The owner of the first user organization, 2026-11-17 (prompt `01a1e9ab-a3ba`): "I'm tired of chasing the whole org structure myself. Where does this dragging out of time come from?" `of_conductor` (message `01a1e9ac-036e`) found five patterns that day. Each moved only after he pushed:
+- ready work booked into later slots: four items set at 13:18Z for 14:25Z to 18:45Z; a release cadence planned from a week later, then from the next day, and "from now" only at his third push; a backup fix planned "by Wednesday 12:00Z" until he said now;
+- one change at a time per keeper, and queues ordered by the keepers' own preference, with no check that the changes conflict;
+- limits the positions had set themselves (a memory line, a count of sends, a freeze) held as hard until he questioned them;
+- owners passing plans up without challenging their dates;
+- "tomorrow 12:00Z" as a default deadline, with no reason.
+
+**Where the delay comes from** (inference, unconfirmed):
+- **Human calendars, copied.** Agents plan like the human teams in the text they learned from: slots, business-hours deadlines, one change at a time. Those habits protect people's attention and working hours. An agent has neither limit. What waits is the owner's attention, and every slot spends it.
+- **A guess loses its author.** A limit written into a plan without its basis reads, a turn later, as a rule. Nobody can tell that it was a guess, so nobody drops it.
+- **Relays check readings, not dates.** The relay rule (AGENTS.md, "A conclusion about an event rests on readings taken where the event happens") made positions check where a reading was taken. Nothing asked them to check a date.
+- **Waits are invisible.** A session cron or a background wait loop is seen by its own agent alone. At their last turn end between 12:00Z and 13:25Z that day, 16 of the organization's 21 positions held one or more, one of them 30 (`of.continuation`). Product development's queues are invisible in general (Reinertsen, *The Principles of Product Development Flow*, 2009, the principle of invisible inventory); an agent's are invisible even to its manager.
+
+**The rule** (AGENTS.md, "Work starts when it is ready"): work runs as soon as what it needs exists. A later start, an order between items, a limit and a deadline each carry their basis, or they do not hold.
+- **A wait that names its basis holds.** The forms OF has: `of status waiting --on <position|founder>`, an owner's card, and a loop's `of loop wait --on runner|window|release|holdout|ask|position|calendar` ([`diagnose.md`](diagnose.md) §2.29, where a wait on the calendar holds nothing). A booked time with none of these is not a wait.
+- **Parallel is the default.** Two items run at once unless they touch the same system, host, file or resource. A position runs its independent parts as subagents where its owner said yes (above).
+- **A limit you set is a proposal.** It states its purpose, and it is dropped or put to the owner when it stops work. The owner's limit (its ask id) and a measured one hold.
+- **A deadline is real or absent.** It has a source: a legal date, a booked window, a limit's reset, a meeting the owner named. No default.
+- **A relay checks dates.** A manager, a conductor or a structure keeper checks each date and order of a plan before passing it up, and sends one without a basis back to the doer. When the owner has to say "now", the doer checks every other date of that plan in the same turn, not only the one he named.
+
+**What OF watches** (hand-over `277de578` to `of_platform`, 2026-11-17, to build):
+- At each turn end, a position's booked starts (its session crons, its background waits, and the planned times, orders, limits and deadlines in its last message) pass a cheap filter, then a small model judges each for a basis. One without a basis is typed back into the position's pane at once: run it now, or name what it waits on.
+- The owner's push on tempo ("now", "why later", "don't wait") becomes a kind of founder correction (`of corrections`), counted per position in the structure keeper's daily digest.
+
+**The measure** is the owner's pushes on tempo per organization per day, which should fall. The booked starts without a basis, per position, lead it.
+
 ### One team: rails for working together
 
 Founder, 2026-11-05:
