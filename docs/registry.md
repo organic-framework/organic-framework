@@ -384,7 +384,7 @@ subagents:
 ## Card ids (2026-11-17, `of_architect`; the founder, prompt `01a1ea59-aeb7`)
 
 A top-level `card_prefix:` sets the prefix of the organization's card ids, such as `OF` for `OF-57`: 2 to 5 capital
-letters. Without it, the prefix is the initials of the organization's name: `acme-shop` gets `AS`. Every ask gets
+letters. Without it, the prefix is the initials of the organization's name: `acme-shop` gets `AS`; a one-word name gives its first three letters (`acme`: `ACM`). Every ask gets
 its id when it is filed: the prefix, a hyphen and a running number (docs/events.md, `ref`). People and agents cite a
 card by its id in chat, cards and summaries; records a program reads keep the full event id. `of registry check`
 refuses a prefix that is not 2 to 5 capital letters, and a prefix that two organizations listed on the machine share,

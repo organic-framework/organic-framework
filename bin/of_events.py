@@ -103,9 +103,12 @@ def card_prefix(org):
 
 
 def default_prefix(org):
-    """An organization's name's initials (acme-shop: AS)."""
-    words = [w for w in re.split(r"[-_. ]+", str(org or "of")) if w]
-    return "".join(w[0] for w in words).upper() or "OF"
+    """An organization's name's initials (acme-shop: AS), or a one-word name's first three letters (acme: ACM), so the
+    prefix keeps to 2 to 5 letters (docs/registry.md, Card ids; of_architect on PR 300)."""
+    words = [w for w in re.split(r"[-_. ]+", re.sub(r"[^A-Za-z_. -]", "", str(org or "of"))) if w]
+    if len(words) == 1:
+        return words[0][:3].upper()
+    return ("".join(w[0] for w in words).upper() or "OF")[:5]
 
 
 def _refs_path():

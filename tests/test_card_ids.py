@@ -45,6 +45,10 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual(given["of.payload"]["ref"], "AS-77")    # a writer's own id is kept
         self.assertEqual(self.ask("acme-shop")["of.payload"]["ref"], "AS-3")
 
+    def test_a_default_prefix_keeps_to_two_to_five_letters(self):
+        self.assertEqual([of_events.default_prefix(o) for o in ("acme-shop", "acme", "a-b-c-d-e-f", "organic-framework-build")],
+                         ["AS", "ACM", "ABCDE", "OFB"])
+
     def test_another_machines_number_raises_the_counter(self):
         self.ask("acme-shop")
         far = of_events.record("agent_question", {"ref": "AS-40", "questions": []}, org="acme-shop")
