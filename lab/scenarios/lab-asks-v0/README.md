@@ -101,8 +101,13 @@ no such rule: questions for the founder stood beside them (`asks-034`, `asks-076
 lost). The card the rule skips would also have escalated to the founder by the delegation's
 `escalate_when` (`ask_unanswered > 2h`, a tag), and a declared wait does not (`of_review` on organic-framework PR
 287). That is accepted on the field's readings: of the 68 pane cards filed for unit owners from 2026-11-10 to
-2026-11-17, the rule would have skipped five, each closed by its unit owner within 1.3 minutes, and none of the 68
-escalated.
+2026-11-17, none escalated, and the rule would have skipped five. Four were closed by the unit owner within 1.3
+minutes, by its answer or its reply to the asker, and the fifth was withdrawn by its asker as no question after 0.4
+minutes. The reading replays `waits_on_receiver` on each judged candidate with a filed card, with the turn as
+`of_judge.turn_of` reads it (the session's last prompt from a person or delivered message before the candidate),
+and takes each card's closing from the asks view (`closed_by`), where a unit owner's reply to the asker closes its
+card too (asks view version 6). A turn bounded by `of.continuation` events starts elsewhere and finds four
+(`of_review`, PR 299).
 
 Two prompt changes were measured and dropped. With the turn's last `of status`, the open founder asks of the unit
 owner and of the waited-on position, an item "a decision another position already carries", and a line saying where
