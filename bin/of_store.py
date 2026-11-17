@@ -826,12 +826,33 @@ def spool_append(name, obj):
         fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def drain_spool(conn):
+def drain_spool(conn, wait_s=0.0):
     """Move spooled events and raw hook payloads into the database. Returns the count.
     Leftover .draining files (a run that stopped midway) are drained too, and a busy store keeps the unread
     rest of a file for the next run instead of stranding the whole file (2026-11-06: ~20 files with the
     founder's answers stayed on disk for 20 minutes while a long redaction held the lock). One drainer at
-    a time: the ingest worker's flock."""
+    a time, by the spool's own lock (spool/drain.lock), never the ingest worker's: on 2026-11-17 the worker crawled
+    93 minutes inside one transcript at load 120 while holding that lock, and the founder's prompts stayed in the
+    spool (of_conductor, message 01a1ea04-a399). WAIT_S: how long to wait for another drainer; 0 returns 0 at once."""
+    import fcntl
+    lock = open(os.open(spool_path("drain.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    end = time.time() + wait_s
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.time() >= end:
+                lock.close()
+                return 0   # another drainer runs: it takes what is there
+            time.sleep(0.2)
+    try:
+        return _drain_spool(conn)
+    finally:
+        lock.close()
+
+
+def _drain_spool(conn):
     import glob
     n = 0
     for name in ("events.jsonl", "hook-raw.jsonl"):
