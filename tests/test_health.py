@@ -98,6 +98,28 @@ class ChecksTest(StateDir):
             self.assertEqual(json.load(fh)["checks"]["machine.disk"]["state"], "ok")
         self.assertIn("hooks.errors", of_health.table(state))
 
+    def test_one_message_per_owner_per_run(self):
+        """2026-11-17: a stopped listener failed 22 checks of one owner, and it got 22 notes; then a reminder a day
+        each."""
+        told, typed = [], []
+        run = lambda r, now: of_health.run(  # noqa: E731
+            now=now, readings=r, emit=lambda k, p, **kw: None, fyi=lambda o, t: told.append((o, t)),
+            typed=lambda o, t: typed.append((o, t)), log=lambda m: None, cards=lambda state: None)
+        t0 = 20_000.0
+        run(self.readings(errors=0.2, swap=0.96), t0)
+        run(self.readings(errors=0.2, swap=0.96), t0 + of_health.TELL_AFTER_S)
+        self.assertEqual(len(told), 1)                                       # two checks, one note
+        self.assertIn("2 checks", told[0][1])
+        self.assertIn("- hooks.errors failed on this machine", told[0][1])
+        self.assertIn("- machine.memory failed on this machine", told[0][1])
+        run(self.readings(errors=0.2, swap=0.96), t0 + 86400)
+        self.assertEqual(len(typed), 1)                                      # one reminder for both
+        self.assertIn("2 checks failed for a day or more", typed[0][1])
+        state = run(self.readings(), t0 + 86400 + 60)
+        self.assertEqual(len(told), 2)                                       # both over: one note
+        self.assertIn("the failure you were told of is over", told[1][1])
+        self.assertIsNone(state["checks"]["hooks.errors"]["reminded"])
+
     def test_a_failure_that_lasts_is_typed_to_its_owner_once_a_day(self):
         """docs/health.md §3, "A failure that lasts is told again" (hand-over 4575c97a): on 2026-11-14 a check failed,
         its owner missed the one --fyi, and it stayed failed three days."""
