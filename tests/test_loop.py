@@ -784,11 +784,13 @@ class Yeses:
         self.stale_v1 = ask("p50 on staging?")
         amend(self.stale_v1, 2, text="p50 on production?")                    # then the answer given to version 1:
         answer(self.stale_v1, "yes, p50 is the target", version=1)            # recorded anyway, it counts for nothing
-        same = of_events.now_iso()  # one millisecond for an answer and an amend: the log's order decides
         self.amend_after = ask("p50, amended in the answer's millisecond?")
+        self.amend_before = ask("p50, amended just before, in the same millisecond?")
+        # one millisecond for an answer and an amend: the log's order decides. Taken after both cards: a card in a
+        # later millisecond than it put its answer before the card, unread (CI on PR 264, run 44038506101)
+        same = of_events.now_iso()
         answer(self.amend_after, "yes, p50 is the target", version=1, ts=same)
         amend(self.amend_after, 2, ts=same, text="p50, amended after the answer?")  # written after it: not before it
-        self.amend_before = ask("p50, amended just before, in the same millisecond?")
         amend(self.amend_before, 2, ts=same, text="p50 on production?")
         answer(self.amend_before, "yes, p50 is the target", version=1, ts=same)  # to version 1: stale
         self.foreign = ask("p50, amended elsewhere?")
