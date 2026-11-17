@@ -87,17 +87,18 @@ class ListenTest(unittest.TestCase):
             stop.set()
             release.set()
 
-    def test_the_watchdog_sees_one_stuck_timer(self):
-        """of_review on organic-framework PR 294: with a thread per timer, the others keep the timers' file fresh, so
-        the watchdog reads each timer's last start."""
-        path = os.path.join(self.tmp.name, "listen-ticks.json")
-        with open(path, "w") as fh:
-            json.dump({"pulse": {"at": 1000.0, "every": 300}, "paste": {"at": 100.0, "every": 20},
-                       "archive": {"at": 0.0, "every": 3600}}, fh)
-        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path), ["paste"])     # 1,200 s > 20 + 900
-        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path + ".none"), [])  # no file: none
-        os.mkfifo(path + ".fifo")
-        self.assertEqual(of_listen.stuck_timers(1300.0, 900, path + ".fifo"), [])  # never opens a FIFO
+    def test_one_stuck_timer_stops_the_timers_file(self):
+        """of_review on organic-framework PR 294: with a thread per timer, the others kept the timers' file fresh; the
+        listener now computes its stuck timers and touches the file only while none is stuck (the watchdog stays
+        stat-only)."""
+        class T(of_listen.Processor):
+            def __init__(self, name, every):
+                self.name, self.tick_s = name, every
+        procs = [T("pulse", 300), T("paste", 20), T("archive", 3600), of_listen.Processor()]
+        ticks = {"pulse": 1000.0, "paste": 100.0, "archive": 0.0}
+        self.assertEqual(of_listen.stuck_timers(ticks, procs, 1300.0, 900), ["paste"])   # 1,200 s > 20 + 900
+        ticks["paste"] = 1290.0
+        self.assertEqual(of_listen.stuck_timers(ticks, procs, 1300.0, 900), [])
 
     def test_a_hung_timer_holds_no_other_timer(self):
         """2026-11-17: the paste tick searched its sources for over an hour at load 90, and the pulse, which types the
