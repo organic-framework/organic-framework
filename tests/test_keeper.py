@@ -214,10 +214,17 @@ class KeeperCheckTest(unittest.TestCase):
             log.revoked()
         # (4) a line removed and added again does not come back on its old approval
         alog = of_keeper.ApprovalLog(os.path.join(self.root, "k", "approvals.jsonl"))
-        self.assertEqual(alog.observe_lines("acme-vault", [line]), set())
-        self.assertEqual(alog.observe_lines("acme-vault", []), {"r1"})       # the line is gone
-        self.assertEqual(alog.observe_lines("acme-vault", [line]), {"r1"})   # added again: still withdrawn
-        self.assertIn("removed since", self.check("acme-vault", "vault", line, withdrawn={"r1"}))
+        nonce = of_keeper.signed_nonce(of_keeper.approval_record(self.root, line["approval"]))
+        self.assertEqual(nonce, "n-r1")
+        self.assertEqual(alog.observe_lines("acme-vault", [line], self.root), set())
+        self.assertEqual(alog.observe_lines("acme-vault", [], self.root), {nonce})       # the line is gone
+        self.assertEqual(alog.observe_lines("acme-vault", [line], self.root), {nonce})   # added again: withdrawn
+        self.assertIn("removed since", self.check("acme-vault", "vault", line, withdrawn={nonce}))
+        import shutil  # the same record copied under a new file name: the same signed nonce, still refused
+        d = os.path.join(self.root, "registry", "access", "approvals")
+        shutil.copy(os.path.join(d, "r1.json"), os.path.join(d, "r9.json"))
+        self.assertIn("removed since", self.check("acme-vault", "vault", dict(line, approval="passkey:r9"),
+                                                  withdrawn={nonce}))
         # (5) amounts are exact and finite
         for bad in (float("nan"), float("inf"), "1e3", True, -1, 0):
             self.assertTrue(of_access.limit_shape({"per_call": {"amount": bad, "unit": "wei"}}), bad)
