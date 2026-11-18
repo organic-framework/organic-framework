@@ -3378,6 +3378,24 @@ LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session,
                "docs/guard.md G29)")
 
 
+# G33: OF's own configuration that decides, for every session, which registries the guard reads (orgs.yaml: their
+# protected_code, tools_excluded and keychain names) and what the listener runs in the person's panes (views.yaml)
+# is the owner's: agents change it through OF's own commands (of view add, of init), never by writing the file
+# (docs/guard.md G33; the gap "OF's own configuration is written by any agent", 2026-11-18; of_review on
+# organic-framework PR 345, msg 01a1efc7-283b, through of_herdr)
+OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml")
+OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner writes: orgs.yaml (which registries the "
+                     "guard reads) and views.yaml (what runs in the person's panes); agents change them through "
+                     "`of view add` or `of init`, never by writing the file (docs/guard.md G33)")
+OWNER_CONFIG_MODE = "warn"  # a deny once its live flows have an OF command: the 21-day replay (2026-11-19) found
+# agents editing orgs.yaml's hold: by sed for the founder, with no command for it (docs/guard.md G33)
+
+
+def _owner_config_targets():
+    d = os.environ.get("OF_CONFIG_DIR") or "~/.config/of"
+    return [os.path.realpath(_expanduser(os.path.join(d, f))) for f in OWNER_CONFIG_FILES]
+
+
 def _launch_targets():
     """The real paths of LAUNCH_FILE and of the executable its first line names, when it names one."""
     f = os.path.realpath(_expanduser(LAUNCH_FILE))
@@ -3392,7 +3410,7 @@ def _launch_targets():
     return out
 
 
-def _launch_file(path, cwd=None):
+def _launch_file(path, cwd=None, targets=None):
     """Does PATH name LAUNCH_FILE or the executable it names? By pattern for a glob; else by device and inode when it
     exists (a hard link made earlier is the same file), and by real path compared without case (the Mac's volume
     ignores case: `~/.CONFIG/of/claude-bin` is the file; of_secrets-review on organic-framework PR 273)."""
@@ -3402,7 +3420,7 @@ def _launch_file(path, cwd=None):
     if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
     p = _expanduser(p)
-    targets = _launch_targets()
+    targets = _launch_targets() if targets is None else targets
     if any(ch in p for ch in "*?["):
         import fnmatch
         rp = _real_pattern(p)
@@ -3461,7 +3479,7 @@ DEPTH_CAP_DENY = ("a command nested deeper than the guard reads (more than twelv
 _REDIR_CTX = [None]  # (folder, line variables) of the simple command _bash_deny reads, for its `<` targets (G0.9)
 
 
-def _launch_write(head, args, cwd, files, removal):
+def _launch_write(head, args, cwd, files, removal, targets=None):
     """G29 as G21 reads a write, with the two targets as its protected entries: a folder above them removed, moved
     or replaced by a link (`ln -f`, `-n`), and a recursive copy or an extraction into a folder that holds one, count
     too (of_secrets-review and of_review on organic-framework PR 273). The path it hit, else None. A command another
@@ -3471,11 +3489,12 @@ def _launch_write(head, args, cwd, files, removal):
     replacing = removal or (head == "ln" and any(
         a == "--force" or a == "--no-dereference" or (a.startswith("-") and not a.startswith("--") and
                                                        ("f" in a[1:] or "n" in a[1:])) for a in args))
+    targets = _launch_targets() if targets is None else list(targets)
     saved = _ORG_PROTECTION["code"]
-    _ORG_PROTECTION["code"] = tuple(_launch_targets())
+    _ORG_PROTECTION["code"] = tuple(targets)
     try:
         return next((t for t in _tree_targets(head, args, cwd) if _protected_code(t, cwd, removal=True)), None) or \
-            next((f for f in files if _launch_file(f, cwd) or _protected_code(f, cwd, replacing)), None)
+            next((f for f in files if _launch_file(f, cwd, targets) or _protected_code(f, cwd, replacing)), None)
     finally:
         _ORG_PROTECTION["code"] = saved
 
@@ -4119,7 +4138,7 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         return GUARD_STATE_DENY, state
     if not _ORG_PROTECTION["code"]:
         launch = _launch_write(head, args, cwd, files, removal)
-        return (LAUNCH_DENY, launch) if launch else None
+        return (LAUNCH_DENY, launch) if launch else _owner_config_write(head, args, cwd, files, removal)
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -4136,7 +4155,18 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     if hit:
         return PROTECTED_CODE_DENY, hit
     launch = _launch_write(head, args, cwd, files, removal)  # G29 after G21: where both hold, G21 names it
-    return (LAUNCH_DENY, launch) if launch else None
+    return (LAUNCH_DENY, launch) if launch else _owner_config_write(head, args, cwd, files, removal)
+
+
+def _owner_config_write(head, args, cwd, files, removal):
+    """G33 on one simple command: a write, removal, move or link over orgs.yaml or views.yaml, read as G29 reads one."""
+    hit = _launch_write(head, args, cwd, files, removal, _owner_config_targets())
+    if not hit:
+        return None
+    if OWNER_CONFIG_MODE == "deny":
+        return OWNER_CONFIG_DENY, hit
+    _WARNINGS.append((OWNER_CONFIG_DENY, hit, "a warning now, a deny once the flows that write it have moved"))
+    return None
 
 
 def _herdr_lab(path):
@@ -5146,6 +5176,11 @@ def critical_deny(tool, tool_input, cwd=None):
         return GUARD_STATE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
+            _launch_file(path, cwd, _owner_config_targets()):  # G33
+        if OWNER_CONFIG_MODE == "deny":
+            return OWNER_CONFIG_DENY, path
+        _WARNINGS.append((OWNER_CONFIG_DENY, path, "a warning now, a deny once the flows that write it have moved"))
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep") and _secret_path(path):
         return f"a secret file ({os.path.basename(path)})", path
     if tool in ("Read", "Edit", "MultiEdit", "Grep") and path and _key_file(_local(path, cwd)):  # G1.13
