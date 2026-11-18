@@ -116,6 +116,48 @@ class Paths(unittest.TestCase):
         self.assertIsNone(of_carry.owner_yes("OF-5", cards, conn))  # still open
         self.assertIsNone(of_carry.owner_yes("OF-99", cards, conn))
 
+    def test_custody_credentials_never_leave(self):
+        # hand-over a1bde073: a key the agents' home never holds stays behind in prepare and copy, and is named
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            t = os.path.realpath(t)
+            mem = os.path.join(t, "memory")
+            os.makedirs(os.path.join(mem, "keys"))
+            files = []
+            for name in ("notes.md", "executor-notes.json", "keys/a.bin", "keys/b.bin"):
+                path = os.path.join(mem, name)
+                with open(path, "w") as fh:
+                    fh.write("x")
+                files.append(path)
+            docs = {"acme": {"credentials": {
+                "executor": {"paths": [os.path.join(mem, "executor-notes.json")], "custody": True},
+                "vault": {"paths": [os.path.join(mem, "keys") + "/**"], "custody": True},
+                "plain": {"paths": [os.path.join(mem, "notes.md")]}}}}
+            pats = of_carry.custody_paths(docs)
+            self.assertEqual(sorted(c for _, c, _ in pats), ["executor", "vault"])
+            skipped, logs = [], []
+            keep = of_carry.drop_custody(files, skipped, pats, log=logs.append)
+            self.assertEqual(keep, [os.path.join(mem, "notes.md")])  # a credential without custody still goes
+            self.assertEqual(sorted(x["reason"] for x in skipped),
+                             ["custody: acme/executor", "custody: acme/vault", "custody: acme/vault"])
+            self.assertEqual(len(logs), 3)
+            bundle = os.path.join(t, "bundle")
+            os.makedirs(bundle)
+            with open(os.path.join(bundle, "files.txt"), "w") as fh:
+                fh.write("".join(f + "\n" for f in files))
+            ran = []
+            key = os.path.join(t, "k")
+            with open(key, "w") as fh:
+                fh.write("k")
+            os.chmod(key, 0o600)
+            from unittest import mock
+            with mock.patch.object(of_carry, "_key_ok", lambda k: k):
+                of_carry.copy(bundle, key, to="u@h:/x", log=lambda m: None, pats=pats,
+                              run=lambda c, env=None: ran.append(c) or mock.Mock(returncode=0))
+            with open(os.path.join(bundle, "files.txt")) as fh:
+                self.assertEqual(fh.read().split(), [os.path.join(mem, "notes.md")])  # filtered before any rsync
+            self.assertEqual(len(ran), 2)
+
     def test_a_replacement_is_never_rewritten_again(self):
         """A rehearsal home inside the tmp root holds the old key in its own path: one pass keeps it whole."""
         new = "/private/tmp/claude-501/-Users-alex-org/s1/scratchpad/home-of"
