@@ -6665,6 +6665,7 @@ def cmd_capacity(args):
             elif step == "restore" and bundle:
                 import of_spawn
                 done = of_carry.restore(bundle, positions, args.org, only=only, dry_run=args.dry_run,
+                                        consents_card=getattr(args, "consents", None),
                                         home=os.path.expanduser(args.home) if args.home else None,
                                         of_bin=os.path.realpath(__file__),
                                         place_of=lambda p: of_spawn.place(p, want_workspace))
@@ -7369,6 +7370,8 @@ def main(argv=None):
     cp.add_argument("--set", choices=["off", "on"], help="training <harness>: record whether the provider may train "
                     "on that account's runs (RFC 0008 §3.1)")
     cp.add_argument("--source", help="training --set: the reading's basis, e.g. the owner's ask id")
+    cp.add_argument("--consents", help="carry restore: the owner's card that said yes to carrying folder trust and the "
+                    "Bypass Permissions acceptance to this machine (its first option)")
     cp.add_argument("--org", help="spend: this organization only; carry restore: the organization the bundle carries")
     cp.add_argument("--until", help="babysit: until this date or time (default: now)")
     cp.add_argument("--op-account", dest="op_account", help="vault-setup: the 1Password account (default: the business one)")

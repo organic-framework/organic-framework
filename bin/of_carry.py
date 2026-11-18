@@ -220,8 +220,38 @@ def _write_json_600(path, doc):
     os.replace(tmp, path)
 
 
+def owner_yes(card, cards=None, conn=None):
+    """The owner's card `card` (a card id) when he himself answered it with its first option, the yes by the filer's
+    convention ("yes …|no …"), on a card never amended; else None. Read by event id from the listener's asks view and
+    the card's own events, never the whole log."""
+    if cards is None:
+        import of_asks
+        cards = of_asks.current_asks().get("asks") or []
+    a = next((x for x in cards if str(x.get("ref") or "").upper() == str(card or "").strip().upper()), None)
+    if not a or a.get("state") != "answered" or not a.get("closed_by"):
+        return None
+    if conn is None:
+        import of_events
+        conn = of_events._conn()
+
+    def payload(eid):
+        row = conn.execute("SELECT payload FROM event WHERE event_id = ?", (eid,)).fetchone()
+        try:
+            return json.loads(row[0]) if row else {}
+        except ValueError:
+            return {}
+    if a.get("amended") or int(a.get("version") or 1) > 1:
+        return None  # an amended card's options are read from its amendments, a log read this check does not make
+    filed, closed = payload(a["event_id"]), payload(a["closed_by"])
+    opts = ((filed.get("questions") or [{}])[0] or {}).get("options") or []
+    ok = closed.get("by") in ("owner", "founder") and bool(opts) and \
+        str(closed.get("answer") or "").strip() == str(opts[0]).strip()
+    return a if ok else None
+
+
 def carry_consents(plan, rw, dry_run=False, log=print):
-    """Put the plan's consents in place under this user, paths rewritten: the Bypass Permissions acceptance into a
+    """Put the plan's consents in place under this user, paths rewritten (only with the owner's card that says yes to
+    it: restore --consents <card>; of_server, PR 339: a retold basis carries none): the Bypass Permissions acceptance into a
     config dir's settings.json when it lacks it, and each trusted folder that exists here into its account file.
     A config dir that does not exist here, or is not signed in yet (no account file), is named and left: run restore
     again after the sign-in. Existing values are never overwritten. Returns [(config dir, what)]."""
@@ -511,7 +541,7 @@ def local_plan(plan, rw):
 
 
 def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=None, place_of=None,
-            home=None, uid=None, account_of=None, restore_fn=None):
+            home=None, uid=None, account_of=None, restore_fn=None, consents_card=None, cards=None, conn=None):
     """Rewrite and install the bundle's files for this user, then resume its sessions (of_capacity.reboot_restore).
     `org` is the organization the caller expects the bundle to carry; entries of any other are neither put in place
     nor resumed. A session whose config dir here is signed in to another account than it ran on is not resumed."""
@@ -532,8 +562,18 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
     install(bundle, rw, dry_run=dry_run, log=log,
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
-    carry_consents(plan, rw, dry_run=dry_run, log=log)  # before any resume: the folders' trust and the bypass
+    card = None
+    if consents_card:  # before any resume: the folders' trust and the bypass, on the owner's yes only
+        card = owner_yes(consents_card, cards, conn)
+        if not card:
+            raise CarryError(f"--consents {consents_card}: not a card the owner himself answered with its first "
+                             f"option (yes); nothing carried")
+        carry_consents(plan, rw, dry_run=dry_run, log=log)
+    elif plan.get("consents"):
+        log("  consents: not carried (no --consents <card>): a folder no config dir here trusts is refused and named")
     lp = local_plan(plan, rw)
+    if card:
+        lp["consents_card"] = {"card": card.get("ref"), "event": card.get("event_id"), "answer": card.get("closed_by")}
     account_of = account_of or of_capacity.account_of
     ok, wrong = set(), []
     for e in lp["entries"]:
