@@ -2379,6 +2379,12 @@ class OtherHarnesses(unittest.TestCase):
         self.assertEqual(of_capacity.training_cards_named("codex", {"orgb": {"card_prefix": "B",
                                                                              "training_cards": {"codex": "OF-27"}}}), {})
         self.assertEqual(of_capacity.training_cards_named("codex", {"x": {"training_cards": "OF-27"}}), {})  # no crash
+        # of_secrets-review, PR 334: a prefix two registries claim owns no card (the last read took the other's)
+        clash = {"acme-shop": {"card_prefix": "AS", "training_cards": {"codex": "AS-1"}},
+                 "alpha-store": {"card_prefix": "AS", "training_cards": {"codex": "AS-2"}}}
+        self.assertEqual(of_capacity.training_cards_named("codex", clash), {})
+        self.assertEqual(of_capacity.training_cards_named("codex", dict(clash, ofteam=pol["ofteam"])),
+                         {"ofteam": "OF-27"})
         out.clear()
         with tempfile.TemporaryDirectory() as t:
             path = os.path.join(t, "settings.json")

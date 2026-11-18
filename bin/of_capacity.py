@@ -541,14 +541,17 @@ def training_cards_named(harness, docs=None, org=None):
     capacity.yaml, which any agent session may write, names none (of_review, PR 334, after of_server on start_in,
     PR 330). `org`: that organization's alone."""
     docs = tool_docs_all() if docs is None else docs
-    raw, prefix = {}, {}
+    raw, claims = {}, {}
     for o, doc in (docs or {}).items():
         tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
         v = tc.get(harness) if isinstance(tc, dict) else None
         m = of_events.REF_RE.match(str(v or "").strip())
-        prefix[str(_card_prefix(o, doc)).upper()] = o
+        claims.setdefault(str(_card_prefix(o, doc)).upper(), set()).add(o)
         if m:
             raw[o] = (m.group(1).upper(), str(v).strip().upper())
+    # a prefix two registries claim owns no card here: the last one read would take the first one's cards
+    # (of_secrets-review, PR 334; default prefixes collide on their own: acme-shop and alpha-store are both AS)
+    prefix = {pre: next(iter(os_)) for pre, os_ in claims.items() if len(os_) == 1}
     out = {}
     for o, (pre, card) in raw.items():
         if org is not None and o != org:
