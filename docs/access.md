@@ -44,13 +44,14 @@ entries:
 - Only `of access grant` and `of access revoke` write a list, and the structure keeper commits it.
 - A keeper reads its list from the committed tip of the organization's default branch, as `of subagent run` reads its entry (docs/registry.md, Subagent harnesses). An uncommitted edit allows nothing.
 - A keeper's own policy file, such as the signer's destination list and caps, is generated from its list. The two never drift apart by hand.
+- **The keeper's kind sets the tier's floor** (`of_secrets-review` on PR 349). A line's own `tier` decides which approvals the keeper checks, and the structure keeper writes it, so a lower tier must not lower the checks. A `signer` line is `money` at least, and a `vault` or `browser` line is `secret` at least. A browser site that moves money, such as a payment or banking page, is `money` by the keeper's own site list, which the host's setup script installs in the keeper's root-owned folder. The floors live in the keeper's code and that folder, never in the list: the keeper refuses a line whose tier is below its floor, and `of registry check` names it.
 - `of registry check` validates every list: a known keeper and position of that organization, a tier, a `decided` that resolves, and an `approval` and a `grant` where the tier needs them.
 
 ## 3. A request for access
 
 1. **The position asks its structure keeper**: `of access request --keeper <keeper> --access <what> [--actions …] --limit <…> --why "<the work it is for>"`. The request goes to the organization's structure keeper (`acme_org` for Acme, `of_architect` for the OF team) as a routed ask. It is never a message to the founder.
 2. **The structure keeper checks the mandate.** It runs `of delegate "<the work>"`. When the work belongs to another position, or to none, it says so and the request stops there. It then sets the tier:
-   - `plain`: nothing secret, no money, no production, such as a download folder the browser keeper already fills;
+   - `plain`: nothing secret, no money, no production. No keeper kind so far has this floor (§2); it is for a future kind that holds nothing secret;
    - `secret`: a vault item, or a signed-in provider page;
    - `money`: a signing key, a payment or a banking page;
    - `production`: anything that changes a production system.
@@ -71,6 +72,14 @@ The founder decides on his laptop or his phone. The agents and the keepers run o
   - for money and production, the grant's SSHSIG verifies against the pinned public key, its scope names this keeper, this access and a limit no wider than the line's, and it has not expired or been revoked.
 
   A line that fails any check is not served, and the keeper tells the structure keeper why.
+- **Revocation fails closed** (`of_secrets-review` on PR 349: today's `of.grant_revoked` is an unsigned event in the agents' own store). A keeper treats a grant as revoked as soon as any source says so, and never takes a revocation back:
+  - his signed revocation (`of grant revoke`, his key on the laptop) in `registry/grants.yaml` at the committed tip, or sent to the keeper directly;
+  - an `of.grant_revoked` event, signed or not, and a grant missing from the committed file. An unsigned revocation can only narrow, so it is taken as it is;
+  - the keeper keeps every revocation it has seen in an append-only log in its own folder. Restoring an older copy of the grants file, which still carries the grant's valid signature, brings nothing back;
+  - it reads the grants file only from a commit that descends from the last one it read;
+  - when it cannot read its sources, it serves no `money` or `production` line.
+
+  A grant's `expires` bounds what is left.
 
 This replaces the inference in `of_conductor`'s point 3. Grants already verify with the public key alone (docs/guard.md G13), and passkey approvals already verify through the enrollment's signature by the grant key (docs/remote.md §6). New here are a grant scope that names a keeper, and the pinned copies in each keeper's folder.
 
