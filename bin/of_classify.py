@@ -559,6 +559,10 @@ _CLOUD_CACHES = (".aws/sso/cache/**", ".aws/cli/cache/**", ".aws/login/cache/**"
                  ".config/gcloud/access_tokens.db", ".config/gcloud/application_default_credentials.json",
                  ".config/gcloud/legacy_credentials/**", ".azure/msal_token_cache.json", ".azure/msal_token_cache.bin",
                  ".azure/accessTokens.json", ".azure/service_principal_entries.json")
+# the other harnesses' own logins (G1.14; of_secrets-review on organic-framework PR 328, through of_platform): Codex's
+# ChatGPT sign-in, and the home OF keeps for Muse (`of subagent muse-login`: its keychain has an empty password). Muse's
+# own ~/.config/muse/auth.json is already secret by G1.8.
+_HARNESS_LOGINS = (".codex/auth.json", ".local/state/of/subagent/muse-login/**")
 SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12", "*.pfx", "*.jks",
                 # of_server, 2026-11-07: the native rules denied id_ecdsa but the guard let `cat` read it
                 "id_ecdsa*", "id_dsa*",
@@ -575,7 +579,7 @@ SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*
                 ".config/of/service-accounts/**",
                 # a user organization's security keeper (OFF-020, 2026-11-11): a funded private key in plaintext in an
                 # untracked executors.txt at a checkout's root; and a known misspelled secrets file (OFF-001)
-                "executors*.txt", "*secrtets*", *_CRED_SUFFIXES, *_CLOUD_CACHES)
+                "executors*.txt", "*secrtets*", *_CRED_SUFFIXES, *_CLOUD_CACHES, *_HARNESS_LOGINS)
 SECRET_EXCEPT = (".env.example", ".env.sample", ".env.template", "*.pub", "*.example.txt")
 
 
