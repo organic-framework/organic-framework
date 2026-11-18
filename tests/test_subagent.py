@@ -173,6 +173,73 @@ class SubagentTest(unittest.TestCase):
                 self.go(h, kind="patch", visibility=lambda r: True, **bad)
             self.assertIn(why, str(e.exception))
 
+    def test_excluded_paths_never_leave(self):
+        """A user organization's security keeper's terms (through its structure keeper, 2026-11-18): per-repository excludes
+        and a built-in list, removed from the snapshot and from a diff run's diff; a bad pattern refuses the run."""
+        rx = lambda p: of_subagent._exclude_rx(p)  # noqa: E731
+        self.assertTrue(rx("*.pem").match("a/b/x.pem"))
+        self.assertTrue(rx("secrets/").match("x/secrets/y.txt"))
+        self.assertTrue(rx("host_vars/").match("host_vars/prod.yml"))
+        self.assertTrue(rx("gateways/**").match("gateways/a/b"))
+        self.assertTrue(rx("deploy/servers.yml").match("deploy/servers.yml"))
+        self.assertFalse(rx("deploy/servers.yml").match("x/deploy/servers.yml"))
+        self.assertFalse(rx("*.pem").match("a/pem.txt"))
+        for bad in ("", "/etc/x", "../x"):
+            with self.subTest(bad=bad), self.assertRaises(of_subagent.SubagentError):
+                rx(bad)
+        for name in ("servers.yml", "host_vars/h1.yml", "conf/app.env", "infra/main.tfstate"):
+            os.makedirs(os.path.dirname(os.path.join(self.repo, name)) or self.repo, exist_ok=True)
+            with open(os.path.join(self.repo, name), "w") as fh:
+                fh.write("keep me home\n")
+            self.git("add", "-f", name)
+        self.git("commit", "-qm", "private files")
+        with open(os.path.join(self.repo, "servers.yml"), "w") as fh:
+            fh.write("changed\n")
+        with open(os.path.join(self.repo, "a.py"), "a") as fh:
+            fh.write("print(9)\n")
+        self.git("commit", "-qam", "change")
+        reg = {"subagent_harnesses": dict(REG["subagent_harnesses"], excludes={"fw": ["servers.yml", "host_vars/"]})}
+        got, call = self.go(diff="HEAD~1..HEAD", registry=reg)
+        self.assertEqual(call["files"], ["fw/.of-review.diff", "fw/a.py"])
+        self.assertEqual(got["exit"], 0)
+        reg["subagent_harnesses"]["excludes"] = {"fw": ["../up"]}
+        with self.assertRaises(of_subagent.SubagentError):
+            self.go(registry=reg)
+
+    def test_the_snapshot_check_and_the_builtin_gitleaks_fail_closed(self):
+        with open(os.path.join(self.org, "scan.py"), "w") as fh:
+            fh.write("import sys\nprint('a.py:1 rule'); sys.exit(1)\n")
+        reg = {"subagent_harnesses": dict(REG["subagent_harnesses"], snapshot_check="scan.py")}
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go(registry=reg, fake=fake)
+        self.assertIn("failed the organization's snapshot_check", str(e.exception))
+        self.assertEqual(fake.calls, [])
+        reg["subagent_harnesses"]["snapshot_check"] = "of:nothing"
+        with self.assertRaises(of_subagent.SubagentError):
+            self.go(registry=reg)
+        import io
+        import of_gitleaks_check as g
+        def runner(version="8.30.1", rc=0, findings=()):
+            def run(argv, **kw):
+                if argv[1] == "version":
+                    return subprocess.CompletedProcess(argv, 0, stdout=version + "\n")
+                with open(argv[argv.index("--report-path") + 1], "w") as fh:
+                    json.dump(list(findings), fh)
+                return subprocess.CompletedProcess(argv, rc)
+            return run
+        d = self.tmp.name
+        self.assertEqual(g.check(d, exe="/bin/true", run=runner(), out=io.StringIO()), 0)
+        out = io.StringIO()
+        self.assertEqual(g.check(d, exe="/bin/true", run=runner(findings=[{"File": os.path.join(d, "k"),
+                                                                          "StartLine": 3, "RuleID": "r1",
+                                                                          "Secret": "s3cr3t"}]), out=out), 1)
+        self.assertEqual(out.getvalue().strip(), "k:3 r1")                   # never the match
+        self.assertEqual(g.check(d, exe="/bin/true", run=runner(version="8.31.0"), out=io.StringIO()), 1)
+        self.assertEqual(g.check(d, exe="/bin/true", run=runner(rc=2), out=io.StringIO()), 1)
+        self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
+            "gitleaks") else 1, 1)
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():
@@ -210,7 +277,8 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(got["answer"], "no findings")
 
     def test_a_secret_path_or_a_key_under_a_harmless_name_refuses_the_run(self):
-        for name, body in ((".env.production", "A=1\n"), ("notes.txt", SSH_HEAD + "\nx\n")):
+        # a G1 name no exclude removes refuses the run (a .env is removed instead: test_excluded_paths_never_leave)
+        for name, body in (("deploy_ed25519", "x\n"), ("notes.txt", SSH_HEAD + "\nx\n")):
             with self.subTest(name=name):
                 with open(os.path.join(self.repo, name), "w") as fh:
                     fh.write(body)
@@ -301,7 +369,7 @@ class SubagentTest(unittest.TestCase):
 
     def test_a_diff_run_never_carries_a_key_the_head_removed(self):
         """of_secrets-review on PR 328: the diff holds the base's text of every file the head removes or changes."""
-        for name, body in (("notes.txt", SSH_HEAD + "\nx\n"), (".env", "TOKEN=x\n"),
+        for name, body in (("notes.txt", SSH_HEAD + "\nx\n"), ("deploy_ed25519", "x\n"),
                            ("a.py", "print(1)\nK = '" + RSA_HEAD + "'\n")):
             with self.subTest(name=name):
                 with open(os.path.join(self.repo, name), "w") as fh:
