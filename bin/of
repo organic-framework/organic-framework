@@ -6379,8 +6379,10 @@ def _access_approval(args, positions, of_access):
     import of_store
     conn = of_store.connect()
     try:
-        rows = conn.execute("SELECT ts, payload, event_id FROM event WHERE name = 'of.diff_approved' ORDER BY ts DESC,"
-                            " rowid DESC").fetchall()
+        import time as _t
+        since = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(_t.time() - 30 * 86400))  # a link lives 15 minutes
+        rows = conn.execute("SELECT ts, payload, event_id FROM event WHERE name = 'of.diff_approved' AND ts >= ?"
+                            " ORDER BY ts DESC, rowid DESC", (since,)).fetchall()
     finally:
         conn.close()
     approvers = _diff_approvers({"org": org}, positions)
