@@ -130,7 +130,7 @@ def eip55(h):
     return all((c.upper() if int(d[i], 16) >= 8 else c.lower()) == c for i, c in enumerate(h) if c.isalpha())
 
 
-_HEX40 = re.compile(r"(?<![0-9A-Za-z])([0-9a-fA-F]{40})(?![0-9A-Za-z])")
+_HEX40 = re.compile(r"(?:(?<=0x)|(?<![0-9A-Za-z]))([0-9a-fA-F]{40})(?![0-9A-Za-z])")
 _LONG = re.compile(r"[A-Za-z0-9+/_=-]{16,}")
 
 
@@ -139,20 +139,26 @@ def checksummed_address(path, f):
     address with a verified EIP-55 checksum and nothing else secret-shaped in its match? Reads the match from PATH at the finding's position."""
     if f.get("RuleID") != "generic-api-key" or not str(path).lower().endswith(".md"):
         return False
+    # bytes split on LF, as gitleaks counts lines and columns (splitlines() also split at U+2028, and characters
+    # shifted the span on a non-ASCII line; of_secrets-review on PR 337)
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
-        line = lines[int(f.get("StartLine") or 0) - 1]
+        with open(path, "rb") as fh:
+            line = fh.read().split(b"\n")[int(f.get("StartLine") or 0) - 1]
     except (OSError, IndexError, ValueError):
         return False
     if int(f.get("EndLine") or f.get("StartLine") or 0) != int(f.get("StartLine") or 0):
         return False
-    m = line[max(int(f.get("StartColumn") or 1) - 1, 0):int(f.get("EndColumn") or len(line))]
+    m = line[max(int(f.get("StartColumn") or 1) - 1, 0):int(f.get("EndColumn") or len(line))].decode("ascii", "replace")
     hexes = _HEX40.findall(m)
     if len(hexes) != 1 or not eip55(hexes[0]):
         return False
-    rest = m.replace(hexes[0], " ")
-    return not _LONG.search(rest)
+    at = m.index(hexes[0])
+    # a bare address exactly: only 0x, a quote or a space before it, only quotes, spaces and closing punctuation after
+    # it (an address with a tail such as -v2 is no address; the same review)
+    before, after = m[:at], m[at + 40:]
+    if not re.search(r"(?:^|[\s\"'`=:(\[{,])(?:0x)?$", before) or not re.fullmatch(r"[\s\"'`,;)\]}]*", after):
+        return False
+    return not _LONG.search(before)
 
 
 def pinned_why(exe):
@@ -189,6 +195,33 @@ def private_copy(src, folder):
     return dest, None
 
 
+def held(run, path):
+    """RUN, with the private copy at PATH opened, hashed again from that descriptor right before each run, and on Linux
+    run from the descriptor itself (/dev/fd/N), so a process of the same user cannot swap the file between the hash
+    and the exec (of_secrets-review on PR 337). A changed copy raises OSError: the check fails closed."""
+    import hashlib
+
+    def go(argv, **kw):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            h, off = hashlib.sha256(), 0
+            while True:
+                b = os.pread(fd, 1 << 20, off)
+                if not b:
+                    break
+                h.update(b)
+                off += len(b)
+            if h.hexdigest() != PINNED_SHA256:
+                raise OSError("the private copy of gitleaks changed before its run")
+            if sys.platform.startswith("linux"):
+                argv = [f"/dev/fd/{fd}"] + list(argv[1:])
+                kw["pass_fds"] = tuple(kw.get("pass_fds") or ()) + (fd,)
+            return run(argv, **kw)
+        finally:
+            os.close(fd)
+    return go
+
+
 def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
     """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule). The
     program comes from OF_GITLEAKS when set (a runner whose root filesystem is read-only puts it in its own folder),
@@ -206,7 +239,7 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
         if why:
             print(f"{why}: fail closed", file=out)
             return 1
-        return _check(folder, copy, run, out)
+        return _check(folder, copy, held(run, copy), out)
 
 
 def _check(folder, exe, run=subprocess.run, out=sys.stdout):
