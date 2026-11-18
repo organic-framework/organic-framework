@@ -1273,13 +1273,16 @@ HOLDER_LAG_NOTE = ("If `of inbox --mine` or `of send` answers `403 not_holder` r
 
 
 def balance_why(reason):
-    """The sentence a balancer move's note gives for it, from the plan's reason (fill, relief or rescue)."""
+    """The sentence a balancer move's note gives for it, from the plan's reason (fill, relief, rescue or restore)."""
     kind = str(reason or "").split(":", 1)[0]
     if kind == "fill":
         return ("the balancer moved it to use model capacity that would otherwise expire unused "
                 "(founder, 2026-11-06).")
     if kind == "rescue":
         return "the old account stopped accepting work."
+    if kind == "restore":
+        names = str(reason).split(":", 1)[1].split(" missing on ", 1)[0].strip()
+        return f"{names} (a tool your position uses) was missing on the old account; this one has it signed in."
     return "the old account is about to reach its model limits."
 
 
@@ -2046,7 +2049,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     unsigned = missing_signins(name, target) if target != src else []
     # an entry missing because of a label (a labelled entry where the sign-in carries no such label, or a plain one
     # where it carries one) is not fixed by signing in: capacity.yaml `signins:` decides, so no task for the founder
-    to_sign = [(i, e) for i, e in unsigned if not e.get("signin") and label_on(e, target) is None]
+    to_sign = [(i, e) for i, e in unsigned if not e.get("signin") and label_beside(e, target) is None]
     if unsigned:
         names = ", ".join(i for i, _ in unsigned)
         if not allow_unsigned:
@@ -4463,6 +4466,28 @@ def labelled_plugins(d, labels=None, now=None, run=None):
     return out
 
 
+def label_beside(entry, d, labels=None):
+    """The label account `d` carries on a sign-in to the same server as `entry`, by its own id or url or by another
+    marketplace's plugin of the same name, or None. A plain entry missing there for that reason is not fixed by
+    signing in (capacity.yaml `signins:` decides), so the founder gets no task for it."""
+    m = (signin_labels() if labels is None else labels).get(os.path.realpath(os.path.expanduser(d))) or {}
+    name = str(entry.get("plugin") or "").split("@", 1)[0]
+    keys = entry_keys(entry)
+    return next((v for k, v in sorted(m.items())
+                 if k in keys or ("://" not in k and name and k.split("@", 1)[0] == name)), None)
+
+
+def plugin_ids_installed(d):
+    """The plugin ids ("<name>@<marketplace>") installed on config dir `d`; None when installed_plugins.json is
+    missing or unreadable (then a plugin entry is judged by its server, as before)."""
+    try:
+        with open(os.path.join(os.path.expanduser(d), "plugins", "installed_plugins.json")) as fh:
+            j = json.load(fh)
+        return set((j.get("plugins") if isinstance(j.get("plugins"), dict) else j) or {})
+    except Exception:  # noqa: BLE001 - missing or broken: unknown, never a veto
+        return None
+
+
 def with_labels(have, d, labels=None, now=None, run=None):
     """Account `d`'s plugins (plugins_ready) with each labelled one renamed "plugin:<name>#<label>", so that only a
     need with the same label (needs_with_labels) finds it there."""
@@ -4488,6 +4513,13 @@ def signed_in(entry, d, now=None, run=None, labels=None):
     with its label, and an entry with `signin:` only a sign-in with that label (signin_labels)."""
     want, there = entry.get("signin"), label_on(entry, d, labels)
     if (want or there) and str(want or "") != str(there or ""):
+        return False
+    pid = str(entry.get("plugin") or "")
+    ids = plugin_ids_installed(d) if "@" in pid else None
+    if ids is not None and pid not in ids:
+        # another marketplace's plugin of the same name answers on the same url, signed in as another user: 2026-11-18,
+        # a user organization's cloud keeper ran 14 hours where the only Cloudflare plugin was the founder's
+        # key-creating one, and its daily token watch failed; the server check had called its own plugin signed in
         return False
     url = str(entry.get("url") or "").rstrip("/")
     if url:
@@ -4780,6 +4812,60 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     return moves
 
 
+def restore_plan(rows, sessions, positions, policy, now, skip=(), tools=None, wcalib=None):
+    """Pure. A holder that lacks a plugin or an account-bound tool it uses where it runs goes back to an account that
+    has every one of them, once one accepts work and is not about to stop. A rescue moves a session without one when
+    no account that has it accepts work, and fill and relief never move it toward its tools (2026-11-18: a cloud keeper
+    ran 14 hours without Cloudflare after the rescue of 11-17 19:50Z, and its daily token watch failed, while
+    ~/.claude had it and room from 22:05Z). Idle holders only, as fill; never `hold` or `stay` positions, which move
+    only off an account that runs out. The account with the most capacity left first. tools: as rescue_plan.
+    Returns at most restore_moves."""
+    needs, seen = tools or ({}, {})
+    if not needs:
+        return []
+    pos_by_session = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
+    acct = {r["config_dir"]: r for r in rows if r.get("logged_in")}
+    step = policy.get("rescue_step", 2)
+
+    def cur(r, w):  # utilization now: a window whose reset has passed is empty
+        x = (r.get("windows") or {}).get(w) or {}
+        return (x.get("utilization") or 0) if (_ts(x.get("resets_at") or "") or float("inf")) > now else 0
+
+    def ok(r):
+        return not blocked_until(r, now) and cur(r, "five_hour") < policy["relief_at"] \
+            and cur(r, "seven_day") < policy["week_max"]
+
+    def veto(sid, d):
+        return sorted(x for x in lacking(needs.get(sid) or (), seen.get(d)) if x.startswith(VETO))
+
+    taken = {d: 0 for d in acct}
+
+    def room(r):
+        left = 100 - max(cur(r, "five_hour"), cur(r, "seven_day")) - step * taken[r["config_dir"]]
+        return left * ((wcalib or {}).get(r["config_dir"]) or TIER_WEEK_USD.get(r.get("tier"), 1.0))
+    moves = []
+    for d in sorted(sessions):
+        for s in sessions[d]:
+            sid = s["session"]
+            p = pos_by_session.get(sid)
+            if not p or p["name"] in policy["hold"] or p["name"] in (policy.get("stay") or ()) \
+                    or s.get("status") != "idle" or sid in skip:
+                continue
+            miss = veto(sid, d)
+            targets = [r for t, r in acct.items() if t != d and ok(r) and not veto(sid, t)] if miss else []
+            if not targets:
+                continue
+            t = max(targets, key=lambda r: (room(r), r["config_dir"]))
+            taken[t["config_dir"]] += 1
+            names = ", ".join(sorted({x.split(":", 1)[1].split("#", 1)[0].split("/")[-1] for x in miss}))
+            moves.append({"position": p["name"], "session": sid, "from": d, "to": t["config_dir"], "rate": 0.0,
+                          "reason": f"restore: {names} missing on {short(d)}; {short(t['config_dir'])} has all "
+                                    f"it uses and accepts work"})
+            if len(moves) >= policy.get("restore_moves", 2):
+                return moves
+    return moves
+
+
 def run_dirs(rows):
     """The accounts whose sessions a balancer run reads: all but a logged-out one (logged_in False). A probe with no
     reading (logged_in None: a timeout, a dropped link) is no evidence the account is gone; blocked_until takes it as
@@ -4909,14 +4995,17 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
            contexts=None, wcalib=None):
-    """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief and fill (balance_plan) for
-    the rest."""
+    """Pure. Rescue first (observed stops, never vetoed by a prediction), then restore (a holder back to its tools),
+    then relief and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
                          tools=connectors)
+    restore = restore_plan(rows, sessions, positions, policy, now,
+                           skip=set(skip) | set(stopped or {}) | {m["session"] for m in rescue}, tools=connectors,
+                           wcalib=wcalib)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
-                        skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
-                        wcalib=wcalib)
-    return rescue + rest
+                        skip=set(skip) | {m["session"] for m in rescue + restore}, connectors=connectors,
+                        contexts=contexts, wcalib=wcalib)
+    return rescue + restore + rest
 
 
 def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), connectors=None, contexts=None,
