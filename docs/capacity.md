@@ -164,6 +164,8 @@ Why: **budget left in a window at its reset is lost, so spend first what resets 
 
 `of capacity balance [--dry-run]` runs this rule once; `of pulse` runs it every 5 minutes when `~/.config/of/capacity.yaml` says `auto: true`. Each run does three things in order: rescue, then relief and fill, then a check of the invariant.
 
+**Two machines on one account.** The probe reads the account's windows, so thresholds, rescue and the forecast include both machines' use. Positions, busy counts and per-session $/h stay local. Each balancer moves only its own holders. A threshold card has one ID per account, window and reset, with the config path as fallback for an unknown account. Each move onto the target that the coordination feed reports from the past 15 minutes costs one `rescue_step` in rescue. Relief and fill reserve the rate of the first local holder they would move there for each remote arrival.
+
 ### The invariant: no session stands on a limit while another account accepts work (design, 2026-11-11)
 
 **Founder, 2026-11-10 ~20:10Z:** "my session hit its 5-hour limit. Why is nobody rebalancing it to another account?" (hand-over 2759a172 from of_conductor).

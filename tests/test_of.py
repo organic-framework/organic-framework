@@ -275,6 +275,34 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(titled["questions"][0]["question"], "Sign in to the account b")  # the title is kept
         self.assertEqual(titled["steps"], "1. open it\n2. sign in")
 
+    def test_capacity_watch_passes_the_id_through_both_card_routes(self):
+        from unittest import mock
+        import of_capacity
+        import of_events
+        import of_pulse
+        sender = "acme_capacity"
+        positions = [pos(sender, _org="acme", _orgid="acme")]
+        week = {"utilization": 96, "resets_at": "2026-11-23T00:00:00Z"}
+        row = {"config_dir": "/a", "account": "shared@acme.example", "logged_in": True,
+               "windows": {"seven_day": week}, "positions": [sender]}
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(of_events, "STATE_DIR", state), \
+                mock.patch.multiple(of_capacity, STATE_DIR=state, actor=lambda: sender, status=lambda *a, **kw: [row]), \
+                mock.patch.object(of, "_load_quiet", return_value=positions) as registry, \
+                mock.patch.object(of, "_reconcile_ask_tokens"), mock.patch.object(of_pulse, "flush_notices", return_value=0):
+            for registered, source in ((True, "declared"), (False, "capacity")):
+                registry.return_value = positions if registered else []
+                key = of_events.stable_id("capacity_threshold", row["account"], "seven_day", week["resets_at"])
+                self.assertEqual(of._capacity_watch(positions, lambda _: None, probe=False), [key])
+                db = of_events._conn()
+                self.assertEqual(db.execute("SELECT json_extract(payload, '$.source') FROM event WHERE event_id = ?",
+                                            (key,)).fetchone()[0], source)
+                week["resets_at"] = "2026-11-30T00:00:00Z"
+
+            registry.return_value = positions
+            for _ in range(2):
+                self.assertEqual(of.main(["ask", "Move now?", "--from", sender]), 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question'").fetchone()[0], 4)
+
     def test_the_ingest_worker_drains_the_spool_after_each_transcript(self):
         """2026-11-11 (of_server 3f2d224): under load the hook spooled its records, and the worker drained the spool
         only after the whole batch of transcripts, minutes later; the relay took a typed message for lost."""

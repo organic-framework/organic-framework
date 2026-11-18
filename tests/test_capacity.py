@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -491,9 +492,15 @@ class PlanAndWatch(unittest.TestCase):
         self.assertEqual(out[0]["command"], "of capacity move acme_prod --to /d")
 
     def test_watch_asks_once_per_window_and_reset(self):
+        import of_events
         asked = []
-        with tempfile.TemporaryDirectory() as state:
-            of_capacity.STATE_DIR = state
+
+        def ask(text, event_id):
+            asked.append((text, event_id))
+            of_events.emit("agent_question", {"questions": [{"question": text}]}, event_id=event_id, org="acme")
+
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(of_capacity, "STATE_DIR", state), \
+                mock.patch.object(of_events, "STATE_DIR", state):
             rows = [dict(r, observed_at="2026-11-06T06:50:00Z", probe={}, error=None,
                          windows={k: dict(v) for k, v in r["windows"].items()}) for r in self.ROWS]
             rows[0]["windows"]["seven_day"]["resets_at"] = "2026-11-08T09:00:00Z"
@@ -505,21 +512,43 @@ class PlanAndWatch(unittest.TestCase):
             kw["sessions_fn"] = lambda d: sessions.get(d, [])
             of_locale.set_language("en")  # the English text, whatever owner.yaml says
             try:
-                of_capacity.watch(pos, asked.append, log=lambda m: None, **kw)
+                of_capacity.watch(pos, ask, log=lambda m: None, **kw)
             finally:
                 of_locale.set_language(None)
             self.assertEqual(len(asked), 1)
-            self.assertIn("off the account /g (g@x)", asked[0])
-            self.assertIn("spent 100% of its week (threshold 90%)", asked[0])
-            self.assertIn("Most headroom: /d", asked[0])
-            of_capacity.watch(pos, asked.append, log=lambda m: None, fresh=True, **kw)
+            text, event_id = asked[0]
+            self.assertIn("off the account /g (g@x)", text)
+            self.assertIn("spent 100% of its week (threshold 90%)", text)
+            self.assertIn("Most headroom: /d", text)
+            self.assertEqual(event_id, of_events.stable_id("capacity_threshold", "g@x", "seven_day",
+                                                          "2026-11-08T09:00:00Z"))
+            of_capacity.watch(pos, ask, log=lambda m: None, fresh=True, **kw)
             self.assertEqual(len(asked), 1)  # same window, same reset: asked already
+            of_capacity.save_cache({})  # the other machine has only the event and its own config path
+            rows[0]["config_dir"] = kw["dirs"][0] = "/other"
+            sessions["/other"] = sessions.pop("/g")
+            self.assertEqual(of_capacity.watch(pos, ask, log=lambda m: None, **kw), [])
+            self.assertEqual(len(asked), 1)
             rows[0]["windows"]["seven_day"]["resets_at"] = "2026-11-15T09:00:00Z"
-            of_capacity.watch(pos, asked.append, log=lambda m: None, fresh=True, **kw)
+            of_capacity.watch(pos, ask, log=lambda m: None, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # a new reset period: ask again
+            self.assertNotEqual(asked[1][1], event_id)
+
+    def test_threshold_id_uses_the_window_and_falls_back_to_the_dir(self):
+        import of_events
+        reset = of_capacity._iso(Balance.NOW + 86400)
+        for account in ("shared@acme.example", None):
+            for window in ("five_hour", "seven_day"):
+                row = dict(self.ROWS[0], account=account, windows={window: {"utilization": 99, "resets_at": reset}})
+                key, _, _, _ = of_capacity.proposals([row], set(), now=Balance.NOW, policy=POLICY)[0]
+                self.assertEqual(key, of_events.stable_id("capacity_threshold", account or "/g", window, reset))
 
     def test_with_the_balancer_on_asks_only_when_no_account_has_room(self):
         asked = []
+
+        def ask(text, event_id):
+            asked.append(event_id)
+
         with tempfile.TemporaryDirectory() as state:
             of_capacity.STATE_DIR = state
             rows = [dict(r, observed_at="2026-11-06T06:50:00Z", probe={}, error=None,
@@ -530,13 +559,13 @@ class PlanAndWatch(unittest.TestCase):
                       sessions_fn=lambda d: sessions.get(d, []), emit=lambda *a: None)
             pos = [dict(p) for p in self.POS]
             on = {"auto": True}
-            of_capacity.watch(pos, asked.append, log=lambda m: None, policy=on, **kw)
+            of_capacity.watch(pos, ask, log=lambda m: None, policy=on, **kw)
             self.assertEqual(asked, [])  # /d has room: relief moves them, nothing to decide
             for r in rows[1:]:
                 r["windows"]["seven_day"]["utilization"] = 95
-            of_capacity.watch(pos, asked.append, log=lambda m: None, policy=on, fresh=True, **kw)
+            of_capacity.watch(pos, ask, log=lambda m: None, policy=on, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # no room anywhere: the owner decides, for /g and for /e
-            of_capacity.watch(pos, asked.append, log=lambda m: None, policy={"auto": False}, fresh=True, **kw)
+            of_capacity.watch(pos, ask, log=lambda m: None, policy={"auto": False}, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # asked once per window and reset, as before
 
     def test_probe_runs_without_hooks_or_mcp(self):
@@ -733,6 +762,26 @@ class Balance(unittest.TestCase):
         m = of_capacity.balance_plan(rows, self.SESS, self.POS, self.RATES, {"/ez": 12.0}, pol, self.NOW)
         self.assertEqual([(x["position"], x["from"], x["to"]) for x in m], [("of_x", "/ez", "/cl")])
 
+    def test_remote_arrivals_take_the_same_room_as_local_moves_in_relief_and_fill(self):
+        rows = self.rows()[:2]
+        sink, source = rows
+        sink["account"] = "shared@acme.example"
+        sink["windows"]["five_hour"]["utilization"] = 70  # 15 points at $2 per point over two hours
+        sessions = {"/cl": [{"session": s, "status": "idle"} for s in ("a", "c")]}
+        rates = {"a": 7, "c": 6}
+        for kind, utilization in (("fill", 10), ("relief", 98)):
+            source["windows"]["seven_day"]["utilization"] = utilization
+            args = rows, sessions, self.POS, rates, {"/ez": 2}, POLICY, self.NOW
+            local = of_capacity.balance_plan(*args)
+            self.assertEqual([(m["position"], m["reason"].split(":")[0]) for m in local], [("a", kind), ("c", kind)])
+            peer = of_capacity.decide(*args, remote_moves={sink["account"]: 1})
+            self.assertEqual([m["position"] for m in peer], ["a"])
+            self.assertEqual(of_capacity.decide(*args, remote_moves={sink["account"]: 2}), [])
+        rows.append(dict(source, config_dir="/second"))
+        sessions["/second"] = [sessions["/cl"].pop()]
+        peer = of_capacity.decide(*args, remote_moves={sink["account"]: 1})
+        self.assertEqual([m["position"] for m in peer], ["a"])
+
 
 class FiveHourRelief(unittest.TestCase):
     """2026-11-10: two idle sessions stood on a Max 5x account's 5-hour limit (week 55%) while two Max 20x accounts
@@ -842,6 +891,36 @@ class Rescue(unittest.TestCase):
         # not stopped, or mid-turn: not a rescue (relief and fill decide about them)
         self.assertNotIn("idle", [x["position"] for x in m])
         self.assertNotIn("busy", [x["position"] for x in m])
+
+    def test_rescue_counts_recent_remote_moves_onto_the_same_account(self):
+        import of_events
+        import of_store
+        rows = self.rows()
+        account = rows[2]["account"] = "shared@acme.example"
+        pol = dict(self.STOPS_ONLY, rescue_step=30)
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(of_events, "STATE_DIR", state):
+            conn = of_events._conn()
+            me = of_events.machine_id()
+
+            def move(host, age, target, previous=None):
+                payload = {"workplace": {"account": target, "config_dir": "/remote"},
+                           "previous_workplace": {"account": previous, "config_dir": "/source"}}
+                rec = of_events.record("holder_changed", payload, org="acme",
+                                       extra={"host.id": host, "timestamp": of_events.now_iso(self.NOW - age)})
+                of_store.add_event(conn, rec)
+
+            def target():
+                moves = of_capacity.rescue_plan(rows, self.SESS, self.POS, {"st1": self.NOW - 600}, pol, self.NOW,
+                                                remote_moves=of_capacity.recent_remote_moves(self.NOW, conn))
+                return moves[0]["to"]
+
+            move(me, 60, account)
+            move("peer", 901, account)
+            move("peer", 60, "other@acme.example")
+            move("peer", 60, account, previous=account)
+            self.assertEqual(target(), "/ap")
+            move("peer", 900, account)
+            self.assertEqual(target(), "/gg")
 
     def test_a_fresh_small_account_does_not_outrank_a_large_one_with_week_left(self):
         rows = self.rows()[:2] + [{"config_dir": "/pro", "logged_in": True, "status": "allowed",

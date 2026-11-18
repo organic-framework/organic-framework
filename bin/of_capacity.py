@@ -16,6 +16,7 @@ import calendar
 import glob
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -3974,11 +3975,12 @@ def proposals(rows, proposed, now=None, policy=None):
         if not why or not r.get("positions"):
             continue
         w = why.split()[0]
-        reset = _ts(((r.get("windows") or {}).get(w) or {}).get("resets_at") or "")
+        resets_at = ((r.get("windows") or {}).get(w) or {}).get("resets_at")
+        reset = _ts(resets_at or "")
         if w == "five_hour" and reset and reset - now <= wait_s:
             continue
-        k = f"{r['config_dir']}|{w}|{((r.get('windows') or {}).get(w) or {}).get('resets_at')}"
-        if k in proposed:
+        k = of_events.stable_id("capacity_threshold", r.get("account") or r["config_dir"], w, resets_at)
+        if k in proposed or f"{r['config_dir']}|{w}|{resets_at}" in proposed:  # older local cache
             continue
         out.append((k, r, why, best_target(rows, exclude=r["config_dir"])))
     return out
@@ -4031,10 +4033,17 @@ def watch(positions, ask, log=print, policy=None, **kw):
     cache = load_cache()
     done = set(cache.get("_proposed") or [])
     asked = []
-    for k, r, why, t in proposals(rows, done):
+    for k, r, why, t in proposals(rows, done, now=kw.get("now"), policy=policy):
         if auto and t and not over_threshold(t) and not exhausted(t):
             continue  # not marked asked: should the room elsewhere run out within this window, it is asked then
-        ask(ask_text(r, why, t))
+        if k in done:
+            continue
+        try:
+            if of_events._conn().execute("SELECT 1 FROM event WHERE event_id = ?", (k,)).fetchone():
+                continue
+        except (OSError, sqlite3.Error) as e:
+            log(f"capacity: threshold card lookup failed ({e}), filing with its fixed ID")
+        ask(ask_text(r, why, t), event_id=k)
         done.add(k)
         asked.append(k)
         log(f"capacity: asked the owner about {short(r['config_dir'])} ({why})")
@@ -5262,7 +5271,20 @@ def resting(p):
     return str((p or {}).get("status") or "").split("#")[0].strip() in RESTING
 
 
-def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None):
+def recent_remote_moves(now, conn=None):
+    """Count arrivals by account because config paths belong to the sending machine."""
+    conn = conn or of_events._conn()
+    since = of_events.now_iso(now - 15 * 60)
+    # The seconds prefix uses the (name, ts) index. The time comparison accepts timestamps with or without fractions.
+    return dict(conn.execute(
+        "SELECT json_extract(payload, '$.workplace.account') AS account, count(*) FROM event "
+        "WHERE name = 'of.holder_changed' AND ts >= ? AND julianday(ts) BETWEEN julianday(?) AND julianday(?) "
+        "AND host_id <> ? AND account <> '' "
+        "AND account IS NOT json_extract(payload, '$.previous_workplace.account') "
+        "GROUP BY account", (since[:19], since, of_events.now_iso(now), of_events.machine_id())))
+
+
+def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None, remote_moves=None):
     """Pure. The invariant (founder, 2026-11-10): no session stands on a usage limit while another account accepts
     work. `stopped`: {session: epoch of its limit stop}, read from its transcript (limit_stop), an observation. A
     stopped holder between turns whose account does not accept work goes to one that does. Predicted room, burn
@@ -5295,7 +5317,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     targets = [r for d, r in acct.items() if not blocked(d)]
     if not targets:
         return []
-    taken = {r["config_dir"]: 0 for r in targets}
+    taken = {r["config_dir"]: (remote_moves or {}).get(r.get("account"), 0) for r in targets}
 
     needs, seen = tools or ({}, {})
 
@@ -5469,22 +5491,22 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
-           contexts=None, wcalib=None):
+           contexts=None, wcalib=None, remote_moves=None):
     """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief, restore (a holder back to its
     tools) and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
-                         tools=connectors)
+                         tools=connectors, remote_moves=remote_moves)
     incoming = {}
     for m in rescue:
         incoming[m["to"]] = incoming.get(m["to"], 0.0) + (rates or {}).get(m["session"], 0.0)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
                         skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
-                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming)
+                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming, remote_moves=remote_moves)
     return rescue + rest
 
 
 def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), connectors=None, contexts=None,
-                 wcalib=None, stopped=(), incoming=None):
+                 wcalib=None, stopped=(), incoming=None, remote_moves=None):
     """Pure. rows: status rows; sessions: {dir: live sessions}; rates: {session: $/h}; calib: {dir: $ per 1%
     of its 5-hour window}; connectors: ({session: claude.ai connectors it uses}, {dir: connectors seen there}).
     Fill never moves a session onto an account that lacks a connector or plugin it uses; relief does for a
@@ -5577,7 +5599,9 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     def tier(name):
         return priority_tier(next((p for p in positions if p["name"] == name), {}), policy)
 
-    def room_of(sink, extra_load=0.0, horizon_h=None):
+    added = dict(incoming or {})
+
+    def room_of(sink, horizon_h=None):
         """$/h the account can still take: under fill_to of its 5-hour window and within its remaining week, sized
         by its own calibration or, without one, by plan tier from the others'. Also the $ a resume may cost there.
         An account that reports no 5-hour window but has a measured week is sized by its week alone: on 2026-11-10
@@ -5588,7 +5612,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         reset), which caps the room."""
         d = sink["config_dir"]
         f, f_reset = win(sink, "five_hour")
-        load = sum(rates.get(s["session"], 0.0) for s in sessions.get(d, [])) + extra_load
+        load = sum(rates.get(s["session"], 0.0) for s in sessions.get(d, [])) + added.get(d, 0.0)
         cal = calib.get(d) or prior_calib(sink)
         # a week just reset has no measure of its own yet: the others' week, scaled by tier, sizes it (2026-11-12:
         # ~/.claude-g reset to 0% looked to have no room, and fill and relief left it empty). Only with the account's
@@ -5642,6 +5666,15 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                 and (wk is None or wk < policy["week_max"]) and not week_runs_out(r))
 
     moves = []
+
+    def remote_load(target, rate):
+        """Size each arrival like the first local move onto its account, whose rate we can measure."""
+        account = target.get("account")
+        count = (remote_moves or {}).get(account, 0)
+        if count:
+            rate = next((m["rate"] for m in moves if acct[m["to"]].get("account") == account), rate)
+        return count * rate
+
     # 1. relief: an account about to stall sheds sessions to accounts that can take them (room, resume cost), unless
     #    the window it hit reopens soon
     for d, r in acct.items():
@@ -5651,16 +5684,17 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         targets = sorted((x for x in acct.values()
                           if not stalled(x) and x["config_dir"] != d and headroom(x) is not None),
                          key=lambda x: -headroom(x))
-        added = {x["config_dir"]: 0.0 for x in targets}
         for rate, name, sid in movable(d, relief=True):
             if len(moves) >= policy.get("relief_moves", policy["max_moves"]):
                 break
             for t in targets:  # relief: the target must last a day, not its whole week (the source stalls otherwise)
-                room, resume_max = room_of(t, added[t["config_dir"]], horizon_h=relief_horizon(r))
+                room, resume_max = room_of(t, horizon_h=relief_horizon(r))
+                room -= remote_load(t, rate)
                 if rate <= room and resume_ok(sid, resume_max) and not lacks_plugin(sid, t["config_dir"]):
                     moves.append({"position": name, "session": sid, "from": d, "to": t["config_dir"], "rate": rate,
                                   "reason": "relief: the account is about to stall"})
-                    added[t["config_dir"]] += rate
+                    td = t["config_dir"]
+                    added[td] = added.get(td, 0.0) + rate
                     break
     # 1b. restore: a holder without a plugin or account-bound tool it uses where it runs (a rescue moves a session
     #     without one when no account that has it accepts work; fill and relief never move it toward its tools) goes to
@@ -5669,9 +5703,6 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     #     14 hours without Cloudflare after a rescue, while the account with it had room from 8 hours after it.
     #     of_review, PR 325: a check by current use alone put a holder on an account relief was shedding
     planned = {m["session"] for m in moves}
-    added = dict(incoming or {})  # what rescue sends in the same plan (Codex review, PR 328: a target overbooked)
-    for m in moves:
-        added[m["to"]] = added.get(m["to"], 0.0) + m["rate"]
 
     def stopped_after_probe(r):
         seen_at = _ts(r.get("observed_at") or "") or 0
@@ -5695,7 +5726,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                 if td == d or stalled(t) or not win(t, "seven_day")[1] or blocked_until(t, now) \
                         or stopped_after_probe(t) or not holds_all(sid, td, d):
                     continue
-                room, resume_max = room_of(t, added.get(td, 0.0))
+                room, resume_max = room_of(t)
+                room -= remote_load(t, rate)
                 if room < max(rate, policy["min_rate"]) or not resume_ok(sid, resume_max):
                     continue
                 if best is None or (room, td) > best:
@@ -5720,7 +5752,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         if len(moves) >= policy["max_moves"]:
             break
         d = sink["config_dir"]
-        room, resume_max = room_of(sink, sum(m["rate"] for m in moves if m["to"] == d))
+        room, resume_max = room_of(sink)
         if room < policy["min_rate"]:
             continue
         week_reset = win(sink, "seven_day")[1]
@@ -5730,7 +5762,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         planned = {m["session"] for m in moves}  # relief took it already: one move per session and run (2026-11-11)
         before = len(moves)
         for rate, name, sid, src in cands:
-            if sid in planned or len(moves) >= policy["max_moves"] or rate < policy["min_rate"] or rate > room \
+            if sid in planned or len(moves) >= policy["max_moves"] or rate < policy["min_rate"] \
+                    or rate + remote_load(sink, rate) > room \
                     or lacks(sid, d):
                 continue
             if not resume_ok(sid, resume_max):
@@ -5866,8 +5899,14 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                 if t:
                     stopped[x["session"]] = t
     failed = {sid for sid, t in recent.items() if len(t) > 2 and t[2] == "fail"}
+    try:
+        remote_moves = recent_remote_moves(now)
+    except (OSError, sqlite3.Error) as e:
+        log(f"balance: recent moves on other machines unavailable ({e})")
+        remote_moves = {}
     plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
-                   failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib)
+                   failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
+                   remote_moves=remote_moves)
     untrusted = {}
     offline = bool(plan_) and not dry_run and not api_online()
     if offline:

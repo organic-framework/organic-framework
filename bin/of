@@ -4120,7 +4120,8 @@ def cmd_ask(args):
         **({"work": _work(me.get("_org"), args.work)} if args.work else {}),
         **({"yes_option": yes} if yes is not None else {}),
         **({"escalated_from": src["event_id"]} if src else {})},
-        position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender))
+        position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender),
+        event_id=getattr(args, "event_id", None))
     if src:  # the unit owner's rewrite: OF's copy is superseded (of_asks), or there is none yet and none will come
         if src["state"] == "open":
             import of_asks_answer
@@ -5800,7 +5801,7 @@ def _listener_runs_capacity():
         return False
 
 
-def _capacity_ask(text, options=None, task=None, due=None, blocking=False, positions=None):
+def _capacity_ask(text, options=None, task=None, due=None, blocking=False, positions=None, event_id=None):
     """The balancer's asks and tasks to the owner. Every field cmd_ask reads is set: a Namespace without `task`
     raised AttributeError from 2026-11-06 (a2b0d44) to 2026-11-07, and no capacity ask reached the owner. A task
     keeps its title, as `of ask "<title>" --task "<steps>"` does (of_capacity's review of PR 23).
@@ -5811,18 +5812,18 @@ def _capacity_ask(text, options=None, task=None, due=None, blocking=False, posit
     sender = of_capacity.actor()
     positions = _load_quiet() if positions is None else positions
     if not any(sender == p["name"] or sender in [str(a) for a in p.get("aliases") or []] for p in positions):
-        return _capacity_card(sender, text, options, task, due, blocking)
+        return _capacity_card(sender, text, options, task, due, blocking, event_id=event_id)
     with open(os.devnull, "w") as null:
         saved, sys.stdout = sys.stdout, null
         try:
             cmd_ask(argparse.Namespace(question=text, options=options, blocking=blocking,
                                        to="founder", sender=sender, task=task, command=None, tags=None,
-                                       due=due, work=None, where=None, escalates=None))
+                                       due=due, work=None, where=None, escalates=None, event_id=event_id))
         finally:
             sys.stdout = saved
 
 
-def _capacity_card(sender, text, options=None, task=None, due=None, blocking=False):
+def _capacity_card(sender, text, options=None, task=None, due=None, blocking=False, event_id=None):
     """The balancer's ask as a machine card to the owner, with no registry position behind it."""
     import of_events
     steps = of_hook_mask(task) if task else None
@@ -5833,15 +5834,18 @@ def _capacity_card(sender, text, options=None, task=None, due=None, blocking=Fal
         "blocking": bool(blocking), "topic_key": _topic_key(question), **({"due": _due(due)} if due else {}),
         "questions": [{"question": question, "options": opts}],
         **({"task": True, "steps": steps, "command": None, "where": "machine"} if task else {})},
-        position=sender)
+        position=sender, event_id=event_id)
 
 
 def _capacity_watch(positions, log, probe=True):
     """docs/capacity.md: probes each account at most every 30 minutes; one ask per account, window and reset.
     probe=False reads the last readings only: the pulse passes it when the listener's detached balancer probes."""
     import of_capacity
-    return of_capacity.watch(positions, lambda t: _capacity_ask(t, tr("move now") + "|" + tr("wait for the reset")), log=log,
-                             probe=probe)
+
+    def ask(text, event_id=None):
+        return _capacity_ask(text, tr("move now") + "|" + tr("wait for the reset"), event_id=event_id)
+
+    return of_capacity.watch(positions, ask, log=log, probe=probe)
 
 
 def _pulse_service(action):
