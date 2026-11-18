@@ -59,62 +59,70 @@ class Paths(unittest.TestCase):
 
     def test_restore_carries_the_owners_consents_with_the_paths_rewritten(self):
         # the agent host is this machine's continuation: the folders' trust and the Bypass Permissions acceptance
-        # travel, as a move within one machine carries them (ensure_trust, ensure_settings)
+        # travel for the entries restore accepted, as a move within one machine carries them
         import json
         import tempfile
         with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
             src, dst = os.path.realpath(src), os.path.realpath(dst)
             for home in (src, dst):
                 os.makedirs(os.path.join(home, ".claude-a"))
-                os.makedirs(os.path.join(home, "org"))
+                os.makedirs(os.path.join(home, "org", "sub"))
+                os.makedirs(os.path.join(home, "other"))
             with open(os.path.join(src, ".claude-a", "settings.json"), "w") as fh:
                 json.dump({"skipDangerousModePermissionPrompt": True}, fh)
             with open(os.path.join(src, ".claude-a", ".claude.json"), "w") as fh:
                 json.dump({"projects": {os.path.join(src, "org"): {"hasTrustDialogAccepted": True}}}, fh)
-            plan = {"consents": of_carry.consents([{"config_dir": os.path.join(src, ".claude-a"),
-                                                    "cwd": os.path.join(src, "org")}])}
+            entry = {"config_dir": os.path.join(src, ".claude-a"), "cwd": os.path.join(src, "org")}
+            plan = {"home": src, "consents": of_carry.consents([entry])}
             self.assertEqual(plan["consents"], {os.path.join(src, ".claude-a"): {"bypass": True,
                                                                                  "trusted": [os.path.join(src, "org")]}})
             rw = of_carry.Rewriter(src, dst, 501, 501)
             logs = []
-            done = of_carry.carry_consents(plan, rw, log=logs.append)  # not signed in there yet: trust waits
+            done = of_carry.carry_consents(plan, rw, [entry], log=logs.append)  # not signed in there yet: trust waits
             self.assertEqual(done, [(os.path.join(dst, ".claude-a"), "bypass")])
             self.assertTrue(any("not signed in yet" in x for x in logs))
             with open(os.path.join(dst, ".claude-a", ".claude.json"), "w") as fh:
                 json.dump({"oauthAccount": {"emailAddress": "x@example.com"}}, fh)
-            done = of_carry.carry_consents(plan, rw, log=logs.append)
+            # of_review, PR 339: a crafted plan's consents for the home itself and another folder are not applied
+            crafted = dict(plan, consents={os.path.join(src, ".claude-a"): {"bypass": True, "trusted": [
+                os.path.join(src, "org"), src, os.path.join(src, "other")]}})
+            done = of_carry.carry_consents(crafted, rw, [entry], log=logs.append)
             self.assertEqual(done, [(os.path.join(dst, ".claude-a"), "trust " + os.path.join(dst, "org"))])
             with open(os.path.join(dst, ".claude-a", ".claude.json")) as fh:
                 conf = json.load(fh)
-            self.assertTrue(conf["projects"][os.path.join(dst, "org")]["hasTrustDialogAccepted"])
+            self.assertEqual(sorted(conf["projects"]), [os.path.join(dst, "org")])
             self.assertEqual(conf["oauthAccount"], {"emailAddress": "x@example.com"})  # nothing else touched
-            self.assertEqual(of_carry.carry_consents(plan, rw, log=logs.append), [])  # already there
+            self.assertEqual(of_carry.carry_consents(plan, rw, [], log=logs.append), [])  # no accepted entry: none
 
     def test_consents_travel_only_on_the_owners_yes(self):
-        # of_server, PR 339: a retold basis carries none; the owner's card answered with its first option does
+        # of_server and of_review, PR 339: only the owner's own yes, on an unamended card an OF position filed about
+        # these consents, whose answer names that card
         import json
         import sqlite3
         conn = sqlite3.connect(":memory:")
         conn.execute("CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, payload TEXT)")
-        add = lambda eid, name, p, ts="t": conn.execute("INSERT INTO event VALUES (?,?,?,?)",  # noqa: E731
-                                                        (eid, ts, name, json.dumps(p, ensure_ascii=False)))
-        add("a1", "of.agent_question", {"questions": [{"question": "q", "options": ["yes, carry them", "no"]}]})
-        add("c1", "of.agent_question_answered", {"ask_id": "a1", "answer": "yes, carry them", "by": "owner"})
-        add("a2", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
-        add("c2", "of.agent_question_answered", {"ask_id": "a2", "answer": "no", "by": "owner"})
-        add("a3", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
-        add("c3", "of.agent_question_answered", {"ask_id": "a3", "answer": "yes", "by": "of_agent-server"})
-        add("a4", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
-        add("c4", "of.agent_question_answered", {"ask_id": "a4", "answer": "yes", "by": "owner"})
-        cards = [{"ref": f"OF-{i}", "event_id": f"a{i}", "closed_by": f"c{i}", "state": "answered"} for i in (1, 2, 3, 4)]
+        add = lambda eid, name, p: conn.execute("INSERT INTO event VALUES (?,?,?,?)",  # noqa: E731
+                                                (eid, "t", name, json.dumps(p, ensure_ascii=False)))
+        yes = "yes, move them with their folder trust and Bypass Permissions acceptance"
+        card = lambda eid, opts, pos="of_agent-server": add(eid, "of.agent_question",  # noqa: E731
+                                                              {"from_position": pos, "questions": [{"question": "q", "options": opts}]})
+        ans = lambda cid, aid, answer, by="owner": add(cid, "of.agent_question_answered",  # noqa: E731
+                                                       {"ask_id": aid, "answer": answer, "by": by})
+        card("a1", [yes, "no"]); ans("c1", "a1", yes)
+        card("a2", [yes, "no"]); ans("c2", "a2", "no")
+        card("a3", [yes, "no"]); ans("c3", "a3", yes, by="of_agent-server")
+        card("a4", [yes, "no"]); ans("c4", "a4", yes)
+        card("a5", ["yes, upgrade the lab cluster", "no"]); ans("c5", "a5", "yes, upgrade the lab cluster")
+        card("a6", [yes, "no"], pos="acme_org"); ans("c6", "a6", yes)
+        card("a7", [yes, "no"]); ans("c7", "a-other", yes)
+        cards = [{"ref": f"OF-{i}", "event_id": f"a{i}", "closed_by": f"c{i}", "state": "answered"} for i in range(1, 8)]
         cards[3].update(amended=True, version=2)
-        cards.append({"ref": "OF-5", "event_id": "a5", "state": "open"})
+        cards.append({"ref": "OF-8", "event_id": "a8", "state": "open"})
         self.assertEqual(of_carry.owner_yes("of-1", cards, conn)["ref"], "OF-1")
-        self.assertIsNone(of_carry.owner_yes("OF-2", cards, conn))  # his no
-        self.assertIsNone(of_carry.owner_yes("OF-3", cards, conn))  # closed by a position, not by him
-        self.assertIsNone(of_carry.owner_yes("OF-4", cards, conn))  # amended: its options are not read here
-        self.assertIsNone(of_carry.owner_yes("OF-5", cards, conn))  # still open
-        self.assertIsNone(of_carry.owner_yes("OF-99", cards, conn))
+        for ref, why in (("OF-2", "his no"), ("OF-3", "closed by a position"), ("OF-4", "amended"),
+                         ("OF-5", "an unrelated yes card"), ("OF-6", "filed by another organization's position"),
+                         ("OF-7", "an answer naming another ask"), ("OF-8", "still open"), ("OF-99", "unknown")):
+            self.assertIsNone(of_carry.owner_yes(ref, cards, conn), why)
 
     def test_custody_credentials_never_leave(self):
         # hand-over a1bde073: a key the agents' home never holds stays behind in prepare and copy, and is named
