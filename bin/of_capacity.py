@@ -474,7 +474,10 @@ def codex_reading(home=None, newest=5):
 def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess.run):
     """Codex's reading, after a minimal probe (`codex exec`, read-only sandbox, low effort, one word, in an empty
     folder) when the newest is older than PROBE_EVERY_MIN or `fresh`. None when Codex is not installed or never
-    signed in; {"error": …} when a due probe failed and there is no reading."""
+    signed in; {"error": …} when a due probe failed and there is no reading. The probe loads none of the account's
+    config.toml (`--ignore-user-config`; sign-in still comes from CODEX_HOME), so none of its MCP servers, its notify
+    program or its hooks start, as the Claude probe starts none (of_review, PR 326). It still writes a rollout: the
+    reading is in it, and `codex exec --json` does not carry it (checked 2026-11-18), so `--ephemeral` would lose it."""
     now = now or time.time()
     home = home or codex_home()
     if not os.path.isfile(os.path.join(home, "auth.json")):
@@ -486,9 +489,9 @@ def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess
         work = os.path.join(STATE_DIR, "capacity", "probe", "codex")
         os.makedirs(work, mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
-        env.update(OF_AUTOMATION="1", SSH_AUTH_SOCK="")
+        env.update(OF_AUTOMATION="1", OF_PROBE="1", SSH_AUTH_SOCK="")
         try:
-            runner([exe, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-c",
+            runner([exe, "exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "-c",
                     "model_reasoning_effort=low", CODEX_PROBE_PROMPT], cwd=work, env=env, capture_output=True,
                    text=True, timeout=120)
         except (OSError, subprocess.SubprocessError) as e:
@@ -508,7 +511,7 @@ def muse_status(path=None):
             s = json.load(fh) or {}
     except (OSError, ValueError):
         s = {}
-    return {"model": s.get("model") or "muse-wonder-full-1.0", "contributor_mode": s.get("contributor_mode_enabled")}
+    return {"model": s.get("model") or "default", "contributor_mode": s.get("contributor_mode_enabled")}
 
 
 def format_other(codex, muse):

@@ -2303,16 +2303,19 @@ class OtherHarnesses(unittest.TestCase):
         runs = []
         with tempfile.TemporaryDirectory() as h, tempfile.TemporaryDirectory() as st, \
                 mock.patch.multiple(of_capacity, STATE_DIR=st, codex_bin=lambda: "/bin/codex"):
-            self.assertIsNone(of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append(a)))
+            self.assertIsNone(of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append((a, k))))
             open(os.path.join(h, "auth.json"), "w").close()
             self.rollout(h, at=self.T0 - 60)
-            r = of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append(a))
+            r = of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append((a, k)))
             self.assertEqual((runs, r["windows"]["seven_day"]["utilization"]), ([], 12))  # fresh: no probe
-            of_capacity.codex_status(now=self.T0 + 3600, home=h, runner=lambda *a, **k: runs.append(a))
-            of_capacity.codex_status(now=self.T0 + 3600, home=h, probe=False, runner=lambda *a, **k: runs.append(a))
+            of_capacity.codex_status(now=self.T0 + 3600, home=h, runner=lambda *a, **k: runs.append((a, k)))
+            of_capacity.codex_status(now=self.T0 + 3600, home=h, probe=False, runner=lambda *a, **k: runs.append((a, k)))
         self.assertEqual(len(runs), 1)
-        argv = runs[0][0]
-        self.assertEqual(argv[:5], ["/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"])
+        argv, kw = runs[0]
+        self.assertEqual(argv[0][:6], ["/bin/codex", "exec", "--ignore-user-config", "--skip-git-repo-check",
+                                       "--sandbox", "read-only"])  # no MCP server, notify or hook of the account
+        self.assertEqual((kw["env"]["OF_PROBE"], kw["env"]["OF_AUTOMATION"], kw["env"]["SSH_AUTH_SOCK"]), ("1", "1", ""))
+        self.assertFalse([k for k in kw["env"] if k.startswith("HERDR_")])
 
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
@@ -2327,6 +2330,9 @@ class OtherHarnesses(unittest.TestCase):
             with open(path, "w") as fh:
                 json.dump({"contributor_mode_enabled": False, "model": "m"}, fh)
             self.assertEqual(of_capacity.muse_status(path), {"model": "m", "contributor_mode": False})
+            with open(path, "w") as fh:
+                json.dump({}, fh)
+            self.assertEqual(of_capacity.muse_status(path)["model"], "default")  # no model named: no guess
 
 
 class ConnectorsCache(unittest.TestCase):
