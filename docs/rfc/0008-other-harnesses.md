@@ -55,6 +55,7 @@ The wrapper is the guard for these runs. Each limit is a test in the wrapper's s
 | **Read-only, no shell beyond the sandbox, no network for a workspace run** | Codex: `codex exec --sandbox read-only --ignore-user-config --ignore-rules`, approvals never, so the account's `danger-full-access` config and its MCP servers are not loaded. Muse: `muse exec --workspace <snapshot> --disable-write --disable-shell --disable-web-tools --approval-mode never --no-foreign-personal-context --disable-request-user-input` (as in `of_capacity`'s trial script). | A run told to write a file, to reach the network, or to call an MCP tool fails, and its event stream lists no tool outside the allowed ones. Codex's help (0.169.0-alpha.11.1) does not say whether its read-only sandbox stops reads outside the workspace; the canary test decides. If it fails, the run goes as another OS user that can read only the snapshot, or in a Lab VM (docs/lab.md). |
 | **Never both a workspace and the web** | `research` runs have the web and no workspace; `review` and `read` runs have a workspace and no web. A page read on the web can then never carry the organization's material out (prompt injection). | A `research` run gets no snapshot; a `review` run has no web tool. |
 | **No training on the run** | Muse: `--contributor-mode off` on every run (per run, never persisted). Codex has no per-run switch (none in `codex exec --help`, 0.169.0-alpha.11.1), and no interface found reads the account's setting, so the basis is the owner's card `OF-27` (turn off training on his data in ChatGPT): until it is done and checked, Codex runs only on public material. **Public** means: every commit the run sends (`--at`, and both ends of `--diff`) is reachable from a ref fetched from the public remote (its `main`, or a pull request's head), and the prompt passed the pre-publish check above. The working copy's `main` runs ahead of the public `main`, so a commit not pushed yet is not public. | A Muse run without the flag is refused; so is a Codex run, while `OF-27` is open, on a commit that exists only in the working copy, or on a prompt that fails the pre-publish check. |
+| **No owner's keychain** | A harness that keeps its login in the macOS keychain gets its own keychain, holding only that login, in the run's fresh home; never the owner's login keychain, which holds all of his passwords (encrypted; a prompt-injected read would carry it to the provider). Or the login comes another way the harness takes (Muse's `--api-key-stdin`). | A run told to read the owner's login keychain gets nothing. |
 | **A clean environment** | The process gets only what it needs: no `SSH_AUTH_SOCK`, `OF_AUTOMATION=1`, the `HERDR_*` variables unset (AGENTS.md, nested harness), no organization tokens. | A run that prints its environment shows none of them. |
 | **Recorded** | Each run writes `of.subagent_run` (started and ended): position, session, work, harness, model, kind, the commit or diff, the prompt's hash, exit, the tokens its JSONL reports, and its record's path. The record (the `--json` stream and the answer) stays in the position's state folder, mode 600, under RFC 0002's scan. `of capacity spend` attributes the run to its position, work and goal. | A run with no event fails the suite. |
 
@@ -81,14 +82,16 @@ What leaves for another provider is the organization's choice, as with every pro
 
 ```yaml
 subagent_harnesses:
-  codex: {kinds: [review, read, research], systems: [of]}   # systems whose snapshots may be sent
-  muse:  {kinds: [review, read], systems: [of]}
-  basis: "<the keeper's diff, or the owner's card where the organization requires one>"
+  codex: {kinds: [review, read, research], repos: [organic-framework]}   # repositories whose snapshots may be sent
+  muse:  {kinds: [review, read], repos: [organic-framework]}
+  prompt_check: "release/check.py"   # the organization's pre-publish check, run on the prompt and the schema
+  basis: "<the keeper's commit, or the owner's card where the organization requires one>"
 ```
 
+The schema is in docs/registry.md, "Subagent harnesses". It names repositories, not systems: one repository holds many systems.
+
 - With no key, an organization's positions use none, and `--harness auto` uses Claude.
-- `of registry check` validates the key once the wrapper reads it; `docs/registry.md` gets it with step 1.
-- **The OF team** (its keeper, `of_architect`): Codex and Muse for `review` and `read` on the public framework repository (public as §3.1 defines it), Codex for `research` with a prompt that passes the pre-publish check. Not organic-framework-build: its reports name a user organization and its people.
+- **The OF team** (its keeper, `of_architect`): Codex for `review`, `read` and `research` on the public framework repository (public as §3.1 defines it), with prompts that pass the pre-publish check. Muse after its login no longer needs the owner's keychain (§3.1). Not organic-framework-build: its reports name a user organization and its people.
 - **A user organization** decides through its own structure keeper, for its own repositories.
 
 ## 6. The bake-off, and what proves it works
