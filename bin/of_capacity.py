@@ -5035,6 +5035,12 @@ def missing_signins(position_name, d, docs=None, now=None, run=None):
     return [(i, e) for i, e in bound_tools(position_name, docs) if signed_in(e, d, now, run) is False]
 
 
+def unconfirmed_signins(position_name, d, docs=None, now=None, run=None):
+    """[(org/id, entry)] of the position's account-bound tools not read as signed in on account `d`: signed out, or
+    unknown. A sign-in task stays open while any is."""
+    return [(i, e) for i, e in bound_tools(position_name, docs) if signed_in(e, d, now, run) is not True]
+
+
 def signin_task(d, missing, position, moved=False, lang=None):
     """(title, steps) of the founder's task to sign in to account-bound tools on one account, in the owner's
     language (of_locale) unless `lang` is given."""
@@ -5113,7 +5119,9 @@ def reconcile_signin_tasks(sessions, now=None, log=print, dry_run=False, asks=No
         d, pos, tools = r.get("dir"), r.get("position"), set(r.get("tools") or [])
         where = d if r.get("moved", True) else None  # None: any account
         on = any(x.get("name") == pos for k, xs in sessions.items() if where in (None, k) for x in xs)
-        left = [i for i, _ in (missing or missing_signins)(pos, d, now=now) if i in tools] if on else []
+        # withdrawn as signed in only when every tool reads signed in: an unknown (a failed claude mcp list, an
+        # unreadable inventory) keeps the task (of_review, PR 338)
+        left = [i for i, _ in (missing or unconfirmed_signins)(pos, d, now=now) if i in tools] if on else []
         if on and left:
             keep.append(r)
             continue
