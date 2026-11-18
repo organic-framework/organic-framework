@@ -112,6 +112,17 @@ def _money_site(access, sites):
     return any(host == s or host.endswith("." + s) for s in sites)
 
 
+def signed_nonce(record):
+    """The nonce the owner's passkey signed in RECORD (its preimage: organization, line id, digest, nonce, expiry), or
+    None. This, not the record's file name, which the list's writer chooses, names an approval for good."""
+    try:
+        pre = json.loads(str((record or {}).get("preimage") or ""))
+        nonce = pre[3] if isinstance(pre, list) and len(pre) == 5 else None
+    except (ValueError, TypeError):
+        return None
+    return str(nonce) if nonce else None
+
+
 def approval_problem(org, keeper, entry, record, keys, pinned, server=None):
     """Why RECORD does not approve this line, or None. PINNED: {credential: person} of the pinned enrollments; the
     people who approve are theirs."""
@@ -170,10 +181,10 @@ def line_problem(org, keeper, kind, entry, *, root, positions, keys, pinned, gra
             return "the browser keeper pins no money-site list (pins/money_sites.txt): it serves no line"
         if _money_site(entry.get("access"), money_sites) and of_access.RANK.get(tier, 0) < of_access.RANK["money"]:
             return f"{entry.get('access')} is a payment or banking site: money at least (docs/access.md §2)"
-    rid = str(entry.get("approval") or "")[len("passkey:"):]
-    if rid and rid in set(withdrawn):
-        return (f"its approval passkey:{rid} was given for a line removed since: a line added again needs the "
-                "owner's new yes")
+    nonce = signed_nonce(approval_record(root, entry.get("approval")))
+    if nonce and nonce in set(withdrawn):
+        return ("its approval was given for a line removed since (the nonce the owner signed): a line added again "
+                "needs the owner's new yes")
     if tier in MONEY and not sources_ok:
         return "the keeper cannot read its sources: it serves no money or production line"
     if of_access.RANK.get(tier, 0) >= of_access.RANK["secret"]:
@@ -268,18 +279,21 @@ class RevocationLog:
 
 
 class ApprovalLog(RevocationLog):
-    """The approvals of lines the keeper has seen, kept beside its revocations: when a line it saw is gone from the
-    committed list, the approval it carried is withdrawn for good, so a line removed and added again needs the owner's
-    new yes (of_secrets-review on PR 357: it came back on its old passkey record, whose recorded_at is unsigned)."""
+    """The approvals of lines the keeper has seen, kept beside its revocations, by the nonce the owner's passkey
+    signed: when a line it saw is gone from the committed list, that approval is withdrawn for good, so a line removed
+    and added again needs the owner's new yes, under whatever file name its record is copied (of_secrets-review on
+    PR 357: it came back on its old passkey record, first by its recorded_at, then by a new file name)."""
 
-    def observe_lines(self, keeper, entries, now=None):
-        """Record what this read of KEEPER's list shows; returns every withdrawn approval id."""
+    def observe_lines(self, keeper, entries, root, now=None):
+        """Record what this read of KEEPER's list (in the repository at ROOT) shows; returns every withdrawn nonce."""
         seen, withdrawn = self._read()
         now = now or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         here = {}
         for e in entries or []:
-            if isinstance(e, dict) and str(e.get("approval") or "").startswith("passkey:"):
-                here[str(e["approval"])[len("passkey:"):]] = line_id(keeper, e.get("position"), e.get("access"))
+            if isinstance(e, dict):
+                nonce = signed_nonce(approval_record(root, e.get("approval")))
+                if nonce:
+                    here[nonce] = line_id(keeper, e.get("position"), e.get("access"))
         new = [{"grant": rid, "line": lid, "at": now} for rid, lid in sorted(here.items()) if rid not in seen]
         for rid in sorted(seen - set(here) - withdrawn):
             new.append({"grant": rid, "revoked": True, "at": now, "source": "its line is gone from the list"})
