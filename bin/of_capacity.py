@@ -657,6 +657,26 @@ def training_cards_problems(org, doc, cards=None, prefix=None):
     return out
 
 
+def training_registry_problems(docs=None, cards=None):
+    """`of registry check`'s lines for every listed registry's training_cards (training_cards_problems), and a card
+    prefix two registries claim while one of them names a card: such a prefix owns no card (of_review and
+    of_secrets-review, PR 334)."""
+    docs = tool_docs_all() if docs is None else docs
+    claims = {}
+    for o, doc in (docs or {}).items():
+        claims.setdefault(str(_card_prefix(o, doc)).upper(), []).append(o)
+    out = []
+    for o, doc in sorted((docs or {}).items()):
+        if not isinstance(doc, dict) or doc.get("training_cards") is None:
+            continue
+        pre = str(_card_prefix(o, doc)).upper()
+        out += training_cards_problems(o, doc, cards, prefix=pre)
+        if len(claims.get(pre, [])) > 1:
+            out.append(f"{o}:registry/positions.yaml: training_cards: card prefix {pre} is also "
+                       f"{', '.join(x for x in sorted(claims[pre]) if x != o)}'s, so it owns no card; set card_prefix")
+    return out
+
+
 def training_verified(harness, readings=None, cards=None, docs=None, org=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
     card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's

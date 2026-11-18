@@ -2412,6 +2412,15 @@ class OtherHarnesses(unittest.TestCase):
                         ({"codex": "OF-31"}, "a question"), (["OF-27"], "a mapping")):
             self.assertIn(why, " ".join(ok(tc)), tc)
 
+    def test_registry_check_names_a_shared_card_prefix(self):
+        cards = [{"ref": "AS-1", "task": True}]
+        docs = {"acme-shop": {"card_prefix": "AS", "training_cards": {"codex": "AS-1"}},
+                "alpha-store": {"card_prefix": "AS"}}
+        lines = of_capacity.training_registry_problems(docs, cards)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("card prefix AS is also alpha-store's", lines[0])
+        self.assertEqual(of_capacity.training_registry_problems({"acme-shop": docs["acme-shop"]}, cards), [])
+
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
              "windows": {"seven_day": {"utilization": 0, "resets_at": of_capacity._iso(self.T0 + 86400)}}}

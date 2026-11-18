@@ -2820,6 +2820,8 @@ def cmd_registry(args):
                             "missing from the file")
         import of_credentials  # docs/registry.md, Credentials: ids, keepers, listed ids, one claim per path
         problems += of_credentials.check(ORGS_FILE)
+        import of_capacity  # docs/registry.md, training_cards: a known harness to a task card of the organization
+        problems += of_capacity.training_registry_problems()
         for pr in problems:
             print(pr)
         warnings = [p_ for p_ in problems if WARN in p_]
