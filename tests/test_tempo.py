@@ -301,5 +301,30 @@ class ProcessorTest(unittest.TestCase):
         self.assertEqual(len(started), 5)                   # every GAP_S (120 s) over ten minutes
 
 
+
+class ExcerptTest(unittest.TestCase):
+    """tb-v5's excerpt (of_review on PR 341): the frame dropped, the first 700 characters kept, and a window where the
+    text names each later time, in any spelling times_ahead reads."""
+
+    def test_short_text_whole_without_the_frame(self):
+        import of_tempo
+        t = "Message from x:y (via relay, authority: none; msg 1)\nI start at 14:30Z.\n[reply: of send x:y \"…\"]"
+        self.assertEqual(of_tempo.excerpt(t, ["14:30"]), "I start at 14:30Z.")
+
+    def test_a_long_text_keeps_its_start_and_a_window_at_an_unpadded_time(self):
+        import of_tempo
+        t = "s" * 728 + " I start the cutover at 9:30Z after the sync. " + "z" * 900
+        times = of_tempo.times_ahead(t, "2026-11-18T05:00:00Z")
+        self.assertIn("09:30", times)
+        e = of_tempo.excerpt(t, times)
+        self.assertTrue(e.startswith("s" * 700))
+        self.assertIn("cutover at 9:30Z", e)
+        self.assertNotIn("z" * 300, e)
+
+    def test_a_cron_with_no_times_keeps_the_old_start(self):
+        import of_tempo
+        self.assertEqual(len(of_tempo.excerpt("c" * 2000, [])), 700)
+
+
 if __name__ == "__main__":
     unittest.main()

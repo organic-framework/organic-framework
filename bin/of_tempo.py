@@ -188,7 +188,7 @@ agent may put a start off only for a named reason (a basis).
 For each item decide:
 - booking: does it put a start of the agent's own work off to a later time? A watch that checks something every \
 few minutes, a report of when something happened, or a time someone else set is not a booking of its own work. A \
-clock range that describes data or an event on another day the item names ("18,568 rows in 21:30-23:00Z that \
+clock range that describes data or an event on an earlier day the item names ("18,568 rows in 21:30-23:00Z that \
 evening", meaning 2026-10-29) is a reading of the past, not a start.
 - basis_kind, the reason it waits, when it names one: position (another position must act first, named), \
 owner_card (the owner's answer to a card or ask), window (a maintenance or release window or slot, with its \
@@ -246,15 +246,21 @@ _REPLY = re.compile(r"\n\[reply: [^\n]*\]\s*\Z")
 
 def excerpt(text, times=None, n=TEXT_MAX, around=240):
     """An item's text for the judge: without the relay's frame line and its reply hint, whole when it fits in N
-    characters, else the start and a window around each later time it names, so the words that give the time its
-    sense reach the judge (2026-11-18: a past data window '21:30-23:00Z that evening' was judged from a text cut before
-    it, under a 200-character frame; a user organization's structure keeper)."""
+    characters, else its first N characters and a window around each later time it names, found where _CLOCK and
+    _WORDS matched it in the text, so '9:30Z' counts as the 09:30 times_ahead reports (2026-11-18: a past data window
+    '21:30-23:00Z that evening' was judged from a text cut before it, under a 200-character frame, a user
+    organization's structure keeper; of_review on PR 341: a first version searched the zero-padded spelling and kept
+    only 240 characters)."""
     t = _REPLY.sub("", _FRAME.sub("", text or ""))
     if len(t) <= n:
         return t
-    spans = [(0, min(len(t), around))]
-    for x in times or ():
-        for m in re.finditer(re.escape(x) if ":" in x else r"\b" + re.escape(x) + r"\b", t, re.I):
+    want = set(times or ())
+    spans = [(0, n)]
+    for m in _CLOCK.finditer(t):
+        if f"{int(m.group(1)):02}:{m.group(2)}" in want:
+            spans.append((max(0, m.start() - around), min(len(t), m.end() + around)))
+    for m in _WORDS.finditer(t):
+        if m.group(1).lower() in want:
             spans.append((max(0, m.start() - around), min(len(t), m.end() + around)))
     spans.sort()
     merged = []
@@ -264,7 +270,7 @@ def excerpt(text, times=None, n=TEXT_MAX, around=240):
         else:
             merged.append((a, b))
     out = " … ".join(t[a:b] for a, b in merged)
-    return out[:3 * n]
+    return out[:4 * n]
 
 
 def user_prompt(position, group, summary=None):
