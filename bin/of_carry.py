@@ -182,6 +182,93 @@ def selected(entries, only):
     return [e for e in entries if e.get("org") in only or e["name"] in only or (e.get("position") or "") in only]
 
 
+def _bypass(d):
+    try:
+        with open(os.path.join(d, "settings.json")) as fh:
+            return bool((json.load(fh) or {}).get("skipDangerousModePermissionPrompt"))
+    except (OSError, ValueError):
+        return False
+
+
+def consents(entries):
+    """{config dir: {"bypass": bool, "trusted": [folder keys]}}: the owner's earlier decisions on this machine that a
+    carried session needs to start in its folder on its account: the Bypass Permissions acceptance (settings'
+    skipDangerousModePermissionPrompt) and the trust of each session's folder (its trusted key in the account file,
+    or in the default dir's). The agent host is this machine's continuation (the founder, of_conductor message
+    01a1ef95-1685; of_agent-server's yes, message 01a1ef9c-3fb0), so restore carries them with the paths rewritten,
+    as a move within one machine carries them (ensure_trust, ensure_settings)."""
+    out = {}
+    for e in entries:
+        d, cwd = e.get("config_dir"), e.get("cwd")
+        if not d:
+            continue
+        c = out.setdefault(d, {"bypass": False, "trusted": []})
+        c["bypass"] = c["bypass"] or _bypass(d)
+        if cwd and os.path.isdir(cwd):
+            cands = of_capacity.trust_candidates(cwd)
+            k = of_capacity.trusted_key(d, cwd, cands) or of_capacity.trusted_key(os.path.expanduser("~/.claude"),
+                                                                                 cwd, cands)
+            if k and k not in c["trusted"]:
+                c["trusted"].append(k)
+    return out
+
+
+def _write_json_600(path, doc):
+    tmp = f"{path}.of-carry.{os.getpid()}.tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        json.dump(doc, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def carry_consents(plan, rw, dry_run=False, log=print):
+    """Put the plan's consents in place under this user, paths rewritten: the Bypass Permissions acceptance into a
+    config dir's settings.json when it lacks it, and each trusted folder that exists here into its account file.
+    A config dir that does not exist here, or is not signed in yet (no account file), is named and left: run restore
+    again after the sign-in. Existing values are never overwritten. Returns [(config dir, what)]."""
+    done = []
+    for d, c in sorted((plan.get("consents") or {}).items()):
+        td = rw.path(d)
+        if not os.path.isdir(td):
+            log(f"  consents: {td} does not exist here; they wait for it")
+            continue
+        if c.get("bypass") and not _bypass(td):
+            done.append((td, "bypass"))
+            if not dry_run:
+                path = os.path.join(td, "settings.json")
+                try:
+                    with open(path) as fh:
+                        doc = json.load(fh) or {}
+                except FileNotFoundError:
+                    doc = {}
+                doc["skipDangerousModePermissionPrompt"] = True
+                _write_json_600(path, doc)
+        trusted = [rw.path(k) for k in c.get("trusted") or []]
+        if not trusted:
+            continue
+        path = of_capacity.account_file(td, home=rw.new_home)
+        try:
+            with open(path) as fh:
+                conf = json.load(fh) or {}
+        except FileNotFoundError:
+            log(f"  consents: {td} is not signed in yet; folder trust waits (run restore again after the sign-in)")
+            continue
+        changed = False
+        for tk in trusted:
+            if not os.path.isdir(tk):
+                log(f"  consents: {tk} does not exist here; its trust is not carried")
+                continue
+            entry = conf.setdefault("projects", {}).setdefault(tk, {})
+            if not entry.get("hasTrustDialogAccepted"):
+                entry["hasTrustDialogAccepted"] = True
+                changed = True
+                done.append((td, "trust " + tk))
+        if changed and not dry_run:
+            _write_json_600(path, conf)
+    for td, what in done:
+        log(f"  consents{' (dry run)' if dry_run else ''}: {td}: {what}")
+    return done
+
+
 def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
     """Write the bundle for the live sessions of the organizations or positions in `only`."""
     if not only:
@@ -211,7 +298,8 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
     plan = {"kind": "carry", "v": 1, "org": org, "prepared_at": of_capacity._iso(time.time()),
             "machine": socket.gethostname(),
             "home": os.path.expanduser("~"), "uid": os.getuid(), "tmp_root": tmp_root, "only": sorted(only),
-            "entries": entries, "files": len(files), "bytes": size, "skipped": skipped}
+            "entries": entries, "files": len(files), "bytes": size, "skipped": skipped,
+            "consents": consents(entries)}
     os.makedirs(out_dir, mode=0o700, exist_ok=True)
     _write_private(os.path.join(out_dir, "plan.json"), json.dumps(plan, indent=1, ensure_ascii=False))
     _write_private(os.path.join(out_dir, "files.txt"), "".join(f + "\n" for f in files))
@@ -444,6 +532,7 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
     install(bundle, rw, dry_run=dry_run, log=log,
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
+    carry_consents(plan, rw, dry_run=dry_run, log=log)  # before any resume: the folders' trust and the bypass
     lp = local_plan(plan, rw)
     account_of = account_of or of_capacity.account_of
     ok, wrong = set(), []

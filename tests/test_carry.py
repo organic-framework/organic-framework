@@ -51,6 +51,39 @@ class Paths(unittest.TestCase):
         self.assertEqual(rw.path("/Users/alex/.claude/projects/-Users-alex-org/s.jsonl"),
                          "/home/alex/.claude/projects/-home-alex-org/s.jsonl")
 
+    def test_restore_carries_the_owners_consents_with_the_paths_rewritten(self):
+        # the agent host is this machine's continuation: the folders' trust and the Bypass Permissions acceptance
+        # travel, as a move within one machine carries them (ensure_trust, ensure_settings)
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            src, dst = os.path.realpath(src), os.path.realpath(dst)
+            for home in (src, dst):
+                os.makedirs(os.path.join(home, ".claude-a"))
+                os.makedirs(os.path.join(home, "org"))
+            with open(os.path.join(src, ".claude-a", "settings.json"), "w") as fh:
+                json.dump({"skipDangerousModePermissionPrompt": True}, fh)
+            with open(os.path.join(src, ".claude-a", ".claude.json"), "w") as fh:
+                json.dump({"projects": {os.path.join(src, "org"): {"hasTrustDialogAccepted": True}}}, fh)
+            plan = {"consents": of_carry.consents([{"config_dir": os.path.join(src, ".claude-a"),
+                                                    "cwd": os.path.join(src, "org")}])}
+            self.assertEqual(plan["consents"], {os.path.join(src, ".claude-a"): {"bypass": True,
+                                                                                 "trusted": [os.path.join(src, "org")]}})
+            rw = of_carry.Rewriter(src, dst, 501, 501)
+            logs = []
+            done = of_carry.carry_consents(plan, rw, log=logs.append)  # not signed in there yet: trust waits
+            self.assertEqual(done, [(os.path.join(dst, ".claude-a"), "bypass")])
+            self.assertTrue(any("not signed in yet" in x for x in logs))
+            with open(os.path.join(dst, ".claude-a", ".claude.json"), "w") as fh:
+                json.dump({"oauthAccount": {"emailAddress": "x@example.com"}}, fh)
+            done = of_carry.carry_consents(plan, rw, log=logs.append)
+            self.assertEqual(done, [(os.path.join(dst, ".claude-a"), "trust " + os.path.join(dst, "org"))])
+            with open(os.path.join(dst, ".claude-a", ".claude.json")) as fh:
+                conf = json.load(fh)
+            self.assertTrue(conf["projects"][os.path.join(dst, "org")]["hasTrustDialogAccepted"])
+            self.assertEqual(conf["oauthAccount"], {"emailAddress": "x@example.com"})  # nothing else touched
+            self.assertEqual(of_carry.carry_consents(plan, rw, log=logs.append), [])  # already there
+
     def test_a_replacement_is_never_rewritten_again(self):
         """A rehearsal home inside the tmp root holds the old key in its own path: one pass keeps it whole."""
         new = "/private/tmp/claude-501/-Users-alex-org/s1/scratchpad/home-of"
