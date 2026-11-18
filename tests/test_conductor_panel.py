@@ -180,6 +180,25 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(of_views.split_ratio({"layout": "grid"}), "0.5")
         self.assertEqual(of_views.split_ratio({}), "0.6")
 
+    def test_view_apply_runs_only_built_in_panels_never_a_stored_command(self):
+        """views.yaml is written by anyone and applied each minute as the person (of_review on PR 345; of_server,
+        msg 01a1efce-da1d): a built-in panel runs the code's command, another name runs nothing and is named."""
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli_panels", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_panels", loader))
+        loader.exec_module(of)
+        ran, said, splits = [], [], iter(["w1:p2", "w1:p3"])
+        of.herdr_json = lambda *a: {"pane": {"pane_id": next(splits)}}
+        of.herdr_do = lambda args, dry: ran.append(args) or True
+        v = {"layout": "main-left-60", "panels": {"questions": "touch /tmp/owned", "evil": "touch /tmp/owned"}}
+        out = of._panel_panes(v, [], False, said.append, anchor="w1:p1")
+        self.assertEqual(out, {"questions": "w1:p2"})
+        cmd = next(a[3] for a in ran if a[:2] == ["pane", "run"])
+        self.assertIn("asks --panel", cmd)
+        self.assertNotIn("/tmp/owned", " ".join(" ".join(a) for a in ran))
+        self.assertTrue(any("panel evil: not a built-in panel" in m for m in said))
+
     def test_a_panel_is_held_by_one_view_per_machine(self):
         """Its pane is found by its label, one per machine: two views holding it would take it from each other
         (of_onboarding, msg 01a1efbe-b153), so of view add --panel refuses a second one; the same view may be added
