@@ -172,17 +172,25 @@ def authorized_key_sources(name, home, uid, invoke=run):
     files = ".ssh/authorized_keys .ssh/authorized_keys2"
     command = "none"
     if os.geteuid() == 0:
+        # As root the effective configuration must be read: OpenSSH's defaults could miss an AuthorizedKeysFile set
+        # elsewhere or an AuthorizedKeysCommand, and keys nobody read would pass (of_server, PR 353). plan without
+        # root falls back to the defaults and says so in the live check, which runs as root.
+        spec = f"user={name},host=localhost,addr=127.0.0.1"
         try:
-            config = invoke(["sshd", "-T", "-C", f"user={name}"], capture_output=True, text=True).stdout
-        except (OSError, subprocess.CalledProcessError):
-            pass  # Use OpenSSH's defaults when sshd cannot run.
-        else:
-            for line in config.splitlines():
-                option, _, value = line.partition(" ")
-                if option == "authorizedkeysfile":
-                    files = value
-                elif option == "authorizedkeyscommand":
-                    command = value.strip()
+            config = invoke(["sshd", "-T", "-C", spec], capture_output=True, text=True).stdout
+        except (OSError, subprocess.CalledProcessError) as e:
+            raise Refusal(f"sshd -T -C {spec} did not answer ({e}): the admin's key sources cannot be read") from None
+        ca = "none"
+        for line in config.splitlines():
+            option, _, value = line.partition(" ")
+            if option == "authorizedkeysfile":
+                files = value
+            elif option == "authorizedkeyscommand":
+                command = value.strip()
+            elif option == "trustedusercakeys":
+                ca = value.strip()
+        require(ca.lower() == "none", f"sshd trusts user certificates signed by {ca}: any certificate it signs logs in "
+                                      f"as {name}; set TrustedUserCAKeys none before continuing")
 
     tokens = {"%%": "%", "%h": home, "%u": name, "%U": str(uid)}
     paths = []

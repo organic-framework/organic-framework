@@ -22,7 +22,7 @@ VAULT = "/var/lib/of-keepers/acme-vault"
 PROGRAM = "/opt/of-keepers/acme-vault"
 CHANNEL = "/srv/of-channel/acme"
 PGREP = ["pgrep", "-u", "owner"]
-SSHD = ["sshd", "-T", "-C", "user=owner"]
+SSHD = ["sshd", "-T", "-C", "user=owner,host=localhost,addr=127.0.0.1"]
 
 
 def public_key(byte):
@@ -319,12 +319,26 @@ class HostContours(unittest.TestCase):
                              ([home / ".ssh/authorized_keys", Path("/etc/owner"), home / "1000/%u/%owner"],
                               "/usr/bin/lookup %u"))
         invoke.assert_called_once_with(SSHD, capture_output=True, text=True)
-        for euid, failure in ((1000, None), (0, FileNotFoundError()), (0, CalledProcessError(1, SSHD))):
+        # Without root (plan) the defaults stand in; as root sshd -T must answer.
+        invoke = Mock()
+        with patch.object(C.os, "geteuid", return_value=1000):
+            self.assertEqual(C.authorized_key_sources("owner", str(home), 1000, invoke),
+                             ([home / ".ssh/authorized_keys", home / ".ssh/authorized_keys2"], "none"))
+        invoke.assert_not_called()
+        for failure in (FileNotFoundError(), CalledProcessError(1, SSHD)):
             invoke = Mock(side_effect=failure)
-            with self.subTest(euid=euid, failure=failure), patch.object(C.os, "geteuid", return_value=euid):
-                self.assertEqual(C.authorized_key_sources("owner", str(home), 1000, invoke),
-                                 ([home / ".ssh/authorized_keys", home / ".ssh/authorized_keys2"], "none"))
-                self.assertEqual(invoke.call_count, int(euid == 0))
+            with self.subTest(failure=failure), patch.object(C.os, "geteuid", return_value=0):
+                with self.assertRaisesRegex(C.Refusal, "did not answer"):
+                    C.authorized_key_sources("owner", str(home), 1000, invoke)
+
+    def test_a_trusted_user_ca_refuses(self):
+        invoke = Mock(return_value=Mock(stdout="authorizedkeysfile .ssh/authorized_keys\ntrustedusercakeys /etc/ssh/user_ca.pub\n"))
+        with patch.object(C.os, "geteuid", return_value=0):
+            with self.assertRaisesRegex(C.Refusal, "user_ca.pub"):
+                C.authorized_key_sources("owner", "/home/alex", 1000, invoke)
+        invoke = Mock(return_value=Mock(stdout="authorizedkeysfile .ssh/authorized_keys\ntrustedusercakeys none\n"))
+        with patch.object(C.os, "geteuid", return_value=0):
+            self.assertEqual(C.authorized_key_sources("owner", "/home/alex", 1000, invoke)[1], "none")
 
     def test_alternate_key_sources_refuse_plan_live_wheel_and_admin_helper(self):
         s = configured()
