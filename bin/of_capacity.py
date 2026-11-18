@@ -601,8 +601,14 @@ def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trus
     """start_folder, checked: a start folder from capacity.yaml that no account trusts never stops a move (a rescue
     least of all), so the session resumes where it runs and the log says why; the owner decides the trust. A folder
     given as `cwd` is the caller's explicit choice, and the move's own trust check refuses it."""
-    want = start_folder(name, cur, cwd, policy)
-    if want == cur or cwd:
+    if cwd:
+        return start_folder(name, cur, cwd, policy)
+    try:
+        want = start_folder(name, cur, None, policy)
+    except MoveError as e:  # a start folder that is gone never stops a move either (of_review, PR 330)
+        log(f"  {e}: resuming in {cur}")
+        return cur
+    if want == cur:
         return want
     try:
         (trust or ensure_trust)(src, target, want, dry_run=True)
@@ -614,26 +620,35 @@ def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trus
 
 
 def rekey_session(d, sid, new_key, backup):
-    """Move one session's transcript and its subagents folder in config dir `d` under project key `new_key`: Claude
-    Code finds a session to resume by its folder's key, and find_transcript takes the first copy it sees, so one
-    account keeps one. Anything already at the new key is first moved under `backup`. Returns the new paths."""
-    keys = sorted(os.path.basename(os.path.dirname(t))
-                  for t in glob.glob(os.path.join(d, "projects", "*", f"{sid}.jsonl")))
-    old = next((k for k in keys if k != new_key), None)  # a stale copy at the new key is no source
-    if not old:
+    """Leave one copy of a session in config dir `d`, under project key `new_key`: Claude Code finds a session to
+    resume by its folder's key, and find_transcript takes the first copy it sees. The freshest transcript (by its
+    modification time) is the session; every other copy, with its subagents folder, goes under `backup` (of_review,
+    PR 330: a session moved back to an account that held it under its start folder's key had two copies there, and
+    the stale one could win). Returns the paths the freshest copy now has, [] when it did not move."""
+    keys = [os.path.basename(os.path.dirname(t)) for t in glob.glob(os.path.join(d, "projects", "*", f"{sid}.jsonl"))]
+    if not keys or keys == [new_key]:
+        return []
+    fresh = max(keys, key=lambda k: (os.path.getmtime(os.path.join(d, "projects", k, f"{sid}.jsonl")), k))
+    for k in keys:
+        if k == fresh:
+            continue
+        for rel in (f"{sid}.jsonl", sid):
+            a = os.path.join(d, "projects", k, rel)
+            if os.path.exists(a):
+                bk = os.path.join(backup, "projects", k, rel)
+                os.makedirs(os.path.dirname(bk), exist_ok=True)
+                if os.path.exists(bk):
+                    (shutil.rmtree if os.path.isdir(bk) else os.remove)(bk)
+                shutil.move(a, bk)
+    if fresh == new_key:
         return []
     out = []
     for rel in (f"{sid}.jsonl", sid):
-        a, b = os.path.join(d, "projects", old, rel), os.path.join(d, "projects", new_key, rel)
-        if not os.path.exists(a):
-            continue
-        if os.path.exists(b):
-            bk = os.path.join(backup, "projects", new_key, rel)
-            os.makedirs(os.path.dirname(bk), exist_ok=True)
-            shutil.move(b, bk)
-        os.makedirs(os.path.dirname(b), exist_ok=True)
-        os.rename(a, b)
-        out.append(b)
+        a, b = os.path.join(d, "projects", fresh, rel), os.path.join(d, "projects", new_key, rel)
+        if os.path.exists(a):
+            os.makedirs(os.path.dirname(b), exist_ok=True)
+            os.rename(a, b)
+            out.append(b)
     return out
 
 
@@ -2497,8 +2512,12 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
             mem = merge_memory(mem_src, mem_dst, mem_base, os.path.join(work, "conflicts"))
         log(f"  carried {len([f for f in files if f[0] == 'copy'])} path(s); memory: "
             f"{', '.join(f'{f}:{a}' for f, a in mem if a != 'same') or 'unchanged'}")
-    if run_cwd != s["cwd"]:  # Claude Code finds the session by its new folder's key
-        mark_copied(rekey_session(target, sid, folder_key(run_cwd), os.path.join(work, "backup")))
+    # one copy of the session on the target, under the key it resumes by: its start folder's, else the key it ran
+    # under (taken from the transcript, never computed: of_review, PR 330)
+    rekeyed = rekey_session(target, sid, folder_key(run_cwd) if run_cwd != s["cwd"] else key,
+                            os.path.join(work, "backup")) if key else []
+    mark_copied(rekeyed)
+    if run_cwd != s["cwd"]:
         log(f"  start folder: {s['cwd']} -> {run_cwd}")
     if mem_dir:  # what the session wrote to its folder before it ran on its own directory
         mem = seed_memory([p], only=(p["_org"], name), extra_sessions={sid: (p["_org"], name)},

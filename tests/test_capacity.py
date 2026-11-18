@@ -1,6 +1,7 @@
 """Capacity (of_capacity): account per config dir, the probe's reading, positions per account,
 the 30-minute probe cache, headroom and the target of a move."""
 
+import glob
 import json
 import os
 import re
@@ -2365,6 +2366,9 @@ class StartFolder(unittest.TestCase):
             self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol,
                                                        trust=lambda *a, **k: ("trusted", b)), rb)
             self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", cwd=b, policy={}, trust=untrusted), rb)
+            gone = {"start_in": {"k": os.path.join(b, "gone")}}  # of_review, PR 330: a gone folder never stops a move
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=gone, log=logs.append), ra)
+            self.assertIn("does not exist", logs[-1])
 
     def test_the_session_moves_under_the_new_key_and_one_copy_stays(self):
         import of_carry
@@ -2378,6 +2382,7 @@ class StartFolder(unittest.TestCase):
             os.makedirs(os.path.join(d, "projects", "-new"))
             with open(os.path.join(d, "projects", "-new", "s1.jsonl"), "w") as fh:
                 fh.write("stale")
+            os.utime(os.path.join(d, "projects", "-new", "s1.jsonl"), (1000, 1000))  # older than the session's own
             out = of_capacity.rekey_session(d, "s1", "-new", bk)
             self.assertEqual(out, [os.path.join(d, "projects", "-new", "s1.jsonl"), os.path.join(d, "projects", "-new", "s1")])
             self.assertEqual(of_capacity.find_transcript(d, "s1"), out[0])  # one copy in the account
@@ -2387,6 +2392,30 @@ class StartFolder(unittest.TestCase):
             with open(os.path.join(bk, "projects", "-new", "s1.jsonl")) as fh:
                 self.assertEqual(fh.read(), "stale")  # what was there is kept aside, not lost
             self.assertEqual(of_capacity.rekey_session(d, "s1", "-new", bk), [])  # already there: nothing to do
+
+    def test_the_freshest_copy_wins_and_the_others_go_aside(self):
+        # of_review, PR 330: two copies in one account (a session moved back where it had run under its start folder);
+        # the stale one must not become the session
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bk:
+            for k, text, t in (("-aaa-stale", "stale", 1000), ("-zzz-fresh", "fresh", 2000)):
+                os.makedirs(os.path.join(d, "projects", k))
+                f = os.path.join(d, "projects", k, "s1.jsonl")
+                with open(f, "w") as fh:
+                    fh.write(text)
+                os.utime(f, (t, t))
+            out = of_capacity.rekey_session(d, "s1", "-new", bk)
+            with open(out[0]) as fh:
+                self.assertEqual(fh.read(), "fresh")
+            self.assertEqual(glob.glob(os.path.join(d, "projects", "*", "s1.jsonl")), [out[0]])  # one copy left
+            with open(os.path.join(bk, "projects", "-aaa-stale", "s1.jsonl")) as fh:
+                self.assertEqual(fh.read(), "stale")
+            f = os.path.join(d, "projects", "-other", "s1.jsonl")  # a stale copy beside the one at the key: aside
+            os.makedirs(os.path.dirname(f))
+            with open(f, "w") as fh:
+                fh.write("old")
+            os.utime(f, (500, 500))
+            self.assertEqual(of_capacity.rekey_session(d, "s1", "-new", bk), [])
+            self.assertEqual(glob.glob(os.path.join(d, "projects", "*", "s1.jsonl")), [out[0]])
 
 
 class ConnectorsCache(unittest.TestCase):
