@@ -36,7 +36,7 @@ entries:
     actions: [send]               # browser: download, read, order…; signer: send; vault: read
     limit: {per_call: {amount: 0.5, unit: ETH}, per_period: {amount: 2, unit: ETH, period: P1D}}   # numbers, a unit, an ISO 8601 period
     tier: money                   # plain | secret | money | production (§3)
-    decided: "01a1f0ac-0d07-7186-95f6-86aed0dc097d"   # card OF-123: the full event id of the founder's card (AGENTS.md: a field a program reads keeps it), or the structure keeper's commit for a plain entry
+    decided: "01a1f000-0000-7000-8000-000000000123"   # card OF-123 (an example id): the full event id of the founder's card (AGENTS.md: a field a program reads keeps it), or the structure keeper's commit for a plain entry
     approval: "passkey:<record id>"   # secret and above (§4)
     grant: g-2026-11-19-004       # money and production (§4)
     added: {at: 2026-11-19T10:00:00Z, by: acme_org}
