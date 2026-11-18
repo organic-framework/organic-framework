@@ -276,8 +276,12 @@ def smudge_filters(checkout):
     run them on every file (git-crypt would decrypt), so a run on such a checkout is refused."""
     r = subprocess.run(["git", "-C", checkout, "config", "--get-regexp", r"^filter\..*\.(smudge|process)$"],
                        capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if r.returncode not in (0, 1):   # 1: none set; anything else: the config could not be read, so refuse
+        return [f"git config failed (exit {r.returncode})"]
+    # only the exact keys GIT_SAFE empties are LFS's; a driver named lfs.x (filter.lfs.x.smudge) is another filter
+    # (the security keeper's re-review of dbaf2d5d)
     return sorted({ln.split()[0] for ln in r.stdout.splitlines() if ln.split()
-                   and not ln.split()[0].startswith("filter.lfs.")})
+                   and ln.split()[0].lower() not in ("filter.lfs.smudge", "filter.lfs.process")})
 
 
 def snapshot(checkout, dest, head, base=None, rxs=None):

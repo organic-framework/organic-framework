@@ -42,11 +42,13 @@ def pinned_why(exe):
 def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
     """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule)."""
     if exe is None:
-        exe = PINNED_PATH
-        why = pinned_why(exe)
+        why = pinned_why(PINNED_PATH)
         if why:
             print(f"{why}: fail closed", file=out)
             return 1
+        # the file the hash was taken of, not the link: the shared user can write /opt/homebrew (re-review of
+        # dbaf2d5d)
+        exe = os.path.realpath(PINNED_PATH)
     if not os.path.isfile(RULES):
         print(f"the pinned rules {os.path.basename(RULES)} are missing: fail closed", file=out)
         return 1
@@ -66,8 +68,8 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
         return 1
     # gitleaks 8.30.1 reads <source>/.gitleaksignore even with --gitleaks-ignore-path set: one silenced a key on
     # 2026-11-18 (of_platform's check), so a folder holding one is not scanned
-    ign = [os.path.relpath(os.path.join(d, ".gitleaksignore"), root) for d, _, fs in os.walk(root)
-           if ".gitleaksignore" in fs]
+    ign = [os.path.relpath(os.path.join(d, f), root) for d, _, fs in os.walk(root) for f in fs
+           if f.lower() == ".gitleaksignore"]   # the Mac's disk ignores case, and so does gitleaks' lookup there
     if ign:
         print(f"{ign[0]}: an ignore file in the scanned folder: fail closed", file=out)
         return 1
