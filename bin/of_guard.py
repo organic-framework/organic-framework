@@ -971,9 +971,41 @@ _WRAPPER_VALUE_OPTS = {
 }
 
 
+# A versioned or alternative name of an interpreter the rules know (2026-11-18, of_server, found while reviewing
+# organic-framework PR 329: `python3.15 bin/of_tools.py header` passed G23, and the same name passed G1, G8 and G13,
+# since every rule compares the command's name with python3, python, node, ruby, perl or php).
+_INTERPRETER_NAME = re.compile(r"(?:(?P<py>python|pypy)(?P<pv>\d+(?:\.\d+)*)?t?(?:-intel64|-arm64)?"
+                               r"|(?P<pl>perl)5(?:\.\d+)*|(?P<rb>ruby)\d+(?:\.\d+)*|(?P<ph>php)\d+(?:\.\d+)*"
+                               r"|(?P<nd>node)(?:js|\d+))")
+
+
+def _interpreter_name(name):
+    """The name the rules know for a versioned or alternative interpreter: python3.15, python3.13t, python3.15-intel64,
+    pypy3 are python3; python2.7 and pypy are python; perl5.34 is perl, ruby3.3 ruby, php8.2 php, nodejs and node22
+    node. Any other name (python3-config, nodemon, perldoc) is returned as it is."""
+    m = _INTERPRETER_NAME.fullmatch(name or "")
+    if not m:
+        return name
+    if m.group("py"):
+        v = m.group("pv") or ("" if m.group("py") == "python" else "2")
+        return "python3" if v.startswith("3") else "python"
+    return next(m.group(k) for k in ("pl", "rb", "ph", "nd") if m.group(k))
+
+
 def _command_words(words):
     """Drop shell keywords, assignments, wrappers and `env VAR=x` prefixes: the words of the command that
-    actually runs (`for h in a b; do ssh h 'cat x'; done` runs ssh)."""
+    actually runs (`for h in a b; do ssh h 'cat x'; done` runs ssh). A versioned interpreter's name becomes the one
+    the rules know (`/opt/homebrew/bin/python3.15` -> `/opt/homebrew/bin/python3`; _interpreter_name)."""
+    out = _command_words_of(words)
+    if out:
+        name = os.path.basename(out[0])
+        known = _interpreter_name(name)
+        if known != name:
+            out = [out[0][:len(out[0]) - len(name)] + known] + list(out[1:])
+    return out
+
+
+def _command_words_of(words):
     if words and words[0] in ("for", "case", "select", "function", "done", "fi", "esac", "in", "}"):
         return []  # a loop header, a function header or a closer runs nothing itself
     i = 0
