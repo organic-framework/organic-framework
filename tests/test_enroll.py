@@ -95,6 +95,33 @@ class EnrollTest(unittest.TestCase):
         self.assertEqual({o["name"]: o["server"] for o in doc["orgs"]}, {"acme": self.url, "other": self.url})
         self.assertIn("raw tier: other", r.stdout)
 
+    def test_a_pinned_enrollment_moves_the_default_only_from_its_own_http_form(self):
+        """of_review on organic-framework PR 350: --pin set ship.yaml's default before the code was read, and for any
+        default; now only after the enrollment, and only from the http form of the same host and port."""
+        cfg = os.path.join(self.tmp.name, "config")
+        os.makedirs(cfg, exist_ok=True)
+        code = ("import importlib.machinery, importlib.util, sys; l = importlib.machinery.SourceFileLoader('ofc', "
+                "sys.argv[1]); s = importlib.util.spec_from_loader('ofc', l); m = importlib.util.module_from_spec(s); "
+                "l.exec_module(m); m._pinned_default(sys.argv[2])")
+
+        def after(default, server):
+            with open(os.path.join(cfg, "ship.yaml"), "w") as fh:
+                fh.write(f"server_url: {default}\n")
+            subprocess.run([sys.executable, "-c", code, OF, server], env=self.env, check=True, capture_output=True)
+            with open(os.path.join(cfg, "ship.yaml")) as fh:
+                return fh.read()
+        self.assertIn('server_url: "https://127.0.0.1:18200"', after("http://127.0.0.1:18200", "https://127.0.0.1:18200"))
+        self.assertIn("server_url: https://of.example.org", after("https://of.example.org", "https://127.0.0.1:18200"))
+        self.assertIn("server_url: http://127.0.0.1:18300", after("http://127.0.0.1:18300", "https://127.0.0.1:18200"))
+        import of_server
+        cert, _, _ = of_server.tls_init({"state_dir": os.path.join(self.tmp.name, "tls")})
+        with open(os.path.join(cfg, "ship.yaml"), "w") as fh:
+            fh.write("server_url: http://127.0.0.1:1\n")
+        r = self.of("enroll", "https://127.0.0.1:1", "--pin", cert, "--code", "WRONG", "--org", "x", "--yes")
+        self.assertNotEqual(r.returncode, 0)  # nothing answers there: the enrollment never happened
+        with open(os.path.join(cfg, "ship.yaml")) as fh:
+            self.assertEqual(fh.read(), "server_url: http://127.0.0.1:1\n")
+
     def test_bad_code_fails_cleanly(self):
         r = self.of("enroll", self.url, "--code", "WRONG", "--org", "x", "--yes")
         self.assertNotEqual(r.returncode, 0)

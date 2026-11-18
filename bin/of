@@ -5982,6 +5982,23 @@ def cmd_machines(args):
     return 0
 
 
+def _pinned_default(server):
+    """After an enrollment with --pin succeeded: make SERVER ship.yaml's default only when the default is the http form
+    of the same host and port, the address the pin now covers (of_review on organic-framework PR 350: set before the
+    code was read, a wrong code changed it, and enrolling one organization to another server moved every
+    organization that ships to the default there). The enrolled organizations' own server: is in orgs.yaml either way."""
+    import of_ship
+    import urllib.parse
+    current = str(of_ship.config().get("server_url") or "").rstrip("/")
+    want = urllib.parse.urlsplit(server)
+    have = urllib.parse.urlsplit(current)
+    if have.scheme.lower() == "http" and (have.hostname, have.port or 80) == (want.hostname, want.port or 443):
+        _ship_server_url(server)
+    elif current.rstrip("/") != server.rstrip("/"):
+        print(f"ship.yaml's default server stays {current}: it is not the http form of {server}")
+    print("restart this machine's relay (of relay off, then of relay on) so it opens its connections through the pin")
+
+
 def _ship_server_url(url):
     """Set ship.yaml's server_url, the default server of the shipper and the relay, to URL."""
     import of_events
@@ -6018,7 +6035,6 @@ def cmd_enroll(args):
         with open(dest, "w") as fh:
             fh.write(pem)
         print(f"pinned the server's certificate for {args.server} in {dest}")
-        _ship_server_url(args.server)  # the default too, so an entry with no server: never falls back to plain http
     if getattr(args, "socket", None):  # docs/server-several-machines.md 4.8: never TCP to that address
         if not (getattr(args, "pin", None) and args.server[:6].lower() == "https:"):
             raise OfError("--socket goes with an https server and --pin")
@@ -6047,6 +6063,8 @@ def cmd_enroll(args):
     r = c.enroll(args.code, consent)
     raw_orgs = r.get("raw_orgs") if r.get("raw_orgs") is not None else [o for o, v in consent.items() if "raw" in v["tiers"]]
     set_org_servers(r.get("orgs") or args.org, args.server, raw_orgs=raw_orgs)
+    if getattr(args, "pin", None):
+        _pinned_default(args.server)
     print(f"enrolled {r.get('machine_id')} for {', '.join(r.get('orgs') or [])}; raw tier: "
           f"{', '.join(r.get('raw_orgs') or []) or 'none'}")
     print(f"orgs.yaml now ships these organizations to {args.server}. Clone each organization's repository and set its "
