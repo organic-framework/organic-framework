@@ -912,6 +912,15 @@ def rekey_session(d, sid, new_key, backup):
     return out
 
 
+def _copy_over(s, t):
+    """copy2 onto a target that may already exist read-only: Claude Code writes its file-history copies 0444, so
+    a session moved back to an account it ran on before finds them there and copy2 cannot open them for writing
+    (2026-11-18, a rescue stopped between exit and resume). The target was saved under the backup first."""
+    if os.path.lexists(t) and not os.path.isdir(t):
+        os.unlink(t)
+    return shutil.copy2(s, t)
+
+
 def copy_session(src, dst, sid, backup, dry_run=False):
     """Copy the session's files; anything already at the target is first saved under `backup`."""
     acts = []
@@ -927,9 +936,9 @@ def copy_session(src, dst, sid, backup, dry_run=False):
         if not dry_run:
             os.makedirs(os.path.dirname(t), exist_ok=True)
             if os.path.isdir(s):
-                shutil.copytree(s, t, dirs_exist_ok=True)
+                shutil.copytree(s, t, dirs_exist_ok=True, copy_function=_copy_over)
             else:
-                shutil.copy2(s, t)
+                _copy_over(s, t)
     return acts
 
 
