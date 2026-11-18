@@ -853,6 +853,35 @@ class InitStructureTest(unittest.TestCase):
                                               configure=lambda h: (False, "herdr config check failed")))
         self.assertIn("NOT linked: herdr plugin link failed", said[-2])
         self.assertIn("herdr config NOT changed: herdr config check failed", said[-1])
+        # the questions panel rides on the same yes, and only when given (surface herdr)
+        pinned, ok = [], lambda h: (True, ["prefix+a opens the questions screen"])
+        i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr", install=lambda h: (True, "linked"),
+                            configure=ok, panel=lambda: pinned.append(1))
+        self.assertEqual(pinned, [1])
+        self.assertTrue(any("of your questions is pinned beside your conductor" in x for x in said))
+        i.link_herdr_plugin(True, said.append, which=lambda n: "/usr/bin/herdr", install=lambda h: (True, "linked"),
+                            configure=ok, panel=lambda: 1 / 0)
+        self.assertIn("questions panel NOT pinned: ZeroDivisionError", said[-1])  # never fails the init
+
+    def test_the_questions_panel_is_pinned_beside_the_conductor(self):
+        i, said, saved = self.of_init, [], []
+        self.assertEqual(i.pin_questions_panel("acme-logistics", "acme-logistics", said.append, load=lambda: [],
+                                               save=saved.append, python="/py", bin_dir="/of/bin"), "acme-logistics")
+        (view,) = saved[0]
+        self.assertEqual((view["name"], view["workspace"], view["tab"]), ("acme-logistics",) * 2 + ("conductor",))
+        self.assertEqual(view["positions"], ["acme-logistics_conductor", "panel:questions"])
+        self.assertIn("/of/bin/of asks --panel", view["panels"]["questions"])  # the Python and bin/ that ran of init
+        self.assertIn("of view remove acme-logistics", said[-1])
+        # never replaces another view, and never a second questions panel on the machine (one pane label each)
+        other = {"name": "conductor", "workspace": "organic-framework", "tab": "conductor",
+                 "positions": ["of_conductor", "panel:questions"], "panels": {"questions": "of asks --panel"}}
+        saved.clear()
+        self.assertIsNone(i.pin_questions_panel("acme", "acme", said.append, load=lambda: [other], save=saved.append))
+        self.assertIn("already in view conductor", said[-1])
+        self.assertIsNone(i.pin_questions_panel("acme", "acme", said.append, load=lambda: [dict(other, name="acme",
+                                                positions=["x"])], save=saved.append))
+        self.assertIn("a view named acme is already there", said[-1])
+        self.assertEqual(saved, [])
 
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
