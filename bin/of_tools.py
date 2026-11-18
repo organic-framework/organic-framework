@@ -376,29 +376,66 @@ def _cached_url(hit, org, tid, key, state_dir):
     return ent["url"] if hmac.compare_digest(ent["mac"], _url_mac(tok, org, tid, key, ent["url"])) else None
 
 
+_TOP_TOOLS = re.compile(r"^tools:[ \t]*(?:#[^\n]*)?\n", re.M)
+_TOP_KEY = re.compile(r"^[^\s#]", re.M)
+
+
+def _tools_block(text):
+    """The text of the registry's top-level `tools:` block (the last one, as YAML keeps it), or None."""
+    m = None
+    for m in _TOP_TOOLS.finditer(text):
+        pass
+    if not m:
+        return None
+    end = _TOP_KEY.search(text, m.end())
+    return text[m.start():end.start() if end else len(text)]
+
+
+def _catalogue_from(text):
+    """The `tools:` catalogue of a registry's text: its block alone when that parses, else the whole file."""
+    import yaml
+    block = _tools_block(text)
+    if block is not None:
+        try:
+            cat = (yaml.safe_load(block) or {}).get("tools")
+            if isinstance(cat, dict):
+                return cat
+        except (yaml.YAMLError, AttributeError):
+            pass  # an alias to an anchor outside the block, a flow mapping: read the whole file
+    try:
+        reg = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return None
+    return reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
+
+
 def shared_url(org, tid, orgs_file=None, state_dir=None):
     """The shared server's URL from the organization's registry, through a cache kept beside the tokens.
 
     The helper runs at every session's connect while Claude Code waits on it: in 2.1.326's own logs helpers that
-    took up to 10.6 s were accepted and those that took 11.6 s and 12.3 s were not. On 2026-11-17 parsing a
-    user organization's large registry on a loaded machine took that long, three sessions got no header, and Claude
-    Code fell back to OAuth (the DCR 404), with no retry. The cache holds only the URLs of one registry's shared
-    tools, keyed by that file's path, size and mtime, and is rebuilt from the registry whenever the file changes, so
-    the registry stays the one source (2026-11-18, of_tools).
+    took up to 10.6 s were accepted and those that took 11.0 s to 12.3 s were not. On 2026-11-17 and 2026-11-18,
+    with the machine's load average near 100 on 10 cores, a session's start took longer than that, sessions got no
+    header, and Claude Code fell back to OAuth (the DCR 404), with no retry. So the helper does as little as it can:
+    the cache is keyed by the registry's path and the hash of its `tools:` block, and on a miss only that block is
+    parsed, not the whole registry, which a user organization's keepers change many times a day (2026-11-18,
+    of_tools).
 
     The cache is no trust root: an agent can write the file (of_server, PR 322 review: an edited entry sent the
     token to an outside address). A cached URL is used only in _want's shape, http://127.0.0.1:<port>/<path>, and
     only when its HMAC under the tool's own token checks over (org, tool, registry key, URL); anything else is read
     from the registry again."""
+    import hashlib
     import of_credentials
     path = dict(of_credentials._registries(orgs_file)).get(org)
     if not path:
         raise ToolsError(f"no organization {org} in the listed registries")
     try:
-        st = os.stat(path)
-    except OSError:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
         raise ToolsError(f"the registry of {org} cannot be read")
-    key = [os.path.realpath(path), st.st_size, st.st_mtime_ns]
+    block = _tools_block(text)
+    key = [os.path.realpath(path), hashlib.sha256((text if block is None else block).encode()).hexdigest()]
     d = os.path.join(state_dir or STATE_DIR, "tools", "shared")
     cache = os.path.join(d, "urls.json")
     try:
@@ -410,13 +447,9 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
     url = _cached_url(doc.get(org), org, tid, key, state_dir)
     if url:
         return url
-    import yaml
-    try:
-        with open(path) as fh:
-            reg = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError):
+    cat = _catalogue_from(text)
+    if cat is None:
         raise ToolsError(f"the registry of {org} cannot be read")
-    cat = reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
     url = _want(cat.get(tid))
     if not url:
         raise ToolsError(f"{org}/{tid} is not a shared tool")
@@ -627,7 +660,10 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None, org
         if sh and up(sh["port"]):  # the machine's one server; the helper gives the token to this profile only
             s = {"type": "http", "url": f"http://127.0.0.1:{sh['port']}{sh.get('path') or '/mcp'}"}
             if sh.get("token_env"):
-                s["headersHelper"] = " ".join(shlex.quote(x) for x in (ofb, "tools", "header", f"{org}/{tid}"))
+                # of_tools.py itself, not `of`: the helper must finish while Claude Code waits on a loaded machine,
+                # and `of` compiles its whole file on every run (2026-11-18; guard G23 covers both forms)
+                s["headersHelper"] = " ".join(shlex.quote(x) for x in (
+                    "python3", os.path.join(os.path.dirname(ofb), "of_tools.py"), "header", f"{org}/{tid}"))
             servers[tid] = s
             allowed.append({"serverName": tid})
         elif kind == "mcp-stdio":
