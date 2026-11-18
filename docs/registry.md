@@ -410,7 +410,9 @@ subagent_harnesses:
 
 ## Access lists (2026-11-19, `of_architect`; docs/access.md)
 
-Each keeper an organization runs on its agent host (a vault, a signer, a browser) has its list, `registry/access/<keeper>.yaml` in the organization's repository: per entry the position, the access, its actions and limit, its tier (`plain`, `secret`, `money`, `production`), the card or commit that decided it, and, from `secret` up, the passkey approval record and, for `money` and `production`, the grant. The shape and the rules are in [`access.md`](access.md) §2 to §4. Only `of access grant` and `of access revoke` write a list; the keeper reads it from the committed tip of the default branch and serves a line only once its approvals verify. `access_review: {unused_days: N}` at the top level sets the weekly review's threshold (30 when absent; §5).
+**Designed, not on the public main yet** (docs/access.md §6): `of access`, the keepers' reader and the `of registry check` rule come with `of_server`'s pull requests, step by step.
+
+Each keeper an organization runs on its agent host (a vault, a signer, a browser) has its list, `registry/access/<keeper>.yaml` in the organization's repository: per entry the position, the access, its actions and limit, its tier (`plain`, `secret`, `money`, `production`), the card (its full event id) or the commit that decided it, and, from `secret` up, the passkey approval record and, for `money` and `production`, the grant. The shape and the rules are in [`access.md`](access.md) §2 to §4. Only `of access grant` and `of access revoke` write a list; the keeper reads it from the committed tip of the default branch and serves a line only once its approvals verify. `access_review: {unused_days: N}` at the top level sets the weekly review's threshold (30 when absent; §5).
 
 ## Where the binding rules come from (2026-11-18, hand-over 83b08e7b)
 

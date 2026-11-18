@@ -2,6 +2,8 @@
 
 Status: **accepted** by the founder, 2026-11-18 21:01Z, prompt `01a1f077-09b7` in `of_conductor`'s session ("ok, access through keepers: approve"); designed 2026-11-19 by `of_architect`, with `of_server` for the guard and the keepers. Basis: the founder's yes, 2026-11-18 20:13Z, prompt `01a1f04a-a868` in `of_conductor`'s session ("okay, let's try"), to `of_conductor`'s four-point plan for growing an organization's structure and access once its agents live on an agent host behind keepers (message `01a1f04d-13d3`).
 
+**Build state.** §1 to §5 are the design. `of_server` builds them step by step (§6), each in its own pull request; a step is in use once that pull request reaches the public main, and is marked here then.
+
 ## 1. Keepers
 
 A **keeper** holds something an agent must use but never hold: a vault item, a signing key, a browser profile with its sign-ins. It runs as its own OS user on the agent host. Its home is closed to the agents' users, and its program and folder are owned by root (organic-framework-build `reports/agent-host-isolation-2026-11-18.md`, layer 1). An agent asks it through one narrow door: an asking script run by one sudoers line, or a socket. It does what its list allows for that caller and nothing else. Three kinds exist so far:
@@ -20,7 +22,7 @@ The keeper knows its caller from the process, not from anything the caller sends
 - the registry's credentials catalogue: the credentials each position lists or keeps (docs/registry.md, Credentials);
 - each keeper's list, `registry/access/<keeper>.yaml` in the organization's repository (below);
 - the grants whose scope names a keeper (§4);
-- the keepers' use records (`of.access_used`, §5).
+- the keepers' records of each request, served or refused (`of.access_used`, `of.access_refused`, §5).
 
 A keeper's list:
 
@@ -34,7 +36,7 @@ entries:
     actions: [send]               # browser: download, read, order…; signer: send; vault: read
     limit: {per_call: {amount: 0.5, unit: ETH}, per_period: {amount: 2, unit: ETH, period: P1D}}   # numbers, a unit, an ISO 8601 period
     tier: money                   # plain | secret | money | production (§3)
-    decided: OF-123               # the founder's card, or the structure keeper's commit for a plain entry
+    decided: "01a1f0ac-0d07-7186-95f6-86aed0dc097d"   # card OF-123: the full event id of the founder's card (AGENTS.md: a field a program reads keeps it), or the structure keeper's commit for a plain entry
     approval: "passkey:<record id>"   # secret and above (§4)
     grant: g-2026-11-19-004       # money and production (§4)
     added: {at: 2026-11-19T10:00:00Z, by: acme_org}
@@ -86,7 +88,7 @@ This replaces the inference in `of_conductor`'s point 3. Grants already verify w
 
 ## 5. The weekly review
 
-- **Every use is recorded.** A keeper writes `of.access_used {keeper, position, access, at}` each time it serves a call, as an event in its organization's store through its own writer. Values are never recorded: an item's id, never its value; a destination and an amount, never a key.
+- **Every request is recorded, served or refused** (as docs/agent-secrets.md §5.7 records every request to the broker). A keeper writes `of.access_used {keeper, position, access, at}` for a call it serves and `of.access_refused {keeper, position, access, reason, at}` for one it refuses, as events in its organization's store through its own writer. Values are never recorded: an item's id, never its value; a destination and an amount, never a key.
 - **Once a week**, on Monday from 05:00 UTC like the corrections digest, the pulse sends each structure keeper one `--fyi` digest:
   - the entries unused for 30 days, each with its `of access revoke` line ready. The organization may set `access_review: {unused_days: N}` in its registry; 30 is a proposal, so that an access nobody uses does not stand for months;
   - the grants that expire within 14 days;
@@ -104,6 +106,6 @@ The first step stands on what exists today, so it starts now.
 | 1. `of access map` from the credentials catalogue and grants alone, with no keeper lists yet | `of_server` | it prints the OF team's and a user organization's current reach |
 | 2. Keeper lists in docs/registry.md, `of access request`, `grant` and `revoke`, their checks in `of registry check` | `of_architect` (schema), `of_server` (code) | a plain entry goes from request to the list on a test organization |
 | 3. A grant scope that names a keeper; the keeper's verification of the passkey record and the grant against pinned keys | `of_server` | a line without a valid signature is not served, in the Lab |
-| 4. Each keeper serves from its list and writes `of.access_used`: the vault asking script, the signer's policy, the browser keeper's sites and actions | `of_server`; each organization's keepers through its structure keeper | the map shows last use for each kind |
+| 4. Each keeper serves from its list and records every call, `of.access_used` or `of.access_refused`: the vault asking script, the signer's policy, the browser keeper's sites and actions | `of_server`; each organization's keepers through its structure keeper | the map shows last use for each kind |
 | 5. The weekly digest in the pulse | `of_server` | a test organization gets it on a Monday |
 | 6. Each organization's lists | its structure keeper (for example `acme_org`, once step 2's format exists) | its map has no hand-kept line |
