@@ -104,6 +104,20 @@ class InterpreterNames(unittest.TestCase):
         for cmd in ("timeout -fp 5 ls", "script -q /dev/null ls"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_the_sixth_pass(self):
+        """of_secrets-review and of_review on organic-framework PR 332 at af79fa6: forms its parent denied, and two
+        still open."""
+        k = "~/.ssh/id_ed25519"
+        for cmd in (f"script -q -t --command=x /dev/null cat {k}",          # macOS -t takes --command=x
+                    f"timeout -f ' 2' cat {k}", f"timeout -f 'nan(x)' cat {k}", f"timeout 0x1p3 cat {k}",
+                    f"echo cat | xargs -tJ MARK MARK {k}", f"echo cat | xargs -0tI% % {k}",
+                    f'script -q -c "true && cat {k}" /dev/null', f'script -qc"true && cat {k}" /dev/null',
+                    f"script -c'cat {k}' /dev/null", f"sudo script -q -c 'ls; cat {k}' /dev/null"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("timeout 5 ls", "timeout -f 2 ls", "script -q /dev/null ls", "script -qc 'ls -la' /dev/null",
+                    "echo x | xargs -tJ % echo %", "ls | xargs -0 -n 1 echo"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_the_abi_suffixes(self):
         for name in ("python3.7m", "python3.12d", "python3.7dm", "pythonw3.12"):
             self.assertEqual(of_guard._interpreter_name(name), "python3", name)

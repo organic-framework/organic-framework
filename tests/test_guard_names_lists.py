@@ -49,6 +49,19 @@ class NamesLists(unittest.TestCase):
         self.assertIsNone(deny("cat " + self.put("token-names.csv", "name,kind\nr2-writer,api\n")))
         self.assertIsNone(deny("cat " + self.put("token-names.yaml", "- app-db\n- ghcr-pull\n")))  # a YAML list
 
+    def test_the_sixth_pass(self):
+        """of_review on organic-framework PR 332 at af79fa6: digits split by spaces, the guard's own credential
+        words, and ssh spelled with quotes."""
+        for text in ("billing,4242 4242 4242 4242\n", "billing 4242 4242 4242 4242\n",
+                     "name,creds\ndemo,public-test-passphrase\n", "name,dsn\napp,postgres-at-db\n"):
+            p = self.put("card-token-names.txt", text)
+            self.assertTrue(deny("cat " + p), text)
+        clean = self.put("evm-secret-names.txt", "NAME TYPE\napp-signer-main Opaque\n")
+        self.assertIsNone(deny("cat " + clean))
+        for cmd in (f"s's'h buildhost cat {clean}", f"\"ssh\" buildhost cat {clean}", f"S'S'H buildhost cat {clean}"):
+            self.assertTrue(deny(cmd), cmd)  # another machine's copy of the file: this one's says nothing
+        self.assertIsNone(deny("cat " + self.put("svc-secret-names.txt", "svc-2026-11-18-backup Opaque 3 120d\n")))
+
     def test_a_names_list_that_holds_a_value_stays_secret(self):
         for text in ("evm-signer  Opaque\npassword: hunter2-but-longer\n",          # a credential word with a value
                      f"evm-signer  Opaque\n{KEY}\nAAAA\n",                           # a private key
