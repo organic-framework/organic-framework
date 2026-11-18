@@ -724,18 +724,18 @@ class BlockedProcessor(Processor):
             if key in seen:
                 continue
             seen.add(key)
+            label = re.sub(r"\s*·\s*❓.*$", "", labels.get(pane, "").strip().strip("■").strip()).strip()
+            position = (sessions.get(sid) or [None])[0] or a.get("name") or label or None
+            # a parked or finished position stopped on a limit or a login is meant to stay stopped: the balancer
+            # neither moves nor wakes it, so it has no ask, and one already open closes below (of_capacity, message
+            # 01a1f0a9-d642: such stops of a user organization's parked positions reached the founder as a card)
+            if d and d["type"] in ("limit", "login") and position in self.resting_names():
+                d = None
             have = opened.get(key) or opened.get(pane)
             if have and d and d["fingerprint"] == have[1]:
                 kept.add(have[0])
                 continue
             if d:
-                label = re.sub(r"\s*·\s*❓.*$", "", labels.get(pane, "").strip().strip("■").strip()).strip()
-                position = (sessions.get(sid) or [None])[0] or a.get("name") or label or None
-                # a parked or finished position stopped on a limit or a login is meant to stay stopped: the balancer
-                # neither moves nor wakes it, so no ask is filed (of_capacity, message 01a1f0a9-d642: such stops of a
-                # user organization's parked positions reached the founder as a card)
-                if d["type"] in ("limit", "login") and position in self.resting_names():
-                    continue
                 to = d["to"] if d["to"] == "founder" or d["to"] in live_names else "founder"
                 fyi = to != "founder" and d["type"] in of_blocked.FYI
                 eid = of_events.emit("agent_question", {
