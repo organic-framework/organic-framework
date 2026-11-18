@@ -152,13 +152,15 @@ class RestingPositionTest(unittest.TestCase):
         filed = []
         proc = of_listen.BlockedProcessor()
         with mock.patch("subprocess.run", run), \
-                mock.patch.object(of_events, "emit", lambda k, p, **kw: filed.append((p["pane"], p["blocked_type"])) or "e1"), \
-                mock.patch.object(proc, "open_asks", lambda conn: {}), \
+                mock.patch.object(of_events, "emit", lambda k, p, **kw: filed.append((p.get("pane"), p.get("blocked_type")))
+                                  or "e1"), \
+                mock.patch.object(proc, "open_asks", lambda conn: {"s-p1": ("old-ask", "fp")}), \
                 mock.patch.object(proc, "resting_names", lambda: frozenset({"parked_one"})), \
                 mock.patch.object(proc, "send_fyi", lambda to, text: None), \
                 mock.patch("of_hook._registry_index", lambda: {"sessions": {}}):
             proc.tick(None, 0)
-        self.assertEqual(sorted(filed), [("p2", "limit"), ("p3", "mcp_auth")])
+        self.assertEqual(sorted(x for x in filed if x[0]), [("p2", "limit"), ("p3", "mcp_auth")])
+        self.assertIn((None, None), filed)                     # the parked position's open ask closes
 
 
 if __name__ == "__main__":
