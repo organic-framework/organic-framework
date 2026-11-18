@@ -527,12 +527,7 @@ class SubagentTest(unittest.TestCase):
         path = code
         self.assertFalse(g.checksummed_address(path, finding(ok + "aa")))                 # 42 hex: not an address
         self.assertFalse(g.checksummed_address(path, finding(ok + " Zk3mQ9xW2vL8pR4tYb")))  # another value beside
-        rx = re.compile(re.search(r"regexes = \['(\^\(\?:\[A-Za-df.*?)'\]", g.ALLOW).group(1))
-        for v in ("cfg.api.token", "self.config.api_token_value", "e.x", "eyB.c", "a." + "b" * 32, "c" * 32 + ".d"):
-            self.assertTrue(rx.match(v), v)
-        for v in ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "token", "a-b.c", "1abc.d", "a." + "b" * 33,
-                  "c" * 33 + ".d", "ey" + "x" * 31 + ".d", "cfg..token"):
-            self.assertFalse(rx.match(v), v)
+        self.assertNotIn("dotted code identifier", g.ALLOW)          # dropped (of_secrets-review, PR 337)
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
