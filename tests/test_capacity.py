@@ -2270,6 +2270,65 @@ class PluginOfAnotherMarketplace(unittest.TestCase):
         self.assertEqual(asks, [])  # signing in does not fix it: capacity.yaml `signins:` decides
 
 
+
+class OtherHarnesses(unittest.TestCase):
+    """The founder, prompt 01a1ee3c-3b01 (2026-11-18): use the Codex and Muse subscriptions too, since the Claude
+    accounts keep running out. `of capacity status` shows them beside the Claude accounts (RFC 0003 §4.7)."""
+    T0 = 1_800_000_000
+
+    def rollout(self, home, used=12.5, minutes=10080, at=None, extra=None):
+        d = os.path.join(home, "sessions", "2026", "11", "18")
+        os.makedirs(d, exist_ok=True)
+        rl = {"limit_id": "codex", "primary": {"used_percent": used, "window_minutes": minutes,
+                                               "resets_at": self.T0 + 3 * 86400},
+              "secondary": extra, "credits": {"has_credits": True, "unlimited": False, "balance": "1"},
+              "plan_type": "pro", "rate_limit_reached_type": None}
+        with open(os.path.join(d, "rollout-1.jsonl"), "w") as fh:
+            fh.write(json.dumps({"timestamp": "x", "type": "session_meta", "payload": {}}) + "\n")
+            fh.write(json.dumps({"timestamp": of_capacity._iso(at or self.T0), "type": "event_msg",
+                                 "payload": {"type": "token_count", "rate_limits": rl}}) + "\n")
+
+    def test_the_newest_rollout_reading_names_its_windows_by_length(self):
+        with tempfile.TemporaryDirectory() as h:
+            self.assertIsNone(of_capacity.codex_reading(h))
+            self.rollout(h, extra={"used_percent": 40, "window_minutes": 300, "resets_at": self.T0 + 3600})
+            r = of_capacity.codex_reading(h)
+        self.assertEqual(r["plan"], "pro")
+        self.assertEqual(r["windows"]["seven_day"]["utilization"], 12)
+        self.assertEqual(r["windows"]["five_hour"], {"utilization": 40, "resets_at": of_capacity._iso(self.T0 + 3600)})
+        self.assertTrue(r["credits"])
+
+    def test_a_probe_runs_only_when_the_reading_is_old_and_codex_is_signed_in(self):
+        from unittest import mock
+        runs = []
+        with tempfile.TemporaryDirectory() as h, tempfile.TemporaryDirectory() as st, \
+                mock.patch.multiple(of_capacity, STATE_DIR=st, codex_bin=lambda: "/bin/codex"):
+            self.assertIsNone(of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append(a)))
+            open(os.path.join(h, "auth.json"), "w").close()
+            self.rollout(h, at=self.T0 - 60)
+            r = of_capacity.codex_status(now=self.T0, home=h, runner=lambda *a, **k: runs.append(a))
+            self.assertEqual((runs, r["windows"]["seven_day"]["utilization"]), ([], 12))  # fresh: no probe
+            of_capacity.codex_status(now=self.T0 + 3600, home=h, runner=lambda *a, **k: runs.append(a))
+            of_capacity.codex_status(now=self.T0 + 3600, home=h, probe=False, runner=lambda *a, **k: runs.append(a))
+        self.assertEqual(len(runs), 1)
+        argv = runs[0][0]
+        self.assertEqual(argv[:5], ["/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only"])
+
+    def test_the_lines_say_what_each_harness_reports(self):
+        r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
+             "windows": {"seven_day": {"utilization": 0, "resets_at": of_capacity._iso(self.T0 + 86400)}}}
+        text = of_capacity.format_other(r, {"model": "muse-wonder-full-1.0", "contributor_mode": True})
+        self.assertIn("ChatGPT pro", text)
+        self.assertIn("seven_day 0%", text)
+        self.assertIn("contributor mode ON", text)
+        self.assertEqual(of_capacity.format_other(None, None), "")
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, "settings.json")
+            with open(path, "w") as fh:
+                json.dump({"contributor_mode_enabled": False, "model": "m"}, fh)
+            self.assertEqual(of_capacity.muse_status(path), {"model": "m", "contributor_mode": False})
+
+
 class ConnectorsCache(unittest.TestCase):
     def test_a_plugin_installed_after_the_list_was_cached_reads_it_again(self):
         from unittest import mock

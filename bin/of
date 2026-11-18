@@ -6694,6 +6694,10 @@ def cmd_capacity(args):
         print(json.dumps(rows, indent=1, ensure_ascii=False))
         return 0
     print(of_capacity.format_table(rows))
+    other = of_capacity.format_other(of_capacity.codex_status(fresh=args.fresh, probe=not args.no_probe),
+                                     of_capacity.muse_status())
+    if other:
+        print(other)
     for r in rows:
         why = of_capacity.over_threshold(r)
         if why and r.get("positions"):
