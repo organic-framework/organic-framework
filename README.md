@@ -62,6 +62,9 @@ of spawn my-org_conductor --config-dir ~/.claude     # your conductor: the first
 6. It adds the recorder hooks to your Claude Code settings. The change is additive and comes with a backup and a diff.
 7. It enrolls this machine and starts `of-server` with SQLite storage, as a launchd or systemd user service, and says "up" only once the server answers. Where there is no systemd user session (some VMs and containers), it says so, and you start the server yourself (below).
 8. It installs the relay (message delivery between agents) and the listener (its pulse offers hand-overs and nudges) as user services, and checks that each runs: `relay: running`, `listen: running`. If one does not, it prints `NOT running` with its log and exits with code 2.
+9. With herdr on the machine, it links OF's herdr plugin, which names each agent by its position, and adds the questions key (`prefix+a`) and counter to your herdr settings, after asking (`herdr plugin unlink organic-framework` removes the plugin).
+10. With two or more Claude accounts on the machine, it asks whether agents on a spent account move to one with room, with a capacity keeper of yours keeping watch (`--capacity yes|no`).
+11. It lists the plugins the machine has for OF ([`docs/plugins.md`](docs/plugins.md)); `--plugin family=name` records your choice.
 
 Without a terminal on stdin, `of init` cannot ask before it writes your Claude settings: it then installs nothing there, says so and exits non-zero; pass `--yes` to agree in advance.
 
