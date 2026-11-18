@@ -85,6 +85,25 @@ class InterpreterNames(unittest.TestCase):
                     "sudo -Q root ls notes.txt"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_the_older_gaps_found_with_the_approval(self):
+        """of_secrets-review's approval of organic-framework PR 332: four ways past G1 older than it."""
+        k = "~/.ssh/id_ed25519"
+        for cmd in (f"taskpolicy -ad default -g default cat {k}", f"</dev/null taskpolicy -ad default cat {k}",
+                    f"timeout -- 1e1 cat {k}", f"timeout -- +2 cat {k}", f"timeout +2 cat {k}", f"timeout inf cat {k}",
+                    f"echo cat | xargs -J X X {k}", f"echo cat | xargs -I{{}} {{}} {k}",
+                    f"echo cat | xargs --replace=R R {k}"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("echo hi | xargs -I{} echo {}", "timeout 5 ls", "</dev/null sudo ls", "taskpolicy -b ls",
+                    "ls | xargs -J % cp % /tmp/x"):
+            self.assertIsNone(deny(cmd), cmd)
+        # of_review on organic-framework PR 332, fifth pass: macOS timeout's -f and -p, script's -F, GNU script -c
+        for cmd in ("timeout -ps TERM -k 4 2 op item --help", "timeout -p -s TERM 5 timeout -ps TERM 2 op item --help",
+                    "< /dev/null timeout -ps TERM 2 op item --help", "env -S 'timeout -ps TERM 2 op item --help'",
+                    "script -qF /dev/null op item --help", f"script -qc 'cat {k}' /dev/null"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("timeout -fp 5 ls", "script -q /dev/null ls"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_the_abi_suffixes(self):
         for name in ("python3.7m", "python3.12d", "python3.7dm", "pythonw3.12"):
             self.assertEqual(of_guard._interpreter_name(name), "python3", name)
