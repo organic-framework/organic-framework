@@ -514,7 +514,52 @@ def muse_status(path=None):
     return {"model": s.get("model") or "default", "contributor_mode": s.get("contributor_mode_enabled")}
 
 
-def format_other(codex, muse):
+TRAINING_HARNESSES = ("codex", "muse")
+
+
+def training_readings(conn=None):
+    """{harness: {training, account, source, ts}}: the latest of.harness_training for each harness (RFC 0008 §3.1,
+    "No training on the run"; `of subagent run` reads the same)."""
+    conn = conn or of_events._conn()
+    out = {}
+    for h in TRAINING_HARNESSES:
+        row = conn.execute("SELECT ts, payload FROM event WHERE name = 'of.harness_training' "
+                           "AND json_extract(payload, '$.harness') = ? ORDER BY ts DESC LIMIT 1", (h,)).fetchone()
+        if row:
+            try:
+                out[h] = dict(json.loads(row[1] or "{}"), ts=row[0])
+            except ValueError:
+                pass
+    return out
+
+
+def record_training(harness, training, account, source, emit=None):
+    """Write of.harness_training: whether the provider may train on the harness account's runs, and the reading's
+    source. Codex shows its data controls nowhere a program can read, so its reading is recorded from the owner's
+    confirmation (`of capacity training codex --set off --source <basis>`); Muse's comes from its settings
+    (sync_muse_training)."""
+    if harness not in TRAINING_HARNESSES or training not in ("off", "on") or not str(source or "").strip():
+        raise ValueError(f"training: harness {'|'.join(TRAINING_HARNESSES)}, --set off|on and a --source are needed")
+    (emit or of_events.emit)("harness_training", {"harness": harness, "training": training,
+                                                  "account": account or "?", "source": str(source).strip()})
+
+
+def sync_muse_training(latest=None, path=None, emit=None):
+    """Record Muse's reading when its settings' contributor mode (Meta trains on the sessions) differs from the latest
+    one recorded; the balancer runs it. Returns what it recorded, or None."""
+    m = muse_status(path)
+    if not m or m.get("contributor_mode") not in (True, False):
+        return None
+    want = "on" if m["contributor_mode"] else "off"
+    if ((latest if latest is not None else training_readings()).get("muse") or {}).get("training") == want:
+        return None
+    record_training("muse", want, "Muse on this machine",
+                    f"Muse settings: contributor_mode_enabled {str(m['contributor_mode']).lower()} (of_capacity read)",
+                    emit=emit)
+    return want
+
+
+def format_other(codex, muse, training=None):
     """The lines `of capacity status` prints for the other harnesses, under the Claude table."""
     out = []
     if codex is not None:
@@ -528,14 +573,23 @@ def format_other(codex, muse):
             line += f"  (read {_local(codex.get('observed_at'), True)} local)"
             if codex.get("limit_reached"):
                 line += f"  LIMIT REACHED: {codex['limit_reached']}"
-        out.append(f"{'codex':<18} {'ChatGPT ' + str(codex.get('plan') or '?'):<36} {line}")
+        out.append(f"{'codex':<18} {'ChatGPT ' + str(codex.get('plan') or '?'):<36} {line}"
+                   + _training_text((training or {}).get("codex")))
     if muse is not None:
         mode = {True: "contributor mode ON: its sessions go to Meta for training",
                 False: "contributor mode off"}.get(muse.get("contributor_mode"), "contributor mode unknown")
-        out.append(f"{'muse':<18} {str(muse.get('model')):<36} limits not reported; {mode}")
+        out.append(f"{'muse':<18} {str(muse.get('model')):<36} limits not reported; {mode}"
+                   + _training_text((training or {}).get("muse")))
     if out:
         out.insert(0, "other harnesses (not targets for Claude sessions):")
     return "\n".join(out)
+
+
+def _training_text(r):
+    """The training reading as `of capacity status` shows it beside a harness."""
+    if not r:
+        return "; training: not read (of capacity training)"
+    return f"; training {r.get('training')} since {_local(r.get('ts'), True)} ({str(r.get('source') or '')[:60]})"
 
 
 # ------------------------------------------------------------------- move
@@ -5538,6 +5592,10 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         reconcile_signin_tasks(sessions, now=now, log=log, dry_run=dry_run)
     except Exception as e:
         log(f"balance: sign-in tasks not reconciled: {e}")
+    try:  # RFC 0008 §3.1: Muse's training reading follows its settings
+        sync_muse_training()
+    except Exception as e:
+        log(f"balance: Muse's training reading not synced: {e}")
     try:  # sessions stopped on a limit their own account no longer has (a reset, a reopened window)
         wake_stopped(rows, sessions, positions, now=now, log=log, dry_run=dry_run)
     except Exception as e:

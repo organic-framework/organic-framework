@@ -39,6 +39,10 @@ Every probe runs in the automation environment ([`AGENTS.md`](../AGENTS.md)): `O
 
 Neither enters the balancer's rows: no Claude session is moved onto them. `--json` keeps its list of Claude accounts.
 
+**Training readings** (RFC 0008 §3.1, "No training on the run"). `of.harness_training {harness, training: off|on, account, source}` says whether the provider may train on a harness account's runs; `of subagent run` sends a Codex review or read run on material that is not public only while the latest Codex reading says `off`. Muse's comes from its settings: each balancer run records it when `contributor_mode_enabled` differs from the latest reading. Codex shows its data controls nowhere a program can read, so its reading is the owner's confirmation, recorded with `of capacity training codex --set off|on --source '<the ask id>'`; `of capacity training` prints both, and `of capacity status` shows them beside each harness.
+
+**Spend.** A run on another harness is in no transcript; its `of.subagent_run` (phase `ended`) carries its tokens. `of capacity spend` gives them to the run's position and work as for a Claude response (the run's own `work`, else the work the position declared then, else the fallback), as `outside_fresh` (input not read from cache, plus output) and `outside_runs`, with no list cost: those plans are flat subscriptions. `outside` sums them per harness and model.
+
 ## Thresholds
 
 A position's account past a threshold is a capacity problem the owner should see before the account stops:

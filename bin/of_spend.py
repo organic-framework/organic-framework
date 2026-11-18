@@ -11,6 +11,12 @@ are attributed session -> position -> work -> goal, and summed per calendar mont
   serve one goal; else unattributed under the position;
 - a goal's spend is its works', what went to it directly, and its sub-goals'; a condition's, its works'.
 
+A position's runs on other providers' harnesses (of.subagent_run, RFC 0008: Codex, Muse) are in no transcript. Each
+ended run's tokens go the same way to its position and work (the run's own `work`, else the work the position had
+declared then, else the fallback above), as `outside_fresh` (input not read from cache, plus output) and
+`outside_runs`; they carry no list cost, since those plans are flat subscriptions with no price per token here.
+`outside` sums them per harness and model.
+
 The responses come from the event store's transcript records (each response once, by message id; subagents to their
 session; a fork's copies of its parent's records left out), kept in `view_spend_month` from the start of the
 previous month. The listener advances it in of_capacity's tick and writes the month's sums to
@@ -263,14 +269,61 @@ def segments(spans, decl, start, end):
 
 
 def _zero():
-    return {"fresh": 0, "cost_usd": 0.0, "responses": 0}
+    return {"fresh": 0, "cost_usd": 0.0, "responses": 0, "outside_fresh": 0, "outside_runs": 0}
 
 
 def _add(a, b):
-    a["fresh"] += b["fresh"]
-    a["cost_usd"] += b["cost_usd"]
-    a["responses"] += b["responses"]
+    for k, v in _zero().items():
+        a[k] = a.get(k, v) + b.get(k, v)
     return a
+
+
+SUBAGENT_EVENT = "of.subagent_run"
+
+
+def _iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".000Z"
+
+
+def outside_runs(conn, canon, decl, start, end):
+    """([(org, position, work or None, sums)], {"<harness>/<model>": {runs, fresh, input, cached, output,
+    reasoning}}) of the runs on other providers' harnesses that ended in [start, end): of.subagent_run, phase ended
+    (RFC 0008 §3.1, "Recorded"). Their tokens are in no transcript, so this is their only count."""
+    segs, by = [], {}
+    rows = conn.execute("SELECT ts, org, position, payload FROM event WHERE name = ? AND ts >= ? AND ts < ?",
+                        (SUBAGENT_EVENT, _iso(start), _iso(end))).fetchall()
+    for ts, org, pos, pl in rows:
+        try:
+            j = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if j.get("phase") != "ended":
+            continue
+        u = j.get("usage") if isinstance(j.get("usage"), dict) else {}
+        n = {k: int(u.get(k) or 0) for k in ("input", "cached", "output", "reasoning")}
+        fresh = max(0, n["input"] - n["cached"]) + n["output"]
+        key = f"{j.get('harness') or '?'}/{j.get('model') or '?'}"
+        b = by.setdefault(key, {"runs": 0, "fresh": 0, "input": 0, "cached": 0, "output": 0, "reasoning": 0})
+        b["runs"] += 1
+        b["fresh"] += fresh
+        for k, v in n.items():
+            b[k] += v
+        name = j.get("position") or pos
+        hit = (canon.get((org, name)) or canon.get((None, name))) if name else None
+        s = dict(_zero(), outside_fresh=fresh, outside_runs=1)
+        if not hit:
+            segs.append((None, None, None, s))
+            continue
+        t = _epoch(ts)
+        work = j.get("work")
+        if not work:
+            for x, w in decl.get(hit) or []:
+                if x <= t:
+                    work = w
+                else:
+                    break
+        segs.append((hit[0], hit[1], work, s))
+    return segs, by
 
 
 def _round(x):
@@ -492,7 +545,8 @@ def compute(docs, conn, month=None, now=None):
                            [start, end] + sorted(seen)).fetchone()
     if k:
         seg_sums.append((None, None, None, {"fresh": int(f), "cost_usd": float(c), "responses": int(k)}))
-    out = summarize(seg_sums, docs, start, end, now)
+    segs, by = outside_runs(conn, canon_map(docs), decl, start, end)
+    out = summarize(seg_sums + segs, docs, start, end, now, totals={"outside": by})
     out["complete"] = _meta(conn, "spend_month_caught_up") == "1"
     return out
 
@@ -538,7 +592,10 @@ def _num(n):
 
 
 def _line(label, s):
-    return f"  {label:<44} {_num(s['fresh']):>8}  ${s['cost_usd']:>10,.2f}"
+    out = f"  {label:<44} {_num(s['fresh']):>8}  ${s['cost_usd']:>10,.2f}"
+    if s.get("outside_runs"):
+        out += f"  + {_num(s.get('outside_fresh'))} in {s['outside_runs']} outside run(s)"
+    return out
 
 
 def render(out, org=None):
@@ -589,4 +646,9 @@ def render(out, org=None):
         lines.append("")
         lines.append(_line("sessions no position held", out.get("unowned") or _zero()))
         lines.append(_line("all", out.get("total") or _zero()))
+        if out.get("outside"):
+            lines.append("\nruns on other harnesses (of subagent run; fresh tokens, no list cost: flat plans)")
+            for key, b in sorted(out["outside"].items()):
+                lines.append(f"  {key:<44} {_num(b['fresh']):>8}  {b['runs']} run(s); input {_num(b['input'])}, "
+                             f"cached {_num(b['cached'])}, output {_num(b['output'])}")
     return "\n".join(lines)

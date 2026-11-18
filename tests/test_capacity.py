@@ -2318,6 +2318,31 @@ class OtherHarnesses(unittest.TestCase):
         self.assertEqual((kw["env"]["OF_PROBE"], kw["env"]["OF_AUTOMATION"], kw["env"]["SSH_AUTH_SOCK"]), ("1", "1", ""))
         self.assertFalse([k for k in kw["env"] if k.startswith("HERDR_")])
 
+    def test_training_readings_are_recorded_with_their_source_and_muse_follows_its_settings(self):
+        # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
+        out = []
+        emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
+        of_capacity.record_training("codex", "off", "ChatGPT pro", "ask:OF-27", emit=emit)
+        self.assertEqual(out[0], ("harness_training", {"harness": "codex", "training": "off", "account": "ChatGPT pro",
+                                                       "source": "ask:OF-27"}))
+        for bad in (("gemini", "off", "x"), ("codex", "maybe", "x"), ("codex", "off", " ")):
+            with self.assertRaises(ValueError):
+                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit)
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, "settings.json")
+            with open(path, "w") as fh:
+                json.dump({"contributor_mode_enabled": False}, fh)
+            self.assertEqual(of_capacity.sync_muse_training(latest={}, path=path, emit=emit), "off")
+            self.assertIsNone(of_capacity.sync_muse_training(latest={"muse": {"training": "off"}}, path=path, emit=emit))
+            with open(path, "w") as fh:
+                json.dump({"contributor_mode_enabled": True}, fh)
+            self.assertEqual(of_capacity.sync_muse_training(latest={"muse": {"training": "off"}}, path=path, emit=emit),
+                             "on")
+        self.assertEqual([p["training"] for k, p in out[1:]], ["off", "on"])
+        self.assertIn("not read", of_capacity._training_text(None))
+        self.assertIn("training off since", of_capacity._training_text({"training": "off", "ts": "2026-11-18T11:40:28Z",
+                                                                         "source": "s"}))
+
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
              "windows": {"seven_day": {"utilization": 0, "resets_at": of_capacity._iso(self.T0 + 86400)}}}

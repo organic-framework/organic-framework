@@ -179,6 +179,32 @@ class Store(unittest.TestCase):
         self.assertEqual(of_spend.load()["orgs"]["acme"]["works"]["w-retry"]["fresh"], 200)
         self.assertFalse(of_spend.tick(self.conn, now + 60, docs_fn=lambda: DOCS))  # within 30 minutes: kept
 
+    def test_runs_on_other_harnesses_go_to_their_position_and_work_with_no_list_cost(self):
+        # RFC 0008: a position's runs on Codex or Muse are in no transcript; of.subagent_run carries their tokens
+        now = T0 + 2 * 86400
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + 3 * H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        run = lambda t, **kw: self.ev(t, "of.subagent_run", "S1", kw.pop("pos", "acme_a"), dict(  # noqa: E731
+            {"phase": "ended", "position": kw.pop("position", "acme_a"), "harness": "codex", "model": "gpt-6.2-astra"},
+            **kw))
+        run(T0 + 4 * H, usage={"input": 1000, "cached": 600, "output": 50, "reasoning": 20})  # the declared work
+        run(T0 + 5 * H, work="w-cache", usage={"input": 200, "cached": 0, "output": 10})      # its own work
+        run(T0 + 5.5 * H, phase="started", usage={"input": 9999})                               # a start: not counted
+        run(T0 + 6 * H, pos="nobody", position="nobody", harness="muse", model="m", usage={"input": 7})
+        of_spend.ingest(self.conn, now)
+        out = of_spend.compute(DOCS, self.conn, now=now)
+        o = out["orgs"]["acme"]
+        self.assertEqual((o["works"]["w-retry"]["outside_fresh"], o["works"]["w-retry"]["outside_runs"]), (450, 1))
+        self.assertEqual((o["works"]["w-retry"]["fresh"], o["works"]["w-retry"]["cost_usd"]), (0, 0))
+        self.assertEqual(o["works"]["w-cache"]["outside_fresh"], 210)
+        self.assertEqual(o["goals"]["g-root"]["total"]["outside_fresh"], 660)
+        self.assertEqual(out["unowned"]["outside_fresh"], 7)
+        self.assertEqual(out["outside"]["codex/gpt-6.2-astra"],
+                         {"runs": 2, "fresh": 660, "input": 1200, "cached": 600, "output": 60, "reasoning": 20})
+        text = of_spend.render(out)
+        self.assertIn("in 1 outside run(s)", text)
+        self.assertIn("runs on other harnesses", text)
+
     def test_the_event_views_match_the_log_and_follow_it_by_a_cursor(self):
         """The founder, 2026-11-14 (of_conductor msg 01a1d68e-8ef9): no reader projects the whole log. The groups
         the attribution reads come from views kept by a cursor, and the sums are the same as from the log."""
