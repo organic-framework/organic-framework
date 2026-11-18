@@ -2622,17 +2622,19 @@ def cmd_subagent(args):
     me = _me(positions, args.from_)
     org = me.get("_org")
     path = next((p for o, p, _ in org_registries() if o == org), None)
+    # the entry and the training cards come from the committed tip of the organization's default branch, never the
+    # working tree any session may write (docs/registry.md, "Subagent harnesses")
     try:
-        with open(path) as fh:
-            registry = yaml.safe_load(fh) or {}
-    except (OSError, TypeError, yaml.YAMLError):
-        registry = {}
+        registry = of_subagent.committed_registry(path)[0] if path else {}
+    except of_subagent.SubagentError as e:
+        raise OfError(f"subagent run refused: {e}")
     if not args.prompt_file:
         raise OfError("--prompt-file <file>: the run's prompt (a file, so its text is recorded as given)")
     harness = args.harness or "auto"
     if harness == "auto":
         repo = of_subagent.repo_of(args.workspace) if args.workspace else None
-        harness = of_subagent.pick(registry, args.kind, repo)
+        harness = of_subagent.pick(registry, args.kind, repo,
+                                   origin=of_subagent.repo_origin(args.workspace) if args.workspace else None)
         if not harness:
             raise OfError(f"no outside harness is allowed for {args.kind} runs of {org} (subagent_harnesses:, RFC 0008 "
                           "§5), or none has room: use a Claude subagent")
@@ -2641,7 +2643,7 @@ def cmd_subagent(args):
         got = of_subagent.run(harness, args.kind, args.prompt_file, me["name"], org=me.get("_orgid") or org,
                               session=os.environ.get("CLAUDE_CODE_SESSION_ID"), work=args.work,
                               checkout=args.workspace, at=args.at, diff=args.diff, schema=args.schema, model=args.model,
-                              registry=registry, org_name=org,
+                              registry=registry, org_name=org, docs={org: registry},
                               org_root=os.path.dirname(os.path.dirname(path)) if path else None,
                               conn=conn,
                               log=lambda m: print(m, file=sys.stderr))

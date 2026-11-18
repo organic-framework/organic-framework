@@ -141,10 +141,12 @@ class SubagentError(Exception):
 
 # ---- the organization's choice (RFC 0008 §5) ----
 
-def allowance(registry, harness, kind, repo=None):
+def allowance(registry, harness, kind, repo=None, origin=None):
     """None when the organization's registry (its parsed positions.yaml) allows HARNESS for KIND on REPO (a workspace
     run's checkout folder name; research has none), else why not (docs/registry.md, "Subagent harnesses": by
-    repository, since one repository holds many systems)."""
+    repository, since one repository holds many systems). A `repos` item with a slash is <host>/<owner>/<name> and
+    matches ORIGIN, the checkout's origin fetch URL (repo_origin); one without keeps matching the folder name; a slash
+    item never matches a checkout with no readable origin (of_architect, docs/registry.md, 2026-11-18)."""
     entry = (registry or {}).get("subagent_harnesses")
     if not isinstance(entry, dict) or not entry:
         return ("the organization allows no outside harness (subagent_harnesses: in its registry, RFC 0008 §5); use a "
@@ -154,10 +156,52 @@ def allowance(registry, harness, kind, repo=None):
         return f"the organization does not allow {harness} (subagent_harnesses: names {', '.join(sorted(k for k in entry if k in HARNESSES)) or 'none'})"
     if kind not in [str(k) for k in h.get("kinds") or []]:
         return f"the organization allows {harness} for {', '.join(map(str, h.get('kinds') or [])) or 'no kind'}, not {kind}"
-    if repo is not None and repo not in [str(r) for r in h.get("repos") or []]:
-        return (f"the organization allows {harness} on the repositories {', '.join(map(str, h.get('repos') or [])) or 'none'}, "
-                f"not {repo!r}")
+    if repo is not None:
+        items = [str(r) for r in h.get("repos") or []]
+        hit = any((origin is not None and fold(i.strip("/")) == fold(origin)) if "/" in i else i == repo
+                  for i in items)
+        if not hit:
+            seen = f"{repo!r}" + (f" (origin {origin})" if origin else " (no readable origin)")
+            return (f"the organization allows {harness} on the repositories {', '.join(items) or 'none'}, not "
+                    f"{seen}")
     return None
+
+
+def repo_origin(checkout):
+    """<host>/<owner>/<name> of the checkout's origin fetch URL (https, ssh or scp form, .git dropped), or None."""
+    r = subprocess.run(["git", "-C", checkout, "config", "--get", "remote.origin.url"], capture_output=True,
+                       text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    url = r.stdout.strip() if r.returncode == 0 else ""
+    m = (re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?$", url, re.I)
+         or re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/?$", url))
+    if not m or m.group(2).count("/") != 1:
+        return None
+    return f"{m.group(1).lower()}/{m.group(2)}"
+
+
+def committed_registry(path):
+    """The organization's registry at the committed tip of its repository's default branch (git show
+    <branch>:<path>), never the working tree, where any session may write (of_architect, docs/registry.md, 2026-11-18):
+    (parsed document, the branch's commit). The default branch is origin's HEAD when the repository has one, else main
+    or master. Raises SubagentError when it cannot be read."""
+    import yaml
+    root = _git(os.path.dirname(os.path.abspath(path)), "rev-parse", "--show-toplevel").strip()
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+    branch = None
+    r = subprocess.run(["git", "-C", root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], capture_output=True,
+                       text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    if r.returncode == 0 and r.stdout.strip():
+        branch = r.stdout.strip().split("/", 1)[-1]
+    for b in ([branch] if branch else []) + ["main", "master"]:
+        ok = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}"],
+                            capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+        if ok.returncode == 0:
+            text = _git(root, "show", f"{b}:{rel}")
+            try:
+                return yaml.safe_load(text) or {}, ok.stdout.strip()
+            except yaml.YAMLError as e:
+                raise SubagentError(f"the committed registry {b}:{rel} does not parse: {e}")
+    raise SubagentError(f"no default branch to read the committed registry from in {root}")
 
 
 def repo_of(checkout):
@@ -235,14 +279,15 @@ def _exclude_rx(pattern):
     return re.compile("^" + lead + out + "(?:/.*)?$", re.I | re.S)
 
 
-def excludes_for(registry, repo):
-    """The exclude regexes for REPO: the built-in list, the entry's `excludes` for every repository ('*') and for
-    REPO."""
+def excludes_for(registry, repo, origin=None):
+    """The exclude regexes for REPO: the built-in list, the entry's `excludes` for every repository ('*'), for REPO
+    (its folder name) and for ORIGIN (<host>/<owner>/<name>)."""
     ex = ((registry or {}).get("subagent_harnesses") or {}).get("excludes") or {}
     if not isinstance(ex, dict):
         raise SubagentError("subagent_harnesses.excludes: a map of repository name to a list of path patterns")
     pats = list(DEFAULT_EXCLUDES)
-    for key in ("*", repo):
+    keys = ["*", repo] + [k for k in ex if origin and "/" in str(k) and fold(str(k).strip("/")) == fold(origin)]
+    for key in keys:
         v = ex.get(key) or []
         if not isinstance(v, list):
             raise SubagentError(f"subagent_harnesses.excludes[{key!r}]: a list of path patterns")
@@ -418,7 +463,7 @@ def public_material(checkout, commits, visibility=gh_public):
     return why or "the checkout has no public GitHub remote"
 
 
-def training(conn, harness, org=None):
+def training(conn, harness, org=None, docs=None):
     """'off', 'on' or None: the latest training reading of_capacity recorded for HARNESS, read through
     of_capacity.training_verified, which re-checks a Codex 'off' against the owner's closed card on each read, so a
     reading written any other way keeps the gate shut (of_capacity, message 01a1eef9-87ee; of_secrets-review on PR
@@ -431,7 +476,8 @@ def training(conn, harness, org=None):
     if verified is not None:
         try:
             try:
-                return verified(harness, org=org)   # only that organization's own named card counts (a42864fc)
+                # only that organization's own named card counts (a42864fc), read from its committed registry
+                return verified(harness, org=org, **({"docs": docs} if docs is not None else {}))
             except TypeError:
                 return verified(harness)
         except Exception:  # noqa: BLE001 - an unreadable reading is no reading: the gate stays shut
@@ -909,7 +955,7 @@ def scratch_root(session):
 
 def run(harness, kind, prompt_file, position, org=None, session=None, work=None, checkout=None, at=None, diff=None,
         schema=None, model=None, registry=None, org_root=None, conn=None, binary=None, visibility=gh_public,
-        sandbox=None, keep_snapshot=False, gates=True, popen=subprocess.run, log=print, org_name=None):
+        sandbox=None, keep_snapshot=False, gates=True, popen=subprocess.run, log=print, org_name=None, docs=None):
     """One outside run; returns {run, exit, answer, record, usage, model, tools, unexpected_tools}. Refuses (raises
     SubagentError) before anything leaves the machine when a limit is not met. GATES False skips the organization's
     choice, the prompt's checks and the training gate (`of subagent selftest`, which sends only its own canary files).
@@ -935,7 +981,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         raise SubagentError("a patch run writes in the snapshot of one commit: --at <commit>, not --diff")
     with open(prompt_file, "rb") as fh:
         prompt = fh.read()
-    head = base = repo = None
+    head = base = repo = origin = None
     if checkout:
         checkout = os.path.realpath(os.path.expanduser(checkout))
         # the snapshot is always the whole repository from its root: git archive run in a subfolder exports that
@@ -944,18 +990,19 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         checkout = os.path.realpath(_git(checkout, "rev-parse", "--show-toplevel").strip() or checkout)
         head, base = resolve(checkout, at, diff)
         repo = repo_of(checkout)
+        origin = repo_origin(checkout)
     if gates:
-        why = allowance(registry, harness, kind, repo if checkout else None)
+        why = allowance(registry, harness, kind, repo if checkout else None, origin)
         if checkout and not repo and why is None:
             why = f"cannot tell the repository of {checkout}"
         if why:
             raise SubagentError(why)
         why = selftest_passed(conn, harness, kind) or prompt_checks(prompt_file, schema, registry, org_root, harness,
-                                                                training(conn, harness, org_name or org))
+                                                                training(conn, harness, org_name or org, docs))
         if why:
             raise SubagentError(why)
         if checkout:
-            why = training_gate(harness, kind, training(conn, harness, org_name or org),
+            why = training_gate(harness, kind, training(conn, harness, org_name or org, docs),
                                 public_material(checkout, [head, base], visibility) if harness == "codex" else None)
             if why:
                 raise SubagentError(why)
@@ -966,9 +1013,17 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     work_dir = _private_dir(os.path.join(run_dir, "material" if checkout else "empty"))
     try:
         if checkout:
-            rxs = excludes_for(registry, repo)
+            rxs = excludes_for(registry, repo, origin)
             snap_dir = snapshot(checkout, os.path.join(work_dir, repo or "repo"), head, base, rxs)
             bad = secret_files(work_dir)
+            # max_snapshot_mb, after excludes; absent means no limit (of_architect, docs/registry.md, 2026-11-18)
+            cap = ((registry or {}).get("subagent_harnesses") or {}).get("max_snapshot_mb") if gates else None
+            if cap is not None:
+                size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(work_dir) for f in fs
+                           if not os.path.islink(os.path.join(d, f)))
+                if size > float(cap) * 1024 * 1024:
+                    raise SubagentError(f"the snapshot is {size / 1048576:.1f} MiB after excludes, over the "
+                                        f"organization's max_snapshot_mb {cap}")
             if base:
                 with open(os.path.join(snap_dir, ".of-review.diff"), errors="replace") as fh:
                     bad += diff_secrets(checkout, base, head, fh.read(), rxs)
@@ -1093,11 +1148,11 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             shutil.rmtree(run_dir, ignore_errors=True)
 
 
-def pick(registry, kind, repo=None, windows=None):
+def pick(registry, kind, repo=None, windows=None, origin=None):
     """--harness auto: of the harnesses the organization allows for KIND (and REPO), the one whose window expires
     first among those with room (WINDOWS: {harness: (resets_at epoch, used fraction)} from of_capacity's readings,
     the order `of capacity balance` follows); None when none is allowed or none has room."""
-    ok = [h for h in HARNESSES if allowance(registry, h, kind, repo) is None]
+    ok = [h for h in HARNESSES if allowance(registry, h, kind, repo, origin) is None]
     windows = windows or {}
     room = [h for h in ok if (windows.get(h) or (None, 0.0))[1] < 1.0]
     return min(room, key=lambda h: ((windows.get(h) or (float("inf"), 0))[0], HARNESSES.index(h)), default=None)
