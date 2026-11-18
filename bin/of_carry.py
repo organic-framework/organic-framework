@@ -23,6 +23,8 @@ the API refuse the session. Everything around it is (the working folder, file-hi
 and the resume note tells the session its home moved.
 """
 
+import glob
+import hashlib
 import json
 import os
 import re
@@ -161,17 +163,29 @@ def custody_paths(docs=None):
     expands them (of_credentials._abs) and matched as it matches them."""
     import of_credentials
     if docs is None:
-        try:
-            import of_tools
-            docs = dict(of_tools.registries())
-        except Exception:  # noqa: BLE001 - no registry here: nothing is marked, the guard's names still apply
-            docs = {}
+        import yaml
+        registries = []
+        for org, path in of_credentials._registries():
+            try:
+                with open(path) as fh:
+                    doc = yaml.safe_load(fh)
+            except Exception:  # a parser error can quote the registry's contents
+                doc = None
+            if not isinstance(doc, dict):
+                raise CarryError(f"the registry of {org} ({path}) cannot be read: carry refuses, "
+                                 "since its custody rules would be lost")
+            registries.append((org, doc))
+    else:
+        registries = sorted(docs.items())
     out = []
-    for org, doc in sorted((docs or {}).items()):
+    for org, doc in registries:
         creds = (doc or {}).get("credentials") if isinstance(doc, dict) else None
         for cid, c in sorted((creds or {}).items()) if isinstance(creds, dict) else ():
             if isinstance(c, dict) and c.get("custody") is True:
-                for path in c.get("paths") or []:
+                paths = c.get("paths") or []
+                if isinstance(paths, str):
+                    paths = [paths]
+                for path in paths:
                     if isinstance(path, str) and path.strip():
                         out.append((org, str(cid), of_credentials._abs(path)))
     return out
@@ -199,16 +213,118 @@ def drop_custody(files, skipped, pats, log=print):
     return keep
 
 
-def filter_files_list(path, pats, log=print):
+_CHUNK = 64 * 1024
+# The guard's private key headers (of_guard._KEY_HEAD, G1.13) at any offset, without its start anchor, BOM and
+# whitespace; tests.test_carry checks the two agree.
+_QUOTED_KEY = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-\d+:")
+_PEM_TYPE = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*[A-Z0-9]*\Z")
+_PUTTY_VERSION = re.compile(rb"PuTTY-User-Key-File-\d*\Z")
+
+
+def _quotes_key(path):
+    """Find a quoted header even when a read ends inside it."""
+    tail = b""
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(_CHUNK), b""):
+            data = tail + chunk
+            if _QUOTED_KEY.search(data):
+                return True
+            # 96 bytes cover the literal parts of either header. A longer match must still be in its
+            # type words or version digits 64 bytes before the end. Carry that state in one byte.
+            tail = data[-96:]
+            cut = max(0, len(data) - 64)
+            if _PEM_TYPE.search(data, 0, cut):
+                word = b"" if data[cut - 1:cut] == b" " else b"X"
+                tail = b"-----BEGIN " + word + data[cut:]
+            elif _PUTTY_VERSION.search(data, 0, cut):
+                digit = b"0" if data[cut - 1:cut].isdigit() else b""
+                tail = b"PuTTY-User-Key-File-" + digit + data[cut:]
+    return False
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(_CHUNK), b""):
+            digest.update(chunk)
+    return digest.digest()
+
+
+def _custody_files(pattern):
+    """Use the registry's glob rules, and include descendants of a named folder."""
+    import of_credentials
+    if glob.has_magic(pattern):
+        yield from (p for p in glob.glob(pattern, recursive=True) if of_credentials._match(pattern, p))
+    elif os.path.isdir(pattern):
+        for directory, _, names in os.walk(pattern):
+            for name in names:
+                yield os.path.join(directory, name)
+    else:
+        yield pattern
+
+
+def _custody_index(pats):
+    """Look up local custody files by inode, or by size and digest."""
+    inodes, digests = {}, {}
+    for org, cid, pattern in pats:
+        for path in _custody_files(pattern):
+            try:
+                st = os.stat(path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            inode = (st.st_dev, st.st_ino)
+            if stat.S_ISREG(st.st_mode) and inode not in inodes:
+                who = f"{org}/{cid}"
+                inodes[inode] = who
+                digests.setdefault(st.st_size, {}).setdefault(_sha256(path), who)
+    return inodes, digests
+
+
+def _content_matches(files, pats, log, named=None, root=None):
+    """Yield files to withhold. Name transcripts that quote a header and keep them intact."""
+    inodes, digests = _custody_index(pats)
+    for path in files:
+        try:  # a scratch file removed between the listing and this check has nothing left to send
+            st = os.lstat(path) if root else os.stat(path)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        source = "/" + os.path.relpath(path, root) if root else path
+        who = inodes.get((st.st_dev, st.st_ino))
+        if not who and st.st_size in digests:
+            who = digests[st.st_size].get(_sha256(path))
+        if who:
+            yield path, f"custody copy: {who}"
+        elif _is_transcript(source):
+            if _quotes_key(path):
+                if named is not None:
+                    named.append({"path": source, "reason": "transcript quotes a private key"})
+                log(f"  transcript quotes a private key: {source}")
+        elif of_guard._key_file(path):
+            yield path, "private key header"
+
+
+def _drop_copies(files, pats, skipped, log, named=None):
+    matches = dict(_content_matches(files, pats, log, named=named))
+    for path, reason in matches.items():
+        skipped.append({"path": path, "reason": reason})
+        log(f"  left out ({reason}): {path}")
+    return [p for p in files if p not in matches]
+
+
+def filter_files_list(path, pats, log=print, check_contents=False):
     """Rewrite a bundle's files.txt without the custody credentials' paths, before a copy sends any file (a
     credential marked after prepare, or a bundle another user prepared). Returns the paths left out."""
     try:
         with open(path) as fh:
             lines = [x.rstrip("\n") for x in fh if x.strip()]
-    except OSError:
+    except FileNotFoundError:
         return []
     skipped = []
     keep = drop_custody(lines, skipped, pats, log=log)
+    if check_contents:
+        keep = _drop_copies(keep, pats, skipped, log)
     if skipped:
         _write_private(path, "".join(f + "\n" for f in keep))
     return [x["path"] for x in skipped]
@@ -282,7 +398,7 @@ def _write_json_600(path, doc):
     os.replace(tmp, path)
 
 
-def owner_yes(card, cards=None, conn=None):
+def owner_yes(card, cards=None, conn=None, host=None):
     """The owner's card `card` (a card id) when he himself answered it with its first option, the yes by the filer's
     convention ("yes …|no …"), on a card never amended; else None. Read by event id from the listener's asks view and
     the card's own events, never the whole log."""
@@ -305,13 +421,18 @@ def owner_yes(card, cards=None, conn=None):
     if a.get("amended") or int(a.get("version") or 1) > 1:
         return None  # an amended card's options are read from its amendments, a log read this check does not make
     filed, closed = payload(a["event_id"]), payload(a["closed_by"])
-    opts = ((filed.get("questions") or [{}])[0] or {}).get("options") or []
+    q = (filed.get("questions") or [{}])[0] or {}
+    opts = q.get("options") or []
     first = str(opts[0]).strip() if opts else ""
+    # and about this machine: its question or its yes names the host the restore runs on (of_server, PR 339)
+    here = str(host or socket.gethostname()).split(".")[0].strip().lower()
+    names_host = bool(here) and re.search(r"(?<![a-z0-9-])" + re.escape(here) + r"(?![a-z0-9-])",
+                                          (str(q.get("question") or "") + " " + first).lower()) is not None
     # the card is about these consents (of_review, PR 339: an unrelated yes card unlocked them): its yes names the
     # Bypass Permissions acceptance (the product's own term, kept in any language), an OF position filed it, and the
     # answer names this ask. Card tags are a fixed set with no tag for it.
     about = bool(_CONSENT_BYPASS.search(first))
-    ok = (closed.get("by") in ("owner", "founder") and bool(first) and about
+    ok = (closed.get("by") in ("owner", "founder") and bool(first) and about and names_host
           and str(closed.get("answer") or "").strip() == first
           and a["event_id"] in ([closed.get("ask_id")] + list(closed.get("ask_ids") or []))
           and str(filed.get("from_position") or a.get("position") or "").startswith("of_"))
@@ -348,17 +469,21 @@ def carry_consents(plan, rw, entries, dry_run=False, log=print):
         if not os.path.isdir(td):
             log(f"  consents: {td} does not exist here; they wait for it")
             continue
-        if w["bypass"] and not _bypass(td):
-            done.append((td, "bypass"))
-            if not dry_run:
-                path = os.path.join(td, "settings.json")
-                try:
-                    with open(path) as fh:
-                        doc = json.load(fh) or {}
-                except FileNotFoundError:
-                    doc = {}
-                doc["skipDangerousModePermissionPrompt"] = True
-                _write_json_600(path, doc)
+        if w["bypass"]:
+            path = os.path.join(td, "settings.json")
+            try:
+                with open(path) as fh:
+                    doc = json.load(fh) or {}
+            except FileNotFoundError:
+                doc = {}
+            bypass = "skipDangerousModePermissionPrompt"
+            if doc.get(bypass) is False:
+                log(f"  kept the owner's false for {bypass} in {td}")
+            elif bypass not in doc:
+                done.append((td, "bypass"))
+                if not dry_run:
+                    doc[bypass] = True
+                    _write_json_600(path, doc)
         trusted = [rw.path(k) for k in sorted(w["trusted"])]
         if not trusted:
             continue
@@ -375,7 +500,9 @@ def carry_consents(plan, rw, entries, dry_run=False, log=print):
                 log(f"  consents: {tk} does not exist here; its trust is not carried")
                 continue
             entry = conf.setdefault("projects", {}).setdefault(tk, {})
-            if not entry.get("hasTrustDialogAccepted"):
+            if entry.get("hasTrustDialogAccepted") is False:
+                log(f"  kept the owner's false for hasTrustDialogAccepted in {tk}")
+            elif "hasTrustDialogAccepted" not in entry:
                 entry["hasTrustDialogAccepted"] = True
                 changed = True
                 done.append((td, "trust " + tk))
@@ -410,22 +537,23 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
         f, s = session_files(e, tmp_root, e["memory_dir"])
         files += f
         skipped += s
-    files = drop_custody(sorted(set(files)), skipped, custody_paths(), log=log)  # never into the agents' home
+    pats = custody_paths()
+    named = []
+    files = drop_custody(sorted(set(files)), skipped, pats, log=log)
+    files = _drop_copies(files, pats, skipped, log, named=named)
     size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
     plan = {"kind": "carry", "v": 1, "org": org, "prepared_at": of_capacity._iso(time.time()),
             "machine": socket.gethostname(),
             "home": os.path.expanduser("~"), "uid": os.getuid(), "tmp_root": tmp_root, "only": sorted(only),
-            "entries": entries, "files": len(files), "bytes": size, "skipped": skipped,
+            "entries": entries, "files": len(files), "bytes": size, "skipped": skipped, "named": named,
             "consents": consents(entries)}
     os.makedirs(out_dir, mode=0o700, exist_ok=True)
     _write_private(os.path.join(out_dir, "plan.json"), json.dumps(plan, indent=1, ensure_ascii=False))
     _write_private(os.path.join(out_dir, "files.txt"), "".join(f + "\n" for f in files))
     for e in entries:
         log(f"{e['name']:28} {of_capacity.short(e['config_dir']):26} {e.get('account') or '?':30} {e['model'] or '?'}")
-    withheld = sum(1 for x in skipped if x.get("reason") == "secret path")  # a count; no path or value is printed
     log(f"{len(entries)} session(s), {len(files)} file(s), {size / 1e6:.0f} MB in {out_dir}"
-        + (f"; left behind: {withheld} at secret paths, {len(skipped) - withheld} over {SKIP_LARGER >> 20} MB "
-           f"(named in plan.json)" if skipped else ""))
+        + (f", {len(skipped)} left behind (named in plan.json)" if skipped else ""))
     return plan
 
 
@@ -485,6 +613,41 @@ def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=
             base + ["-R", f"--files-from={b}/files.txt", f"{src.split(':', 1)[0]}:/", f"{b}/files/"]]
 
 
+def _source_patterns(bundle, pats):
+    """Match a pulled list in the home where it was prepared."""
+    plan = os.path.join(bundle, "plan.json")
+    try:
+        with open(plan) as fh:
+            source = json.load(fh)["home"]
+        if not isinstance(source, str) or not os.path.isabs(source):
+            raise ValueError
+    except (OSError, ValueError, TypeError, KeyError):
+        raise CarryError(f"cannot read the source home from {plan}") from None
+    home = os.path.expanduser("~")
+    result = []
+    for org, cid, pattern in pats:
+        if pattern == home:
+            pattern = source
+        elif pattern.startswith(home.rstrip("/") + "/"):
+            pattern = os.path.join(source, os.path.relpath(pattern, home))
+        result.append((org, cid, pattern))
+    return result
+
+
+def _check_received(bundle, pats, log):
+    root = os.path.join(bundle, "files")
+    if os.path.islink(root):
+        raise CarryError(f"cannot check received files through a link: {root}")
+    files = (os.path.join(directory, name) for directory, _, names in os.walk(root) for name in names)
+    removed = 0
+    for path, reason in _content_matches(files, pats, log, root=root):
+        os.remove(path)
+        removed += 1
+        log(f"  removed ({reason}): {path}")
+    if removed:
+        raise CarryError(f"carry removed {removed} received file(s) after checking their contents")
+
+
 def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, log=print, run=subprocess.run,
          pats=None):
     key = _key_ok(key)
@@ -495,12 +658,16 @@ def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, lo
     files_txt = os.path.join(bundle, "files.txt")
     for i, c in enumerate(cmds):
         # the list the file copy reads is filtered first: before a push's first command, after a pull fetched it
-        if (to and i == 0) or (frm and i == len(cmds) - 1):
-            filter_files_list(files_txt, pats, log=log)
+        if to and i == 0:
+            filter_files_list(files_txt, pats, log=log, check_contents=True)
+        if frm and i == len(cmds) - 1 and (not dry_run or os.path.isfile(files_txt)):
+            filter_files_list(files_txt, _source_patterns(bundle, pats), log=log)
         log("$ " + " ".join(c))
         if dry_run:
             continue
         r = run(c, env=env)
+        if frm and i == len(cmds) - 1:
+            _check_received(bundle, pats, log)
         if getattr(r, "returncode", 0) != 0:
             raise CarryError(f"rsync exited {r.returncode}; run the same copy again to go on (--partial keeps what came)")
     return cmds
