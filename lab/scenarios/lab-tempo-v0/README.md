@@ -40,6 +40,8 @@ also prints how many items the window held and how many were flagged in all.
 | tb-v2 | real | 30 | 0.75 | 1.00 | $0.071 |
 | tb-v4 | synthetic | 16 | 0.86 | 0.75 | $0.005 |
 | tb-v4 | real | 15 of 30 | 0.91 | 1.00 | $0.045 |
+| tb-v5 | synthetic | 16 | 0.86 | 0.75 | $0.004 |
+| tb-v5 | real | 15 of 30 | 0.90 | 0.90 | $0.041, $0.030 (two runs) |
 
 The real window held 152 items. The judge flagged 58 of them; only 10 are labelled, so the precision over all 58 is
 not known yet.
@@ -74,3 +76,13 @@ judges both as labelled. On 2026-11-18 the real replay found only 15 of the 30 l
 report "not found", so their precision is not known for tb-v4. Inference, unconfirmed: their source records left the
 store's live tables. It is not investigated (the precision sample is postponed to the week of 2026-11-23 by the
 founder's card OF-31).
+
+tb-v5 (2026-11-18) gives the judge a message's text without the relay's frame line and its reply hint, and for a
+long text the start and a window around each later time it names, instead of its first 700 characters. It also adds
+a line: a clock range that describes data or an event on another day the item names is a reading of the past, not a
+start. The case was a user organization's message quoting "18,568 rows in 21:30-23:00Z that evening" (meaning
+2026-10-29), judged from a text cut before those words under a 200-character frame; re-judged from the full message,
+it is not a booking. On the real cases each of two runs missed one labelled booking, a different one each time (a
+daily cron read as the role's cadence; a message whose wider text now names a host reboot and another position's
+window on the same hosts), so recall reads 0.90 against tb-v4's 1.00 on ten positives: one item, and run-to-run
+variance as far as two runs show.
