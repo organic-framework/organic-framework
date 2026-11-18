@@ -398,10 +398,13 @@ def _write_json_600(path, doc):
     os.replace(tmp, path)
 
 
-def owner_yes(card, cards=None, conn=None, host=None):
+def owner_yes(card, cards=None, conn=None, host=None, keeper=None):
     """The owner's card `card` (a card id) when he himself answered it with its first option, the yes by the filer's
     convention ("yes …|no …"), on a card never amended; else None. Read by event id from the listener's asks view and
-    the card's own events, never the whole log."""
+    the card's own events, never the whole log. The filer is an OF position, or `keeper`: the structure keeper of the
+    organization being restored, whose card lives in that organization's own store (2026-11-18, of_agent-server: on a
+    host of one OS user per organization, the user organization's restore reads its own store, which holds no OF
+    card, and its decisions stay in its own contour)."""
     if cards is None:
         import of_asks
         cards = of_asks.current_asks().get("asks") or []
@@ -432,10 +435,11 @@ def owner_yes(card, cards=None, conn=None, host=None):
     # Bypass Permissions acceptance (the product's own term, kept in any language), an OF position filed it, and the
     # answer names this ask. Card tags are a fixed set with no tag for it.
     about = bool(_CONSENT_BYPASS.search(first))
+    filer = str(filed.get("from_position") or a.get("position") or "")
     ok = (closed.get("by") in ("owner", "founder") and bool(first) and about and names_host
           and str(closed.get("answer") or "").strip() == first
           and a["event_id"] in ([closed.get("ask_id")] + list(closed.get("ask_ids") or []))
-          and str(filed.get("from_position") or a.get("position") or "").startswith("of_"))
+          and (filer.startswith("of_") or (bool(keeper) and filer == keeper)))
     return a if ok else None
 
 
@@ -825,11 +829,13 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
     card = None
     if consents_card:  # the folders' trust and the bypass, on the owner's yes only; applied below, before any resume
-        card = owner_yes(consents_card, cards, conn)
+        import of_pulse
+        keeper = of_pulse.structure_keeper(positions or [], org)
+        card = owner_yes(consents_card, cards, conn, keeper=keeper)
         if not card:
             raise CarryError(f"--consents {consents_card}: not the owner's own yes (its first option) to carrying folder "
-                             f"trust and the Bypass Permissions acceptance, on an unamended card an OF position filed; "
-                             f"nothing carried")
+                             f"trust and the Bypass Permissions acceptance, on an unamended card an OF position or "
+                             f"{org}'s structure keeper ({keeper or 'none in the registry'}) filed; nothing carried")
     elif plan.get("consents"):
         log("  consents: not carried (no --consents <card>): a folder no config dir here trusts is refused and named")
     lp = local_plan(plan, rw)

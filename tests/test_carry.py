@@ -133,6 +133,11 @@ class Paths(unittest.TestCase):
                          ("OF-7", "an answer naming another ask"), ("OF-8", "still open"), ("OF-99", "unknown"),
                          ("OF-9", "a card that names no host the restore runs on")):
             self.assertIsNone(of_carry.owner_yes(ref, cards, conn, host="agent-host"), why)
+        # the restored organization's own structure keeper may file it, in its own store (of_agent-server,
+        # 2026-11-18); another position of that organization may not
+        self.assertEqual(of_carry.owner_yes("OF-6", cards, conn, host="agent-host", keeper="acme_org")["ref"], "OF-6")
+        self.assertIsNone(of_carry.owner_yes("OF-6", cards, conn, host="agent-host", keeper="acme_ops"))
+        self.assertIsNone(of_carry.owner_yes("OF-2", cards, conn, host="agent-host", keeper="acme_org"))  # his no
 
     def test_carry_consents_keeps_the_owners_false(self):
         with tempfile.TemporaryDirectory() as t:
