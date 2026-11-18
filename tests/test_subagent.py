@@ -191,6 +191,7 @@ class SubagentTest(unittest.TestCase):
         self.assertTrue(rx("deploy/servers.yml").match("deploy/servers.yml"))
         self.assertFalse(rx("deploy/servers.yml").match("x/deploy/servers.yml"))
         self.assertFalse(rx("*.pem").match("a/pem.txt"))
+        self.assertTrue(of_subagent.excluded("Secret\u017f/x.txt", [rx("secrets/")]))   # long s reads as s
         for bad in ("", "/etc/x", "../x"):
             with self.subTest(bad=bad), self.assertRaises(of_subagent.SubagentError):
                 rx(bad)
@@ -381,7 +382,8 @@ class SubagentTest(unittest.TestCase):
         R = of_subagent.patch_refusals
         raw = lambda path: f":100644 100644 0 0 M\0{path}\0".encode()  # noqa: E731
         for path in (".Claude/settings.json", "docs/Claude.md", "Agents.md", ".GitHub/workflows/x.yml",
-                     "dir with space/.github/ci.yml", "\u043a/AGENTS.md"):
+                     "dir with space/.github/ci.yml", "\u043a/AGENTS.md", "AGENT\u017f.md", ".agent\u017f/skills/s.md",
+                     ".githook\u017f/pre", ".gitattribute\u017f", "\uff0egithub/ci.yml"):
             with self.subTest(path=path):
                 self.assertEqual([p for p, _ in R(raw(path))], [path])
 
