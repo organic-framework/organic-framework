@@ -381,6 +381,24 @@ subagents:
 - **`of registry check`** names a `decided` that does not resolve as a problem, or as a warning when it cannot read the log, and a `subagents:` without `words` as a problem.
 - **Why a key, not a line for everyone.** The start context would otherwise tell every position of every organization that its owner asked, citing another person's prompt. An owner's words carry no authority outside the organization they own (organic-framework PR 241 review). The first organizations' owner said it twice on 2026-11-16 (prompts `01a1e393-ded4` and `01a1e395-8d97`; docs/method.md).
 
+## Subagent harnesses (2026-11-18, `of_architect`; RFC 0008 §5)
+
+A top-level `subagent_harnesses:` says which other providers' harnesses may take this organization's read-only work, and on what (docs/rfc/0008-other-harnesses.md). `of subagent run` (`bin/of_subagent.py`) refuses every run the entry does not allow, and names why. With no entry, the organization's positions use none, and `--harness auto` uses a Claude subagent.
+
+```yaml
+subagent_harnesses:
+  codex:                              # a harness: codex or muse
+    kinds: [review, read, research]   # review and read send a snapshot of a repository; research sends only the prompt
+    repos: [organic-framework]        # the repositories (checkout folder names) whose snapshots may be sent
+  prompt_check: "release/check.py"    # run on a folder holding only the prompt and the schema; exit 0 passes
+  basis: "<the keeper's commit or diff, or the owner's card where the organization requires one>"
+```
+
+- **The structure keeper writes it**, for the organization's own repositories. What leaves for another provider is the organization's choice (docs/plugins.md §1).
+- **`repos`, not systems.** A run sends a repository's snapshot, and one repository often holds many systems: a repository the entry does not name is refused, and so is a checkout whose folder name it cannot tell.
+- **`prompt_check`** is the organization's pre-publish check, a path relative to its repository. The prompt and the schema leave as they are, and a `research` run sends nothing else, so the wrapper runs this check on them, besides its own secret checks. Without one, a harness that may train on the run (RFC 0008 §3.1) gets no prompt.
+- The limits of each run (the snapshot, the secret checks, read-only, no training, the record) are the wrapper's, not the entry's: RFC 0008 §3.1.
+
 ## Where the binding rules come from (2026-11-18, hand-over 83b08e7b)
 
 The binding sections of an organization's `AGENTS.md` reach its positions whole. OF (`of apply` and the pulse,
