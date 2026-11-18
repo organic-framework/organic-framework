@@ -89,9 +89,32 @@ class SubagentTest(unittest.TestCase):
         with open(os.path.join(self.repo, ".env"), "w") as fh:     # untracked, beside the checkout's files
             fh.write("TOKEN=x\n")
         self.git = git
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE event (name TEXT, ts TEXT, payload TEXT)")
+        for h in ("codex", "muse"):
+            self.selftest(h, True)
         self.prompt = os.path.join(t, "prompt.md")
         with open(self.prompt, "w") as fh:
             fh.write("Review this.")
+
+    def selftest(self, harness, passed, ts="2026-11-18T12:00:00Z"):
+        self.conn.execute("INSERT INTO event VALUES (?, ?, ?)", (of_subagent.SELFTEST_EVENT, ts, json.dumps(
+            {"harness": harness, "passed": passed, "failed": None if passed else ["the model cannot read its login"]})))
+
+    def test_a_run_needs_its_harness_latest_selftest_passed(self):
+        """of_secrets-review on PR 328: Muse's file tools read its own login, and withholding catches only a verbatim
+        copy, so a harness runs only while its latest live selftest passed every check."""
+        self.selftest("muse", False, ts="2026-11-18T13:00:00Z")
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("muse", fake=fake)
+        self.assertIn("the model cannot read its login", str(e.exception))
+        self.assertEqual(fake.calls, [])
+        self.conn.execute("DELETE FROM event WHERE json_extract(payload, '$.harness') = 'codex'")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("codex", visibility=lambda r: True)
+        self.assertIn("no live selftest", str(e.exception))
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
@@ -113,7 +136,7 @@ class SubagentTest(unittest.TestCase):
         if kw.get("visibility") and harness == "codex" and kind != "research":
             self.publish()
         got = of_subagent.run(harness, kind, self.prompt, "of_doer", session="S1", registry=kw.pop("registry", REG),
-                              org_root=self.org, conn=kw.pop("conn", None), popen=fake, visibility=kw.pop("visibility", lambda r: False),
+                              org_root=self.org, conn=kw.pop("conn", self.conn), popen=fake, visibility=kw.pop("visibility", lambda r: False),
                               log=lambda m: None, **kw)
         return got, fake.calls[-1] if fake.calls else None
 
