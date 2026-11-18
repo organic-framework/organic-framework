@@ -533,12 +533,16 @@ def training_readings(conn=None):
     return out
 
 
-def owner_closed_card(source, cards=None):
-    """The owner's card that `source` names (a card id such as OF-27, or its ask's event id or a prefix of it) when it
-    is a task marked done or an ask answered, else None. `cards`: the asks projection (of_asks.project), read from the
-    event log when not given."""
+def owner_closed_card(source, cards=None, harness="codex", policy=None):
+    """The owner's card that confirms a harness's training setting, when `source` names it (by card id, or by its
+    event id or a prefix of it) and the owner himself closed it; else None. Only the card capacity.yaml
+    `training_cards: {<harness>: <card id>}` names for that setting counts, and only as a task he marked done (his
+    claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks answered`, or
+    an answered card about something else unlocks nothing (of_secrets-review, PR 334). `cards`: the asks projection
+    (of_asks.project), read from the event log when not given."""
+    named = str(((policy if policy is not None else load_policy()).get("training_cards") or {}).get(harness) or "")
     src = str(source or "").strip()
-    if not src:
+    if not named or not src:
         return None
     if cards is None:
         import of_asks
@@ -547,27 +551,40 @@ def owner_closed_card(source, cards=None):
     for a in cards or []:
         ref, eid = str(a.get("ref") or ""), str(a.get("event_id") or "")
         if ref.upper() == src.upper() or (len(src) >= 8 and eid.startswith(src)):
-            ok = a.get("state") == "done" if a.get("task") else a.get("state") == "answered"
+            ok = ref.upper() == named.upper() and bool(a.get("task")) and a.get("state") == "done" \
+                and bool(a.get("claimed_at"))
             return a if ok else None
     return None
 
 
-def record_training(harness, training, account, source, emit=None, cards=None):
+def record_training(harness, training, account, source, emit=None, cards=None, policy=None):
     """Write of.harness_training: whether the provider may train on the harness account's runs, and the reading's
     source. Codex shows its data controls nowhere a program can read, so its `off` stands only on the owner's card
-    that says so: a task he marked done or an ask he answered, resolved in the event log (of_review, PR 334: any text
-    was taken, and the reading unlocks material that is not public for Codex runs). Muse's comes from its settings
-    (sync_muse_training)."""
+    named for that setting and closed by his own claim (owner_closed_card; of_review and of_secrets-review, PR 334:
+    any text, then any closed card, was taken, and the reading unlocks material that is not public for Codex runs).
+    Muse's comes from its settings (sync_muse_training)."""
     if harness not in TRAINING_HARNESSES or training not in ("off", "on") or not str(source or "").strip():
         raise ValueError(f"training: harness {'|'.join(TRAINING_HARNESSES)}, --set off|on and a --source are needed")
     payload = {"harness": harness, "training": training, "account": account or "?", "source": str(source).strip()}
     if harness == "codex" and training == "off":
-        card = owner_closed_card(source, cards)
+        card = owner_closed_card(source, cards, harness, policy)
         if not card:
-            raise ValueError(f"training: codex off needs --source to name the owner's card that confirms it (a task "
-                             f"he marked done or an ask he answered); {str(source).strip()!r} is none")
+            raise ValueError(f"training: codex off needs --source to name the card capacity.yaml training_cards names "
+                             f"for codex, a task the owner himself marked done; {str(source).strip()!r} is not it")
         payload.update(card=card.get("ref"), card_event=card.get("event_id"), closed_by=card.get("closed_by"))
     (emit or of_events.emit)("harness_training", payload)
+
+
+def training_verified(harness, readings=None, cards=None, policy=None):
+    """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
+    card on each read: it stands only while that card is still the one training_cards names, closed by the owner's
+    own claim. A reading written any other way, or with no card, reads as None (unknown), so a gate that sends only
+    on 'off' stays shut (of_secrets-review, PR 334: the reader trusted the event, not the card)."""
+    r = (readings if readings is not None else training_readings()).get(harness) or {}
+    v = r.get("training")
+    if harness == "codex" and v == "off" and not owner_closed_card(r.get("card_event") or "", cards, harness, policy):
+        return None
+    return v if v in ("off", "on") else None
 
 
 def sync_muse_training(latest=None, path=None, emit=None):
