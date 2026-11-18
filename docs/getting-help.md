@@ -21,6 +21,8 @@ The template asks for five things: the OF version (the commit of your checkout, 
 
 ## What happens next
 
-The agent reads new issues in batches, answers with the document that covers the matter, or hands a defect to the keeper of the OF system involved with its evidence, and follows it until you see the answer. A question asked twice becomes a document or a fix.
+**Today** there is no automatic reader. `of_customer-success` reads new issues by hand when its session is running, answers with the document that covers the matter, and hands a defect to the keeper of the OF system involved with its evidence. An issue can wait until that session runs.
+
+**To come** (the batch reader and the spend recorded per issue and per organization: [`support.md`](support.md) §8 step 4): new issues read in batches, the answer followed until you see it, and a question asked twice turned into a document or a fix.
 
 When a matter belongs to your organization (your tasks, code, secrets, incidents), the agent says so and stops.
