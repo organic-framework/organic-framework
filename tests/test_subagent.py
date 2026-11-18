@@ -557,6 +557,49 @@ class SubagentTest(unittest.TestCase):
             self.assertIn("macOS only", str(e.exception))
             self.assertEqual(fake.calls, [])
 
+    def test_the_registry_points_of_architect_decided(self):
+        """docs/registry.md, Subagent harnesses (2026-11-18): a repos item by origin, max_snapshot_mb, and the entry
+        read from the committed tip of the default branch."""
+        for url, want in (("https://github.com/acme/fw.git", "github.com/acme/fw"),
+                          ("git@github.com:acme/fw.git", "github.com/acme/fw"),
+                          ("ssh://git@gitlab.example.com:2222/acme/fw", "gitlab.example.com/acme/fw"),
+                          ("/local/path", None)):
+            self.git("remote", "remove", "origin") if "origin" in self.git("remote").stdout.decode().split() else None
+            self.git("remote", "add", "origin", url)
+            with self.subTest(url=url):
+                self.assertEqual(of_subagent.repo_origin(self.repo), want)
+        self.git("remote", "set-url", "origin", "https://github.com/acme/fw.git")
+        by_origin = {"subagent_harnesses": dict(REG["subagent_harnesses"],
+                                                muse={"kinds": ["review"], "repos": ["github.com/Acme/fw"]},
+                                                excludes={"github.com/acme/fw": ["a.py"]})}
+        self.assertIsNone(of_subagent.allowance(by_origin, "muse", "review", "other-folder", "github.com/acme/fw"))
+        self.assertIn("no readable origin", of_subagent.allowance(by_origin, "muse", "review", "fw", None))
+        with open(os.path.join(self.repo, "b.py"), "w") as fh:
+            fh.write("x = 1\n")
+        self.git("add", "b.py")
+        self.git("commit", "-qm", "b")
+        _, call = self.go(registry=by_origin)
+        self.assertEqual(call["files"], ["fw/b.py"])                        # the origin's exclude removed a.py
+        capped = {"subagent_harnesses": dict(REG["subagent_harnesses"], max_snapshot_mb=0.000001)}
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go(registry=capped)
+        self.assertIn("over the organization's max_snapshot_mb", str(e.exception))
+        # the committed registry, never the working tree
+        org = os.path.join(self.tmp.name, "orgrepo")
+        os.makedirs(os.path.join(org, "registry"))
+        g = lambda *a: subprocess.run(["git", "-C", org, *G, *a], check=True, capture_output=True)  # noqa: E731
+        g("init", "-q", "-b", "main")
+        reg = os.path.join(org, "registry", "positions.yaml")
+        with open(reg, "w") as fh:
+            fh.write("subagent_harnesses:\n  codex: {kinds: [read], repos: [fw]}\n")
+        g("add", "registry/positions.yaml")
+        g("commit", "-qm", "entry")
+        with open(reg, "w") as fh:
+            fh.write("subagent_harnesses:\n  codex: {kinds: [read, patch], repos: [fw, other]}\n")
+        doc, sha = of_subagent.committed_registry(reg)
+        self.assertEqual(doc["subagent_harnesses"]["codex"]["kinds"], ["read"])
+        self.assertEqual(len(sha), 40)
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():
