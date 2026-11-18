@@ -2402,18 +2402,24 @@ class OtherHarnesses(unittest.TestCase):
                                                                          "source": "s"}))
 
     def test_registry_check_reads_training_cards(self):
-        # of_architect, PR 334: a mapping of a known harness to a card id that resolves to a task of this organization
-        cards = [{"ref": "OF-27", "task": True}, {"ref": "OF-31", "task": None}, {"ref": "MT-5", "task": True}]
-        ok = lambda tc: of_capacity.training_cards_problems("ofb", {"training_cards": tc}, cards, prefix="OF")  # noqa: E731
+        # of_architect, PR 334: a known harness to a task card of this organization, or one its own organization names
+        cards = [{"ref": "OF-27", "task": True, "org": "ofb"}, {"ref": "OF-31", "task": None, "org": "ofb"},
+                 {"ref": "AC-5", "task": True, "org": "acme"}, {"ref": "OF-40", "task": True, "org": "ofb"}]
+        docs = {"ofb": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"}}, "acme": {"card_prefix": "AC"}}
+        ok = lambda tc, o="ofb": of_capacity.training_cards_problems(o, dict(docs[o], training_cards=tc), cards,  # noqa: E731
+                                                                      docs=dict(docs, **{o: dict(docs[o], training_cards=tc)}))
         self.assertEqual(ok({"codex": "OF-27"}), [])
-        self.assertEqual(of_capacity.training_cards_problems("ofb", {}, cards, prefix="OF"), [])
-        for tc, why in (({"gemini": "OF-27"}, "not a harness"), ({"codex": "27"}, "no card id"),
-                        ({"codex": "MT-5"}, "not a card of"), ({"codex": "OF-99"}, "no card OF-99"),
-                        ({"codex": "OF-31"}, "a question"), (["OF-27"], "a mapping")):
-            self.assertIn(why, " ".join(ok(tc)), tc)
+        self.assertEqual(of_capacity.training_cards_problems("ofb", {}, cards), [])
+        # a second organization may name the card its own organization names for the same harness (one setting)
+        self.assertEqual(ok({"codex": "OF-27"}, "acme"), [])
+        for tc, o, why in (({"gemini": "OF-27"}, "ofb", "not a harness"), ({"codex": "27"}, "ofb", "no card id"),
+                           ({"codex": "AC-5"}, "ofb", "is acme's card"), ({"codex": "OF-99"}, "ofb", "no card OF-99"),
+                           ({"codex": "OF-31"}, "ofb", "a question"), (["OF-27"], "ofb", "a mapping"),
+                           ({"codex": "OF-40"}, "acme", "does not name it")):
+            self.assertIn(why, " ".join(ok(tc, o)), (tc, o))
 
     def test_registry_check_names_a_shared_card_prefix(self):
-        cards = [{"ref": "AS-1", "task": True}]
+        cards = [{"ref": "AS-1", "task": True, "org": "acme-shop"}]
         docs = {"acme-shop": {"card_prefix": "AS", "training_cards": {"codex": "AS-1"}},
                 "alpha-store": {"card_prefix": "AS"}}
         lines = of_capacity.training_registry_problems(docs, cards)
