@@ -98,6 +98,7 @@ PAGES = [
         ("docs/rfc/0005-development-loops.md", "rfc/0005-development-loops", "0005 Development loops"),
         ("docs/rfc/0006-position-memory.md", "rfc/0006-position-memory", "0006 Position memory"),
         ("docs/rfc/0007-system-architect-and-cells.md", "rfc/0007-system-architect", "0007 The system architect"),
+        ("docs/rfc/0008-other-harnesses.md", "rfc/0008-other-harnesses", "0008 Other harnesses"),
     ]),
 ]
 # A page's title is its first heading, except here.
