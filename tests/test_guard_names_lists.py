@@ -13,6 +13,9 @@ import of_guard  # noqa: E402
 
 KEY = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"  # spelled apart so this file trips no scanner
 TOKEN = "ghp_" + "Ab3" * 12
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "rules", "bip39-english.txt")) as _fh:
+    _WORDS = [w.strip() for w in _fh if w.strip()]
+SEED = [_WORDS[i * 97 % 2048] for i in range(12)]  # twelve list words, as of_review built them
 
 
 def deny(cmd):
@@ -44,6 +47,7 @@ class NamesLists(unittest.TestCase):
         self.assertIsNone(deny(f"python3 - <<'EOF'\nprint(open('{p}').read())\nEOF"))  # G8
         self.assertIsNone(of_guard.critical_deny("Read", {"file_path": p}))
         self.assertIsNone(deny("cat " + self.put("token-names.csv", "name,kind\nr2-writer,api\n")))
+        self.assertIsNone(deny("cat " + self.put("token-names.yaml", "- app-db\n- ghcr-pull\n")))  # a YAML list
 
     def test_a_names_list_that_holds_a_value_stays_secret(self):
         for text in ("evm-signer  Opaque\npassword: hunter2-but-longer\n",          # a credential word with a value
@@ -51,7 +55,16 @@ class NamesLists(unittest.TestCase):
                      f"r2-writer {TOKEN}\n",                                         # a token
                      "signer: MHgxMjM0NTY3ODlhYmNkZWZBQkNERUY=\n",                   # a base64 value
                      "signer " + "a1" * 32 + "\n",                                    # a long hex value
-                     "caf\xe9\x00\x01 binary\n"):                                      # not plain text
+                     "caf\xe9\x00\x01 binary\n",                                      # not plain text
+                     # of_secrets-review on organic-framework PR 332: forms the value patterns missed
+                     "app-db\nDB_PASS=abc123\n", "aws_secret_access_key = " + "Q" * 40 + "\n",
+                     "app-db=zq8w3k9x7m2p5r4t6y1u\n", "app-db  correcthorsebatterystaple42\n",
+                     "- name: app-db\n  value: hunter2\n",
+                     # of_review on organic-framework PR 332
+                     "evm-signer  " + " ".join(SEED) + "\n", "evm-signer  " + " ".join(SEED[:6]) + "\n"
+                     + " ".join(SEED[6:]) + "\n", "db-main  Tr0ub4dor&3x\n",
+                     "heroku-api  3f2b8c1e-9a4d-4e7b-b1c2-7d8e9f0a1b2c\n", "r2-writer  k3j9x2m8q7w1e5r4t6y0u8i2o3p4a5s6\n",
+                     "data:\n  signer: c2hvcnQxMjM=\n"):
             p = self.put("evm-secret-names.txt", text)
             self.assertTrue(deny("cat " + p), text[:30])
             self.assertTrue(of_guard.critical_deny("Read", {"file_path": p}), text[:30])
