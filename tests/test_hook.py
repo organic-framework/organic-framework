@@ -583,6 +583,22 @@ class HandleTest(unittest.TestCase):
         checks = [e for e in self.events() if e.get("event.name") == "of.mandate_check"]
         self.assertEqual([(c.get("of.payload") or {}).get("verdict") for c in checks], ["warn"])
 
+    def test_a_guard_reason_is_recorded_masked(self):
+        """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""
+        token = "ghp_" + "Ab3" * 12
+        import contextlib
+        import io
+        of_hook.OUTPUT = None
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": f"cat notes/{token}.token"})
+        decision = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn(token, decision["permissionDecisionReason"])  # the agent's own words, in its own session
+        checks = [e for e in self.events() if e.get("event.name") == "of.mandate_check"]
+        self.assertEqual(len(checks), 1)
+        self.assertNotIn(token, json.dumps(checks[0]))
+
     def test_plain_tool_events_write_nothing(self):
         self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
         self.fire("PostToolUse", tool_name="Bash", tool_input={"command": "ls"})
