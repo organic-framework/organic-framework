@@ -57,10 +57,14 @@ def key_of(path):
 class Rewriter:
     """One machine's paths to another's: the home, the folder keys built from it, and the agent tmp root's uid."""
 
-    def __init__(self, old_home, new_home, old_uid, new_uid):
+    def __init__(self, old_home, new_home, old_uid, new_uid, old_tmp=None, new_tmp=None):
+        import of_capacity
         self.old_home, self.new_home = old_home.rstrip("/"), new_home.rstrip("/")
         self.old_key, self.new_key = key_of(self.old_home), key_of(self.new_home)
-        self.old_tmp, self.new_tmp = f"/private/tmp/claude-{old_uid}", f"/private/tmp/claude-{new_uid}"
+        # the source's tmp root as its plan recorded it (macOS: /private/tmp/claude-<uid>), the target's by its own
+        # platform (Linux: /tmp/claude-<uid>): a carry from the laptop to a Linux host maps one to the other
+        self.old_tmp = (old_tmp or f"/private/tmp/claude-{old_uid}").rstrip("/")
+        self.new_tmp = (new_tmp or of_capacity.agent_tmp_root(new_uid)).rstrip("/")
         self.old_tmp_key, self.new_tmp_key = key_of(self.old_tmp), key_of(self.new_tmp)
         # one pass, so a replacement is never rewritten again (a new home whose own path holds the old key, as a
         # rehearsal home inside the tmp root does). A key starts a path component or follows the tmp root's own key
@@ -310,8 +314,9 @@ def planned(plan, root, org, positions, only=None):
     home = os.path.normpath(plan["home"])
     by_name = {p["name"]: p for p in positions or []}
     tmp = os.path.normpath(plan.get("tmp_root") or f"/private/tmp/claude-{plan.get('uid')}")
-    if tmp != f"/private/tmp/claude-{plan.get('uid')}" and not tmp.startswith(home + "/"):
-        tmp = None
+    if tmp not in (f"/private/tmp/claude-{plan.get('uid')}", f"/tmp/claude-{plan.get('uid')}") \
+            and not tmp.startswith(home + "/"):
+        tmp = None  # the source's own agent tmp root on macOS or Linux, or a rehearsal's inside its home
     exact, prefixes, sids = set(), [], set()
     for e in plan.get("entries") or []:
         if only and e.get("name") not in only and (e.get("position") or "") not in only:
@@ -433,7 +438,8 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
         raise CarryError(f"{bundle}/plan.json is not a carry plan")
     if plan.get("org") != org:
         raise CarryError(f"{bundle} carries {plan.get('org') or 'no organization'}, not {org}")
-    rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid)
+    rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid,
+                  old_tmp=plan.get("tmp_root"))
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
     install(bundle, rw, dry_run=dry_run, log=log,

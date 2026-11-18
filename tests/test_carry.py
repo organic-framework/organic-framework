@@ -38,6 +38,19 @@ class Paths(unittest.TestCase):
         for same in ("/Users/alexander", "-Users-alexander", "/home/runner/x", "x-Users-alex-y"):
             self.assertEqual(rw.path(same), same)
 
+    def test_a_mac_plan_carried_to_a_linux_host_maps_the_tmp_root(self):
+        # the agent host is Linux: /private/tmp/claude-<uid> on the laptop becomes /tmp/claude-<uid> there
+        import of_capacity
+        self.assertEqual(of_capacity.agent_tmp_root(1000, "linux"), "/tmp/claude-1000")
+        self.assertEqual(of_capacity.agent_tmp_root(501, "darwin"), "/private/tmp/claude-501")
+        rw = of_carry.Rewriter("/Users/alex", "/home/alex", 501, 1000, old_tmp="/private/tmp/claude-501",
+                               new_tmp=of_capacity.agent_tmp_root(1000, "linux"))
+        self.assertEqual(rw.path("/private/tmp/claude-501/-Users-alex-org/s/tasks/a.output"),
+                         "/tmp/claude-1000/-home-alex-org/s/tasks/a.output")
+        self.assertEqual(rw.path("-private-tmp-claude-501--Users-alex-org"), "-tmp-claude-1000--home-alex-org")
+        self.assertEqual(rw.path("/Users/alex/.claude/projects/-Users-alex-org/s.jsonl"),
+                         "/home/alex/.claude/projects/-home-alex-org/s.jsonl")
+
     def test_a_replacement_is_never_rewritten_again(self):
         """A rehearsal home inside the tmp root holds the old key in its own path: one pass keeps it whole."""
         new = "/private/tmp/claude-501/-Users-alex-org/s1/scratchpad/home-of"
