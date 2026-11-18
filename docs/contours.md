@@ -54,4 +54,4 @@ Each path today crosses organizations directly. Under contours each needs a new 
 5. **The move of the sessions** (`of capacity carry`, paths rewritten): the OF team into `of`, the organization into its own user, each from its own folders. Its credential roots go by the copy script, with its structure keeper's yes (docs/registry.md, Credentials).
 6. **The channel replaces the direct paths** (§3). Grants between the organizations are revoked.
 
-**The transition.** On the laptop, until the move, both organizations keep one server, as `of_server` ruled. On the host, the two are separate from their first session. Nothing moves to the host before step 1.
+**The transition.** On the laptop, until the move, both organizations keep one server, as `of_server` ruled. The OF team moves in stages: its positions on the host reach the laptop's server through a forward until the last one has moved, and then its server moves into its own user. A user organization goes straight into its own contour, with its own server from its first session on the host and its records exported from the laptop's store. Nothing moves to the host before step 1.
