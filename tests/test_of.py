@@ -883,6 +883,30 @@ class InitStructureTest(unittest.TestCase):
         self.assertIn("a view named acme is already there", said[-1])
         self.assertEqual(saved, [])
 
+    def test_the_panel_view_is_where_of_apply_puts_the_conductor(self):
+        import yaml
+        # of_review on PR 345: the view in <org> while of apply keeps the conductor in <short>·onboarding would move it
+        # across workspaces on a fresh machine; the view takes the workspace bin/of's want_workspace gives it
+        i, saved = self.of_init, []
+        doc = {"organization": "acme"}
+        i.merge_structure(doc, self.built())
+        with tempfile.TemporaryDirectory() as d:
+            reg = os.path.join(d, "registry", "positions.yaml")
+            os.makedirs(os.path.dirname(reg))
+            with open(reg, "w") as fh:
+                yaml.safe_dump(doc, fh)
+            entry = {"name": "acme", "path": d, "workspace": "acme"}
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                yaml.safe_dump({"orgs": [entry]}, fh)
+            want = of.want_workspace(next(p for p in of.load_positions(orgs)[0] if p["name"] == "acme_conductor"))
+            self.assertEqual(i.conductor_workspace("acme", reg, entry), want)
+            self.assertEqual(want, "acme·onboarding")
+            self.assertEqual(i.conductor_workspace("acme", reg, dict(entry, short="ac")), "ac·onboarding")
+            self.assertEqual(i.conductor_workspace("acme", os.path.join(d, "none.yaml"), entry), "acme")  # no units
+            i.pin_questions_panel("acme", "acme", lambda m: None, load=lambda: [], save=saved.append, workspace=want)
+        self.assertEqual(saved[0][0]["workspace"], "acme·onboarding")
+
     def test_no_password_manager_is_assumed(self):
         files = self.built()["files"]
         for rel, text in files.items():

@@ -506,9 +506,31 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
     return "yes" if str(answer).strip().lower() in words else "no"
 
 
-def pin_questions_panel(org, prefix, out=print, load=None, save=None, python=sys.executable, bin_dir=HERE):
-    """Pin herdr's questions panel beside the person's conductor, as `of view add <org> --workspace <org> --tab
-    conductor --positions <prefix>_conductor --panel questions` would (of_herdr's `--panel`, 2026-11-18; docs/herdr.md,
+def conductor_workspace(prefix, reg_path, entry):
+    """The workspace label `of apply` gives the conductor, as bin/of's want_workspace reads it: `<short>·<unit>` when
+    its system is in a unit (the onboarding package's is: the unit `onboarding` holds the system `{org}`), else the
+    organization's workspace from its orgs.yaml entry. of_review on organic-framework PR 345: a view written in
+    `<org>` while the conductor lives in `<short>·onboarding` would move it across workspaces on a fresh machine."""
+    import yaml
+    try:
+        with open(reg_path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        doc = {}
+    units = doc.get("units") if isinstance(doc.get("units"), dict) else {}
+    me = next((p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name") == f"{prefix}_conductor"),
+              {})
+    unit = me.get("unit") or next((uid for uid, u in units.items()
+                                   if isinstance(u, dict) and me.get("system") in (u.get("systems") or [])), None)
+    workspace = str(entry.get("workspace") or entry.get("name"))
+    return f"{entry.get('short') or workspace}·{unit}" if unit else workspace
+
+
+def pin_questions_panel(org, prefix, out=print, load=None, save=None, python=sys.executable, bin_dir=HERE,
+                        workspace=None):
+    """Pin herdr's questions panel beside the person's conductor, as `of view add <org> --workspace <its workspace>
+    --tab conductor --positions <prefix>_conductor --panel questions` would, workspace being the conductor's own
+    (conductor_workspace; <org> when not given) (of_herdr's `--panel`, 2026-11-18; docs/herdr.md,
     "The questions panel, on any machine"). Until 2026-11-18 the panel worked only on the machine it was built on: no
     command set it up (via of_conductor, msg 01a1efa8-8574; AGENTS.md, "A feature a person uses is done when it works
     on a machine it was not built on"), and of_herdr asked whether of init should (msg 01a1efb1-c27a). Only the view is
@@ -527,7 +549,8 @@ def pin_questions_panel(org, prefix, out=print, load=None, save=None, python=sys
         out(f"  questions panel: already in view {held['name']}; there is one per machine, so none is added")
         return None
     name, command = of_views.panel_spec(of_views.QUESTIONS_PANEL, python, bin_dir)
-    (save or of_views.save)(views + [{"name": org, "workspace": org, "tab": "conductor", "layout": "main-left-60",
+    (save or of_views.save)(views + [{"name": org, "workspace": workspace or org, "tab": "conductor",
+                                      "layout": "main-left-60",
                                       "positions": [f"{prefix}_conductor", f"panel:{name}"], "panels": {name: command}}])
     out(f"  questions panel: pinned beside {prefix}_conductor (view {org}); it opens once the conductor runs. "
         f"of view remove {org} takes it away")
@@ -1151,7 +1174,8 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     except NoTTY as e:
         out(f"  NOT installed: {e}")
         failed = True
-    link_herdr_plugin(yes, out, panel=(lambda: pin_questions_panel(org, prefix, out)) if surface == "herdr" else None)
+    link_herdr_plugin(yes, out, panel=(lambda: pin_questions_panel(
+        org, prefix, out, workspace=conductor_workspace(prefix, reg_path, entry))) if surface == "herdr" else None)
 
     out("\n7. The server (profile 1: this machine, SQLite storage)")
     import of_client
