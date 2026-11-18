@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
@@ -23,6 +24,10 @@ def read(p):
 
 def line(rec):
     return json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
+
+
+def key_header():
+    return "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
 
 
 class Paths(unittest.TestCase):
@@ -76,7 +81,8 @@ class Paths(unittest.TestCase):
             plan = {"home": src, "consents": of_carry.consents([entry])}
             self.assertEqual(plan["consents"], {os.path.join(src, ".claude-a"): {"bypass": True,
                                                                                  "trusted": [os.path.join(src, "org")]}})
-            rw = of_carry.Rewriter(src, dst, 501, 501)
+            rw = of_carry.Rewriter(src, dst, 501, 501, old_tmp=os.path.join(src, "tmp"),
+                                   new_tmp=os.path.join(dst, "tmp"))
             logs = []
             done = of_carry.carry_consents(plan, rw, [entry], log=logs.append)  # not signed in there yet: trust waits
             self.assertEqual(done, [(os.path.join(dst, ".claude-a"), "bypass")])
@@ -104,8 +110,8 @@ class Paths(unittest.TestCase):
         add = lambda eid, name, p: conn.execute("INSERT INTO event VALUES (?,?,?,?)",  # noqa: E731
                                                 (eid, "t", name, json.dumps(p, ensure_ascii=False)))
         yes = "yes, move them with their folder trust and Bypass Permissions acceptance"
-        card = lambda eid, opts, pos="of_agent-server": add(eid, "of.agent_question",  # noqa: E731
-                                                              {"from_position": pos, "questions": [{"question": "q", "options": opts}]})
+        card = lambda eid, opts, pos="of_agent-server", q="Move every agent to agent-host?": add(  # noqa: E731
+            eid, "of.agent_question", {"from_position": pos, "questions": [{"question": q, "options": opts}]})
         ans = lambda cid, aid, answer, by="owner": add(cid, "of.agent_question_answered",  # noqa: E731
                                                        {"ask_id": aid, "answer": answer, "by": by})
         card("a1", [yes, "no"]); ans("c1", "a1", yes)
@@ -115,14 +121,59 @@ class Paths(unittest.TestCase):
         card("a5", ["yes, upgrade the lab cluster", "no"]); ans("c5", "a5", "yes, upgrade the lab cluster")
         card("a6", [yes, "no"], pos="acme_org"); ans("c6", "a6", yes)
         card("a7", [yes, "no"]); ans("c7", "a-other", yes)
-        cards = [{"ref": f"OF-{i}", "event_id": f"a{i}", "closed_by": f"c{i}", "state": "answered"} for i in range(1, 8)]
+        card("a9", [yes, "no"], q="Move every agent to the lab box?"); ans("c9", "a9", yes)
+        cards = [{"ref": f"OF-{i}", "event_id": f"a{i}", "closed_by": f"c{i}", "state": "answered"}
+                 for i in (1, 2, 3, 4, 5, 6, 7, 9)]
         cards[3].update(amended=True, version=2)
         cards.append({"ref": "OF-8", "event_id": "a8", "state": "open"})
-        self.assertEqual(of_carry.owner_yes("of-1", cards, conn)["ref"], "OF-1")
+        self.assertEqual(of_carry.owner_yes("of-1", cards, conn, host="agent-host.local")["ref"], "OF-1")
+        self.assertIsNone(of_carry.owner_yes("OF-1", cards, conn, host="labbox"))  # a yes about another machine
         for ref, why in (("OF-2", "his no"), ("OF-3", "closed by a position"), ("OF-4", "amended"),
                          ("OF-5", "an unrelated yes card"), ("OF-6", "filed by another organization's position"),
-                         ("OF-7", "an answer naming another ask"), ("OF-8", "still open"), ("OF-99", "unknown")):
-            self.assertIsNone(of_carry.owner_yes(ref, cards, conn), why)
+                         ("OF-7", "an answer naming another ask"), ("OF-8", "still open"), ("OF-99", "unknown"),
+                         ("OF-9", "a card that names no host the restore runs on")):
+            self.assertIsNone(of_carry.owner_yes(ref, cards, conn, host="agent-host"), why)
+
+    def test_carry_consents_keeps_the_owners_false(self):
+        with tempfile.TemporaryDirectory() as t:
+            home = Path(t) / "Users/alex"
+            config, project = home / ".claude-a", home / "work"
+            config.mkdir(parents=True)
+            project.mkdir()
+            settings, account = config / "settings.json", config / ".claude.json"
+            settings.write_text('{"skipDangerousModePermissionPrompt": false}')
+            account.write_text(line({"projects": {str(project): {"hasTrustDialogAccepted": False}}}))
+            entry = {"config_dir": str(config), "cwd": str(project)}
+            plan = {"home": str(home), "consents": {str(config): {"bypass": True, "trusted": [str(project)]}}}
+            logs = []
+            done = of_carry.carry_consents(plan, of_carry.Rewriter(str(home), str(home), 501, 501), [entry],
+                                           log=logs.append)
+            self.assertEqual(done, [])
+            self.assertIs(json.loads(settings.read_text())["skipDangerousModePermissionPrompt"], False)
+            self.assertIs(json.loads(account.read_text())["projects"][str(project)]["hasTrustDialogAccepted"], False)
+            for field in ("skipDangerousModePermissionPrompt", "hasTrustDialogAccepted"):
+                self.assertTrue(any(f"kept the owner's false for {field}" in msg for msg in logs))
+
+    def test_quoted_key_agrees_with_the_guard(self):
+        for head in (key_header(), "-----BEGIN " + "RSA PRIVATE KEY-----", "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----",
+                     "PuTTY-User-Key-File-3:", "-----BEGIN " + "PUBLIC KEY-----", "PuTTY-User-Key-File-x:"):
+            self.assertEqual(bool(of_carry._QUOTED_KEY.search(b"x " + head.encode())),
+                             bool(of_carry.of_guard._KEY_HEAD.match(head.encode())), head)
+
+    def test_a_listed_file_gone_before_the_check_is_skipped(self):
+        with tempfile.TemporaryDirectory() as t:
+            gone = os.path.join(t, "gone")
+            self.assertEqual(list(of_carry._content_matches([gone], [], log=lambda *_: None)), [])
+
+    def test_variable_length_headers_across_transcript_reads(self):
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t, "session.jsonl")
+            pem = "-----BEGIN " + "TYPE " * of_carry._CHUNK
+            putty = "PuTTY-User-Key-File-" + "1" * of_carry._CHUNK
+            for header, quoted in ((pem + "PRIVATE KEY-----", True), (pem + "PUBLIC KEY-----", False),
+                                   (putty + ":", True), (putty + "x:", False)):
+                path.write_text(line({"message": header}))
+                self.assertEqual(of_carry._quotes_key(path), quoted)
 
     def test_custody_credentials_never_leave(self):
         # hand-over a1bde073: a key the agents' home never holds stays behind in prepare and copy, and is named
@@ -135,7 +186,7 @@ class Paths(unittest.TestCase):
             for name in ("notes.md", "executor-notes.json", "keys/a.bin", "keys/b.bin"):
                 path = os.path.join(mem, name)
                 with open(path, "w") as fh:
-                    fh.write("x")
+                    fh.write(name)
                 files.append(path)
             docs = {"acme": {"credentials": {
                 "executor": {"paths": [os.path.join(mem, "executor-notes.json")], "custody": True},
@@ -236,6 +287,43 @@ class CopyCommands(unittest.TestCase):
             pull = of_carry.copy_commands("/b", self.key, frm="of@host:/c/b")
         self.assertTrue(all(c[:6] == ["nice", "-n", "19", "ionice", "-c3", "rsync"] for c in pull))
 
+    def test_pull_filters_source_paths_then_removes_received_key_files(self):
+        home = Path(self.d, "Users/alex")
+        home.mkdir(parents=True)
+        original = home / "custody"
+        original.write_text("custody fixture")
+        outside = Path(str(home) + "-shared", "deploy")
+        out, source = Path(self.d, "bundle"), Path("/home/alex")
+        files = out / "files"
+        deploy, renamed, transcript = (source / p for p in ("work/deploy", "work/backup", "projects/p/s.jsonl"))
+        keep = [str(deploy), str(renamed), str(transcript)]
+        docs = {"acme": {"credentials": {"deploy": {"custody": True, "paths": ["~/custody", str(outside)]}}}}
+        logs = []
+
+        def run(cmd, env):
+            if cmd[-2].endswith("/plan.json"):
+                (out / "plan.json").write_text(line({"home": str(source)}))
+            elif cmd[-2].endswith("/files.txt"):
+                paths = [str(source / "custody"), str(outside)] + keep
+                (out / "files.txt").write_text("\n".join(paths) + "\n")
+            else:
+                self.assertEqual((out / "files.txt").read_text().splitlines(), keep)
+                for path, contents in ((deploy, key_header()), (renamed, original.read_text()),
+                                       (transcript, line({"message": key_header()}))):
+                    received = files / path.relative_to("/")
+                    received.parent.mkdir(parents=True, exist_ok=True)
+                    received.write_text(contents)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.dict(os.environ, {"HOME": str(home)}), self.assertRaisesRegex(of_carry.CarryError, "removed 2"):
+            of_carry.copy(str(out), self.key, frm="agent-host:/bundle", pats=of_carry.custody_paths(docs),
+                          log=logs.append, run=run)
+        for path, reason in ((deploy, "private key header"), (renamed, "custody copy: acme/deploy")):
+            self.assertFalse((files / path.relative_to("/")).exists())
+            self.assertTrue(any(str(path) in msg and reason in msg for msg in logs))
+        self.assertTrue((files / transcript.relative_to("/")).is_file())
+        self.assertTrue(any(str(transcript) in msg and "transcript quotes a private key" in msg for msg in logs))
+
     def test_no_agent_and_no_loose_key(self):
         envs = []
 
@@ -307,9 +395,9 @@ class Carry(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root)
 
-    def prepare(self, home, entries, bundle):
-        with mock.patch.object(of_carry.os.path, "expanduser", lambda p: home if p == "~" else p):
-            return of_carry.prepare([], {"acme"}, bundle, log=lambda *_: None, entries=entries, tmp_root=self.tmp
+    def prepare(self, home, entries, bundle, log=lambda *_: None):
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            return of_carry.prepare([], {"acme"}, bundle, log=log, entries=entries, tmp_root=self.tmp
                                     if home == self.a else os.path.join(self.b, "tmp"))
 
     def ship(self, src_bundle, dst_bundle):
@@ -387,6 +475,84 @@ class Carry(unittest.TestCase):
         self.ship(os.path.join(self.root, "out-b"), back)
         self.restore(back, self.a)
         self.assertEqual(read(self.transcript).split("\n")[:3], self.lines)
+
+    def test_prepare_finds_renamed_keys_and_names_a_quoted_header(self):
+        scratch = Path(self.tmp, of_carry.key_of(self.proj), SID, "scratchpad")
+        deploy, renamed, linked, different = (scratch / n for n in ("deploy", "backup", "linked", "notes"))
+        deploy.write_text(key_header() + "\n")
+        vault = Path(self.root, "vault")
+        original = vault / "nested" / "original"
+        original.parent.mkdir(parents=True)
+        original.write_bytes(b"custody fixture")
+        shutil.copyfile(original, renamed)
+        os.link(original, linked)
+        different.write_bytes(b"x" * original.stat().st_size)
+        transcript = '{"message":"' + "x" * (of_carry._CHUNK - 16) + key_header() + '"}\n'
+        Path(self.transcript).write_text(transcript)
+        out = Path(self.root, "out")
+        for pattern in (original, vault, vault / "**" / "orig*"):
+            with self.subTest(pattern=pattern):
+                docs = {"acme": {"credentials": {"deploy": {"paths": str(pattern), "custody": True}}}}
+                pats = of_carry.custody_paths(docs)
+                self.assertEqual(pats, [("acme", "deploy", str(pattern))])
+                logs = []
+                with mock.patch.object(of_carry, "custody_paths", return_value=pats):
+                    plan = self.prepare(self.a, [self.entry], out, log=logs.append)
+                listed = (out / "files.txt").read_text().splitlines()
+                for path, reason in ((deploy, "private key header"), (renamed, "custody copy: acme/deploy"),
+                                     (linked, "custody copy: acme/deploy")):
+                    self.assertNotIn(str(path), listed)
+                    self.assertIn({"path": str(path), "reason": reason}, plan["skipped"])
+                self.assertIn(str(different), listed)
+                self.assertIn(self.transcript, listed)
+                self.assertEqual(plan["named"], [{"path": self.transcript, "reason": "transcript quotes a private key"}])
+                self.assertTrue(any(self.transcript in msg and "transcript quotes a private key" in msg for msg in logs))
+                self.assertEqual(Path(self.transcript).read_text(), transcript)
+
+    def test_push_checks_an_edit_to_the_list_before_the_first_rsync(self):
+        out = Path(self.root, "out")
+        with mock.patch.object(of_carry, "custody_paths", return_value=[]):
+            self.prepare(self.a, [self.entry], out)
+        listed = out / "files.txt"
+        before = listed.read_text()
+        deploy = Path(self.mem, "deploy")
+        deploy.write_text(key_header())
+        with listed.open("a") as fh:
+            fh.write(str(deploy) + "\n")
+
+        def run(cmd, env):
+            self.assertEqual(listed.read_text(), before)
+            return mock.Mock(returncode=0)
+
+        key = Path(self.root, "identity")
+        key.touch(mode=0o600)
+        logs = []
+        of_carry.copy(str(out), str(key), to="agent-host:/bundle", run=run, pats=[], log=logs.append)
+        self.assertTrue(any(str(deploy) in msg and "private key header" in msg for msg in logs))
+
+    def test_a_bad_listed_registry_stops_prepare_and_copy(self):
+        orgs, registry = Path(self.root, "orgs.yaml"), Path(self.root, "acme/registry/positions.yaml")
+        orgs.write_text("orgs:\n  - name: acme\n    path: acme\n")
+        registry.parent.mkdir(parents=True)
+        key, out = Path(self.root, "identity"), Path(self.root, "out")
+        key.touch(mode=0o600)
+        run = mock.Mock()
+        with mock.patch.dict(os.environ, {"OF_ORGS": str(orgs)}):
+            for contents in (None, "credentials: [", "[]", ""):
+                with self.subTest(contents=contents):
+                    if contents is not None:
+                        registry.write_text(contents)
+                    with self.assertRaises(of_carry.CarryError) as raised:
+                        of_carry.custody_paths()
+                    self.assertEqual(str(raised.exception),
+                                     f"the registry of acme ({registry}) cannot be read: "
+                                     "carry refuses, since its custody rules would be lost")
+            with self.assertRaises(of_carry.CarryError):
+                self.prepare(self.a, [self.entry], out)
+            self.assertFalse((out / "plan.json").exists())
+            with self.assertRaises(of_carry.CarryError):
+                of_carry.copy(str(out), str(key), to="agent-host:/bundle", run=run)
+            run.assert_not_called()
 
     def test_secret_paths_stay_behind_unread_and_the_bundle_is_private(self):
         """of_server on PR 116: a kubeconfig or an .env in a scratch folder never travels as a side effect."""
