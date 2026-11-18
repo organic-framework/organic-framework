@@ -168,9 +168,75 @@ def resolve(checkout, at=None, diff=None):
     return _git(checkout, "rev-parse", "--verify", at + "^{commit}").strip(), None
 
 
-def snapshot(checkout, dest, head, base=None):
+# paths no run sends, in any repository (a user organization's security keeper's terms through its structure keeper,
+# 2026-11-18): removed from the snapshot and from a diff run's diff before anything leaves
+DEFAULT_EXCLUDES = ("kubeconfig*", "*.kubeconfig", "*.pem", "*.key", "*.env", ".env", ".env.*", "secrets/",
+                    ".generated/", "*.tfstate", "*.tfstate.*")
+
+
+def _exclude_rx(pattern):
+    """A path pattern as a regex over a path relative to the repository's root. A pattern without a slash matches a
+    name at any depth ('*.pem'); one ending in a slash matches that folder at any depth with all under it
+    ('secrets/'); one with a slash inside is anchored at the root ('host_vars/prod.yml', 'gateways/**'). '**' spans
+    folders, '*' and '?' do not. An empty, absolute or '..' pattern is refused: excludes fail closed."""
+    p = str(pattern or "").strip()
+    if not p or p.startswith("/") or ".." in p.split("/"):
+        raise SubagentError(f"exclude {pattern!r}: a path relative to the repository's root, without '..'")
+    folder = p.endswith("/")
+    p = p.rstrip("/")
+    if p.endswith("/**"):
+        p, folder = p[:-3], True
+    out, i = "", 0
+    while i < len(p):
+        if p.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif p[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif p[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(p[i]), i + 1
+    lead = "" if "/" in p else "(?:.*/)?"
+    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"))
+
+
+def excludes_for(registry, repo):
+    """The exclude regexes for REPO: the built-in list, the entry's `excludes` for every repository ('*') and for
+    REPO."""
+    ex = ((registry or {}).get("subagent_harnesses") or {}).get("excludes") or {}
+    if not isinstance(ex, dict):
+        raise SubagentError("subagent_harnesses.excludes: a map of repository name to a list of path patterns")
+    pats = list(DEFAULT_EXCLUDES)
+    for key in ("*", repo):
+        v = ex.get(key) or []
+        if not isinstance(v, list):
+            raise SubagentError(f"subagent_harnesses.excludes[{key!r}]: a list of path patterns")
+        pats += [str(x) for x in v]
+    return [_exclude_rx(x) for x in pats]
+
+
+def excluded(path, rxs):
+    return any(r.match(path) for r in rxs or ())
+
+
+def _drop_from_diff(text, rxs):
+    """A unified git diff without the blocks of excluded files (either side's name)."""
+    if not rxs:
+        return text
+    out, keep = [], True
+    for line in text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            m = re.match(r"diff --git a/(.*) b/(.*)$", line.rstrip("\n"))
+            keep = not (m and (excluded(m.group(1), rxs) or excluded(m.group(2), rxs)))
+        if keep:
+            out.append(line)
+    return "".join(out)
+
+
+def snapshot(checkout, dest, head, base=None, rxs=None):
     """Export HEAD's tracked files into DEST (a new folder), and for a diff run BASE..HEAD as .of-review.diff beside
-    them. Never the live checkout: untracked and ignored files do not exist in the export."""
+    them. Never the live checkout: untracked and ignored files do not exist in the export. Files RXS excludes are
+    removed, and their blocks dropped from the diff, before anything is checked or sent; returns DEST."""
     os.makedirs(dest, mode=0o700)
     tar = os.path.join(os.path.dirname(dest), "snapshot.tar")
     with open(tar, "wb") as fh:
@@ -181,15 +247,22 @@ def snapshot(checkout, dest, head, base=None):
     with tarfile.open(tar) as tf:
         members = [m for m in tf.getmembers() if not (m.issym() or m.islnk() or m.isdev())
                    and not os.path.isabs(m.name) and ".." not in m.name.split("/")]
-        tf.extractall(dest, members=members)
+        tf.extractall(dest, members=[m for m in members if not excluded(m.name.rstrip("/"), rxs)
+                                     or m.isdir()])
     os.remove(tar)
+    for d, dirs, files in os.walk(dest, topdown=False):
+        for n in files + dirs:
+            p = os.path.join(d, n)
+            if excluded(os.path.relpath(p, dest), rxs):
+                shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
     if base:
         with open(os.path.join(dest, ".of-review.diff"), "w") as fh:
-            fh.write(_git(checkout, "diff", "--no-color", "--no-ext-diff", base, head))
+            fh.write(_drop_from_diff(_git(checkout, "diff", "--no-color", "--no-ext-diff", "--no-renames", base, head),
+                                     rxs))
     return dest
 
 
-def diff_secrets(checkout, base, head, diff_text=""):
+def diff_secrets(checkout, base, head, diff_text="", rxs=None):
     """[(path, why)] of what a diff run's .of-review.diff would carry out: a changed path that is a G1 secret path, a
     base-side file that starts with a G1.13 key header (the diff holds the base's text of every file the head removes
     or changes: a review of "remove the leaked key" would send the key; of_secrets-review on PR 328), and a key header
@@ -198,6 +271,8 @@ def diff_secrets(checkout, base, head, diff_text=""):
     out = []
     names = _git(checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
     for n in names:
+        if excluded(n, rxs):
+            continue   # removed from the diff: not sent
         if of_classify.secret_path(n) or of_classify.secret_path(os.path.basename(n)):
             out.append((n, "a secret path (docs/guard.md G1)"))
             continue
@@ -302,6 +377,26 @@ def training_gate(harness, kind, reading, public_why):
             f"{public_why}")
 
 
+BUILTIN_CHECKS = {"of:gitleaks": os.path.join(os.path.dirname(os.path.abspath(__file__)), "of_gitleaks_check.py")}
+
+
+def run_check(check, folder, org_root, popen=subprocess.run):
+    """Run an entry's check (prompt_check or snapshot_check) on FOLDER: a built-in one named of:<name>
+    (BUILTIN_CHECKS), or a path relative to the organization's repository. The completed process, or why it could not
+    run (a text: the run is refused)."""
+    name = str(check)
+    if name.startswith("of:"):
+        path, cwd = BUILTIN_CHECKS.get(name), os.path.dirname(os.path.abspath(__file__))
+        if not path:
+            return f"no built-in check {name!r} (known: {', '.join(sorted(BUILTIN_CHECKS))})"
+    else:
+        path, cwd = os.path.join(org_root or "", name), org_root
+        if not org_root or not os.path.isfile(path):
+            return f"the organization's check {name!r} is not found in its repository"
+    return popen([sys.executable, path, folder], capture_output=True, text=True, cwd=cwd,
+                 env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
+
+
 def prompt_checks(prompt_file, schema, registry, org_root, harness, reading, popen=subprocess.run):
     """None when the prompt and the schema may leave, else why not (RFC 0008 §3.1, "The prompt is material too"): they
     pass the snapshot's secret checks, and the organization's prompt_check (docs/registry.md, "Subagent harnesses":
@@ -326,11 +421,9 @@ def prompt_checks(prompt_file, schema, registry, org_root, harness, reading, pop
                 return ("the organization has no prompt_check (docs/registry.md, \"Subagent harnesses\"), so Codex, "
                         "which may train on the run until its training reading says off, gets no prompt")
             return None
-        path = os.path.join(org_root or "", str(check))
-        if not org_root or not os.path.isfile(path):
-            return f"the organization's prompt_check {check!r} is not found in its repository"
-        r = popen([sys.executable, path, d], capture_output=True, text=True, cwd=org_root,
-                  env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
+        r = run_check(check, d, org_root, popen)
+        if isinstance(r, str):
+            return r
         if r.returncode != 0:
             out = "\n".join((r.stdout or "").strip().splitlines()[-12:])
             return f"the prompt failed the organization's prompt_check ({check}, exit {r.returncode}):\n{out}"
@@ -702,15 +795,25 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     work_dir = _private_dir(os.path.join(run_dir, "material" if checkout else "empty"))
     try:
         if checkout:
-            snap_dir = snapshot(checkout, os.path.join(work_dir, repo or "repo"), head, base)
+            rxs = excludes_for(registry, repo)
+            snap_dir = snapshot(checkout, os.path.join(work_dir, repo or "repo"), head, base, rxs)
             bad = secret_files(work_dir)
             if base:
                 with open(os.path.join(snap_dir, ".of-review.diff"), errors="replace") as fh:
-                    bad += diff_secrets(checkout, base, head, fh.read())
+                    bad += diff_secrets(checkout, base, head, fh.read(), rxs)
             if bad:
                 raise SubagentError("the snapshot holds files no outside run may see: "
                                     + "; ".join(f"{p} ({why})" for p, why in bad[:10])
                                     + (f" and {len(bad) - 10} more" if len(bad) > 10 else ""))
+            # the organization's own scan of what leaves (snapshot_check: of:gitleaks or a path in its repository)
+            scheck = ((registry or {}).get("subagent_harnesses") or {}).get("snapshot_check") if gates else None
+            if scheck:
+                rc = run_check(scheck, work_dir, org_root)
+                if isinstance(rc, str):
+                    raise SubagentError(rc)
+                if rc.returncode != 0:
+                    raise SubagentError(f"the snapshot failed the organization's snapshot_check ({scheck}, exit "
+                                        f"{rc.returncode}):\n" + "\n".join((rc.stdout or "").strip().splitlines()[-12:]))
         rec_prompt = os.path.join(record, "prompt.md")
         with open(rec_prompt, "wb") as fh:
             fh.write(prompt)
