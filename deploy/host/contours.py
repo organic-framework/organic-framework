@@ -7,9 +7,10 @@ Without -I, a Python module planted beside this script could run as root.
 
   sudo python3 -I /opt/organic-framework/deploy/host/contours.py apply --admin owner --org-user of --org-user acme --keeper acme-vault --channel acme --no-tailscale-operator
 
-passwd prompts directly when the admin needs a password. --admin-key-from selects
-a public key by identity from SUDO_USER's authorized_keys. Agent-marked keys are
-excluded. Keepers get no sudoers entry. --no-tailscale-operator inspects local prefs.
+passwd prompts directly when the admin needs a password. Repeat --admin-key to
+set the admin's authorized_keys to exactly the supplied public key lines. Use
+--org-key USER="public key line" to add a key to an organization user's login.
+Keepers get no sudoers entry. --no-tailscale-operator inspects local prefs.
 
 See step 2 of docs/contours.md section 4. deploy/host/plane.py creates a root-owned
 checkout pinned to a reviewed commit.
@@ -20,6 +21,7 @@ import base64
 import binascii
 import fcntl
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -31,6 +33,7 @@ import stat
 import subprocess
 import sys
 import sysconfig
+from collections import Counter
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -81,12 +84,13 @@ def arguments(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "apply"))
     parser.add_argument("--admin")
-    parser.add_argument("--admin-key-from", action="append", default=[], metavar="FILE")
+    parser.add_argument("--admin-key", action="append", default=[], metavar="LINE")
+    parser.add_argument("--org-key", action="append", default=[], metavar="USER=LINE")
     for option in ("org-user", "keeper", "channel"):
         parser.add_argument("--" + option, action="append", default=[])
     parser.add_argument("--no-tailscale-operator", action="store_true")
     a = parser.parse_args(argv)
-    for attr in ("org_user", "keeper", "channel", "admin_key_from"):
+    for attr in ("org_user", "keeper", "channel"):
         setattr(a, attr, list(dict.fromkeys(getattr(a, attr))))
     orgs = set(a.org_user) | ({"of", *a.channel} if a.channel else set())
     for n in [*orgs, *a.keeper] + ([a.admin] if a.admin is not None else []):
@@ -95,7 +99,16 @@ def arguments(argv):
     require(not (set(a.keeper) & orgs), "keeper has conflicting roles")
     require("of" not in a.channel, "a channel needs two distinct users")
     require(all(NAME.fullmatch("ch-of-" + n) for n in a.channel), "channel group name too long")
-    require(a.admin or not a.admin_key_from, "--admin-key-from needs --admin")
+    require(a.admin or not a.admin_key, "--admin-key needs --admin")
+    for line in a.admin_key:
+        validate_key("admin", line)
+    org_keys = {}
+    for assignment in a.org_key:
+        name, sep, line = assignment.partition("=")
+        require(sep and name in a.org_user, "--org-key needs USER=LINE for a user in --org-user")
+        validate_key("org", line)
+        org_keys.setdefault(name, []).append(line)
+    a.org_key = org_keys
     return a
 
 
@@ -166,6 +179,9 @@ class Host:
 
     directory = staticmethod(directory)
 
+    def authorized_keys(self, name):
+        return authorized_keys(name)
+
     @staticmethod
     def password(name):
         return password(name) if os.geteuid() == 0 else None
@@ -180,6 +196,12 @@ def plan(a, state):
 
     def step(text, *argv):
         steps.append((text, list(argv)))
+
+    def key_step(role, name, lines):
+        for line in lines:
+            step(f"keep {key_description(os.fsencode(line))} for {name}")
+        step(f"set {name}'s pinned admin keys" if role == "admin" else f"ensure keys for {name}",
+             sys.executable, "-I", os.path.realpath(__file__), "_keys", role, name, *lines)
 
     def info(path):
         return paths[path] if path in paths else state.directory(path)
@@ -209,6 +231,14 @@ def plan(a, state):
     if a.admin:
         admin = account(a.admin)
         require("wheel" in groups, "missing wheel group")
+        existing = state.authorized_keys(a.admin) if a.admin in state.users else b""
+        removed = outside_pins(existing, a.admin_key)
+        if a.admin_key:
+            for key in removed:
+                step(f"remove {key} from {a.admin}")
+            key_step("admin", a.admin, a.admin_key)
+        else:
+            require_pinned(a.admin, removed)
         if admin.group == "wheel" or a.admin in groups["wheel"]:
             step(f"already in wheel: {a.admin}")
         else:
@@ -219,9 +249,6 @@ def plan(a, state):
             step(f"already have a password for {a.admin}")
         else:
             step(f"set {a.admin}'s password interactively if needed", "passwd", a.admin)
-        if a.admin_key_from:
-            step(f"copy selected owner keys to {a.admin} if missing", sys.executable, "-I",
-                 os.path.abspath(__file__), "_keys", a.admin, *a.admin_key_from)
 
     for n in a.org_user:
         u = account(n)
@@ -247,6 +274,9 @@ def plan(a, state):
         if member:
             step(f"verify admin before removing {n} from wheel", "sudo", "-l", "-U", a.admin)
             step(f"remove {n} from wheel", "gpasswd", "-d", n, "wheel")
+
+    for n, lines in a.org_key.items():
+        key_step("org", n, lines)
 
     if a.keeper:
         for path in ("/var/lib/of-keepers", "/opt/of-keepers"):
@@ -324,12 +354,29 @@ def read_keys(fd, name, uid):
         return data
 
 
+def authorized_keys(name):
+    user = pwd.getpwnam(name)
+    require(user.pw_uid != 0, f"{name} has uid zero")
+    try:
+        with key_folder(user.pw_dir + "/.ssh", user.pw_uid) as fd:
+            return read_keys(fd, "authorized_keys", user.pw_uid)
+    except FileNotFoundError:
+        return b""
+
+
 # An authorized_keys options field can contain quoted spaces. Match it as one field
 # so a key mentioned inside a command or a trailing comment cannot select the line.
 KEY = re.compile(rb'(?:(?P<options>(?:[^\s"\\]|\\(?!")|\\"|"(?:[^"\\]|\\(?!")|\\")*")+)[ \t]+)?'
                  rb'(?P<type>(?:ssh-|sk-|ecdsa-)[\w@.+-]+)[ \t]+(?P<blob>[A-Za-z0-9+/]+=*)'
                  rb'(?:[ \t]+(?P<comment>.*))?')
 AGENT = re.compile(rb'(?<![a-z0-9])agents?(?![a-z0-9])', re.I)
+
+
+class Key(NamedTuple):
+    kind: str
+    blob: bytes
+    options: bytes
+    agent: bool
 
 
 def key_line(line):
@@ -346,50 +393,69 @@ def key_line(line):
     kind = m["type"]
     if not blob.startswith(len(kind).to_bytes(4, "big") + kind) or len(blob) <= 4 + len(kind):
         return None
-    return blob, m["options"], bool(AGENT.search(m["comment"] or b""))
+    return Key(kind.decode("ascii"), blob, m["options"] or b"", bool(AGENT.search(m["comment"] or b"")))
 
 
-def selected_lines(public_files, authorized):
-    pins = set()
-    for data in public_files:
-        key = key_line(data.strip())
-        require(key and not key[1] and not key[2], "expected one owner's public key per --admin-key-from")
-        pins.add(key[0])
-    lines, found = [], set()
-    for line in authorized.split(b"\n"):
-        key = key_line(line)
-        if key and key[0] in pins:
-            require(not key[2], "selected public key is also marked as an agent key")
-            # An agent-controlled source must not choose code to execute as the admin,
-            # or turn the selected device key into a certificate authority.
-            options = (key[1] or b"").lower()
-            require(not re.search(rb"(?:^|,)(?:command=|environment=|cert-authority(?:,|$))", options),
-                    "selected key has unsafe admin login options")
-            lines.append(line)
-            found.add(key[0])
-    require(found == pins, "selected owner key missing from sudo user's authorized_keys")
-    return list(dict.fromkeys(lines))
+def validate_key(role, line):
+    key = key_line(os.fsencode(line))
+    require(key and "\r" not in line, f"expected one public key line for --{role}-key")
+    if role == "admin":
+        require(not key.options and not key.agent, "--admin-key forbids options and agent-marked comments")
 
 
-def import_keys(admin, filenames):
-    require(os.geteuid() == 0 and NAME.fullmatch(admin), "key import requires root and a valid admin")
-    caller = os.environ.get("SUDO_USER", "")
-    require(NAME.fullmatch(caller), "--admin-key-from requires an invoking sudo user")
-    src, dst = pwd.getpwnam(caller), pwd.getpwnam(admin)
-    require(dst.pw_uid != 0, "admin has uid zero")
-    public = []
-    for filename in filenames:
-        parent, name = os.path.split(os.path.abspath(filename))
-        with key_folder(parent, src.pw_uid) as fd:
-            public.append(read_keys(fd, name, src.pw_uid))
-    with key_folder(src.pw_dir + "/.ssh", src.pw_uid) as fd:
-        lines = selected_lines(public, read_keys(fd, "authorized_keys", src.pw_uid))
+def key_description(line):
+    key = key_line(line)
+    if not key:
+        return "unrecognized line (no key fingerprint)"
+    digest = base64.b64encode(hashlib.sha256(key.blob).digest()).rstrip(b"=").decode("ascii")
+    return f"{key.kind} SHA256:{digest}"
+
+
+def outside_pins(existing, pins):
+    remaining = Counter(map(os.fsencode, pins))
+    removed = []
+    lines = existing.split(b"\n")
+    if not lines[-1]:
+        lines.pop()
+    for line in lines:
+        if remaining[line]:
+            remaining[line] -= 1
+        else:
+            removed.append(key_description(line))
+    return removed
+
+
+def require_pinned(name, removed):
+    require(not removed, f"{name} has unpinned authorized_keys: {', '.join(removed)}. Pass --admin-key.")
+
+
+def key_contents(role, existing, lines):
+    if role == "admin":
+        return b"\n".join(lines) + b"\n"
+    present = set(existing.split(b"\n"))
+    missing = [line for line in dict.fromkeys(lines) if line not in present]
+    if not missing:
+        return existing
+    if existing and not existing.endswith(b"\n"):
+        existing += b"\n"
+    return existing + b"\n".join(missing) + b"\n"
+
+
+def import_keys(role, name, pins):
+    require(os.geteuid() == 0 and NAME.fullmatch(name), "key helper requires root and a valid user")
+    require(role in ("admin", "org") and pins, "key helper requires a role and public key lines")
+    for line in pins:
+        validate_key(role, line)
+    lines = list(map(os.fsencode, pins))
+    dst = pwd.getpwnam(name)
+    require(dst.pw_uid != 0, f"{name} has uid zero")
 
     # This helper is a separate process. Give up root before creating anything
-    # in a directory the admin can move. Replace the final file atomically.
+    # in a directory the target user can move. Replace the final file atomically.
     os.setgroups([])
     os.setgid(dst.pw_gid)
     os.setuid(dst.pw_uid)
+    os.umask(0o077)
     with key_folder(dst.pw_dir, dst.pw_uid) as home:
         try:
             os.mkdir(".ssh", 0o700, dir_fd=home)
@@ -398,27 +464,22 @@ def import_keys(admin, filenames):
         fd = os.open(".ssh", DIR, dir_fd=home)
     try:
         s = os.fstat(fd)
-        require(s.st_uid == dst.pw_uid, "admin does not own .ssh")
+        require(s.st_uid == dst.pw_uid, f"{name} does not own .ssh")
         if stat.S_IMODE(s.st_mode) != 0o700:
             os.fchmod(fd, 0o700)
         try:
             existing = read_keys(fd, "authorized_keys", dst.pw_uid)
         except FileNotFoundError:
             existing = b""
-        present = set(existing.split(b"\n"))
-        missing = [line for line in lines if line not in present]
-        if not missing:
-            print("already have the selected owner keys")
+        desired = key_contents(role, existing, lines)
+        if desired == existing:
             return
         tmp = ".authorized_keys." + secrets.token_hex(16)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         new = os.open(tmp, flags, 0o600, dir_fd=fd)
         try:
             with os.fdopen(new, "wb") as f:
-                f.write(existing)
-                if existing and not existing.endswith(b"\n"):
-                    f.write(b"\n")
-                f.write(b"\n".join(missing) + b"\n")
+                f.write(desired)
             os.replace(tmp, "authorized_keys", src_dir_fd=fd, dst_dir_fd=fd)
         finally:
             try:
@@ -445,10 +506,10 @@ def check_paths(argv):
         require(directory(home) is None, f"home appeared before useradd: {home}")
 
 
-def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print):
+def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print, get_keys=authorized_keys):
     completed = []
     for label, argv in steps:
-        out(f"{label}  {shlex.join(argv)}" if argv else label)
+        out(f"{label}  {shlex.join(argv)}" if argv and argv[0] != sys.executable else label)
     for label, argv in steps:
         if not argv:
             continue
@@ -456,6 +517,8 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print)
         if a.action == "plan" and cmd != "tailscale":
             continue
         try:
+            if argv[:3] in (["usermod", "-aG", "wheel"], ["sudo", "-l", "-U"]):
+                require_pinned(a.admin, outside_pins(get_keys(a.admin), a.admin_key))
             if cmd == "tailscale":
                 data = json.loads(invoke(argv, capture_output=True, text=True).stdout)
                 require(isinstance(data, dict) and isinstance(data.get("OperatorUser", ""), str),
@@ -476,22 +539,27 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print)
                 invoke(argv)
             completed.append(label)
         except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as e:
+            if cmd == sys.executable and isinstance(e, subprocess.CalledProcessError):
+                e = f"key helper exited with status {e.returncode}"
             raise Refusal(f"step '{label}' failed: {e}. Completed: {', '.join(completed) or 'none'}") from None
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
-        if argv[:1] == ["_keys"] and len(argv) >= 3:
-            # The helper runs as root too: the same isolated, root-owned chain as apply.
-            problems = trusted_chain() + ([] if sys.flags.isolated else ["the key helper requires isolated Python (python3 -I)"])
+        helper = argv[:1] == ["_keys"]
+        a = None if helper else arguments(argv)
+        problems = trusted_chain()
+        if os.path.abspath(__file__) != os.path.realpath(__file__):
+            problems.append("run the script by its real path")
+        if not sys.flags.isolated:
+            action = "the key helper" if helper else "apply"
+            problems.append(f"{action} requires isolated Python (use python3 -I)")
+        if helper:
             require(not problems, "\n".join(problems))
-            import_keys(argv[1], argv[2:])
+            require(len(argv) >= 4, "key helper requires a role, user and public key lines")
+            import_keys(argv[1], argv[2], argv[3:])
         else:
-            a = arguments(argv)
-            problems = trusted_chain()
-            if not sys.flags.isolated:
-                problems.append("apply requires isolated Python (use python3 -I)")
             if a.action == "apply":
                 if os.geteuid() != 0:
                     problems.append("apply requires root (use sudo)")
