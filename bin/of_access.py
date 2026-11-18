@@ -759,6 +759,193 @@ def build(org=None, position=None, orgs_file=None, uses=None, keys=None, now_iso
     return out
 
 
+# ---------------------------------------------------------------- the weekly review (docs/access.md §5)
+
+DIGEST_HOUR = 5        # UTC, on Mondays: the first run at or after it sends the week's digest
+UNUSED_DAYS = 30       # a proposal (docs/access.md §5); an organization sets access_review: {unused_days: N}
+EXPIRING_DAYS = 14
+
+
+def _epoch(iso):
+    import calendar
+    return calendar.timegm(time.strptime(_when(iso)[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+def access_events(conn, org, since_iso):
+    """[(name, ts, payload)] of the keepers' records for ORG since SINCE_ISO: of.access_used, of.access_refused."""
+    out = []
+    try:
+        rows = conn.execute("SELECT name, ts, payload FROM event WHERE name IN ('of.access_used', 'of.access_refused')"
+                            " AND ts >= ? ORDER BY ts", (since_iso,)).fetchall()
+    except sqlite3.Error:
+        return out
+    for name, ts, pl in rows:
+        try:
+            p = json.loads(pl) if isinstance(pl, str) else (pl or {})
+        except ValueError:
+            continue
+        if p.get("org") == org:
+            out.append((name, ts, p))
+    return out
+
+
+def _lists_at(root, rev, run=subprocess.run):
+    """{(keeper, position, access): entry} of the lists committed at REV (None: the working copy's)."""
+    import yaml
+    out = {}
+    if rev is None:
+        for path in sorted(glob.glob(os.path.join(root, "registry", "access", "*.yaml"))):
+            try:
+                doc = load_list(path) or {}
+            except AccessError:
+                continue
+            for e in doc.get("entries") or []:
+                if isinstance(e, dict):
+                    out[(os.path.basename(path)[:-5], e.get("position"), e.get("access"))] = e
+        return out
+    names = (_git(root, ["ls-tree", "--name-only", rev, "registry/access/"], run) or "").split()
+    for n in names:
+        if not n.endswith(".yaml"):
+            continue
+        try:
+            doc = yaml.safe_load(_git(root, ["show", f"{rev}:{n}"], run) or "") or {}
+        except yaml.YAMLError:
+            continue
+        for e in doc.get("entries") or [] if isinstance(doc, dict) else []:
+            if isinstance(e, dict):
+                out[(os.path.basename(n)[:-5], e.get("position"), e.get("access"))] = e
+    return out
+
+
+def digest_text(org, root, conn=None, now=None, run=subprocess.run):
+    """The week's access review for ORG's structure keeper (docs/access.md §5), or None when there is nothing in it."""
+    import yaml
+    now = now or time.time()
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+    try:
+        with open(os.path.join(root, "registry", "positions.yaml")) as fh:
+            reg = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        reg = {}
+    review = reg.get("access_review") if isinstance(reg.get("access_review"), dict) else {}
+    days = review.get("unused_days") if isinstance(review.get("unused_days"), int) else UNUSED_DAYS
+    events = access_events(conn, org, iso(now - max(days, 7) * 86400)) if conn is not None else []
+    used = {}
+    for name, ts, p in events:
+        if name == "of.access_used":
+            k = (p.get("keeper"), p.get("position"), p.get("access"))
+            used[k] = max(used.get(k, ""), str(ts))
+    lines = _lists_at(root, "HEAD", run) if _git(root, ["rev-parse", "--verify", "-q", "HEAD"], run) else {}
+    unused = []
+    for (keeper, position, access), e in sorted(lines.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
+        added = (e.get("added") or {}).get("at") if isinstance(e.get("added"), dict) else None
+        last = used.get((keeper, position, access))
+        since = last or (_when(added) if added else None)
+        try:
+            idle = since is None or now - _epoch(since) >= days * 86400
+        except ValueError:
+            idle = True
+        if idle:
+            unused.append(f"- {keeper}: {position} {access} ({e.get('tier')}), "
+                          f"{'last used ' + last if last else 'never used'}: "
+                          f"`of access revoke {keeper} {position} {access} --why \"unused for {days} days\"`")
+    expiring = []
+    try:
+        with open(os.path.join(root, "registry", "grants.yaml")) as fh:
+            grants = (yaml.safe_load(fh) or {}).get("grants") or []
+    except (OSError, yaml.YAMLError):
+        grants = []
+    for g in grants:
+        if not isinstance(g, dict) or g.get("revoked") or not g.get("expires"):
+            continue
+        try:
+            left = _epoch(g["expires"]) - now
+        except ValueError:
+            continue
+        if 0 < left <= EXPIRING_DAYS * 86400:
+            expiring.append(f"- {g.get('id')} for {g.get('subject')}: expires {_when(g['expires'])}")
+    refused = [f"- {p.get('keeper')}: {p.get('position')} {p.get('access')} at {ts}: {p.get('reason')}"
+               for name, ts, p in events if name == "of.access_refused" and str(ts) >= iso(now - 7 * 86400)]
+    week_ago = _git(root, ["rev-list", "-1", f"--before={iso(now - 7 * 86400)}", "HEAD"], run)
+    before = _lists_at(root, week_ago.strip(), run) if week_ago and week_ago.strip() else {}
+    added = [f"- {k[0]}: {k[1]} {k[2]} ({lines[k].get('tier')})" for k in sorted(set(lines) - set(before), key=str)]
+    removed = [f"- {k[0]}: {k[1]} {k[2]}" for k in sorted(set(before) - set(lines), key=str)]
+    parts = []
+    if unused:
+        parts.append(f"Unused for {days} days or more, each with its revoke line:\n" + "\n".join(unused))
+    if expiring:
+        parts.append(f"Grants that expire within {EXPIRING_DAYS} days:\n" + "\n".join(expiring))
+    if refused:
+        parts.append("Lines a keeper refused this week:\n" + "\n".join(refused))
+    if added:
+        parts.append("Granted this week (committed):\n" + "\n".join(added))
+    if removed:
+        parts.append("Removed this week (committed):\n" + "\n".join(removed))
+    if not parts:
+        return None
+    return (f"Access review of {org} (docs/access.md §5; `of access map --org {org}` shows it all). You decide; a "
+            "money or production line you keep past its unused days stays on next week's review.\n\n"
+            + "\n\n".join(parts))
+
+
+def digest_state_path():
+    import of_events
+    return os.path.join(of_events.STATE_DIR, "access-digest.json")
+
+
+def due(now):
+    """True from DIGEST_HOUR UTC on a Monday."""
+    t = time.gmtime(now)
+    return t.tm_wday == 0 and t.tm_hour >= DIGEST_HOUR
+
+
+def send_digests(positions, orgs_file=None, conn=None, now=None, force=False, dry_run=False, send=None, log=print):
+    """Once per ISO week per organization, its structure keeper's digest as an --fyi message from that keeper's own
+    position, within its organization; an organization with nothing in it gets nothing, and its week still counts."""
+    import of_pulse
+    now = now or time.time()
+    if not force and not due(now):
+        return 0
+    week = time.strftime("%G-W%V", time.gmtime(now))
+    try:
+        with open(digest_state_path()) as fh:
+            st = json.load(fh) or {}
+    except (OSError, ValueError):
+        st = {}
+    sent = 0
+    for org, root in _orgs(orgs_file):
+        if not force and st.get(org) == week:
+            continue
+        keeper = of_pulse.structure_keeper(positions, org)
+        text = digest_text(org, root, conn, now) if keeper else None
+        if text:
+            if dry_run:
+                log(f"to {org}:{keeper}:\n{text}\n")
+                continue
+            if not (send or _send)(f"{org}:{keeper}", text, log):
+                continue  # tried again at the next run
+            sent += 1
+        if not dry_run:
+            st[org] = week
+    if not dry_run:
+        tmp = digest_state_path() + ".tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(st, fh)
+        os.replace(tmp, digest_state_path())
+    return sent
+
+
+def _send(to, text, log):
+    import sys
+    here = os.path.dirname(os.path.realpath(__file__))
+    r = subprocess.run([sys.executable, os.path.join(here, "of"), "send", to, "--from", to.split(":", 1)[1], "--fyi",
+                        text], capture_output=True, text=True, timeout=60,
+                       env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    if r.returncode != 0:
+        log(f"access digest to {to}: not sent ({(r.stderr or r.stdout).strip()[:200]})")
+    return r.returncode == 0
+
+
 # ---------------------------------------------------------------- printing
 
 def _table(header, rows, widths):

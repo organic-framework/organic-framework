@@ -1207,6 +1207,37 @@ class CorrectionsProcessor(Processor):
         log.close()
 
 
+class AccessDigestProcessor(Processor):
+    """The weekly access review (docs/access.md §5; bin/of_access.py): from DIGEST_HOUR UTC on Mondays, at most every
+    EVERY_S, it starts `of access digest --quiet` as a detached child, which sends each organization's structure keeper
+    its week's digest once (a state file per ISO week)."""
+    name = "access_digest"
+    version = "1"
+    from_now = True
+    tick_s = 300
+    EVERY_S = 3600
+
+    def __init__(self):
+        self.at = 0.0
+
+    def handle(self, conn, rows):
+        return False
+
+    def tick(self, conn, now):
+        import of_access
+        if of_access.due(now) and now - self.at >= self.EVERY_S:
+            self.at = now
+            import subprocess
+            here = os.path.dirname(os.path.realpath(__file__))
+            log = open(os.open(os.path.join(of_events.STATE_DIR, "access-digest.log"),
+                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+            subprocess.Popen([sys.executable, os.path.join(here, "of"), "access", "digest", "--quiet"],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+                             env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+            log.close()
+        return False
+
+
 class TempoProcessor(Processor):
     """Work booked for later, judged for a basis (bin/of_tempo.py; hand-over 277de578). It reads only its own names (a
     session's crons and background tasks, messages, asks), by its own cursor and within its time budget; once any of
@@ -1271,7 +1302,7 @@ class HandoverScopesProcessor(Processor):
 
 
 PROCESSORS = [AsksProcessor, WaitsProcessor, PasteProcessor, BlockedProcessor, ViewsProcessor, PulseProcessor,
-              DeliverProcessor, CaseProcessor, CorrectionsProcessor, TempoProcessor,
+              DeliverProcessor, CaseProcessor, CorrectionsProcessor, AccessDigestProcessor, TempoProcessor,
               PromptOriginProcessor,
               GithubProcessor, StudioCacheProcessor, HandoverScopesProcessor, ArchiveProcessor]
 try:  # of_capacity's processor (bin/of_capacity.py, owned there): spend by message id, the balancer detached

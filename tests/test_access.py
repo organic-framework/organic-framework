@@ -258,5 +258,59 @@ class KeeperListTest(AccessMapTest):
         self.assertIn("pay the hosting invoice", text)
         self.assertIn("of delegate", text)
 
+
+class DigestTest(unittest.TestCase):
+    """Step 5: the Monday review to each structure keeper (docs/access.md §5)."""
+
+    MONDAY = 1795410000.0  # 2026-11-23T05:00:00Z, a Monday
+
+    def setUp(self):
+        AccessMapTest.setUp(self)  # the same made-up organization, without AccessMapTest's own tests
+        self.state = tempfile.mkdtemp()
+        import of_events
+        self._sd = of_events.STATE_DIR
+        of_events.STATE_DIR = self.state
+        self.addCleanup(lambda: setattr(of_events, "STATE_DIR", self._sd))
+        d = os.path.join(self.repo, "registry", "access")
+        os.makedirs(d)
+        with open(os.path.join(d, "acme-vault.yaml"), "w") as fh:
+            fh.write(textwrap.dedent("""\
+                keeper: acme-vault
+                kind: vault
+                host: h1
+                entries:
+                  - position: acme_obs
+                    access: "item:old"
+                    actions: [read]
+                    tier: secret
+                    decided: AC-7
+                    approval: "passkey:r1"
+                    added: {at: "2026-09-01T10:00:00Z", by: acme_org}
+            """))
+        with open(os.path.join(self.repo, "registry", "grants.yaml"), "w") as fh:
+            fh.write("grants:\n  - id: g-soon\n    subject: acme_payer\n    tier: observe\n"
+                     "    expires: \"2026-12-03T00:00:00Z\"\n")
+        subprocess.run(GIT + ["-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(GIT + ["-C", self.repo, "commit", "-q", "-m", "lists"], check=True)
+        self.positions = [{"name": "acme_org", "role": "org", "_org": "acme"}]
+
+    def test_the_digest_names_unused_lines_with_their_revoke_and_soon_expiring_grants(self):
+        text = of_access.digest_text("acme", self.repo, None, self.MONDAY)
+        self.assertIn("never used", text)
+        self.assertIn('`of access revoke acme-vault acme_obs item:old --why "unused for 30 days"`', text)
+        self.assertIn("g-soon for acme_payer: expires 2026-12-03T00:00:00Z", text)
+        self.assertIn("Granted this week", text)  # committed within the week
+
+    def test_it_goes_once_a_week_on_mondays_from_the_keeper_s_own_position(self):
+        sent = []
+        send = lambda to, text, log: sent.append((to, text)) or True  # noqa: E731
+        wednesday = self.MONDAY + 2 * 86400
+        self.assertEqual(of_access.send_digests(self.positions, self.orgs, None, wednesday, send=send), 0)
+        self.assertEqual(of_access.send_digests(self.positions, self.orgs, None, self.MONDAY, send=send), 1)
+        self.assertEqual(of_access.send_digests(self.positions, self.orgs, None, self.MONDAY + 3600, send=send), 0)
+        self.assertEqual(sent[0][0], "acme:acme_org")
+        self.assertEqual(of_access.send_digests(self.positions, self.orgs, None, self.MONDAY + 7 * 86400, send=send),
+                         1)  # the next week
+
 if __name__ == "__main__":
     unittest.main()

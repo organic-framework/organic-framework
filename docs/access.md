@@ -113,6 +113,8 @@ This replaces the inference in `of_conductor`'s point 3. Grants already verify w
 - **The structure keeper decides**, removing with `of access revoke`. A money or production entry it keeps past 30 days unused stays on the next digest.
 - **The founder sees one line a week per organization**, in his conductor's report: the number of entries by tier, what changed, and what waits on him.
 
+Built so far, step 5 of §6 (2026-11-19, `of_server`; `bin/of_access.py`, the listener's `AccessDigestProcessor`, `tests/test_access.py` DigestTest): from 05:00 UTC on Mondays the listener starts `of access digest`, which sends each organization's structure keeper its week's review once per ISO week, as an `--fyi` message from that keeper's own position, so it never crosses organizations. It lists the committed lines unused for `access_review: {unused_days}` days (30 when unset), counted from their last `of.access_used` or, never used, from their `added` time, each with its `of access revoke` line; the grants that expire within 14 days; the lines a keeper refused this week (`of.access_refused`); and the lines committed and removed since a week ago. An organization with nothing in it gets nothing. `of access digest --dry-run --force` shows it now. The founder's weekly line in his conductor's report is `of_conductor`'s.
+
 ## 6. Who builds what
 
 The first step stands on what exists today, so it starts now.

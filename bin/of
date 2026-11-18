@@ -6261,6 +6261,17 @@ def cmd_access(args):
         if args.action == "map":
             return of_access.cli(args)
         positions, _ = load_positions()
+        if args.action == "digest":  # docs/access.md §5; the listener runs it on Mondays (AccessDigestProcessor)
+            import of_store
+            conn = of_store.connect()
+            try:
+                n = of_access.send_digests(positions, ORGS_FILE, conn, force=args.force, dry_run=args.dry_run,
+                                           log=(lambda m: None) if args.quiet else print)
+            finally:
+                conn.close()
+            if not args.quiet and not args.dry_run:
+                print(f"access digests sent: {n}")
+            return 0
         if args.action == "request":
             if not (args.keeper and args.access and args.why):
                 raise OfError("usage: of access request --keeper K --access A [--actions a,b] [--limit JSON] --why …")
@@ -7391,7 +7402,10 @@ def main(argv=None):
     pf.add_argument("--to", required=True, help="the target's commit id (not a branch)")
     pf.set_defaults(fn=cmd_protected)
     acc = sub.add_parser("access", help="access through keepers: the map of who reaches what (docs/access.md)")
-    acc.add_argument("action", choices=["map", "request", "grant", "revoke", "link", "record"])
+    acc.add_argument("action", choices=["map", "request", "grant", "revoke", "link", "record", "digest"])
+    acc.add_argument("--dry-run", action="store_true", help="digest: print, send nothing")
+    acc.add_argument("--force", action="store_true", help="digest: send now, whatever the day")
+    acc.add_argument("--quiet", action="store_true", help="digest: no output (the listener's run)")
     acc.add_argument("keeper_name", nargs="?", help="grant, revoke, link, record: the keeper")
     acc.add_argument("position_name", nargs="?", help="grant, revoke, link, record: the position")
     acc.add_argument("access_value", nargs="?", help="grant, revoke, link, record: item:<id>, dest:<address> or "
