@@ -152,6 +152,66 @@ def _files_under(root, skipped):
     return out
 
 
+def custody_paths(docs=None):
+    """[(organization, credential id, path pattern)] of every credential a listed registry marks `custody: true`: a
+    key the agents' home never holds (docs/registry.md, Credentials; hand-over a1bde073 from of_architect, after
+    of_server's review of the agent host plan, message 01a1efa4-fddf). Patterns are expanded as the guard's catalogue
+    expands them (of_credentials._abs) and matched as it matches them."""
+    import of_credentials
+    if docs is None:
+        try:
+            import of_tools
+            docs = dict(of_tools.registries())
+        except Exception:  # noqa: BLE001 - no registry here: nothing is marked, the guard's names still apply
+            docs = {}
+    out = []
+    for org, doc in sorted((docs or {}).items()):
+        creds = (doc or {}).get("credentials") if isinstance(doc, dict) else None
+        for cid, c in sorted((creds or {}).items()) if isinstance(creds, dict) else ():
+            if isinstance(c, dict) and c.get("custody") is True:
+                for path in c.get("paths") or []:
+                    if isinstance(path, str) and path.strip():
+                        out.append((org, str(cid), of_credentials._abs(path)))
+    return out
+
+
+def custody_of(path, pats):
+    """'<org>/<credential>' when `path` is a custody credential's file (its pattern, or under its folder), else None."""
+    import of_credentials
+    for org, cid, pat in pats or []:
+        if of_credentials._match(pat, path) or (not any(ch in pat for ch in "*?[") and path.startswith(pat.rstrip("/") + "/")):
+            return f"{org}/{cid}"
+    return None
+
+
+def drop_custody(files, skipped, pats, log=print):
+    """`files` without every custody credential's path, each named in `skipped` and printed."""
+    keep = []
+    for f in files:
+        who = custody_of(f, pats)
+        if who:
+            skipped.append({"path": f, "reason": f"custody: {who}"})
+            log(f"  left out (custody: {who}): {f}")
+        else:
+            keep.append(f)
+    return keep
+
+
+def filter_files_list(path, pats, log=print):
+    """Rewrite a bundle's files.txt without the custody credentials' paths, before a copy sends any file (a
+    credential marked after prepare, or a bundle another user prepared). Returns the paths left out."""
+    try:
+        with open(path) as fh:
+            lines = [x.rstrip("\n") for x in fh if x.strip()]
+    except OSError:
+        return []
+    skipped = []
+    keep = drop_custody(lines, skipped, pats, log=log)
+    if skipped:
+        _write_private(path, "".join(f + "\n" for f in keep))
+    return [x["path"] for x in skipped]
+
+
 def session_files(entry, tmp_root, memory_dir=None):
     """Every file one plan entry needs on the other machine, and the large scratch files left behind."""
     d, sid = entry["config_dir"], entry["session"]
@@ -323,7 +383,7 @@ def prepare(positions, only, out_dir, log=print, entries=None, tmp_root=None):
         f, s = session_files(e, tmp_root, e["memory_dir"])
         files += f
         skipped += s
-    files = sorted(set(files))
+    files = drop_custody(sorted(set(files)), skipped, custody_paths(), log=log)  # never into the agents' home
     size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
     plan = {"kind": "carry", "v": 1, "org": org, "prepared_at": of_capacity._iso(time.time()),
             "machine": socket.gethostname(),
@@ -398,12 +458,18 @@ def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=
             base + ["-R", f"--files-from={b}/files.txt", f"{src.split(':', 1)[0]}:/", f"{b}/files/"]]
 
 
-def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, log=print, run=subprocess.run):
+def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, log=print, run=subprocess.run,
+         pats=None):
     key = _key_ok(key)
     cmds = copy_commands(bundle, key, to=to, frm=frm, bwlimit=bwlimit)
     env = dict(os.environ, SSH_AUTH_SOCK="", OF_AUTOMATION="1")
     os.makedirs(bundle, mode=0o700, exist_ok=True)
-    for c in cmds:
+    pats = custody_paths() if pats is None else pats
+    files_txt = os.path.join(bundle, "files.txt")
+    for i, c in enumerate(cmds):
+        # the list the file copy reads is filtered first: before a push's first command, after a pull fetched it
+        if (to and i == 0) or (frm and i == len(cmds) - 1):
+            filter_files_list(files_txt, pats, log=log)
         log("$ " + " ".join(c))
         if dry_run:
             continue
