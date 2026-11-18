@@ -323,6 +323,31 @@ class CommentTest(unittest.TestCase):
         self.assertEqual(of_guard._tokens("echo a#b c # d"), ["echo", "a#b", "c"])
 
 
+class FixtureTokensTest(unittest.TestCase):
+    """G1.2 (a user organization's security keeper through of_capacity, msg 01a1ef27-a8ad, 2026-11-18): a test fixture
+    listing tokens refused every outside run on its repository."""
+
+    def test_a_fixture_that_lists_tokens_is_no_credential(self):
+        import of_classify
+        for p in ("crates/tax_policy/tests/fixtures/crafted_tokens.txt", "tests/four_tokens.txt",
+                  "pkg/testdata/token-prices.txt", "fixtures/bribe_tokens.txt"):
+            self.assertFalse(of_classify.secret_path(p), p)
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": "cat " + p}, cwd="/Users/alex/repo"), p)
+            self.assertIsNone(of_guard.critical_deny("Read", {"file_path": "/Users/alex/repo/" + p}), p)
+        for p in ("tests/fixtures/token.txt", "tests/fixtures/gh-token.txt", "tests/api_token.txt",  # a credential's name
+                  "work/crafted_tokens.txt", "scratch/tokens.txt", "token.txt", "notes/k8s-token.txt"):  # outside tests
+            self.assertTrue(of_classify.secret_path(p), p)
+            self.assertTrue(of_guard.critical_deny("Bash", {"command": "cat " + p}, cwd="/Users/alex/repo"), p)
+            self.assertTrue(of_guard.critical_deny("Read", {"file_path": "/Users/alex/repo/" + p}), p)
+
+    def test_the_native_rule_names_a_credential_by_its_last_part(self):
+        import of_classify
+        rules = of_classify.deny_rules()
+        self.assertNotIn("Read(**/*token*.txt)", rules)
+        for g in ("token.txt", "*-token.txt", "*_token.txt", "*.token.txt"):
+            self.assertIn(f"Read(**/{g})", rules)
+
+
 class CloudCacheTest(unittest.TestCase):
     """G1.12 (of_architect's condition 5)."""
 
