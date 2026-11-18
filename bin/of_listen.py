@@ -1797,9 +1797,9 @@ def run(stop=None, log=print, rebuild=False):
     import threading
     import of_store
     if stop is None:  # the service: the watchdog asks for every thread's stack before it restarts a stuck one
-        import faulthandler
+        import of_stacks
         import signal
-        faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+        of_stacks.install(signal.SIGUSR1, sys.stderr)  # by a Python handler: faulthandler's C dump crashed on 3.15.2
     spool_conn = []
 
     def drain_during_start():   # its own connection: SQLite's objects stay in the thread that made them

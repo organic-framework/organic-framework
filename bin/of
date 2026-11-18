@@ -4044,9 +4044,9 @@ def cmd_relay(args):
         return 0
     if args.action == "watchdog":  # one check; launchd runs it every minute (docs/health.md §5)
         return 0 if of_relay.watchdog() != "not-under-launchd" else 1
-    import faulthandler
+    import of_stacks
     import signal
-    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)  # the watchdog's stack dump
+    of_stacks.install(signal.SIGUSR1, sys.stderr)  # the watchdog's stack dump (of_stacks: never faulthandler's C dump)
     cfg = of_ship.config()
     servers, default = of_ship.org_servers(cfg), cfg["server_url"].rstrip("/")
     clients = {}

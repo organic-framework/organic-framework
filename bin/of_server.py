@@ -2024,12 +2024,13 @@ WATCH_S = 2.0  # how often the server looks for a changed module under bin/
 
 
 def run(log=None, config=None):
-    import faulthandler
     import signal
+    import of_stacks
     log = log or (lambda m: log_line(m, sys.stdout))
     # `kill -USR1 <pid>` (the watchdog does it before a restart) writes every thread's stack to server.log, so a hang
-    # names where it waits (of_conductor, msg 01a1d63f-d434: a hang that left no trace).
-    faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+    # names where it waits (of_conductor, msg 01a1d63f-d434: a hang that left no trace); by a Python handler, since
+    # faulthandler's C dump crashed the process on Python 3.15.2 (of_stacks; of_conductor, msg 01a1f10f-bb50)
+    of_stacks.install(signal.SIGUSR1, sys.stderr)
     app = App(load_config(config) if config else None, writer_process=True, config_path=config)
     httpd = app.serve()
     log(f"of-server {VERSION} listening on {httpd.server_address[0]}:{httpd.server_address[1]}, "
