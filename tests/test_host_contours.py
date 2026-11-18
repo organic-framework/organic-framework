@@ -123,11 +123,11 @@ class HostContours(unittest.TestCase):
                 change = ["gpasswd", "-d", "of", "wheel"]
             steps = C.plan(a, s)
             self.assertEqual([argv for _, argv in steps if argv], [sudo, change])
-            for rule in ("(root) /bin/true", "(ALL : ALL) ALL"):
+            for rule in ("(root) /bin/true", "(ALL) NOPASSWD: /usr/bin/systemctl restart sshd", "(ALL : ALL) /bin/sh, /usr/bin/id", "(ALL : ALL) ALL", "(ALL) NOPASSWD: ALL"):
                 with self.subTest(primary=primary, rule=rule):
                     listing = f"User owner may run the following commands on host:\n    {rule}\n"
                     invoke = Mock(side_effect=[Mock(stdout="owner P"), Mock(stdout=listing), Mock()])
-                    if rule.startswith("(ALL"):
+                    if rule.endswith(") ALL") or rule.endswith(": ALL"):
                         C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock())
                         expected = [passwd, sudo, change]
                     else:
