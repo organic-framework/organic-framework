@@ -22,6 +22,7 @@ import of_server  # noqa: E402
 
 class Hello(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        getattr(self.server, "seen", []).append((self.path, self.headers.get("Authorization")))
         body = json.dumps({"ok": True, "forwarded": getattr(self.server, "forwarded", False)}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
@@ -40,6 +41,7 @@ class TLSTest(unittest.TestCase):
         self.cert, self.key, self.sha = of_server.tls_init({"state_dir": os.path.join(self.tmp, "a")})
         self.other, _, _ = of_server.tls_init({"state_dir": os.path.join(self.tmp, "b")})
         self.srv = of_server.TLSServer(("127.0.0.1", 0), Hello, self.cert, self.key)
+        self.srv.seen = []
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.url = f"https://127.0.0.1:{self.srv.server_address[1]}"
         self.home = os.path.join(self.tmp, "home")
@@ -87,6 +89,26 @@ class TLSTest(unittest.TestCase):
         self.assertEqual(c.url, self.url)
         with urllib.request.urlopen(c.url + "/", timeout=10, context=of_client.tls_context(c.url)) as r:
             self.assertTrue(json.loads(r.read())["ok"])
+
+    def test_the_scheme_is_read_without_case_and_the_client_compares_the_pin_byte_for_byte(self):
+        self.pin(self.cert)
+        loud = f"HTTP://127.0.0.1:{self.srv.server_address[1]}"
+        self.assertEqual(of_client.pinned_url(loud)[:8], "https://")
+        c = of_client.Client(self.url)
+        self.assertEqual(c._request("GET", "/v1/x")[0], 200)
+        with mock.patch.object(of_client, "pin_sha256", lambda url: "0" * 64):  # a pin that is not this certificate
+            with self.assertRaises(Exception):
+                of_client.Client(self.url)._request("GET", "/v1/x")
+
+    def test_the_health_checks_send_the_bearer_only_through_the_pin(self):
+        """of_secrets-review on PR 350: of_health took the https token and sent it to the plain http address."""
+        import of_health
+        plain = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self.pin(self.cert)
+        of_health.server_checks(url=plain, token="tok-1")
+        self.assertIsNotNone(of_health.server_health(url=plain, timeout=10))
+        self.assertIn(("/v1/health/checks", "Bearer tok-1"), self.srv.seen)  # arrived, over the pinned TLS
+        self.assertIn(("/v1/health", None), self.srv.seen)
 
     def test_the_server_keeps_its_error_handler(self):
         self.assertIn("handle_error", of_server.Server.__dict__)  # PR 350: it had been moved into tls_init

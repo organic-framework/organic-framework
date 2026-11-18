@@ -77,7 +77,8 @@ DEFAULTS = {
     # /v1/health without authentication: counts and errors on a local server; on a public
     # ingress only {ok, version}.
     "health_detail": True,
-    # {port, cert, key}: a second listener, TLS only, on `host`, for clients that reach this server through a forward
+    # {port, cert, key[, host]}: a second listener, TLS only, on 127.0.0.1 unless `host` names another address, for
+    # clients that reach this server through a forward
     # (docs/server-several-machines.md 4.8): they trust only its pinned certificate, so a process that takes the
     # forwarded port while the forward is down gets no bearer, batch or code. Its /v1/health answers {ok, version}.
     # `of server tls-init` makes the certificate and adds this. Absent: no second listener.
@@ -1867,7 +1868,8 @@ TLS_PORT = 18201
 
 
 def tls_init(cfg, port=TLS_PORT, run=subprocess.run):
-    """Make the second listener's key and self-signed certificate (P-256, for 127.0.0.1) under the state folder.
+    """Make the second listener's key and self-signed leaf certificate (P-256, for 127.0.0.1, no CA: it signs nothing
+    else) under the state folder.
     Returns (cert path, key path, SHA-256 of the certificate's DER). An existing pair is kept, never replaced: every
     client pins this certificate."""
     import hashlib
@@ -1879,8 +1881,8 @@ def tls_init(cfg, port=TLS_PORT, run=subprocess.run):
         conf = os.path.join(d, "req.cnf")
         with open(conf, "w") as fh:
             fh.write("[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n[dn]\nCN = of-server\n"
-                     "[ext]\nsubjectAltName = IP:127.0.0.1\nbasicConstraints = critical,CA:TRUE,pathlen:0\n"
-                     "keyUsage = critical,digitalSignature,keyCertSign\nextendedKeyUsage = serverAuth\n"
+                     "[ext]\nsubjectAltName = IP:127.0.0.1\nbasicConstraints = critical,CA:FALSE\n"
+                     "keyUsage = critical,digitalSignature\nextendedKeyUsage = serverAuth\n"
                      "subjectKeyIdentifier = hash\n")
         old = os.umask(0o077)
         try:
@@ -1998,7 +2000,8 @@ class App:
         t = self.cfg.get("tls")
         if not t:
             return None
-        return TLSServer((self.cfg["host"], int(t.get("port") or TLS_PORT)), make_handler(self), t["cert"], t["key"])
+        return TLSServer((t.get("host") or "127.0.0.1", int(t.get("port") or TLS_PORT)), make_handler(self),
+                         t["cert"], t["key"])  # loopback unless named: the forward's end is this machine
 
     def serve(self, host=None, port=None):
         httpd = Server((host or self.cfg["host"], self.cfg["port"] if port is None else port), make_handler(self))
