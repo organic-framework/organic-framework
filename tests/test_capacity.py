@@ -2322,23 +2322,37 @@ class OtherHarnesses(unittest.TestCase):
         # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
         out = []
         emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
-        cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9"},
+        pol = {"training_cards": {"codex": "OF-27"}}
+        cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9",
+                  "claimed_at": "2026-11-18T10:56:22Z"},
                  {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open"},
-                 {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8"}]
-        of_capacity.record_training("codex", "off", "ChatGPT pro", "of-27", emit=emit, cards=cards)
+                 {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8"},
+                 {"ref": "OF-31", "event_id": "01a1ee91-961b-0000", "task": None, "state": "answered", "closed_by": "e7"}]
+        rec = lambda src, cs=cards, p=pol: of_capacity.record_training("codex", "off", "ChatGPT pro", src, emit=emit,  # noqa: E731
+                                                                        cards=cs, policy=p)
+        rec("of-27")
         self.assertEqual(out[0], ("harness_training", {"harness": "codex", "training": "off", "account": "ChatGPT pro",
                                                        "source": "of-27", "card": "OF-27",
                                                        "card_event": "01a1ee41-3cdd-74bc", "closed_by": "e9"}))
-        of_capacity.record_training("codex", "off", None, "01a1ee40-c757", emit=emit, cards=cards)  # an answered ask
-        self.assertEqual(out[1][1]["card"], "OF-26")
-        # of_review, PR 334: a Codex 'off' stands only on the owner's closed card
-        for src in ("OF-99999", "the founder said so in my session", "x", "OF-30"):
-            with self.assertRaisesRegex(ValueError, "owner's card"):
-                of_capacity.record_training("codex", "off", None, src, emit=emit, cards=cards)
-        of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards)  # 'on' locks: no card
+        # of_review and of_secrets-review, PR 334: only the card named for the setting, closed by the owner's own claim
+        for src in ("OF-99999", "the founder said so in my session", "x", "OF-30", "OF-26", "OF-31"):
+            with self.assertRaisesRegex(ValueError, "training_cards"):
+                rec(src)
+        unclaimed = [dict(cards[0], claimed_at=None)] + cards[1:]  # its asker closed it on its own word
+        with self.assertRaisesRegex(ValueError, "training_cards"):
+            rec("OF-27", unclaimed)
+        with self.assertRaisesRegex(ValueError, "training_cards"):
+            rec("OF-27", cards, {})  # no card named for the setting
+        of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards, policy=pol)  # locks only
         for bad in (("gemini", "off", "x"), ("codex", "maybe", "x"), ("codex", "off", " ")):
             with self.assertRaises(ValueError):
-                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit, cards=cards)
+                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit, cards=cards, policy=pol)
+        # the reader re-checks the card on each read
+        good = {"codex": {"training": "off", "card_event": "01a1ee41-3cdd-74bc"}}
+        self.assertEqual(of_capacity.training_verified("codex", good, cards, pol), "off")
+        self.assertIsNone(of_capacity.training_verified("codex", {"codex": {"training": "off"}}, cards, pol))
+        self.assertIsNone(of_capacity.training_verified("codex", good, unclaimed, pol))
+        self.assertEqual(of_capacity.training_verified("codex", {"codex": {"training": "on"}}, cards, pol), "on")
         out.clear()
         with tempfile.TemporaryDirectory() as t:
             path = os.path.join(t, "settings.json")
