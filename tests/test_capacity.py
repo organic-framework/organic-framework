@@ -2322,12 +2322,15 @@ class OtherHarnesses(unittest.TestCase):
         # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
         out = []
         emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
-        pol = {"ofteam": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"}}, "other": {"positions": []}}
+        pol = {"ofteam": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"},
+                          "positions": [{"name": "of_capacity"}]}, "other": {"positions": []}}
         cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9",
-                  "claimed_at": "2026-11-18T10:56:22Z"},
-                 {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open"},
-                 {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8"},
-                 {"ref": "OF-31", "event_id": "01a1ee91-961b-0000", "task": None, "state": "answered", "closed_by": "e7"}]
+                  "claimed_at": "2026-11-18T10:56:22Z", "position": "of_capacity"},
+                 {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open", "position": "of_capacity"},
+                 {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8",
+                  "position": "of_capacity"},
+                 {"ref": "OF-31", "event_id": "01a1ee91-961b-0000", "task": None, "state": "answered", "closed_by": "e7",
+                  "position": "of_capacity"}]
         rec = lambda src, cs=cards, p=pol: of_capacity.record_training("codex", "off", "ChatGPT pro", src, emit=emit,  # noqa: E731
                                                                         cards=cs, docs=p)
         rec("of-27")
@@ -2343,12 +2346,11 @@ class OtherHarnesses(unittest.TestCase):
             rec("OF-27", unclaimed)
         with self.assertRaisesRegex(ValueError, "training_cards"):
             rec("OF-27", cards, {})  # no registry names a card for the setting
-        # of_review, PR 334: capacity.yaml, which any agent may write, names nothing: another done task stays shut
         other_done = cards + [{"ref": "OF-32", "event_id": "01a1ef00-0000-7000", "task": True, "state": "done",
-                               "claimed_at": "2026-11-18T13:00:00Z", "closed_by": "e6"}]
+                               "claimed_at": "2026-11-18T13:00:00Z", "closed_by": "e6", "position": "of_capacity"}]
         from unittest import mock
         with mock.patch.object(of_capacity, "load_policy", lambda: {"training_cards": {"codex": "OF-32"}}):
-            with self.assertRaisesRegex(ValueError, "training_cards"):
+            with self.assertRaisesRegex(ValueError, "training_cards"):  # capacity.yaml names nothing
                 rec("OF-32", other_done)
         of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards, docs=pol)  # locks only
         for bad in (("gemini", "off", "x"), ("codex", "maybe", "x"), ("codex", "off", " ")):
@@ -2360,31 +2362,29 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIsNone(of_capacity.training_verified("codex", {"codex": {"training": "off"}}, cards, pol))
         self.assertIsNone(of_capacity.training_verified("codex", good, unclaimed, pol))
         self.assertEqual(of_capacity.training_verified("codex", {"codex": {"training": "on"}}, cards, pol), "on")
-        # of_review, PR 334: another organization's own done task does not unlock when the registries disagree, and
-        # an organization names only its own cards
-        b12 = {"ref": "B-12", "event_id": "01a1ef0f-0000-7000", "task": True, "state": "done", "claimed_at": "t"}
-        open27 = [dict(cards[0], state="open", claimed_at=None)] + cards[1:] + [b12]
-        two = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "B-12"}})
+        # a card's organization comes from the card itself (its filer's registry), never from a declared prefix
+        b12 = {"ref": "BE-9", "event_id": "01a1ef0f-0000-7000", "task": True, "state": "done", "claimed_at": "t",
+               "org": "b"}
+        as1 = {"ref": "AS-1", "event_id": "01a1ef0f-1111-7000", "task": True, "state": "open", "org": "a"}
+        two = {"a": {"card_prefix": "AS", "training_cards": {"codex": "AS-1"}},
+               "b": {"card_prefix": "BE", "training_cards": {"codex": "BE-9"}}}
         rb = {"codex": {"training": "off", "card_event": "01a1ef0f-0000-7000"}}
-        self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two))  # OF-27 open, B-12 done: unknown
-        self.assertEqual(of_capacity.training_verified("codex", rb, open27, two, org="orgb"), "off")  # orgb's own runs
-        self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two, org="ofteam"))
-        # a second organization may name the card the first names for the same harness (one setting per account)...
-        lean = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "OF-27"}})
-        self.assertEqual(of_capacity.training_cards_named("codex", lean), {"ofteam": "OF-27", "orgb": "OF-27"})
-        # ...but never another organization's card that organization does not name for it
-        stolen = {"ofteam": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"}},
-                  "orgb": {"card_prefix": "B", "training_cards": {"codex": "OF-30"}}}
-        self.assertEqual(of_capacity.training_cards_named("codex", stolen), {"ofteam": "OF-27"})
-        self.assertEqual(of_capacity.training_cards_named("codex", {"orgb": {"card_prefix": "B",
-                                                                             "training_cards": {"codex": "OF-27"}}}), {})
-        self.assertEqual(of_capacity.training_cards_named("codex", {"x": {"training_cards": "OF-27"}}), {})  # no crash
-        # of_secrets-review, PR 334: a prefix two registries claim owns no card (the last read took the other's)
-        clash = {"acme-shop": {"card_prefix": "AS", "training_cards": {"codex": "AS-1"}},
-                 "alpha-store": {"card_prefix": "AS", "training_cards": {"codex": "AS-2"}}}
-        self.assertEqual(of_capacity.training_cards_named("codex", clash), {})
-        self.assertEqual(of_capacity.training_cards_named("codex", dict(clash, ofteam=pol["ofteam"])),
-                         {"ofteam": "OF-27"})
+        self.assertIsNone(of_capacity.training_verified("codex", rb, [as1, b12], two))  # a names an open card: unknown
+        # of_review's repro: a third registry declaring prefix AS with no card changes nothing
+        self.assertIsNone(of_capacity.training_verified("codex", rb, [as1, b12], dict(two, c={"card_prefix": "AS"})))
+        self.assertEqual(of_capacity.training_verified("codex", rb, [as1, b12], two, org="b"), "off")  # b's own runs
+        self.assertIsNone(of_capacity.training_verified("codex", rb, [as1, b12], two, org="a"))
+        # a second organization may name the card its own organization names for the same harness...
+        lean = dict(pol, orgb={"training_cards": {"codex": "OF-27"}})
+        self.assertEqual(of_capacity.training_cards_named("codex", lean, cards=cards), {"ofteam": "OF-27", "orgb": "OF-27"})
+        self.assertEqual(of_capacity.training_verified("codex", good, cards, lean), "off")
+        # ...never one its own organization does not name for it, nor a card no registry can place
+        stolen = dict(pol, orgb={"training_cards": {"codex": "OF-30"}})
+        self.assertEqual(of_capacity.training_cards_named("codex", stolen, cards=cards), {"ofteam": "OF-27"})
+        self.assertIsNone(of_capacity.training_verified("codex", good, cards, stolen))  # a registry's entry is bad
+        self.assertEqual(of_capacity.training_cards_named("codex", {"orgb": {"training_cards": {"codex": "OF-27"}}},
+                                                          cards=cards), {})
+        self.assertEqual(of_capacity.training_cards_named("codex", {"x": {"training_cards": "OF-27"}}, cards=cards), {})
         out.clear()
         with tempfile.TemporaryDirectory() as t:
             path = os.path.join(t, "settings.json")

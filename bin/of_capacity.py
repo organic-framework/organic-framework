@@ -533,33 +533,57 @@ def training_readings(conn=None):
     return out
 
 
-def training_cards_named(harness, docs=None, org=None):
-    """{organization: card id} the listed registries name for a harness's training setting (`training_cards:
-    {<harness>: <card id>}` at a registry's top level), each only when the card is that organization's own (its card
-    prefix), or one the card's own organization names for the same harness (the account's setting confirmed once):
-    a registry is its structure keeper's committed and reviewed file, and it speaks for its own owner's cards only.
-    capacity.yaml, which any agent session may write, names none (of_review, PR 334, after of_server on start_in,
-    PR 330). `org`: that organization's alone."""
-    docs = tool_docs_all() if docs is None else docs
-    raw, claims = {}, {}
+def _raw_training_cards(harness, docs):
+    """{organization: card id} as each registry writes it for `harness`, well-formed ids only."""
+    out = {}
     for o, doc in (docs or {}).items():
         tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
         v = tc.get(harness) if isinstance(tc, dict) else None
-        m = of_events.REF_RE.match(str(v or "").strip())
-        claims.setdefault(str(_card_prefix(o, doc)).upper(), set()).add(o)
-        if m:
-            raw[o] = (m.group(1).upper(), str(v).strip().upper())
-    # a prefix two registries claim owns no card here: the last one read would take the first one's cards
-    # (of_secrets-review, PR 334; default prefixes collide on their own: acme-shop and alpha-store are both AS)
-    prefix = {pre: next(iter(os_)) for pre, os_ in claims.items() if len(os_) == 1}
+        if of_events.REF_RE.match(str(v or "").strip()):
+            out[o] = str(v).strip().upper()
+    return out
+
+
+def card_org(card, docs):
+    """The organization a card belongs to, from the card itself: the organization whose registry lists the position
+    that filed it (its `org` when the asks view carries one). None when no registry lists that position, or more than
+    one does. Never from a declared card prefix, which two registries may share (of_review, PR 334)."""
+    if not card:
+        return None
+    if card.get("org"):
+        return card["org"]
+    name = card.get("position")
+    hits = [o for o, doc in (docs or {}).items() if isinstance(doc, dict)
+            and any(isinstance(p, dict) and (p.get("name") == name or name in (p.get("aliases") or []))
+                    for p in doc.get("positions") or [])]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _asks(cards):
+    if cards is not None:
+        return cards
+    import of_asks
+    return of_asks.current_asks().get("asks") or []
+
+
+def training_cards_named(harness, docs=None, org=None, cards=None):
+    """{organization: card id} the listed registries name for a harness's training setting (`training_cards:
+    {<harness>: <card id>}` at a registry's top level), each only when the card is that organization's own, or one
+    the card's own organization names for the same harness (the account's setting confirmed once). A card's
+    organization is read from the card (card_org), never from a declared prefix (of_review, PR 334). A registry is
+    its structure keeper's committed and reviewed file, and it speaks for its own owner's cards only; capacity.yaml,
+    which any agent session may write, names none (after of_server on start_in, PR 330). `org`: that one's alone."""
+    docs = tool_docs_all() if docs is None else docs
+    raw = _raw_training_cards(harness, docs)
+    if not raw:
+        return {}
+    by_ref = {str(a.get("ref") or "").upper(): a for a in _asks(cards)}
     out = {}
-    for o, (pre, card) in raw.items():
+    for o, card in raw.items():
         if org is not None and o != org:
             continue
-        owner_org = prefix.get(pre)
-        # its own card, or one the card's own organization names for this harness too: the setting is one per
-        # account, so a second organization may lean on the first's confirmation, never on any other closed card
-        if owner_org == o or (owner_org and raw.get(owner_org, (None, None))[1] == card):
+        own = card_org(by_ref.get(card), docs)
+        if own == o or (own and raw.get(own) == card):
             out[o] = card
     return out
 
@@ -586,13 +610,13 @@ def owner_closed_card(source, cards=None, harness="codex", docs=None, org=None):
     done (his claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks
     answered`, or an answered card about something else unlocks nothing (of_secrets-review and of_review, PR 334).
     `cards`: the asks as the listener's view holds them (of_asks.current_asks, never a read of the whole log)."""
-    named = set(training_cards_named(harness, docs, org).values())
     src = str(source or "").strip()
-    if not named or not src:
+    if not src:
         return None
-    if cards is None:
-        import of_asks
-        cards = of_asks.current_asks().get("asks") or []
+    cards = _asks(cards)
+    named = set(training_cards_named(harness, docs, org, cards).values())
+    if not named:
+        return None
     for a in cards or []:
         ref, eid = str(a.get("ref") or ""), str(a.get("event_id") or "")
         if ref.upper() == src.upper() or eid == src:
@@ -673,22 +697,31 @@ def training_registry_problems(docs=None, cards=None):
         out += training_cards_problems(o, doc, cards, prefix=pre)
         if len(claims.get(pre, [])) > 1:
             out.append(f"{o}:registry/positions.yaml: training_cards: card prefix {pre} is also "
-                       f"{', '.join(x for x in sorted(claims[pre]) if x != o)}'s, so it owns no card; set card_prefix")
+                       f"{', '.join(x for x in sorted(claims[pre]) if x != o)}'s, so its card ids are ambiguous; set "
+                       f"card_prefix")
     return out
 
 
 def training_verified(harness, readings=None, cards=None, docs=None, org=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
     card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's
-    own claim. `org`: for that organization's runs, only its own named card counts. With no `org`, every registry
-    that names a card must name the same one, or the reading is unknown (of_review, PR 334: one organization's card
-    unlocked every run while another's named card was still open). A reading written any other way, or with no card,
-    reads as None (unknown), so a gate that sends only on 'off' stays shut (of_secrets-review, PR 334)."""
+    own claim. `org`: for that organization's runs, its own named entry must hold. With no `org`, every registry
+    that names a card must name the same one and every such entry must hold, or the reading is unknown (of_review,
+    PR 334). A reading written any other way, or with no card, reads as None (unknown), so a gate that sends only on
+    'off' stays shut (of_secrets-review, PR 334)."""
     r = (readings if readings is not None else training_readings()).get(harness) or {}
     v = r.get("training")
     if harness == "codex" and v == "off":
-        named = training_cards_named(harness, docs, org)
-        if len(set(named.values())) != 1 or not owner_closed_card(r.get("card_event") or "", cards, harness, docs, org):
+        docs = tool_docs_all() if docs is None else docs
+        cards = _asks(cards)
+        raw = _raw_training_cards(harness, docs)
+        named = training_cards_named(harness, docs, None, cards)
+        if org is not None:
+            if org not in named:
+                return None
+        elif not raw or named != raw or len(set(raw.values())) != 1:
+            return None
+        if not owner_closed_card(r.get("card_event") or "", cards, harness, docs, org):
             return None
     return v if v in ("off", "on") else None
 
