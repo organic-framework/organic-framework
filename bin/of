@@ -2774,17 +2774,22 @@ def cmd_conductor(args):
         return 0
 
 
-def _panel_panes(v, panes_now, dry_run, say, anchor=None):
+def _panel_panes(v, panes_now, dry_run, say, anchor=None, start=True):
     """{panel name: pane id} for a view's panels (views.yaml `panels: {name: command}`, placed in `positions` as
     `panel:<name>`): the pane labelled "▤ <name>", started in a new pane when there is none (hand-over a8ee7e96: a
     panel in a pinned view). The layout then places it like an agent. Only a built-in panel runs, with the command the
     code gives its name (of_views.panel_spec, this Python and this bin/); the command stored in views.yaml is never
     run. The listener applies every view each minute, as the person, and any agent can write that file, so a stored
     command was a way to run anything (of_review on organic-framework PR 345, msg 01a1efc7-283b; of_server, msg
-    01a1efce-da1d: the reader is the wall that holds whoever wrote the file). Another name is refused and named."""
+    01a1efce-da1d: the reader is the wall that holds whoever wrote the file). Another name is refused and named.
+    A panel starts beside its anchor, the view's first live agent. A view of panels alone starts its first panel in
+    the view's own tab, made when missing: a machine that holds no position, such as the owner's laptop under
+    contours, has no agent to split (hand-over 830275c0; docs/contours.md §3). A view that names agents and has none
+    live starts nothing: it waits for them. start=False only finds the panes."""
     import of_views
     out = {}
     here = os.path.dirname(os.path.realpath(__file__))
+    alone = not [n for n in v.get("positions") or [] if not str(n).startswith("panel:")]
     for name in (v.get("panels") or {}):
         try:
             name, command = of_views.panel_spec(name, sys.executable, here)
@@ -2794,11 +2799,26 @@ def _panel_panes(v, panes_now, dry_run, say, anchor=None):
             continue
         label = f"▤ {name}"
         hit = next((p["pane_id"] for p in panes_now if (p.get("label") or "").strip() == label), None)
-        if not hit and not dry_run:
+        if not hit and start and (anchor or alone):
             import of_capacity
-            r = herdr_json("pane", "split", anchor, "--direction", "right", "--ratio", of_views.split_ratio(v),
-                           "--cwd", os.path.expanduser("~"), "--no-focus") if anchor else None
+            home, follow = os.path.expanduser("~"), None
+            if anchor:
+                cmd = ["pane", "split", anchor, "--direction", "right", "--ratio", of_views.split_ratio(v),
+                       "--cwd", home, "--no-focus"]
+            else:
+                cmd, follow = of_capacity.place_command(
+                    v["workspace"], v.get("tab") or v["name"], home, herdr_json("workspace", "list")["workspaces"],
+                    herdr_json("tab", "list")["tabs"], herdr_json("pane", "list")["panes"])
+            if dry_run:
+                say(f"  panel {name}: would start it: herdr {' '.join(cmd)}")
+                continue
+            r = herdr_json(*cmd)
             hit = of_capacity.first_pane_id(r) if r else None
+            if hit and follow:  # a new workspace: its first tab gets the view's tab label, as of spawn does
+                tab_id = next((p.get("tab_id") for p in herdr_json("pane", "list")["panes"]
+                               if p.get("pane_id") == hit), None)
+                if tab_id:
+                    herdr_do(["tab", "rename", tab_id, follow[1]], False)
             if hit:
                 herdr_do(["pane", "run", hit, command], False)
                 herdr_do(["pane", "rename", hit, label], False)
@@ -4364,6 +4384,9 @@ def view_apply(v, dry_run=False, quiet=False):
     missing = [n for n in v.get("positions") or [] if n not in pane_of]
     for n in missing:
         say(f"  {n}: no live pane; left out")
+    if not panes:
+        say(f"view {v['name']}: no live pane to lay out")
+        return 0 if dry_run else 1
     workspaces = herdr_json("workspace", "list")["workspaces"]
     ws = next((w for w in workspaces if w.get("label") == v["workspace"]), None)
     tabs = herdr_json("tab", "list")["tabs"]
@@ -4376,8 +4399,10 @@ def view_apply(v, dry_run=False, quiet=False):
             if dry_run or herdr_do(["tab", "rename", mine["tab_id"], v["tab"]], False):
                 tab = dict(mine, label=v["tab"])
     if tab and panes:
-        lay = herdr_json("pane", "layout", "--pane", panes[0])["layout"] if \
-            next((a for a in agents if a["pane_id"] == panes[0] and a.get("tab_id") == tab["tab_id"]), None) else None
+        first_tab = next((a.get("tab_id") for a in agents if a["pane_id"] == panes[0]), None)
+        if first_tab is None:  # a view of panels alone: its first pane is a panel, not an agent
+            first_tab = herdr_json("pane", "get", panes[0])["pane"].get("tab_id")
+        lay = herdr_json("pane", "layout", "--pane", panes[0])["layout"] if first_tab == tab["tab_id"] else None
         if of_views.matches(v, lay, panes):
             say(f"view {v['name']}: in place ({len(panes)} panes)")
             return 0
@@ -4400,7 +4425,7 @@ def view_apply(v, dry_run=False, quiet=False):
     pane_of = {p["name"]: a["pane_id"] for p, a in bind(positions, live_agents())[0]}
     if v.get("panels"):
         pane_of.update({f"panel:{k}": x for k, x in _panel_panes(v, herdr_json("pane", "list")["panes"], True,
-                                                                  lambda m: None).items()})
+                                                                  lambda m: None, start=False).items()})
     panes = [pane_of[n] for n in v.get("positions") or [] if n in pane_of]
     lay = herdr_json("pane", "layout", "--pane", panes[0])["layout"] if panes else None
     held = of_views.matches(v, lay, panes)

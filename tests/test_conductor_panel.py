@@ -199,6 +199,46 @@ class PanelTest(unittest.TestCase):
         self.assertNotIn("/tmp/owned", " ".join(" ".join(a) for a in ran))
         self.assertTrue(any("panel evil: not a built-in panel" in m for m in said))
 
+    def test_a_view_of_panels_alone_starts_its_panel_in_its_own_tab(self):
+        """A machine that holds no position (the owner's laptop under contours) has no agent to split (hand-over
+        830275c0): the panel opens in the view's own tab, its workspace made when missing; a view that names an agent
+        with none live waits for it, and a dry run starts nothing."""
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli_alone", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_alone", loader))
+        loader.exec_module(of)
+        state = {"workspaces": [{"workspace_id": "w1", "label": "acme"}], "tabs": [], "panes": []}
+        calls, ran, said = [], [], []
+
+        def herdr_json(*a):
+            calls.append(list(a))
+            if a[:2] == ("workspace", "create"):
+                state["panes"].append({"pane_id": "w2:p1", "tab_id": "w2:t1"})
+                return {"type": "workspace_created", "workspace": {"workspace_id": "w2", "label": a[3]},
+                        "tab": {"tab_id": "w2:t1", "label": "1"}, "root_pane": {"pane_id": "w2:p1"}}
+            if a[0] in ("workspace", "tab", "pane") and a[1] == "list":
+                return {a[0] + "s": state[a[0] + "s"]}
+            raise AssertionError(a)
+        of.herdr_json = herdr_json
+        of.herdr_do = lambda args, dry: ran.append(args) or True
+        v = {"name": "questions", "workspace": "questions", "tab": "questions", "layout": "main-left-60",
+             "positions": ["panel:questions"], "panels": {"questions": "ignored"}}
+        self.assertEqual(of._panel_panes(dict(v), [], True, said.append), {})
+        self.assertEqual(ran, [])
+        self.assertTrue(any("would start it: herdr workspace create --label questions" in m for m in said))
+        out = of._panel_panes(dict(v), [], False, said.append)
+        self.assertEqual(out, {"questions": "w2:p1"})
+        create = next(c for c in calls if c[:2] == ["workspace", "create"])
+        self.assertIn("--no-focus", create)
+        self.assertIn(["tab", "rename", "w2:t1", "questions"], ran)
+        self.assertIn("asks --panel", next(a[3] for a in ran if a[:2] == ["pane", "run"]))
+        self.assertIn(["pane", "rename", "w2:p1", "▤ questions"], ran)
+        ran.clear()
+        waits = dict(v, positions=["acme_conductor", "panel:questions"])
+        self.assertEqual(of._panel_panes(waits, [], False, said.append), {})
+        self.assertEqual(ran, [])
+
     def test_a_panel_is_held_by_one_view_per_machine(self):
         """Its pane is found by its label, one per machine: two views holding it would take it from each other
         (of_onboarding, msg 01a1efbe-b153), so of view add --panel refuses a second one; the same view may be added
