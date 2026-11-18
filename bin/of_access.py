@@ -51,6 +51,7 @@ ACTION_RE = re.compile(r"^[a-z][a-z_-]{0,31}$")
 PERIOD_RE = re.compile(r"^P(?!$)(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?$")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+EVENT_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")  # a card's full event id
 HEADER = ("# A keeper's list (docs/access.md §2). Written only by `of access grant` and `of access revoke`; the structure\n"
           "# keeper commits it, and the keeper reads it from the committed tip of the default branch.\n")
 
@@ -186,7 +187,9 @@ def entry_problems(kind, e, positions, grant_ids=None, resolve=None, commit_ok=N
         out.append(f"a {kind} entry is {spec['floor']} at least (docs/access.md §2), not {tier}")
     out += _limit_problems(e.get("limit"), kind)
     decided = str(e.get("decided") or "").strip()
-    card = bool(of_events.REF_RE.match(decided))
+    # the founder's card: its full event id, as a field a program reads keeps it (AGENTS.md; docs/access.md §2), or
+    # its card id (AS-412); of_review on PR 357: the documented full id was refused
+    card = bool(of_events.REF_RE.match(decided) or EVENT_RE.match(decided))
     if not decided:
         out.append("decided names the founder's card, or the structure keeper's commit for a plain entry")
     elif tier in RANK and RANK[tier] >= RANK["secret"] and not card:
@@ -262,7 +265,8 @@ def _grant_ids(root):
 
 
 def _card_resolver():
-    """RESOLVE(card) -> bool from this machine's event store (of_asks.ref_id); None when the store cannot be read."""
+    """RESOLVE(card) -> bool from this machine's event store: a card id by of_asks.ref_id, a full event id as an ask
+    (of.agent_question) by its id; None when the store cannot be read."""
     try:
         import of_asks
         import of_store
@@ -272,6 +276,9 @@ def _card_resolver():
 
     def resolve(card):
         try:
+            if EVENT_RE.match(card):
+                return conn.execute("SELECT 1 FROM event WHERE event_id = ? AND name = 'of.agent_question' LIMIT 1",
+                                    (card,)).fetchone() is not None
             return bool(of_asks.ref_id(conn, card))
         except Exception:  # noqa: BLE001
             return False
