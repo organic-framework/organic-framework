@@ -61,6 +61,18 @@ WORKSPACE_KINDS = ("review", "read", "patch")
 # a patch run (RFC 0008 §3.3; hand-over 66c37728, the founder's prompt 01a1eeff-880b): Codex writes in its snapshot
 # only, and the run returns the snapshot's diff against --at in its record, never applied anywhere
 PATCH_HARNESSES = ("codex",)
+# what a patch may not change (RFC 0008 §3.3, of_review on PR 336): the position applies the diff and runs its tests
+# with its own rights, so a diff must not change what steers later agents or privileged automation
+PATCH_DENY_DIRS = {".claude", ".codex", ".agents", ".git", ".githooks", "hooks", ".github", ".circleci", ".buildkite"}
+PATCH_DENY_NAMES = {".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".gitattributes", ".gitmodules",
+                    ".gitlab-ci.yml"}
+# a patch run's bounds (RFC 0008 §3.3: "Light work only" is a request to the model, so the wrapper bounds the run).
+# Purpose: a model that runs a build or a whole test suite on the laptop despite the prompt is stopped, and its record
+# kept. Codex has no step cap of its own (none in codex exec --help, 0.169.0-alpha.11.1, or its config), so the wrapper
+# counts the tools it starts in its event stream. Values: the first patch runs of 2026-11-18 took under 3 minutes and
+# under 30 tool calls; 40 minutes and 200 tool calls leave room for a real change with its named tests.
+PATCH_WALL_S = 40 * 60
+PATCH_STEPS = 200
 PATCH_LINE = ("You may change files only inside the folder {name}/; your change is taken as a diff of that folder and "
               "read by the position that asked. Run only the named tests of what you change, inside it; no build, no "
               "full test suite, nothing heavy.\n\n")
@@ -516,6 +528,63 @@ def login_readable(harness, run_dir, work_dir, reads, outer):
     return sorted(set(out))
 
 
+def patch_refusals(raw):
+    """[(path, why)] of a patch's changes that a patch may not make, from `git diff --raw --no-renames`: a path under
+    an agent's settings or instructions, git control or CI, a symbolic link new or made from a file, a file newly made
+    executable (RFC 0008 §3.3)."""
+    out = []
+    for line in raw.splitlines():
+        meta, _, path = line.partition("\t")
+        f = meta.split()
+        if len(f) < 5 or not path:
+            continue
+        old, new = f[0].lstrip(":"), f[1]
+        parts = path.split("/")
+        if set(parts[:-1]) & PATCH_DENY_DIRS or parts[-1] in PATCH_DENY_DIRS:
+            out.append((path, "an agent's settings or instructions, git control or CI"))
+        elif parts[-1] in PATCH_DENY_NAMES:
+            out.append((path, "an agent's instructions, git control or CI"))
+        if new == "120000" and old != "120000":
+            out.append((path, "a symbolic link, new or made from a file"))
+        elif new == "100755" and old != "100755":
+            out.append((path, "a file newly made executable"))
+    return sorted(set(out))
+
+
+class Bounded(subprocess.CompletedProcess):
+    stopped = None
+
+
+def run_bounded(argv, fin, fout, ferr, env, cwd, stream, wall_s, steps, poll_s=1.0):
+    """Run a harness with its bounds: stopped after WALL_S seconds, or once its event stream (STREAM, which FOUT
+    writes) has started more than STEPS tools; `stopped` says which. Its output so far stays in the record."""
+    p = subprocess.Popen(argv, stdin=fin, stdout=fout, stderr=ferr, env=env, cwd=cwd)
+    started, stop = time.time(), None
+    while p.poll() is None:
+        time.sleep(poll_s)
+        if time.time() - started > wall_s:
+            stop = f"wall clock past {wall_s} s"
+        else:
+            try:
+                with open(stream, "rb") as fh:
+                    n = fh.read().count(b'"type":"item.started"')
+            except OSError:
+                n = 0
+            if n > steps:
+                stop = f"more than {steps} tool calls"
+        if stop:
+            p.terminate()
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+            break
+    r = Bounded(argv, p.returncode if not stop else 124)
+    r.stopped = stop
+    return r
+
+
 def _patch_git(git_dir, work_tree, *args):
     """git on a patch run's own repository: its folder lies outside the snapshot, beyond Codex's reads, and it runs
     with no user config, no hooks and no signing."""
@@ -779,7 +848,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             why = f"cannot tell the repository of {checkout}"
         if why:
             raise SubagentError(why)
-        why = selftest_passed(conn, harness) or prompt_checks(prompt_file, schema, registry, org_root, harness,
+        why = selftest_passed(conn, harness, kind) or prompt_checks(prompt_file, schema, registry, org_root, harness,
                                                                 training(conn, harness))
         if why:
             raise SubagentError(why)
@@ -860,7 +929,10 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         with open(run_prompt, "rb") as fin, open(stream, "wb") as fout, open(err, "wb") as ferr:
             os.chmod(stream, 0o600)
             os.chmod(err, 0o600)
-            r = popen(argv, stdin=fin, stdout=fout, stderr=ferr, env=env, cwd=work_dir)
+            if kind == "patch" and popen is subprocess.run:
+                r = run_bounded(argv, fin, fout, ferr, env, work_dir, stream, PATCH_WALL_S, PATCH_STEPS)
+            else:
+                r = popen(argv, stdin=fin, stdout=fout, stderr=ferr, env=env, cwd=work_dir)
         got = read_stream(harness, stream, answer_file)
         patch_files = None
         if patch_git:
@@ -869,7 +941,9 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             diff_text = _patch_git(patch_git, snap_dir, "diff", "--cached", "--binary", "--no-color", "HEAD")
             patch_files = [n for n in _patch_git(patch_git, snap_dir, "diff", "--cached", "--name-only",
                                                  "HEAD").splitlines() if n]
-            pfile = os.path.join(record, "patch.diff")
+            raw = _patch_git(patch_git, snap_dir, "diff", "--cached", "--raw", "--no-renames", "HEAD")
+            refused = patch_refusals(raw)
+            pfile = os.path.join(record, "patch.diff" if not refused else "refused.diff")
             with open(pfile, "w") as fh:
                 fh.write(diff_text)
             os.chmod(pfile, 0o600)
@@ -890,14 +964,22 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             with open(ans, "w") as fh:
                 fh.write(got["answer"])
         odd = unexpected(harness, kind, got["tools"])
-        end = dict(base_ev, patch_files=patch_files, phase="ended", exit=r.returncode if not held else 3, withheld=held or None, model=got["model"] or base_ev["model"], usage=got["usage"],
+        stop = getattr(r, "stopped", None)
+        end = dict(base_ev, patch_files=patch_files, patch_refused=(refused if patch_git else None) or None,
+                   stopped=stop, phase="ended", exit=r.returncode if not held else 3, withheld=held or None, model=got["model"] or base_ev["model"], usage=got["usage"],
                    tools=sorted(set(got["tools"])), unexpected_tools=odd or None,
                    seconds=round(time.time() - started, 1))
         of_events.emit("subagent_run", {k: v for k, v in end.items() if v is not None}, position=position,
                        session=session, org=org)
         if odd:
             log(f"warning: the run called tools its kind does not allow: {', '.join(odd)} (record {record})")
-        return {"run": rid, "exit": end["exit"], "withheld": held, "patch_files": patch_files, "answer": got["answer"], "record": record, "usage": got["usage"],
+        if patch_git and refused:
+            raise SubagentError("the patch touches what a patch may not change (RFC 0008 §3.3); such a change is the "
+                                "position's own to write: " + "; ".join(f"{p} ({why})" for p, why in refused)
+                                + f". The diff is kept for reading only: {pfile}")
+        if stop:
+            log(f"the run was stopped: {stop} (record {record})")
+        return {"run": rid, "exit": end["exit"], "withheld": held, "patch_files": patch_files, "stopped": stop, "answer": got["answer"], "record": record, "usage": got["usage"],
                 "model": end["model"], "tools": got["tools"], "unexpected_tools": odd}
     finally:
         if not keep_snapshot:
@@ -1032,8 +1114,10 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
                 pass
         shutil.rmtree(repo, ignore_errors=True)
     failed = [c for c, ok, _ in results if not ok]
+    kinds = ["read"] + (["patch"] if any(c.startswith("patch:") for c, _, _ in results) else [])
     of_events.emit("subagent_selftest", {"harness": harness, "passed": not failed, "failed": failed or None,
-                                         "checks": len(results), "position": position}, position=position,
+                                         "checks": len(results), "kinds": kinds, "position": position},
+                   position=position,
                    session=session)
     return results
 
@@ -1085,7 +1169,7 @@ def _selftest_patch(harness, position, session, repo, mark, home_dir, log, popen
     return out
 
 
-def selftest_passed(conn, harness):
+def selftest_passed(conn, harness, kind="read"):
     """None when HARNESS's latest live selftest on this machine passed every check (of.subagent_selftest), else why
     not. A run goes only on a harness whose latest selftest passed: Muse's file tools read its own login, which its
     process must read, so its selftest fails and its runs are refused (of_secrets-review on PR 328: withholding catches
@@ -1101,6 +1185,9 @@ def selftest_passed(conn, harness):
     if not p.get("passed"):
         return (f"{harness}'s latest selftest failed ({'; '.join(p.get('failed') or [])}): its runs are refused until "
                 "it passes")
+    # the gate is kept per kind (RFC 0008 §3.3): a patch run goes only after a selftest that carried the patch checks
+    if kind == "patch" and "patch" not in (p.get("kinds") or []):
+        return f"{harness}'s latest selftest carried no patch checks: run of subagent selftest --harness {harness}"
     return None
 
 
