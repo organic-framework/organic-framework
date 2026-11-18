@@ -128,7 +128,8 @@ def pin_path(url):
     (docs/server-several-machines.md 4.8)."""
     import urllib.parse
     u = urllib.parse.urlsplit(url)
-    return os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{u.port or 443}.pem")
+    port = u.port or (443 if u.scheme == "https" else 80)
+    return os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{port}.pem")
 
 
 def tls_context(url):
@@ -220,9 +221,23 @@ def _uuid7():
     return str(u7() if u7 else uuid.uuid4())
 
 
+def pinned_url(url):
+    """URL as https when it is http to a host and port this machine pins a certificate for: the relay's default
+    server, the shipper's fallback and an orgs.yaml entry with no server: all name http://127.0.0.1:18200, which on a
+    machine behind the forward any user could answer (of_secrets-review on organic-framework PR 350;
+    docs/server-several-machines.md 4.8)."""
+    url = (url or "").rstrip("/")
+    if url.startswith("http://"):
+        import urllib.parse
+        u = urllib.parse.urlsplit(url)
+        if u.hostname and os.path.exists(pin_path(f"https://{u.hostname}:{u.port or 80}")):
+            return "https://" + url[len("http://"):]
+    return url
+
+
 class Client:
     def __init__(self, url, key_path=KEY_PATH, state_dir=None):
-        self.url = url.rstrip("/")
+        self.url = pinned_url(url)
         self.opener = urlopen_no_redirect  # tests replace it
         self.key_path = key_path
         import hashlib
