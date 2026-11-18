@@ -5,7 +5,8 @@ names it as `of:gitleaks`, for its prompt_check and its snapshot_check).
     python3 bin/of_gitleaks_check.py FOLDER
     python3 bin/of_gitleaks_check.py --repo CHECKOUT --at COMMIT [--registry positions.yaml]   (a dry run)
 
-It runs gitleaks 8.30.1 at /opt/homebrew/bin/gitleaks, checked by its SHA-256 (`gitleaks dir`: no git history) with the rules pinned in bin/rules/gitleaks-8.30.1.toml,
+It runs gitleaks 8.30.1 at the path pinned for the platform (macOS arm64: /opt/homebrew/bin/gitleaks; Linux x86_64 and
+aarch64: /usr/local/bin/gitleaks), checked by its SHA-256 (`gitleaks dir`: no git history) with the rules pinned in bin/rules/gitleaks-8.30.1.toml,
 --redact and the tree's own allow comments and ignore files not honoured, archives opened. Exit 0 only when gitleaks
 is that version, ran, wrote its report and found nothing. A finding, a scanner error, a missing report or another
 version exits 1. It prints each finding as its file, line and rule id, never the match (a user organization's security
@@ -23,7 +24,31 @@ PINNED = "8.30.1"
 # the program itself, not whatever PATH finds first (~/.rvm and ~/.bun/bin come before /opt/homebrew/bin on this
 # Mac, so a fake that prints 8.30.1 would pass; a user organization's security keeper, 2026-11-18): its path and the
 # SHA-256 of the file it resolves to
-PINNED_PATH = "/opt/homebrew/bin/gitleaks"
+# Pinned per platform; any other platform fails closed. The Linux binaries are the release's own: their tarballs'
+# SHA-256 equal gitleaks_8.30.1_checksums.txt (linux_x64 551f6fc8..., linux_arm64 e4a487ee...), checked by of_platform
+# on 2026-11-18, and the hashes below are of the gitleaks file inside each. A Linux runner (a user organization's pods)
+# installs that file at /usr/local/bin/gitleaks.
+PINS = {
+    ("darwin", "arm64"): ("/opt/homebrew/bin/gitleaks",
+                          "f414bc2fb952be6c9072b75cb411e3368614ef4b16d48dbd9ad238034afd2302"),   # Homebrew 8.30.1
+    ("linux", "x86_64"): ("/usr/local/bin/gitleaks",
+                          "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"),
+    ("linux", "aarch64"): ("/usr/local/bin/gitleaks",
+                           "00e91bbe655bd7c47753e8cfe61cb76ea1a5d7e7702fe161ee40102b46b3823b"),
+}
+
+
+def pin(system=None, machine=None):
+    """(path, SHA-256) of the pinned gitleaks for this platform, or None."""
+    import platform
+    system = system or sys.platform
+    machine = machine or platform.machine()
+    if system.startswith("linux"):
+        return PINS.get(("linux", {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)))
+    return PINS.get((system, machine))
+
+
+PINNED_PATH, PINNED_SHA256 = pin() or (None, None)
 # the one allow rule on top of the pinned rules: a bare EVM address (0x and 40 hex digits) is public, and gitleaks'
 # generic-api-key takes every one of them for a key, so a trading repository always failed (12 false findings in a user
 # organization's first run, its security keeper's reading, 2026-11-18). Only that rule, only the whole value: 64 hex
@@ -35,7 +60,6 @@ targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = ['^0x[0-9a-fA-F]{40}$']
 """
-PINNED_SHA256 = "f414bc2fb952be6c9072b75cb411e3368614ef4b16d48dbd9ad238034afd2302"
 RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules", f"gitleaks-{PINNED}.toml")
 
 
@@ -54,6 +78,10 @@ def pinned_why(exe):
 def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
     """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule)."""
     if exe is None:
+        if not PINNED_PATH:
+            import platform
+            print(f"no gitleaks is pinned for {sys.platform}/{platform.machine()}: fail closed", file=out)
+            return 1
         why = pinned_why(PINNED_PATH)
         if why:
             print(f"{why}: fail closed", file=out)

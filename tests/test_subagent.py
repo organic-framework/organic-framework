@@ -369,6 +369,11 @@ class SubagentTest(unittest.TestCase):
             fh.write("#!/bin/sh\necho 8.30.1\n")
         self.assertIn("is not the pinned gitleaks", g.pinned_why(fake))
         self.assertIn("is not at", g.pinned_why(os.path.join(self.tmp.name, "none")))
+        self.assertEqual(g.pin("linux", "x86_64")[0], "/usr/local/bin/gitleaks")
+        self.assertEqual(g.pin("linux", "amd64"), g.pin("linux", "x86_64"))
+        self.assertEqual(g.pin("linux", "arm64"), g.pin("linux", "aarch64"))
+        self.assertIsNone(g.pin("win32", "AMD64"))                     # any other platform: none, fail closed
+        self.assertIsNone(g.pin("darwin", "x86_64"))
         d = os.path.join(self.tmp.name, "scan")
         os.makedirs(os.path.join(d, "sub"))
         with open(os.path.join(d, "sub", ".GitLeaksIgnore"), "w") as fh:
