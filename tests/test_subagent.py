@@ -312,9 +312,32 @@ class SubagentTest(unittest.TestCase):
             self.go()
         self.assertIn("filter.crypt.smudge", str(e.exception))
         self.git("config", "--unset", "filter.crypt.smudge")
-        self.git("config", "filter.lfs.smudge", "false")
+        self.git("config", "filter.lfs.x.smudge", "cat")              # a driver named lfs.x is not LFS
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go()
+        self.assertIn("filter.lfs.x.smudge", str(e.exception))
+        self.git("config", "--unset", "filter.lfs.x.smudge")
+        # a real filter=lfs attribute: LFS's smudge would run on archive; neutralized, the blob goes as stored
+        with open(os.path.join(self.repo, ".gitattributes"), "w") as fh:
+            fh.write("*.bin filter=lfs\n")
+        with open(os.path.join(self.repo, "data.bin"), "w") as fh:
+            fh.write("pointer\n")
+        self.git("add", ".gitattributes", "data.bin")
+        self.git("commit", "-qm", "lfs")
+        self.git("config", "filter.lfs.smudge", "echo SMUDGED")
+        self.git("config", "filter.lfs.process", "false")
         self.git("config", "filter.lfs.required", "true")
-        self.assertEqual(self.go()[0]["exit"], 0)
+
+        class Peek(Fake):
+            def __call__(s2, argv, **kw):
+                with open(os.path.join(kw["cwd"], "fw", "data.bin")) as fh:
+                    s2.seen = fh.read()
+                return Fake.__call__(s2, argv, **kw)
+        peek = Peek("muse")
+        self.assertEqual(self.go(fake=peek)[0]["exit"], 0)
+        self.assertEqual(peek.seen, "pointer\n")
+        self.assertEqual(of_subagent.smudge_filters(os.path.join(self.tmp.name, "no-repo")),
+                         ["git config failed (exit 128)"])
         # (2) an excluded file in a non-ASCII folder stays out of the diff; patterns match any case
         folder = "\u043a\u043b"
         os.makedirs(os.path.join(self.repo, folder))
@@ -328,7 +351,7 @@ class SubagentTest(unittest.TestCase):
         self.git("add", "a.py")
         self.git("commit", "-qm", "add")
         _, call = self.go(diff="HEAD~1..HEAD")
-        self.assertEqual(call["files"], ["fw/.of-review.diff", "fw/a.py"])
+        self.assertEqual(call["files"], ["fw/.gitattributes", "fw/.of-review.diff", "fw/a.py", "fw/data.bin"])
         diff = call["diffs"]["fw/.of-review.diff"]
         self.assertIn("+print(5)", diff)
         for gone in ("prod.env", "PROD.ENV", "Secrets/", ".gitleaksignore", "API=1"):
@@ -344,7 +367,7 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("is not at", g.pinned_why(os.path.join(self.tmp.name, "none")))
         d = os.path.join(self.tmp.name, "scan")
         os.makedirs(os.path.join(d, "sub"))
-        with open(os.path.join(d, "sub", ".gitleaksignore"), "w") as fh:
+        with open(os.path.join(d, "sub", ".GitLeaksIgnore"), "w") as fh:
             fh.write("x\n")
         ok = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")  # noqa: E731
         out = io.StringIO()
