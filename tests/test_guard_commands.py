@@ -344,5 +344,21 @@ class CloudCacheTest(unittest.TestCase):
             self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
 
 
+class HarnessLoginTest(unittest.TestCase):
+    """G1.14 (of_secrets-review on organic-framework PR 328, through of_platform): the other harnesses' logins."""
+
+    def test_the_logins_are_secret_paths(self):
+        for p in ("~/.codex/auth.json", "/Users/alex/.codex/auth.json",
+                  "~/.local/state/of/subagent/muse-login/xdg-config/muse/auth.json",
+                  "~/.local/state/of/subagent/muse-login/home/Library/Keychains/login.keychain-db"):
+            for cmd in ("cat ", "cp {} /tmp/x # ", "base64 "):
+                c = cmd.format(p) if "{}" in cmd else cmd + p
+                self.assertTrue(of_guard.critical_deny("Bash", {"command": c}), c)
+            self.assertTrue(of_guard.critical_deny("Read", {"file_path": p.replace("~", "/Users/alex")}), p)
+        for cmd in ("ls ~/.codex", "cat ~/.codex/config.toml", "ls ~/.local/state/of/subagent", "of subagent muse-login",
+                    "of capacity status"):
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
