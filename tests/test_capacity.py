@@ -2376,6 +2376,17 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIn("training off since", of_capacity._training_text({"training": "off", "ts": "2026-11-18T11:40:28Z",
                                                                          "source": "s"}))
 
+    def test_registry_check_reads_training_cards(self):
+        # of_architect, PR 334: a mapping of a known harness to a card id that resolves to a task of this organization
+        cards = [{"ref": "OF-27", "task": True}, {"ref": "OF-31", "task": None}, {"ref": "MT-5", "task": True}]
+        ok = lambda tc: of_capacity.training_cards_problems("ofb", {"training_cards": tc}, cards, prefix="OF")  # noqa: E731
+        self.assertEqual(ok({"codex": "OF-27"}), [])
+        self.assertEqual(of_capacity.training_cards_problems("ofb", {}, cards, prefix="OF"), [])
+        for tc, why in (({"gemini": "OF-27"}, "not a harness"), ({"codex": "27"}, "no card id"),
+                        ({"codex": "MT-5"}, "not a card of"), ({"codex": "OF-99"}, "no card OF-99"),
+                        ({"codex": "OF-31"}, "a question"), (["OF-27"], "a mapping")):
+            self.assertIn(why, " ".join(ok(tc)), tc)
+
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
              "windows": {"seven_day": {"utilization": 0, "resets_at": of_capacity._iso(self.T0 + 86400)}}}
