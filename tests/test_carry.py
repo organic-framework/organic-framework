@@ -26,6 +26,12 @@ def line(rec):
 
 
 class Paths(unittest.TestCase):
+    def setUp(self):  # the target's tmp root follows its platform; these cases are a Mac's (CI runs on Linux)
+        from unittest import mock
+        p = mock.patch.object(of_capacity.sys, "platform", "darwin")
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_home_its_folder_keys_and_the_tmp_root(self):
         rw = of_carry.Rewriter("/Users/alex", "/Users/lab", 501, 502)
         self.assertEqual(of_carry.key_of("/Users/alex/x/.claude/worktrees/y"), "-Users-alex-x--claude-worktrees-y")
@@ -83,6 +89,32 @@ class Paths(unittest.TestCase):
             self.assertTrue(conf["projects"][os.path.join(dst, "org")]["hasTrustDialogAccepted"])
             self.assertEqual(conf["oauthAccount"], {"emailAddress": "x@example.com"})  # nothing else touched
             self.assertEqual(of_carry.carry_consents(plan, rw, log=logs.append), [])  # already there
+
+    def test_consents_travel_only_on_the_owners_yes(self):
+        # of_server, PR 339: a retold basis carries none; the owner's card answered with its first option does
+        import json
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (event_id TEXT, ts TEXT, name TEXT, payload TEXT)")
+        add = lambda eid, name, p, ts="t": conn.execute("INSERT INTO event VALUES (?,?,?,?)",  # noqa: E731
+                                                        (eid, ts, name, json.dumps(p, ensure_ascii=False)))
+        add("a1", "of.agent_question", {"questions": [{"question": "q", "options": ["yes, carry them", "no"]}]})
+        add("c1", "of.agent_question_answered", {"ask_id": "a1", "answer": "yes, carry them", "by": "owner"})
+        add("a2", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
+        add("c2", "of.agent_question_answered", {"ask_id": "a2", "answer": "no", "by": "owner"})
+        add("a3", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
+        add("c3", "of.agent_question_answered", {"ask_id": "a3", "answer": "yes", "by": "of_agent-server"})
+        add("a4", "of.agent_question", {"questions": [{"question": "q", "options": ["yes", "no"]}]})
+        add("c4", "of.agent_question_answered", {"ask_id": "a4", "answer": "yes", "by": "owner"})
+        cards = [{"ref": f"OF-{i}", "event_id": f"a{i}", "closed_by": f"c{i}", "state": "answered"} for i in (1, 2, 3, 4)]
+        cards[3].update(amended=True, version=2)
+        cards.append({"ref": "OF-5", "event_id": "a5", "state": "open"})
+        self.assertEqual(of_carry.owner_yes("of-1", cards, conn)["ref"], "OF-1")
+        self.assertIsNone(of_carry.owner_yes("OF-2", cards, conn))  # his no
+        self.assertIsNone(of_carry.owner_yes("OF-3", cards, conn))  # closed by a position, not by him
+        self.assertIsNone(of_carry.owner_yes("OF-4", cards, conn))  # amended: its options are not read here
+        self.assertIsNone(of_carry.owner_yes("OF-5", cards, conn))  # still open
+        self.assertIsNone(of_carry.owner_yes("OF-99", cards, conn))
 
     def test_a_replacement_is_never_rewritten_again(self):
         """A rehearsal home inside the tmp root holds the old key in its own path: one pass keeps it whole."""
