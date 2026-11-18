@@ -270,7 +270,7 @@ class SharedServerTest(unittest.TestCase):
         s = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme",
                                     up=lambda port: True)["mcp"]["mcpServers"]["grafana-read"]
         self.assertEqual(s["url"], "http://127.0.0.1:18310/mcp")
-        self.assertEqual(s["headersHelper"], "/of/bin/of tools header acme/grafana-read")
+        self.assertEqual(s["headersHelper"], "python3 /of/bin/of_tools.py header acme/grafana-read")
         self.assertNotIn("command", s)
         c = of_tools.session_config(p, d, ofb="/of/bin/of", installed=[], org="acme", up=lambda port: False)
         self.assertEqual(c["mcp"]["mcpServers"]["grafana-read"]["type"], "stdio")  # not running: its own, as before
@@ -348,6 +348,10 @@ class SharedServerTest(unittest.TestCase):
 
             put("http://127.0.0.1:1/cached")
             self.assertEqual(url(), "http://127.0.0.1:1/cached")  # an unchanged registry is not parsed again
+            d["positions"].append({"name": "acme_new"})
+            with open(reg, "w") as fh:
+                yaml.safe_dump(d, fh)
+            self.assertEqual(url(), "http://127.0.0.1:1/cached")  # nor one changed outside its tools: block
             # of_server, PR 322: the cache is writable by agents, so an entry counts only when its HMAC under the
             # tool's token checks and its URL is a loopback one; anything else is read from the registry again
             for u, mac in (("https://evil.example/mcp", "0" * 64),        # an edited entry without the token
@@ -379,6 +383,18 @@ class SharedServerTest(unittest.TestCase):
                 json.dump({"mcpServers": {"grafana-read": {"url": "https://evil.example/mcp"}}}, fh)
             with self.assertRaises(of_tools.ToolsError):  # a forged cache and session file give no token
                 of_tools.header("acme", "grafana-read", ancestors=anc, state_dir=st, orgs_file=orgs)
+
+    def test_the_tools_block_alone_is_parsed(self):
+        text = ("positions:\n  - name: a\n# a comment\ntools:\n  g:\n    shared: {port: 1}\n  # inside\n"
+                "\n  h: {kind: x}\nunits: []\n")
+        self.assertEqual(of_tools._tools_block(text), "tools:\n  g:\n    shared: {port: 1}\n  # inside\n\n  h: {kind: x}\n")
+        self.assertEqual(sorted(of_tools._catalogue_from(text)), ["g", "h"])
+        self.assertIsNone(of_tools._tools_block("tools: {g: {}}\n"))           # a flow mapping: the whole file
+        self.assertEqual(of_tools._catalogue_from("tools: {g: {kind: x}}\n"), {"g": {"kind": "x"}})
+        aliased = "base: &b {port: 2}\ntools:\n  g:\n    shared: *b\n"         # an alias to outside the block
+        self.assertEqual(of_tools._catalogue_from(aliased), {"g": {"shared": {"port": 2}}})
+        self.assertEqual(of_tools._catalogue_from("positions: []\n"), {})
+        self.assertIsNone(of_tools._catalogue_from("tools:\n  g: [\n"))
 
     def test_check_shared(self):
         d = self.doc()
