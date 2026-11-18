@@ -554,6 +554,29 @@ class GoTest(unittest.TestCase):
             self.go("of_gone")
 
 
+class OwnerCommandTest(unittest.TestCase):
+    """`of owner set` writes owner.yaml without an organization (of_asks, hand-over 830275c0: a laptop under contours
+    holds none, and only `of init --language` wrote the language)."""
+
+    def test_set_and_show_without_an_organization(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, OF_CONFIG_DIR=d)
+            of = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "owner"]
+            run = lambda *a: subprocess.run(of + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+            self.assertIn("language: (not set: en)", run("show").stdout)
+            self.assertEqual(run("set", "language", "Russian").returncode, 0)
+            bad = run("set", "language", "xx")
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("one of", bad.stderr)
+            self.assertNotEqual(run("set", "surface", "pigeon").returncode, 0)
+            self.assertEqual(run("set", "surface", "remote").returncode, 0)
+            out = run("show").stdout
+            self.assertIn("language: ru (Russian)", out)
+            self.assertIn("surface: remote", out)
+            self.assertNotEqual(run("set", "language").returncode, 0)
+            self.assertFalse(os.path.exists(os.path.join(d, "orgs.yaml")))     # no organization is made
+
+
 if __name__ == "__main__":
     unittest.main()
 

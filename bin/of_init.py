@@ -139,7 +139,8 @@ def write_owner_setting(key, value, path=None):
     doc[key] = value
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
-        fh.write("# The organization's owner on this machine (of init --language, --surface; docs/remote.md)\n")
+        fh.write("# The owner on this machine (of owner set language|surface, of init --language, --surface; "
+                 "docs/remote.md)\n")
         yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
 
 
