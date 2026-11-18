@@ -621,10 +621,13 @@ _PY_PATH_READS = frozenset(("read_text", "read_bytes", "open"))
 
 def _py_plain(node):
     """A literal python sees as written: a constant with no `$`, backtick or `$( )` (which the parser shows as
-    __OFSUB__), all of which the shell fills in first."""
+    __OFSUB__), all of which the shell fills in first; a bytes literal the same (of_review on organic-framework PR 323:
+    open(b'$F') opened what the shell put there)."""
     import ast as _ast
-    return isinstance(node, _ast.Constant) and not (isinstance(node.value, str) and
-                                                    re.search(r"[$`]|__OFSUB", node.value))
+    if not isinstance(node, _ast.Constant):
+        return False
+    value = node.value.decode("latin-1") if isinstance(node.value, bytes) else node.value
+    return not (isinstance(value, str) and re.search(r"[$`]|__OFSUB", value))
 
 
 def _py_reaches(tree, parent):
