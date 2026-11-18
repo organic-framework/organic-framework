@@ -62,19 +62,12 @@ targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = ['^0x[0-9a-fA-F]{40}$']
 
-[[allowlists]]
-description = "a dotted code identifier (cfg.api.token): identifier parts of at most 32 characters, never a JWT"
-targetRules = ["generic-api-key"]
-regexTarget = "secret"
-regexes = ['^(?:[A-Za-df-z_][A-Za-z0-9_]{0,31}|e|e[A-Za-xz0-9_][A-Za-z0-9_]{0,30}|ey|ey[A-IK-Za-z0-9_][A-Za-z0-9_]{0,29})(?:\\.[A-Za-z_][A-Za-z0-9_]{0,31})+$']
 """
-# the second allow rule (the same keeper, 2026-11-18): a dotted code identifier ('let token = cfg.api.token;'). Each
-# dot-separated part matches ^[A-Za-z_][A-Za-z0-9_]*$ (no '-') and is at most 32 characters, with at least one dot
-# (the keeper's exact form, 2026-11-18);
-# the first part never starts with eyJ (RE2 has no lookahead, so the first part's first three characters spell out
-# every start but that). A JWT (eyJ..., '-' and long parts) and a random key stay caught: checked live on 8.30.1.
+# A dotted-identifier rule was tried and dropped (of_secrets-review on PR 337: it let quoted namespaced and two-part
+# tokens through, while the case it was for drew no finding without it); one waits for the organization's dry run
+# to show its case.
 #
-# The third (the same keeper): a bare 40-hex address with no 0x, as research notes write one. 40 hex digits is also
+# The second (the same keeper): a bare 40-hex address with no 0x, as research notes write one. 40 hex digits is also
 # the shape of a legacy GitHub OAuth token and other API keys, so it is allowed only in documentation files (*.md)
 # and only when it carries an EIP-55 checksum that verifies (mixed case, keccak-256 of the lower-case address); an
 # all-lower or all-upper value, which has none, stays caught, and one in code stays a per-path exclude after the
