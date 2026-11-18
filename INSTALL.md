@@ -38,7 +38,7 @@ The details and a security checklist are in [`docs/remote-access.md`](docs/remot
 
 | Check | Passes when | If it fails |
 |---|---|---|
-| `python3 --version` | 3.11 or newer | Install a newer Python: Homebrew `brew install python` on macOS, the system's package manager on Linux. |
+| `python3 --version` | 3.11 or newer | Install a newer Python: Homebrew `brew install python` on macOS, the system's package manager on Linux. 3.11 runs OF. Before 3.14, which brings `compression.zstd`, `of archive` refuses to run, the store and the server keep their data uncompressed, `of ship` sends gzip, and Codex's compressed transcripts (`.zst`) are not read; install 3.14 or newer for those. |
 | `python3 -c "import yaml"` | no output | Homebrew's or a recent Linux Python refuses a plain `pip install --user`. Run `python3 -m pip install --user --break-system-packages pyyaml`. On Linux without pip (`python3 -m pip --version` fails), the system package (`python3-yaml` on Debian or Ubuntu) needs the person's password: their step, on this machine. |
 | `git --version` | prints a version | Install git. |
 | `ssh -V` | prints a version | Install OpenSSH. |
