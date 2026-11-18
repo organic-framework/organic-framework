@@ -131,6 +131,7 @@ The server differs only by plugins. See [`docs/server.md`](docs/server.md), Prof
 
 - **Start:** this quickstart, then [the guide](docs/guide.md): the ideas you need and your everyday tasks.
 - **What works today:** [`FEATURES.md`](FEATURES.md), every feature by area, with its state and evidence. Changes by release: [`CHANGELOG.md`](CHANGELOG.md).
+- **Help:** a framework question or a bug goes to the public repository's issues, by the template; how to reach OF: [`docs/getting-help.md`](docs/getting-help.md).
 - **The framework:** [`docs/`](docs/): mission, ontology, method, systems, the registry and event schemas.
 - **The platform:** the `of` CLI and `of-server`, in [`bin/`](bin/). Its design: [RFC 0001](docs/rfc/0001-organic-framework-platform.md), and the other records in [`docs/rfc/`](docs/rfc/).
 

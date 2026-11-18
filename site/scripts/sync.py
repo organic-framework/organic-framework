@@ -81,6 +81,7 @@ PAGES = [
         ("docs/accounts.md", "accounts", "Accounts and the capacity package"),
         ("docs/access.md", "access", "Access through keepers"),
         ("docs/support.md", "support", "Support for OF's users"),
+        ("docs/getting-help.md", "getting-help", "How to reach OF"),
         ("docs/contours.md", "contours", "Contours: one organization per OS user"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
         ("docs/tools.md", "tools", "Tools of a position"),

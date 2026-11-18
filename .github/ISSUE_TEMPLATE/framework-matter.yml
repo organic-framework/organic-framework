@@ -1,0 +1,49 @@
+name: Framework matter
+description: A bug in OF, a failed setup, a missing capability, or a question about how to do something with OF
+title: "[framework] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This channel is for **framework matters only**: a bug in `of`, a failed setup, a missing capability, how to do something with OF.
+        It is public. **Do not include your organization's names, people, hosts, home paths, secrets or data.** Take them out of every command and log line, and reduce the problem to a reproduction without them.
+        A security problem goes through [private vulnerability reporting](https://github.com/organic-framework/organic-framework/security/advisories/new), never an issue.
+  - type: input
+    id: version
+    attributes:
+      label: OF version
+      description: "The commit of your OF checkout (`git -C <checkout> rev-parse --short HEAD`) or the release you installed."
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command or screen
+      description: "The `of` command, with its arguments, or the screen or file involved. Names and paths taken out."
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: "The output or behavior you saw, as text, with names and data taken out."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce (optional)
+      description: "A minimal reproduction a stranger could run, if you have one."
+  - type: checkboxes
+    id: clean
+    attributes:
+      label: Nothing private
+      options:
+        - label: "I removed my organization's names, people, hosts, home paths, secrets and data from this issue."
+          required: true
