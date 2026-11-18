@@ -242,7 +242,7 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(findings=[{"File": os.path.join(d, "k"),
                                                                           "StartLine": 3, "RuleID": "r1",
                                                                           "Secret": "s3cr3t"}]), out=out), 1)
-        self.assertEqual(out.getvalue().strip(), "k:3 r1")                   # never the match
+        self.assertEqual(out.getvalue().strip(), "k:3:r1")                   # never the match
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(version="8.31.0"), out=io.StringIO()), 1)
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(rc=2), out=io.StringIO()), 1)
         self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
@@ -429,6 +429,33 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("fw/ops/readme.md", call["files"])
         self.assertNotIn("fw/ops/production.yml", call["files"])
         self.assertNotIn("fw/production.yml", call["files"])
+
+    def test_the_gitleaks_allow_rule_and_the_dry_run(self):
+        """A user organization's asks after its first refused run (through of_capacity, message 01a1ef49-361c)."""
+        import io
+        import of_gitleaks_check as g
+        seen = {}
+
+        def run(argv, **kw):
+            if argv[1] == "version":
+                return subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")
+            seen["cfg"] = open(argv[argv.index("--config") + 1]).read()
+            with open(argv[argv.index("--report-path") + 1], "w") as fh:
+                fh.write("[]")
+            return subprocess.CompletedProcess(argv, 0)
+        self.assertEqual(g.check(self.tmp.name, exe="/bin/true", run=run, out=io.StringIO()), 0)
+        self.assertIn(f"path = {json.dumps(g.RULES)}", seen["cfg"])
+        self.assertIn('targetRules = ["generic-api-key"]', seen["cfg"])
+        self.assertIn("'^0x[0-9a-fA-F]{40}$'", seen["cfg"])       # 40 hex digits only, never 64
+        # the dry run snapshots the commit as a run would, excludes applied, and checks that folder
+        with open(os.path.join(self.repo, "prod.env"), "w") as fh:
+            fh.write("A=1\n")
+        self.git("add", "-f", "prod.env")
+        self.git("commit", "-qm", "env")
+        got = {}
+        with mock.patch.object(g, "check", lambda d, out=None: got.setdefault("files", sorted(os.listdir(d))) and 0):
+            self.assertEqual(g.dry_run(self.repo, "HEAD"), 0)
+        self.assertEqual(got["files"], ["a.py"])
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""

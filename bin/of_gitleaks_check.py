@@ -3,6 +3,7 @@
 names it as `of:gitleaks`, for its prompt_check and its snapshot_check).
 
     python3 bin/of_gitleaks_check.py FOLDER
+    python3 bin/of_gitleaks_check.py --repo CHECKOUT --at COMMIT [--registry positions.yaml]   (a dry run)
 
 It runs gitleaks 8.30.1 at /opt/homebrew/bin/gitleaks, checked by its SHA-256 (`gitleaks dir`: no git history) with the rules pinned in bin/rules/gitleaks-8.30.1.toml,
 --redact and the tree's own allow comments and ignore files not honoured, archives opened. Exit 0 only when gitleaks
@@ -23,6 +24,17 @@ PINNED = "8.30.1"
 # Mac, so a fake that prints 8.30.1 would pass; a user organization's security keeper, 2026-11-18): its path and the
 # SHA-256 of the file it resolves to
 PINNED_PATH = "/opt/homebrew/bin/gitleaks"
+# the one allow rule on top of the pinned rules: a bare EVM address (0x and 40 hex digits) is public, and gitleaks'
+# generic-api-key takes every one of them for a key, so a trading repository always failed (12 false findings in a user
+# organization's first run, its security keeper's reading, 2026-11-18). Only that rule, only the whole value: 64 hex
+# digits (which can be a private key) still fail. Checked live on 8.30.1: two addresses pass, a 64-hex value is caught.
+ALLOW = """
+[[allowlists]]
+description = "a bare EVM address (0x and 40 hex digits) is public"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['^0x[0-9a-fA-F]{40}$']
+"""
 PINNED_SHA256 = "f414bc2fb952be6c9072b75cb411e3368614ef4b16d48dbd9ad238034afd2302"
 RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules", f"gitleaks-{PINNED}.toml")
 
@@ -74,9 +86,11 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
         print(f"{ign[0]}: an ignore file in the scanned folder: fail closed", file=out)
         return 1
     with tempfile.TemporaryDirectory(prefix="of-gitleaks-") as t:
-        report = os.path.join(t, "report.json")
+        report, cfg = os.path.join(t, "report.json"), os.path.join(t, "gitleaks.toml")
+        with open(cfg, "w") as fh:
+            fh.write(f"[extend]\npath = {json.dumps(RULES)}\n" + ALLOW)
         try:
-            r = run([exe, "dir", root, "--config", RULES, "--gitleaks-ignore-path", t, "--ignore-gitleaks-allow",
+            r = run([exe, "dir", root, "--config", cfg, "--gitleaks-ignore-path", t, "--ignore-gitleaks-allow",
                      "--max-archive-depth", "3", "--no-banner", "--redact", "--log-level", "error",
                      "--report-format", "json", "--report-path", report, "--exit-code", "0"],
                     cwd=t, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -93,13 +107,39 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
             print("gitleaks' report is unreadable: fail closed", file=out)
             return 1
     for f in findings:
-        print(f"{os.path.relpath(f.get('File', '?'), root)}:{f.get('StartLine') or 0} {f.get('RuleID') or '?'}",
+        print(f"{os.path.relpath(f.get('File', '?'), root)}:{f.get('StartLine') or 0}:{f.get('RuleID') or '?'}",
               file=out)
     return 1 if findings else 0
 
 
+def dry_run(repo, at, registry=None, out=sys.stdout):
+    """The snapshot check over REPO at commit AT, as a run would make its snapshot (tracked files only, no content
+    filter, the built-in excludes and REGISTRY's for that repository): so an organization clears its repositories
+    before its positions hit them. Plain: no event store, no relay, nothing recorded. Prints path:line:rule only."""
+    import of_subagent
+    reg = None
+    if registry:
+        import yaml
+        with open(registry) as fh:
+            reg = yaml.safe_load(fh) or {}
+    root = os.path.realpath(of_subagent._git(repo, "rev-parse", "--show-toplevel").strip())
+    head = of_subagent.resolve(root, at=at)[0]
+    with tempfile.TemporaryDirectory(prefix="of-gitleaks-dry-") as t:
+        dest = of_subagent.snapshot(root, os.path.join(t, "snapshot"), head,
+                                    rxs=of_subagent.excludes_for(reg, os.path.basename(root)))
+        return check(dest, out=out)
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
-        sys.exit(2)
-    sys.exit(check(sys.argv[1]))
+    a = sys.argv[1:]
+    if len(a) == 1:
+        sys.exit(check(a[0]))
+    if len(a) in (4, 6) and a[0] == "--repo" and a[2] == "--at" and (len(a) == 4 or a[4] == "--registry"):
+        try:
+            sys.exit(dry_run(a[1], a[3], a[5] if len(a) == 6 else None))
+        except Exception as e:  # noqa: BLE001 - a dry run that cannot run fails closed, with why
+            print(f"{e}: fail closed")
+            sys.exit(1)
+    print("usage: of_gitleaks_check.py FOLDER | --repo CHECKOUT --at COMMIT [--registry positions.yaml]",
+          file=sys.stderr)
+    sys.exit(2)
