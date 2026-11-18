@@ -2628,6 +2628,17 @@ def cmd_subagent(args):
         registry = of_subagent.committed_registry(path)[0] if path else {}
     except of_subagent.SubagentError as e:
         raise OfError(f"subagent run refused: {e}")
+    # the training cards of every organization, each from its committed registry: a card names its owner's own
+    # organization, which another one's entry may cite (a user organization's training_cards names the OF team's card;
+    # with its own registry alone the reading was unknown and every private run refused, 2026-11-18 ~22:00Z, its
+    # structure keeper). An organization whose committed registry cannot be read vouches for nothing.
+    docs = {org: registry}
+    for o, p, _ in org_registries():
+        if o != org:
+            try:
+                docs[o] = of_subagent.committed_registry(p)[0]
+            except of_subagent.SubagentError:
+                pass
     if not args.prompt_file:
         raise OfError("--prompt-file <file>: the run's prompt (a file, so its text is recorded as given)")
     harness = args.harness or "auto"
@@ -2643,7 +2654,7 @@ def cmd_subagent(args):
         got = of_subagent.run(harness, args.kind, args.prompt_file, me["name"], org=me.get("_orgid") or org,
                               session=os.environ.get("CLAUDE_CODE_SESSION_ID"), work=args.work,
                               checkout=args.workspace, at=args.at, diff=args.diff, schema=args.schema, model=args.model,
-                              registry=registry, org_name=org, docs={org: registry},
+                              registry=registry, org_name=org, docs=docs,
                               org_root=os.path.dirname(os.path.dirname(path)) if path else None,
                               conn=conn,
                               log=lambda m: print(m, file=sys.stderr))
