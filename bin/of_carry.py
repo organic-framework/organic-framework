@@ -64,6 +64,8 @@ class Rewriter:
         # the source's tmp root as its plan recorded it (macOS: /private/tmp/claude-<uid>), the target's by its own
         # platform (Linux: /tmp/claude-<uid>): a carry from the laptop to a Linux host maps one to the other
         self.old_tmp = (old_tmp or f"/private/tmp/claude-{old_uid}").rstrip("/")
+        if not new_tmp and self.old_tmp.startswith(self.old_home + "/"):
+            new_tmp = self.new_home + self.old_tmp[len(self.old_home):]  # a rehearsal's tmp root stays in its home
         self.new_tmp = (new_tmp or of_capacity.agent_tmp_root(new_uid)).rstrip("/")
         self.old_tmp_key, self.new_tmp_key = key_of(self.old_tmp), key_of(self.new_tmp)
         # one pass, so a replacement is never rewritten again (a new home whose own path holds the old key, as a
@@ -145,7 +147,7 @@ def _files_under(root, skipped):
             if not _is_transcript(p) and of_guard._secret_path(p):
                 skipped.append({"path": p, "reason": "secret path"})
                 continue
-            if st.st_size > SKIP_LARGER and ("/private/tmp/" in p or "/tasks/" in p):
+            if st.st_size > SKIP_LARGER and ("/tmp/" in p or "/tasks/" in p):  # macOS /private/tmp, Linux /tmp
                 skipped.append({"path": p, "bytes": st.st_size, "reason": "over the size limit"})
                 continue
             out.append(p)
@@ -304,24 +306,49 @@ def owner_yes(card, cards=None, conn=None):
         return None  # an amended card's options are read from its amendments, a log read this check does not make
     filed, closed = payload(a["event_id"]), payload(a["closed_by"])
     opts = ((filed.get("questions") or [{}])[0] or {}).get("options") or []
-    ok = closed.get("by") in ("owner", "founder") and bool(opts) and \
-        str(closed.get("answer") or "").strip() == str(opts[0]).strip()
+    first = str(opts[0]).strip() if opts else ""
+    # the card is about these consents (of_review, PR 339: an unrelated yes card unlocked them): its yes names the
+    # Bypass Permissions acceptance (the product's own term, kept in any language), an OF position filed it, and the
+    # answer names this ask. Card tags are a fixed set with no tag for it.
+    about = bool(_CONSENT_BYPASS.search(first))
+    ok = (closed.get("by") in ("owner", "founder") and bool(first) and about
+          and str(closed.get("answer") or "").strip() == first
+          and a["event_id"] in ([closed.get("ask_id")] + list(closed.get("ask_ids") or []))
+          and str(filed.get("from_position") or a.get("position") or "").startswith("of_"))
     return a if ok else None
 
 
-def carry_consents(plan, rw, dry_run=False, log=print):
-    """Put the plan's consents in place under this user, paths rewritten (only with the owner's card that says yes to
-    it: restore --consents <card>; of_server, PR 339: a retold basis carries none): the Bypass Permissions acceptance into a
-    config dir's settings.json when it lacks it, and each trusted folder that exists here into its account file.
-    A config dir that does not exist here, or is not signed in yet (no account file), is named and left: run restore
-    again after the sign-in. Existing values are never overwritten. Returns [(config dir, what)]."""
-    done = []
-    for d, c in sorted((plan.get("consents") or {}).items()):
-        td = rw.path(d)
+_CONSENT_BYPASS = re.compile(r"(?i)\bbypass permissions\b")
+
+
+def carry_consents(plan, rw, entries, dry_run=False, log=print):
+    """Put the plan's consents in place under this user, paths rewritten, for `entries` only: the plan's entries restore
+    accepted (its organization, a position of it in this machine's registry, a well-formed session, a config dir
+    that is the home's own .claude or .claude-*, --only, and the account check: of_review, PR 339, a crafted plan
+    trusted the new home and another organization's folders). Only with the owner's card that says yes to it
+    (restore --consents <card>; of_server, PR 339). Per entry: the Bypass Permissions acceptance into its config dir's
+    settings.json when the plan's consents say so and the dir lacks it; and the trust of the plan's trusted folder
+    for that dir that holds the session's own folder, strictly inside the home, when it exists here. A config dir
+    not here, or not signed in yet, is named and left: run restore again after the sign-in. Existing values are
+    never overwritten. Returns [(config dir, what)]."""
+    done, consents = [], plan.get("consents") or {}
+    home = os.path.normpath(plan["home"])
+    wanted = {}
+    for e in entries:
+        src_d, src_cwd = os.path.normpath(e.get("config_dir") or "/"), os.path.normpath(e.get("cwd") or "/")
+        c = consents.get(e.get("config_dir")) or consents.get(src_d) or {}
+        w = wanted.setdefault(src_d, {"bypass": False, "trusted": set()})
+        w["bypass"] = w["bypass"] or bool(c.get("bypass"))
+        for k in c.get("trusted") or []:
+            k = os.path.normpath(k)
+            if k.startswith(home + "/") and (src_cwd == k or src_cwd.startswith(k + "/")):
+                w["trusted"].add(k)
+    for src_d, w in sorted(wanted.items()):
+        td = rw.path(src_d)
         if not os.path.isdir(td):
             log(f"  consents: {td} does not exist here; they wait for it")
             continue
-        if c.get("bypass") and not _bypass(td):
+        if w["bypass"] and not _bypass(td):
             done.append((td, "bypass"))
             if not dry_run:
                 path = os.path.join(td, "settings.json")
@@ -332,7 +359,7 @@ def carry_consents(plan, rw, dry_run=False, log=print):
                     doc = {}
                 doc["skipDangerousModePermissionPrompt"] = True
                 _write_json_600(path, doc)
-        trusted = [rw.path(k) for k in c.get("trusted") or []]
+        trusted = [rw.path(k) for k in sorted(w["trusted"])]
         if not trusted:
             continue
         path = of_capacity.account_file(td, home=rw.new_home)
@@ -607,7 +634,8 @@ def local_plan(plan, rw):
 
 
 def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=None, place_of=None,
-            home=None, uid=None, account_of=None, restore_fn=None, consents_card=None, cards=None, conn=None):
+            home=None, uid=None, account_of=None, restore_fn=None, consents_card=None, cards=None, conn=None,
+            tmp_root=None):
     """Rewrite and install the bundle's files for this user, then resume its sessions (of_capacity.reboot_restore).
     `org` is the organization the caller expects the bundle to carry; entries of any other are neither put in place
     nor resumed. A session whose config dir here is signed in to another account than it ran on is not resumed."""
@@ -623,18 +651,18 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
     if plan.get("org") != org:
         raise CarryError(f"{bundle} carries {plan.get('org') or 'no organization'}, not {org}")
     rw = Rewriter(plan["home"], home or os.path.expanduser("~"), plan["uid"], os.getuid() if uid is None else uid,
-                  old_tmp=plan.get("tmp_root"))
+                  old_tmp=plan.get("tmp_root"), new_tmp=tmp_root)
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
     install(bundle, rw, dry_run=dry_run, log=log,
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
     card = None
-    if consents_card:  # before any resume: the folders' trust and the bypass, on the owner's yes only
+    if consents_card:  # the folders' trust and the bypass, on the owner's yes only; applied below, before any resume
         card = owner_yes(consents_card, cards, conn)
         if not card:
-            raise CarryError(f"--consents {consents_card}: not a card the owner himself answered with its first "
-                             f"option (yes); nothing carried")
-        carry_consents(plan, rw, dry_run=dry_run, log=log)
+            raise CarryError(f"--consents {consents_card}: not the owner's own yes (its first option) to carrying folder "
+                             f"trust and the Bypass Permissions acceptance, on an unamended card an OF position filed; "
+                             f"nothing carried")
     elif plan.get("consents"):
         log("  consents: not carried (no --consents <card>): a folder no config dir here trusts is refused and named")
     lp = local_plan(plan, rw)
@@ -655,6 +683,14 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
                 f"{here or 'signed in to no account'}, it ran on {e['account']}")
             continue
         ok.add(e["name"])
+    if card:  # only the entries accepted here: planned()'s checks, --only, the account (of_review, PR 339)
+        by_name = {p["name"]: p for p in positions or []}
+        home_src = os.path.normpath(plan["home"])
+        accepted = [e for e in plan.get("entries") or [] if e.get("name") in ok and _SID.fullmatch(e.get("session") or "")
+                    and e.get("org") == org and (by_name.get(e.get("position") or "") or {}).get("_org") == org
+                    and os.path.dirname(os.path.normpath(e.get("config_dir") or "/")) == home_src
+                    and _CONFIG_NAME.fullmatch(os.path.basename(os.path.normpath(e.get("config_dir") or "/")))]
+        carry_consents(plan, rw, accepted, dry_run=dry_run, log=log)
     path = os.path.join(bundle, "plan.local.dry-run.json" if dry_run else "plan.local.json")
     _write_private(path, json.dumps(lp, indent=1, ensure_ascii=False))
     if not ok:
