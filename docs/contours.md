@@ -6,7 +6,7 @@ Status: **design**, 2026-11-19, by `of_architect`, with `of_agent-server` (the a
 
 A **contour** is everything one organization runs, closed to every other organization:
 - **its own OS user** on each machine it runs on, with a home of mode 0700 that no other organization's user reads;
-- **its own herdr server, services and OF install:**
+- **its own herdr server, services and OF install**, each listening on a Unix socket in its own home (mode 0700), never on a loopback TCP port, which every user of the machine can reach or take (`of_server`):
   - its listener, its pulse, its of-server with its relay and its event store;
   - its own Claude Code accounts and their sign-ins, and its own Codex sign-in;
   - its credential roots and its secret store;
@@ -27,9 +27,9 @@ Two contours share nothing on the machine but the kernel, the keepers' root-owne
   - its incidents;
   - the OF team's own internal matters.
 - **The transport, on the host, with no outside server for now:** a mailbox folder with one inbox per direction, for example `/srv/of-channel/<org>/to-of/` and `.../to-<org>/`.
-  - Each inbox is writable only by the sending contour's user and readable only by the receiving one, through one group per pair. The folder is setgid and sticky.
-  - A message is one file: `{from, to, thread, text, at}`.
-  - The sender runs its own pre-publish check on the text before it writes it. The receiver's listener takes the file in as a message with authority none, and the receiving agent reads it as data, never as instructions.
+  - **The folders** (`of_server`, message `01a1f08d-1f9a`). The parent `/srv/of-channel/<org>/` is root's, mode 0755, made by the setup script, so neither side can replace the other's inbox. Each inbox is owned by its sending user, with the pair's group, mode 2750: the owner writes, the other side reads, nobody else does anything.
+  - **A message is one file**, `{from, to, thread, text, at}`. The sender writes it as `.<id>.tmp` at mode 0640 and renames it to `<id>.json` (a UUIDv7), so the receiver never reads half a file. The sender runs its own pre-publish check on the text first, and removes its own files after a retention.
+  - **The receiver trusts the file system, not the text.** It opens each file with `O_NOFOLLOW` and takes only a regular file under a size limit, owned by the pair's other user (by `fstat`). It sets `from` to that contour, whatever the file says, and keeps a ledger of the ids it took; it can delete nothing there. Its listener takes the message in with authority none, and the receiving agent reads it as data, never as instructions.
 - **Later, the same messages go through the public support API** (docs/support.md) when an outside server exists. Only the transport changes.
 
 ## 3. Today's paths between the organizations, under contours
@@ -49,7 +49,7 @@ Each path today crosses organizations directly. Under contours each needs a new 
 
 1. **His yes on the target state**, in one card from `of_agent-server` (`OF-44`, amended): the OS users, the contours, the channel, and his choice of window, A or B.
 2. **The setup script, in his one sudo sitting** (`of_agent-server`, reviewed by `of_server`): the users and their homes, the keepers' users (layers 1 to 3 of the host plan), the channel folder and its groups, and the SSH change of `OF-38`.
-3. **Each contour's services** (`of_server`): its herdr, listener, of-server with relay and store, on the user's own sockets.
+3. **Each contour's services** (`of_server`): its herdr, listener, of-server with relay and store, on Unix sockets in the user's own home; `of_client` and of-server speak HTTP over such a socket. The laptop's TLS forward serves only the transition.
 4. **His sign-ins, one sitting per contour:** the Claude accounts he gives it, Codex for the OF team, and the organization's secret store's service account (`of_capacity` and the organization's own keeper list what each needs).
 5. **The move of the sessions** (`of capacity carry`, paths rewritten): the OF team into `of`, the organization into its own user, each from its own folders. Its credential roots go by the copy script, with its structure keeper's yes (docs/registry.md, Credentials).
 6. **The channel replaces the direct paths** (§3). Grants between the organizations are revoked.
