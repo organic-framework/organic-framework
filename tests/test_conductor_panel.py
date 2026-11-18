@@ -238,6 +238,14 @@ class PanelTest(unittest.TestCase):
         waits = dict(v, positions=["acme_conductor", "panel:questions"])
         self.assertEqual(of._panel_panes(waits, [], False, said.append), {})
         self.assertEqual(ran, [])
+        # the view's tab is there with an earlier build's ask marker: the panel opens in it, not in a second tab
+        # that view_apply, which strips the marker, would never find (of_review on PR 362)
+        state.update(workspaces=[{"workspace_id": "w2", "label": "questions"}],
+                     tabs=[{"tab_id": "w2:t1", "workspace_id": "w2", "label": "questions ❓1"}],
+                     panes=[{"pane_id": "w2:p1", "tab_id": "w2:t1"}])
+        said.clear()
+        of._panel_panes(dict(v), [], True, said.append)
+        self.assertTrue(any("would start it: herdr pane split w2:p1" in m for m in said), said)
 
     def test_a_panel_is_held_by_one_view_per_machine(self):
         """Its pane is found by its label, one per machine: two views holding it would take it from each other

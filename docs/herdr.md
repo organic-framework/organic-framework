@@ -139,7 +139,7 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   run, and a panel of another name is refused and named. A panel opens beside the view's first
   agent with a live pane, so a view whose agents are all down starts no panel (`panel:questions: no live pane; left
   out`). A view of panels alone, for a machine that holds no position (the owner's laptop under contours,
-  [`contours.md`](contours.md) §3), is `of view add questions --workspace questions --tab questions --panel
+  `docs/contours.md` §3), is `of view add questions --workspace questions --tab questions --panel
   questions` with no `--positions`: `of view apply questions` starts the panel in the view's own tab, and makes the
   tab and its workspace when they are missing, without moving the person's focus (hand-over 830275c0; checked in an
   isolated lab herdr, 2026-11-19). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
