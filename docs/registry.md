@@ -383,7 +383,7 @@ subagents:
 
 ## Subagent harnesses (2026-11-18, `of_architect`; RFC 0008 §5)
 
-A top-level `subagent_harnesses:` says which other providers' harnesses may take this organization's read-only work, and on what (docs/rfc/0008-other-harnesses.md). `of subagent run` (`bin/of_subagent.py`) refuses every run the entry does not allow, and names why. With no entry, the organization's positions use none, and `--harness auto` uses a Claude subagent.
+A top-level `subagent_harnesses:` says which other providers' harnesses may take this organization's work as subagent runs (read-only, or a patch returned as a diff), and on what (docs/rfc/0008-other-harnesses.md). `of subagent run` (`bin/of_subagent.py`) refuses every run the entry does not allow, and names why. With no entry, the organization's positions use none, and `--harness auto` uses a Claude subagent.
 
 ```yaml
 subagent_harnesses:

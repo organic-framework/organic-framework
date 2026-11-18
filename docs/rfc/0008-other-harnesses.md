@@ -70,11 +70,17 @@ The wrapper is the guard for these runs. Each limit is a test in the wrapper's s
 
 The founder, 2026-11-18 14:11Z, prompt `01a1eeff-880b` in `of_conductor`'s session, declining to restart agents with a clean context: "Let's move part of the work to Codex, something about development and so on. Context is a very important part of the agents' understanding of the system, so context must not be reset." A `patch` run lets Codex write code without holding a position, the way a Claude subagent writes in its own worktree (docs/method.md, "Subagents").
 
-- **The run.** `of subagent run --harness codex --kind patch --workspace <checkout> --at <commit> --prompt-file <file>` gives Codex its snapshot to write in (Codex's `workspace-write` sandbox on the snapshot only), with §3.1's read confinement, no network, no credentials, no connectors and no hooks. Its answer is the snapshot's `git diff` against `--at`, kept in the run's record. The wrapper never applies it anywhere.
-- **Light work only.** The run may run the named tests of what it changes inside the snapshot; no build, no full test suite, nothing heavy (AGENTS.md, "No heavy local jobs on a laptop").
-- **The position owns the change.** It reads the whole diff as it would a Claude subagent's, applies it in its own worktree, runs its tests and commits it under its own name, with `Drafted-by: codex <model>, run <id>` beside its `Position:` trailer, so the measures can tell drafted work apart. A pull request's reviewer is still a position that wrote none of its commits: a drafted commit counts as its committer's.
-- **The same limits as §3.1**, plus two tests: a patch run writes nothing outside its snapshot, and its diff names only the snapshot's files.
-- **Allowed by the organization's entry** with `patch` among the harness's `kinds` (§5).
+- **The run.** `of subagent run --harness codex --kind patch --workspace <checkout> --at <commit> --prompt-file <file>` gives Codex its snapshot to write in (Codex's `workspace-write` sandbox on the snapshot only), with §3.1's read confinement, no network, no credentials, no connectors and no hooks. Before the run, the wrapper makes the snapshot a git repository with one commit of its files; after it, the answer is `git add -A` then `git diff --cached --binary` against that commit, so new, deleted and mode-changed files are in it. It is kept in the run's record. The wrapper never applies it anywhere.
+- **Light work only.** The run may run the named tests of what it changes inside the snapshot; no build, no full test suite, nothing heavy (AGENTS.md, "No heavy local jobs on a laptop"). That sentence is a request to the model, so the wrapper also bounds the run: Codex's step cap and a wall-clock limit, after which it stops the run and keeps its record. `of_platform` sets their values and says their purpose.
+- **What a patch may not change** (of_review, PR 336). The position applies the diff and runs its tests with its own rights, so a diff must not change what steers later agents or privileged automation. The wrapper refuses a diff that touches any of these, and names the path; such a change is the position's own to write:
+  - agent settings and instructions: `.claude/`, `.codex/`, `.agents/`, `.mcp.json`, and `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` anywhere;
+  - skills and plugins: `skills/` and `plugins/` under those folders;
+  - git control: `.gitattributes`, `.gitmodules`, `.githooks/`, a `hooks` folder, `.git/`;
+  - CI: `.github/`, `.gitlab-ci.yml`, `.circleci/`, `.buildkite/`;
+  - a symbolic link, new or made from a file (a later write through it lands outside the worktree), and a file newly made executable.
+- **The position owns the change.** It reads the whole diff as it would a Claude subagent's, applies it in its own worktree, runs its tests and commits it under its own name, with `Drafted-by: codex <model>, run <id>` beside its `Position:` trailer, so the measures can tell drafted work apart. A pull request's reviewer is still a position that wrote none of its commits: a drafted commit counts as its committer's. A protected worktree (docs/guard.md G21) takes no drafted patch: its git calls are denied.
+- **Tested, per kind.** The same limits as §3.1, and these tests: a patch run writes nothing beside or outside its snapshot; its diff names only the snapshot's files; a diff touching each class above, a link or a newly executable file is refused. The selftest gate is kept per harness and kind: a patch run goes only after a patch-mode selftest passed on that harness; a passed `read` selftest admits no patch run.
+- **Allowed by the organization's entry** with `patch` among the harness's `kinds` (§5). Until the wrapper takes `--kind patch` (hand-over `66c37728`), a patch run is refused.
 
 ## 4. Rung 2: positions held by Codex
 
@@ -102,7 +108,7 @@ subagent_harnesses:
 The schema is in docs/registry.md, "Subagent harnesses". It names repositories, not systems: one repository holds many systems.
 
 - With no key, an organization's positions use none, and `--harness auto` uses Claude.
-- **The OF team** (its keeper, `of_architect`): Codex for `review`, `read` and `research` on the public framework repository (public as §3.1 defines it), with prompts that pass the pre-publish check. Muse after its login no longer needs the owner's keychain (§3.1). Not organic-framework-build: its reports name a user organization and its people.
+- **The OF team** (its keeper, `of_architect`): Codex for `review`, `read`, `research` and `patch` on the public framework repository (public as §3.1 defines it), with prompts that pass the pre-publish check. Muse after its login no longer needs the owner's keychain (§3.1). Not organic-framework-build: its reports name a user organization and its people.
 - **A user organization** decides through its own structure keeper, for its own repositories.
 
 ## 6. The bake-off, and what proves it works
@@ -110,7 +116,8 @@ The schema is in docs/registry.md, "Subagent harnesses". It names repositories, 
 `of_lab` runs the same cases on a Claude subagent, Codex and Muse:
 - reviews of diffs with seeded bugs (the design of `of_capacity`'s Muse trial, kept in its state folder);
 - reviews of the framework's recent pull requests whose findings were verified in their review records (for example organic-framework PR 306, reviewed six times);
-- reading questions on the public repository whose answers are checked.
+- reading questions on the public repository whose answers are checked;
+- for `patch`: tasks with a known test that the diff must make pass, scored by the tests passing after the position applies the diff, the lines it had to change by hand, and any path §3.3 refuses. Until those cases ran, a position uses patch runs and checks each diff, as for any kind before its bake-off (§3.2).
 
 It reports per kind and harness: the seeded bugs found, the findings whose failure scenario holds when checked, the false ones, and the share of the window each run took. **A kind moves to an outside harness by default** when, on the same cases, it finds at least the seeded bugs the Claude subagent finds. Its false findings are reported beside that, because the calling position pays one check for each. The reading is taken where the event happens: in the run's own output, checked against the code.
 
