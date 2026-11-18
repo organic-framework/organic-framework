@@ -12,7 +12,7 @@ A **keeper** holds something an agent must use but never hold: a vault item, a s
 | `signer` | one money key | destinations, a per-call cap and a per-period cap |
 | `browser` | a browser profile signed in to providers' account pages | sites, the actions on them, a download folder, a per-day count |
 
-The keeper knows its caller from the process, not from anything the caller sends: the caller's process id from the socket or its sudo parent, up to the Claude Code session, and through OF's session record to the position (that report, "The caller's identity"; `of_server` designs it, `of_lab` tests it).
+The keeper knows its caller from the process, not from anything the caller sends: the caller's process id from the socket or its sudo parent, up to the Claude Code session, and through OF's session record to the position (that report, "The caller's identity"; `of_server` designs it, `of_lab` tests it). Within one organization every position runs as the same OS user, so this rests on process ancestry, not on the OS. For a money keeper, what bounds a caller that is not who it seems is the grant's per-call and per-period caps (§4).
 
 ## 2. One access map per organization
 
@@ -32,7 +32,7 @@ entries:
   - position: acme_payer
     access: "dest:0x1234…"        # vault: "item:<item id>"; signer: "dest:<address>"; browser: "site:<domain>"
     actions: [send]               # browser: download, read, order…; signer: send; vault: read
-    limit: {per_call: "0.5 ETH", per_period: "2 ETH/day"}
+    limit: {per_call: {amount: 0.5, unit: ETH}, per_period: {amount: 2, unit: ETH, period: P1D}}   # numbers, a unit, an ISO 8601 period
     tier: money                   # plain | secret | money | production (§3)
     decided: OF-123               # the founder's card, or the structure keeper's commit for a plain entry
     approval: "passkey:<record id>"   # secret and above (§4)
@@ -42,7 +42,8 @@ entries:
 ```
 
 - Only `of access grant` and `of access revoke` write a list, and the structure keeper commits it.
-- A keeper reads its list from the committed tip of the organization's default branch, as `of subagent run` reads its entry (docs/registry.md, Subagent harnesses). An uncommitted edit allows nothing.
+- A keeper reads its list from the committed tip of the organization's default branch, as `of subagent run` reads its entry (docs/registry.md, Subagent harnesses). An uncommitted edit allows nothing. Any session of that organization that can commit there could still add a line; for `secret` and up the signatures in §4 are what holds, and no keeper kind takes a `plain` line so far.
+- A `limit` is machine-read: an amount, a unit and an ISO 8601 period, in the line and in the grant alike, so the keeper compares them as numbers.
 - A keeper's own policy file, such as the signer's destination list and caps, is generated from its list. The two never drift apart by hand.
 - **The keeper's kind sets the tier's floor** (`of_secrets-review` on PR 349). A line's own `tier` decides which approvals the keeper checks, and the structure keeper writes it, so a lower tier must not lower the checks. A `signer` line is `money` at least, and a `vault` or `browser` line is `secret` at least. A browser site that moves money, such as a payment or banking page, is `money` by the keeper's own site list, which the host's setup script installs in the keeper's root-owned folder. The floors live in the keeper's code and that folder, never in the list: the keeper refuses a line whose tier is below its floor, and `of registry check` names it.
 - `of registry check` validates every list: a known keeper and position of that organization, a tier, a `decided` that resolves, and an `approval` and a `grant` where the tier needs them.
@@ -65,7 +66,7 @@ entries:
 The founder decides on his laptop or his phone. The agents and the keepers run on the agent host. His keys never go there: only signatures and public keys do.
 
 - **Plain:** the structure keeper's commit.
-- **Secret:** his yes on the card, given on the approval page that shows the entry's exact line, with his passkey (the phone or the laptop; `of diff link`, docs/remote.md §6). The signed record is stored with the entry as `approval`.
+- **Secret:** his yes on the card, given on the approval page that shows the entry's exact line, with his passkey (the phone or the laptop; `of diff link`, docs/remote.md §6). The passkey signs the line without its `approval`, `grant` and `added` fields, in canonical JSON (keys sorted), so recording the approval or the time it was added never breaks it. The signed record is stored with the entry as `approval`.
 - **Money and production:** the same passkey approval, and also a grant he signs with his own key on the laptop, through Touch ID: `of grant issue --scope keepers=<keeper>:<access> --limit … --expires …`. He runs it in a plain terminal, and no agent's session can run it (docs/guard.md G13; AGENTS.md, "Automation never touches the owner's SSH agent"). The grant lands in the organization's `registry/grants.yaml` (docs/registry.md, Grants). The card names the expiry he chooses, and the grant carries it.
 - **What the keeper verifies before it serves a new line.** The host's setup script, which he runs once, pins the organization's grant public key and his passkey enrollment records in the keeper's root-owned folder. An agent cannot write there. Before it serves a line, the keeper checks:
   - the passkey record's signature covers the exact line, and the enrollment is signed by the grant key (as `of diff apply` checks today);
