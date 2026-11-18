@@ -68,7 +68,7 @@ stage is done only when its own evidence exists in the records (record §8.3 (3)
    (or their lines in `onboarding/README.md`).
    Each lens writes its baseline under `onboarding/baselines/` and checks it against its norm (record §8.1). You
    do not write a baseline yourself.
-5. **Integrate.** Read the four baselines and Studio's diagnosed issues (`of model issues --org {org}`). Write
+5. **Integrate.** Read the four baselines and Studio's diagnosed issues (`of model issues --org {org_name}`). Write
    `onboarding/findings.md`: each finding with its lens, its evidence, its consequence and its decider. Rank by
    consequence. Route by Burke and Litwin's split: a transformational finding (environment, strategy, leadership,
    culture) goes to the head; a transactional one goes to its keeper (record §1.2). Gaps that no agent raises (the

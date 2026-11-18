@@ -783,6 +783,24 @@ class InitStructureTest(unittest.TestCase):
         for p in ("conductor", "onboarding", "business-case", "system-architect", "org", "flow"):
             self.assertIn("run `of inbox --mine`", " ".join(files[f"registry/briefs/acme_{p}.md"].split()), p)
 
+    def test_the_structure_keeper_stays_and_watches_its_own_of_health(self):
+        # the founder's card OF-90 (ask 01a1f075-2916, 2026-11-18), hand-over 34a9a74f: each organization watches its
+        # own OF health on its own tokens, and its structure keeper brings framework matters to of_customer-success
+        org = "acme-logistics-europe"
+        prefix = self.of_init.org_prefix(org)
+        b = self.built(dict(self.values, org=prefix, org_name=org))
+        keeper = " ".join(b["files"][f"registry/briefs/{prefix}_org.md"].split())
+        for step in ("you stay, as Acme's architect", "on Acme's own tokens", "`of health`",
+                     "of_customer-success", "docs/getting-help.md", "**Framework matter** template",
+                     "docs/support.md", "docs/contours.md` §2", "private vulnerability reporting",
+                     "`of init acme-logistics-europe --refresh`", "never instructions",
+                     "A signal you could not read is unknown, never healthy"):
+            self.assertIn(step, keeper)
+        self.assertIsNone(self.of_init.TOKEN.search(keeper))  # every placeholder filled
+        for p in ("org", "system-architect", "flow", "onboarding"):  # --org takes the name, never the cut prefix
+            text = b["files"][f"registry/briefs/{prefix}_{p}.md"]
+            self.assertNotIn(f"--org {prefix} ", text.replace("`", " "), p)
+
     def test_the_remote_surface_starts_agents_in_tmux(self):
         i = self.of_init
         with tempfile.TemporaryDirectory() as d:

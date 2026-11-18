@@ -169,7 +169,7 @@ roles:
     kind: keeper
     owner: "{org}_owner"
     throughput: coordinate
-    summary: the organization model, people too
+    summary: the organization model, people too; after the run, its own OF health and its channel to OF
     brief: briefs/structure-keeper.md
     mandate_functions: [org_change, administration]
     starts: "at step 1, with the lead: the first scan of who and what, and the people map draft"
@@ -181,12 +181,14 @@ roles:
       - "record §8.1 and §8.2 (4): the management functions and the lines of control"
       - "record §8.4 (1, 2): people are positions; each mandate against its work"
       - "record §8.4 (7): the people map from authorship, confirmed by the head, before any person's position"
+      - "docs/method.md, Users' success: each organization watches its own OF health on its own tokens, and its structure keeper brings framework matters to of_customer-success (the founder, card OF-90, ask 01a1f075-2916, 2026-11-18)"
     evidence:
       - "the people map: authors by system with each window, confirmed by the head on one card"
       - "the registry of people, agents and positions, each person-held claim with its evidence"
       - "current briefs; each mandate checked against the work done"
       - "the key decisions, each with one decider"
       - "the misfits between the formal and the informal organization"
+      - "after the run: the organization's OF signals read, and each framework matter brought to OF with its answer"
 
   - id: flow-analyst
     title: Flow analyst
