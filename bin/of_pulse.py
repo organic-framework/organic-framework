@@ -1158,7 +1158,7 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
         # restatement replaced, counts for nothing (2026-11-18: a user organization's owner was told two such waits,
         # one of them restated 2 minutes after it, as holding; its structure keeper, message 01a1ed18-b0bf)
         clk = of_diagnose_rules.loop_clock(card, now, thresholds) if to else None
-        for x in long_waits(card["waits"], now, esc_h, clk) if clk else ():
+        for x in long_waits(card["waits"], now, esc_h, clk) if clk and clk["part"] == "held" else ():
             k = f"{org}/{wid}/{x['ts']}/{x['on']}/{x.get('ref')}"
             a = live.get(to) or {}
             if k in long_told or not prompt or to in away or not a.get("pane_id") \
@@ -1298,14 +1298,14 @@ def long_waits(waits, now, esc_h, clock=None):
     """The stated waits whose expect_at lies past the escalation threshold from their statement, still to come and
     stated within the last day: each reaches the work's owner once, when it is stated (docs/registry.md, Works, "A
     stated wait"). Not a cap: the wait holds as stated. With CLOCK (of_diagnose_rules.loop_clock of the same card),
-    only the waits it counts: stated since its last run or decision and not a restatement it left uncounted."""
-    skip, last = set(), 0
-    if clock:
-        skip = {(x.get("ts"), x.get("on"), x.get("ref")) for x in clock.get("waits_not_counted") or []}
-        last = (clock.get("last") or {}).get("at") or 0
+    only the wait that holds it now (part `held`): a restatement it did not count, a counted wait that ends after the
+    one holding it, a wait on the calendar and one stated before the clock started hold nothing, so the note's "it
+    holds the stall clock" would be false and the escalation it stands in for still fires (of_review on PR 324)."""
+    ident = lambda x: (x.get("ts"), x.get("on"), x.get("ref"))  # noqa: E731
+    holder = ident(clock["wait"]) if clock and clock.get("part") == "held" and clock.get("wait") else None
     return [x for x in waits or [] if x.get("ts") and x.get("expect_at") and x["expect_at"] > now
             and x["ts"] >= now - 86400 and x["expect_at"] - x["ts"] > esc_h * 3600
-            and x["ts"] >= last and (x["ts"], x.get("on"), x.get("ref")) not in skip]
+            and (clock is None or ident(x) == holder)]
 
 
 def long_wait_note(work, x, esc_h, to="owner"):

@@ -291,8 +291,20 @@ class LongWaitTest(unittest.TestCase):
                 "runs": [], "decisions_all": [], "waits": [first, longer, win, shorter]}
         clk = of_diagnose_rules.loop_clock(card, t0 + 120)
         self.assertEqual(len(of_pulse.long_waits(card["waits"], t0 + 120, 4)), 4)          # without the clock
-        self.assertEqual(of_pulse.long_waits(card["waits"], t0 + 120, 4, clk), [first, shorter])
+        self.assertEqual(of_pulse.long_waits(card["waits"], t0 + 120, 4, clk), [first])   # the first to end holds
         self.assertEqual(of_pulse.long_waits(card["waits"], t0 + 120, 8, clk), [])
+
+        def told(*waits, at=t0 + 120):
+            c = dict(card, waits=list(waits))
+            return of_pulse.long_waits(c["waits"], at, 8, of_diagnose_rules.loop_clock(c, at))
+        # of_review on PR 324: a counted wait that ends after the one holding the clock, a wait on the calendar, and
+        # one stated before the clock started each hold nothing, so none is told as holding it
+        a = {"ts": t0, "on": "runner", "ref": "a", "expect_at": t0 + 2 * h}
+        b = {"ts": t0 + 60, "on": "release", "ref": "b", "expect_at": t0 + 20 * h}
+        self.assertEqual(told(a, b), [])
+        self.assertEqual(told({"ts": t0, "on": "calendar", "ref": "wk", "expect_at": t0 + 14 * 86400}), [])
+        self.assertEqual(told({"ts": t0 - 2 * h, "on": "runner", "ref": "j", "expect_at": t0 + 20 * h}), [])
+        self.assertEqual(told(b), [b])                                                     # alone, it holds
 
     def test_on_a_work_a_person_owns_the_long_wait_goes_to_the_conductor_once(self):
         """of_architect, message 01a1e133-dbf4: while a stated wait holds the clock the 8 h level never fires, so on a
@@ -304,7 +316,7 @@ class LongWaitTest(unittest.TestCase):
             now = time.time()
             for name, payload, at in (("loop_hypothesis", {"id": "h1", "hypothesis": "h1", "status": "testing",
                                                             "status_at": of_pulse._iso(now - 600)}, now - 600),
-                                      ("loop_wait", {"on": "holdout", "ref": "day 3", "by": "of_doer",
+                                      ("loop_wait", {"on": "runner", "ref": "job 3", "by": "of_doer",
                                                      "expect_at": of_pulse._iso(now + 30 * 3600)}, now - 300)):
                 rec = of_events.record(name, dict(payload, work="w1"), position="of_doer", session="SD")
                 rec["timestamp"] = of_pulse._iso(at)
@@ -321,7 +333,7 @@ class LongWaitTest(unittest.TestCase):
                                          prompt=lambda pane, text, sender: typed.append((pane, text)) or (True, None),
                                          log=lambda m: None)
             self.assertEqual([p for p, _ in typed], ["p-of_conductor"])                  # once, never the person
-            self.assertIn("w1: of_doer stated a wait on holdout day 3", typed[0][1])
+            self.assertIn("w1: of_doer stated a wait on runner job 3", typed[0][1])   # a holdout holds no clock
             conn.close()
 
 
