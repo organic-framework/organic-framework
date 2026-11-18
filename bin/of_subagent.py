@@ -210,7 +210,15 @@ def committed_registry(path):
     (parsed document, the branch's commit). The default branch is origin's HEAD when the repository has one, else main
     or master. Raises SubagentError when it cannot be read."""
     import yaml
-    root = _git(os.path.dirname(os.path.abspath(path)), "rev-parse", "--show-toplevel").strip()
+    # the organization's own root (orgs.yaml's path: the registry's folder's parent, its links not followed), and
+    # refused when git's top level or the registry folder's real path lies elsewhere: an uncommitted folder link
+    # registry -> another organization's registry read that one's committed file (of_review on PR 342)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    top = _git(root, "rev-parse", "--show-toplevel").strip()
+    if os.path.realpath(top) != os.path.realpath(root) or \
+            os.path.realpath(os.path.join(root, "registry")) != os.path.join(os.path.realpath(root), "registry"):
+        raise SubagentError(f"the registry at {path} is not the organization repository's own (its git top level or its "
+                            "registry folder lies elsewhere)")
     # the fixed path, never a working-tree link followed to another file (of_review on PR 342)
     rel = "registry/positions.yaml"
     branch = None
@@ -1132,7 +1140,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             if cap is not None:
                 import math
                 try:
-                    cap = float(cap)
+                    cap = float("nan") if isinstance(cap, bool) else float(cap)
                 except (TypeError, ValueError):
                     cap = float("nan")
                 if not math.isfinite(cap) or cap <= 0:
