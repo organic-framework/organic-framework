@@ -1,0 +1,81 @@
+"""deploy/host/forward.py: the laptop's reverse forward to the agent host (docs/server-several-machines.md 4.8). Pure
+logic: a fake launchctl, a temporary home; no ssh runs."""
+
+import importlib.util
+import os
+import plistlib
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+spec = importlib.util.spec_from_file_location("host_forward", os.path.join(HERE, "..", "deploy", "host", "forward.py"))
+F = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(F)
+
+
+class Run:
+    def __init__(self, code=0):
+        self.calls, self.code = [], code
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+
+        class R:
+            returncode, stdout, stderr = self.code, "", "boom"
+        return R()
+
+
+class ForwardTest(unittest.TestCase):
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.key = os.path.join(self.home, "fwd_ed25519")
+        with open(self.key, "w") as fh:
+            fh.write("not a key\n")
+        with open(self.key + ".pub", "w") as fh:
+            fh.write("ssh-ed25519 AAAAexample of-forward\n")
+
+    def test_ssh_never_uses_an_agent_and_ends_on_a_failed_forward(self):
+        argv = F.ssh_argv("alex@192.0.2.10", self.key)
+        self.assertEqual(argv[:4], ["/usr/bin/ssh", "-N", "-R", "127.0.0.1:18200:127.0.0.1:18200"])
+        opts = {argv[i + 1] for i, a in enumerate(argv) if a == "-o"}
+        for o in ("IdentityAgent=none", "IdentitiesOnly=yes", "BatchMode=yes", "ForwardAgent=no",
+                  "ExitOnForwardFailure=yes", "ServerAliveInterval=30", "ServerAliveCountMax=3"):
+            self.assertIn(o, opts)
+        self.assertEqual(argv[argv.index("-i") + 1], self.key)
+        self.assertEqual(argv[-1], "alex@192.0.2.10")
+
+    def test_the_unit_is_automation_with_no_agent_socket(self):
+        u = F.unit("alex@192.0.2.10", self.key, home=self.home)
+        self.assertEqual(u["Label"], "dev.organic-framework.forward")
+        self.assertEqual(u["EnvironmentVariables"], {"OF_AUTOMATION": "1", "SSH_AUTH_SOCK": ""})
+        self.assertTrue(u["KeepAlive"])
+        self.assertTrue(u["StandardErrorPath"].startswith(self.home))
+
+    def test_the_hosts_line_allows_this_forward_only(self):
+        self.assertEqual(F.authorized_line("ssh-ed25519 AAAAexample of-forward\n"),
+                         'restrict,port-forwarding,permitlisten="127.0.0.1:18200" ssh-ed25519 AAAAexample of-forward')
+
+    def test_dry_run_writes_nothing_and_install_loads_the_unit(self):
+        run, shown = Run(), []
+        F.install("alex@192.0.2.10", self.key, dry_run=True, home=self.home, run=run, out=shown.append)
+        self.assertEqual(run.calls, [])
+        self.assertFalse(os.path.exists(F.agent_path(self.home)))
+        self.assertTrue(any('permitlisten="127.0.0.1:18200"' in s for s in shown))
+        F.install("alex@192.0.2.10", self.key, home=self.home, run=run, out=shown.append)
+        with open(F.agent_path(self.home), "rb") as fh:
+            self.assertEqual(plistlib.load(fh)["ProgramArguments"][-1], "alex@192.0.2.10")
+        self.assertEqual([c[:2] for c in run.calls], [["launchctl", "bootout"], ["launchctl", "bootstrap"]])
+
+    def test_it_refuses_a_missing_key_a_bare_host_and_a_failed_load(self):
+        with self.assertRaises(SystemExit):
+            F.install("alex@192.0.2.10", os.path.join(self.home, "none"), home=self.home, run=Run())
+        with self.assertRaises(SystemExit):
+            F.install("192.0.2.10", self.key, home=self.home, run=Run())
+        with self.assertRaises(SystemExit):
+            F.install("alex@192.0.2.10", self.key, home=self.home, run=Run(code=5), out=lambda s: None)
+
+
+if __name__ == "__main__":
+    unittest.main()
