@@ -391,11 +391,16 @@ subagent_harnesses:
     kinds: [review, read, research, patch]   # review, read and patch send a snapshot of a repository (patch writes in it and returns a diff, RFC 0008 §3.3); research sends only the prompt
     repos: [organic-framework]        # the repositories (checkout folder names) whose snapshots may be sent
   prompt_check: "release/check.py"    # run on a folder holding only the prompt and the schema; exit 0 passes
+  snapshot_check: "of:gitleaks"       # run the same way on the material folder (the snapshot) before it leaves
+  excludes:                           # paths taken out of the snapshot and the diff, on top of a built-in list
+    "*": ["fixtures/private/"]        # a repository's name, or "*" for every repository
   basis: "<the keeper's commit or diff, or the owner's card where the organization requires one>"
 ```
 
 - **The structure keeper writes it**, for the organization's own repositories. What leaves for another provider is the organization's choice (docs/plugins.md §1).
 - **`repos`, not systems.** A run sends a repository's snapshot, and one repository often holds many systems: a repository the entry does not name is refused, and so is a checkout whose folder name it cannot tell.
+- **`excludes`** maps a repository's name, or `*`, to path patterns removed from the snapshot and from a patch run's diff, on top of the wrapper's built-in list of secret-like names (`DEFAULT_EXCLUDES` in `bin/of_subagent.py`). A pattern with no slash matches a name at any depth; one ending in a slash matches a folder at any depth; one with an inner slash is anchored at the repository's root; `**` spans folders. A malformed pattern refuses the run.
+- **`snapshot_check`** runs on the material folder before it leaves, as `prompt_check` runs on the prompt. Either may name the built-in `of:gitleaks` (a pinned gitleaks with its default rules, `bin/of_gitleaks_check.py`) instead of a path.
 - **`prompt_check`** is the organization's pre-publish check, a path relative to its repository. The prompt and the schema leave as they are, and a `research` run sends nothing else, so the wrapper runs this check on them, besides its own secret checks. Without one, a harness that may train on the run (RFC 0008 §3.1) gets no prompt.
 - The limits of each run (the snapshot, the secret checks, read-only, no training, the record) are the wrapper's, not the entry's: RFC 0008 §3.1.
 - **`training_cards: {<harness>: <card id>}`**, a top-level key beside it, names the owner's card that confirms a harness account's training setting, such as `codex: OF-27`, his task to turn training off. `of_capacity` records the reading (`of.harness_training`, docs/capacity.md, "Training readings") only from a card a registry names here, done by the owner, and a run on non-public material takes the reading only while the card is still named (organic-framework PR 334). It lives in the registry, not in `capacity.yaml`, because agents can write that file.
