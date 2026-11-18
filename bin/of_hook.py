@@ -1067,7 +1067,7 @@ def _permission_answer(hook):
         return None
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
     if hit:
-        decision = {"behavior": "deny", "message": f"Organic Framework critical deny: {hit[0]}."}
+        decision = {"behavior": "deny", "message": f"Organic Framework critical deny: {hit[0]}." + NO_WAY_ROUND}
         answered = {"by": "guard", "behavior": "deny", "reason": mask(hit[0])[:200], "mode": mode}
     else:
         decision = {"behavior": "allow"}
@@ -1077,6 +1077,14 @@ def _permission_answer(hook):
     sys.stdout.flush()
     OUTPUT = None
     return answered
+
+
+# The deny's last sentence, on every deny (critical, an organization's rule, an excluded plugin). A subagent sees no
+# binding rules of OF's (they come with a main session's start; OF uses no SubagentStart), but it sees the reason of a
+# call it made (2026-11-18, a user organization's structure keeper, msg 01a1eedd-f437: a drafting subagent wrote a
+# file with another tool after a deny, the day's second way round one).
+NO_WAY_ROUND = (" Do not reach the same file or value another way (another tool, a split or rebuilt string, a script "
+                "written first); if this deny looks wrong, stop and report the command to your structure keeper.")
 
 
 def _guard_index(sid=None):
@@ -1144,7 +1152,7 @@ def _guard(hook, sess):
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                      "permissionDecisionReason": f"Organic Framework critical deny: {why}. " + (
                                          "" if of_guard.owns_advice(why) else
-                                         "Secrets stay in their files; ask the owner if you need a value.")}}
+                                         "Secrets stay in their files; ask the owner if you need a value.") + NO_WAY_ROUND}}
     # the decision goes out before anything else can fail (recording needs the store and the registry)
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
     sys.stdout.flush()
@@ -1332,7 +1340,8 @@ def _plugin_guard(hook, sess):
     pid, basis = hit
     what = f"the connector {pid}" if connector else f"the plugin {pid}"
     why = (f"Organic Framework rule of {org} (docs/guard.md G22): {what} is excluded for this organization's "
-           f"positions ({basis or 'tools_excluded'}), so its tools are not used here. Ask its structure keeper.")
+           f"positions ({basis or 'tools_excluded'}), so its tools are not used here. Ask its structure keeper."
+           + NO_WAY_ROUND)
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                      "permissionDecisionReason": why}}
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
@@ -1394,7 +1403,7 @@ def _org_guard(hook, sess):
         r, said = deny
         OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                          "permissionDecisionReason": f"Organic Framework rule of {org} (grant "
-                                         f"{r['id']}): {r['reason']} Matched: {said}."}}
+                                         f"{r['id']}): {r['reason']} Matched: {said}." + NO_WAY_ROUND}}
         sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
         sys.stdout.flush()
         OUTPUT = None

@@ -106,6 +106,7 @@ class HandleTest(unittest.TestCase):
 
     def tearDown(self):
         of_events.STATE_DIR, of_hook.STATE = self.saved[0], self.saved[1]
+        of_hook._PRE_TOOL = False  # one process per hook in use; here a PreToolUse call's flag outlived its test
         for k, v in (("OF_ORGS", self.saved[2]), ("HERDR_ENV", self.saved[3])):
             if v is None:
                 os.environ.pop(k, None)
@@ -582,6 +583,20 @@ class HandleTest(unittest.TestCase):
         self.assertNotIn("bare op", out["additionalContext"])
         checks = [e for e in self.events() if e.get("event.name") == "of.mandate_check"]
         self.assertEqual([(c.get("of.payload") or {}).get("verdict") for c in checks], ["warn"])
+
+    def test_every_deny_says_not_to_go_round_it_and_reaches_a_subagent(self):
+        """A user organization's structure keeper, msg 01a1eedd-f437 (2026-11-18): a drafting subagent wrote a file with
+        another tool after a deny. A subagent gets none of OF's binding rules, but it gets the deny's reason."""
+        import contextlib
+        import io
+        for extra in ({}, {"agent_id": "a1", "agent_type": "general-purpose"}):
+            of_hook.OUTPUT = None
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):  # the decision goes to stdout first (OUTPUT is cleared after)
+                self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "cat ~/.ssh/id_ed25519"}, **extra)
+            why = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("another way", why, extra)
+            self.assertIn("report the command to your structure keeper", why, extra)
 
     def test_a_guard_reason_is_recorded_masked(self):
         """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""
