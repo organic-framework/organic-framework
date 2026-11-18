@@ -131,8 +131,9 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   as `of init` does: `of view add` refuses a name already in use unless given `--replace`, and `--dry-run`
   prints the view without writing it. `--panel questions` writes the
   command (the panel under `keep`, with the Python and the `bin/` that ran `of view add`) and places `panel:questions`
-  after the positions. `--panel` takes only built-in panels. The listener runs a view's panels every minute, as the
-  person, so a panel with a command of its own is written into `views.yaml` by the person. A panel opens beside the view's first
+  after the positions. `--panel` takes only built-in panels, and `of view apply` (the listener too, each minute, as the
+  person) runs only those, with the command the code gives their name: a command stored in `views.yaml` is never
+  run, and a panel of another name is refused and named. A panel opens beside the view's first
   agent with a live pane, so a view whose agents are all down starts no panel (`panel:questions: no live pane; left
   out`). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
   resizes no pane moved within its own tab. When the view's tab does not exist yet and the first agent's own tab in

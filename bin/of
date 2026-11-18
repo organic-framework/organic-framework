@@ -2731,25 +2731,31 @@ def cmd_conductor(args):
 
 def _panel_panes(v, panes_now, dry_run, say, anchor=None):
     """{panel name: pane id} for a view's panels (views.yaml `panels: {name: command}`, placed in `positions` as
-    `panel:<name>`): the pane labelled "▤ <name>", started in a new pane with its command when there is none
-    (hand-over a8ee7e96: the conductor's panel in its pinned view). The layout then places it like an agent."""
+    `panel:<name>`): the pane labelled "▤ <name>", started in a new pane when there is none (hand-over a8ee7e96: a
+    panel in a pinned view). The layout then places it like an agent. Only a built-in panel runs, with the command the
+    code gives its name (of_views.panel_spec, this Python and this bin/); the command stored in views.yaml is never
+    run. The listener applies every view each minute, as the person, and any agent can write that file, so a stored
+    command was a way to run anything (of_review on organic-framework PR 345, msg 01a1efc7-283b; of_server, msg
+    01a1efce-da1d: the reader is the wall that holds whoever wrote the file). Another name is refused and named."""
+    import of_views
     out = {}
-    for name, command in (v.get("panels") or {}).items():
+    here = os.path.dirname(os.path.realpath(__file__))
+    for name in (v.get("panels") or {}):
+        try:
+            name, command = of_views.panel_spec(name, sys.executable, here)
+        except ValueError:
+            say(f"  panel {name}: not a built-in panel ({', '.join(of_views.BUILTIN_PANELS)}), so its command in "
+                "views.yaml is not run (docs/herdr.md, \"The questions panel\")")
+            continue
         label = f"▤ {name}"
         hit = next((p["pane_id"] for p in panes_now if (p.get("label") or "").strip() == label), None)
         if not hit and not dry_run:
             import of_capacity
-            import of_views
             r = herdr_json("pane", "split", anchor, "--direction", "right", "--ratio", of_views.split_ratio(v),
                            "--cwd", os.path.expanduser("~"), "--no-focus") if anchor else None
             hit = of_capacity.first_pane_id(r) if r else None
             if hit:
-                # this Python, not the login shell's first python3, which may lack PyYAML (a machine with OF in its
-                # own venv and no Homebrew, 2026-11-12)
-                import shlex
-                me = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.realpath(__file__))} "
-                cmd = str(command).replace("of ", me, 1) if str(command).startswith("of ") else str(command)
-                herdr_do(["pane", "run", hit, cmd], False)
+                herdr_do(["pane", "run", hit, command], False)
                 herdr_do(["pane", "rename", hit, label], False)
                 say(f"  panel {name}: started in {hit}")
         if hit:
