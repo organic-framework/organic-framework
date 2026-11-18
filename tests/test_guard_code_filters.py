@@ -94,6 +94,10 @@ class CodeFilterTest(unittest.TestCase):
                 "python3 - <<EOF\nif '.env' in '$1': print(open('$1').read())\nEOF",
                 "python3 -c \"if '.env' in 'x': print(open('$(ls | head -1)').read())\"",
                 "python3 -c \"import pathlib\nif '.env' in 'x': print(pathlib.Path('`ls`').read_text())\"",
+                # a bytes literal is filled in the same way (of_review on organic-framework PR 323)
+                "python3 -c \"if '.env' in 'x': print(open(b'$F').read())\"",
+                "python3 -c \"import pathlib\nif '.env' in 'x': print(pathlib.Path(b'$1').read_text())\"",
+                "python3 -c \"if '.env' in 'x': print(open(b'$(ls | head -1)').read())\"",
         ):
             self.assertTrue(deny(cmd), cmd)
 
