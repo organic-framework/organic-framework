@@ -1909,9 +1909,12 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
             threading.Thread(target=reconcile, daemon=True).start()
         return data, over, extra
 
-    def record(kind, payload):
+    def record(kind, payload):  # a card put off or handed over: it leaves for its organization's server now
         import of_events
-        return of_events.emit(kind, payload)
+        eid = of_events.emit(kind, payload)
+        if eid:
+            of_asks_answer.ship_soon()
+        return eid
 
     def handoff(pendings):
         T.to_outbox(pendings)
