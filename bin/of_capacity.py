@@ -2974,8 +2974,11 @@ def settings_text(args):
         return ""
 
 
-def agent_tmp_root():
-    return f"/private/tmp/claude-{os.getuid()}"
+def agent_tmp_root(uid=None, platform=None):
+    """Claude Code's agent tmp root for a user: /private/tmp/claude-<uid> on macOS (where /tmp is a link to it),
+    /tmp/claude-<uid> elsewhere (Linux), so a carry from the laptop to a Linux host maps one to the other."""
+    plat = platform or sys.platform
+    return f"{'/private/tmp' if plat == 'darwin' else '/tmp'}/claude-{os.getuid() if uid is None else uid}"
 
 
 def flags_from_args(args):
