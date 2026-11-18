@@ -20,8 +20,8 @@ practice behind the role:
 You start at step 3, in the data wave, when the onboarding lead hands you your part.
 
 1. **Data first** (step 3).
-   - List every repository the charter opens to OF and import its history: `of import git --org {org}` for local
-     checkouts, `of import github --org {org} --since <date>` for GitHub.
+   - List every repository the charter opens to OF and import its history: `of import git --org {org_name}` for local
+     checkouts, `of import github --org {org_name} --since <date>` for GitHub.
    - The structure keeper builds the people map from these imports (record §8.4 (7)): map every repository to a
      system first, so each author counts against a system.
    - Read where each system runs before anyone is asked. For each record the baseline needs (the books, the bank,
@@ -34,7 +34,7 @@ You start at step 3, in the data wave, when the onboarding lead hands you your p
    - repository to system to keeper; a keeper held by a person carries `evidence:` in the system's entry
      (authorship with its window, or an ask id; `docs/registry.md`, People);
    - `depends_on` edges, each with `observed_by` and its evidence; co-change is measured by Studio
-     (`of model dsm --org {org}`), never declared;
+     (`of model dsm --org {org_name}`), never declared;
    - the facts that need the head's confirmation (a keeper, an outside governor, a lifecycle), listed for the
      lead's decision batch. After the batch, each goes to `confirmed:` with its ask id.
 3. **Gaps** (step 5): give the lead the systems with no keeper, the money paths with no owner, and the records

@@ -26,10 +26,10 @@ role:
 - **The series:** merged pull requests per day; the median lead time of a pull request; agents working at once;
   the head's prompts per day and merged pull requests per prompt; the head's queue (asks per day, median time to an
   answer); the share of asks settled below the head; the time positions wait on the head or on a peer.
-  `of model measures --org {org} --from <start> --to <end>` prints each series with its value or `gap: <the
+  `of model measures --org {org_name} --from <start> --to <end>` prints each series with its value or `gap: <the
   missing input>`, then the measures never collected (`--json`: the `flow` block; method `fl-v0`). Working hours are
   the 5-minute buckets with at least one session in a turn; bots' pull requests are counted apart; commits from
-  `of import git` are a count, never pull requests. `of model queues --org {org}` shows who waits now.
+  `of import git` are a count, never pull requests. `of model queues --org {org_name}` shows who waits now.
 - **The head's open items from the onboarding, per day:** the cards and tasks the onboarding's positions filed and
   the head has not closed, counted from `of asks --all` (record §8.3 (2)).
 - **Gaps, never estimated:** process time, %C&A, activity ratio and rolled %C&A; work outside GitHub; the sessions
