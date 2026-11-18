@@ -138,7 +138,11 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   person) runs only those, with the command the code gives their name: a command stored in `views.yaml` is never
   run, and a panel of another name is refused and named. A panel opens beside the view's first
   agent with a live pane, so a view whose agents are all down starts no panel (`panel:questions: no live pane; left
-  out`). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
+  out`). A view of panels alone, for a machine that holds no position (the owner's laptop under contours,
+  [`contours.md`](contours.md) §3), is `of view add questions --workspace questions --tab questions --panel
+  questions` with no `--positions`: `of view apply questions` starts the panel in the view's own tab, and makes the
+  tab and its workspace when they are missing, without moving the person's focus (hand-over 830275c0; checked in an
+  isolated lab herdr, 2026-11-19). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
   resizes no pane moved within its own tab. When the view's tab does not exist yet and the first agent's own tab in
   the view's workspace holds nothing but the view's panes, `of view apply` gives that tab the view's label instead of
   moving the agent to a new tab. A move would be held back while the person works in that pane, and then it would
@@ -153,6 +157,15 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   saying so. It backs the file up first, runs `herdr config check` and puts the backup back if
   the check fails, then reloads a running server. Its CLI cannot open a
   plugin pane as a popup (`--placement` lacks `popup`), although the socket API and the manifest can.
+- **Keys and popups with a saved machine** (`herdr machine add`; read in herdr 0.9.5's source, not run: hand-over
+  830275c0). One herdr window shows one server's tab at a time: the laptop's own or one saved machine's. The sidebar
+  lists them all. A custom command, such as prefix+a, is the command of the server on screen, taken from its own
+  `config.toml` and run there (`src/client/shell/config.rs`, `apply_snapshot_keybindings`;
+  `src/client/shell/actions.rs`). With a saved machine's pane focused, prefix+a opens that machine's popup, or nothing
+  when it binds no such key. A popup belongs to the server that opened it (`src/protocol/wire.rs`,
+  `PaneSurfaceFrame.popup`), so the laptop's popup, from its key or a panel's button, shows only while one of the
+  laptop's own workspaces is on screen. herdr 0.9.5 has no way to bind a key to the laptop's server whatever is
+  focused; that would be a request upstream.
 - **Checked on 2026-11-11 in an isolated lab herdr** (its own `XDG_CONFIG_HOME`, so its own plugin registry,
   sessions and socket; its own OF config and state, with a lab organization of one position):
   - a Claude Code session started as `claude -n storefront_operator` was named within a second of detection, with
