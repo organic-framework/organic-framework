@@ -328,13 +328,20 @@ class Relay:
         return "unverified_claim", r.get("reason") or r.get("decision") or "not admitted"
 
     REPLY_WINDOW_S = 7 * 86400
+    # A message reaches its holder before the relay marks it delivered: `of inbox --mine` lists queued and leased
+    # messages in full, and a take under a busy pane is kept on the machine until the relay's next ack. Only an
+    # expired or failed one never reached it (2026-11-18: a founder question relayed across organizations sat leased
+    # from 10:56 to 11:03Z while its busy receiver read it, took it and replied three times at 10:59Z, each refused;
+    # a user organization's structure keeper, msg 01a1ee56-f4f7).
+    NEVER_REACHED = {"expired": "it expired unread", "dead": "its delivery failed"}
 
     def _reply_across(self, m, body, from_org, from_pos, to_org, to_pos):
         """The reason a message across organizations may go without a grant, or None (docs/registry.md, Grants,
         "Where they live"; of_architect 2eeabd5, 2026-11-09): its reply_to names a message from to_org:to_pos that
         was delivered to from_org:from_pos at most 7 days ago, the sender holds from_pos, and its machine joined
         from_org. It goes only back to that sender, and it carries no authority. Returns (reason, None) or
-        (None, why not): a 403 says why a reply did not count (2026-11-09: a shortened reply_to read as "no grant")."""
+        (None, why not): a 403 says why a reply did not count (2026-11-09: a shortened reply_to read as "no grant").
+        A queued or leased message counts as well as a delivered one (NEVER_REACHED)."""
         rid = body.get("reply_to")
         if not rid:
             return None, None
@@ -345,8 +352,11 @@ class Relay:
                           " WHERE msg_id = ?", (rid,)).fetchone()
         if not r:
             return None, f"reply_to {rid} names no message (give its full id)"
-        if (r[0], r[1], r[2], r[3], r[4]) != (to_org, to_pos, from_org, from_pos, "delivered"):
-            return None, f"reply_to {rid} is not a message from {to_org}:{to_pos} delivered to {from_org}:{from_pos}"
+        if (r[0], r[1], r[2], r[3]) != (to_org, to_pos, from_org, from_pos):
+            return None, f"reply_to {rid} is not a message from {to_org}:{to_pos} to {from_org}:{from_pos}"
+        if r[4] not in ("queued", "leased", "delivered"):
+            return None, (f"reply_to {rid} never reached {from_org}:{from_pos}: "
+                          f"{self.NEVER_REACHED.get(r[4], f'its state is {r[4]}')}")
         at = r[6]
         if r[5]:
             try:
@@ -354,7 +364,7 @@ class Relay:
             except ValueError:
                 pass
         if not at or time.time() - at > self.REPLY_WINDOW_S:
-            return None, f"reply_to {rid} was delivered more than {self.REPLY_WINDOW_S // 86400} days ago"
+            return None, f"reply_to {rid} was sent or delivered more than {self.REPLY_WINDOW_S // 86400} days ago"
         holds, held_why = self._holds(m, from_org, from_pos)
         if not holds:
             return None, held_why
