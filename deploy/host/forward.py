@@ -73,7 +73,9 @@ def authorized_line(pubkey, port=PORT):
 
 def sshd_block(user=HOST_USER, port=PORT):
     """The host's sshd Match block for the forward's user (sshd_config(5)): remote forwarding to that one listen
-    address and nothing else: no local or dynamic forwarding (-L, -D, -W), no socket forwarding, no session."""
+    address and nothing else: no local or dynamic forwarding (-L, -D, -W), no socket forwarding, no session. A closing
+    `Match all` ends it: a file under sshd_config.d is included near the top of sshd_config, and without it the main
+    file's lines after the Include would apply to this user alone."""
     return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8)\n"
             f"Match User {user}\n"
             f"    AllowTcpForwarding remote\n"
@@ -85,7 +87,8 @@ def sshd_block(user=HOST_USER, port=PORT):
             f"    GatewayPorts no\n"
             f"    PermitTTY no\n"
             f"    MaxSessions 0\n"
-            f"    ForceCommand /usr/bin/false\n")
+            f"    ForceCommand /usr/bin/false\n"
+            f"Match all\n")  # ends the block, so the main config's lines after its Include are not under it
 
 
 def _no_agent_env():

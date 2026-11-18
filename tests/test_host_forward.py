@@ -64,6 +64,7 @@ class ForwardTest(unittest.TestCase):
                      "PermitOpen none", "AllowStreamLocalForwarding no", "GatewayPorts no", "PermitTTY no",
                      "MaxSessions 0", "ForceCommand /usr/bin/false"):
             self.assertIn(line, block)
+        self.assertTrue(block.rstrip().endswith("Match all"))  # the main config after the Include stays global
 
     def test_dry_run_writes_nothing_and_install_loads_the_unit(self):
         run, shown = Run(), []
