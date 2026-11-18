@@ -299,12 +299,12 @@ class LaunchdTest(unittest.TestCase):
         import of_init
         with mock.patch.object(of_init.platform, "system", lambda: "Darwin"), \
                 mock.patch.object(of_server, "install_launchd", lambda *a, **k: "both loaded"), \
-                mock.patch.object(of_init, "_started", lambda m: m):
+                mock.patch.object(of_init, "_started", lambda m, **kw: m):
             self.assertEqual(of_init.install_service(), "service installed: both loaded")
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
                 mock.patch.object(of_init.platform, "system", lambda: "Linux"), \
                 mock.patch.object(of_init.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \
-                mock.patch.object(of_init, "_started", lambda m: m):
+                mock.patch.object(of_init, "_started", lambda m, **kw: m):
             of_init.install_service()
             unit = open(os.path.join(home, ".config", "systemd", "user", "of-server.service")).read()
         self.assertNotIn("Nice", unit)
