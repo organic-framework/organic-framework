@@ -3683,6 +3683,31 @@ def _closed_receiver(to, positions):
                keeper != name else ""))
 
 
+def _parked_note(to, positions):
+    """What `of send` says when TO is parked on purpose and still held: the message goes, and its holder reads it only
+    when the position resumes; so it names who covers the work now (its active `successor`, else its unit's owner, else
+    its organization's structure keeper) and the command that sends there instead (a user organization's structure keeper,
+    msg 01a1f0a9-ad31: messages piled up unread on parked watchers and keepers that kept their sessions; docs/guard.md
+    R11). None for any other receiver."""
+    org, _, name = to.partition(":")
+    p = next((x for x in positions if x.get("_org") == org and x.get("name") == name), None)
+    if p is None or (p.get("status") or "active") != "parked":
+        return None
+    live = {x["name"] for x in positions if x.get("_org") == org and x.get("status") not in ("finished", "parked")}
+    succ, owner = p.get("successor"), p.get("_unit_owner")
+    import of_pulse
+    if succ in live:
+        cover, why = succ, "its successor"
+    elif owner in live and owner != name:
+        cover, why = owner, f"the owner of its unit {p.get('_unit')}"
+    else:
+        cover = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
+        why = "its organization's structure keeper"
+    return (f"note: {to} is parked on purpose (its registry status), so its holder reads this only when it resumes"
+            + (f"; {org}:{cover}, {why}, covers its work now: to send it there instead, "
+               f"`of send {org}:{cover} \"…\"`" if cover and cover != name else ""))
+
+
 def pick_grants(grants_by_org, position, to_org, now=None, to_position=None):
     """Ids of the allow grants whose subject is `position`, whose scope's to_org covers `to_org` and, when the
     scope names to_positions (patterns of '<org>:<position>', fnmatch, as the relay checks them), covers
@@ -3819,6 +3844,9 @@ def cmd_send(args):
             and os.environ.get("OF_AUTOMATION") != "1" else None
         if note:
             print(note, file=sys.stderr)
+        parked = _parked_note(to, positions)
+        if parked:
+            print(parked, file=sys.stderr)
     return 0
 
 
