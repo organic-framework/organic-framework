@@ -731,6 +731,11 @@ class BlockedProcessor(Processor):
             if d:
                 label = re.sub(r"\s*·\s*❓.*$", "", labels.get(pane, "").strip().strip("■").strip()).strip()
                 position = (sessions.get(sid) or [None])[0] or a.get("name") or label or None
+                # a parked or finished position stopped on a limit or a login is meant to stay stopped: the balancer
+                # neither moves nor wakes it, so no ask is filed (of_capacity, message 01a1f0a9-d642: such stops of a
+                # user organization's parked positions reached the founder as a card)
+                if d["type"] in ("limit", "login") and position in self.resting_names():
+                    continue
                 to = d["to"] if d["to"] == "founder" or d["to"] in live_names else "founder"
                 fyi = to != "founder" and d["type"] in of_blocked.FYI
                 eid = of_events.emit("agent_question", {
@@ -752,6 +757,32 @@ class BlockedProcessor(Processor):
                 changed = True
         return changed
 
+
+    _resting = (None, frozenset())
+
+    def resting_names(self):
+        """The positions whose registry status is parked or finished (of_capacity.RESTING), read from the registries
+        again only when one of them changed."""
+        import importlib.machinery
+        import importlib.util
+        orgs = os.environ.get("OF_ORGS") or of_events.config_path("orgs.yaml")
+        here = os.path.dirname(os.path.realpath(__file__))
+        try:
+            loader = importlib.machinery.SourceFileLoader("of_cli_blocked", os.path.join(here, "of"))
+            spec = importlib.util.spec_from_loader("of_cli_blocked", loader)
+            of = importlib.util.module_from_spec(spec)
+            loader.exec_module(of)
+            files = [orgs] + [r for _, r, _ in of.org_registries(orgs)]
+            stamp = tuple((f, os.path.getmtime(f)) for f in files if os.path.exists(f))
+            if self._resting[0] == stamp:
+                return self._resting[1]
+            positions, _ = of.load_positions(orgs)
+        except (SystemExit, Exception):  # noqa: BLE001 - no registry read: none counts as resting, asks go as before
+            return frozenset()
+        rest = ("parked", "finished")
+        names = frozenset(p["name"] for p in positions if str(p.get("status") or "").split("#")[0].strip() in rest)
+        self._resting = (stamp, names)
+        return names
 
     @staticmethod
     def send_fyi(to, text):

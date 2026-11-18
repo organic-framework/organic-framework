@@ -126,6 +126,41 @@ class BlockedTest(unittest.TestCase):
         self.assertEqual(of_asks.project(rows)[0]["state"], "moved_on")
 
 
+class RestingPositionTest(unittest.TestCase):
+    """of_capacity, message 01a1f0a9-d642: a parked or finished position stopped on a limit or a login stays stopped
+    on purpose, so the detector files no ask for it; any other dialog still makes one."""
+
+    def test_no_limit_ask_for_a_parked_position(self):
+        import json
+        import subprocess
+        from unittest import mock
+        import of_events
+        import of_listen
+        screens = {"p1": LIMIT, "p2": LIMIT, "p3": MCP}
+        agents = [{"pane_id": p, "name": n, "agent_status": "idle", "agent": "claude",
+                   "agent_session": {"value": "s-" + p}} for p, n in (("p1", "parked_one"), ("p2", "live_one"),
+                                                                    ("p3", "parked_one"))]
+
+        def run(argv, **kw):
+            if argv[:3] == ["herdr", "agent", "list"]:
+                out = json.dumps({"result": {"agents": agents}})
+            elif argv[:3] == ["herdr", "pane", "list"]:
+                out = json.dumps({"result": {"panes": []}})
+            else:
+                out = screens[argv[3]]
+            return subprocess.CompletedProcess(argv, 0, stdout=out)
+        filed = []
+        proc = of_listen.BlockedProcessor()
+        with mock.patch("subprocess.run", run), \
+                mock.patch.object(of_events, "emit", lambda k, p, **kw: filed.append((p["pane"], p["blocked_type"])) or "e1"), \
+                mock.patch.object(proc, "open_asks", lambda conn: {}), \
+                mock.patch.object(proc, "resting_names", lambda: frozenset({"parked_one"})), \
+                mock.patch.object(proc, "send_fyi", lambda to, text: None), \
+                mock.patch("of_hook._registry_index", lambda: {"sessions": {}}):
+            proc.tick(None, 0)
+        self.assertEqual(sorted(filed), [("p2", "limit"), ("p3", "mcp_auth")])
+
+
 if __name__ == "__main__":
     unittest.main()
 
