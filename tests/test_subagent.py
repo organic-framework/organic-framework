@@ -361,6 +361,12 @@ class SubagentTest(unittest.TestCase):
         self.assertIn("training reading is on", of_subagent.training_gate("codex", "review", "on", "private"))
         self.assertIsNone(of_subagent.training_gate("codex", "research", None, "private"))
 
+    def test_training_gate_on_private_material(self):
+        """With training on, the gate allows Muse and Codex research and explains why a Codex read is blocked."""
+        assert of_subagent.training_gate("muse", "read", "on", "private") is None
+        assert of_subagent.training_gate("codex", "research", "on", "private") is None
+        assert "training reading is on" in of_subagent.training_gate("codex", "read", "on", "private")
+
     def test_public_material_is_each_commit_on_a_public_remote_branch(self):
         self.git("remote", "add", "origin", "https://github.com/acme/fw.git")
         head = self.git("rev-parse", "HEAD").stdout.decode().strip()
