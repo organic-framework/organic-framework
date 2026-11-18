@@ -325,7 +325,7 @@ def project(rows, state=None):
                    "ref": (r.get("payload") or {}).get("ref"),
                    "kind": f"blocked:{pl_.get('blocked_type')}", "text": _text(r), "state": "open", "closed_by": None,
                    "closed_at": None, "to": bare_to(pl_.get("to"), r.get("org")), "tags": [], "pane": pl_.get("pane"),
-                   "n_options": len(pl_.get("options") or [])}
+                   "n_options": len(pl_.get("options") or []), "org": r.get("org")}
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask
@@ -353,8 +353,9 @@ def project(rows, state=None):
                    "tags_declared": bool((r["payload"] or {}).get("tags_declared")),
                    "diff_id": (r["payload"] or {}).get("diff_id"),
                    "source": (r["payload"] or {}).get("source"), "escalated_from": src,
-                   "n_options": _n_options(r), "host_id": r.get("host_id")}  # the machine that filed it: the one
-            # whose amends apply (of_server on PR 181)
+                   "n_options": _n_options(r), "host_id": r.get("host_id"),  # the machine that filed it: the one
+                   # whose amends apply (of_server on PR 181)
+                   "org": r.get("org")}  # its organization: groups never cross one (the owner's panel holds several)
             if (r["payload"] or {}).get("task"):
                 pl_ = r["payload"] or {}
                 ask.update(task=True, kind="task", steps=(pl_.get("steps") or "")[:4000], command=pl_.get("command"),
@@ -375,7 +376,8 @@ def project(rows, state=None):
             ask = {"event_id": r["event_id"], "ts": r["ts"], "session_id": sid, "position": r["position"],
                    "ref": (r.get("payload") or {}).get("ref"),
                    "kind": _kind(r), "text": _text(r), "state": "candidate" if heuristic else "open", "closed_by": None,
-                   "closed_at": None, "n_options": 2 if name == "of.permission_request" else _n_options(r)}
+                   "closed_at": None, "n_options": 2 if name == "of.permission_request" else _n_options(r),
+                   "org": r.get("org")}
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask
@@ -846,8 +848,12 @@ def group(asks, threshold=0.6):
         for it in items:
             u = it["tokens"]
             # never across recipients, nor a task with a question: one answer must not close another person's item
-            # (2026-11-07: a routed question to platform_owner and a founder's task grouped; its answer claimed the task)
-            same = it["asks"][0].get("to") == a.get("to") and bool(it["asks"][0].get("task")) == bool(a.get("task"))
+            # (2026-11-07: a routed question to platform_owner and a founder's task grouped; its answer claimed the task);
+            # never across organizations: the owner's panel holds several (docs/contours.md §3), and one answer to two
+            # organizations' asks would ship under the first one's to its server alone (of_review on PR 359)
+            first = it["asks"][0]
+            same = first.get("to") == a.get("to") and bool(first.get("task")) == bool(a.get("task")) \
+                and first.get("org") == a.get("org")
             if same and t and u and len(t & u) / len(t | u) >= threshold:
                 it["asks"].append(a)
                 it["tokens"] = u | t
