@@ -4968,6 +4968,8 @@ def plugin_ids_installed(d):
         return set()
     except Exception:  # noqa: BLE001 - broken: unknown, never a veto
         return None
+    if not isinstance(j, dict):  # valid JSON of another shape (a list): unreadable, not a crash (Codex review, PR 328)
+        return None
     return set((j.get("plugins") if isinstance(j.get("plugins"), dict) else j) or {})
 
 
@@ -4999,6 +5001,8 @@ def signed_in(entry, d, now=None, run=None, labels=None):
         return False
     pid = str(entry.get("plugin") or "")
     ids = plugin_ids_installed(d) if "@" in pid else None
+    if ids is None and "@" in pid and os.path.isdir(os.path.expanduser(d)):
+        return None  # its inventory is unreadable: another marketplace's plugin may answer on that url (unknown)
     if ids is not None and pid not in ids:
         # another marketplace's plugin of the same name answers on the same url, signed in as another user: 2026-11-18,
         # a user organization's cloud keeper ran 14 hours where the only Cloudflare plugin was the founder's
@@ -5440,33 +5444,46 @@ def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, s
     tools) and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
                          tools=connectors)
+    incoming = {}
+    for m in rescue:
+        incoming[m["to"]] = incoming.get(m["to"], 0.0) + (rates or {}).get(m["session"], 0.0)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
                         skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
-                        wcalib=wcalib, stopped=set(stopped or {}))
+                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming)
     return rescue + rest
 
 
 def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), connectors=None, contexts=None,
-                 wcalib=None, stopped=()):
+                 wcalib=None, stopped=(), incoming=None):
     """Pure. rows: status rows; sessions: {dir: live sessions}; rates: {session: $/h}; calib: {dir: $ per 1%
     of its 5-hour window}; connectors: ({session: claude.ai connectors it uses}, {dir: connectors seen there}).
     Fill never moves a session onto an account that lacks a connector or plugin it uses; relief does for a
     connector (the move's note says what is missing), never for a plugin (2026-11-11: aws_keeper lost Cloudflare).
     Restore, between them, moves a holder that lacks a plugin or account-bound tool where it runs to an account that
-    holds them all; `stopped` sessions are left to rescue and the wake. Returns [{position, session, from, to, rate,
+    holds them all; `stopped` sessions ({session: epoch of its limit stop}) are left to rescue and the wake, and
+    `incoming` ({dir: $/h}) is what rescue sends each account in the same plan. Returns [{position, session, from, to, rate,
     reason}]: restore makes at most restore_moves, and fill adds only while the plan holds fewer than max_moves."""
     needs, seen = connectors or ({}, {})
 
-    def holds_all(sid, d):
-        """Every plugin and account-bound tool the session uses is read present on account `d`. lacking() counts a
-        side it could not read as present, which vetoes nothing but vouches for no target (of_review, PR 325: a
-        restore onto an account whose tools were never read, its note saying they are there)."""
+    def holds_all(sid, d, src=None):
+        """Every plugin and account-bound tool the session uses is read present on account `d`, and every connector
+        it has where it runs (`src`). lacking() counts a side it could not read as present, which vetoes nothing but
+        vouches for no target (of_review, PR 325: a restore onto an account whose tools were never read, its note
+        saying they are there). A plugin counts only where `claude mcp list` answered, since only that reads its
+        sign-in; a connector only where the connectors were read (Codex review, PR 328: a restore kept Cloudflare and
+        lost Slack)."""
         have = seen.get(d)
         if have is None:
             return False
+        gone_at_src = lacking(needs.get(sid) or (), seen.get(src)) if src else set()
         for x in needs.get(sid) or ():
-            side = "plugins:known" if x.startswith("plugin:") else "bound:known" if x.startswith("bound:") else None
-            if side and (side not in have or x not in have):
+            if x.startswith("plugin:"):
+                ok = "plugins:known" in have and "connectors:known" in have and x in have
+            elif x.startswith("bound:"):
+                ok = "bound:known" in have and x in have
+            else:
+                ok = x in gone_at_src or ("connectors:known" in have and x in have)
+            if not ok:
                 return False
         return True
 
@@ -5622,11 +5639,16 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     #     14 hours without Cloudflare after a rescue, while the account with it had room from 8 hours after it.
     #     of_review, PR 325: a check by current use alone put a holder on an account relief was shedding
     planned = {m["session"] for m in moves}
-    added = {}
+    added = dict(incoming or {})  # what rescue sends in the same plan (Codex review, PR 328: a target overbooked)
     for m in moves:
         added[m["to"]] = added.get(m["to"], 0.0) + m["rate"]
+
+    def stopped_after_probe(r):
+        seen_at = _ts(r.get("observed_at") or "") or 0
+        return any((stopped.get(x["session"]) or 0) > seen_at for x in sessions.get(r["config_dir"], [])) \
+            if isinstance(stopped, dict) else False
     restored = 0
-    for d in sorted(acct):
+    for d in sorted(sessions):  # a source whose own probe failed still has holders to restore (Codex review, PR 328)
         for rate, name, sid in movable(d):
             if restored >= policy.get("restore_moves", 2):
                 break
@@ -5638,7 +5660,10 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
             best = None
             for t in acct.values():
                 td = t["config_dir"]
-                if td == d or stalled(t) or not holds_all(sid, td):
+                # a target needs a week reading, as fill's sinks do, accepts work by its windows, and saw no stop after
+                # its probe (Codex review, PR 328)
+                if td == d or stalled(t) or not win(t, "seven_day")[1] or blocked_until(t, now) \
+                        or stopped_after_probe(t) or not holds_all(sid, td, d):
                     continue
                 room, resume_max = room_of(t, added.get(td, 0.0))
                 if room < max(rate, policy["min_rate"]) or not resume_ok(sid, resume_max):

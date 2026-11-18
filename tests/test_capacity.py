@@ -2167,9 +2167,11 @@ class Restore(unittest.TestCase):
         self.b = Balance()
         self.b.setUp()
 
-    def seen(self, ez=("plugin:cloudflare",), cl=()):
-        return {"/ez": of_capacity.account_tools(None, set(ez)) if ez is not None else None,
-                "/cl": of_capacity.account_tools(None, set(cl)), "/gg": of_capacity.account_tools(None, set(ez or ()))}
+    def seen(self, ez=("plugin:cloudflare",), cl=(), ez_conn=(), cl_conn=()):
+        """Accounts read in full: their plugins and `claude mcp list` (connectors and the plugins' sign-ins)."""
+        return {"/ez": of_capacity.account_tools(set(ez_conn), set(ez)) if ez is not None else None,
+                "/cl": of_capacity.account_tools(set(cl_conn), set(cl)),
+                "/gg": of_capacity.account_tools(set(), set(ez or ()))}
 
     def plan(self, who="cf", status="idle", rows=None, seen=None, needs=None, rates=None, pol=None, skip=(),
              stopped=(), contexts=None, wcalib=None, ez_sessions=()):
@@ -2203,6 +2205,15 @@ class Restore(unittest.TestCase):
         unknown = dict(self.seen(), **{"/cl": None})  # what it has where it runs is unknown: no move on a guess
         self.assertEqual(self.restores(self.plan(seen=unknown)), [])
         self.assertEqual(self.restores(self.plan(seen=self.seen(cl=("plugin:cloudflare",)))), [])  # nothing missing
+        # Codex review, PR 328: a plugin counts only where claude mcp list answered (its sign-in read) ...
+        no_list = dict(self.seen(), **{"/ez": of_capacity.account_tools(None, {"plugin:cloudflare"})})
+        self.assertEqual(self.restores(self.plan(seen=no_list)), [])
+        # ... and a restore never trades a connector it has for the plugin it lacks
+        needs = {"cf": {"plugin:cloudflare", "Slack"}}
+        self.assertEqual(self.restores(self.plan(needs=needs, seen=self.seen(cl_conn=("Slack",)))), [])
+        self.assertEqual(self.restores(self.plan(needs=needs, seen=self.seen(cl_conn=("Slack",), ez_conn=("Slack",)))),
+                         [("cf", "/cl", "/ez")])
+        self.assertEqual(self.restores(self.plan(needs=needs, seen=self.seen())), [("cf", "/cl", "/ez")])  # no Slack to lose
 
     def test_the_target_passes_fill_tests(self):
         # its week reaches week_max within relief_ahead_h at its load: relief's own stall, so no target
@@ -2216,6 +2227,25 @@ class Restore(unittest.TestCase):
         rows = self.b.rows()
         rows[0]["windows"]["seven_day"]["utilization"] = 97
         self.assertEqual(self.restores(self.plan(rows=rows)), [])
+        # Codex review, PR 328: a target with no week reading; one where a session stopped after its probe; one that
+        # rescue fills in the same plan
+        rows = self.b.rows()
+        rows[0]["windows"] = {}
+        self.assertEqual(self.restores(self.plan(rows=rows)), [])
+        rows = self.b.rows()
+        rows[0]["observed_at"] = of_capacity._iso(self.NOW - 600)
+        m = self.plan(rows=rows, ez_sessions=[{"session": "busy1", "status": "busy"}], stopped={"busy1": self.NOW - 60})
+        self.assertEqual(self.restores(m), [])
+        sess = {"/ez": [], "/cl": [{"session": "cf", "status": "idle"}], "/gg": []}
+        m = of_capacity.balance_plan(self.b.rows(), sess, self.POS, {"cf": 3}, {"/ez": 12.0, "/cl": 12.0}, dict(POLICY),
+                                     self.NOW, connectors=({"cf": {"plugin:cloudflare"}}, self.seen()),
+                                     incoming={"/ez": 10_000.0})
+        self.assertEqual(self.restores(m), [])
+
+    def test_a_source_whose_probe_failed_still_has_holders_to_restore(self):
+        rows = self.b.rows()
+        rows[1] = {"config_dir": "/cl", "logged_in": None, "windows": {}, "error": "probe timed out"}
+        self.assertEqual(self.restores(self.plan(rows=rows)), [("cf", "/cl", "/ez")])
 
     def test_never_busy_production_stay_resting_or_stopped(self):
         self.assertEqual(self.restores(self.plan(status="busy")), [])
@@ -2426,6 +2456,15 @@ class OtherHarnesses(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("card prefix AS is also alpha-store's", lines[0])
         self.assertEqual(of_capacity.training_registry_problems({"acme-shop": docs["acme-shop"]}, cards), [])
+
+    def test_a_plugin_inventory_of_another_shape_is_unreadable_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "plugins"))
+            with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
+                fh.write("[]")
+            self.assertIsNone(of_capacity.plugin_ids_installed(d))
+            entry = {"kind": "plugin", "plugin": "cloudflare@claude-plugins-official", "url": "https://x/mcp"}
+            self.assertIsNone(of_capacity.signed_in(entry, d, labels={}))  # unknown: the url cannot tell the plugin
 
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
