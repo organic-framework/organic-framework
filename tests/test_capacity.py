@@ -2322,14 +2322,14 @@ class OtherHarnesses(unittest.TestCase):
         # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
         out = []
         emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
-        pol = {"training_cards": {"codex": "OF-27"}}
+        pol = {"acme": {"training_cards": {"codex": "OF-27"}}, "other": {"positions": []}}  # the registries
         cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9",
                   "claimed_at": "2026-11-18T10:56:22Z"},
                  {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open"},
                  {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8"},
                  {"ref": "OF-31", "event_id": "01a1ee91-961b-0000", "task": None, "state": "answered", "closed_by": "e7"}]
         rec = lambda src, cs=cards, p=pol: of_capacity.record_training("codex", "off", "ChatGPT pro", src, emit=emit,  # noqa: E731
-                                                                        cards=cs, policy=p)
+                                                                        cards=cs, docs=p)
         rec("of-27")
         self.assertEqual(out[0], ("harness_training", {"harness": "codex", "training": "off", "account": "ChatGPT pro",
                                                        "source": "of-27", "card": "OF-27",
@@ -2342,11 +2342,18 @@ class OtherHarnesses(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "training_cards"):
             rec("OF-27", unclaimed)
         with self.assertRaisesRegex(ValueError, "training_cards"):
-            rec("OF-27", cards, {})  # no card named for the setting
-        of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards, policy=pol)  # locks only
+            rec("OF-27", cards, {})  # no registry names a card for the setting
+        # of_review, PR 334: capacity.yaml, which any agent may write, names nothing: another done task stays shut
+        other_done = cards + [{"ref": "OF-32", "event_id": "01a1ef00-0000-7000", "task": True, "state": "done",
+                               "claimed_at": "2026-11-18T13:00:00Z", "closed_by": "e6"}]
+        from unittest import mock
+        with mock.patch.object(of_capacity, "load_policy", lambda: {"training_cards": {"codex": "OF-32"}}):
+            with self.assertRaisesRegex(ValueError, "training_cards"):
+                rec("OF-32", other_done)
+        of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards, docs=pol)  # locks only
         for bad in (("gemini", "off", "x"), ("codex", "maybe", "x"), ("codex", "off", " ")):
             with self.assertRaises(ValueError):
-                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit, cards=cards, policy=pol)
+                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit, cards=cards, docs=pol)
         # the reader re-checks the card on each read
         good = {"codex": {"training": "off", "card_event": "01a1ee41-3cdd-74bc"}}
         self.assertEqual(of_capacity.training_verified("codex", good, cards, pol), "off")

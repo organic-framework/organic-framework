@@ -533,14 +533,36 @@ def training_readings(conn=None):
     return out
 
 
-def owner_closed_card(source, cards=None, harness="codex", policy=None):
+def training_cards_named(harness, docs=None):
+    """The card ids the listed registries name for a harness's training setting (`training_cards: {<harness>: <card
+    id>}` at a registry's top level). A registry is its structure keeper's committed and reviewed file; capacity.yaml,
+    which any agent session may write, names none (of_review, PR 334, after of_server on start_in, PR 330)."""
+    docs = tool_docs_all() if docs is None else docs
+    out = set()
+    for doc in (docs or {}).values():
+        v = ((doc or {}).get("training_cards") or {}).get(harness) if isinstance(doc, dict) else None
+        if v:
+            out.add(str(v).upper())
+    return out
+
+
+def tool_docs_all():
+    """{org: registry doc} of every listed organization; {} when none or unreadable."""
+    try:
+        import of_tools
+        return dict(of_tools.registries())
+    except Exception:  # noqa: BLE001 - no registry reader: nothing is named
+        return {}
+
+
+def owner_closed_card(source, cards=None, harness="codex", docs=None):
     """The owner's card that confirms a harness's training setting, when `source` names it (by card id, or by its
-    whole event id: a prefix is shared by several cards) and the owner himself closed it; else None. Only the card
-    capacity.yaml `training_cards: {<harness>: <card id>}` names for that setting counts, and only as a task he marked
+    whole event id: a prefix is shared by several cards) and the owner himself closed it; else None. Only a card a
+    registry's `training_cards` names for that setting counts (training_cards_named), and only as a task he marked
     done (his claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks
     answered`, or an answered card about something else unlocks nothing (of_secrets-review and of_review, PR 334).
     `cards`: the asks as the listener's view holds them (of_asks.current_asks, never a read of the whole log)."""
-    named = str(((policy if policy is not None else load_policy()).get("training_cards") or {}).get(harness) or "")
+    named = training_cards_named(harness, docs)
     src = str(source or "").strip()
     if not named or not src:
         return None
@@ -550,13 +572,13 @@ def owner_closed_card(source, cards=None, harness="codex", policy=None):
     for a in cards or []:
         ref, eid = str(a.get("ref") or ""), str(a.get("event_id") or "")
         if ref.upper() == src.upper() or eid == src:
-            ok = ref.upper() == named.upper() and bool(a.get("task")) and a.get("state") == "done" \
+            ok = ref.upper() in named and bool(a.get("task")) and a.get("state") == "done" \
                 and bool(a.get("claimed_at"))
             return a if ok else None
     return None
 
 
-def record_training(harness, training, account, source, emit=None, cards=None, policy=None):
+def record_training(harness, training, account, source, emit=None, cards=None, docs=None):
     """Write of.harness_training: whether the provider may train on the harness account's runs, and the reading's
     source. Codex shows its data controls nowhere a program can read, so its `off` stands only on the owner's card
     named for that setting and closed by his own claim (owner_closed_card; of_review and of_secrets-review, PR 334:
@@ -566,22 +588,22 @@ def record_training(harness, training, account, source, emit=None, cards=None, p
         raise ValueError(f"training: harness {'|'.join(TRAINING_HARNESSES)}, --set off|on and a --source are needed")
     payload = {"harness": harness, "training": training, "account": account or "?", "source": str(source).strip()}
     if harness == "codex" and training == "off":
-        card = owner_closed_card(source, cards, harness, policy)
+        card = owner_closed_card(source, cards, harness, docs)
         if not card:
-            raise ValueError(f"training: codex off needs --source to name the card capacity.yaml training_cards names "
+            raise ValueError(f"training: codex off needs --source to name the card a registry's training_cards names "
                              f"for codex, a task the owner himself marked done; {str(source).strip()!r} is not it")
         payload.update(card=card.get("ref"), card_event=card.get("event_id"), closed_by=card.get("closed_by"))
     (emit or of_events.emit)("harness_training", payload)
 
 
-def training_verified(harness, readings=None, cards=None, policy=None):
+def training_verified(harness, readings=None, cards=None, docs=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
-    card on each read: it stands only while that card is still the one training_cards names, closed by the owner's
+    card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's
     own claim. A reading written any other way, or with no card, reads as None (unknown), so a gate that sends only
     on 'off' stays shut (of_secrets-review, PR 334: the reader trusted the event, not the card)."""
     r = (readings if readings is not None else training_readings()).get(harness) or {}
     v = r.get("training")
-    if harness == "codex" and v == "off" and not owner_closed_card(r.get("card_event") or "", cards, harness, policy):
+    if harness == "codex" and v == "off" and not owner_closed_card(r.get("card_event") or "", cards, harness, docs):
         return None
     return v if v in ("off", "on") else None
 
