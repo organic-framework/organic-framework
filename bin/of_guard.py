@@ -588,10 +588,12 @@ _PY_STR_SEARCH = {"startswith", "endswith", "find", "rfind", "index", "rindex", 
                   "removesuffix", "__contains__"}
 _PY_RE_CALLS = {"search", "match", "fullmatch", "findall", "finditer", "sub", "subn", "split", "compile"}
 _PY_FN_CALLS = {"fnmatch", "fnmatchcase", "filter"}
+# never `type`: type(open('<literal>', 'rb', buffering=0)) is io.FileIO, which opens any name (of_secrets-review on
+# organic-framework PR 323)
 _PY_BUILTINS = frozenset((
     "print len sum min max sorted reversed enumerate zip range any all list dict set frozenset tuple str int float "
     "bool repr abs round map filter isinstance ord chr hex format divmod input iter next slice bytes hash "
-    "id type callable Exception ValueError KeyError IndexError TypeError AttributeError StopIteration OSError "
+    "id callable Exception ValueError KeyError IndexError TypeError AttributeError StopIteration OSError "
     "FileNotFoundError RuntimeError UnicodeDecodeError").split())
 _PY_MODULES = {
     "csv": frozenset("reader DictReader writer DictWriter QUOTE_ALL QUOTE_MINIMAL QUOTE_NONE excel excel_tab".split()),
