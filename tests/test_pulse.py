@@ -277,6 +277,23 @@ class LongWaitTest(unittest.TestCase):
         self.assertEqual(of_pulse.long_waits(waits, t0 + 31 * 3600, 8), [])                  # over: nothing to tell
         self.assertIn("Tell the person you serve, who owns the work", of_pulse.long_wait_note("w1", got[0], 8, "conductor"))
 
+    def test_only_a_wait_the_clock_counts_is_told(self):
+        """2026-11-18, a user organization's structure keeper (message 01a1ed18-b0bf): its owner was told a 24-hour
+        wait as holding the clock, though it restated an earlier one with a later end, so it counted for nothing."""
+        import of_diagnose_rules
+        t0 = 1_800_000_000
+        h = 3600
+        first = {"ts": t0, "on": "release", "ref": "op", "expect_at": t0 + 6 * h, "by": "d"}
+        longer = {"ts": t0 + 60, "on": "release", "ref": "op", "expect_at": t0 + 25 * h, "by": "d"}
+        win = {"ts": t0, "on": "window", "ref": "w", "expect_at": t0 + 24 * h, "by": "d"}
+        shorter = {"ts": t0 + 90, "on": "window", "ref": "w", "expect_at": t0 + 7 * h, "by": "d"}
+        card = {"work": "w1", "state": "active", "hypotheses": [{"id": "h1", "status": "testing", "status_at": t0 - h}],
+                "runs": [], "decisions_all": [], "waits": [first, longer, win, shorter]}
+        clk = of_diagnose_rules.loop_clock(card, t0 + 120)
+        self.assertEqual(len(of_pulse.long_waits(card["waits"], t0 + 120, 4)), 4)          # without the clock
+        self.assertEqual(of_pulse.long_waits(card["waits"], t0 + 120, 4, clk), [first, shorter])
+        self.assertEqual(of_pulse.long_waits(card["waits"], t0 + 120, 8, clk), [])
+
     def test_on_a_work_a_person_owns_the_long_wait_goes_to_the_conductor_once(self):
         """of_architect, message 01a1e133-dbf4: while a stated wait holds the clock the 8 h level never fires, so on a
         work whose owner's position a person holds the long wait reached nobody."""
