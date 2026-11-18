@@ -157,14 +157,17 @@ NAMES_LIST_MAX = 256 * 1024
 # lower-case letters and digits with two digits or more) is no name. A short lower-case value shaped like a name
 # (`hunter2`) cannot be told from one (docs/guard.md G1.8.1, Known limits).
 _KEY_ANYWHERE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-\d+:")
-_HEX_RUN = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}(?![0-9A-Fa-f])")
 _NAME_TOKEN = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
 _TYPE_TOKEN = re.compile(r"Opaque|[a-z0-9.-]+/[a-z0-9.-]+")
-_HEADER_TOKEN = re.compile(r"[A-Z][A-Z_-]{0,19}")
-_COUNT_TOKEN = re.compile(r"\d{1,6}|(?:\d+[smhdy]){1,3}|-")
-_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+# the column names kubectl and its kin print (of_review on PR 332: an upper-case Base32 key passed as a header)
+_HEADERS = frozenset("NAME NAMESPACE TYPE DATA AGE KIND KEY KEYS STATUS CREATED LABELS".split())
+_COUNT_TOKEN = re.compile(r"\d{1,6}|(?:\d{1,5}[smhdy]){1,3}|-")
 NAMES_LINE_MAX = 8
-_LOWER_RUN = re.compile(r"(?<![A-Za-z0-9])(?=[a-z0-9]*\d[a-z0-9]*\d)[a-z0-9]{16,}(?![A-Za-z0-9])")
+# a value in any field: a UUID, 32 or more hex digits, a lower-case run with digits, a Kubernetes bootstrap token
+# (`abcdef.0123456789abcdef`, digits or none), 16 or more digits (of_review on PR 332)
+_VALUE_SHAPE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}"
+                          r"|(?<![A-Za-z0-9])(?=[a-z0-9]*\d[a-z0-9]*\d)[a-z0-9]{16,}(?![A-Za-z0-9])"
+                          r"|(?<![a-z0-9])[a-z0-9]{6}\.[a-z0-9]{16}(?![a-z0-9])|\d{16,}")
 
 
 def _names_list_clean(p):
@@ -188,6 +191,8 @@ def _names_list_clean(p):
         return False
     if len(data) > NAMES_LIST_MAX or "\x00" in text or _KEY_ANYWHERE.search(text) or of_classify.SECRET.search(text):
         return False
+    if _REMOTE_BODY[0]:
+        return False  # a remote command's file is another machine's: this one's copy says nothing about it
     names, first = [], True
     for line in text.splitlines():
         toks = [t for t in re.split(r"[\s,]+", line.strip()) if t]
@@ -195,14 +200,19 @@ def _names_list_clean(p):
             continue
         if len(toks) > NAMES_LINE_MAX:
             return False  # a table of names has a few columns; a seed phrase or a sentence has more
+        if first and all(t in _HEADERS for t in toks):
+            first = False
+            continue  # the first non-empty line, made of known column names only
+        first = False
         for t in toks:
-            if (first and _HEADER_TOKEN.fullmatch(t)) or _COUNT_TOKEN.fullmatch(t) or _TYPE_TOKEN.fullmatch(t):
+            if _VALUE_SHAPE.search(t):
+                return False  # in any field: a type, a count or a name
+            if _COUNT_TOKEN.fullmatch(t) or _TYPE_TOKEN.fullmatch(t):
                 continue
-            if _NAME_TOKEN.fullmatch(t) and not (_UUID.fullmatch(t) or _HEX_RUN.search(t) or _LOWER_RUN.search(t)):
+            if _NAME_TOKEN.fullmatch(t):
                 names.append(t)
                 continue
             return False  # anything else (`=`, `key:`, upper case, a symbol, base64) is no name
-        first = False
     return not _bip39_run(names)
 
 
@@ -973,6 +983,9 @@ def _scan(text, i=0, nested=False):
             out.append(text[i:i + 2])
             i += 2
             continue
+        elif c == "$" and not double and text.startswith('$"', i):
+            i += 1  # $"…" is "…" (bash's locale translation; of_secrets-review on organic-framework PR 332)
+            continue
         elif c == "$" and not double and text.startswith("$'", i) and _ANSI_WORD.match(text, i):
             # a $'…' word: its escapes (\' included) are bash's, so it is read whole and decoded, and the line
             # every rule reads holds its value single-quoted (of_secrets-review on organic-framework PR 97)
@@ -1044,6 +1057,21 @@ def _segments(text):
 # The options of a wrapper that take a value as the next word: without them `nice -n 5 cat <key>`, `sudo -u root cat
 # <key>` and `exec -a x …` read the value as the command, and no rule saw what ran (G0.6; of_server, 2026-11-14,
 # probing G23).
+def _opt_takes_next(word, opts):
+    """Does wrapper option WORD take the next word as its value? getopt's reading: `-u` or `--user` named in OPTS does;
+    so does a cluster of short options whose last letter takes a value (`-nu root`, `-lo file`, `-ca label`); one whose
+    value-taking letter is not its last holds its value in the rest of the word (`-uroot`, `-i0`). G0.6
+    (of_secrets-review on organic-framework PR 332: `sudo -nu root cat <a key>` passed every rule)."""
+    if word in opts:
+        return 1
+    if word.startswith("--") or len(word) < 3 or not word.startswith("-"):
+        return 0
+    for k, c in enumerate(word[1:], 1):
+        if f"-{c}" in opts:
+            return 1 if k == len(word) - 1 else 0
+    return 0
+
+
 _WRAPPER_VALUE_OPTS = {
     "sudo": {"-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user",
              "--close-from", "--chdir", "--host", "--prompt", "--role", "--type", "--command-timeout"},
@@ -1051,7 +1079,7 @@ _WRAPPER_VALUE_OPTS = {
     "timeout": {"-s", "--signal", "-k", "--kill-after"}, "stdbuf": {"-i", "-o", "-e"},
     "xargs": {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
               "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
-    "env": {"-u", "--unset", "-C", "--chdir"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-P"},
     "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
     "caffeinate": {"-t", "-w"}, "chrt": set(), "taskset": set(),
     "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p"}, "arch": {"-arch", "-e", "-d"}, "script": {"-F", "-t", "-T"},
@@ -1060,6 +1088,13 @@ _WRAPPER_VALUE_OPTS = {
 
 # a command name made of plain characters, whose case _command_words folds (a variable or a placeholder keeps its own)
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9._+-]+")
+
+
+def _fold_name(name):
+    """A command name as this Mac's volumes match it: NFKC, case-folded (`awK` with KELVIN SIGN, `ſed` with LONG S are
+    awk and sed; of_secrets-review on organic-framework PR 332)."""
+    import unicodedata
+    return unicodedata.normalize("NFKC", name).casefold()
 # A versioned or alternative name of an interpreter the rules know (2026-11-18, of_server, found while reviewing
 # organic-framework PR 329: `python3.15 bin/of_tools.py header` passed G23, and the same name passed G1, G8 and G13,
 # since every rule compares the command's name with python3, python, node, ruby, perl or php).
@@ -1091,7 +1126,8 @@ def _command_words(words):
     if out:
         name = os.path.basename(out[0])
         # a variable or the parser's placeholder for one (`$T`, `__OFSUB__`) keeps its letters: names are case-sensitive
-        known = _interpreter_name(name.lower()) if _PLAIN_NAME.fullmatch(name) and "__OF" not in name else name
+        folded = _fold_name(name)
+        known = _interpreter_name(folded) if _PLAIN_NAME.fullmatch(folded) and "__OF" not in name else name
         if known != name:
             out = [out[0][:len(out[0]) - len(name)] + known] + list(out[1:])
     return out
@@ -1102,7 +1138,7 @@ def _command_words_of(words):
         return []  # a loop header, a function header or a closer runs nothing itself
     i = 0
     while i < len(words):
-        w = os.path.basename(words[i]).lower()  # `SUDO`, `NICE`, `ENV` run the real ones too (G0.10)
+        w = _fold_name(os.path.basename(words[i]))  # `SUDO`, `NICE`, `ENV` run the real ones too (G0.10)
         # `time` is a wrapper, with its options (G0.6), not a bare keyword: `time -p cat <key>` (of_secrets-review, PR 136)
         if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc"):
             i += 1
@@ -1115,7 +1151,7 @@ def _command_words_of(words):
                 if words[i] == "--":
                     i += 1
                     break
-                i += 2 if words[i] in opts else 1
+                i += 1 + _opt_takes_next(words[i], opts)
             if w in _WRAPPER_POSITIONAL and i < len(words):
                 i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
@@ -1127,7 +1163,7 @@ def _command_words_of(words):
                     except ValueError:
                         i += 2
                     continue
-                i += 2 if words[i] in _WRAPPER_VALUE_OPTS["env"] else 1
+                i += 1 + _opt_takes_next(words[i], _WRAPPER_VALUE_OPTS["env"])
         else:
             break
     return words[i:]
@@ -2091,6 +2127,9 @@ def _ansi_c(text):
             double = not double
         elif c == "'" and not double:
             single = True
+        elif c == "$" and not double and text.startswith('$"', i):
+            i += 1  # $"…" is "…"
+            continue
         elif c == "$" and not double and text.startswith("$'", i):
             m = _ANSI_WORD.match(text, i)
             if m:

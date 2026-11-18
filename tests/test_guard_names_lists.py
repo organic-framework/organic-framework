@@ -64,7 +64,10 @@ class NamesLists(unittest.TestCase):
                      "evm-signer  " + " ".join(SEED) + "\n", "evm-signer  " + " ".join(SEED[:6]) + "\n"
                      + " ".join(SEED[6:]) + "\n", "db-main  Tr0ub4dor&3x\n",
                      "heroku-api  3f2b8c1e-9a4d-4e7b-b1c2-7d8e9f0a1b2c\n", "r2-writer  k3j9x2m8q7w1e5r4t6y0u8i2o3p4a5s6\n",
-                     "data:\n  signer: c2hvcnQxMjM=\n"):
+                     "data:\n  signer: c2hvcnQxMjM=\n",
+                     # of_review on organic-framework PR 332, third pass
+                     "registry/0123456789abcdef0123456789abcdef\n", "12345678901234567890123456789012d\n",
+                     "\ndemo ABCDEFGHIJKLMNOP\n", "ABCDEFGHIJKLMNOP\n", "abcdef.abcdefghijklmnop\n"):
             p = self.put("evm-secret-names.txt", text)
             self.assertTrue(deny("cat " + p), text[:30])
             self.assertTrue(of_guard.critical_deny("Read", {"file_path": p}), text[:30])
@@ -76,6 +79,12 @@ class NamesLists(unittest.TestCase):
         self.assertTrue(deny("cat " + big))
         self.assertTrue(deny("cat " + self.put("secret-names.env", "evm-signer\n")))  # an env file holds values
         self.assertTrue(deny("cat " + self.put("evm-secret.txt", "evm-signer  Opaque\n")))  # no names part
+
+    def test_a_remote_command_gets_no_exception(self):
+        """of_review on organic-framework PR 332: the file a remote command reads is another machine's."""
+        p = self.put("evm-secret-names.txt", "demo\n")
+        self.assertIsNone(deny("grep -q demo " + p))
+        self.assertTrue(deny("ssh somehost grep -q demo " + p))
 
     def test_the_deny_without_names_is_unchanged(self):
         p = self.put("evm-secret-names.txt", "evm-signer  Opaque\n")

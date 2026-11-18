@@ -60,6 +60,16 @@ class InterpreterNames(unittest.TestCase):
         for cmd in ("CAT notes.txt", "Rscript -e 'print(1)'", "PlistBuddy -c Print x.plist"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_a_name_in_other_unicode_case_and_clustered_options(self):
+        """of_secrets-review on organic-framework PR 332 (third pass)."""
+        for cmd in ("aw\u212a '{print}' ~/.ssh/id_ed25519", "\u017fed -n p ~/.ssh/id_ed25519",
+                    "sudo -nu root cat ~/.ssh/id_ed25519", "/usr/bin/time -lo /dev/null cat ~/.ssh/id_ed25519",
+                    "env -P /bin cat ~/.ssh/id_ed25519", "exec -ca label /bin/cat ~/.ssh/id_ed25519",
+                    'c$"at" ~/.ssh/id_ed25519', 'C$"AT" ~/.ssh/id_ed25519'):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("sudo -u root ls", "stdbuf -i0 cat notes.txt", "xargs -I{} echo {}", 'echo $"hello"'):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_the_abi_suffixes(self):
         for name in ("python3.7m", "python3.12d", "python3.7dm", "pythonw3.12"):
             self.assertEqual(of_guard._interpreter_name(name), "python3", name)
