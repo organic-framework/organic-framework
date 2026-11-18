@@ -27,7 +27,7 @@ import time
 
 import of_events
 
-VERSION = "tb-v4"
+VERSION = "tb-v5"
 MODEL = "haiku"
 TIMEOUT_S = 90
 AHEAD_MIN = 15            # a clock time this many minutes after the item's own time is a booking's candidate
@@ -187,7 +187,9 @@ agent may put a start off only for a named reason (a basis).
 
 For each item decide:
 - booking: does it put a start of the agent's own work off to a later time? A watch that checks something every \
-few minutes, a report of when something happened, or a time someone else set is not a booking of its own work.
+few minutes, a report of when something happened, or a time someone else set is not a booking of its own work. A \
+clock range that describes data or an event on another day the item names ("18,568 rows in 21:30-23:00Z that \
+evening", meaning 2026-10-29) is a reading of the past, not a start.
 - basis_kind, the reason it waits, when it names one: position (another position must act first, named), \
 owner_card (the owner's answer to a card or ask), window (a maintenance or release window or slot, with its \
 source), runner (a CI run, a build, a job running now), data_not_yet (data that does not exist yet, named), \
@@ -238,13 +240,40 @@ SCHEMA = {"type": "object", "additionalProperties": False,
           "required": ["items"]}
 
 
+_FRAME = re.compile(r"\AMessage from [^\n]*\(via [^\n]*\)\s*\n")
+_REPLY = re.compile(r"\n\[reply: [^\n]*\]\s*\Z")
+
+
+def excerpt(text, times=None, n=TEXT_MAX, around=240):
+    """An item's text for the judge: without the relay's frame line and its reply hint, whole when it fits in N
+    characters, else the start and a window around each later time it names, so the words that give the time its
+    sense reach the judge (2026-11-18: a past data window '21:30-23:00Z that evening' was judged from a text cut before
+    it, under a 200-character frame; a user organization's structure keeper)."""
+    t = _REPLY.sub("", _FRAME.sub("", text or ""))
+    if len(t) <= n:
+        return t
+    spans = [(0, min(len(t), around))]
+    for x in times or ():
+        for m in re.finditer(re.escape(x) if ":" in x else r"\b" + re.escape(x) + r"\b", t, re.I):
+            spans.append((max(0, m.start() - around), min(len(t), m.end() + around)))
+    spans.sort()
+    merged = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    out = " … ".join(t[a:b] for a, b in merged)
+    return out[:3 * n]
+
+
 def user_prompt(position, group, summary=None):
     lines = [f"Agent: {position}" + (f" ({summary})" if summary else "")]
     for i, it in enumerate(group, 1):
         where = {"cron": "a cron it set in its session", "clock_wait": "a background task that waits on the clock",
                  "message": f"a message it sent to {it.get('to')}", "ask": "a question it asked the owner"}[it["source"]]
         times = f"; later times named: {', '.join(it['times'])}" if it.get("times") else ""
-        lines.append(f"\nItem {i}, {where}, at {it['ts'][:16]}Z{times}:\n<<<\n{it['text'][:TEXT_MAX]}\n>>>")
+        lines.append(f"\nItem {i}, {where}, at {it['ts'][:16]}Z{times}:\n<<<\n{excerpt(it['text'], it.get('times'))}\n>>>")
     lines.append("\nAnswer one entry per item, its id the item's number.")
     return "\n".join(lines)
 
