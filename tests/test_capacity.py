@@ -977,6 +977,41 @@ class Rescue(unittest.TestCase):
                                                  self.NOW), [])
         self.assertEqual(of_capacity.stall_report(rows, self.SESS, self.POS, stopped, [], self.NOW), [])
 
+    def test_rescue_and_invariant_share_the_same_stop_after_a_wake(self):
+        rows = self.rows()[:3]
+        rows[0].update(status="allowed", windows={}, observed_at=self.iso(0))
+        stopped = {"st1": self.NOW - 3600, "st2": self.NOW - 3600}
+        pol = dict(self.STOPS_ONLY, hold=["st2"], rescue_moves=1)
+        wake_at = self.NOW - 300
+        result = "deferred: a dialog is open in the pane"
+        woken = {sid: {"at": wake_at, "dir": "/mm", "result": result} for sid in stopped}
+        moves = of_capacity.decide(rows, self.SESS, self.POS, {}, {}, pol, self.NOW, stopped=stopped, woken=woken)
+        self.assertEqual([(m["session"], m["to"]) for m in moves], [("st2", "/ap")])
+        reason = f"woken on its account at {of_capacity._iso(wake_at)}, still stopped ({result})"
+        self.assertIn("rescue: " + reason, moves[0]["reason"])
+        self.assertIn(reason, of_capacity.balance_why(moves[0]["reason"]))
+        report = of_capacity.stall_report(rows, self.SESS, self.POS, stopped, moves, self.NOW, woken=woken)
+        self.assertEqual([(s["session"], s["why"]) for s in report], [("st1", reason), ("st2", reason)])
+        moves[0]["done"] = True
+        report = of_capacity.stall_report(rows, self.SESS, self.POS, stopped, moves, self.NOW, woken=woken)
+        self.assertEqual([s["session"] for s in report], ["st1"])
+
+        for outcome, age, stop, other, expected in (
+                ("delivered", 300, self.NOW - 3600, True, False),
+                ("delivered", of_capacity.WAKE_AGAIN_S + 1, self.NOW - 3600, True, True),
+                (result, 300, wake_at, True, True),
+                (result, 300, wake_at + 1, True, False),
+                (result, 300, None, True, False),
+                (result, 300, wake_at, False, False)):
+            with self.subTest(outcome=outcome, age=age, stop=stop, other=other):
+                pool = rows if other else rows[:1]
+                stops = {"st1": stop} if stop else {}
+                history = {"st1": {"dir": "/mm", "at": self.NOW - age, "result": outcome}}
+                moves = of_capacity.rescue_plan(pool, self.SESS, self.POS, stops, pol, self.NOW, woken=history)
+                stalls = of_capacity.stall_report(pool, self.SESS, self.POS, stops, [], self.NOW, woken=history)
+                self.assertEqual(([m["to"] for m in moves], [s["session"] for s in stalls]),
+                                 (["/ap"], ["st1"]) if expected else ([], []))
+
     def test_a_window_whose_reset_passed_stops_nothing(self):
         r = self.rows()[0]
         self.assertGreater(of_capacity.blocked_until(r, self.NOW), self.NOW)
@@ -1672,6 +1707,21 @@ class CapacityPosition(unittest.TestCase):
 
     def tearDown(self):
         of_locale.set_language(None)
+
+    def test_stopped_capacity_holder_routes_to_its_registered_conductor(self):
+        capacity = "acme:capacity"
+        positions = [{"_org": "acme", "name": "capacity", "holder": {"session": "s1"}},
+                     {"_org": "acme-lab", "name": "other_conductor"},
+                     {"_org": "acme", "name": "guide", "role": "conductor", "holder": {"session": "s2"}}]
+        self.assertEqual(of_capacity.invariant_route(capacity, positions, {"s2"}), (capacity, ""))
+        to, note = of_capacity.invariant_route(capacity, positions, {"s1"})
+        self.assertEqual(to, "acme:guide")
+        self.assertIn("acme:capacity is stopped on a usage limit", note)
+        self.assertIn("conductor", note)
+        for registry in (positions[:2], positions):
+            to, note = of_capacity.invariant_route(capacity, registry, {"s1", "s2"})
+            self.assertIsNone(to)
+            self.assertIn("owner", note)
 
     def test_the_position_and_the_name_records_carry(self):
         self.assertIsNone(of_capacity.capacity_position({}))
@@ -2752,28 +2802,30 @@ class ConnectorsCache(unittest.TestCase):
 
 
 class WakeStopped(unittest.TestCase):
-    """2026-11-17: two accounts reopened by the founder's free resets, and 27 sessions on them sat in the limit dialog;
-    the rescue moves only sessions off an account that refuses work."""
+    """A reset can reopen an account while its sessions are still in the limit dialog."""
     DIALOG = ["   What do you want to do?", "   ❯ 1. Stop and wait for limit to reset",
               "     2. Wait here, then continue automatically at Nov 23 at 12am", "     3. Switch to usage credits",
               "   Enter to confirm · Esc to cancel"]
     T0 = 1_800_000_000
 
     def run_it(self, screen, status="idle", stop=-60, probe_at=0, account_ok=True, dry_run=False, cache=None,
-               positions=None):
+               positions=None, deliver=None, later=60, other=False):
         from unittest import mock
         rows = [{"config_dir": "/m", "logged_in": True, "observed_at": of_capacity._iso(self.T0 + probe_at),
                  "windows": {"seven_day": {"utilization": 0 if account_ok else 100}}}]
         sessions = {"/m": [{"session": "s1", "name": "sec", "status": status}]}
+        if other:
+            rows.append(dict(rows[0], config_dir="/other"))
         pressed, typed, store = [], [], dict(cache or {})
         with mock.patch.object(of_capacity, "load_cache", side_effect=lambda: dict(store)), \
                 mock.patch.object(of_capacity, "save_cache", side_effect=store.update), \
                 mock.patch.object(of_capacity, "actor", return_value="of_capacity"):
             out = of_capacity.wake_stopped(
                 rows, sessions, [{"name": "sec", "holder": {"session": "s1"}}] if positions is None else positions,
-                now=self.T0 + 60, log=lambda m: None, dry_run=dry_run,
+                now=self.T0 + later, log=lambda m: None, dry_run=dry_run,
                 agent=lambda sid: {"pane_id": "p1"}, read=lambda pane: screen,
-                keys=lambda pane, k: pressed.append(k), deliver=lambda pane, text, sid: typed.append(text) or (True, None),
+                keys=lambda pane, k: pressed.append(k),
+                deliver=deliver or (lambda pane, text, sid: typed.append(text) or (True, None)),
                 stopped=lambda d, sid: self.T0 + stop if stop is not None else None, sleep=lambda s: None)
         return out, pressed, typed, store
 
@@ -2782,6 +2834,39 @@ class WakeStopped(unittest.TestCase):
         self.assertEqual((pressed, len(typed), out), (["enter"], 1, [("sec", (True, None))]))
         self.assertIn("accepts work again", typed[0])
         self.assertIn("s1", store["_woken"])
+
+    def test_an_unsuccessful_wake_keeps_its_result_for_the_next_run(self):
+        for response, result in ((("deferred", "a dialog is open in the pane"), "deferred: a dialog is open in the pane"),
+                                 ((False, "pane closed"), "refused: pane closed"),
+                                 (OSError("relay unavailable"), "exception: relay unavailable")):
+            with self.subTest(result=result):
+                relay = mock.Mock(side_effect=[response])
+                _, _, _, store = self.run_it([], deliver=relay)
+                self.assertEqual(store["_woken"]["s1"], {"at": self.T0 + 60, "dir": "/m", "result": result})
+                due = 61 + of_capacity.WAKE_AGAIN_S
+                self.assertEqual(self.run_it([], cache=store, later=due, other=True)[0], [])
+                self.assertEqual(self.run_it([], cache=store, later=100)[0], [])
+                _, _, typed, retried = self.run_it([], cache=store, later=due)
+                self.assertEqual(len(typed), 1)
+                self.assertEqual(retried["_woken"]["s1"]["result"], "delivered")
+
+    def test_a_dry_run_leaves_no_wake_record(self):
+        _, pressed, typed, store = self.run_it(self.DIALOG, dry_run=True)
+        self.assertEqual((pressed, typed, store), ([], [], {}))
+
+    def test_an_old_timestamp_can_trigger_rescue_only_on_the_original_account(self):
+        cache = {"_woken": {"s1": self.T0}}
+        out, _, _, store = self.run_it([], cache=cache, later=of_capacity.WAKE_AGAIN_S + 1, other=True)
+        self.assertEqual(out, [])
+        self.assertEqual(store["_woken"]["s1"], {"at": self.T0, "dir": "/m", "result": None})
+        self.assertEqual(of_capacity.wake_history(store, {"/other": [{"session": "s1"}]}), {})
+
+    def test_the_balancer_can_wake_its_own_holder_from_outside_that_session(self):
+        pos = [{"name": "of_capacity", "holder": {"session": "s1"}}]
+        for caller, pane, count in (("", "", 1), ("s2", "p2", 1), ("s1", "", 0), ("", "p1", 0)):
+            with self.subTest(caller=caller, pane=pane), mock.patch.dict(
+                    os.environ, CLAUDE_CODE_SESSION_ID=caller, HERDR_PANE_ID=pane):
+                self.assertEqual(len(self.run_it([], positions=pos)[2]), count)
 
     def test_never_on_usage_credits_and_never_twice(self):
         credits = [ln.replace("❯ 1.", "  1.").replace("  3. Switch", "❯ 3. Switch") for ln in self.DIALOG]

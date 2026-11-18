@@ -1750,6 +1750,8 @@ def balance_why(reason):
         return ("the balancer moved it to use model capacity that would otherwise expire unused "
                 "(founder, 2026-11-06).")
     if kind == "rescue":
+        if reason.startswith("rescue: woken on its account at "):
+            return f"the session was {reason.split(': ', 1)[1]}."
         return "the old account stopped accepting work."
     if kind == "restore":
         names = str(reason).split(":", 1)[1].split(" missing on ", 1)[0].strip()
@@ -4101,15 +4103,55 @@ WAKE_TEXT = ("of_capacity: your account accepts work again (probed at {at}), aft
 WAKE_AGAIN_S = 1800  # a session woken once is not woken again within this
 
 
+def wake_history(cache, sessions):
+    """Keep a wake with its live holder on the account where it was tried."""
+    records = cache.get("_woken") or {}
+    out = {}
+    for d, xs in sessions.items():
+        for x in xs:
+            sid = x["session"]
+            rec = records.get(sid)
+            if isinstance(rec, (int, float)):  # older caches recorded only the time
+                rec = {"at": rec, "dir": d, "result": None}
+            if rec and rec["dir"] == d:
+                out[sid] = rec
+    return out
+
+
+def stranded_wakes(woken, stopped, accepting, now):
+    """Explain a rescue only when the same stop survived a wake and another account can take it."""
+    if len(accepting) < 2:
+        return {}
+    out = {}
+    for sid, wake in (woken or {}).items():
+        if wake["dir"] not in accepting or sid not in stopped or stopped[sid] > wake["at"]:
+            continue
+        result = wake["result"]
+        if result in (None, "delivered") and now - wake["at"] < WAKE_AGAIN_S:
+            continue
+        out[sid] = f"woken on its account at {_iso(wake['at'])}, still stopped ({result or 'result not recorded'})"
+    return out
+
+
+def session_stops(sessions, stopped=None):
+    """Read the stops between turns so a newer stop can overrule an older probe."""
+    stopped = stopped or (lambda d, sid: limit_stop(find_transcript(d, sid) or ""))
+    return {x["session"]: t for d, xs in sessions.items() for x in xs
+            if x.get("status") in ("idle", "shell", "waiting") and (t := stopped(d, x["session"]))}
+
+
 def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, agent=None, read=None, keys=None,
                  deliver=None, stopped=None, sleep=time.sleep):
     """Wake the sessions stopped on a usage limit whose own account accepts work again: choose the limit dialog's
-    "Stop and wait" (never usage credits), or cancel a limit wait, then type a declared prompt to go on. The rescue
-    moves only sessions off an account that refuses work, and a session in the limit dialog never goes on by itself
-    (2026-11-17: the founder's free resets reopened two accounts at about 22:05Z, and 27 sessions on them sat in the
-    dialog, waiting for 23.11). Only when the account's probe is later than the stop, once per WAKE_AGAIN_S, and only
-    the live holder of an agent position: never a person's own session or a position a person holds (of_review on
-    PR 318). rows: status(); sessions: {dir: live_sessions(dir)}. Returns [(name, result)]."""
+    "Stop and wait" (never usage credits), or cancel a limit wait, then type a declared prompt to go on. A session in
+    the limit dialog never goes on by itself (2026-11-17: the founder's free resets reopened two accounts at about
+    22:05Z, and 27 sessions on them sat in the dialog, waiting for 23.11). Only when the account's probe is later than
+    the stop, once per WAKE_AGAIN_S, and only the live holder of an agent position: never a person's own session or a
+    position a person holds (of_review on PR 318). The balancer's own position is woken too, except from inside its
+    own session or pane. A wake that did not take (deferred, refused, an error) is recorded with its result, and the
+    rescue then moves that session to another account that accepts work (stranded_wakes; 2026-11-18: a dialog
+    deferred one wake three times, and two positions stood from 20:14Z to 21:40Z while another account had a fresh
+    week). rows: status(); sessions: {dir: live_sessions(dir)}. Returns [(name, result)]."""
     agents = {sid: p for p in positions or []
               for sid in [((p.get("holder") or {}).get("session") or "").strip()]
               if sid and ((p.get("holder") or {}).get("runtime") or "claude-code") in ("claude-code", "claude")
@@ -4117,13 +4159,16 @@ def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, 
     now = now or time.time()
     agent, read = agent or _agent_by_session, read or _pane_lines
     keys = keys or (lambda pane, k: _herdr("pane", "send-keys", pane, k))
-    stopped = stopped or (lambda d, sid: limit_stop(find_transcript(d, sid) or ""))
+    stops = session_stops(sessions, stopped)
     if deliver is None:
         import of_relay_client
         deliver = lambda pane, text, sid: of_relay_client.herdr_deliver(pane, text, sid, actor(), wait_s=8)  # noqa: E731
-    ok = {r["config_dir"]: r for r in rows if r.get("logged_in") and not exhausted(r)}
+    accepting = accepting_accounts(rows, sessions, stops, now)
+    ok = {r["config_dir"]: r for r in rows if r["config_dir"] in accepting and not exhausted(r)}
     cache = load_cache()
-    woken = {k: v for k, v in (cache.get("_woken") or {}).items() if now - v < WAKE_AGAIN_S}
+    woken = wake_history(cache, sessions)
+    rescue = stranded_wakes(woken, stops, accepting, now)
+    caller = os.environ.get("CLAUDE_CODE_SESSION_ID")
     out = []
     for d, xs in sessions.items():
         r = ok.get(d)
@@ -4133,40 +4178,51 @@ def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, 
         for x in xs:
             sid = x.get("session")
             p = agents.get(sid)
-            if not p or x.get("status") == "busy" or sid in woken or p["name"] == actor():
+            if not p or sid == caller or sid in rescue:
                 continue
             name = p["name"]
-            t = stopped(d, sid)
+            t = stops.get(sid)
             if not t or t >= probed:  # the stop is newer than what says the account accepts work
                 continue
-            a = agent(sid)
-            if not a:
+            if sid in woken and now - woken[sid]["at"] < WAKE_AGAIN_S:
                 continue
-            pane = a["pane_id"]
-            lines = read(pane)
-            plain = [ANSI.sub("", ln) for ln in lines]
-            step = None
-            if any(LIMIT_DIALOG in ln for ln in plain):
-                if not limit_cursor(lines):
-                    log(f"balance: {name}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {pane}; left")
+            try:
+                a = agent(sid)
+                if not a or a["pane_id"] == os.environ.get("HERDR_PANE_ID"):
                     continue
-                step = "enter"
-            elif any(AUTO_CONTINUE.search(ln) for ln in plain[-12:]):
-                step = "esc"
-            if dry_run:
-                out.append((name, f"would wake ({step or 'type'})"))
-                continue
-            if step == "enter" and not limit_cursor(read(pane)):  # read again right before the key
-                log(f"balance: {name}: the limit dialog changed in {pane}; left")
-                continue
-            if step:
-                keys(pane, step)
-                sleep(2)
-            res = deliver(pane, WAKE_TEXT.format(at=(r.get("observed_at") or "")[11:16] + "Z"), sid)
-            woken[sid] = now
+                pane = a["pane_id"]
+                lines = read(pane)
+                plain = [ANSI.sub("", ln) for ln in lines]
+                step = None
+                if any(LIMIT_DIALOG in ln for ln in plain):
+                    if not limit_cursor(lines):
+                        log(f"balance: {name}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {pane}; left")
+                        continue
+                    step = "enter"
+                elif any(AUTO_CONTINUE.search(ln) for ln in plain[-12:]):
+                    step = "esc"
+                if dry_run:
+                    out.append((name, f"would wake ({step or 'type'})"))
+                    continue
+                if step == "enter" and not limit_cursor(read(pane)):  # read again right before the key
+                    log(f"balance: {name}: the limit dialog changed in {pane}; left")
+                    continue
+                if step:
+                    keys(pane, step)
+                    sleep(2)
+                res = deliver(pane, WAKE_TEXT.format(at=r["observed_at"][11:16] + "Z"), sid)
+            except Exception as e:
+                res = ("exception", str(e) or type(e).__name__)
+            status, detail = res
+            result = "delivered"
+            if status is not True:
+                result = "refused" if status is False else status
+                if detail:
+                    result = f"{result}: {detail}"
+            woken[sid] = {"at": now, "dir": d, "result": result}
             out.append((name, res))
-            log(f"balance: woke {name} on {short(d)}: {res}")
-    if out and not dry_run:
+            log(f"balance: wake of {name} on {short(d)}: {res}")
+    if not dry_run and woken != (cache.get("_woken") or {}):
         cache = load_cache()
         cache["_woken"] = woken
         save_cache(cache)
@@ -4425,12 +4481,30 @@ def report_route(p, positions, policy=None):
     return f"{name} (of send {cap_org}:{name})"
 
 
-def owner_card(kind, stalls, accepting, spent, numbers):
+def invariant_route(capacity, positions, stopped):
+    """A capacity holder on a limit cannot act on its own invariant message."""
+    org, _, name = (capacity or "").rpartition(":")
+    holder = next((p for p in positions if p["name"] == name and (not org or p.get("_org") == org)), None)
+    if not holder or (holder.get("holder") or {}).get("session") not in stopped:
+        return capacity, ""
+    import of_pulse
+    org = holder.get("_org")
+    available = [p for p in positions if (p.get("holder") or {}).get("session") not in stopped]
+    conductor = org and of_pulse._conductor_of(available, org)
+    note = f"{capacity} is stopped on a usage limit."
+    if conductor:
+        return f"{org}:{conductor}", f"{note} This message goes to you as its organization's conductor."
+    return None, f"{note} Its organization has no available conductor, so this notice goes to the owner."
+
+
+def owner_card(kind, stalls, accepting, spent, numbers, route_note=""):
     """The owner's card for the invariant's work when no capacity position serves the machine: a session stands on
     its limit for two runs ("self"), or the pool is short or spent ("pool", a money question)."""
     from of_locale import tr
     if kind == "self":
         who = ", ".join(sorted({s.get("position") or s["session"] for s in stalls})) or "?"
+        if route_note:
+            return f"{who} still stand on a usage limit after two balancer runs. {route_note}", None
         return (tr("{who} stand on their usage limit for two balancer runs while {accepting} accept work, and the "
                    "balancer could not move them. No capacity position serves this machine's accounts, so this card "
                    "is the only notice. Ask your conductor to move them, or wait for their accounts to reopen.",
@@ -5284,11 +5358,12 @@ def recent_remote_moves(now, conn=None):
         "GROUP BY account", (since[:19], since, of_events.now_iso(now), of_events.machine_id())))
 
 
-def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None, remote_moves=None):
+def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None, remote_moves=None,
+                woken=None):
     """Pure. The invariant (founder, 2026-11-10): no session stands on a usage limit while another account accepts
     work. `stopped`: {session: epoch of its limit stop}, read from its transcript (limit_stop), an observation. A
-    stopped holder between turns whose account does not accept work goes to one that does. Predicted room, burn
-    rates, calibrations and resume costs never veto this; they size relief and fill, which are optional. An account
+    stopped holder between turns whose account refuses work, or whose wake there did not take, goes elsewhere.
+    Predicted room, burn rates, calibrations and resume costs never veto this; they size relief and fill. An account
     with a session stopped after its last probe is taken as stopped (the probe lags up to 30 minutes).
     Targets: accounts that accept work and are not about to stop (5-hour under relief_at, week under week_max), else
     any that accepts; the most capacity left first: observed free percent times the account's measured $ per 1%
@@ -5307,14 +5382,9 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
         x = (r.get("windows") or {}).get(w) or {}
         return (x.get("utilization") or 0) if (_ts(x.get("resets_at") or "") or float("inf")) > now else 0
 
-    def blocked(d):
-        r = acct.get(d)
-        if r is None or blocked_until(r, now):
-            return True
-        seen = _ts(r.get("observed_at") or "") or 0
-        return any(stopped.get(s["session"], 0) > seen for s in sessions.get(d, []))
-
-    targets = [r for d, r in acct.items() if not blocked(d)]
+    accepting = accepting_accounts(rows, sessions, stopped, now)
+    stranded = stranded_wakes(woken, stopped, accepting, now)
+    targets = [acct[d] for d in accepting]
     if not targets:
         return []
     taken = {r["config_dir"]: (remote_moves or {}).get(r.get("account"), 0) for r in targets}
@@ -5332,8 +5402,6 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     ahead = policy.get("rescue_ahead_min", 60) * 60
     cands = []
     for d in acct:
-        if not blocked(d):
-            continue
         # the probe saw this account refuse work for rescue_ahead_min or longer yet: a holder between turns there
         # stops on its next turn (2026-11-11: storefront-hosts_keeper sat on spent ~/.claude-d with a check due at 06:48Z), so it
         # goes too, after the stopped ones. Within the hour a window reopens before most idle holders get work, and
@@ -5343,6 +5411,8 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
         # only its stopped sessions go (2026-11-11: the founder's Mac on a mobile hotspot, of_platform's check)
         doomed = bool(until) and until - now >= ahead and acct[d].get("logged_in") is not None
         for s in sessions.get(d, []):
+            if d in accepting and s["session"] not in stranded:
+                continue
             p = pos_by_session.get(s["session"])
             is_stopped = s["session"] in stopped
             if not (is_stopped or doomed) or not p or s.get("status") not in ("idle", "shell", "waiting") \
@@ -5352,10 +5422,14 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
                           stopped.get(s["session"], until), p["name"], s["session"], d))
     moves = []
     for later, _, _, since, name, sid, d in sorted(cands)[:policy.get("rescue_moves", 6)]:
-        t = min(targets, key=lambda r: key(r, sid))
+        t = min((r for r in targets if r["config_dir"] != d), key=lambda r: key(r, sid), default=None)
+        if t is None:  # its own account is the only one that accepts work: the wake is tried again there
+            continue
         taken[t["config_dir"]] += 1
-        why = (f"its account does not accept work until {_iso(since) if since != float('inf') else 'an unknown time'}"
-               if later else f"stopped on its account's usage limit since {_iso(since)}")
+        if later:
+            why = f"its account does not accept work until {_iso(since) if since != float('inf') else 'an unknown time'}"
+        else:
+            why = stranded.get(sid) or f"stopped on its account's usage limit since {_iso(since)}"
         moves.append({"position": name, "session": sid, "from": d, "to": t["config_dir"], "rate": 0.0,
                       "reason": f"rescue: {why}; {short(t['config_dir'])} accepts work"})
     return moves
@@ -5370,37 +5444,30 @@ def run_dirs(rows):
     return [r["config_dir"] for r in rows if r.get("logged_in") is not False]
 
 
-def stall_report(rows, sessions, positions, stopped, moves, now):
-    """After a run: the holders still stopped on a limit on an account that does not accept work, while another
-    account does, with why each is still there. Empty when the invariant holds (or no account accepts work)."""
-    acct = {r["config_dir"]: r for r in rows}
+def stall_report(rows, sessions, positions, stopped, moves, now, woken=None):
+    """Explain each remaining stop that could have been rescued to another account."""
     pos_by_session = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
     moved = {m["session"]: m for m in moves}
 
-    def blocked(d):
-        r = acct.get(d)
-        seen = _ts((r or {}).get("observed_at") or "") or 0
-        return r is None or bool(blocked_until(r, now)) or \
-            any(stopped.get(s["session"], 0) > seen for s in sessions.get(d, []))
-    accepting = [d for d in acct if not blocked(d)]
+    accepting = accepting_accounts(rows, sessions, stopped, now)
+    stranded = stranded_wakes(woken, stopped, accepting, now)
     if not accepting:
         return []
     out = []
     for d, xs in sessions.items():
-        if not blocked(d):
-            continue
         for s in xs:
-            if s["session"] not in stopped:
+            if s["session"] not in stopped or (d in accepting and s["session"] not in stranded):
                 continue
             m = moved.get(s["session"])
-            if m and m.get("done", True):
+            if m and m.get("done"):
                 continue
             p = pos_by_session.get(s["session"])
             if resting(p):  # parked or finished: rescue leaves it, so it is no stall (of_review, PR 333)
                 continue
-            why = (f"move failed: {m.get('error')}" if m else "no position in any registry" if not p
+            why = (f"move failed: {m.get('error')}" if m and m.get("done") is False
+                   else "no position in any registry" if not p
                    else f"session status {s.get('status')}" if s.get("status") not in ("idle", "shell", "waiting")
-                   else "a recent move of it failed, or over this run's rescue_moves")
+                   else stranded.get(s["session"], "a recent move of it failed, or over this run's rescue_moves"))
             out.append({"session": s["session"], "position": p["name"] if p else None, "account": d,
                         "since": _iso(stopped[s["session"]]), "why": why})
     return out
@@ -5491,11 +5558,11 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
-           contexts=None, wcalib=None, remote_moves=None):
+           contexts=None, wcalib=None, remote_moves=None, woken=None):
     """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief, restore (a holder back to its
     tools) and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
-                         tools=connectors, remote_moves=remote_moves)
+                         tools=connectors, remote_moves=remote_moves, woken=woken)
     incoming = {}
     for m in rescue:
         incoming[m["to"]] = incoming.get(m["to"], 0.0) + (rates or {}).get(m["session"], 0.0)
@@ -5891,13 +5958,9 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     # server the same list shows signed out
     seen = {d: account_tools(connectors_seen(d), with_labels(plugins_ready(d), d)) for d in dirs}
     add_bound(needs, seen, positions, dirs)
-    stopped = {}
-    for d, xs in sessions.items():
-        for x in xs:
-            if x.get("status") in ("idle", "shell", "waiting"):
-                t = limit_stop(find_transcript(d, x["session"]) or "")
-                if t:
-                    stopped[x["session"]] = t
+    stopped = session_stops(sessions)
+    woken = wake_history(cache, sessions)
+    prior_wakes = {sid: wake for sid, wake in woken.items() if wake["at"] < now}
     failed = {sid for sid, t in recent.items() if len(t) > 2 and t[2] == "fail"}
     try:
         remote_moves = recent_remote_moves(now)
@@ -5906,7 +5969,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         remote_moves = {}
     plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                    failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
-                   remote_moves=remote_moves)
+                   remote_moves=remote_moves, woken=prior_wakes)
     untrusted = {}
     offline = bool(plan_) and not dry_run and not api_online()
     if offline:
@@ -5937,7 +6000,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
                     ask(None, task=stuck_task(m["position"], e), due="+30m")
                 log("balance: stopped this run; a pane is stuck")
                 break
-    stalls = stall_report(rows, sessions, positions, stopped, plan_ if not dry_run else [], now)
+    stalls = stall_report(rows, sessions, positions, stopped, plan_, now, woken=woken)
     accepting = accepting_accounts(rows, sessions, stopped, now)
     if stalls:  # the invariant is checked, not assumed (2026-11-10: the founder was the one who noticed)
         log(f"balance: {len(stalls)} session(s) still stopped on a usage limit while another account accepts work: "
@@ -5954,22 +6017,28 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         save_cache(cache)
         of_bin = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
         carded = set()
+        sender = capacity_position(policy)
+        still_stopped = stopped.keys() - {m["session"] for m in plan_ if m.get("done")}
+        to, route_note = invariant_route(sender, positions, still_stopped)
         for kind, x in actions:
             if kind == "event":
                 of_events.emit("capacity_stall", x)
                 continue
-            to = capacity_position(policy)  # "self" and "pool": work for the capacity position's session
             if not to:
                 if kind == "self" and kind in carded:
                     continue  # one card per run names every stalled session
                 carded.add(kind)
                 text, options = owner_card(kind, stalls, accepting, spent,
-                                           pool_numbers(rows, sessions, rates, wcalib, now))
+                                           pool_numbers(rows, sessions, rates, wcalib, now), route_note)
+                if route_note and kind == "pool":
+                    text = f"{route_note}\n{text}"
                 if ask and not dry_run:
                     ask(text, options) if options else ask(text)
-                log(f"balance: invariant {kind}: no capacity position; {'the owner has a card' if ask else text}")
+                log(f"balance: invariant {kind}: {'the owner has a card' if ask else text}")
                 continue
-            r = subprocess.run([sys.executable, of_bin, "send", to, "--from", to, x], capture_output=True, text=True,
+            if route_note:
+                x = f"{route_note}\n{x}"
+            r = subprocess.run([sys.executable, of_bin, "send", to, "--from", sender, x], capture_output=True, text=True,
                                timeout=60, env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
             log(f"balance: invariant {kind}: {(r.stdout or r.stderr).strip()[-160:]}")
     if plan_ and not dry_run:
