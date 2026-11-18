@@ -93,6 +93,13 @@ The founder decides on his laptop or his phone. The agents and the keepers run o
 
   A grant's `expires` bounds what is left.
 
+Built so far, step 3 of §6 (2026-11-19, `of_server`; `bin/of_keeper.py`, `tests/test_keeper.py`):
+- `of_keeper.line_problem` is the check every keeper kind calls before it serves a line, with what it read from the committed tip and its own folder: `pins/grant.pub`, `pins/passkeys/*.json` (`of_keeper.load_pins`) and `revocations.jsonl` (`of_keeper.RevocationLog`, append-only: a grant gone from the committed file, a `revoked` field or an `of.grant_revoked` event revokes it, and nothing takes that back). `of_keeper.descends` checks that a new commit descends from the last one read. The keeper runs with its own `OF_ORGS` and state folder, so `of_grants.passkey_revoked` reads its own record of revoked passkeys.
+- What the passkey signs is `of_keeper.line_payload`: `{id: access:<keeper>:<position>:<access>, org, keeper, line}`, the line without `approval`, `grant` and `added`, times in UTC with a Z; its digest is `of_diff.digest`'s. So the approval page and `of_passkey.approval_problem` serve a line as they serve a diff, and of-server needs nothing new.
+- `of access link <keeper> <position> <access>` gives the structure keeper that page's address for the founder's card. `of access record <keeper> <position> <access>` takes his approval from the organization's feed once it reaches this machine, checks it, saves it as `registry/access/approvals/<event id>.json` and names it on the line as `approval: passkey:<event id>`. The structure keeper commits both together.
+- `of registry check` names a line of secret and up whose record is missing or does not approve the line as it stands.
+- A grant for a line: `scope: {keepers: ["<keeper>:<access>"], limit: {…}}`, exactly one line, the tenant's allow to one position, with `expires`; `of_access.limit_within` holds the line within it in every part. A narrower limit attenuates, and a wider or an open one does not.
+
 This replaces the inference in `of_conductor`'s point 3. Grants already verify with the public key alone (docs/guard.md G13), and passkey approvals already verify through the enrollment's signature by the grant key (docs/remote.md §6). New here are a grant scope that names a keeper, and the pinned copies in each keeper's folder.
 
 ## 5. The weekly review

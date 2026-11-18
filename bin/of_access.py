@@ -113,6 +113,36 @@ def _limit_problems(limit, kind):
     return out
 
 
+def limit_within(line, bound):
+    """Why LINE's limit is not within BOUND's in every part (amount, unit, period alike), or None (docs/access.md §4:
+    the grant bounds the line, never the other way). A part the line leaves open while BOUND caps it is wider."""
+    bound = bound if isinstance(bound, dict) else {}
+    line = line if isinstance(line, dict) else {}
+    if not bound:
+        return "the grant names no limit"
+    for k, b in bound.items():
+        v = line.get(k)
+        if not isinstance(v, dict):
+            return f"the line has no {k}, which the grant caps"
+        if not isinstance(b, dict) or v.get("unit") != b.get("unit") or (k == "per_period" and v.get("period")
+                                                                          != b.get("period")):
+            return f"the line's {k} is in another unit or period than the grant's"
+        try:
+            if float(v.get("amount")) > float(b.get("amount")):
+                return f"the line's {k} {v.get('amount')} {v.get('unit')} is above the grant's {b.get('amount')}"
+        except (TypeError, ValueError):
+            return f"the line's or the grant's {k} amount is not a number"
+    for k in line:
+        if k not in bound:
+            return f"the line's {k} is a part the grant does not cap"
+    return None
+
+
+def limit_shape(limit):
+    """The shape problems of a limit, kind aside (a grant's `scope.limit`)."""
+    return _limit_problems(limit, None) if limit not in (None, {}) else ["a limit names per_call or per_period"]
+
+
 def entry_problems(kind, e, positions, grant_ids=None, resolve=None, commit_ok=None):
     """What is wrong with one entry of a list of KIND. POSITIONS: the organization's position names. GRANT_IDS: its
     grants' ids (None: not checked). RESOLVE(card) -> bool: a card id is an ask; COMMIT_OK(sha) -> bool: a commit of
@@ -248,6 +278,8 @@ def check_lists(orgs_file=None, resolve=None, run=subprocess.run):
         positions, grant_ids = _position_names(root), _grant_ids(root)
         for fn in sorted(os.listdir(d)):
             rel = f"{org}:registry/access/{fn}"
+            if fn == "approvals" and os.path.isdir(os.path.join(d, fn)):
+                continue  # the passkey records the lines name (of_keeper.approval_record)
             if not fn.endswith(".yaml") or not KEEPER_RE.match(fn[:-5]):
                 out.append(f"{rel}: not a keeper's list (registry/access/<keeper>.yaml)")
                 continue
@@ -258,6 +290,29 @@ def check_lists(orgs_file=None, resolve=None, run=subprocess.run):
                 continue
             out += [f"{rel}: {p}" for p in list_problems(doc, fn[:-5], positions, grant_ids, resolve,
                                                           _commit_checker(root, run))]
+            out += [f"{rel}: {p}" for p in _approval_notes(org, root, fn[:-5], doc)]
+    return out
+
+
+def _approval_notes(org, root, keeper, doc, keys=None):
+    """Lines of secret and up whose passkey record is missing or does not approve the line as it stands, checked as
+    the keeper checks it (of_keeper.approval_problem) against this machine's pinned grant key; the enrollments are
+    taken as the records carry them, since the keeper's own pins are on its host."""
+    import of_grants
+    import of_keeper
+    out = []
+    for i, e in enumerate(doc.get("entries") or [] if isinstance(doc, dict) else []):
+        if not isinstance(e, dict) or RANK.get(e.get("tier"), 0) < RANK["secret"] or not e.get("approval"):
+            continue
+        rec = of_keeper.approval_record(root, e.get("approval"))
+        if rec is None:
+            out.append(f"entry {i + 1}: its approval {e['approval']} has no record in registry/access/approvals/")
+            continue
+        cred = str(rec.get("credential") or "")
+        person = str((rec.get("enrollment") or {}).get("person") or "")
+        why = of_keeper.approval_problem(org, keeper, e, rec, keys or of_grants.local_keys(), {cred: person})
+        if why:
+            out.append(f"entry {i + 1}: its approval does not approve the line: {why}")
     return out
 
 
@@ -301,6 +356,30 @@ def grant(root, keeper, position, access, *, actions, tier, decided, by, limit=N
         raise AccessError("; ".join(problems))
     doc["entries"].append(e)
     _write_list(path, doc)
+    return e
+
+
+def find_line(root, keeper, position, access):
+    """(the list's document, the entry) for one line; AccessError when it is not on the list."""
+    doc = load_list(list_path(root, keeper))
+    for e in (doc or {}).get("entries") or []:
+        if isinstance(e, dict) and e.get("position") == position and e.get("access") == access:
+            return doc, e
+    raise AccessError(f"{position} {access} is not on {keeper}'s list")
+
+
+def record_approval(root, keeper, position, access, rid, record):
+    """Save the owner's passkey record beside the list (approvals/<rid>.json) and name it on the line."""
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$", str(rid or "")):
+        raise AccessError(f"an approval's id is letters, digits, - and _: {rid!r}")
+    doc, e = find_line(root, keeper, position, access)
+    d = os.path.join(root, "registry", "access", "approvals")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, f"{rid}.json"), "w") as fh:
+        json.dump(record, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    e["approval"] = f"passkey:{rid}"
+    _write_list(list_path(root, keeper), doc)
     return e
 
 

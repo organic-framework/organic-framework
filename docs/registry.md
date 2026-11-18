@@ -712,6 +712,8 @@ grants:
 
 **Credentials, for break-glass** (2026-11-11, agreed by `of_architect`, msg `01a1cab8`; [`agent-secrets.md`](agent-secrets.md) §5.6). `scope: {credentials: [<one credential id>]}` on an allow grant the tenant issues to one position, with `expires` at most 24 hours after it is issued, lets that position use that one credential through the broker although it does not list it. Exactly one credential and one position per grant, never `subject: "*"`, never on a deny. **Not built yet**: until it is, the broker refuses such a use.
 
+**Keepers** (2026-11-19, `of_server`; agreed by `of_architect`, msg `01a1f066-128f`; docs/access.md §4). `scope: {keepers: ["<keeper>:<access>"], limit: {per_call: {amount, unit}, per_period: {amount, unit, period}}}` on an allow grant the tenant issues to one position, with `expires` (the expiry the owner chose on the card), lets that keeper serve that one line of its list, a money or production line, to that position. Exactly one line per grant, never `subject: "*"`, never on a deny; `limit` only beside `keepers`. The line's limit must be within the grant's in every part (amount, unit, period alike), so the grant bounds the line; a narrower limit attenuates and a wider one does not. The keeper checks it (`bin/of_keeper.py`).
+
 **Authorities** (2026-11-11, `of_architect`; docs/guard.md G16). An organization lists the regulators and authorities it answers to (where it is licensed, its tax office) in a top-level `authorities:` list of its registry, reviewed by its structure keeper like the rest of its structure:
 
 ```yaml
