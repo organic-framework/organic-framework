@@ -360,10 +360,12 @@ def _url_mac(token, org, tid, key, url):
     return hmac.new(token.encode(), msg, hashlib.sha256).hexdigest()
 
 
-def _cached_url(hit, org, tid, key, state_dir):
-    """The cached URL when it is a loopback URL in _want's shape and its HMAC checks under the tool's token; else None."""
+def _cached_url(hit, org, tid, keys, state_dir):
+    """The cached URL when its entry's key is one of `keys`, the URL is a loopback URL in _want's shape and its HMAC
+    checks under the tool's token; else None."""
     import hmac
-    ent = (hit.get("urls") or {}).get(tid) if isinstance(hit, dict) and hit.get("key") == key else None
+    key = hit.get("key") if isinstance(hit, dict) else None
+    ent = (hit.get("urls") or {}).get(tid) if key in keys else None
     if not isinstance(ent, dict) or not isinstance(ent.get("url"), str) or not isinstance(ent.get("mac"), str):
         return None
     m = LOOPBACK_URL.match(ent["url"])
@@ -392,21 +394,22 @@ def _tools_block(text):
 
 
 def _catalogue_from(text):
-    """The `tools:` catalogue of a registry's text: its block alone when that parses, else the whole file."""
+    """(catalogue, how): the `tools:` catalogue of a registry's text and what it was read from, "block" when its
+    block parses alone, else "file"; (None, None) when neither parses."""
     import yaml
     block = _tools_block(text)
     if block is not None:
         try:
             cat = (yaml.safe_load(block) or {}).get("tools")
             if isinstance(cat, dict):
-                return cat
+                return cat, "block"
         except (yaml.YAMLError, AttributeError):
             pass  # an alias to an anchor outside the block, a flow mapping: read the whole file
     try:
         reg = yaml.safe_load(text) or {}
     except yaml.YAMLError:
-        return None
-    return reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}
+        return None, None
+    return (reg.get("tools") if isinstance(reg, dict) and isinstance(reg.get("tools"), dict) else {}), "file"
 
 
 def shared_url(org, tid, orgs_file=None, state_dir=None):
@@ -434,8 +437,13 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
             text = fh.read()
     except (OSError, UnicodeDecodeError):
         raise ToolsError(f"the registry of {org} cannot be read")
-    block = _tools_block(text)
-    key = [os.path.realpath(path), hashlib.sha256((text if block is None else block).encode()).hexdigest()]
+    # The key says what the catalogue was read from and hashes exactly that: the block when it parsed alone, else
+    # the whole file, so an anchor outside the block that the block's alias names is covered (of_server and
+    # of_review, PR 329: with the block's hash alone, a port changed in such an anchor kept the old URL).
+    block, real = _tools_block(text), os.path.realpath(path)
+    keys = {"file": [real, "file", hashlib.sha256(text.encode()).hexdigest()]}
+    if block is not None:
+        keys["block"] = [real, "block", hashlib.sha256(block.encode()).hexdigest()]
     d = os.path.join(state_dir or STATE_DIR, "tools", "shared")
     cache = os.path.join(d, "urls.json")
     try:
@@ -444,15 +452,16 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
     except (OSError, ValueError):
         doc = {}
     doc = doc if isinstance(doc, dict) else {}
-    url = _cached_url(doc.get(org), org, tid, key, state_dir)
+    url = _cached_url(doc.get(org), org, tid, list(keys.values()), state_dir)
     if url:
         return url
-    cat = _catalogue_from(text)
+    cat, how = _catalogue_from(text)
     if cat is None:
         raise ToolsError(f"the registry of {org} cannot be read")
     url = _want(cat.get(tid))
     if not url:
         raise ToolsError(f"{org}/{tid} is not a shared tool")
+    key = keys[how]
     urls = {}
     for t, e in cat.items():
         u = _want(e)
