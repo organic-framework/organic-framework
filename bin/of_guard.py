@@ -148,11 +148,23 @@ ENV_FILE_NOTE = ("an env file holds values: read names only through a committed 
 # name, and it blocked a manifest generator its owner had approved). An env file is never one: it holds values.
 _NAMES_PART = re.compile(r"(?:^|[._-])names(?=$|[._-])", re.I)
 NAMES_LIST_MAX = 256 * 1024
-# what a value looks like in a names list: a private key, a credential word given a value (of_classify.SECRET), a
-# token-shaped run (letters of both cases and digits: Kubernetes names are lower case), a long hex run
+# A names list is read by what it may hold, not by the values it must not: a list of value patterns let `DB_PASS=…`,
+# `aws_secret_access_key = …`, lower-case keys, a seed phrase, a mixed-case password, a UUID and base64 under a key
+# through (of_secrets-review and of_review on organic-framework PR 332). It may hold Kubernetes-style names, a type
+# (Opaque, kubernetes.io/tls), a count or an age (1, 12d, 3h5m), a `-` list marker and upper-case column headers on its
+# first line, at most NAMES_LINE_MAX on a line; no private key's header and nothing of_classify.SECRET finds anywhere;
+# no twelve BIP39 words in a row. A name shaped like a value (a UUID, 32 or more hex digits, a run of 16 or more
+# lower-case letters and digits with two digits or more) is no name. A short lower-case value shaped like a name
+# (`hunter2`) cannot be told from one (docs/guard.md G1.8.1, Known limits).
 _KEY_ANYWHERE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-\d+:")
-_RUN = re.compile(r"[A-Za-z0-9+/_=-]{20,}")
 _HEX_RUN = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}(?![0-9A-Fa-f])")
+_NAME_TOKEN = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
+_TYPE_TOKEN = re.compile(r"Opaque|[a-z0-9.-]+/[a-z0-9.-]+")
+_HEADER_TOKEN = re.compile(r"[A-Z][A-Z_-]{0,19}")
+_COUNT_TOKEN = re.compile(r"\d{1,6}|(?:\d+[smhdy]){1,3}|-")
+_UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+NAMES_LINE_MAX = 8
+_LOWER_RUN = re.compile(r"(?<![A-Za-z0-9])(?=[a-z0-9]*\d[a-z0-9]*\d)[a-z0-9]{16,}(?![A-Za-z0-9])")
 
 
 def _names_list_clean(p):
@@ -176,10 +188,42 @@ def _names_list_clean(p):
         return False
     if len(data) > NAMES_LIST_MAX or "\x00" in text or _KEY_ANYWHERE.search(text) or of_classify.SECRET.search(text):
         return False
-    if _HEX_RUN.search(text):
-        return False
-    return not any(re.search(r"\d", r) and re.search(r"[A-Z]", r) and re.search(r"[a-z]", r)
-                   for r in _RUN.findall(text))
+    names, first = [], True
+    for line in text.splitlines():
+        toks = [t for t in re.split(r"[\s,]+", line.strip()) if t]
+        if not toks:
+            continue
+        if len(toks) > NAMES_LINE_MAX:
+            return False  # a table of names has a few columns; a seed phrase or a sentence has more
+        for t in toks:
+            if (first and _HEADER_TOKEN.fullmatch(t)) or _COUNT_TOKEN.fullmatch(t) or _TYPE_TOKEN.fullmatch(t):
+                continue
+            if _NAME_TOKEN.fullmatch(t) and not (_UUID.fullmatch(t) or _HEX_RUN.search(t) or _LOWER_RUN.search(t)):
+                names.append(t)
+                continue
+            return False  # anything else (`=`, `key:`, upper case, a symbol, base64) is no name
+        first = False
+    return not _bip39_run(names)
+
+
+_BIP39 = None
+
+
+def _bip39_run(words, need=12):
+    """Do NEED words in a row come from the BIP39 list (a seed phrase, even split across lines)?"""
+    global _BIP39
+    if _BIP39 is None:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules", "bip39-english.txt")) as fh:
+                _BIP39 = frozenset(w.strip() for w in fh if w.strip())
+        except OSError:
+            _BIP39 = frozenset()
+    run = 0
+    for w in words:
+        run = run + 1 if w in _BIP39 else 0
+        if run >= need:
+            return True
+    return False
 
 
 def _org_config_secret(p):
@@ -1014,23 +1058,25 @@ _WRAPPER_VALUE_OPTS = {
 }
 
 
+# a command name made of plain characters, whose case _command_words folds (a variable or a placeholder keeps its own)
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9._+-]+")
 # A versioned or alternative name of an interpreter the rules know (2026-11-18, of_server, found while reviewing
 # organic-framework PR 329: `python3.15 bin/of_tools.py header` passed G23, and the same name passed G1, G8 and G13,
 # since every rule compares the command's name with python3, python, node, ruby, perl or php).
-_INTERPRETER_NAME = re.compile(r"(?:(?P<py>python|pypy)(?P<pv>\d+(?:\.\d+)*)?t?(?:-intel64|-arm64)?"
+_INTERPRETER_NAME = re.compile(r"(?:(?P<py>python|pythonw|pypy)(?P<pv>\d+(?:\.\d+)*)?[tdm]{0,2}(?:-intel64|-arm64)?"
                                r"|(?P<pl>perl)5(?:\.\d+)*|(?P<rb>ruby)\d+(?:\.\d+)*|(?P<ph>php)\d+(?:\.\d+)*"
                                r"|(?P<nd>node)(?:js|\d+))")
 
 
 def _interpreter_name(name):
-    """The name the rules know for a versioned or alternative interpreter: python3.15, python3.13t, python3.15-intel64,
-    pypy3 are python3; python2.7 and pypy are python; perl5.34 is perl, ruby3.3 ruby, php8.2 php, nodejs and node22
+    """The name the rules know for a versioned or alternative interpreter: python3.15, python3.13t, python3.7m,
+    python3.12d, python3.15-intel64, pypy3 are python3; python2.7 and pypy are python; perl5.34 is perl, ruby3.3 ruby, php8.2 php, nodejs and node22
     node. Any other name (python3-config, nodemon, perldoc) is returned as it is."""
     m = _INTERPRETER_NAME.fullmatch(name or "")
     if not m:
         return name
     if m.group("py"):
-        v = m.group("pv") or ("" if m.group("py") == "python" else "2")
+        v = m.group("pv") or ("" if m.group("py") in ("python", "pythonw") else "2")
         return "python3" if v.startswith("3") else "python"
     return next(m.group(k) for k in ("pl", "rb", "ph", "nd") if m.group(k))
 
@@ -1038,11 +1084,14 @@ def _interpreter_name(name):
 def _command_words(words):
     """Drop shell keywords, assignments, wrappers and `env VAR=x` prefixes: the words of the command that
     actually runs (`for h in a b; do ssh h 'cat x'; done` runs ssh). A versioned interpreter's name becomes the one
-    the rules know (`/opt/homebrew/bin/python3.15` -> `/opt/homebrew/bin/python3`; _interpreter_name)."""
+    the rules know (`/opt/homebrew/bin/python3.15` -> `/opt/homebrew/bin/python3`; _interpreter_name), in lower case:
+    this Mac's volumes ignore case, so `CAT`, `HEAD` or `PYTHON3` run the real programs (of_secrets-review on
+    organic-framework PR 332). Only the name is folded, never the folder it is in."""
     out = _command_words_of(words)
     if out:
         name = os.path.basename(out[0])
-        known = _interpreter_name(name)
+        # a variable or the parser's placeholder for one (`$T`, `__OFSUB__`) keeps its letters: names are case-sensitive
+        known = _interpreter_name(name.lower()) if _PLAIN_NAME.fullmatch(name) and "__OF" not in name else name
         if known != name:
             out = [out[0][:len(out[0]) - len(name)] + known] + list(out[1:])
     return out
@@ -1053,7 +1102,7 @@ def _command_words_of(words):
         return []  # a loop header, a function header or a closer runs nothing itself
     i = 0
     while i < len(words):
-        w = os.path.basename(words[i])
+        w = os.path.basename(words[i]).lower()  # `SUDO`, `NICE`, `ENV` run the real ones too (G0.10)
         # `time` is a wrapper, with its options (G0.6), not a bare keyword: `time -p cat <key>` (of_secrets-review, PR 136)
         if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc"):
             i += 1

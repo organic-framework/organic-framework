@@ -49,6 +49,22 @@ class InterpreterNames(unittest.TestCase):
                 for name in names:
                     self.assertEqual(bool(deny(cmd.format(i=name))), want, cmd.format(i=name))
 
+    def test_a_name_in_other_case_is_the_same_program(self):
+        """of_secrets-review on organic-framework PR 332: this Mac's volumes ignore case, so CAT, HEAD and PYTHON3 run
+        the real programs, and the guard compared names with their case."""
+        for cmd in ("CAT ~/.ssh/id_ed25519", "Cat ~/.ssh/id_ed25519", "HEAD -5 ~/.ssh/id_ed25519",
+                    "PYTHON3 -c \"print(open('.env').read())\"", "Python3.15 -c \"print(open('.env').read())\"",
+                    "SUDO cat ~/.ssh/id_ed25519", "NICE -n 5 CAT ~/.ssh/id_ed25519", "ENV A=1 cat ~/.ssh/id_ed25519",
+                    "/BIN/CAT ~/.ssh/id_ed25519"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("CAT notes.txt", "Rscript -e 'print(1)'", "PlistBuddy -c Print x.plist"):
+            self.assertIsNone(deny(cmd), cmd)
+
+    def test_the_abi_suffixes(self):
+        for name in ("python3.7m", "python3.12d", "python3.7dm", "pythonw3.12"):
+            self.assertEqual(of_guard._interpreter_name(name), "python3", name)
+            self.assertTrue(deny(name + " -c \"print(open('.env').read())\""), name)
+
     def test_the_cases_found(self):
         for cmd in ("python3.15 bin/of_tools.py header acme/g", "python3.15 bin/of grant issue x",
                     "python3.12 -c \"print(open('.env').read())\"", "nodejs .env"):
