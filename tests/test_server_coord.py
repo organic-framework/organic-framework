@@ -142,7 +142,8 @@ class CoordFeedTest(unittest.TestCase):
 
 class EventListTest(unittest.TestCase):
     """docs/server-several-machines.md §4.2: a new event a projection reads cannot silently stay on one machine."""
-    PROJECTIONS = ("of_asks.py", "of_asks_tui.py", "of_pulse.py", "of_handover.py", "of_listen.py")
+    PROJECTIONS = ("of_asks.py", "of_asks_tui.py", "of_asks_inbox.py", "of_asks_answer.py", "of_pulse.py",
+                   "of_handover.py", "of_listen.py")
 
     def test_every_event_a_projection_reads_is_shared_or_local_by_decision(self):
         bin_dir = os.path.join(HERE, "..", "bin")

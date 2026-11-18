@@ -14,6 +14,10 @@ EVENTS = frozenset({
     # asks to the founder or a unit owner, and their life
     "of.agent_question", "of.agent_question_judged", "of.agent_question_answered", "of.ask_escalated",
     "of.ask_withdrawn", "of.ask_amended", "of.escalation_due", "of.question_labelled",
+    # the owner's own moves on a card in his questions screens (of_asks_inbox): a card handed to a position, whose
+    # machine types it in (of_asks_answer.pending), and a card put off till later, on every machine he opens them on
+    # (docs/contours.md §3: his machine joins each organization's server and holds none of its positions)
+    "of.ask_handed", "of.ask_snoozed",
     # declared states and stalls
     "of.state_declared", "of.stall_detected", "of.nudge_sent",
     "of.ask_ref",  # a card id given to an ask filed before ids existed: the same on every machine
