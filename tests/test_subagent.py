@@ -376,6 +376,45 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.check(d, exe="/bin/true", run=ok, out=out), 1)
         self.assertIn("an ignore file in the scanned folder", out.getvalue())
 
+    def test_the_security_review_of_patch_refusals_and_the_review_diff(self):
+        """of_secrets-review on PR 334: a bare CR, case and quoting in a patch; a folder made into a file in a diff."""
+        R = of_subagent.patch_refusals
+        raw = lambda path: f":100644 100644 0 0 M\0{path}\0".encode()  # noqa: E731
+        for path in (".Claude/settings.json", "docs/Claude.md", "Agents.md", ".GitHub/workflows/x.yml",
+                     "dir with space/.github/ci.yml", "\u043a/AGENTS.md"):
+            with self.subTest(path=path):
+                self.assertEqual([p for p, _ in R(raw(path))], [path])
+
+        class CR(Fake):
+            def __call__(s2, argv, **kw):
+                snap = os.path.join(kw["cwd"], "fw")
+                with open(os.path.join(snap, "a.py"), "wb") as fh:
+                    fh.write(b"print(1)\rdiff --git a/AGENTS.md b/AGENTS.md\r+steer\n")
+                return Fake.__call__(s2, argv, **kw)
+        got, _ = self.go("codex", kind="patch", fake=CR("codex", ["file_change"]), visibility=lambda r: True)
+        self.assertEqual(got["patch_files"], ["a.py"])
+        with open(os.path.join(got["record"], "patch.diff"), "rb") as fh:
+            body = fh.read()
+        self.assertIn(b"print(1)\rdiff --git a/AGENTS.md", body)            # the CR kept: one hunk of a.py
+        self.assertEqual(body.count(b"\ndiff --git "), 0)
+
+        # a folder whose excluded file goes away while the folder becomes a file
+        os.makedirs(os.path.join(self.repo, "conf"))
+        with open(os.path.join(self.repo, "conf", "prod.env"), "w") as fh:
+            fh.write("API=1\n")
+        self.git("add", "-f", "conf/prod.env")
+        self.git("commit", "-qm", "folder")
+        self.git("rm", "-q", "-r", "conf")
+        with open(os.path.join(self.repo, "conf"), "w") as fh:
+            fh.write("now a file\n")
+        self.git("add", "conf")
+        self.git("commit", "-qm", "file")
+        _, call = self.go(diff="HEAD~1..HEAD")
+        diff = call["diffs"]["fw/.of-review.diff"]
+        self.assertIn("+now a file", diff)
+        self.assertNotIn("API=1", diff)
+        self.assertNotIn("prod.env", diff)
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():

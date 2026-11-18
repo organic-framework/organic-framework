@@ -71,6 +71,8 @@ PATCH_DENY_NAMES = {".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".
 # kept. Codex has no step cap of its own (none in codex exec --help, 0.169.0-alpha.11.1, or its config), so the wrapper
 # counts the tools it starts in its event stream. Values: the first patch runs of 2026-11-18 took under 3 minutes and
 # under 30 tool calls; 40 minutes and 200 tool calls leave room for a real change with its named tests.
+DENY_DIRS_LOWER = {d.lower() for d in PATCH_DENY_DIRS}
+DENY_NAMES_LOWER = {n.lower() for n in PATCH_DENY_NAMES}
 PATCH_WALL_S = 40 * 60
 PATCH_STEPS = 200
 PATCH_LINE = ("You may change files only inside the folder {name}/; your change is taken as a diff of that folder and "
@@ -249,11 +251,21 @@ def changed_names(checkout, base, head):
 def review_diff(checkout, base, head, rxs=None):
     """The diff BASE..HEAD of the changed files no exclude names, built from their exact names as literal pathspecs,
     so no header is parsed to drop a file (a quoted non-ASCII path once kept an excluded file in the diff)."""
-    keep = [n for n in changed_names(checkout, base, head) if not excluded(n, rxs)]
+    names = changed_names(checkout, base, head)
+    keep = [n for n in names if not excluded(n, rxs)]
+    # a literal pathspec of a folder made into a file matches the folder's old files too, excluded ones among them
+    # (of_secrets-review on PR 334), so every excluded name is also given as an exclude pathspec
+    drop = [":(exclude,literal)" + n for n in names if excluded(n, rxs)]
     out = []
     for i in range(0, len(keep), 500):
+        specs = [":(literal)" + n for n in keep[i:i + 500]] + drop
+        got = [n for n in _git(checkout, "diff", "-z", "--name-only", "--no-renames", base, head, "--",
+                               *specs).split("\0") if n]
+        leak = [n for n in got if excluded(n, rxs)]
+        if leak:   # fail closed: the pathspecs still reached an excluded file
+            raise SubagentError(f"the review diff would carry excluded files ({', '.join(leak[:5])}); no run")
         out.append(_git(checkout, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head,
-                        "--", *[":(literal)" + n for n in keep[i:i + 500]]))
+                        "--", *specs, text=False).decode("utf-8", "surrogateescape"))
     return "".join(out)
 
 
@@ -311,8 +323,8 @@ def snapshot(checkout, dest, head, base=None, rxs=None):
             if excluded(os.path.relpath(p, dest), rxs):
                 shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
     if base:
-        with open(os.path.join(dest, ".of-review.diff"), "w") as fh:
-            fh.write(review_diff(checkout, base, head, rxs))
+        with open(os.path.join(dest, ".of-review.diff"), "wb") as fh:
+            fh.write(review_diff(checkout, base, head, rxs).encode("utf-8", "surrogateescape"))
     return dest
 
 
@@ -573,21 +585,43 @@ def login_readable(harness, run_dir, work_dir, reads, outer):
     return sorted(set(out))
 
 
+def _raw_entries(raw):
+    """[(old mode, new mode, path)] from `git diff --raw`: its -z form (bytes or text, NUL-separated, never quoted),
+    or plain lines."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "surrogateescape")
+    out = []
+    if "\0" in raw:
+        f = raw.split("\0")
+        i = 0
+        while i + 1 < len(f):
+            meta = f[i].split()
+            if len(meta) >= 5 and meta[0].startswith(":"):
+                out.append((meta[0].lstrip(":"), meta[1], f[i + 1]))
+                i += 2
+            else:
+                i += 1
+        return out
+    for line in raw.splitlines():
+        meta, _, path = line.partition("\t")
+        m = meta.split()
+        if len(m) >= 5 and path:
+            out.append((m[0].lstrip(":"), m[1], path))
+    return out
+
+
 def patch_refusals(raw):
     """[(path, why)] of a patch's changes that a patch may not make, from `git diff --raw --no-renames`: a path under
     an agent's settings or instructions, git control or CI, a symbolic link new or made from a file, a file newly made
     executable (RFC 0008 §3.3)."""
     out = []
-    for line in raw.splitlines():
-        meta, _, path = line.partition("\t")
-        f = meta.split()
-        if len(f) < 5 or not path:
-            continue
-        old, new = f[0].lstrip(":"), f[1]
-        parts = path.split("/")
-        if set(parts[:-1]) & PATCH_DENY_DIRS or parts[-1] in PATCH_DENY_DIRS:
+    for old, new, path in _raw_entries(raw):
+        # names compared in any case, as the Mac's disk and the tools that read them do (of_secrets-review on PR 334:
+        # .Claude/settings.json, docs/Claude.md and Agents.md passed)
+        parts = path.lower().split("/")
+        if set(parts[:-1]) & DENY_DIRS_LOWER or parts[-1] in DENY_DIRS_LOWER:
             out.append((path, "an agent's settings or instructions, git control or CI"))
-        elif parts[-1] in PATCH_DENY_NAMES:
+        elif parts[-1] in DENY_NAMES_LOWER:
             out.append((path, "an agent's instructions, git control or CI"))
         if new == "120000" and old != "120000":
             out.append((path, "a symbolic link, new or made from a file"))
@@ -630,16 +664,17 @@ def run_bounded(argv, fin, fout, ferr, env, cwd, stream, wall_s, steps, poll_s=1
     return r
 
 
-def _patch_git(git_dir, work_tree, *args):
+def _patch_git(git_dir, work_tree, *args, text=True):
     """git on a patch run's own repository: its folder lies outside the snapshot, beyond Codex's reads, and it runs
     with no user config, no hooks and no signing."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_DIR=git_dir, GIT_WORK_TREE=work_tree)
     r = subprocess.run(["git", "-c", "user.name=of", "-c", "user.email=of@localhost", "-c", "commit.gpgsign=false",
-                        "-c", "core.hooksPath=/dev/null", *args], capture_output=True, text=True, env=env,
-                       cwd=work_tree)
+                        "-c", "core.hooksPath=/dev/null", "-c", "core.quotePath=false", *args], capture_output=True,
+                       text=text, env=env, cwd=work_tree)
     if r.returncode != 0:
-        raise SubagentError(f"patch git {args[0]}: {r.stderr.strip()}")
+        err = r.stderr if text else r.stderr.decode(errors="replace")
+        raise SubagentError(f"patch git {args[0]}: {err.strip()}")
     return r.stdout
 
 
@@ -984,13 +1019,18 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         if patch_git:
             # the snapshot's diff against --at, with new files: kept in the record, applied nowhere
             _patch_git(patch_git, snap_dir, "add", "-A", ".")
-            diff_text = _patch_git(patch_git, snap_dir, "diff", "--cached", "--binary", "--no-color", "HEAD")
-            patch_files = [n for n in _patch_git(patch_git, snap_dir, "diff", "--cached", "--name-only",
-                                                 "HEAD").splitlines() if n]
-            raw = _patch_git(patch_git, snap_dir, "diff", "--cached", "--raw", "--no-renames", "HEAD")
+            # bytes, never text: universal newlines turned a bare CR in a file into a line break, which split a hidden
+            # AGENTS.md hunk into the diff that patch_refusals never saw (of_secrets-review on PR 334)
+            diff_text = _patch_git(patch_git, snap_dir, "diff", "--cached", "--binary", "--no-color", "HEAD",
+                                   text=False)
+            patch_files = [n.decode("utf-8", "surrogateescape") for n in _patch_git(
+                patch_git, snap_dir, "diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD",
+                text=False).split(b"\0") if n]
+            raw = _patch_git(patch_git, snap_dir, "diff", "--cached", "--raw", "-z", "--no-renames", "HEAD",
+                             text=False)
             refused = patch_refusals(raw)
             pfile = os.path.join(record, "patch.diff" if not refused else "refused.diff")
-            with open(pfile, "w") as fh:
+            with open(pfile, "wb") as fh:
                 fh.write(diff_text)
             os.chmod(pfile, 0o600)
             got["answer"] = ((got["answer"] or "").rstrip() + f"\n\n[patch: {pfile}, {len(patch_files)} file(s): "
