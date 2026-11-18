@@ -378,6 +378,20 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.pin("linux", "arm64"), g.pin("linux", "aarch64"))
         self.assertIsNone(g.pin("win32", "AMD64"))                     # any other platform: none, fail closed
         self.assertIsNone(g.pin("darwin", "x86_64"))
+        # OF_GITLEAKS, for a runner with a read-only root: copied into a fresh 0700 folder, hashed and run there
+        d2 = tempfile.mkdtemp(dir=self.tmp.name)
+        self.assertEqual(g.private_copy(fake, d2)[0], None)
+        self.assertIn("is not the pinned gitleaks", g.private_copy(fake, d2)[1])
+        with mock.patch.object(g, "PINNED_SHA256", __import__("hashlib").sha256(open(fake, "rb").read()).hexdigest()):
+            copy, why = g.private_copy(fake, d2)
+            self.assertIsNone(why)
+            self.assertEqual(oct(os.stat(copy).st_mode & 0o777), "0o700")
+            self.assertNotEqual(os.path.realpath(copy), os.path.realpath(fake))
+            seen = []
+            with mock.patch.dict(os.environ, {"OF_GITLEAKS": fake}), \
+                    mock.patch.object(g, "_check", lambda folder, exe, run, out: seen.append(exe) or 0):
+                self.assertEqual(g.check(self.tmp.name, out=io.StringIO()), 0)
+            self.assertTrue(seen and seen[0].endswith("/gitleaks") and not seen[0].startswith(self.tmp.name))
         d = os.path.join(self.tmp.name, "scan")
         os.makedirs(os.path.join(d, "sub"))
         with open(os.path.join(d, "sub", ".GitLeaksIgnore"), "w") as fh:
