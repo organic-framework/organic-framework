@@ -2988,6 +2988,35 @@ def _hook_entry(head, args):
     return None
 
 
+FORWARD_DIR = "~/.ssh/of-forward"
+FORWARD_DENY = ("the forward's own key and host pin (docs/guard.md G34): only its launchd unit uses them; "
+                "`python3 deploy/host/forward.py keygen|pin-host|install` handles them without naming them")
+
+
+def _forward_dir():
+    return os.path.realpath(_expanduser(FORWARD_DIR))
+
+
+def _forward_deny(head, args):
+    """G34 on one simple command: any word that names the forward's key folder, `ssh -i <its key>` included, since
+    a key used is a key the session holds for that call (of_review on organic-framework PR 350: a laptop session
+    could open its own forward with it, a listen on the host that the pin makes useless but that can take the
+    forward's socket)."""
+    d = _forward_dir()
+    for w in [head, *args]:
+        for part in re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)]:
+            p = part.strip("'\"")
+            if "of-forward" not in p:
+                continue
+            try:
+                real = os.path.realpath(_expanduser(p))
+            except (OSError, ValueError):
+                continue
+            if real == d or real.startswith(d + os.sep):
+                return FORWARD_DENY, part
+    return None
+
+
 def _tool_token_deny(head, args):
     """G23: `of tools header` from an agent's command line would print a shared tool server's token into its
     transcript. Claude Code runs that helper as its own child, which no Bash call is (of_server's trust review of
@@ -5054,6 +5083,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
                 or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) or _hook_entry(head, args) \
+                or _forward_deny(head, args) \
                 or _actor_deny(head, args, stext, {**exported, **_assignments(stext)}) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
@@ -5768,6 +5798,9 @@ def critical_deny(tool, tool_input, cwd=None):
         return PROTECTED_CODE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _guard_state_file(path, cwd):
         return GUARD_STATE_DENY, path
+    if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob") and path and \
+            "of-forward" in str(path) and _forward_deny(str(_local(path, cwd)), []):  # G34
+        return FORWARD_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_outbox(path, cwd):  # G35
