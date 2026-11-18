@@ -80,6 +80,7 @@ PAGES = [
         ("docs/capacity.md", "capacity", "Capacity"),
         ("docs/accounts.md", "accounts", "Accounts and the capacity package"),
         ("docs/access.md", "access", "Access through keepers"),
+        ("docs/support.md", "support", "Support for OF's users"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
         ("docs/tools.md", "tools", "Tools of a position"),
         ("docs/studio.md", "studio", "Model and Studio"),
