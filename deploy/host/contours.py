@@ -38,6 +38,7 @@ from typing import NamedTuple
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 NOLOGIN = "/usr/sbin/nologin"
 NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+SUDO_ALL = re.compile(r"^[ \t]*\(ALL(?:[ \t]*:[ \t]*ALL)?\)[ \t]+(?:(?:NO)?(?:PASSWD|SETENV|EXEC):[ \t]*)*ALL[ \t]*$", re.MULTILINE)
 
 
 class Refusal(ValueError):
@@ -468,8 +469,8 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print)
                 require(member(name) and password(name, invoke) == "P",
                         f"admin {name} must exist, belong to wheel and have password status P")
                 listing = invoke(argv, capture_output=True, text=True).stdout
-                require(re.search(r"^[ \t]*\(ALL(?=[ \t,:)])", listing, re.MULTILINE),
-                        f"sudo -l lists no (ALL rule for admin {name}")
+                # A rule that runs as ALL but lists only some commands does not make root (of_server, PR 353).
+                require(SUDO_ALL.search(listing), f"sudo -l lists no rule that runs ALL commands as ALL for admin {name}")
             else:
                 guard(argv)
                 invoke(argv)
