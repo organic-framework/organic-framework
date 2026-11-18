@@ -595,13 +595,23 @@ def _glob_rx(g):
     return out
 
 
-_SECRET_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_GLOBS) + r")$")
 _EXCEPT_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_EXCEPT) + r")$")
+# G1.2's `*token*.txt` alone does not hold inside a test folder when `token` is no last part of the name
+# (crafted_tokens.txt, token-prices.txt): such fixtures list tokens (a parser's, a chain's), not a credential, while
+# `token.txt` or `gh-token.txt` there stay secret, and so does anything another pattern matches (a user organization's
+# security keeper through of_capacity, msg 01a1ef27-a8ad, 2026-11-18: a repository's tests/fixtures/crafted_tokens.txt
+# refused every outside run on it)
+_TOKEN_TXT = "*token*.txt"
+_SECRET_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_GLOBS if g != _TOKEN_TXT) + r")$")
+_TOKEN_TXT_RX = re.compile(r"(?:^|/)" + _glob_rx(_TOKEN_TXT) + r"$")
+_FIXTURE_TOKENS_RX = re.compile(r"(?:^|/)(?:tests?|fixtures|testdata)/(?:[^/]+/)*[^/]*token(?:s|[-_])[^/]*\.txt$")
 
 
 def secret_path(path):
     p = (path or "").strip().strip("'\"")
-    return bool(p) and bool(_SECRET_RX.search(p)) and not _EXCEPT_RX.search(p)
+    if not p or _EXCEPT_RX.search(p):
+        return False
+    return bool(_SECRET_RX.search(p)) or (bool(_TOKEN_TXT_RX.search(p)) and not _FIXTURE_TOKENS_RX.search(p))
 
 
 # Claude Code's deny rules win over allow rules, so they cannot carry the guard's exceptions
@@ -610,7 +620,8 @@ def secret_path(path):
 DENY_READ_GLOBS = (".env", ".env.local", ".env.prod", ".env.production", ".env.dev", ".env.development",
                    ".env.staging", ".env.test", "*.pem", "*.key", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", "*.p12", "*.pfx",
                    "*.jks", "*.keystore", ".aws/credentials", ".netrc", "secrets/**",
-                   "*.secret", "*.token", "*token*.txt", "credentials.json", "service-account*.json",
+                   "*.secret", "*.token", "token.txt", "*-token.txt", "*_token.txt", "*.token.txt",
+                   "credentials.json", "service-account*.json",
                    "*.kubeconfig", "kubeconfig*", "*_ed25519", "*_rsa", ".config/of/clickhouse/**",
                    ".config/of/grant_ed25519", ".local/state/of/redact-backup/**", ".config/of/service-accounts/**",
                    "executors.txt", *_CRED_SUFFIXES, *_CLOUD_CACHES)
