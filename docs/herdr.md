@@ -128,9 +128,11 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   key. The listener opens it within a minute of the conductor starting. On a machine set up earlier, pin it beside
   the conductor yourself: `of view add <org> --workspace <the organization's workspace label> --tab conductor
   --positions <org>_conductor --panel questions`, then `of view apply <org>`. Name the view after the organization,
-  as `of init` does: `of view add` replaces a view of the same name. `--panel questions` writes the
+  as `of init` does: `of view add` refuses a name already in use unless given `--replace`, and `--dry-run`
+  prints the view without writing it. `--panel questions` writes the
   command (the panel under `keep`, with the Python and the `bin/` that ran `of view add`) and places `panel:questions`
-  after the positions. Another panel takes its command, `--panel NAME=COMMAND`. A panel opens beside the view's first
+  after the positions. `--panel` takes only built-in panels. The listener runs a view's panels every minute, as the
+  person, so a panel with a command of its own is written into `views.yaml` by the person. A panel opens beside the view's first
   agent with a live pane, so a view whose agents are all down starts no panel (`panel:questions: no live pane; left
   out`). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
   resizes no pane moved within its own tab. When the view's tab does not exist yet and the first agent's own tab in

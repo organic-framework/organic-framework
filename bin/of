@@ -4221,9 +4221,17 @@ def cmd_view(args):
         probs = of_views.check(v, {p["name"] for p in _load_quiet()})
         if probs:
             raise OfError("; ".join(probs))
-        if args.name in by:
-            print(f"replacing the view {args.name} ({by[args.name].get('workspace')}/{by[args.name].get('tab')}: "
-                  f"{', '.join(by[args.name].get('positions') or [])})")
+        if args.name in by:  # never erased by a second add of the same name (of_review on PR 345)
+            was = (f"{by[args.name].get('workspace')}/{by[args.name].get('tab')}: "
+                   f"{', '.join(by[args.name].get('positions') or [])}")
+            if not args.replace:
+                raise OfError(f"a view named {args.name} is already there ({was}): give --replace to replace it, or "
+                              "another name (a view named after its organization, as of init does)")
+            print(f"replacing the view {args.name} ({was})")
+        if args.dry_run:  # the listener applies every view in the file each minute, so a dry run writes nothing
+            print(f"would write the view {args.name}: {v['workspace']}/{v['tab']} {v['layout']} "
+                  f"{', '.join(v['positions'])}" + "".join(f"\n  panel {k}: {c}" for k, c in panels.items()))
+            return 0
         of_views.save([x for x in views if x["name"] != args.name] + [v])
         print(f"view {args.name}: {v['workspace']}/{v['tab']} {v['layout']} {', '.join(v['positions'])}; "
               f"now `of view apply {args.name}`")
@@ -7178,9 +7186,10 @@ def main(argv=None):
     vw.add_argument("--tab")
     vw.add_argument("--layout", choices=["main-left-60", "grid"])
     vw.add_argument("--positions", help="comma-separated, the main one first")
-    vw.add_argument("--panel", action="append", metavar="NAME[=COMMAND]",
-                    help="a panel in the view after the positions (repeatable): `questions` is the questions panel "
-                         "(of asks --panel), any other needs NAME=COMMAND; it opens beside the view's first live agent")
+    vw.add_argument("--panel", action="append", choices=["questions"],
+                    help="a built-in panel in the view after the positions: `questions` is the questions panel "
+                         "(of asks --panel); it opens beside the view's first live agent")
+    vw.add_argument("--replace", action="store_true", help="add: replace a view of the same name")
     vw.add_argument("--dry-run", action="store_true")
     vw.add_argument("--quiet", action="store_true")
     vw.set_defaults(fn=cmd_view)
