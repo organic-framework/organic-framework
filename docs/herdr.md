@@ -77,8 +77,8 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   everything detected meanwhile causes exactly one more run (at most five in a row). A name binding recorded by
   `of apply` has a fixed event id, so repeated runs keep it once. The log is `<state>/herdr-plugin.log`; herdr
   keeps its own (`herdr plugin log list --plugin organic-framework`).
-- **Install and remove.** `of init` runs `of_herdr_plugin.install()`. By hand, run `bin/of_herdr_plugin.py install`
-  with the Python that `of` runs on. It links the folder and writes two files into the plugin's config dir
+- **Install and remove.** `of init` runs `of_herdr_plugin.install()`. By hand, run `python3 bin/of_herdr_plugin.py install`
+  with the Python that `of` runs on (the file has no `#!` line). It links the folder and writes two files into the plugin's config dir
   (`herdr plugin config-dir organic-framework`): `of_home` and `python`, the interpreter it ran under. It is
   idempotent, and it refuses an interpreter without PyYAML before it links anything. `herdr plugin unlink
   organic-framework` removes the plugin. herdr registers plugins for the user, in every session.
@@ -120,14 +120,17 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     An agent opens it beside its pane without moving the person's focus: `herdr pane split "$HERDR_PANE_ID"
     --direction right --no-focus` prints the new pane's id, then `herdr pane run <that id> "of asks --panel"`.
   - For the button and `prefix+a`: OF's herdr plugin linked and the key in herdr's `config.toml`. `of init` does both
-    after the person's yes; by hand the person runs `bin/of_herdr_plugin.py install` and `configure` in a plain
-    terminal. Linking a plugin is the person's act, and the guard refuses `herdr plugin link` from an agent
+    after the person's yes; by hand the person runs `python3 bin/of_herdr_plugin.py install`, then
+    `python3 bin/of_herdr_plugin.py configure`, in a plain terminal, with the Python that `of` runs on. Linking a plugin is the person's act, and the guard refuses `herdr plugin link` from an agent
     (docs/guard.md G19).
 
   `of init` pins it beside the person's conductor when they work in herdr, with the same yes as the plugin and the
   key. The listener opens it within a minute of the conductor starting. On a machine set up earlier, pin it beside
-  the conductor yourself: `of view add <org> --workspace <the organization's workspace label> --tab conductor
-  --positions <org>_conductor --panel questions`, then `of view apply <org>`. Name the view after the organization,
+  the conductor yourself: `of view add <org> --workspace <the workspace the conductor is in> --tab conductor
+  --positions <org>_conductor --panel questions`, then `of view apply <org>`. The workspace is the label of the one that
+  holds the conductor's pane (herdr's Spaces sidebar, or `herdr workspace list`). For an organization with units it
+  is the unit's (`<short>·<unit>`), not the organization's, and a view in another workspace would take the
+  conductor out of its own. Name the view after the organization,
   as `of init` does: `of view add` refuses a name already in use unless given `--replace`, and `--dry-run`
   prints the view without writing it. `--panel questions` writes the
   command (the panel under `keep`, with the Python and the `bin/` that ran `of view add`) and places `panel:questions`
