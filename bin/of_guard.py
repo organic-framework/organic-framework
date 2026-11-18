@@ -160,7 +160,11 @@ _KEY_ANYWHERE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?---
 _NAME_TOKEN = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
 _TYPE_TOKEN = re.compile(r"Opaque|[a-z0-9.-]+/[a-z0-9.-]+")
 # the column names kubectl and its kin print (of_review on PR 332: an upper-case Base32 key passed as a header)
-_HEADERS = frozenset("NAME NAMESPACE TYPE DATA AGE KIND KEY KEYS STATUS CREATED LABELS".split())
+_HEADERS = frozenset("NAME NAMESPACE TYPE DATA AGE KIND STATUS CREATED LABELS".split())
+# a field that names what a column holds as a credential: the file holds values, not names (of_review on PR 332:
+# `name,password` over `demo,public-test-passphrase` passed)
+_CRED_FIELDS = frozenset("password passwd passphrase pass pwd secret secrets token tokens key keys apikey api_key api-key "
+                         "private_key privatekey credential credentials auth pin otp value values".split())
 _COUNT_TOKEN = re.compile(r"\d{1,6}|(?:\d{1,5}[smhdy]){1,3}|-")
 NAMES_LINE_MAX = 8
 # a value in any field: a UUID, 32 or more hex digits, a lower-case run with digits, a Kubernetes bootstrap token
@@ -205,7 +209,7 @@ def _names_list_clean(p):
             continue  # the first non-empty line, made of known column names only
         first = False
         for t in toks:
-            if _VALUE_SHAPE.search(t):
+            if _VALUE_SHAPE.search(t) or t.lower() in _CRED_FIELDS or sum(c.isdigit() for c in t) >= 12:
                 return False  # in any field: a type, a count or a name
             if _COUNT_TOKEN.fullmatch(t) or _TYPE_TOKEN.fullmatch(t):
                 continue
@@ -1093,12 +1097,23 @@ def _option_known(word, opts, flags):
     return True
 
 
-def _unknown_option_tails(words, limit=3):
+# a duration timeout reads with strtod: 2, .5, 1e1, +2, 0x10, inf (of_secrets-review on organic-framework PR 332)
+_TIMEOUT_DURATION = re.compile(r"[+-]?(?:inf(?:inity)?|nan|0[xX][0-9a-fA-F.]+(?:[pP][+-]?\d+)?"
+                               r"|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?", re.I)
+_REDIRECTION = re.compile(r"\d*(?:[<>]{1,2}|&>>?|>&|<&)")
+
+
+def _unknown_option_tails(words, limit=12):
     """When a wrapper's option holds a letter the tables do not know (`sudo -Q root cat <key>`, `xargs -Z n cat`), the
     tails that start at each of the next LIMIT words: any of them may be the command that runs (of_secrets-review on
-    organic-framework PR 332). [] when every option is known."""
+    organic-framework PR 332). [] when every option is known. The line's leading redirections are passed over
+    (`</dev/null taskpolicy -ad x cat <key>`)."""
     i = 0
     while i < len(words):
+        m = _REDIRECTION.match(words[i])
+        if m:  # `< f`, `2>/dev/null`, `</dev/null`: a redirection and its target, not the command
+            i += 1 if m.end() < len(words[i]) else 2
+            continue
         w = _fold_name(os.path.basename(words[i]))
         if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc") or \
                 re.match(r"^[A-Za-z_]\w*=", words[i]):
@@ -1115,11 +1130,43 @@ def _unknown_option_tails(words, limit=3):
             i += 1 + (_opt_takes_next(o, opts, flags) if o.startswith("-") else 0)
         if i < len(words) and words[i] == "--":
             i += 1
-        if w == "timeout" and i < len(words) and re.match(r"^[\d.]+[smhd]?$", words[i]):
+        if w == "timeout" and i < len(words) and _TIMEOUT_DURATION.fullmatch(words[i]):
             i += 1
         if w in _WRAPPER_POSITIONAL:
             i += _WRAPPER_POSITIONAL[w]
     return []
+
+
+def _script_command(opts):
+    """The command string GNU script's -c (or --command) gives, among its options, or None."""
+    for k, o in enumerate(opts):
+        if o in ("-c", "--command") and k + 1 < len(opts):
+            return opts[k + 1]
+        if o.startswith("--command="):
+            return o.split("=", 1)[1]
+        if o.startswith("-") and not o.startswith("--") and o.endswith("c") and k + 1 < len(opts) and \
+                all(f"-{x}" in _WRAPPER_FLAGS["script"] for x in o[1:-1]):
+            return opts[k + 1]
+    return None
+
+
+def _xargs_replstr(opts):
+    """xargs's replacement string among its options (-I X, -IX, -J X, -JX, --replace=X, -i or --replace as {}), or
+    None."""
+    out, k = None, 0
+    while k < len(opts):
+        o = opts[k]
+        if o in ("-I", "-J") and k + 1 < len(opts):
+            out, k = opts[k + 1], k + 2
+            continue
+        if (o.startswith("-I") or o.startswith("-J")) and not o.startswith("--") and len(o) > 2:
+            out = o[2:]
+        elif o.startswith("--replace="):
+            out = o.split("=", 1)[1]
+        elif o in ("-i", "--replace"):
+            out = "{}"
+        k += 1
+    return out
 
 
 def _env_split_cluster(word):
@@ -1145,17 +1192,18 @@ _WRAPPER_VALUE_OPTS = {
     "env": {"-u", "--unset", "-C", "--chdir", "-P"},
     "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
     "caffeinate": {"-t", "-w"}, "chrt": set(), "taskset": set(),
-    "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p"}, "arch": {"-arch", "-e", "-d"}, "script": {"-F", "-t", "-T"},
+    "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p", "-m", "-j", "-P", "-S"}, "arch": {"-arch", "-e", "-d"},
+    "script": {"-t", "-T", "-c", "--command"},
 }
 # the flags (no value) each wrapper knows, so a cluster of them before a value-taking letter is read getopt's way;
 # a letter in neither table stops that reading (of_secrets-review on organic-framework PR 332)
 _WRAPPER_FLAGS = {
     "sudo": frozenset("-A -B -b -E -e -H -i -K -k -l -N -n -P -S -s -V -v".split()),
     "doas": frozenset("-n -s -L".split()), "exec": frozenset("-c -l".split()),
-    "time": frozenset("-p -l -a -h -v -q -V".split()), "timeout": frozenset(["-v"]),
+    "time": frozenset("-p -l -a -h -v -q -V".split()), "timeout": frozenset("-v -f -p --foreground --preserve-status --verbose".split()),
     "xargs": frozenset("-0 -o -p -r -t -x".split()), "env": frozenset("-0 -i -v".split()),
     "ionice": frozenset(["-t"]), "caffeinate": frozenset("-d -i -m -s -u".split()),
-    "taskpolicy": frozenset("-b -B".split()), "script": frozenset("-a -d -e -k -p -q -r".split()),
+    "taskpolicy": frozenset("-b -B -a -s -x -X".split()), "script": frozenset("-a -d -e -F -f -k -p -q -r".split()),
 }
 
 
@@ -1220,13 +1268,25 @@ def _command_words_of(words):
         elif w in _WRAPPERS or w == "timeout":
             i += 1
             opts = _WRAPPER_VALUE_OPTS.get(w, ())
-            while i < len(words) and (words[i].startswith("-") or (w == "timeout" and words[i][:1].isdigit())):
+            start = i
+            while i < len(words) and (words[i].startswith("-") or (w == "timeout" and _TIMEOUT_DURATION.fullmatch(words[i]))):
                 if words[i] == "--":
                     i += 1
                     break
                 i += 1 + _opt_takes_next(words[i], opts, _WRAPPER_FLAGS.get(w, frozenset()))
-            if w == "timeout" and i < len(words) and re.match(r"^[\d.]+[smhd]?$", words[i]):
-                i += 1  # `timeout -- 2 cat`: the duration after `--` (of_secrets-review on PR 332)
+            if w == "timeout" and i < len(words) and _TIMEOUT_DURATION.fullmatch(words[i]):
+                i += 1  # `timeout -- 2 cat`, `-- 1e1`, `-- +2`: the duration after `--` (of_secrets-review on PR 332)
+            if w == "xargs" and i < len(words) and words[i] == _xargs_replstr(words[start:i]):
+                # `echo cat | xargs -J X X <key>`: the utility is the replacement string, so the command comes from
+                # input and no name rule sees it; its arguments are judged as a reader's (of_secrets-review on PR 332)
+                words = words[:i] + ["cat"] + words[i + 1:]
+            cmd_string = _script_command(words[start:i]) if w == "script" else None
+            if cmd_string is not None:
+                try:  # GNU `script -c '<command>' <file>`: the string is the command line, as env -S gives one
+                    words, i = shlex.split(cmd_string), 0
+                    continue
+                except ValueError:
+                    pass
             if w in _WRAPPER_POSITIONAL and i < len(words):
                 i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
@@ -3044,8 +3104,8 @@ _REMOTE_BODY = [0]
 # on it is judged by this machine's content (G1.8.1): `ssh h python3 - <<'PY' … open('<names list>') …` reads the other
 # machine's (of_review on organic-framework PR 332)
 _LINE_REMOTE = [False]
-_REMOTE_LINE = re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|()]*/)?(?:ssh|autossh|docker|podman|nerdctl|kubectl|crictl|limactl"
-                          r"|lima|multipass|vagrant|orbctl|orb)(?=[\s;&|)]|$)", re.I)
+_REMOTE_LINE = re.compile(r"(?<![\w-])(?:ssh|autossh|docker|podman|nerdctl|kubectl|crictl|limactl|lima|multipass"
+                          r"|vagrant|orbctl|orb)(?![\w-])", re.I)
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
 _REDIR_CTX = [None]  # (folder, line variables) of the simple command _bash_deny reads, for its `<` targets (G0.9)
 
