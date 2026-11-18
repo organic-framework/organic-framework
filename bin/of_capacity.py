@@ -644,40 +644,42 @@ def record_training(harness, training, account, source, emit=None, cards=None, d
     (emit or of_events.emit)("harness_training", payload)
 
 
-def training_cards_problems(org, doc, cards=None, prefix=None):
+def training_cards_problems(org, doc, cards=None, prefix=None, docs=None):
     """`of registry check`'s lines for an organization's `training_cards`: a mapping of a known harness to a card id
-    that resolves to a task in this organization (its card prefix), as the listener's asks view holds it (of_architect,
-    PR 334). An unknown harness, a malformed id, a card of another organization, or one that is no task is a problem."""
+    that resolves, in the listener's asks view, to a task for the owner's hands, filed in this organization (card_org)
+    or one its own organization names for the same harness, as training_cards_named counts it at run time (of_architect
+    and a user organization's structure keeper, PR 334). Anything else is a problem."""
     tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
     if tc is None:
         return []
     where = f"{org}:registry/positions.yaml: training_cards"
     if not isinstance(tc, dict):
         return [f"{where}: a mapping of a harness to a card id, e.g. {{codex: OF-27}}"]
+    docs = {org: doc} if docs is None else docs
+    pre = str(prefix or _card_prefix(org, doc)).upper()
+    try:
+        cards = _asks(cards)
+    except Exception:  # noqa: BLE001 - no store here: the card cannot be resolved
+        cards = []
     out = []
-    pre = str(prefix or of_events.card_prefix(org)).upper()
-    if cards is None:
-        try:
-            import of_asks
-            cards = of_asks.current_asks().get("asks") or []
-        except Exception:  # noqa: BLE001 - no store here: the card cannot be resolved
-            cards = []
     for h, ref in tc.items():
         if h not in TRAINING_HARNESSES:
             out.append(f"{where}.{h}: not a harness this machine reads ({', '.join(TRAINING_HARNESSES)})")
             continue
-        m = of_events.REF_RE.match(str(ref or "").strip())
-        if not m:
+        if not of_events.REF_RE.match(str(ref or "").strip()):
             out.append(f"{where}.{h}: {ref!r} is no card id (like {pre}-27)")
-            continue
-        if m.group(1).upper() != pre:
-            out.append(f"{where}.{h}: {ref} is not a card of {org} (its cards are {pre}-…)")
             continue
         card = next((a for a in cards if str(a.get("ref") or "").upper() == str(ref).strip().upper()), None)
         if not card:
             out.append(f"{where}.{h}: no card {ref} in the asks")
-        elif not card.get("task"):
+            continue
+        if not card.get("task"):
             out.append(f"{where}.{h}: {ref} is a question, not a task for the owner's hands")
+            continue
+        own = card_org(card, docs)
+        if own != org and not (own and _raw_training_cards(h, docs).get(own) == str(ref).strip().upper()):
+            out.append(f"{where}.{h}: {ref} is {own or 'no listed organization'}'s card, and "
+                       f"{'it does not name it for ' + h if own else 'none can be placed'}")
     return out
 
 
@@ -694,7 +696,7 @@ def training_registry_problems(docs=None, cards=None):
         if not isinstance(doc, dict) or doc.get("training_cards") is None:
             continue
         pre = str(_card_prefix(o, doc)).upper()
-        out += training_cards_problems(o, doc, cards, prefix=pre)
+        out += training_cards_problems(o, doc, cards, prefix=pre, docs=docs)
         if len(claims.get(pre, [])) > 1:
             out.append(f"{o}:registry/positions.yaml: training_cards: card prefix {pre} is also "
                        f"{', '.join(x for x in sorted(claims[pre]) if x != o)}'s, so its card ids are ambiguous; set "
