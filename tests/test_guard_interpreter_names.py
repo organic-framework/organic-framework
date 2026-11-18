@@ -70,6 +70,21 @@ class InterpreterNames(unittest.TestCase):
         for cmd in ("sudo -u root ls", "stdbuf -i0 cat notes.txt", "xargs -I{} echo {}", 'echo $"hello"'):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_a_cluster_is_read_only_while_every_letter_is_known(self):
+        """of_secrets-review on organic-framework PR 332, fourth pass: the cluster reading had taken the command for a
+        value where a letter was missing from the table."""
+        k = "~/.ssh/id_ed25519"
+        for cmd in (f"xargs -tJn cat {k}", f"env -iSX=u cat {k}", f"xargs -J n cat {k}", f"env -iS 'cat {k}'",
+                    f"env -iS'cat {k}'", f"env -iScat {k}", f"sudo -nR / cat {k}", f"timeout -- 2 cat {k}",
+                    f"sudo -Qu root cat {k}", f"time -lo /dev/null cat {k}", f"timeout -vs TERM -- 2 cat {k}",
+                    f"timeout -vs TERM -- .5 cat {k}"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in (f"sudo -Q root cat {k}", f"xargs -Z n cat {k}", f"nice -Zq 5 cat {k}"):  # letters no table knows
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("sudo -nu root ls", "xargs -0 -n1 echo", "env -i PATH=/bin ls", "timeout -- 2 ls",
+                    "sudo -Q root ls notes.txt"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_the_abi_suffixes(self):
         for name in ("python3.7m", "python3.12d", "python3.7dm", "pythonw3.12"):
             self.assertEqual(of_guard._interpreter_name(name), "python3", name)

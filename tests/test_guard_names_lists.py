@@ -67,7 +67,9 @@ class NamesLists(unittest.TestCase):
                      "data:\n  signer: c2hvcnQxMjM=\n",
                      # of_review on organic-framework PR 332, third pass
                      "registry/0123456789abcdef0123456789abcdef\n", "12345678901234567890123456789012d\n",
-                     "\ndemo ABCDEFGHIJKLMNOP\n", "ABCDEFGHIJKLMNOP\n", "abcdef.abcdefghijklmnop\n"):
+                     "\ndemo ABCDEFGHIJKLMNOP\n", "ABCDEFGHIJKLMNOP\n", "abcdef.abcdefghijklmnop\n",
+                     # of_review on organic-framework PR 332, fourth pass
+                     "NAME DATA AGE\ndemo 1000000 100000d\n", "portal 12345678\n", "-".join(["123456"] * 8) + "\n"):
             p = self.put("evm-secret-names.txt", text)
             self.assertTrue(deny("cat " + p), text[:30])
             self.assertTrue(of_guard.critical_deny("Read", {"file_path": p}), text[:30])
@@ -85,6 +87,9 @@ class NamesLists(unittest.TestCase):
         p = self.put("evm-secret-names.txt", "demo\n")
         self.assertIsNone(deny("grep -q demo " + p))
         self.assertTrue(deny("ssh somehost grep -q demo " + p))
+        code = "print(open('" + p + "').read())"
+        self.assertIsNone(deny("python3 - <<'PY'\n" + code + "\nPY"))                # here: the content is checked
+        self.assertTrue(deny("ssh somehost python3 - <<'PY'\n" + code + "\nPY"))     # there: another machine's
 
     def test_the_deny_without_names_is_unchanged(self):
         p = self.put("evm-secret-names.txt", "evm-signer  Opaque\n")
