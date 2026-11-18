@@ -2077,6 +2077,10 @@ class ToolProfiles(unittest.TestCase):
                 config_dirs=lambda: [ez, cl], live_sessions=lambda d: [], dir_of_position=lambda p, s: cl,
                 account_of=lambda d: "x@example.com",
                 mcp_servers=lambda d, now=None, run=None: self.servers("/ez" if d == ez else "/cl")):
+            for d in (ez, cl):  # installed on both; signed in on /cl only
+                os.makedirs(os.path.join(d, "plugins"))
+                with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
+                    json.dump({"version": 2, "plugins": {"slack@anthropic-plugin-directory": [{}]}}, fh)
             self.assertEqual([i for i, _ in of_capacity.missing_signins("aws", ez)], ["acme/slack"])
             self.assertEqual(of_capacity.missing_signins("aws", cl), [])
             self.assertEqual(of_capacity.missing_signins("plain", ez), [])  # no bound tool: nothing changes
@@ -2151,54 +2155,82 @@ class Stay(unittest.TestCase):
 
 
 class Restore(unittest.TestCase):
-    """2026-11-18: a rescue of 11-17 19:50Z put a user organization's cloud keeper on an account without its Cloudflare; it ran there 14
-    hours and its daily token watch failed, while ~/.claude had the tool and room from 22:05Z. Nothing moved it back:
-    fill and relief only avoid an account without a session's tools."""
-    NOW = Rescue.NOW
-    POS = [{"name": n, "holder": {"session": n}} for n in ("cf", "k8s_keeper", "of_conductor")]
-    NEEDS = {"cf": {"plugin:cloudflare"}, "k8s_keeper": {"plugin:cloudflare"}, "of_conductor": {"plugin:cloudflare"}}
+    """2026-11-18: a rescue of 11-17 19:50Z put a user organization's cloud keeper on an account without its Cloudflare;
+    it ran there 14 hours and its daily token watch failed, while another account had the tool and room from 22:05Z.
+    Nothing moved it back: fill and relief only avoid an account without a session's tools. Restore holds its target
+    to fill's tests and to tools read present there (of_review, PR 325)."""
+    NOW = Balance.NOW
+    POS = [{"name": n, "holder": {"session": n}} for n in ("cf", "k8s_keeper", "of_conductor", "busy1")]
 
-    def seen(self, gg=(), ap=("plugin:cloudflare",)):
-        return {"/gg": of_capacity.account_tools(None, set(gg)), "/ap": of_capacity.account_tools(None, set(ap)),
-                "/mm": of_capacity.account_tools(None, {"plugin:cloudflare"}), "/cl": of_capacity.account_tools(None, set())}
+    def setUp(self):
+        self.b = Balance()
+        self.b.setUp()
 
-    def plan(self, rows=None, status="idle", who="cf", pol=None, seen=None, skip=()):
-        sess = {"/gg": [{"session": who, "status": status}], "/ap": [], "/mm": [], "/cl": []}
-        return of_capacity.restore_plan(rows or Rescue().rows(), sess, self.POS, pol or dict(POLICY), self.NOW,
-                                        skip=skip, tools=(self.NEEDS, seen or self.seen()))
+    def seen(self, ez=("plugin:cloudflare",), cl=()):
+        return {"/ez": of_capacity.account_tools(None, set(ez)) if ez is not None else None,
+                "/cl": of_capacity.account_tools(None, set(cl)), "/gg": of_capacity.account_tools(None, set(ez or ()))}
 
-    def test_a_holder_without_its_tool_goes_back_to_one_that_has_it(self):
+    def plan(self, who="cf", status="idle", rows=None, seen=None, needs=None, rates=None, pol=None, skip=(),
+             stopped=(), contexts=None, wcalib=None, ez_sessions=()):
+        sess = {"/ez": list(ez_sessions), "/cl": [{"session": who, "status": status}], "/gg": []}
+        return of_capacity.balance_plan(
+            rows or self.b.rows(), sess, self.POS, dict({who: 3}, **(rates or {})), {"/ez": 12.0, "/cl": 12.0},
+            pol or dict(POLICY), self.NOW, skip=skip, contexts=contexts, wcalib=wcalib, stopped=stopped,
+            connectors=(needs or {who: {"plugin:cloudflare"}}, seen or self.seen()))
+
+    def restores(self, m):
+        return [(x["position"], x["from"], x["to"]) for x in m if x["reason"].startswith("restore")]
+
+    def test_a_holder_without_its_tool_goes_back_to_one_that_holds_it(self):
         m = self.plan()
-        self.assertEqual([(x["position"], x["from"], x["to"]) for x in m], [("cf", "/gg", "/ap")])
-        self.assertTrue(m[0]["reason"].startswith("restore: cloudflare missing on /gg; /ap has all it uses"))
+        self.assertEqual(self.restores(m), [("cf", "/cl", "/ez")])  # its $3/h is under min_rate: fill leaves it
+        self.assertEqual(m[0]["reason"], "restore: cloudflare missing on /cl; /ez holds all it uses and has room")
         self.assertEqual(of_capacity.balance_why(m[0]["reason"]),
                          "cloudflare (a tool your position uses) was missing on the old account; this one has it "
                          "signed in.")
 
-    def test_only_an_idle_holder_with_a_tool_missing_and_a_target_that_takes_work(self):
-        self.assertEqual(self.plan(status="busy"), [])
-        self.assertEqual(self.plan(seen=self.seen(gg=("plugin:cloudflare",))), [])  # it has the tool where it runs
-        self.assertEqual(self.plan(seen=self.seen(ap=())), [])  # only /mm has it, and /mm refuses work
-        self.assertEqual(self.plan(skip={"cf"}), [])  # moved lately, or its move failed
-        rows = Rescue().rows()
-        rows[2]["windows"]["seven_day"]["utilization"] = 97  # /ap has it but is about to stop
-        self.assertEqual(self.plan(rows=rows), [])
-        unknown = dict(self.seen(), **{"/gg": None})  # what /gg has is unknown: no move on a guess
-        self.assertEqual(self.plan(seen=unknown), [])
+    def test_only_a_target_read_to_hold_every_tool(self):
+        self.assertEqual(self.restores(self.plan(seen=self.seen(ez=None))), [])  # no reading at all
+        unread = dict(self.seen(), **{"/ez": of_capacity.account_tools({"Slack"}, None)})  # plugins unreadable
+        self.assertEqual(self.restores(self.plan(seen=unread)), [])
+        self.assertEqual(self.restores(self.plan(seen=self.seen(ez=()))), [])  # read, and without it
+        needs = {"cf": {"bound:acme/cf"}}
+        seen = {"/cl": {"bound:known"}, "/ez": {"bound:acme/cf"}, "/gg": None}  # claude mcp list did not answer on /ez
+        self.assertEqual(self.restores(self.plan(needs=needs, seen=seen)), [])
+        seen["/ez"] = {"bound:acme/cf", "bound:known"}
+        self.assertEqual(self.restores(self.plan(needs=needs, seen=seen)), [("cf", "/cl", "/ez")])
+        unknown = dict(self.seen(), **{"/cl": None})  # what it has where it runs is unknown: no move on a guess
+        self.assertEqual(self.restores(self.plan(seen=unknown)), [])
+        self.assertEqual(self.restores(self.plan(seen=self.seen(cl=("plugin:cloudflare",)))), [])  # nothing missing
 
-    def test_production_and_stay_positions_stay(self):
-        self.assertEqual(self.plan(who="k8s_keeper"), [])
-        self.assertEqual(self.plan(who="of_conductor", pol=dict(POLICY, stay=["of_conductor"])), [])
+    def test_the_target_passes_fill_tests(self):
+        # its week reaches week_max within relief_ahead_h at its load: relief's own stall, so no target
+        rows = self.b.rows(e_week_reset_h=90)
+        rows[0]["windows"]["seven_day"]["utilization"] = 90
+        m = self.plan(rows=rows, rates={"busy1": 40}, wcalib={"/ez": 26.0},
+                      ez_sessions=[{"session": "busy1", "status": "busy"}])
+        self.assertEqual(self.restores(m), [])
+        self.assertEqual(self.restores(self.plan(contexts={"cf": 20_000_000})), [])  # a $160 resume over the $120 cap
+        self.assertEqual(self.restores(self.plan(rates={"cf": 500})), [])  # its rate over the target's room
+        rows = self.b.rows()
+        rows[0]["windows"]["seven_day"]["utilization"] = 97
+        self.assertEqual(self.restores(self.plan(rows=rows)), [])
 
-    def test_decide_leaves_a_stopped_session_to_rescue_and_fill_does_not_move_it_again(self):
-        rows = Rescue().rows()
-        sess = {"/gg": [{"session": "cf", "status": "idle"}], "/ap": [], "/mm": [], "/cl": []}
-        m = of_capacity.decide(rows, sess, self.POS, {"cf": 50}, {}, dict(POLICY), self.NOW,
-                               connectors=(self.NEEDS, self.seen()))
+    def test_never_busy_production_stay_resting_or_stopped(self):
+        self.assertEqual(self.restores(self.plan(status="busy")), [])
+        self.assertEqual(self.restores(self.plan(who="k8s_keeper")), [])
+        self.assertEqual(self.restores(self.plan(who="of_conductor", pol=dict(POLICY, stay=["of_conductor"]))), [])
+        self.assertEqual(self.restores(self.plan(skip={"cf"})), [])  # moved lately, or its move failed
+        self.assertEqual(self.restores(self.plan(stopped={"cf"})), [])  # rescue and the wake take a stopped one
+
+    def test_decide_leaves_a_stopped_session_to_rescue(self):
+        sess = {"/ez": [], "/cl": [{"session": "cf", "status": "idle"}], "/gg": []}
+        args = (self.b.rows(), sess, self.POS, {"cf": 3}, {"/ez": 12.0, "/cl": 12.0}, dict(POLICY), self.NOW)
+        conn = ({"cf": {"plugin:cloudflare"}}, self.seen())
+        m = of_capacity.decide(*args, connectors=conn)
         self.assertEqual([(x["position"], x["reason"][:8]) for x in m], [("cf", "restore:")])
-        m = of_capacity.decide(rows, sess, self.POS, {"cf": 50}, {}, dict(POLICY), self.NOW,
-                               stopped={"cf": self.NOW - 600}, connectors=(self.NEEDS, self.seen()))
-        self.assertNotIn("restore", " ".join(x["reason"] for x in m))
+        m = of_capacity.decide(*args, stopped={"cf": self.NOW - 600}, connectors=conn)
+        self.assertEqual([(x["position"], x["to"], x["reason"][:7]) for x in m], [("cf", "/ez", "rescue:")])
 
 
 class PluginOfAnotherMarketplace(unittest.TestCase):
