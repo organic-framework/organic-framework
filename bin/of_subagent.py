@@ -921,6 +921,10 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     head = base = repo = None
     if checkout:
         checkout = os.path.realpath(os.path.expanduser(checkout))
+        # the snapshot is always the whole repository from its root: git archive run in a subfolder exports that
+        # subfolder alone with its paths made relative, so an anchored exclude ('ops/production.yml') missed
+        # (of_review on PR 334)
+        checkout = os.path.realpath(_git(checkout, "rev-parse", "--show-toplevel").strip() or checkout)
         head, base = resolve(checkout, at, diff)
         repo = repo_of(checkout)
     if gates:
