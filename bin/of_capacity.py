@@ -3853,7 +3853,8 @@ def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, 
     PR 318). rows: status(); sessions: {dir: live_sessions(dir)}. Returns [(name, result)]."""
     agents = {sid: p for p in positions or []
               for sid in [((p.get("holder") or {}).get("session") or "").strip()]
-              if sid and ((p.get("holder") or {}).get("runtime") or "claude-code") in ("claude-code", "claude")}
+              if sid and ((p.get("holder") or {}).get("runtime") or "claude-code") in ("claude-code", "claude")
+              and not resting(p)}  # a parked position's stopped session stays stopped
     now = now or time.time()
     agent, read = agent or _agent_by_session, read or _pane_lines
     keys = keys or (lambda pane, k: _herdr("pane", "send-keys", pane, k))
@@ -4979,6 +4980,16 @@ def blocked_until(r, now):
     return until if until > now else 0.0
 
 
+RESTING = ("parked", "finished")  # a position's registry status under which its session is no balancer's work
+
+
+def resting(p):
+    """Whether position `p` is parked or finished: its session is not moved (fill, relief, restore, rescue) nor woken.
+    2026-11-18: on the founder's OF-31 answer a user organization parked 27 positions to 11-23 whose sessions stayed
+    live; a move or a wake would only spend a resume on them."""
+    return str((p or {}).get("status") or "").split("#")[0].strip() in RESTING
+
+
 def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None):
     """Pure. The invariant (founder, 2026-11-10): no session stands on a usage limit while another account accepts
     work. `stopped`: {session: epoch of its limit stop}, read from its transcript (limit_stop), an observation. A
@@ -5041,7 +5052,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
             p = pos_by_session.get(s["session"])
             is_stopped = s["session"] in stopped
             if not (is_stopped or doomed) or not p or s.get("status") not in ("idle", "shell", "waiting") \
-                    or s["session"] in skip:
+                    or s["session"] in skip or resting(p):
                 continue
             cands.append((not is_stopped, p["name"] not in policy["hold"], priority_tier(p, policy),
                           stopped.get(s["session"], until), p["name"], s["session"], d))
@@ -5271,7 +5282,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
             p = pos_by_session.get(s["session"])
             held = bool(p) and p["name"] in policy["hold"]
             if not p or (held and not relief) or p["name"] in (policy.get("stay") or ()) \
-                    or s.get("status") not in ok or s["session"] in skip:
+                    or s.get("status") not in ok or s["session"] in skip or resting(p):
                 continue
             out.append((rates.get(s["session"], 0.0), p["name"], s["session"]))
         return sorted(out, key=lambda x: (x[1] not in policy["hold"], tier(x[1]), -x[0], x[1]))

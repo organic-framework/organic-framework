@@ -2425,6 +2425,32 @@ class StartFolder(unittest.TestCase):
             self.assertEqual(glob.glob(os.path.join(d, "projects", "*", "s1.jsonl")), [out[0]])
 
 
+
+class Resting(unittest.TestCase):
+    """2026-11-18: on the founder's OF-31 answer a user organization parked 27 positions to 11-23, their sessions still
+    live; the balancer neither moves nor wakes them."""
+
+    def test_fill_relief_and_rescue_leave_a_parked_position(self):
+        b = Balance()
+        b.setUp()
+        rows = b.rows()
+        sess = {"/cl": [], "/ez": [], "/gg": [{"session": "aws", "status": "idle"}]}
+        for status, n in (("active", 1), ("parked", 0), ("finished", 0), ("parked   # to 2026-11-23", 0)):
+            pos = [{"name": "aws", "holder": {"session": "aws"}, "status": status}]
+            m = of_capacity.balance_plan(rows, sess, pos, {"aws": 50}, {"/ez": 12.0, "/cl": 12.0}, dict(POLICY), Balance.NOW)
+            self.assertEqual(len(m), n, status)
+        r = Rescue()
+        pos = [dict(p, status="parked") if p["name"] == "st1" else p for p in r.POS]
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW)
+        self.assertNotIn("st1", [x["position"] for x in m])
+
+    def test_a_parked_positions_stopped_session_is_not_woken(self):
+        w = WakeStopped()
+        out, pressed, typed, _ = w.run_it(w.DIALOG, positions=[{"name": "sec", "holder": {"session": "s1"},
+                                                                  "status": "parked"}])
+        self.assertEqual((pressed, typed), ([], []))
+
+
 class ConnectorsCache(unittest.TestCase):
     def test_a_plugin_installed_after_the_list_was_cached_reads_it_again(self):
         from unittest import mock
