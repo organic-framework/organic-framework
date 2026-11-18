@@ -3121,6 +3121,23 @@ def cmd_asks(args):
 
 # ----------------------------------------------------------------- server
 
+def _server_yaml_tls(cert, port):
+    """Add `tls:` to ~/.config/of/server.yaml when it has none; True when added. The key sits beside the certificate."""
+    path = os.path.expanduser("~/.config/of/server.yaml")
+    text = ""
+    if os.path.exists(path):
+        with open(path) as fh:
+            text = fh.read()
+        if re.search(r"^tls:", text, re.M):
+            return False
+    key = os.path.join(os.path.dirname(cert), "server.key")
+    block = (f"tls:  # docs/server-several-machines.md 4.8, by `of server tls-init`\n  port: {int(port)}\n"
+             f"  cert: {json.dumps(cert)}\n  key: {json.dumps(key)}\n")
+    with open(path, "a") as fh:
+        fh.write(("" if not text or text.endswith("\n") else "\n") + block)
+    return True
+
+
 def cmd_server(args):
     import of_server
     if args.action == "start" or (args.action == "run" and args.daemon):
@@ -3139,6 +3156,13 @@ def cmd_server(args):
         return 0
     if args.action == "watchdog":  # one check; launchd runs it every minute (docs/server.md, "On this Mac")
         return 0 if of_server.watchdog() in ("ok", "failing", "waiting", "restarted") else 1
+    if args.action == "tls-init":
+        cert, _, sha = of_server.tls_init(of_server.load_config(), port=args.tls_port or of_server.TLS_PORT)
+        added = _server_yaml_tls(cert, args.tls_port or of_server.TLS_PORT)
+        print(f"TLS listener's certificate: {cert} (SHA-256 {sha}); "
+              + ("server.yaml now has tls:; restart the server to open the listener"
+                 if added else "server.yaml names tls: already, left as it is"))
+        return 0
     if args.action == "enroll-machine":
         import of_client
         import of_events
@@ -5914,6 +5938,24 @@ def cmd_machines(args):
 
 def cmd_enroll(args):
     import of_client
+    if getattr(args, "pin", None):  # the server's certificate, to trust it alone (docs/server-several-machines.md 4.8)
+        if not args.server.startswith("https:"):
+            raise OfError("--pin is for an https server")
+        import ssl
+        with open(os.path.expanduser(args.pin)) as fh:
+            pem = fh.read()
+        try:
+            ssl.PEM_cert_to_DER_cert(pem)
+        except ValueError:
+            raise OfError(f"--pin {args.pin}: not a PEM certificate") from None
+        dest = of_client.pin_path(args.server)
+        os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(pem)
+        print(f"pinned the server's certificate for {args.server} in {dest}")
+    if args.code == "-":  # out of the process arguments, which other users of the machine can list
+        import getpass
+        args.code = getpass.getpass("invite code: ").strip()
     c = of_client.Client(args.server)
     terms = c.terms()
     print(TIERS_TEXT)
@@ -7295,7 +7337,8 @@ def main(argv=None):
     mc.set_defaults(fn=cmd_machines)
     en = sub.add_parser("enroll", help="join organizations on a server with an invite code")
     en.add_argument("server")
-    en.add_argument("--code", required=True)
+    en.add_argument("--code", required=True, help="the invite code, or - to type it without echo")
+    en.add_argument("--pin", help="an https server's certificate file: trust that certificate alone")
     en.add_argument("--org", action="append", required=True)
     en.add_argument("--raw", action="append", help="send the raw tier for this organization (otherwise asked; default no)")
     en.add_argument("--yes", "-y", action="store_true", help="do not ask; raw only where --raw says so")
@@ -7309,11 +7352,13 @@ def main(argv=None):
     sv = sub.add_parser("server", help="of-server: run, start, stop, install, uninstall, watchdog, enroll-machine, "
                                        "revoke, status (docs/server.md)")
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
+                                       "tls-init",
                                        "revoke", "status", "export-secret-key"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key")
     sv.add_argument("--machine-id")
+    sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
     sv.add_argument("--org", action="append", help="an organization the machine joins (repeat)")
     sv.add_argument("--raw-org", action="append", help="an organization whose raw tier the person consented to")

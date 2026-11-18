@@ -123,6 +123,28 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
                                 "Cloudflare Access this usually means the machine's service token was refused)")
 
 
+def pin_path(url):
+    """Where this machine keeps the certificate it pins for an https server: ~/.config/of/servers/<host>_<port>.pem
+    (docs/server-several-machines.md 4.8)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(url)
+    return os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{u.port or 443}.pem")
+
+
+def tls_context(url):
+    """The TLS context for an https server: only its pinned certificate when this machine pins one (never the
+    system's CAs then), else the system's verified default."""
+    import ssl
+    pin = pin_path(url)
+    if not os.path.exists(pin):
+        return ssl.create_default_context()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)  # verifies the peer and its name
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_verify_locations(cafile=pin)
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN  # the pinned certificate itself is the trust anchor
+    return ctx
+
+
 def urlopen_no_redirect(req, timeout=None, context=None):
     """urllib.request.urlopen with redirects refused."""
     handlers = [_NoRedirect()] + ([urllib.request.HTTPSHandler(context=context)] if context is not None else [])
@@ -219,8 +241,7 @@ class Client:
         secret = dict(access_headers(self.url), **({"Authorization": f"Bearer {token}"} if token else {}))
         for k, v in secret.items():
             req.add_unredirected_header(k, v)
-        import ssl
-        ctx = ssl.create_default_context() if self.url.startswith("https:") else None  # certificates always verified
+        ctx = tls_context(self.url) if self.url.startswith("https:") else None  # certificates always verified
         # Every endpoint is idempotent on retry (batch_id, msg_id, acks, PUTs), except POST /v1/enroll
         # (a single-use code: 410 on a retry after a lost response means it probably went through)
         # and the minting endpoints (a retry mints another code; only the last one is shown).

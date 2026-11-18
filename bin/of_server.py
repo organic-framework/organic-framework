@@ -77,6 +77,11 @@ DEFAULTS = {
     # /v1/health without authentication: counts and errors on a local server; on a public
     # ingress only {ok, version}.
     "health_detail": True,
+    # {port, cert, key}: a second listener, TLS only, on `host`, for clients that reach this server through a forward
+    # (docs/server-several-machines.md 4.8): they trust only its pinned certificate, so a process that takes the
+    # forwarded port while the forward is down gets no bearer, batch or code. Its /v1/health answers {ok, version}.
+    # `of server tls-init` makes the certificate and adds this. Absent: no second listener.
+    "tls": None,
     # ClickHouse for the storage plugin: {url, user, password_file}; `<db>_ingest.password`
     # files sit next to password_file. Absent: the client's ship.yaml (the founder's Mac).
     "clickhouse": None,
@@ -1277,7 +1282,8 @@ def make_handler(app):
                         t0 = time.monotonic()
                     try:
                         h = health(app.store, app.writer)
-                        self._send(200, h if app.cfg.get("health_detail", True) else {"ok": h["ok"], "version": VERSION})
+                        detail = app.cfg.get("health_detail", True) and not getattr(self.server, "forwarded", False)
+                        self._send(200, h if detail else {"ok": h["ok"], "version": VERSION})
                     finally:  # an answer its client no longer waited for is the slowest kind (of_review, PR 142)
                         app.health_checks.answered(time.monotonic() - t0)  # server.health, as answered
                     return None
@@ -1814,6 +1820,67 @@ class Server(ThreadingHTTPServer):
             self._accepted = {}
         return self._accepted
 
+
+class TLSServer(Server):
+    """The listener for forwarded clients (cfg `tls`): TLS 1.2 or later; each handshake runs in its request's own
+    thread, so a slow or silent client never holds up the accept loop."""
+    forwarded = True
+    HANDSHAKE_S = 30
+
+    def __init__(self, address, handler, cert, key):
+        import ssl
+        super().__init__(address, handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(os.path.expanduser(cert), os.path.expanduser(key))
+        self.socket = ctx.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
+
+    def finish_request(self, request, client_address):
+        import ssl
+        try:
+            request.settimeout(self.HANDSHAKE_S)
+            request.do_handshake()
+            request.settimeout(None)
+        except (ssl.SSLError, OSError):
+            return
+        super().finish_request(request, client_address)
+
+
+TLS_DIR = "tls"
+TLS_PORT = 18201
+
+
+def tls_init(cfg, port=TLS_PORT, run=subprocess.run):
+    """Make the second listener's key and self-signed certificate (P-256, for 127.0.0.1) under the state folder.
+    Returns (cert path, key path, SHA-256 of the certificate's DER). An existing pair is kept, never replaced: every
+    client pins this certificate."""
+    import hashlib
+    import ssl
+    d = os.path.join(os.path.expanduser(cfg["state_dir"]), TLS_DIR)
+    cert, key = os.path.join(d, "server-cert.pem"), os.path.join(d, "server.key")
+    if not (os.path.exists(cert) and os.path.exists(key)):
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        conf = os.path.join(d, "req.cnf")
+        with open(conf, "w") as fh:
+            fh.write("[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n[dn]\nCN = of-server\n"
+                     "[ext]\nsubjectAltName = IP:127.0.0.1\nbasicConstraints = critical,CA:TRUE,pathlen:0\n"
+                     "keyUsage = critical,digitalSignature,keyCertSign\nextendedKeyUsage = serverAuth\n"
+                     "subjectKeyIdentifier = hash\n")
+        old = os.umask(0o077)
+        try:
+            r = run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                     "-days", "3650", "-config", conf, "-keyout", key, "-out", cert], capture_output=True, text=True)
+        finally:
+            os.umask(old)
+            os.remove(conf)
+        if r.returncode != 0:
+            raise RuntimeError(f"openssl could not make the certificate: {(r.stderr or '').strip()[-300:]}")
+        os.chmod(key, 0o600)
+        os.chmod(cert, 0o644)
+    with open(cert) as fh:
+        der = ssl.PEM_cert_to_DER_cert(fh.read())
+    return cert, key, hashlib.sha256(der).hexdigest()
+
     def handle_error(self, request, client_address):
         """A reply to a client that had already gone (it timed out, slept, lost its network) is counted and said once
         a minute; any other error is logged with its time and traceback."""
@@ -1925,6 +1992,13 @@ class App:
         return of_grants.verify_request(self._grants, key, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                         grant_id, subject, action)
 
+    def serve_tls(self):
+        """The second listener (cfg `tls`), or None when it is not configured."""
+        t = self.cfg.get("tls")
+        if not t:
+            return None
+        return TLSServer((self.cfg["host"], int(t.get("port") or TLS_PORT)), make_handler(self), t["cert"], t["key"])
+
     def serve(self, host=None, port=None):
         httpd = Server((host or self.cfg["host"], self.cfg["port"] if port is None else port), make_handler(self))
         self.writer.start()
@@ -1956,6 +2030,10 @@ def run(log=None, config=None):
     httpd = app.serve()
     log(f"of-server {VERSION} listening on {httpd.server_address[0]}:{httpd.server_address[1]}, "
         f"state {app.cfg['state_dir']}")
+    tls_httpd = app.serve_tls()  # docs/server-several-machines.md 4.8
+    if tls_httpd is not None:
+        threading.Thread(target=tls_httpd.serve_forever, daemon=True, name="of-server-tls").start()
+        log(f"of-server: TLS for forwarded clients on {tls_httpd.server_address[0]}:{tls_httpd.server_address[1]}")
     # SIGTERM (launchd, Kubernetes): stop accepting, let requests in flight answer, then exit.
     signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=httpd.shutdown, daemon=True).start())
     pid_file = os.path.join(app.cfg["state_dir"], "server.pid")
@@ -1983,6 +2061,9 @@ def run(log=None, config=None):
     finally:
         restart_now = restart.is_set()
         restart.set()
+        if tls_httpd is not None:
+            tls_httpd.shutdown()
+            tls_httpd.server_close()
         app.writer.terminate()
         httpd.server_close()
         if pid_file and not restart_now:

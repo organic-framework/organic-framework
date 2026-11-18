@@ -38,7 +38,7 @@ class ForwardTest(unittest.TestCase):
 
     def test_ssh_never_uses_an_agent_and_ends_on_a_failed_forward(self):
         argv = F.ssh_argv("alex@192.0.2.10", self.key)
-        self.assertEqual(argv[:4], ["/usr/bin/ssh", "-N", "-R", "127.0.0.1:18200:127.0.0.1:18200"])
+        self.assertEqual(argv[:4], ["/usr/bin/ssh", "-N", "-R", "127.0.0.1:18200:127.0.0.1:18201"])  # to TLS
         opts = {argv[i + 1] for i, a in enumerate(argv) if a == "-o"}
         for o in ("IdentityAgent=none", "IdentitiesOnly=yes", "BatchMode=yes", "ForwardAgent=no",
                   "ExitOnForwardFailure=yes", "ServerAliveInterval=30", "ServerAliveCountMax=3"):
@@ -53,9 +53,15 @@ class ForwardTest(unittest.TestCase):
         self.assertTrue(u["KeepAlive"])
         self.assertTrue(u["StandardErrorPath"].startswith(self.home))
 
-    def test_the_hosts_line_allows_this_forward_only(self):
+    def test_the_hosts_line_and_block_allow_this_forward_only(self):
         self.assertEqual(F.authorized_line("ssh-ed25519 AAAAexample of-forward\n"),
-                         'restrict,port-forwarding,permitlisten="127.0.0.1:18200" ssh-ed25519 AAAAexample of-forward')
+                         'restrict,port-forwarding,permitlisten="127.0.0.1:18200",command="/usr/bin/false" '
+                         'ssh-ed25519 AAAAexample of-forward')
+        block = F.sshd_block("of-forward")
+        for line in ("Match User of-forward", "AllowTcpForwarding remote", "PermitListen 127.0.0.1:18200",
+                     "PermitOpen none", "AllowStreamLocalForwarding no", "GatewayPorts no", "PermitTTY no",
+                     "MaxSessions 0", "ForceCommand /usr/bin/false"):
+            self.assertIn(line, block)
 
     def test_dry_run_writes_nothing_and_install_loads_the_unit(self):
         run, shown = Run(), []
@@ -63,6 +69,7 @@ class ForwardTest(unittest.TestCase):
         self.assertEqual(run.calls, [])
         self.assertFalse(os.path.exists(F.agent_path(self.home)))
         self.assertTrue(any('permitlisten="127.0.0.1:18200"' in s for s in shown))
+        self.assertTrue(any("Match User alex" in s for s in shown))
         F.install("alex@192.0.2.10", self.key, home=self.home, run=run, out=shown.append)
         with open(F.agent_path(self.home), "rb") as fh:
             self.assertEqual(plistlib.load(fh)["ProgramArguments"][-1], "alex@192.0.2.10")
