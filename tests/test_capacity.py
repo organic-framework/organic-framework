@@ -533,6 +533,12 @@ class PlanAndWatch(unittest.TestCase):
             of_capacity.watch(pos, ask, log=lambda m: None, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # a new reset period: ask again
             self.assertNotEqual(asked[1][1], event_id)
+            # a contour that files no account cards (docs/contours.md: the other contour's balancer does)
+            of_capacity.save_cache({})
+            rows[0]["windows"]["seven_day"]["resets_at"] = "2026-11-22T09:00:00Z"
+            self.assertEqual(of_capacity.watch(pos, ask, log=lambda m: None, fresh=True,
+                                               policy={"account_cards": False}, **kw), [])
+            self.assertEqual(len(asked), 2)
 
     def test_threshold_id_uses_the_window_and_falls_back_to_the_dir(self):
         import of_events

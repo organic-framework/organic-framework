@@ -4029,8 +4029,12 @@ def watch(positions, ask, log=print, policy=None, **kw):
     owner once per account, window and reset when a position's account passes a threshold. With the balancer
     on (`auto`), only when no other account is under its thresholds: otherwise relief moves the positions
     before the account stalls, and the ask had nothing left to decide (2026-11-14: the founder answered three
-    such asks with "is it everywhere?" and "no longer relevant?")."""
+    such asks with "is it everywhere?" and "no longer relevant?"). A contour whose capacity.yaml says
+    `account_cards: false` reads capacity and files none: with every account shared by two contours, an account's
+    card comes from one balancer only (of_architect, message 01a1f0ab-c6bc, docs/contours.md)."""
     rows = status(positions, **kw)
+    if (policy or load_policy()).get("account_cards") is False:
+        return []
     auto = (policy or load_policy()).get("auto")
     cache = load_cache()
     done = set(cache.get("_proposed") or [])
@@ -6024,6 +6028,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
             if kind == "event":
                 of_events.emit("capacity_stall", x)
                 continue
+            if kind == "pool" and policy.get("account_cards") is False:
+                continue  # the pool is the shared accounts': its question comes from one contour only (watch)
             if not to:
                 if kind == "self" and kind in carded:
                     continue  # one card per run names every stalled session

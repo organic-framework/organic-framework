@@ -166,6 +166,8 @@ Why: **budget left in a window at its reset is lost, so spend first what resets 
 
 **Two machines on one account.** The probe reads the account's windows, so thresholds, rescue and the forecast include both machines' use. Positions, busy counts and per-session $/h stay local. Each balancer moves only its own holders. A threshold card has one ID per account, window and reset, with the config path as fallback for an unknown account. Each move onto the target that the coordination feed reports from the past 15 minutes costs one `rescue_step` in rescue. Relief and fill reserve the rate of the first local holder they would move there for each remote arrival.
 
+**Two contours on one set of accounts** (the founder, card `OF-102`: every account signed in under both contours; of_architect, message `01a1f0ab-c6bc`, docs/contours.md). Each contour's balancer moves only its own sessions and shares no capacity events with the other, so a double fill in one run is accepted and the next run moves the overflow back. An account's threshold card and the pool question go to the owner from one contour only: the other contour's `capacity.yaml` says `account_cards: false`, and its balancer then files only what concerns its own sessions (a stuck move, a sign-in, its own sessions standing on a limit).
+
 ### The invariant: no session stands on a limit while another account accepts work (design, 2026-11-11)
 
 **Founder, 2026-11-10 ~20:10Z:** "my session hit its 5-hour limit. Why is nobody rebalancing it to another account?" (hand-over 2759a172 from of_conductor).
