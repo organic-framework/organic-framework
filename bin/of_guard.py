@@ -174,14 +174,19 @@ CODE_READS = "code that names a secret file in a string"
 
 
 def _code_reads(lit):
-    """G8's reason: the string it matched, as written, and what to do when it is no file the code reads (a user
-    organization's structure keeper, msg 01a1ecc1-40a4: a filter word was denied as a read, and the reason did not say
-    which string it was, so the agent reshaped the string instead of reporting it)."""
-    shown = lit if len(lit) <= 120 else lit[:117] + "..."
+    """G8's reason: the name it matched, said to be a string in the code, and what to do when it is no file the code
+    reads (a user organization's structure keeper, msg 01a1ecc1-40a4: a filter word was denied as a read, and the agent
+    reshaped the string instead of reporting it). The name is the string's last path part, as in every other read's
+    reason, so a URL's or a path's other parts stay out of it (of_review on organic-framework PR 323: a credential in a
+    URL's user part reached the recorded reason); the report goes to the agent's own structure keeper (the same
+    review: framework matters come through it, AGENTS.md)."""
+    shown = os.path.basename(lit.rstrip("/")) or lit
+    shown = shown if len(shown) <= 120 else shown[:117] + "..."
     return (f"{CODE_READS}: {shown!r} (docs/guard.md G8). Secrets stay in their files; ask the owner if you need a "
-            "value. In python a string the code only compares or searches for is a filter, not a read, when the code "
-            "lists no folder, runs no command and opens files only by literal names; if this string is no file the "
-            "code reads, report the command to of_server rather than reshape the string"), lit
+            "value. In python a string the code only compares or searches for is a filter, not a read, when every "
+            "call in the code is on G8's short list (string, list, csv, json, re, sys.stdin) and it opens files only by "
+            "plain literal names; if this string is no file the code reads, report the command to your structure "
+            "keeper rather than reshape the string"), lit
 
 
 # G1.13 and G0.9 (2026-11-18; a user organization's security owner through its structure keeper, msg 01a1eb16-9ebf): a
@@ -572,65 +577,127 @@ def _lang(word):
 # python one-liner searched a names-only secrets register for one credential kind, `if '<kind>' in row`, and was denied
 # as reading a secret file by that name. A string the code only compares or searches for is a filter: an operand of
 # `in`, `not in`, `==` or `!=` (alone or in a tuple, list or set), an argument of a string's own search (startswith,
-# endswith, find, index, count, removeprefix…), the pattern of `re` or `fnmatch`, a `case` value. It is no read when the
-# code cannot reach a file by a name it computes, since then the filter picks no file: it lists no folder, runs no
-# command, makes no code at run time, and opens a file only by a literal (which is checked as a path itself).
+# endswith, find, index, count, removeprefix…), the pattern of `re` or `fnmatch`, a `case` value. It is no read when
+# nothing in the code can reach a file by a name it computes, since then the filter picks no file. That is told by a
+# known list, not by a list of what reaches a file (of_secrets-review on organic-framework PR 323: such a list missed
+# netrc, dotenv, configparser, linecache, toml, archive members and methodcaller): every name, attribute and call in
+# the code is on it, and a file is opened only as `open('<literal>')` or `Path('<literal>').read_text()`, with no `$`
+# or backtick in the literal, which the shell fills in before python runs (the same review). Anything else keeps the
+# deny, as it was before.
 _PY_STR_SEARCH = {"startswith", "endswith", "find", "rfind", "index", "rindex", "count", "removeprefix",
                   "removesuffix", "__contains__"}
 _PY_RE_CALLS = {"search", "match", "fullmatch", "findall", "finditer", "sub", "subn", "split", "compile"}
 _PY_FN_CALLS = {"fnmatch", "fnmatchcase", "filter"}
-_PY_REACH = {"listdir", "scandir", "walk", "fwalk", "glob", "iglob", "iterdir", "rglob", "system", "run", "call",
-             "check_call", "check_output", "getoutput", "getstatusoutput", "startfile", "pty", "shutil", "fileinput",
-             "eval", "__import__", "importlib", "getattr", "globals", "locals", "vars", "__builtins__", "builtins",
-             "__dict__", "__getattribute__", "ctypes", "cffi", "copyfile"}
-_PY_REACH_PART = ("subprocess", "spawn", "exec", "popen")  # also inside a longer name: create_subprocess_exec, Popen
-_PY_OPENERS = {"open", "ZipFile", "TarFile", "FileIO", "fdopen", "connect", "load_workbook", "loadtxt", "genfromtxt",
-               "fromfile", "imread", "urlopen", "urlretrieve"}
-# modules whose opener takes the file's name first (`io.open(name)`, `pd.read_csv(name)`); any other receiver is an
-# object whose own name is opened (`Path(name).open('r')`, `ZipFile(z).open(name)`), so that object and the call must
-# both be a literal's
-_PY_FILE_MODULES = {"io", "os", "codecs", "gzip", "bz2", "lzma", "tarfile", "zipfile", "sqlite3", "json", "csv", "yaml",
-                    "pd", "pandas", "np", "numpy", "openpyxl", "imageio", "cv2"}
+_PY_BUILTINS = frozenset((
+    "print len sum min max sorted reversed enumerate zip range any all list dict set frozenset tuple str int float "
+    "bool repr abs round map filter isinstance ord chr hex format divmod input iter next slice bytes hash "
+    "id type callable Exception ValueError KeyError IndexError TypeError AttributeError StopIteration OSError "
+    "FileNotFoundError RuntimeError UnicodeDecodeError").split())
+_PY_MODULES = {
+    "csv": frozenset("reader DictReader writer DictWriter QUOTE_ALL QUOTE_MINIMAL QUOTE_NONE excel excel_tab".split()),
+    "json": frozenset("load loads dump dumps JSONDecodeError".split()),
+    "re": frozenset("search match fullmatch findall finditer sub subn split compile escape I IGNORECASE M MULTILINE "
+                    "S DOTALL X VERBOSE A ASCII error".split()),
+    "fnmatch": frozenset("fnmatch fnmatchcase filter translate".split()),
+    "sys": frozenset("stdin stdout stderr argv exit".split()),
+    "collections": frozenset("Counter defaultdict OrderedDict namedtuple deque".split()),
+    "itertools": frozenset("groupby chain islice count takewhile dropwhile product combinations permutations "
+                           "zip_longest accumulate".split()),
+}
+# methods of what those give: a string, a list, a dict, a set, a Counter, a file opened by a literal or sys.stdin, a
+# csv reader or writer, a regular expression and its match
+_PY_METHODS = frozenset((
+    "lower upper strip lstrip rstrip split rsplit splitlines join replace startswith endswith find rfind index rindex "
+    "count partition rpartition removeprefix removesuffix casefold title capitalize isdigit isalpha isalnum isspace "
+    "isupper islower zfill ljust rjust center encode decode expandtabs format "
+    "append extend insert pop remove sort reverse copy get items keys values setdefault update add discard union "
+    "intersection difference clear most_common elements "
+    "read readline readlines write writerow writerows writeheader flush close fieldnames "
+    "group groups groupdict span start end pattern search match fullmatch findall finditer sub subn").split())
+_PY_PATH_READS = frozenset(("read_text", "read_bytes", "open"))
+
+
+def _py_plain(node):
+    """A literal python sees as written: a constant with no `$`, backtick or `$( )` (which the parser shows as
+    __OFSUB__), all of which the shell fills in first."""
+    import ast as _ast
+    return isinstance(node, _ast.Constant) and not (isinstance(node.value, str) and
+                                                    re.search(r"[$`]|__OFSUB", node.value))
 
 
 def _py_reaches(tree, parent):
-    """Can python code (its ast; PARENT maps each node to its parent) reach a file by a name it computes? A listing, a
-    command, code made at run time, an opener used other than by a direct call (`o = open`, `map(open, names)`), or
-    an open of anything but a literal."""
+    """Can python code (its ast; PARENT maps each node to its parent) reach anything the guard does not know? True
+    unless every name, attribute and call in it is on G8's known list and it opens files only by plain literals."""
     import ast as _ast
+    import builtins as _builtins
+    modules, path_names, bound = {}, set(), set()
     for n in _ast.walk(tree):
-        names = []
-        if isinstance(n, _ast.Name):
-            names = [n.id]
-        elif isinstance(n, _ast.Attribute):
-            names = [n.attr]
-        elif isinstance(n, (_ast.Import, _ast.ImportFrom)):
-            names = [p for a in n.names for p in a.name.split(".")] + (getattr(n, "module", None) or "").split(".")
-        if any(x in _PY_REACH or any(w in x.lower() for w in _PY_REACH_PART) for x in names if x):
-            return True
-        if names and (names[0] in _PY_OPENERS or names[0].startswith("read_")) and not isinstance(n, (
-                _ast.Import, _ast.ImportFrom)):
-            p = parent.get(n)
-            if not (isinstance(p, _ast.Call) and p.func is n):
-                return True  # the opener itself handed on: what it opens is not seen
-        if isinstance(n, _ast.Call):
-            f = n.func
-            fname, recv = (f.id, None) if isinstance(f, _ast.Name) else (f.attr, f.value) if isinstance(
-                f, _ast.Attribute) else ("", None)
-            if fname not in _PY_OPENERS and not fname.startswith("read_"):
-                continue
-            if recv is None or (isinstance(recv, _ast.Name) and recv.id in _PY_FILE_MODULES):
-                if not n.args or not isinstance(n.args[0], _ast.Constant):
+        if isinstance(n, _ast.Import):
+            for a in n.names:
+                if a.name == "pathlib":
+                    path_names.add(("module", a.asname or a.name))
+                elif a.name in _PY_MODULES:
+                    modules[a.asname or a.name] = a.name
+                else:
                     return True
-            elif not (isinstance(recv, _ast.Call) and _py_literal_call(recv) and _py_literal_call(n)):
+        elif isinstance(n, _ast.ImportFrom):
+            for a in n.names:
+                if n.module == "pathlib" and a.name == "Path" and not n.level:
+                    path_names.add(("class", a.asname or a.name))
+                elif n.level or n.module not in _PY_MODULES or a.name not in _PY_MODULES[n.module]:
+                    return True
+                else:
+                    bound.add(a.asname or a.name)
+        elif isinstance(n, _ast.Name) and not isinstance(n.ctx, _ast.Load):
+            bound.add(n.id)
+        elif isinstance(n, _ast.arg):
+            bound.add(n.arg)
+        elif isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+            bound.add(n.name)
+        elif isinstance(n, _ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        elif isinstance(n, (getattr(_ast, "MatchAs", ()), getattr(_ast, "MatchStar", ()))) and n.name:
+            bound.add(n.name)
+    names = bound | set(modules) | {x for _, x in path_names}
+    if any(x.startswith("__") or (x in vars(_builtins) and x not in _PY_BUILTINS) for x in names):
+        return True  # `eval = print` after an eval, `import csv as open`, a dunder
+
+    def path_class(f):  # Path or pathlib.Path
+        return ((isinstance(f, _ast.Name) and ("class", f.id) in path_names) or
+                (isinstance(f, _ast.Attribute) and f.attr == "Path" and isinstance(f.value, _ast.Name) and
+                 ("module", f.value.id) in path_names))
+
+    def plain_call(c):
+        return isinstance(c, _ast.Call) and all(_py_plain(a) for a in c.args) and all(
+            k.arg and _py_plain(k.value) for k in c.keywords)
+
+    for n in _ast.walk(tree):
+        p = parent.get(n)
+        called = isinstance(p, _ast.Call) and p.func is n
+        if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Load):
+            if n.id == "open" or ("class", n.id) in path_names:
+                if not (called and plain_call(p)):
+                    return True
+            elif ("module", n.id) in path_names:
+                if not (isinstance(p, _ast.Attribute) and path_class(p)):
+                    return True
+            elif n.id not in names and n.id not in _PY_BUILTINS:
+                return True
+        elif isinstance(n, _ast.Attribute):
+            if n.attr.startswith("_"):
+                return True
+            if path_class(n):
+                if not (called and plain_call(p)):
+                    return True
+            elif isinstance(n.value, _ast.Name) and n.value.id in modules:
+                if n.attr not in _PY_MODULES[modules[n.value.id]]:
+                    return True
+            elif n.attr in _PY_PATH_READS and isinstance(n.value, _ast.Call) and path_class(n.value.func):
+                if not (called and plain_call(p) and plain_call(n.value)):
+                    return True
+            elif n.attr not in _PY_METHODS:
                 return True
     return False
-
-
-def _py_literal_call(call):
-    """`Path('<literal>')`: a call whose every argument is a literal."""
-    import ast as _ast
-    return all(isinstance(a, _ast.Constant) for a in call.args) and not call.keywords
 
 
 def _py_filters(code):

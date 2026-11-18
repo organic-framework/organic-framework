@@ -1068,7 +1068,7 @@ def _permission_answer(hook):
     hit = critical_deny(hook.get("tool_name"), hook.get("tool_input"), hook.get("cwd"))
     if hit:
         decision = {"behavior": "deny", "message": f"Organic Framework critical deny: {hit[0]}."}
-        answered = {"by": "guard", "behavior": "deny", "reason": hit[0][:200], "mode": mode}
+        answered = {"by": "guard", "behavior": "deny", "reason": mask(hit[0])[:200], "mode": mode}
     else:
         decision = {"behavior": "allow"}
         answered = {"by": "guard", "behavior": "allow", "mode": mode}
@@ -1133,7 +1133,8 @@ def _guard(hook, sess):
         try:
             write("mandate_check", {"verdict": "warn", "decision": "admit", "mode": "enforce",
                                     "router_version": __import__("of_router").VERSION, "tool_name": hook.get("tool_name"),
-                                    "reason": why, "subject": mask(str(token))[:300]}, hook, sess, _guard_index())
+                                    "reason": mask(why), "subject": mask(str(token))[:300]}, hook, sess,
+                                   _guard_index())
         except (SystemExit, Exception):
             pass
         return
@@ -1152,7 +1153,7 @@ def _guard(hook, sess):
         index = _guard_index()
         write("mandate_check", {"verdict": "critical", "decision": "deny", "mode": "enforce",
                                 "router_version": __import__("of_router").VERSION, "tool_name": hook.get("tool_name"),
-                                "reason": why, "subject": mask(str(subject))[:300]}, hook, sess, index)
+                                "reason": mask(why), "subject": mask(str(subject))[:300]}, hook, sess, index)
     except (SystemExit, Exception):
         pass
 

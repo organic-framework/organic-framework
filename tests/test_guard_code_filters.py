@@ -86,6 +86,58 @@ class CodeFilterTest(unittest.TestCase):
         ):
             self.assertTrue(deny(py(code)), code)
 
+    def test_a_literal_the_shell_fills_in_is_no_literal(self):
+        # of_secrets-review on organic-framework PR 323: bash substitutes into a double-quoted -c or an unquoted
+        # heredoc before python runs, so open('$f') opens whatever the loop names
+        for cmd in (
+                "for f in *; do python3 -c \"if '$f'.endswith('.env'): print(open('$f').read())\"; done",
+                "python3 - <<EOF\nif '.env' in '$1': print(open('$1').read())\nEOF",
+                "python3 -c \"if '.env' in 'x': print(open('$(ls | head -1)').read())\"",
+                "python3 -c \"import pathlib\nif '.env' in 'x': print(pathlib.Path('`ls`').read_text())\"",
+        ):
+            self.assertTrue(deny(cmd), cmd)
+
+    def test_only_known_calls_keep_the_carve_out(self):
+        # of_secrets-review on organic-framework PR 323: a list of what reaches a file missed the readers of the very
+        # files the filter words name; only code whose every name, attribute and call is known keeps the carve-out
+        for code in (
+                "import netrc, sys\nfor l in sys.stdin:\n    if l.strip().endswith('.netrc'): print(netrc.netrc(l.strip()).hosts)",
+                "import sys\nfrom dotenv import dotenv_values\nfor l in sys.stdin:\n"
+                "    if l.strip().endswith('.env'): print(dotenv_values(l.strip()))",
+                "import configparser, sys\nfor l in sys.stdin:\n    if '.env' in l:\n"
+                "        c = configparser.ConfigParser(); c.read(l.strip()); print(dict(c['default']))",
+                "import linecache, sys\nfor l in sys.stdin:\n    if l.strip().endswith('.pem'): print(linecache.getlines(l.strip()))",
+                "import toml, sys\nfor l in sys.stdin:\n    if '.env' in l: print(toml.load(l.strip()))",
+                "import zipfile\nz = zipfile.ZipFile('kit.zip')\nfor n in z.namelist():\n    if n.endswith('.pem'): print(z.read(n))",
+                "import tarfile\nt = tarfile.open('kit.tgz')\nfor m in t.getmembers():\n"
+                "    if m.name.endswith('.pem'): print(t.extractfile(m).read())",
+                "import operator, pathlib, sys\nfor l in sys.stdin:\n"
+                "    if '.env' in l: print(operator.methodcaller('read_text')(pathlib.Path(l.strip())))",
+                # a dangerous builtin rebound after its call, a dunder walk, a path built from a literal one
+                "import sys\nif '.env' in sys.argv: eval(sys.stdin.read())\neval = print",
+                "import sys\nif '.env' in sys.argv: print(''.__class__.__mro__)",
+                "import sys, pathlib\np = pathlib.Path('/etc')\nif '.env' in sys.argv: print((p / sys.argv[1]).read_text())",
+                "import csv as open, sys\nif '.env' in sys.argv: print(1)",
+                # of_review on organic-framework PR 323: more readers, and a computed name moved under a literal one
+                "import runpy, sys\nfor l in sys.stdin:\n    if l.strip().endswith('.env'): runpy.run_path(l.strip())",
+                "import xml.etree.ElementTree as E, sys\nfor l in sys.stdin:\n"
+                "    if l.strip().endswith('.env'): print(E.parse(l.strip()))",
+                "import os, sys\nfor l in sys.stdin:\n"
+                "    if l.strip().endswith('.env'): os.symlink(l.strip(), 'x'); print(open('x').read())",
+        ):
+            self.assertTrue(deny(py(code)), code)
+        for code in (  # what a filter over data still does
+                "import csv, sys\nfor r in csv.DictReader(open('register.csv')):\n"
+                "    if r.get('kind', '').lower() in ('kubeconfig', '.env'): print(r['id'], r['name'][:40])",
+                "import json, sys\nd = json.load(sys.stdin)\n"
+                "print(len(d), sorted(k for k in d if k.endswith('.pem')))",
+                "import re, sys, collections\nc = collections.Counter(m.group(0) for m in "
+                "re.finditer(r'kubeconfig|token', sys.stdin.read()))\nprint(c.most_common(3))",
+                "import sys\nfrom pathlib import Path\nfor l in Path('register.txt').read_text().splitlines():\n"
+                "    if l.endswith('.env'): print(l)",
+        ):
+            self.assertIsNone(deny(py(code)), code)
+
     def test_a_slip_in_the_reading_keeps_the_deny(self):
         from unittest import mock
         code = "import sys\nfor l in sys.stdin:\n    if 'kubeconfig' in l: print(l)"
@@ -102,6 +154,13 @@ class CodeFilterTest(unittest.TestCase):
         self.assertIn("G8", why)
         self.assertIn("filter", why)
         self.assertTrue(of_guard.owns_advice(why))  # its advice is its own, with the owner's line kept
+        self.assertIn("your structure keeper", why)
+        self.assertNotIn("of_server", why)
+        # only the name's last part: a credential in a URL's user part stays out (of_review on organic-framework PR 323)
+        token = "ghp_" + "Ab3" * 12
+        why = of_guard._code_reads(f"https://x:{token}@h.example/repo/.env")[0]
+        self.assertIn("'.env'", why)
+        self.assertNotIn(token, why)
         self.assertIn("ask the owner", why)
         # a shell reader keeps its own wording
         self.assertIn("reads a secret file (id_rsa)", deny("cat ~/.ssh/id_rsa")[0])
