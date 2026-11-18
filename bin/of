@@ -2127,6 +2127,9 @@ def cmd_who(args):
 def _server_warning():
     """One line about of-server's queue: dead batches, a failing writer, a backlog draining or stuck."""
     import urllib.request
+    import of_client
+    if of_client.pinned_url("http://127.0.0.1:18200").startswith("https:"):
+        return None  # a machine behind the forward: whoever answers plain http there is not the server (4.8)
     try:
         with urllib.request.urlopen("http://127.0.0.1:18200/v1/health", timeout=1) as r:
             h = json.loads(r.read())

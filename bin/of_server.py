@@ -1821,6 +1821,22 @@ class Server(ThreadingHTTPServer):
         return self._accepted
 
 
+    def handle_error(self, request, client_address):
+        """A reply to a client that had already gone (it timed out, slept, lost its network) is counted and said once
+        a minute; any other error is logged with its time and traceback."""
+        e = sys.exc_info()[1]
+        if isinstance(e, CLIENT_GONE):
+            Server.gone += 1
+            Server.gone_since = Server.gone_since or stamp()
+            if time.time() - Server.gone_said >= 60:
+                log_line(f"{Server.gone} replies to clients that had gone (broken pipe, reset, timeout) since "
+                         f"{Server.gone_since}; the last: {type(e).__name__}")
+                Server.gone, Server.gone_since, Server.gone_said = 0, None, time.time()
+            return
+        log_line(f"error in a request from {client_address[0] if client_address else '?'}:")
+        traceback.print_exc()
+
+
 class TLSServer(Server):
     """The listener for forwarded clients (cfg `tls`): TLS 1.2 or later; each handshake runs in its request's own
     thread, so a slow or silent client never holds up the accept loop."""
@@ -1880,21 +1896,6 @@ def tls_init(cfg, port=TLS_PORT, run=subprocess.run):
     with open(cert) as fh:
         der = ssl.PEM_cert_to_DER_cert(fh.read())
     return cert, key, hashlib.sha256(der).hexdigest()
-
-    def handle_error(self, request, client_address):
-        """A reply to a client that had already gone (it timed out, slept, lost its network) is counted and said once
-        a minute; any other error is logged with its time and traceback."""
-        e = sys.exc_info()[1]
-        if isinstance(e, CLIENT_GONE):
-            Server.gone += 1
-            Server.gone_since = Server.gone_since or stamp()
-            if time.time() - Server.gone_said >= 60:
-                log_line(f"{Server.gone} replies to clients that had gone (broken pipe, reset, timeout) since "
-                         f"{Server.gone_since}; the last: {type(e).__name__}")
-                Server.gone, Server.gone_since, Server.gone_said = 0, None, time.time()
-            return
-        log_line(f"error in a request from {client_address[0] if client_address else '?'}:")
-        traceback.print_exc()
 
 
 class BadCodes:

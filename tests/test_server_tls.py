@@ -76,6 +76,22 @@ class TLSTest(unittest.TestCase):
         self.assertEqual(os.stat(self.key).st_mode & 0o777, 0o600)
         self.assertEqual(len(self.sha), 64)
 
+    def test_plain_http_to_a_pinned_address_is_taken_as_https(self):
+        port = self.srv.server_address[1]
+        plain = f"http://127.0.0.1:{port}"
+        self.assertEqual(of_client.Client(plain).url, plain)  # no pin: as given
+        self.pin(self.cert)
+        self.assertEqual(of_client.Client(plain + "/").url, self.url)  # the relay's default, a fallback, no server:
+        self.assertEqual(of_client.Client("http://127.0.0.1:1").url, "http://127.0.0.1:1")  # another port: as given
+        c = of_client.Client(plain)
+        self.assertEqual(c.url, self.url)
+        with urllib.request.urlopen(c.url + "/", timeout=10, context=of_client.tls_context(c.url)) as r:
+            self.assertTrue(json.loads(r.read())["ok"])
+
+    def test_the_server_keeps_its_error_handler(self):
+        self.assertIn("handle_error", of_server.Server.__dict__)  # PR 350: it had been moved into tls_init
+        self.assertTrue(issubclass(of_server.TLSServer, of_server.Server))
+
     def test_a_silent_client_does_not_hold_the_listener(self):
         import socket
         quiet = socket.create_connection(("127.0.0.1", self.srv.server_address[1]))  # never starts a handshake
