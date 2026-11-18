@@ -189,5 +189,44 @@ class KeeperCheckTest(unittest.TestCase):
         with self.assertRaises(of_access.AccessError):
             of_access.record_approval(self.root, "acme-vault", "acme_obs", "item:abc", "../x", rec)
 
+    def test_the_five_points_of_the_review_of_pr_357(self):
+        """of_secrets-review on organic-framework PR 357 at 6e867cf."""
+        line = self.approve("acme-vault", self.vault_line())
+        # (1) an unknown kind serves nothing
+        self.assertIn("no keeper kind", self.check("acme-vault", "vaults", line))
+        # (2) a browser keeper with no money-site list serves nothing; a payment site is money at least
+        site = self.approve("acme-web", self.vault_line(access="site:pay.example.com", actions=["download"],
+                                                         limit={"per_period": {"amount": 20, "unit": "downloads",
+                                                                               "period": "P1D"}}), rid="w1")
+        self.assertIn("pins no money-site list", self.check("acme-web", "browser", site))
+        self.assertIn("payment or banking site", self.check("acme-web", "browser", site, money_sites={"example.com"}))
+        self.assertIsNone(self.check("acme-web", "browser", site, money_sites={"bank.example.org"}))
+        # (3) a revocation log that cannot be read whole raises, so the keeper's sources count as unreadable
+        log = of_keeper.RevocationLog(os.path.join(self.root, "k", "revocations.jsonl"))
+        log.observe([self.grant()])
+        with open(log.path, "a") as fh:
+            fh.write('{"grant": "g-2", "rev')                          # a torn record
+        with self.assertRaises(OSError):
+            log.revoked()
+        with open(log.path, "w") as fh:
+            fh.write("")                                                # truncated below its count
+        with self.assertRaises(OSError):
+            log.revoked()
+        # (4) a line removed and added again does not come back on its old approval
+        alog = of_keeper.ApprovalLog(os.path.join(self.root, "k", "approvals.jsonl"))
+        self.assertEqual(alog.observe_lines("acme-vault", [line]), set())
+        self.assertEqual(alog.observe_lines("acme-vault", []), {"r1"})       # the line is gone
+        self.assertEqual(alog.observe_lines("acme-vault", [line]), {"r1"})   # added again: still withdrawn
+        self.assertIn("removed since", self.check("acme-vault", "vault", line, withdrawn={"r1"}))
+        # (5) amounts are exact and finite
+        for bad in (float("nan"), float("inf"), "1e3", True, -1, 0):
+            self.assertTrue(of_access.limit_shape({"per_call": {"amount": bad, "unit": "wei"}}), bad)
+        wei = {"per_call": {"amount": 10 ** 18, "unit": "wei"}}
+        self.assertIn("above the grant", of_access.limit_within({"per_call": {"amount": 10 ** 18 + 1, "unit": "wei"}}, wei))
+        self.assertIsNone(of_access.limit_within({"per_call": {"amount": "0.5", "unit": "ETH"}},
+                                                 {"per_call": {"amount": 0.5, "unit": "ETH"}}))
+        self.assertIn("not a finite number", of_access.limit_within({"per_call": {"amount": float("nan"),
+                                                                                  "unit": "wei"}}, wei))
+
 if __name__ == "__main__":
     unittest.main()

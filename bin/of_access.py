@@ -86,6 +86,21 @@ def _write_list(path, doc):
     os.replace(tmp, path)
 
 
+def amount(v):
+    """An amount as an exact Decimal, or None: an integer, a decimal string, or a finite float as written; never a
+    bool, NaN or an infinity (of_secrets-review on PR 357: as floats NaN passed every bound, and 1e18 + 1 wei equalled
+    1e18). Write large amounts as integers or strings: YAML reads 1.5e18 as a float, exact only as far as a float is."""
+    import decimal
+    if isinstance(v, bool):
+        return None
+    try:
+        d = decimal.Decimal(v) if isinstance(v, int) else decimal.Decimal(repr(v)) if isinstance(v, float) else \
+            decimal.Decimal(str(v).strip()) if isinstance(v, str) and re.fullmatch(r"\s*\d+(?:\.\d+)?\s*", v) else None
+    except decimal.InvalidOperation:
+        return None
+    return d if d is not None and d.is_finite() else None
+
+
 def _limit_problems(limit, kind):
     out = []
     need = KINDS[kind]["limit"] if kind in KINDS else ()
@@ -100,9 +115,9 @@ def _limit_problems(limit, kind):
         if not isinstance(v, dict):
             out.append(f"limit.{k} is a mapping with amount and unit")
             continue
-        amount = v.get("amount")
-        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount <= 0:
-            out.append(f"limit.{k}.amount is a number above 0")
+        a = amount(v.get("amount"))
+        if a is None or a <= 0:
+            out.append(f"limit.{k}.amount is a finite number above 0: an integer or a decimal string")
         if not isinstance(v.get("unit"), str) or not v["unit"].strip():
             out.append(f"limit.{k}.unit is a word, such as ETH or calls")
         if k == "per_period" and not (isinstance(v.get("period"), str) and PERIOD_RE.match(v["period"])):
@@ -127,11 +142,11 @@ def limit_within(line, bound):
         if not isinstance(b, dict) or v.get("unit") != b.get("unit") or (k == "per_period" and v.get("period")
                                                                           != b.get("period")):
             return f"the line's {k} is in another unit or period than the grant's"
-        try:
-            if float(v.get("amount")) > float(b.get("amount")):
-                return f"the line's {k} {v.get('amount')} {v.get('unit')} is above the grant's {b.get('amount')}"
-        except (TypeError, ValueError):
-            return f"the line's or the grant's {k} amount is not a number"
+        la, ba = amount(v.get("amount")), amount(b.get("amount"))
+        if la is None or ba is None:
+            return f"the line's or the grant's {k} amount is not a finite number"
+        if la > ba:
+            return f"the line's {k} {v.get('amount')} {v.get('unit')} is above the grant's {b.get('amount')}"
     for k in line:
         if k not in bound:
             return f"the line's {k} is a part the grant does not cap"
@@ -152,6 +167,8 @@ def entry_problems(kind, e, positions, grant_ids=None, resolve=None, commit_ok=N
         return ["an entry is a mapping"]
     out = []
     spec = KINDS.get(kind)
+    if spec is None:  # of_secrets-review on PR 357: an unknown kind had no floor at all
+        return [f"kind {kind!r} is no keeper kind ({', '.join(KINDS)}): nothing is served from it"]
     if str(e.get("position") or "") not in positions:
         out.append(f"position {e.get('position')!r} is no position of the organization")
     access = e.get("access")
