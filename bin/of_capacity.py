@@ -536,19 +536,28 @@ def training_readings(conn=None):
 def training_cards_named(harness, docs=None, org=None):
     """{organization: card id} the listed registries name for a harness's training setting (`training_cards:
     {<harness>: <card id>}` at a registry's top level), each only when the card is that organization's own (its card
-    prefix): a registry is its structure keeper's committed and reviewed file, and it speaks for its own owner's cards
-    only. capacity.yaml, which any agent session may write, names none (of_review, PR 334, after of_server on
-    start_in, PR 330). `org`: that organization's alone."""
+    prefix), or one the card's own organization names for the same harness (the account's setting confirmed once):
+    a registry is its structure keeper's committed and reviewed file, and it speaks for its own owner's cards only.
+    capacity.yaml, which any agent session may write, names none (of_review, PR 334, after of_server on start_in,
+    PR 330). `org`: that organization's alone."""
     docs = tool_docs_all() if docs is None else docs
-    out = {}
+    raw, prefix = {}, {}
     for o, doc in (docs or {}).items():
-        if org is not None and o != org:
-            continue
         tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
         v = tc.get(harness) if isinstance(tc, dict) else None
         m = of_events.REF_RE.match(str(v or "").strip())
-        if m and m.group(1).upper() == str(_card_prefix(o, doc)).upper():
-            out[o] = str(v).strip().upper()
+        prefix[str(_card_prefix(o, doc)).upper()] = o
+        if m:
+            raw[o] = (m.group(1).upper(), str(v).strip().upper())
+    out = {}
+    for o, (pre, card) in raw.items():
+        if org is not None and o != org:
+            continue
+        owner_org = prefix.get(pre)
+        # its own card, or one the card's own organization names for this harness too: the setting is one per
+        # account, so a second organization may lean on the first's confirmation, never on any other closed card
+        if owner_org == o or (owner_org and raw.get(owner_org, (None, None))[1] == card):
+            out[o] = card
     return out
 
 

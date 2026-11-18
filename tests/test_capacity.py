@@ -2369,8 +2369,15 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two))  # OF-27 open, B-12 done: unknown
         self.assertEqual(of_capacity.training_verified("codex", rb, open27, two, org="orgb"), "off")  # orgb's own runs
         self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two, org="ofteam"))
-        stolen = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "OF-27"}})  # names another org's card
+        # a second organization may name the card the first names for the same harness (one setting per account)...
+        lean = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "OF-27"}})
+        self.assertEqual(of_capacity.training_cards_named("codex", lean), {"ofteam": "OF-27", "orgb": "OF-27"})
+        # ...but never another organization's card that organization does not name for it
+        stolen = {"ofteam": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"}},
+                  "orgb": {"card_prefix": "B", "training_cards": {"codex": "OF-30"}}}
         self.assertEqual(of_capacity.training_cards_named("codex", stolen), {"ofteam": "OF-27"})
+        self.assertEqual(of_capacity.training_cards_named("codex", {"orgb": {"card_prefix": "B",
+                                                                             "training_cards": {"codex": "OF-27"}}}), {})
         self.assertEqual(of_capacity.training_cards_named("codex", {"x": {"training_cards": "OF-27"}}), {})  # no crash
         out.clear()
         with tempfile.TemporaryDirectory() as t:
