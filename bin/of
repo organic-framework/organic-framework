@@ -3234,8 +3234,13 @@ def cmd_server(args):
         import of_events
         mid = args.machine_id or of_events.machine_id()
         pub = open(os.path.expanduser(args.pubkey)).read() if args.pubkey else of_client.ensure_key()
-        orgs = args.org or ([o for o, _, _ in org_registries()] if args.tenant else [])
         store = of_server.Store(of_server.load_config()["state_dir"])
+        with store.conn() as c:  # the tenant's machine stays the tenant's unless --no-tenant says otherwise
+            row = c.execute("SELECT tenant FROM machines WHERE machine_id = ? AND revoked_at IS NULL", (mid,)).fetchone()
+        if row and row[0] and not args.tenant and not getattr(args, "no_tenant", False):
+            print(f"{mid} is the tenant's machine and stays it (pass --no-tenant to make it a plain machine)")
+            args.tenant = True  # of_lab's walkthrough, 2026-11-19: enroll-machine had made it a plain machine silently
+        orgs = args.org or ([o for o, _, _ in org_registries()] if args.tenant else [])
         of_server.enroll(store, mid, pub, orgs, args.raw_org or (orgs if args.tenant else []), tenant=args.tenant)
         print(f"enrolled {mid}{' (tenant)' if args.tenant else ''}: orgs {', '.join(orgs) or '-'}")
         return 0
@@ -7738,6 +7743,7 @@ def main(argv=None):
     sv.add_argument("--org", action="append", help="an organization the machine joins (repeat)")
     sv.add_argument("--raw-org", action="append", help="an organization whose raw tier the person consented to")
     sv.add_argument("--tenant", action="store_true", help="the tenant's own machine: all organizations, raw included")
+    sv.add_argument("--no-tenant", action="store_true", help="enroll-machine: make the tenant's machine a plain one")
     sv.set_defaults(fn=cmd_server)
     sh = sub.add_parser("ship", help="send new local rows to the central ClickHouse")
     sh.set_defaults(fn=lambda a: __import__("of_ship").ship())
