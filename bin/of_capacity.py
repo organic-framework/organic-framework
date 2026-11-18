@@ -576,6 +576,67 @@ def project_key(d, sid):
     return os.path.basename(os.path.dirname(t)) if t else None
 
 
+def folder_key(path):
+    """Claude Code's project key for a folder: every character other than a letter or digit becomes "-" (as
+    of_carry.key_of)."""
+    import re
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def start_folder(name, cur, cwd=None, policy=None):
+    """The folder a moved or restarted session resumes in: `cwd`, else the position's capacity.yaml `start_in`, else
+    the one it runs in (`cur`, returned unchanged). Raises MoveError for a start folder that does not exist.
+    2026-11-18: a user organization's structure keeper ran in the OF team's repository, so OF wrote no binding-rules
+    file for it, and it asked to resume in its own folder at its next move or restart."""
+    want = cwd or ((policy if policy is not None else load_policy()).get("start_in") or {}).get(name)
+    if not want:
+        return cur
+    want = os.path.realpath(os.path.expanduser(str(want)))
+    if not os.path.isdir(want):
+        raise MoveError(f"{name}: its start folder {want} does not exist")
+    return cur if want == os.path.realpath(cur) else want
+
+
+def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trust=None):
+    """start_folder, checked: a start folder from capacity.yaml that no account trusts never stops a move (a rescue
+    least of all), so the session resumes where it runs and the log says why; the owner decides the trust. A folder
+    given as `cwd` is the caller's explicit choice, and the move's own trust check refuses it."""
+    want = start_folder(name, cur, cwd, policy)
+    if want == cur or cwd:
+        return want
+    try:
+        (trust or ensure_trust)(src, target, want, dry_run=True)
+    except MoveError:
+        log(f"  start folder {want} is trusted in no config: resuming in {cur}; the owner decides the trust (the tool "
+            f"never presses the trust dialog)")
+        return cur
+    return want
+
+
+def rekey_session(d, sid, new_key, backup):
+    """Move one session's transcript and its subagents folder in config dir `d` under project key `new_key`: Claude
+    Code finds a session to resume by its folder's key, and find_transcript takes the first copy it sees, so one
+    account keeps one. Anything already at the new key is first moved under `backup`. Returns the new paths."""
+    keys = sorted(os.path.basename(os.path.dirname(t))
+                  for t in glob.glob(os.path.join(d, "projects", "*", f"{sid}.jsonl")))
+    old = next((k for k in keys if k != new_key), None)  # a stale copy at the new key is no source
+    if not old:
+        return []
+    out = []
+    for rel in (f"{sid}.jsonl", sid):
+        a, b = os.path.join(d, "projects", old, rel), os.path.join(d, "projects", new_key, rel)
+        if not os.path.exists(a):
+            continue
+        if os.path.exists(b):
+            bk = os.path.join(backup, "projects", new_key, rel)
+            os.makedirs(os.path.dirname(bk), exist_ok=True)
+            shutil.move(b, bk)
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+        os.rename(a, b)
+        out.append(b)
+    return out
+
+
 def copy_session(src, dst, sid, backup, dry_run=False):
     """Copy the session's files; anything already at the target is first saved under `backup`."""
     acts = []
@@ -2147,7 +2208,7 @@ def hold_after_move(session, now=None):
 
 def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, registry_file=None, place=None,
          extra_note=None, in_place=False, assume_empty_input=False, model=None, why=None, allow_unsigned=False,
-         ask=None, restart=False, positions=None):
+         ask=None, restart=False, positions=None, cwd=None):
     """Move one position's live session to the config dir `target`. Raises MoveError before anything
     irreversible when a precondition fails; the old session then keeps running untouched.
     The session may run in a herdr pane (it resumes in the same pane) or in a Zellij pane (it resumes
@@ -2201,6 +2262,11 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         tasks = [t.get("description") for t in cont.get("background_tasks") or [] if t.get("status") == "running"]
         raise MoveError(f"{name}: background shells are running ({'; '.join(map(str, tasks)) or 'see the pane'}); "
                         "exiting stops them. Agree with the holder, then pass --allow-shells")
+    run_cwd = resume_folder(name, s["cwd"], src, target, cwd, log=log)
+    if run_cwd != s["cwd"]:
+        extra_note = (f"Your working folder changed from {s['cwd']} to {run_cwd} (your position's start folder). "
+                      f"Relative paths, git and the folder's agent rules now refer to the new folder; files you "
+                      f"left in the old one are still there." + ("\n\n" + extra_note if extra_note else ""))
     env, args = proc_env(s["pid"]), proc_args(s["pid"])
     a = _agent_by_session(sid)
     if a:
@@ -2316,7 +2382,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
                       f"it: give the founder a task (of ask --task) to connect {', '.join(missing)} at claude.ai, "
                       f"Settings, Connectors, signed in as {account_of(target) or 'this account'}, and say what "
                       f"waits on it." + ("\n\n" + extra_note if extra_note else ""))
-    trust = ensure_trust(src, target, s["cwd"], dry_run=True)  # refuses before anything irreversible
+    trust = ensure_trust(src, target, run_cwd, dry_run=True)  # refuses before anything irreversible
     # the effort the process runs at (its --effort), else the account's setting for the model: 40 of 49 sessions
     # ran at xhigh on accounts set to high (2026-11-10), and a move by the setting would have lowered them
     effort = flags_from_args(args)[1] or (effort_of(src, ctx_model) if ctx_model else None)
@@ -2331,7 +2397,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     on_own = bool(flags_from_args(args)[3])  # started by of spawn on its own directory: keep it
     mem_dir = of_memory.directory(p) if on_own or load_policy().get("position_memory") else None
     prompt = launch_prompt(note_path, model=model if switch else None, restarted=restarted)
-    cmd = launch_command(s["cwd"], target, sid, name, note_path, model=model, effort=effort, bypass=bypass,
+    cmd = launch_command(run_cwd, target, sid, name, note_path, model=model, effort=effort, bypass=bypass,
                          memory_dir=mem_dir, prompt=prompt, deny=deny_for(p, log), tools=tools_for(p, sid, target, log))
     key = project_key(src, sid)
     mem_src, mem_dst = os.path.join(src, "projects", key, "memory"), os.path.join(target, "projects", key, "memory")
@@ -2350,10 +2416,12 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         log(f"  memory {key}: {[x for x in merge_memory(mem_src, mem_dst, mem_base, '/nonexistent', dry_run=True) if x[1] != 'same']}")
     log(f"  resume: {cmd}")
     log(f"  folder trust: {trust[0]} ({trust[1]})")
+    if run_cwd != s["cwd"]:
+        log(f"  start folder: {s['cwd']} -> {run_cwd} (its transcript goes under that folder's project key)")
     if dry_run:
         return {"dry_run": True, "command": cmd}
     if trust[0] == "carried":
-        trust = ensure_trust(src, target, s["cwd"])
+        trust = ensure_trust(src, target, run_cwd)
         log(f"  folder trust carried: {trust[1]} from {short(src)}")
     carried_settings = ensure_settings(src, target) if src != target else []
     if carried_settings:
@@ -2398,7 +2466,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     if runtime == "herdr" or (runtime == "zellij" and not place):
         new_pane = pane
     else:
-        c, follow = place_command(place[0], place[1], s["cwd"], _herdr("workspace", "list")["workspaces"],
+        c, follow = place_command(place[0], place[1], run_cwd, _herdr("workspace", "list")["workspaces"],
                                   _herdr("tab", "list")["tabs"], _herdr("pane", "list")["panes"])
         new_pane = first_pane_id(_herdr(*c))
         if not new_pane:
@@ -2429,6 +2497,9 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
             mem = merge_memory(mem_src, mem_dst, mem_base, os.path.join(work, "conflicts"))
         log(f"  carried {len([f for f in files if f[0] == 'copy'])} path(s); memory: "
             f"{', '.join(f'{f}:{a}' for f, a in mem if a != 'same') or 'unchanged'}")
+    if run_cwd != s["cwd"]:  # Claude Code finds the session by its new folder's key
+        mark_copied(rekey_session(target, sid, folder_key(run_cwd), os.path.join(work, "backup")))
+        log(f"  start folder: {s['cwd']} -> {run_cwd}")
     if mem_dir:  # what the session wrote to its folder before it ran on its own directory
         mem = seed_memory([p], only=(p["_org"], name), extra_sessions={sid: (p["_org"], name)},
                           log=log)["positions"].get(mem_dir) or []
@@ -2450,7 +2521,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         run = lambda: _run_in_pane(new_pane, cmd)  # noqa: E731
         read = lambda: _pane_lines(new_pane)  # noqa: E731
         key = lambda k: _herdr("pane", "send-keys", new_pane, k.lower())  # noqa: E731
-    new = start_session(sid, name, s["cwd"], target, prompt, run, read, key, f"{what}: hand-over note", log=log)
+    new = start_session(sid, name, run_cwd, target, prompt, run, read, key, f"{what}: hand-over note", log=log)
     log(f"  resumed: pid {new['pid']}, session {new['session']}, pane {new_pane}")
     if bypass and (runtime != "zellij" or place):  # a herdr pane: the footer can be read and keyed
         check_bypass_after_start(new_pane, log)
@@ -2464,8 +2535,8 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         if diff_path:
             log(f"  registry: proposed diff {diff_path} (for the organization's structure keeper; not applied)")
     ws = {"config_dir": target, "account": account_of(target), "runtime": "zellij" if new_pane == pane and runtime == "zellij"
-          else "herdr", "pane": new_pane}
-    prev = {"config_dir": src, "account": account_of(src), "runtime": runtime, "pane": pane}
+          else "herdr", "pane": new_pane, "cwd": run_cwd}
+    prev = {"config_dir": src, "account": account_of(src), "runtime": runtime, "pane": pane, "cwd": s["cwd"]}
     of_events.emit("holder_changed", {"position": name, "previous_session": sid, "new_session": new["session"],
                                       "evidence": "of capacity move" + (" --model" if switch else "")
                                                   + (" --restart" if restarted else ""),
