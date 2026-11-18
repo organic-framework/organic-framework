@@ -118,6 +118,9 @@ class CodeFilterTest(unittest.TestCase):
                 "import sys\nif '.env' in sys.argv: print(''.__class__.__mro__)",
                 "import sys, pathlib\np = pathlib.Path('/etc')\nif '.env' in sys.argv: print((p / sys.argv[1]).read_text())",
                 "import csv as open, sys\nif '.env' in sys.argv: print(1)",
+                # a literal open's own class, called on a computed name (of_secrets-review on organic-framework PR 323)
+                "import sys\nfor l in sys.stdin:\n    l = l.strip()\n"
+                "    if l.endswith('.env'): print(type(open('a.txt', 'rb', buffering=0))(l).read())",
                 # of_review on organic-framework PR 323: more readers, and a computed name moved under a literal one
                 "import runpy, sys\nfor l in sys.stdin:\n    if l.strip().endswith('.env'): runpy.run_path(l.strip())",
                 "import xml.etree.ElementTree as E, sys\nfor l in sys.stdin:\n"
