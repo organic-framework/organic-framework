@@ -23,7 +23,8 @@
 | A read-only review of a diff or a pull request | yes | rung 1 | rung 1, findings verified (below) |
 | Reading: a repository, a long record, a document against code, into a short answer | yes | rung 1 | rung 1, findings verified |
 | Research on the public web, with no workspace | yes | rung 1 | after its bake-off |
-| Anything that writes, runs commands on a system, uses a grant or a credential, or touches production | yes | no (until rung 2, then under the guard) | no |
+| A code change drafted in a snapshot and returned as a diff, which the position applies, tests and commits | yes | rung 1.5 (§3.3) | no |
+| Anything that writes outside a snapshot, runs commands on a system, uses a grant or a credential, or touches production | yes | no (until rung 2, then under the guard) | no |
 | Browser hands for the owner's kind-B tasks | no | RFC 0003 | no |
 
 - **What each is known to be good at.** The founder considers Codex the strongest at browser use (RFC 0003 §4.6). Codex ships a code reviewer (`codex exec review`). Muse's trial on 2026-11-06 (`of_capacity`, three read-only reviews): it found both bugs seeded in one case, and 4 of its 7 findings on a real pull request had garbled failure scenarios. Codex on the same seeded case, 2026-11-18 (`of_capacity`, message `01a1ee54-8ce6`): `gpt-6.2-astra` reported 10 findings and `gpt-6.2-sol` 7, both found the two seeded bugs and both missed a third known one; Astra's 3 extra findings are not yet checked against the code. Nothing else is measured yet; the bake-off (§6) measures it before a kind of work moves by default.
@@ -63,7 +64,17 @@ The wrapper is the guard for these runs. Each limit is a test in the wrapper's s
 
 - **Default for the kinds that passed the bake-off** (§6), when the organization allows them (§5). Until then a position may use it, and checks each finding as above.
 - **The method's conditions hold** (docs/method.md, "Subagents"): what needs the position stays with the position.
-- **What it does not replace.** A subagent that changes files, runs on a runner, or watches a run stays a Claude subagent until rung 2.
+- **What it does not replace.** A subagent that runs on a runner, watches a run, or changes files anywhere but a snapshot stays a Claude subagent until rung 2.
+
+### 3.3 Patch runs (rung 1.5)
+
+The founder, 2026-11-18 14:11Z, prompt `01a1eeff-880b` in `of_conductor`'s session, declining to restart agents with a clean context: "Let's move part of the work to Codex, something about development and so on. Context is a very important part of the agents' understanding of the system, so context must not be reset." A `patch` run lets Codex write code without holding a position, the way a Claude subagent writes in its own worktree (docs/method.md, "Subagents").
+
+- **The run.** `of subagent run --harness codex --kind patch --workspace <checkout> --at <commit> --prompt-file <file>` gives Codex its snapshot to write in (Codex's `workspace-write` sandbox on the snapshot only), with §3.1's read confinement, no network, no credentials, no connectors and no hooks. Its answer is the snapshot's `git diff` against `--at`, kept in the run's record. The wrapper never applies it anywhere.
+- **Light work only.** The run may run the named tests of what it changes inside the snapshot; no build, no full test suite, nothing heavy (AGENTS.md, "No heavy local jobs on a laptop").
+- **The position owns the change.** It reads the whole diff as it would a Claude subagent's, applies it in its own worktree, runs its tests and commits it under its own name, with `Drafted-by: codex <model>, run <id>` beside its `Position:` trailer, so the measures can tell drafted work apart. A pull request's reviewer is still a position that wrote none of its commits: a drafted commit counts as its committer's.
+- **The same limits as §3.1**, plus two tests: a patch run writes nothing outside its snapshot, and its diff names only the snapshot's files.
+- **Allowed by the organization's entry** with `patch` among the harness's `kinds` (§5).
 
 ## 4. Rung 2: positions held by Codex
 
@@ -82,7 +93,7 @@ What leaves for another provider is the organization's choice, as with every pro
 
 ```yaml
 subagent_harnesses:
-  codex: {kinds: [review, read, research], repos: [organic-framework]}   # repositories whose snapshots may be sent
+  codex: {kinds: [review, read, research, patch], repos: [organic-framework]}   # repositories whose snapshots may be sent
   muse:  {kinds: [review, read], repos: [organic-framework]}
   prompt_check: "release/check.py"   # the organization's pre-publish check, run on the prompt and the schema
   basis: "<the keeper's commit, or the owner's card where the organization requires one>"
