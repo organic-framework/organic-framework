@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
 """Set up the owner's admin login, organization users, credential keepers and channels on Linux.
 
-Run from a root-controlled checkout in the owner's terminal. Inspect the plan first,
-then replace plan with apply and run the same command under sudo.
+Run from a root-owned checkout in the owner's terminal. Inspect the steps with plan
+before applying them. The owner's admin login may be where agents once worked.
+Without -I, a Python module planted beside this script could run as root.
 
-  python3 deploy/host/contours.py plan --admin owner --rename agents:of \
-      --org-user of --org-user acme --keeper acme-vault --channel acme
+  sudo python3 -I /opt/organic-framework/deploy/host/contours.py apply --admin owner --org-user of --org-user acme --keeper acme-vault --channel acme --no-tailscale-operator
 
 passwd prompts directly when the admin needs a password. --admin-key-from selects
 a public key by identity from SUDO_USER's authorized_keys. Agent-marked keys are
 excluded. Keepers get no sudoers entry. --no-tailscale-operator inspects local prefs.
 
-Step 2 of docs/contours.md section 4. Two rules for the owner's sitting:
-- Run it from a checkout that only root can change, for example a fresh root-owned
-  clone pinned to a reviewed commit (as deploy/host/plane.py makes one), never from a
-  checkout inside an organization user's home: root would run code an agent can edit.
-- A rename refuses while the old user has processes, and the owner's own login counts.
-  So the sitting has two runs: first, logged in as the user that will be renamed, only
-  --admin (with --admin-key-from), which creates the admin and sets its password; then,
-  logged in as the admin, the full run. Paths that name the old home (a tool's pinned
-  binary, a scheduled job) are the owners' to update after the move.
+See step 2 of docs/contours.md section 4. deploy/host/plane.py creates a root-owned
+checkout pinned to a reviewed commit.
 """
 
 import argparse
@@ -37,6 +30,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 from contextlib import contextmanager
 from typing import NamedTuple
 
@@ -55,27 +49,49 @@ def require(condition, message):
         raise Refusal(message)
 
 
+def trust_problems(paths, lstat=os.lstat):
+    """Check each resolved absolute path and its parents through /."""
+    problems = []
+    seen = set()
+    for path in paths:
+        while path not in seen:
+            seen.add(path)
+            try:
+                s = lstat(path)
+            except OSError as e:
+                problems.append(f"{path}: {e.strerror or e}")
+            else:
+                if s.st_uid != 0:
+                    problems.append(f"{path} is owned by uid {s.st_uid}, expected root")
+                if s.st_mode & 0o022:
+                    problems.append(f"{path} is writable by group or others")
+            path = os.path.dirname(path)
+    return problems
+
+
+def trusted_chain():
+    """Report problems with the paths used to run this script."""
+    paths = sysconfig.get_paths()
+    roots = (__file__, sys.executable, paths["stdlib"], paths["platstdlib"])
+    return trust_problems([os.path.realpath(p) for p in roots])
+
+
 def arguments(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "apply"))
     parser.add_argument("--admin")
     parser.add_argument("--admin-key-from", action="append", default=[], metavar="FILE")
-    for option in ("rename", "org-user", "keeper", "channel"):
+    for option in ("org-user", "keeper", "channel"):
         parser.add_argument("--" + option, action="append", default=[])
     parser.add_argument("--no-tailscale-operator", action="store_true")
     a = parser.parse_args(argv)
-    for attr in ("rename", "org_user", "keeper", "channel", "admin_key_from"):
+    for attr in ("org_user", "keeper", "channel", "admin_key_from"):
         setattr(a, attr, list(dict.fromkeys(getattr(a, attr))))
-    a.rename = [pair.split(":") for pair in a.rename]
-    require(all(len(pair) == 2 for pair in a.rename), "use --rename OLD:NEW")
-    renamed = [n for pair in a.rename for n in pair]
     orgs = set(a.org_user) | ({"of", *a.channel} if a.channel else set())
-    for n in [*renamed, *orgs, *a.keeper] + ([a.admin] if a.admin is not None else []):
+    for n in [*orgs, *a.keeper] + ([a.admin] if a.admin is not None else []):
         require(NAME.fullmatch(n) and n != "root", f"invalid account name {n!r}")
-    require(len(set(renamed)) == len(renamed), "rename endpoints must be distinct")
-    require(a.admin not in orgs | set(a.keeper) | set(renamed), "admin has conflicting roles")
-    require(not (set(a.keeper) & (orgs | set(renamed))), "keeper has conflicting roles")
-    require(not (orgs & {old for old, new in a.rename}), "use the renamed organization name")
+    require(a.admin not in orgs | set(a.keeper), "admin has conflicting roles")
+    require(not (set(a.keeper) & orgs), "keeper has conflicting roles")
     require("of" not in a.channel, "a channel needs two distinct users")
     require(all(NAME.fullmatch("ch-of-" + n) for n in a.channel), "channel group name too long")
     require(a.admin or not a.admin_key_from, "--admin-key-from needs --admin")
@@ -206,46 +222,6 @@ def plan(a, state):
             step(f"copy selected owner keys to {a.admin} if missing", sys.executable, "-I",
                  os.path.abspath(__file__), "_keys", a.admin, *a.admin_key_from)
 
-    for old, new in a.rename:
-        source = old if old in users else new
-        require(source in users, f"missing rename source {old}")
-        u = users[source]
-        dest = "/home/" + new
-        require(u.uid != 0, f"{source} has uid zero")
-        if source == old:
-            require(new not in users, f"user {new} already exists")
-        else:
-            # A retry may find the login renamed but its private group or home still pending.
-            require(u.group in (old, new) and u.home in ("/home/" + old, dest),
-                    f"cannot identify {new} as the renamed {old}")
-        if u.group != new:
-            require(new not in groups, f"group {new} already exists")
-            require(u.group not in ("root", "wheel") and
-                    not any(v.group == u.group for n, v in users.items() if n != source),
-                    f"cannot rename shared primary group {u.group}")
-        home = info(u.home)
-        require(home and home.owner == source, f"missing or incorrectly owned home {u.home}")
-        if u.home != dest:
-            require(info(dest) is None, f"destination {dest} already exists")
-        if source == new and u.group == new and u.home == dest:
-            step(f"already renamed {old} to {new}")
-            continue
-        step(f"check {source} has no running processes", "pgrep", "-u", source)
-        if source == old:
-            step(f"rename {old} to {new}", "usermod", "-l", new, old)
-        if u.group != new:
-            step(f"rename primary group of {new}", "groupmod", "-n", new, u.group)
-            groups[new] = groups.pop(u.group)
-        if u.home != dest:
-            step(f"move home of {new}", "usermod", "-d", dest, "-m", new)
-        del users[source]
-        users[new] = u._replace(group=new, home=dest)
-        paths[dest] = home._replace(owner=new, group=new if home.group == u.group else home.group)
-        for members in groups.values():
-            if old in members:
-                members.remove(old)
-                members.add(new)
-
     for n in a.org_user:
         u = account(n)
         home = info(u.home)
@@ -264,11 +240,11 @@ def plan(a, state):
             if n not in groups:
                 step(f"create primary group for {n}", "groupadd", n)
                 groups[n] = set()
-            step(f"verify admin before changing {n}'s primary group", "passwd", "-S", a.admin)
+            step(f"verify admin before changing {n}'s primary group", "sudo", "-l", "-U", a.admin)
             step(f"change {n}'s primary group", "usermod", "-g", n, n)
             users[n] = users[n]._replace(group=n)
         if member:
-            step(f"verify admin before removing {n} from wheel", "passwd", "-S", a.admin)
+            step(f"verify admin before removing {n} from wheel", "sudo", "-l", "-U", a.admin)
             step(f"remove {n} from wheel", "gpasswd", "-d", n, "wheel")
 
     if a.keeper:
@@ -466,14 +442,6 @@ def check_paths(argv):
     elif argv[0] == "useradd":
         home = argv[argv.index("-d") + 1]
         require(directory(home) is None, f"home appeared before useradd: {home}")
-    elif argv[:2] == ["usermod", "-d"] and "-m" in argv:
-        name, dest = argv[-1], argv[2]
-        old = pwd.getpwnam(name).pw_dir
-        home = directory(old)
-        require(home and home.owner == name and directory(dest) is None, f"unsafe home move for {name}")
-        # Keep usermod on the rename(2) path, away from a recursive cross-device copy.
-        require(os.stat(old).st_dev == os.stat(os.path.dirname(dest)).st_dev,
-                f"moving {old} to {dest} crosses filesystems")
 
 
 def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print):
@@ -484,18 +452,10 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print)
         if not argv:
             continue
         cmd = argv[0]
-        if a.action == "plan" and cmd not in ("pgrep", "tailscale"):
+        if a.action == "plan" and cmd != "tailscale":
             continue
         try:
-            if cmd == "pgrep":
-                try:
-                    invoke(argv, capture_output=True)
-                except subprocess.CalledProcessError as e:
-                    if e.returncode != 1:
-                        raise
-                else:
-                    raise Refusal(f"{argv[-1]} has running processes")
-            elif cmd == "tailscale":
+            if cmd == "tailscale":
                 data = json.loads(invoke(argv, capture_output=True, text=True).stdout)
                 require(isinstance(data, dict) and isinstance(data.get("OperatorUser", ""), str),
                         "unrecognized tailscale preferences")
@@ -503,10 +463,13 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print)
                 operator = data.get("OperatorUser", "")
                 require(operator not in orgs, f"organization user {operator} is the Tailscale operator")
                 out("already clear of organization operators")
-            elif argv[:2] == ["passwd", "-S"]:
+            elif argv[:3] == ["sudo", "-l", "-U"]:
                 name = argv[-1]
                 require(member(name) and password(name, invoke) == "P",
                         f"admin {name} must exist, belong to wheel and have password status P")
+                listing = invoke(argv, capture_output=True, text=True).stdout
+                require(re.search(r"^[ \t]*\(ALL(?=[ \t,:)])", listing, re.MULTILINE),
+                        f"sudo -l lists no (ALL rule for admin {name}")
             else:
                 guard(argv)
                 invoke(argv)
@@ -519,10 +482,21 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
         if argv[:1] == ["_keys"] and len(argv) >= 3:
+            # The helper runs as root too: the same isolated, root-owned chain as apply.
+            problems = trusted_chain() + ([] if sys.flags.isolated else ["the key helper requires isolated Python (python3 -I)"])
+            require(not problems, "\n".join(problems))
             import_keys(argv[1], argv[2:])
         else:
             a = arguments(argv)
-            require(a.action != "apply" or os.geteuid() == 0, "apply requires root (use sudo)")
+            problems = trusted_chain()
+            if not sys.flags.isolated:
+                problems.append("apply requires isolated Python (use python3 -I)")
+            if a.action == "apply":
+                if os.geteuid() != 0:
+                    problems.append("apply requires root (use sudo)")
+                require(not problems, "\n".join(problems))
+            elif problems:
+                print("warning: " + "\n".join(problems), file=sys.stderr)
             # Serialize owner sittings, including their snapshots, without leaving a lock file.
             fd = os.open("/etc", DIR)
             try:
