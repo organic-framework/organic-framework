@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/organic-framework/organic-framework/security/advisories/new
+    about: Security matters go through private vulnerability reporting, never a public issue.
+  - name: How to reach OF
+    url: https://github.com/organic-framework/organic-framework/blob/main/docs/getting-help.md
+    about: Where framework questions go, and what they must not contain.
