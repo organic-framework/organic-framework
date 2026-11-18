@@ -106,6 +106,39 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   run over a minute, and says so in the pane (in the owner's language); Ctrl-C stops it. The founder's questions
   panel runs under it since it died at 21:23Z on 2026-11-11, when the build it ran from was rebased. A popup's
   command must not use it: the popup would never close.
+- **The questions panel, on any machine** (the founder, 2026-11-18 ~18:16Z via of_conductor, msg 01a1efa8-8574: on a
+  machine other than the one it was built on, nobody found how to turn it on). `of asks --panel` is a
+  full-screen program: the count in each stream, the longest wait, the first card, and a button that opens the
+  questions popup. It shows the open questions to the person that this machine's OF knows of, and "Nothing waits on
+  you" when there are none. `of asks --watch` is a different program: the full questions screen the popup shows,
+  with stream tabs across the top, a list and a card. Put in a pane, it gives no button and lays the space out
+  differently (the founder, ~18:22Z: a conductor had put that one in its pane). `ps -ax -o
+  pid,args | grep 'of asks --'` tells which one runs. It needs:
+  - OF from 2026-11-12 or later (`of asks --help` lists `--panel`) and `of init` run on the machine. Its labels follow
+    `language` in `~/.config/of/owner.yaml`, English by default.
+  - A terminal pane. An agent's own shell (Claude Code's Bash tool) has no terminal, so the program cannot draw there.
+    An agent opens it beside its pane without moving the person's focus: `herdr pane split "$HERDR_PANE_ID"
+    --direction right --no-focus` prints the new pane's id, then `herdr pane run <that id> "of asks --panel"`.
+  - For the button and `prefix+a`: OF's herdr plugin linked and the key in herdr's `config.toml`. `of init` does both
+    after the person's yes; by hand the person runs `bin/of_herdr_plugin.py install` and `configure` in a plain
+    terminal. Linking a plugin is the person's act, and the guard refuses `herdr plugin link` from an agent
+    (docs/guard.md G19).
+
+  `of init` pins it beside the person's conductor when they work in herdr, with the same yes as the plugin and the
+  key. The listener opens it within a minute of the conductor starting. On a machine set up earlier, pin it beside
+  the conductor yourself: `of view add <org> --workspace <the organization's workspace label> --tab conductor
+  --positions <org>_conductor --panel questions`, then `of view apply <org>`. Name the view after the organization,
+  as `of init` does: `of view add` replaces a view of the same name. `--panel questions` writes the
+  command (the panel under `keep`, with the Python and the `bin/` that ran `of view add`) and places `panel:questions`
+  after the positions. Another panel takes its command, `--panel NAME=COMMAND`. A panel opens beside the view's first
+  agent with a live pane, so a view whose agents are all down starts no panel (`panel:questions: no live pane; left
+  out`). The panel is split at the layout's share (60% stays with the agent in `main-left-60`), since herdr 0.9.5
+  resizes no pane moved within its own tab. When the view's tab does not exist yet and the first agent's own tab in
+  the view's workspace holds nothing but the view's panes, `of view apply` gives that tab the view's label instead of
+  moving the agent to a new tab. A move would be held back while the person works in that pane, and then it would
+  empty and close the tab they had been in (checked in an isolated lab herdr, 2026-11-18). Before 2026-11-18,
+  `of view add` had no `--panel`. `--positions …,panel:questions` was refused as an unknown position, and the panel
+  could be pinned only by writing it into `views.yaml` by hand.
 - **What a plugin cannot do in herdr 0.9.5.** It cannot bind keys or set sidebar rows; those stay in herdr's
   `config.toml` (prefix+a for the questions; the red per-workspace question counter it also added until 2026-11-17
   is gone: the founder had it and the tabs' `❓N` removed, and herdr now shows a question only on its asker).
