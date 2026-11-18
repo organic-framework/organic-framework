@@ -506,21 +506,53 @@ def resolve_capacity(arg=None, yes=False, accounts=0, served=None, ask=None, pos
     return "yes" if str(answer).strip().lower() in words else "no"
 
 
-def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, configure=None):
+def pin_questions_panel(org, prefix, out=print, load=None, save=None, python=sys.executable, bin_dir=HERE):
+    """Pin herdr's questions panel beside the person's conductor, as `of view add <org> --workspace <org> --tab
+    conductor --positions <prefix>_conductor --panel questions` would (of_herdr's `--panel`, 2026-11-18; docs/herdr.md,
+    "The questions panel, on any machine"). Until 2026-11-18 the panel worked only on the machine it was built on: no
+    command set it up (via of_conductor, msg 01a1efa8-8574; AGENTS.md, "A feature a person uses is done when it works
+    on a machine it was not built on"), and of_herdr asked whether of init should (msg 01a1efb1-c27a). Only the view is
+    written: the listener lays it out once the conductor runs (of_listen.ViewsProcessor applies every view each
+    minute; a view whose agents are all down starts nothing). The view is named after the organization, so a view
+    of another one on the machine is never replaced (`of view add` replaces a view of the same name), and nothing is
+    written when a view already holds the questions panel: its pane is found by one label per machine, so two views
+    holding it would take it from each other. Returns the view's name, or None."""
+    import of_views
+    views = (load or of_views.load)()
+    if any(v.get("name") == org for v in views):
+        out(f"  questions panel: a view named {org} is already there and kept (of view list)")
+        return None
+    held = next((v for v in views if f"panel:{of_views.QUESTIONS_PANEL}" in (v.get("positions") or [])), None)
+    if held:
+        out(f"  questions panel: already in view {held['name']}; there is one per machine, so none is added")
+        return None
+    name, command = of_views.panel_spec(of_views.QUESTIONS_PANEL, python, bin_dir)
+    (save or of_views.save)(views + [{"name": org, "workspace": org, "tab": "conductor", "layout": "main-left-60",
+                                      "positions": [f"{prefix}_conductor", f"panel:{name}"], "panels": {name: command}}])
+    out(f"  questions panel: pinned beside {prefix}_conductor (view {org}); it opens once the conductor runs. "
+        f"of view remove {org} takes it away")
+    return org
+
+
+def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, configure=None, panel=None):
     """Link OF's herdr plugin (of_herdr's, bin/of_herdr_plugin.py), which names each agent by its position when herdr
     sees it and after every herdr restart, and give herdr's config the key for the questions screen (configure, which a
-    plugin cannot do; no per-workspace counter since the founder had it removed, 2026-11-17). Both change the
-    person's herdr, so they are said first and asked once, like the hooks; the plugin is undone with `herdr plugin
-    unlink organic-framework`, the config from the backup configure keeps. Returns True when linked; never fails
-    the init."""
+    plugin cannot do; no per-workspace counter since the founder had it removed, 2026-11-17). panel, when given (the
+    person works in herdr: surface herdr), pins the questions panel beside their conductor (pin_questions_panel). All
+    of it changes the person's herdr, so it is said first and asked once, like the hooks; the plugin is undone with
+    `herdr plugin unlink organic-framework`, the config from the backup configure keeps, the panel with `of view
+    remove`. Returns True when linked; never fails the init."""
     if not which("herdr"):
         out("  herdr: not installed here, nothing to link")
         return False
     out("  herdr: OF's plugin names each agent by its position when herdr sees it and after every herdr restart. "
         "Linking adds it to your herdr; herdr plugin unlink organic-framework removes it. herdr's config also gets "
-        "prefix+a for the questions screen, after a backup; a key of your own is kept.")
+        "prefix+a for the questions screen, after a backup; a key of your own is kept."
+        + (" A small panel of your questions is pinned beside your conductor; of view remove takes it away."
+           if panel else ""))
     try:
-        if not _ask("Link OF's plugin into herdr and add the questions key?", yes):
+        if not _ask("Link OF's plugin into herdr and add the questions key"
+                    + (" and the questions panel?" if panel else "?"), yes):
             out("  not linked: of apply names the agents when you run it; "
                 f"{sys.executable} {os.path.join(HERE, 'of_herdr_plugin.py')} install links it later")
             return False
@@ -547,6 +579,11 @@ def link_herdr_plugin(yes=False, out=print, install=None, which=shutil.which, co
             out(f"  herdr config: {n}")
     else:
         out(f"  herdr config NOT changed: {notes} (of asks still lists the questions)")
+    if panel:
+        try:
+            panel()
+        except Exception as e:  # noqa: BLE001 - said plainly; of view add sets it up later
+            out(f"  questions panel NOT pinned: {type(e).__name__}: {e} (docs/herdr.md, \"The questions panel\")")
     return ok
 
 
@@ -1114,7 +1151,7 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     except NoTTY as e:
         out(f"  NOT installed: {e}")
         failed = True
-    link_herdr_plugin(yes, out)
+    link_herdr_plugin(yes, out, panel=(lambda: pin_questions_panel(org, prefix, out)) if surface == "herdr" else None)
 
     out("\n7. The server (profile 1: this machine, SQLite storage)")
     import of_client
