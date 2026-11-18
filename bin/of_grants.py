@@ -228,6 +228,11 @@ def attenuates(derived, issuer):
             out.append(f"risk_appetite {r_!r} is not one of low, medium, high")
     if ri in risk and (rd is None or (rd in risk and risk.index(rd) > risk.index(ri))):
         out.append(f"risk_appetite {rd or 'unset'} is above the issuer's {ri}")
+    if iss.get("limit") is not None:  # a narrower limit attenuates; a wider or an open one does not
+        import of_access
+        why = of_access.limit_within(ds.get("limit"), iss.get("limit"))
+        if why:
+            out.append(f"limit: {why.replace('the grant', 'the issuer').replace('the line', 'this grant')}")
     if issuer.get("expires") and (not derived.get("expires") or str(derived["expires"]) > str(issuer["expires"])):
         out.append("expires later than the issuer's grant")
     rights = (iss.get("grants") or {}) if isinstance(iss.get("grants"), dict) else {}
@@ -450,6 +455,18 @@ def shape_problems(grant):
         out.append('except is only for subject "*"')
     if exc is not None and not (isinstance(exc, list) and all(isinstance(x, str) and x for x in exc)):
         out.append("except is a list of position names")
+    kp = scope.get("keepers")  # docs/access.md §4: one keeper line, the tenant's allow to one position, with a limit
+    if kp is not None:
+        if not (_str_list(kp) and len(kp) == 1 and ":" in kp[0] and kp[0].split(":", 1)[0] and kp[0].split(":", 1)[1]):
+            out.append("scope keepers names exactly one line: <keeper>:<access>")
+        if grant.get("effect", "allow") != "allow" or sub == "*" or grant.get("issuer") != "tenant":
+            out.append("scope keepers is only on an allow the tenant issues to one position")
+        if not grant.get("expires"):
+            out.append("a keepers grant carries the expiry the owner chose on the card")
+        import of_access
+        out += [f"scope {p}" for p in of_access.limit_shape(scope.get("limit"))]
+    elif scope.get("limit") is not None:
+        out.append("scope limit is only with keepers")
     c = scope.get("contacts")
     if c is not None:
         if not (_str_list(c) and len(c) == 1):

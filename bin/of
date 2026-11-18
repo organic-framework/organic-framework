@@ -6291,6 +6291,8 @@ def cmd_access(args):
             return main(argv)
         if not (args.keeper_name and args.position_name and args.access_value):
             raise OfError(f"usage: of access {args.action} <keeper> <position> <access> …")
+        if args.action in ("link", "record"):
+            return _access_approval(args, positions, of_access)
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
         if sid:  # an agent's session: only its organization's structure keeper writes a list (docs/access.md §2)
             me = _me(positions, None)
@@ -6326,6 +6328,69 @@ def cmd_access(args):
         return 0
     except of_access.AccessError as e:
         raise OfError(str(e)) from None
+
+
+def _access_approval(args, positions, of_access):
+    """`of access link`: the page where the owner approves one line with his passkey (the diff's page, with the line
+    in the diff's place; docs/access.md §4). `of access record`: his approval from the organization's feed, checked as
+    the keeper checks it, saved beside the list and named on the line, for the structure keeper to commit."""
+    import of_keeper
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        me = _me(positions, None)
+        org = me.get("_org")
+        import of_pulse
+        if of_pulse.structure_keeper(positions, org) != me["name"]:
+            raise OfError(f"only {org}'s structure keeper asks for and records a line's approval")
+    elif not args.org:
+        raise OfError("--org: the organization whose list this is")
+    else:
+        org = args.org
+    root = of_access.org_root(org, ORGS_FILE)
+    _, e = of_access.find_line(root, args.keeper_name, args.position_name, args.access_value)
+    payload = of_keeper.line_payload(org, args.keeper_name, e)
+    digest = of_keeper.line_digest(payload)
+    if args.action == "link":
+        import of_client
+        import of_ship
+        client = of_client.Client(_org_server(org) or of_ship.config()["server_url"])
+        try:
+            _, got = client._authed("POST", "/v1/passkey/links", body={"org": org, "id": payload["id"],
+                                                                        "diff": payload, "digest": digest, "ttl": 900})
+        except Exception as exc:  # noqa: BLE001 - the server says why (no HTTPS name, digest mismatch, not enrolled)
+            raise OfError(f"of access link: {exc}")
+        if not isinstance(got, dict) or not got.get("url"):
+            raise OfError(f"of access link: of-server answered without an address: {got!r}"[:300])
+        print(got["url"])
+        return 0
+    import of_grants
+    import of_passkey
+    import of_store
+    conn = of_store.connect()
+    try:
+        rows = conn.execute("SELECT ts, payload, event_id FROM event WHERE name = 'of.diff_approved' ORDER BY ts DESC,"
+                            " rowid DESC").fetchall()
+    finally:
+        conn.close()
+    approvers = _diff_approvers({"org": org}, positions)
+    why = "no passkey approval of this line has reached this machine yet (its feed)"
+    for ts, pl, eid in rows:
+        try:
+            p = json.loads(pl) if isinstance(pl, str) else (pl or {})
+        except ValueError:
+            continue
+        if p.get("via") != "passkey" or p.get("id") != payload["id"]:
+            continue
+        rec = dict({k: v for k, v in p.items() if not k.startswith("_")}, recorded_at=ts)
+        why = of_passkey.approval_problem(rec, payload["id"], org, digest, of_grants.local_keys(), recorded_at=ts,
+                                          approvers=approvers, server=_org_server(org), last_counter=0)
+        if why is None:
+            of_access.record_approval(root, args.keeper_name, args.position_name, args.access_value,
+                                      str(eid).replace(".", "-"), rec)
+            print(f"recorded the owner's approval of {payload['id']} as passkey:{eid}; commit the list and "
+                  f"registry/access/approvals/ together")
+            return 0
+    raise OfError(f"not recorded: {why}")
 
 
 def _access_limit(text):
@@ -7326,10 +7391,11 @@ def main(argv=None):
     pf.add_argument("--to", required=True, help="the target's commit id (not a branch)")
     pf.set_defaults(fn=cmd_protected)
     acc = sub.add_parser("access", help="access through keepers: the map of who reaches what (docs/access.md)")
-    acc.add_argument("action", choices=["map", "request", "grant", "revoke"])
-    acc.add_argument("keeper_name", nargs="?", help="grant, revoke: the keeper")
-    acc.add_argument("position_name", nargs="?", help="grant, revoke: the position")
-    acc.add_argument("access_value", nargs="?", help="grant, revoke: item:<id>, dest:<address> or site:<domain>")
+    acc.add_argument("action", choices=["map", "request", "grant", "revoke", "link", "record"])
+    acc.add_argument("keeper_name", nargs="?", help="grant, revoke, link, record: the keeper")
+    acc.add_argument("position_name", nargs="?", help="grant, revoke, link, record: the position")
+    acc.add_argument("access_value", nargs="?", help="grant, revoke, link, record: item:<id>, dest:<address> or "
+                                                     "site:<domain>")
     acc.add_argument("--org", help="map: one organization (default: every one with a local checkout); grant, revoke "
                                    "from a plain terminal: the organization")
     acc.add_argument("--position", help="map: one position's reach")

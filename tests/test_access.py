@@ -208,7 +208,9 @@ class KeeperListTest(AccessMapTest):
         self.assertEqual({(r["position"], r["access"]) for r in rows}, {("acme_obs", "item:abc"),
                                                                         ("acme_payer", "item:def")})
         self.assertTrue(all(r["approved"].endswith("uncommitted: serves nothing") for r in rows), rows)
-        self.assertEqual(of_access.check_lists(self.orgs, resolve=lambda c: c == "AC-7"), [])
+        got = of_access.check_lists(self.orgs, resolve=lambda c: c == "AC-7")
+        self.assertEqual(len(got), 2)  # the lines' passkey records are not written here (tests/test_keeper.py)
+        self.assertTrue(all("has no record in registry/access/approvals/" in g for g in got), got)
         removed = of_access.revoke(self.repo, "acme-vault", "acme_obs", "item:abc")
         self.assertEqual(removed["access"], "item:abc")
         rows = [r for r in self.build()[0]["rows"] if r.get("keeper") == "acme-vault"]
