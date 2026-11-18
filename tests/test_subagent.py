@@ -130,6 +130,16 @@ class SubagentTest(unittest.TestCase):
         with mock.patch.object(of_subagent, "login_files", lambda h: [os.path.expanduser("~/.codex/auth.json")]):
             self.assertEqual(self.go("codex", visibility=lambda r: True, real_login_gate=True)[0]["exit"], 0)
 
+    def test_codex_training_is_read_through_of_capacity_verified_reader(self):
+        import types
+        fake = types.SimpleNamespace(training_verified=lambda h: "off" if h == "codex" else None)
+        with mock.patch.dict(sys.modules, {"of_capacity": fake}):
+            self.assertEqual(of_subagent.training(None, "codex"), "off")
+            self.assertEqual(self.go("codex")[0]["exit"], 0)          # not public, but the verified reading is off
+        broken = types.SimpleNamespace(training_verified=lambda h: 1 / 0)
+        with mock.patch.dict(sys.modules, {"of_capacity": broken}):
+            self.assertIsNone(of_subagent.training(None, "codex"))
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():

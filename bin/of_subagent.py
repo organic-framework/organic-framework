@@ -261,7 +261,20 @@ def public_material(checkout, commits, visibility=gh_public):
 
 
 def training(conn, harness):
-    """'off', 'on' or None: the latest training reading of_capacity recorded for HARNESS."""
+    """'off', 'on' or None: the latest training reading of_capacity recorded for HARNESS, read through
+    of_capacity.training_verified, which re-checks a Codex 'off' against the owner's closed card on each read, so a
+    reading written any other way keeps the gate shut (of_capacity, message 01a1eef9-87ee; of_secrets-review on PR
+    334). Without of_capacity's reader, the latest event."""
+    try:
+        import of_capacity
+        verified = getattr(of_capacity, "training_verified", None)
+    except ImportError:
+        verified = None
+    if verified is not None:
+        try:
+            return verified(harness)
+        except Exception:  # noqa: BLE001 - an unreadable reading is no reading: the gate stays shut
+            return None
     if conn is None:
         return None
     row = conn.execute("SELECT payload FROM event WHERE name = ? AND json_extract(payload, '$.harness') = ? "
