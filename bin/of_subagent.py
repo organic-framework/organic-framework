@@ -353,7 +353,7 @@ def public_material(checkout, commits, visibility=gh_public):
     return why or "the checkout has no public GitHub remote"
 
 
-def training(conn, harness):
+def training(conn, harness, org=None):
     """'off', 'on' or None: the latest training reading of_capacity recorded for HARNESS, read through
     of_capacity.training_verified, which re-checks a Codex 'off' against the owner's closed card on each read, so a
     reading written any other way keeps the gate shut (of_capacity, message 01a1eef9-87ee; of_secrets-review on PR
@@ -365,7 +365,10 @@ def training(conn, harness):
         verified = None
     if verified is not None:
         try:
-            return verified(harness)
+            try:
+                return verified(harness, org=org)   # only that organization's own named card counts (a42864fc)
+            except TypeError:
+                return verified(harness)
         except Exception:  # noqa: BLE001 - an unreadable reading is no reading: the gate stays shut
             return None
     if conn is None:
@@ -818,11 +821,12 @@ def scratch_root(session):
 
 def run(harness, kind, prompt_file, position, org=None, session=None, work=None, checkout=None, at=None, diff=None,
         schema=None, model=None, registry=None, org_root=None, conn=None, binary=None, visibility=gh_public,
-        sandbox=None, keep_snapshot=False, gates=True, popen=subprocess.run, log=print):
+        sandbox=None, keep_snapshot=False, gates=True, popen=subprocess.run, log=print, org_name=None):
     """One outside run; returns {run, exit, answer, record, usage, model, tools, unexpected_tools}. Refuses (raises
     SubagentError) before anything leaves the machine when a limit is not met. GATES False skips the organization's
     choice, the prompt's checks and the training gate (`of subagent selftest`, which sends only its own canary files).
-    ORG_ROOT: the organization's repository, where its prompt_check lives."""
+    ORG_ROOT: the organization's repository, where its prompt_check lives. ORG_NAME: its name in orgs.yaml, for the
+    training reading's card (ORG is the events' organization id)."""
     if harness not in HARNESSES:
         raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)} (or auto)")
     if kind not in KINDS:
@@ -849,11 +853,11 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         if why:
             raise SubagentError(why)
         why = selftest_passed(conn, harness, kind) or prompt_checks(prompt_file, schema, registry, org_root, harness,
-                                                                training(conn, harness))
+                                                                training(conn, harness, org_name or org))
         if why:
             raise SubagentError(why)
         if checkout:
-            why = training_gate(harness, kind, training(conn, harness),
+            why = training_gate(harness, kind, training(conn, harness, org_name or org),
                                 public_material(checkout, [head, base], visibility) if harness == "codex" else None)
             if why:
                 raise SubagentError(why)

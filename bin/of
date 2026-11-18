@@ -2641,7 +2641,8 @@ def cmd_subagent(args):
         got = of_subagent.run(harness, args.kind, args.prompt_file, me["name"], org=me.get("_orgid") or org,
                               session=os.environ.get("CLAUDE_CODE_SESSION_ID"), work=args.work,
                               checkout=args.workspace, at=args.at, diff=args.diff, schema=args.schema, model=args.model,
-                              registry=registry, org_root=os.path.dirname(os.path.dirname(path)) if path else None,
+                              registry=registry, org_name=org,
+                              org_root=os.path.dirname(os.path.dirname(path)) if path else None,
                               conn=conn,
                               log=lambda m: print(m, file=sys.stderr))
     except of_subagent.SubagentError as e:
