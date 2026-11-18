@@ -548,6 +548,27 @@ class RelayTest(unittest.TestCase):
                                                       "text": "hi", "grants": [g]})
         self.assertEqual(other["authority"], "unverified_claim")            # within its org: delivered, not verified
 
+    def test_a_grant_for_something_else_verifies_no_message(self):
+        """2026-11-19: a signed grant whose scope leaves to_org and to_positions open (finance data) matched every
+        message, so it verified one to any organization."""
+        a = self.machine("a", ["ofb", "zeta"])
+        self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-lead"}]})
+        g = {"id": "g-d", "subject": "ofb_lead", "issuer": "tenant", "tier": "act_and_report",
+             "scope": {"data": ["finance"]}}
+        g["signature"] = of_grants.sign_ed25519(g, self.grant_key)
+        with self.assertRaises(of_client.ServerError) as cm:
+            self.call(a, "POST", "/v1/messages", {"msg_id": "d1", "to": "zeta:acme_org", "from": "ofb:ofb_lead",
+                                                  "text": "hi", "grants": [g]})
+        self.assertEqual(cm.exception.status, 403)
+        inside = self.call(a, "POST", "/v1/messages", {"msg_id": "d2", "to": "ofb:ofb_dev", "from": "ofb:ofb_lead",
+                                                       "text": "hi", "grants": [g]})
+        self.assertEqual(inside["authority"], "unverified_claim")
+        m = {"id": "g-m", "subject": "ofb_lead", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["zeta"]}}
+        m["signature"] = of_grants.sign_ed25519(m, self.grant_key)
+        ok = self.call(a, "POST", "/v1/messages", {"msg_id": "d3", "to": "zeta:acme_org", "from": "ofb:ofb_lead",
+                                                   "text": "hi", "grants": [g, m]})
+        self.assertEqual(ok["authority"], "verified")
+
     def test_addresses_are_validated(self):
         a = self.machine("a", ["ofb"])
         for bad in ("ofb", ":x", "ofb:"):

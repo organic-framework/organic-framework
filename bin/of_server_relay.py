@@ -323,6 +323,15 @@ class Relay:
         r = of_grants.verify_request(pool, self.app._grant_key(), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                      grant_id, f"{from_org}:{from_pos}", action)
         if r.get("valid") and r.get("decision") == "admit":
+            # The deciding grant must be one for messages: it names the organization a message crosses into
+            # (`to_org`), or, within its own organization, the positions (`to_positions`). A grant for something
+            # else (finance data, a keeper's line) leaves both open, so it matched every message (2026-11-19,
+            # of_server, found while adding a keeper scope: a data grant verified a message to any organization).
+            dim = "to_org" if to_org != from_org else "to_positions"
+            d = next((x for gs in pool.values() for x in gs
+                      if x.get("id") == r.get("deciding_grant") and x.get("subject") == from_pos), None)
+            if not (d and (d.get("scope") or {}).get(dim)):
+                return "unverified_claim", f"grant {r.get('deciding_grant')} names no {dim}: it is not for messages"
             holds, why = self._holds(m, from_org, from_pos)
             return ("verified", "ok") if holds else ("unverified_claim", why)
         return "unverified_claim", r.get("reason") or r.get("decision") or "not admitted"
