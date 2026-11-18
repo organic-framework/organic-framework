@@ -5,8 +5,9 @@ names it as `of:gitleaks`, for its prompt_check and its snapshot_check).
     python3 bin/of_gitleaks_check.py FOLDER
     python3 bin/of_gitleaks_check.py --repo CHECKOUT --at COMMIT [--registry positions.yaml]   (a dry run)
 
-It runs gitleaks 8.30.1 at the path pinned for the platform (macOS arm64: /opt/homebrew/bin/gitleaks; Linux x86_64 and
-aarch64: /usr/local/bin/gitleaks), checked by its SHA-256 (`gitleaks dir`: no git history) with the rules pinned in bin/rules/gitleaks-8.30.1.toml,
+It runs gitleaks 8.30.1 from OF_GITLEAKS when that is set, else from the path pinned for the platform (macOS arm64:
+/opt/homebrew/bin/gitleaks; Linux x86_64 and aarch64: /usr/local/bin/gitleaks), copied into a fresh 0700 folder and
+checked there by the platform's pinned SHA-256 (`gitleaks dir`: no git history) with the rules pinned in bin/rules/gitleaks-8.30.1.toml,
 --redact and the tree's own allow comments and ignore files not honoured, archives opened. Exit 0 only when gitleaks
 is that version, ran, wrote its report and found nothing. A finding, a scanner error, a missing report or another
 version exits 1. It prints each finding as its file, line and rule id, never the match (a user organization's security
@@ -173,20 +174,49 @@ def pinned_why(exe):
     return None if h == PINNED_SHA256 else f"{real} is not the pinned gitleaks (SHA-256 {h[:16]}…)"
 
 
+def private_copy(src, folder):
+    """Copy the gitleaks file SRC into FOLDER (a fresh 0700 folder) and return the copy's path when the copy has the
+    pinned SHA-256, else (None, why). The hash and the exec are then of one file nobody else can write: a link or a
+    path another user can replace cannot be swapped between the check and the run (a user organization's security
+    keeper, 2026-11-18)."""
+    import hashlib
+    real = os.path.realpath(src)
+    dest = os.path.join(folder, "gitleaks")
+    try:
+        with open(real, "rb") as fin, open(dest, "wb") as fout:
+            data = fin.read()
+            fout.write(data)
+        os.chmod(dest, 0o700)
+    except OSError:
+        return None, f"gitleaks is not at {src}"
+    with open(dest, "rb") as fh:
+        h = hashlib.sha256(fh.read()).hexdigest()
+    if h != PINNED_SHA256:
+        return None, f"{real} is not the pinned gitleaks (SHA-256 {h[:16]}…)"
+    return dest, None
+
+
 def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
-    """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule)."""
-    if exe is None:
-        if not PINNED_PATH:
-            import platform
-            print(f"no gitleaks is pinned for {sys.platform}/{platform.machine()}: fail closed", file=out)
-            return 1
-        why = pinned_why(PINNED_PATH)
+    """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule). The
+    program comes from OF_GITLEAKS when set (a runner whose root filesystem is read-only puts it in its own folder),
+    else from the platform's pinned path; either way it is copied into a fresh 0700 folder, hashed there and run
+    from there."""
+    if exe is not None:
+        return _check(folder, exe, run, out)
+    if not PINNED_PATH:
+        import platform
+        print(f"no gitleaks is pinned for {sys.platform}/{platform.machine()}: fail closed", file=out)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="of-gitleaks-bin-") as d:
+        os.chmod(d, 0o700)
+        copy, why = private_copy(os.environ.get("OF_GITLEAKS") or PINNED_PATH, d)
         if why:
             print(f"{why}: fail closed", file=out)
             return 1
-        # the file the hash was taken of, not the link: the shared user can write /opt/homebrew (re-review of
-        # dbaf2d5d)
-        exe = os.path.realpath(PINNED_PATH)
+        return _check(folder, copy, run, out)
+
+
+def _check(folder, exe, run=subprocess.run, out=sys.stdout):
     if not os.path.isfile(RULES):
         print(f"the pinned rules {os.path.basename(RULES)} are missing: fail closed", file=out)
         return 1
