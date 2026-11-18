@@ -131,6 +131,22 @@ KEY_HEAD = re.compile(rb"\A(?:\xef\xbb\xbf)?\s*(?:-----BEGIN (?:[A-Z0-9]+ )*PRIV
                       rb"|PuTTY-User-Key-File-\d+:)")   # as of_guard._KEY_HEAD (G1.13)
 KEY_ANYWHERE = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-\d+:")
 DENIED_ROOTS = ("/Users", "/private/tmp", "/private/var/folders", "/Volumes")
+# on Linux (the agent host move; of_agent-server, message 01a1efa2-919d): where people's and other sessions' files live
+LINUX_DENIED_ROOTS = ("/home", "/root", "/tmp", "/var/tmp", "/run", "/mnt", "/media", "/srv")
+
+
+def denied_roots():
+    return LINUX_DENIED_ROOTS if sys.platform.startswith("linux") else DENIED_ROOTS
+
+
+def codex_bin():
+    """The Codex program: the ChatGPT app's on macOS; on Linux OF_CODEX, else codex on PATH, else ~/.local/bin/codex."""
+    if not sys.platform.startswith("linux"):
+        return CODEX_BIN
+    for c in (os.environ.get("OF_CODEX"), shutil.which("codex"), os.path.expanduser("~/.local/bin/codex")):
+        if c and os.access(c, os.X_OK):
+            return os.path.realpath(c)
+    raise SubagentError("Codex is not installed on this machine (OF_CODEX, codex on PATH, or ~/.local/bin/codex)")
 # which harness runs inside the outer sandbox: Codex applies its own sandbox, which macOS refuses inside another
 OUTER_SANDBOX = {"codex": False, "muse": True}
 
@@ -776,6 +792,27 @@ def _private_dir(path):
     return path
 
 
+def bwrap_argv(argv, run_dir, work_dir, write_dir, exe_dir, login, login_at):
+    """ARGV inside bwrap, on Linux: /usr and /etc read-only, /home, /tmp and /run empty tmpfs, the run's folder bound
+    in with its material read-only (WRITE_DIR, a patch's snapshot, writable), the Codex program's folder read-only and
+    its login file bound onto LOGIN_AT; a new session and every namespace but the network unshared (the harness
+    reaches its API; Codex's own sandbox keeps its commands off the network and inside the material)."""
+    a = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--share-net",
+         "--ro-bind", "/usr", "/usr"]
+    for p in ("/bin", "/sbin", "/lib", "/lib64"):
+        if os.path.islink(p):
+            a += ["--symlink", os.readlink(p), p]
+        elif os.path.isdir(p):
+            a += ["--ro-bind", p, p]
+    a += ["--ro-bind", "/etc", "/etc", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/home",
+          "--tmpfs", "/run", "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+          "--bind", run_dir, run_dir, "--ro-bind", work_dir, work_dir]
+    if write_dir:
+        a += ["--bind", write_dir, write_dir]
+    a += ["--ro-bind", exe_dir, exe_dir, "--bind", login, login_at, "--chdir", work_dir, "--"]
+    return a + list(argv)
+
+
 def _link_login(src, dest):
     """A fresh harness folder holding only the login: a link to the account's login file, so a refreshed token is
     written back where the harness keeps it."""
@@ -807,7 +844,7 @@ def codex_filesystem(work_dir, write=None):
     the material folder to read (the more specific path wins); for a patch run WRITE, the snapshot inside it, is
     the one writable path, so every write lands where the run's diff is taken."""
     fs = {":minimal": "read"}
-    fs.update({r: "none" for r in DENIED_ROOTS + ("/tmp",)})
+    fs.update({r: "none" for r in denied_roots() + ("/tmp",)})
     fs[os.path.realpath(work_dir)] = "read"
     if write:
         fs[os.path.realpath(write)] = "write"
@@ -829,8 +866,14 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
     if harness == "codex":
         codex_home = os.path.join(run_dir, "codex-home")
         login = os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "auth.json")
-        _link_login(login, os.path.join(codex_home, "auth.json"))
-        argv = [binary or CODEX_BIN, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
+        if sys.platform.startswith("linux"):
+            # bwrap binds the login file itself onto this path (a link would point into the hidden /home)
+            os.makedirs(codex_home, mode=0o700, exist_ok=True)
+            open(os.path.join(codex_home, "auth.json"), "a").close()
+        else:
+            _link_login(login, os.path.join(codex_home, "auth.json"))
+        exe = binary or codex_bin()
+        argv = [exe, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                 "--skip-git-repo-check", "--json", "-o", answer_file, "-C", work_dir]
         for f in CODEX_OFF:
             argv += ["--disable", f]
@@ -844,7 +887,8 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
                  f'model_reasoning_effort="{DEFAULT_EFFORT["codex"]}"']
         argv.append("-")
         fresh = _private_dir(os.path.join(run_dir, "home"))
-        return argv, clean_env(run_dir, {"CODEX_HOME": codex_home, "HOME": fresh}), [CODEX_APP, login], [login]
+        reads = [CODEX_APP, login] if not sys.platform.startswith("linux") else [os.path.dirname(exe), login]
+        return argv, clean_env(run_dir, {"CODEX_HOME": codex_home, "HOME": fresh}), reads, [login]
     if harness == "muse":
         cfg, data = os.path.join(run_dir, "xdg-config"), os.path.join(run_dir, "xdg-data")
         own = muse_login_dir()
@@ -963,12 +1007,12 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     training reading's card (ORG is the events' organization id)."""
     if harness not in HARNESSES:
         raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)} (or auto)")
-    if sys.platform != "darwin":
-        # the confinement is macOS's (Codex's profile names macOS roots, Muse's outer sandbox is sandbox-exec): on
-        # another system /home would be readable and Muse unconfined, so no run goes until it is ported there
-        # (of_agent-server for the agent host move, message 01a1ef9c-454b)
-        raise SubagentError(f"of subagent run confines its harnesses on macOS only; on {sys.platform} it refuses until "
-                            "the confinement is ported (bwrap)")
+    if sys.platform != "darwin" and not (sys.platform.startswith("linux") and harness == "codex"):
+        # the confinement is macOS's, and on Linux Codex's inside bwrap; Muse's outer sandbox is sandbox-exec, so on
+        # another system it would run unconfined (of_agent-server for the agent host move, messages 01a1ef9c-454b and
+        # 01a1efa2-919d)
+        raise SubagentError(f"of subagent run confines {harness} on macOS" + (" and Codex on Linux" if harness != "codex"
+                            else "") + f" only; on {sys.platform} it refuses")
     if kind not in KINDS:
         raise SubagentError(f"--kind {kind!r}: one of {', '.join(KINDS)}")
     if kind in WORKSPACE_KINDS and not checkout:
@@ -1070,7 +1114,10 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             raise SubagentError(f"{harness}'s run could read its own login ({', '.join(exposed)}): its process must "
                                 "read it and its file tools read what the process may, so no run goes until the login "
                                 "comes another way (Muse: --api-key-stdin)")
-        if outer:
+        if sys.platform.startswith("linux") and harness == "codex":
+            argv = bwrap_argv(argv, run_dir, work_dir, _snapshot_in(work_dir) if kind == "patch" else None,
+                              reads[0], login_files("codex")[0], os.path.join(run_dir, "codex-home", "auth.json"))
+        elif outer:
             prof = os.path.join(run_dir, "sandbox.sb")
             with open(prof, "w") as fh:
                 fh.write(sandbox_profile(run_dir, reads, writes))

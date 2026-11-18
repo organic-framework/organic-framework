@@ -550,12 +550,42 @@ class SubagentTest(unittest.TestCase):
         self.assertNotIn("dotted code identifier", g.ALLOW)          # dropped (of_secrets-review, PR 337)
 
     def test_another_system_than_macos_is_refused(self):
-        with mock.patch.object(of_subagent.sys, "platform", "linux"):
-            fake = Fake("codex")
-            with self.assertRaises(of_subagent.SubagentError) as e:
-                self.go("codex", fake=fake, visibility=lambda r: True)
-            self.assertIn("macOS only", str(e.exception))
-            self.assertEqual(fake.calls, [])
+        for platform, harness in (("win32", "codex"), ("linux", "muse")):
+            with self.subTest(platform=platform, harness=harness), \
+                    mock.patch.object(of_subagent.sys, "platform", platform):
+                fake = Fake(harness)
+                with self.assertRaises(of_subagent.SubagentError) as e:
+                    self.go(harness, fake=fake, visibility=lambda r: True)
+                self.assertIn("only; on " + platform, str(e.exception))
+                self.assertEqual(fake.calls, [])
+
+    def test_codex_on_linux_runs_inside_bwrap(self):
+        """The agent host move (of_agent-server, message 01a1efa2-919d): on Linux, Codex inside bwrap, with /home, /tmp
+        and /run empty, the material read-only (a patch's snapshot writable) and its login bound in alone."""
+        with mock.patch.object(of_subagent.sys, "platform", "linux"), \
+                mock.patch.dict(os.environ, {"OF_CODEX": "/bin/echo"}):
+            for kind in ("read", "patch"):
+                with self.subTest(kind=kind):
+                    _, call = self.go("codex", kind=kind, visibility=lambda r: True)
+                    a = call["argv"]
+                    self.assertEqual(a[0], "/usr/bin/bwrap")
+                    pairs = list(zip(a, a[1:], a[2:]))
+                    for flag in ("--die-with-parent", "--new-session", "--unshare-all", "--share-net"):
+                        self.assertIn(flag, a)
+                    for root in ("/home", "/tmp", "/run"):
+                        self.assertIn(("--tmpfs", root), list(zip(a, a[1:])))
+                    material = next(x[1] for x in pairs if x[0] == "--ro-bind" and x[1].endswith("/material"))
+                    self.assertEqual(os.path.basename(material), "material")
+                    writable = [x[1] for x in pairs if x[0] == "--bind" and x[1].startswith(material)]
+                    self.assertEqual(writable, [os.path.join(material, "fw")] if kind == "patch" else [])
+                    login = next(x for x in pairs if x[0] == "--bind" and x[2].endswith("/codex-home/auth.json"))
+                    self.assertTrue(login[1].endswith("/.codex/auth.json"))
+                    fs = next(x for x in a if x.startswith("permissions.of_snapshot.filesystem="))
+                    self.assertIn('"/home"="none"', fs)
+                    self.assertEqual(a[a.index("--") + 1], "/bin/echo")
+
+    def test_linux_names_its_own_denied_roots(self):
+        self.assertIn("/home", of_subagent.LINUX_DENIED_ROOTS)
 
     def test_the_registry_points_of_architect_decided(self):
         """docs/registry.md, Subagent harnesses (2026-11-18): a repos item by origin, max_snapshot_mb, and the entry
