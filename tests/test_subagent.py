@@ -98,9 +98,11 @@ class SubagentTest(unittest.TestCase):
         with open(self.prompt, "w") as fh:
             fh.write("Review this.")
 
-    def selftest(self, harness, passed, ts="2026-11-18T12:00:00Z"):
+    def selftest(self, harness, passed, ts="2026-11-18T12:00:00Z", kinds=("read", "patch")):
+        kinds = list(kinds)
         self.conn.execute("INSERT INTO event VALUES (?, ?, ?)", (of_subagent.SELFTEST_EVENT, ts, json.dumps(
-            {"harness": harness, "passed": passed, "failed": None if passed else ["the model cannot read its login"]})))
+            {"harness": harness, "passed": passed, "failed": None if passed else ["the model cannot read its login"],
+             "kinds": kinds})))
 
     def test_a_run_needs_its_harness_latest_selftest_passed(self):
         """of_secrets-review on PR 328: Muse's file tools read its own login, and withholding catches only a verbatim
@@ -239,6 +241,62 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(g.check(d, exe="/bin/true", run=runner(rc=2), out=io.StringIO()), 1)
         self.assertEqual(g.check(d, exe=None, run=runner(), out=io.StringIO()) if not __import__("shutil").which(
             "gitleaks") else 1, 1)
+
+    def test_what_a_patch_may_not_change(self):
+        """RFC 0008 §3.3 (of_review on PR 336): agent settings and instructions, git control, CI, a new or converted
+        link, a newly executable file; one test per class, each naming the path."""
+        raw = lambda old, new, path: f":{old} {new} 0 0 M\t{path}"  # noqa: E731
+        R = of_subagent.patch_refusals
+        for path in (".claude/settings.json", "x/.codex/config.toml", ".agents/skills/s/SKILL.md", ".mcp.json",
+                     "sub/AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".gitattributes", ".gitmodules", ".githooks/pre",
+                     "tools/hooks/run.sh", ".git/config", ".github/workflows/ci.yml", ".gitlab-ci.yml",
+                     ".circleci/config.yml", ".buildkite/pipeline.yml"):
+            with self.subTest(path=path):
+                self.assertEqual([p for p, _ in R(raw("100644", "100644", path))], [path])
+        self.assertEqual(R(raw("000000", "120000", "lnk")), [("lnk", "a symbolic link, new or made from a file")])
+        self.assertEqual(R(raw("100644", "120000", "a.py")), [("a.py", "a symbolic link, new or made from a file")])
+        self.assertEqual(R(raw("100644", "100755", "a.py")), [("a.py", "a file newly made executable")])
+        self.assertEqual(R(raw("000000", "100755", "new.sh")), [("new.sh", "a file newly made executable")])
+        self.assertEqual(R(raw("100755", "100755", "run.sh") + "\n" + raw("100644", "100644", "bin/of.py")), [])
+
+        class Steer(Fake):
+            def __call__(s2, argv, **kw):
+                snap = os.path.join(kw["cwd"], "fw")
+                os.makedirs(os.path.join(snap, ".github", "workflows"))
+                with open(os.path.join(snap, ".github", "workflows", "ci.yml"), "w") as fh:
+                    fh.write("on: push\n")
+                os.symlink("/etc/passwd", os.path.join(snap, "link"))
+                with open(os.path.join(snap, "x.sh"), "w") as fh:
+                    fh.write("echo\n")
+                os.chmod(os.path.join(snap, "x.sh"), 0o755)
+                return Fake.__call__(s2, argv, **kw)
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("codex", kind="patch", fake=Steer("codex", ["file_change"]), visibility=lambda r: True)
+        msg = str(e.exception)
+        for p in (".github/workflows/ci.yml", "link (a symbolic link", "x.sh (a file newly made executable"):
+            self.assertIn(p, msg)
+        self.assertIn("refused.diff", msg)
+        ended = [p for k, p in self.events if k == "subagent_run"][-1]
+        self.assertEqual(len(ended["patch_refused"]), 3)
+
+    def test_a_patch_run_needs_a_selftest_with_the_patch_checks(self):
+        self.selftest("codex", True, ts="2026-11-18T13:00:00Z", kinds=("read",))
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("codex", kind="patch", visibility=lambda r: True)
+        self.assertIn("carried no patch checks", str(e.exception))
+        self.assertEqual(self.go("codex", kind="read", visibility=lambda r: True)[0]["exit"], 0)
+
+    def test_a_patch_run_is_bounded_by_steps_and_wall_clock(self):
+        d = self.tmp.name
+        many = [sys.executable, "-c", "import sys, time\nfor i in range(50):\n    print('{\"type\":\"item.started\"}', "
+                "flush=True)\ntime.sleep(30)"]
+        slow = [sys.executable, "-c", "import time; time.sleep(30)"]
+        for argv, wall, steps, why in ((many, 60, 10, "more than 10 tool calls"), (slow, 1, 10, "wall clock past 1 s")):
+            with self.subTest(why=why):
+                stream = os.path.join(d, "s.jsonl")
+                with open(os.devnull, "rb") as fin, open(stream, "wb") as fout, open(os.devnull, "wb") as ferr:
+                    r = of_subagent.run_bounded(argv, fin, fout, ferr, None, d, stream, wall, steps, poll_s=0.2)
+                self.assertEqual((r.returncode, r.stopped), (124, why))
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
