@@ -151,6 +151,46 @@ class PanelTest(unittest.TestCase):
             dict(v, panels={"requests": "x", "extra": "y"}), {"of_conductor"})))
         self.assertEqual(of_views.pinned_positions([v]), {"of_conductor"})
 
+    def test_of_view_add_takes_a_panel_and_the_questions_one_needs_no_command(self):
+        import shlex
+        name, cmd = of_views.panel_spec("questions", "/py dir/python3", "/of/bin")
+        self.assertEqual(name, "questions")
+        self.assertEqual(shlex.split(cmd), ["env", "OF_AUTOMATION=1", "/py dir/python3", "/of/bin/of_herdr_plugin.py",
+                                            "keep", "--name", "the questions panel", "--", "/py dir/python3",
+                                            "/of/bin/of", "asks", "--panel"])
+        self.assertEqual(of_views.panel_spec("requests = of conductor panel", "/p", "/b"),
+                         ("requests", "of conductor panel"))
+        for bad in ("requests", "questions=", "two words", "", "a/b=x"):
+            with self.assertRaises(ValueError):
+                of_views.panel_spec(bad, "/p", "/b")
+        v = {"name": "c", "workspace": "w", "tab": "t", "positions": ["of_conductor", "panel:questions"],
+             "panels": {"questions": cmd}}
+        self.assertEqual(of_views.check(v, {"of_conductor"}), [])
+
+    def test_a_view_labels_its_first_agents_own_tab_rather_than_move_it(self):
+        """of init pins the conductor's view before of spawn opens the conductor in a tab named by its system: the
+        tab is relabelled, and the conductor is not moved out of the tab the person watches (lab, 2026-11-18)."""
+        tabs = [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "acme"},
+                {"tab_id": "w1:t2", "workspace_id": "w1", "label": "lead"},
+                {"tab_id": "w2:t1", "workspace_id": "w2", "label": "acme"}]
+        alone = {"w1:p1": "w1:t1", "w1:p2": "w1:t1", "w1:p3": "w1:t2"}
+        self.assertEqual(of_views.adoptable_tab(tabs, alone, ["w1:p1", "w1:p2"], "w1")["tab_id"], "w1:t1")
+        self.assertEqual(of_views.adoptable_tab(tabs, alone, ["w1:p1"], "w1"), None)  # w1:p2 is not the view's
+        self.assertEqual(of_views.adoptable_tab(tabs, alone, ["w1:p1", "w1:p2"], "w2"), None)  # another workspace
+        self.assertEqual(of_views.adoptable_tab(tabs, alone, [], "w1"), None)
+        self.assertEqual(of_views.split_ratio({"layout": "grid"}), "0.5")
+        self.assertEqual(of_views.split_ratio({}), "0.6")
+
+    def test_a_panel_is_held_by_one_view_per_machine(self):
+        """Its pane is found by its label, one per machine: two views holding it would take it from each other
+        (of_onboarding, msg 01a1efbe-b153), so of view add --panel refuses a second one; the same view may be added
+        again."""
+        views = [{"name": "conductor", "positions": ["of_conductor", "panel:questions"]},
+                 {"name": "core", "positions": ["of_architect"]}]
+        self.assertEqual(of_views.panel_held_elsewhere(views, "questions", "acme"), "conductor")
+        self.assertEqual(of_views.panel_held_elsewhere(views, "questions", "conductor"), None)
+        self.assertEqual(of_views.panel_held_elsewhere(views, "requests", "acme"), None)
+
 
 class LanguageTest(unittest.TestCase):
     """of_conductor and of_onboarding, 2026-11-11: a new organization's panel follows owner.yaml (English by default)
