@@ -413,6 +413,128 @@ def format_table(rows, home=None):
     return "\n".join(out)
 
 
+# ------------------------------------------------------------------- other harnesses
+#
+# Codex (a ChatGPT plan) and Muse (Meta) are capacity too (the founder, prompt 01a1ee3c-3b01, 2026-11-18: use those
+# accounts as well, since the Claude ones keep running out; RFC 0003 §4.7). They are shown beside the Claude accounts
+# and never enter the balancer's rows, so no Claude session is moved onto them.
+
+CODEX_APP_BIN = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+CODEX_WINDOWS = {300: "five_hour", 10080: "seven_day"}  # Codex names its windows by their length in minutes
+CODEX_PROBE_PROMPT = "Reply with the single word OK."
+
+
+def codex_home():
+    return os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
+
+
+def codex_bin():
+    """The Codex CLI: on PATH, else the one ChatGPT.app ships; None when neither is there."""
+    return shutil.which("codex") or (CODEX_APP_BIN if os.access(CODEX_APP_BIN, os.X_OK) else None)
+
+
+def codex_reading(home=None, newest=5):
+    """The newest rate-limit reading Codex wrote into a session rollout (<home>/sessions/Y/M/D/*.jsonl, newest files
+    first): {plan, windows: {five_hour|seven_day: {utilization, resets_at}}, observed_at, credits}, or None. Any
+    Codex session writes one with each turn's token count, the founder's own included."""
+    pattern = os.path.join(home or codex_home(), "sessions", "*", "*", "*", "*.jsonl")
+    try:
+        files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)[:newest]
+    except OSError:
+        return None
+    for f in files:
+        last = None
+        try:
+            with open(f, errors="replace") as fh:
+                for line in fh:
+                    if '"rate_limits"' in line:
+                        last = line
+        except OSError:
+            continue
+        try:
+            j = json.loads(last) if last else None
+        except ValueError:
+            j = None
+        rl = ((j or {}).get("payload") or {}).get("rate_limits")
+        if not isinstance(rl, dict):
+            continue
+        windows = {}
+        for w in (rl.get("primary"), rl.get("secondary")):
+            if isinstance(w, dict) and w.get("window_minutes") in CODEX_WINDOWS:
+                windows[CODEX_WINDOWS[w["window_minutes"]]] = {
+                    "utilization": round(w.get("used_percent") or 0),
+                    "resets_at": _iso(w["resets_at"]) if w.get("resets_at") else None}
+        credits = rl.get("credits") or {}
+        return {"plan": rl.get("plan_type"), "windows": windows, "observed_at": j.get("timestamp"),
+                "limit_reached": rl.get("rate_limit_reached_type"),
+                "credits": bool(credits.get("has_credits")) and not credits.get("unlimited")}
+    return None
+
+
+def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess.run):
+    """Codex's reading, after a minimal probe (`codex exec`, read-only sandbox, low effort, one word, in an empty
+    folder) when the newest is older than PROBE_EVERY_MIN or `fresh`. None when Codex is not installed or never
+    signed in; {"error": …} when a due probe failed and there is no reading."""
+    now = now or time.time()
+    home = home or codex_home()
+    if not os.path.isfile(os.path.join(home, "auth.json")):
+        return None
+    r = codex_reading(home)
+    seen = _ts((r or {}).get("observed_at") or "") or 0
+    exe = codex_bin()
+    if probe and exe and (fresh or now - seen > PROBE_EVERY_MIN * 60):
+        work = os.path.join(STATE_DIR, "capacity", "probe", "codex")
+        os.makedirs(work, mode=0o700, exist_ok=True)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+        env.update(OF_AUTOMATION="1", SSH_AUTH_SOCK="")
+        try:
+            runner([exe, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-c",
+                    "model_reasoning_effort=low", CODEX_PROBE_PROMPT], cwd=work, env=env, capture_output=True,
+                   text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as e:
+            return r or {"error": f"codex probe: {e}"[:120]}
+        r = codex_reading(home) or r
+    return r
+
+
+def muse_status(path=None):
+    """Muse (Meta): its model and contributor mode, from its settings; None when it is not installed. Muse reports no
+    limits, so there is nothing to probe: a run that hits one is the first sign."""
+    path = path or os.path.expanduser("~/.config/muse/settings.json")
+    if not shutil.which("muse") and not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as fh:
+            s = json.load(fh) or {}
+    except (OSError, ValueError):
+        s = {}
+    return {"model": s.get("model") or "muse-wonder-full-1.0", "contributor_mode": s.get("contributor_mode_enabled")}
+
+
+def format_other(codex, muse):
+    """The lines `of capacity status` prints for the other harnesses, under the Claude table."""
+    out = []
+    if codex is not None:
+        w = (codex or {}).get("windows") or {}
+        if codex.get("error"):
+            line = f"no reading: {codex['error']}"
+        else:
+            parts = [f"{k} {_pct_text(w[k].get('utilization'))}, resets {_local(w[k].get('resets_at'), True)}"
+                     for k in ("five_hour", "seven_day") if k in w]
+            line = "; ".join(parts) or "no window reported"
+            line += f"  (read {_local(codex.get('observed_at'), True)} local)"
+            if codex.get("limit_reached"):
+                line += f"  LIMIT REACHED: {codex['limit_reached']}"
+        out.append(f"{'codex':<18} {'ChatGPT ' + str(codex.get('plan') or '?'):<36} {line}")
+    if muse is not None:
+        mode = {True: "contributor mode ON: its sessions go to Meta for training",
+                False: "contributor mode off"}.get(muse.get("contributor_mode"), "contributor mode unknown")
+        out.append(f"{'muse':<18} {str(muse.get('model')):<36} limits not reported; {mode}")
+    if out:
+        out.insert(0, "other harnesses (not targets for Claude sessions):")
+    return "\n".join(out)
+
+
 # ------------------------------------------------------------------- move
 #
 # A Workplace change with the same holder (docs/capacity.md): between turns, carry the session's

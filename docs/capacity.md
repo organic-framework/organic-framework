@@ -33,6 +33,12 @@ What the probe showed on 2026-11-06:
 
 Every probe runs in the automation environment ([`AGENTS.md`](../AGENTS.md)): `OF_AUTOMATION=1`, an empty `SSH_AUTH_SOCK`, no `HERDR_*` variables (a nested harness run from a herdr pane would re-bind the pane), and `OF_PROBE=1`.
 
+**Other harnesses** (the founder, prompt `01a1ee3c-3b01`, 2026-11-18: use the Codex and Muse subscriptions too, since the Claude accounts keep running out; RFC 0003 §4.7). Below the Claude table, `of capacity status` prints:
+- **Codex** (a ChatGPT plan; the CLI on `PATH` or the one ChatGPT.app ships): the newest rate-limit reading any Codex session wrote into its rollout (`~/.codex/sessions`, or `CODEX_HOME`), with each window named by its length (300 minutes: five_hour; 10080: seven_day), its plan and the time of the reading. When the newest is older than the probe period, a probe refreshes it: `codex exec` in a read-only sandbox, low effort, one word, in an empty folder under the state directory, in the automation environment (about 5k tokens of the plan). An account never signed in (no `auth.json`) shows nothing.
+- **Muse** (Meta): its model and whether contributor mode is on, from its settings. Muse reports no limits, so nothing is probed; a run that hits one is the first sign. Contributor mode on means its sessions go to Meta as training data, so OF's own runs turn it off per run.
+
+Neither enters the balancer's rows: no Claude session is moved onto them. `--json` keeps its list of Claude accounts.
+
 ## Thresholds
 
 A position's account past a threshold is a capacity problem the owner should see before the account stops:
