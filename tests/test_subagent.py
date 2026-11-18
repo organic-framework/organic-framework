@@ -116,6 +116,20 @@ class SubagentTest(unittest.TestCase):
             self.go("codex", visibility=lambda r: True)
         self.assertIn("no live selftest", str(e.exception))
 
+    def test_a_harness_whose_run_could_read_its_login_is_refused(self):
+        """of_secrets-review on PR 328: a selftest whose model declines to read its login passes; the read rules decide."""
+        login = of_subagent.login_files("muse")[0]
+        os.makedirs(os.path.dirname(login), exist_ok=True)
+        with open(login, "w") as fh:
+            fh.write("{}")
+        fake = Fake("muse")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go("muse", fake=fake, real_login_gate=True)
+        self.assertIn("could read its own login (auth.json)", str(e.exception))
+        self.assertEqual(fake.calls, [])
+        with mock.patch.object(of_subagent, "login_files", lambda h: [os.path.expanduser("~/.codex/auth.json")]):
+            self.assertEqual(self.go("codex", visibility=lambda r: True, real_login_gate=True)[0]["exit"], 0)
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():
@@ -135,9 +149,14 @@ class SubagentTest(unittest.TestCase):
             kw.setdefault("at", "HEAD")
         if kw.get("visibility") and harness == "codex" and kind != "research":
             self.publish()
-        got = of_subagent.run(harness, kind, self.prompt, "of_doer", session="S1", registry=kw.pop("registry", REG),
-                              org_root=self.org, conn=kw.pop("conn", self.conn), popen=fake, visibility=kw.pop("visibility", lambda r: False),
-                              log=lambda m: None, **kw)
+        # the other limits are tested as if the login came another way; the login's own gate has its test
+        real = kw.pop("real_login_gate", False)
+        with mock.patch.object(of_subagent, "login_readable",
+                               of_subagent.login_readable if real else (lambda *a: [])):
+            got = of_subagent.run(harness, kind, self.prompt, "of_doer", session="S1", registry=kw.pop("registry", REG),
+                                  org_root=self.org, conn=kw.pop("conn", self.conn), popen=fake,
+                                  visibility=kw.pop("visibility", lambda r: False),
+                                  log=lambda m: None, **kw)
         return got, fake.calls[-1] if fake.calls else None
 
     def test_confined_to_a_snapshot_of_tracked_files(self):
