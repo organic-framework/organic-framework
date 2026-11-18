@@ -589,11 +589,13 @@ class InitServerPortTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "server.yaml")
             with open(p, "w") as fh:
-                fh.write("plugins:\n  storage: sqlite\n")
+                fh.write("# of-server plugins\nplugins:\n  storage: sqlite\n")
             of_init.set_config_key(p, "port", 18300)
+            of_init.set_config_key(p, "port", 18310)              # its line is edited, not added again
             with open(p) as fh:
-                doc = yaml.safe_load(fh)
-            self.assertEqual(doc, {"plugins": {"storage": "sqlite"}, "port": 18300})
+                text = fh.read()
+            self.assertEqual(yaml.safe_load(text), {"plugins": {"storage": "sqlite"}, "port": 18310})
+            self.assertTrue(text.startswith("# of-server plugins\n"))     # the comment stays
             self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o600")
             q = os.path.join(d, "ship.yaml")
             of_init.set_config_key(q, "server_url", "http://127.0.0.1:18300")

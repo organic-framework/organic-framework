@@ -7513,7 +7513,7 @@ def main(argv=None):
     it.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
                     help="the effort they start at (default xhigh)")
     it.add_argument("--server-port", type=int, help="this organization's own of-server port (default 18200): a second "
-                    "contour on one machine needs its own, written to server.yaml, ship.yaml and its orgs.yaml entry")
+                    "contour on one machine needs its own, written to server.yaml and its orgs.yaml entry")
     it.add_argument("--capacity", choices=["yes", "no"],
                     help="with two or more Claude accounts here: move agents off a spent account and add the head's "
                          "capacity keeper (bench/capacity); asked in a terminal when unset, else one card to the head")

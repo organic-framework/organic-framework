@@ -1195,9 +1195,10 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         # --server-port: this contour's server listens there, and its clients (the shipper, the relay through
         # orgs.yaml) reach it there, so a second contour on one machine never reaches the first one's server (of_lab's
         # clean-VM walkthrough of 2026-11-19, finding 1: it got 401 from the first contour's 18200)
+        # ship.yaml's server_url stays: it is the default of every organization without its own server:, and this
+        # one's orgs.yaml server: already routes it (of_review on PR 366)
         set_config_key(srv_cfg, "port", int(server_port))
-        set_config_key(of_events.config_path("ship.yaml"), "server_url", f"http://127.0.0.1:{int(server_port)}")
-        out(f"  this contour's server: 127.0.0.1:{int(server_port)} (server.yaml, ship.yaml, orgs.yaml)")
+        out(f"  this contour's server: 127.0.0.1:{int(server_port)} (server.yaml, and its orgs.yaml entry)")
     store = of_server.Store(of_server.load_config()["state_dir"])
     of_server.enroll(store, of_events.machine_id(), of_client.ensure_key(), [o["name"] for o in lst],
                      [o["name"] for o in lst], tenant=True)
@@ -1301,15 +1302,16 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
 
 
 def set_config_key(path, key, value):
-    """Set one top-level KEY in the YAML file at PATH (mode 600), keeping its other keys."""
+    """Set one top-level scalar KEY in the YAML file at PATH (mode 600), editing its line in place so the file's other
+    keys and its comments stay (of_review on PR 366: a dump dropped server.yaml's comments)."""
     import yaml
-    doc = {}
-    if os.path.exists(path):
-        with open(path) as fh:
-            doc = yaml.safe_load(fh) or {}
-    doc[key] = value
+    text = open(path).read() if os.path.exists(path) else ""
+    line = yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True).strip()
+    rx = re.compile(rf"^{re.escape(key)}\s*:.*$", re.M)
+    text = rx.sub(lambda m: line, text, count=1) if rx.search(text) else \
+        (text + ("" if not text or text.endswith("\n") else "\n") + line + "\n")
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+        fh.write(text)
     os.chmod(path, 0o600)
 
 
