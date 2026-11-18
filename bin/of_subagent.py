@@ -140,13 +140,22 @@ def denied_roots():
 
 
 def codex_bin():
-    """The Codex program: the ChatGPT app's on macOS; on Linux OF_CODEX, else codex on PATH, else ~/.local/bin/codex."""
+    """The Codex program: the ChatGPT app's on macOS. On Linux: OF_CODEX, else the newest mise install of codex (the
+    agent host's, its real static binary: the PATH entry is a link to mise itself, which a bwrap bind of its folder would
+    not run; of_agent-server, message 01a1efa5-16dd), else ~/.local/bin/codex, else a codex on PATH that resolves to a
+    file named codex."""
     if not sys.platform.startswith("linux"):
         return CODEX_BIN
-    for c in (os.environ.get("OF_CODEX"), shutil.which("codex"), os.path.expanduser("~/.local/bin/codex")):
-        if c and os.access(c, os.X_OK):
+    import glob
+    mise = sorted(glob.glob(os.path.expanduser("~/.local/share/mise/installs/codex/*/bin/codex")),
+                  key=lambda p: [(0, int(x), "") if x.isdigit() else (1, 0, x) for x in re.split(r"[.-]", p.split("/")[-3])])
+    which = shutil.which("codex")
+    for c in (os.environ.get("OF_CODEX"), mise[-1] if mise else None, os.path.expanduser("~/.local/bin/codex"),
+              which if which and os.path.basename(os.path.realpath(which)).startswith("codex") else None):
+        if c and os.path.isfile(os.path.realpath(c)) and os.access(c, os.X_OK):
             return os.path.realpath(c)
-    raise SubagentError("Codex is not installed on this machine (OF_CODEX, codex on PATH, or ~/.local/bin/codex)")
+    raise SubagentError("Codex is not installed on this machine (OF_CODEX, a mise install, ~/.local/bin/codex, or "
+                        "codex on PATH)")
 # which harness runs inside the outer sandbox: Codex applies its own sandbox, which macOS refuses inside another
 OUTER_SANDBOX = {"codex": False, "muse": True}
 
@@ -838,14 +847,23 @@ def muse_binary(bin_dir=MUSE_BIN_DIR):
     raise SubagentError("Muse is not installed (no muse-bin in ~/.local/bin)")
 
 
-def codex_filesystem(work_dir, write=None):
+def codex_filesystem(work_dir, write=None, reads=()):
     """Codex's permission profile: the minimal platform files, nothing under the roots other sessions and the home
     folder live in (the minimal set reads /private/tmp: a canary beside a checkout there was read on 2026-11-18), and
     the material folder to read (the more specific path wins); for a patch run WRITE, the snapshot inside it, is
     the one writable path, so every write lands where the run's diff is taken."""
     fs = {":minimal": "read"}
-    fs.update({r: "none" for r in denied_roots() + ("/tmp",)})
+    # on Linux the outer bwrap already empties /home, /tmp and /run, and Codex's own Linux sandbox reads a root set to
+    # none as hiding the material inside it (the run's folder lies under /tmp): the selftest on the agent host read no
+    # tracked file and wrote no patch with them (2026-11-18), so there the profile names the material alone
+    if not sys.platform.startswith("linux"):
+        fs.update({r: "none" for r in denied_roots() + ("/tmp",)})
     fs[os.path.realpath(work_dir)] = "read"
+    # on Linux Codex's own sandbox is a nested bwrap that runs the Codex program again inside: its folder must be
+    # readable there, or every command fails ("bwrap: execvp .../codex: No such file"; the agent host's selftest,
+    # 2026-11-18). The outer bwrap shows nothing else of /home.
+    for r in reads:
+        fs[os.path.realpath(r)] = "read"
     if write:
         fs[os.path.realpath(write)] = "write"
     return fs
@@ -880,7 +898,8 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         argv += ["-c", "project_doc_max_bytes=0", "-c", 'approval_policy="never"', "-c", 'web_search="live"' if web else 'web_search="disabled"',
                  "-c", 'default_permissions="of_snapshot"',
                  "-c", "permissions.of_snapshot.filesystem={" + ", ".join(
-                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in codex_filesystem(work_dir, _snapshot_in(work_dir) if kind == "patch" else None).items()) + "}"]
+                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in codex_filesystem(work_dir, _snapshot_in(work_dir) if kind == "patch" else None,
+                                      [os.path.dirname(exe)] if sys.platform.startswith("linux") else ()).items()) + "}"]
         if schema:
             argv += ["--output-schema", schema]
         argv += ["-m", model or DEFAULT_MODEL["codex"], "-c",

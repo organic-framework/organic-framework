@@ -71,7 +71,10 @@ class SubagentTest(unittest.TestCase):
         self.saved = of_events.STATE_DIR
         of_events.STATE_DIR = os.path.join(t, "state")
         self.events = []
-        self.patches = [mock.patch.object(of_events, "emit", lambda k, p, **kw: self.events.append((k, p))),
+        # the wrapper confines on macOS (and Codex on Linux); CI runs on Linux, so the tests run as on macOS unless
+        # one names its platform (of_release on PR 342)
+        self.patches = [mock.patch.object(of_subagent.sys, "platform", "darwin"),
+                        mock.patch.object(of_events, "emit", lambda k, p, **kw: self.events.append((k, p))),
                         mock.patch.object(of_subagent, "scratch_root", lambda s: os.path.join(t, "scratch")),
                         mock.patch.object(of_subagent, "muse_binary", lambda *a: "/bin/false")]
         for p in self.patches:
@@ -388,7 +391,7 @@ class SubagentTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(copy).st_mode & 0o777), "0o700")
             self.assertNotEqual(os.path.realpath(copy), os.path.realpath(fake))
             seen = []
-            with mock.patch.dict(os.environ, {"OF_GITLEAKS": fake}), \
+            with mock.patch.dict(os.environ, {"OF_GITLEAKS": fake}), mock.patch.object(g, "PINNED_PATH", fake), \
                     mock.patch.object(g, "_check", lambda folder, exe, run, out: seen.append(exe) or 0):
                 self.assertEqual(g.check(self.tmp.name, out=io.StringIO()), 0)
             self.assertTrue(seen and seen[0].endswith("/gitleaks") and not seen[0].startswith(self.tmp.name))
@@ -581,8 +584,8 @@ class SubagentTest(unittest.TestCase):
                     login = next(x for x in pairs if x[0] == "--bind" and x[2].endswith("/codex-home/auth.json"))
                     self.assertTrue(login[1].endswith("/.codex/auth.json"))
                     fs = next(x for x in a if x.startswith("permissions.of_snapshot.filesystem="))
-                    self.assertIn('"/home"="none"', fs)
-                    self.assertEqual(a[a.index("--") + 1], "/bin/echo")
+                    self.assertNotIn('"/tmp"="none"', fs)         # bwrap hides it; Codex's none would hide the run
+                    self.assertEqual(a[a.index("--") + 1], os.path.realpath("/bin/echo"))
 
     def test_linux_names_its_own_denied_roots(self):
         self.assertIn("/home", of_subagent.LINUX_DENIED_ROOTS)
