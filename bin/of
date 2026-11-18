@@ -2893,6 +2893,8 @@ def cmd_registry(args):
                             "missing from the file")
         import of_credentials  # docs/registry.md, Credentials: ids, keepers, listed ids, one claim per path
         problems += of_credentials.check(ORGS_FILE)
+        import of_access  # the keepers' lists (docs/access.md §2)
+        problems += of_access.check_lists(ORGS_FILE)
         import of_capacity  # docs/registry.md, training_cards: a known harness to a task card of the organization
         problems += of_capacity.training_registry_problems()
         for pr in problems:
@@ -6251,12 +6253,92 @@ def cmd_protected(args):
 
 
 def cmd_access(args):
-    """`of access map`: who reaches what, through what, approved how, last used (docs/access.md §2; bin/of_access.py)."""
+    """`of access map|request|grant|revoke` (docs/access.md; bin/of_access.py): the map of who reaches what, a
+    position's request to its structure keeper, and the structure keeper's one-line grant and revoke."""
     import of_access
+    import of_pulse
     try:
-        return of_access.cli(args)
+        if args.action == "map":
+            return of_access.cli(args)
+        positions, _ = load_positions()
+        if args.action == "request":
+            if not (args.keeper and args.access and args.why):
+                raise OfError("usage: of access request --keeper K --access A [--actions a,b] [--limit JSON] --why …")
+            me = _me(positions, getattr(args, "sender", None))
+            org = me.get("_org")
+            root = of_access.org_root(org, ORGS_FILE)
+            doc = of_access.load_list(of_access.list_path(root, args.keeper))
+            if doc is None:
+                raise OfError(f"{org} has no keeper {args.keeper} (no registry/access/{args.keeper}.yaml)")
+            actions = [a.strip() for a in (args.actions or "").split(",") if a.strip()] or \
+                list(of_access.KINDS.get(doc.get("kind"), {}).get("actions") or [])
+            limit = _access_limit(args.limit)
+            spec = of_access.KINDS.get(doc.get("kind")) or {}
+            probe = {"position": me["name"], "access": args.access, "actions": actions, "limit": limit,
+                     "tier": spec.get("floor", "secret"), "decided": "OF-1", "approval": "passkey:probe",
+                     "grant": "probe", "added": {"at": _now_iso(), "by": me["name"]}}
+            shape = [p for p in of_access.entry_problems(doc.get("kind"), probe, {me["name"]})
+                     if p.startswith(("access ", "actions", "limit", "a signer", "a browser", "a vault"))]
+            if shape:
+                raise OfError("; ".join(shape))
+            keeper = of_pulse.structure_keeper(positions, org)
+            if not keeper:
+                raise OfError(f"{org} has no structure keeper (an active position of role org or architect)")
+            text = of_access.request_text(args.keeper, doc, me["name"], args.access, actions, limit, args.why)
+            argv = ["ask", text, "--to", keeper, "--options", "grant it, with its tier|decline it, with the reason"]
+            if getattr(args, "sender", None):
+                argv += ["--from", args.sender]
+            return main(argv)
+        if not (args.keeper_name and args.position_name and args.access_value):
+            raise OfError(f"usage: of access {args.action} <keeper> <position> <access> …")
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        if sid:  # an agent's session: only its organization's structure keeper writes a list (docs/access.md §2)
+            me = _me(positions, None)
+            org = me.get("_org")
+            if args.org and args.org != org:
+                raise OfError(f"{me['name']} writes only {org}'s lists")
+            if of_pulse.structure_keeper(positions, org) != me["name"]:
+                raise OfError(f"only {org}'s structure keeper writes a keeper's list (docs/access.md §2)")
+            by = me["name"]
+        else:  # the owner's plain terminal
+            if not args.org:
+                raise OfError("--org: the organization whose list this is")
+            org, by = args.org, "owner"
+        root = of_access.org_root(org, ORGS_FILE)
+        if args.action == "grant":
+            if not (args.tier and args.decided):
+                raise OfError("of access grant needs --tier and --decided (the founder's card, or your commit for a "
+                              "plain entry)")
+            decided = args.decided.strip()
+            e = of_access.grant(root, args.keeper_name, args.position_name, args.access_value,
+                                actions=[a.strip() for a in (args.actions or "").split(",") if a.strip()],
+                                tier=args.tier, decided=decided, by=by, limit=_access_limit(args.limit),
+                                approval=args.approval, grant_id=args.grant, expires=args.expires, kind=args.kind,
+                                host=args.host, now_iso=_now_iso())
+            print(f"added to {org}:registry/access/{args.keeper_name}.yaml: {e['position']} {e['access']} "
+                  f"({e['tier']}); commit it: a keeper serves only the committed tip")
+            return 0
+        if not args.why:
+            raise OfError("of access revoke needs --why")
+        of_access.revoke(root, args.keeper_name, args.position_name, args.access_value)
+        print(f"removed from {org}:registry/access/{args.keeper_name}.yaml: {args.position_name} {args.access_value} "
+              f"({args.why.strip()}); commit it, and the keeper stops serving it at its next read")
+        return 0
     except of_access.AccessError as e:
         raise OfError(str(e)) from None
+
+
+def _access_limit(text):
+    if not text:
+        return None
+    try:
+        v = json.loads(text)
+    except ValueError:
+        raise OfError('--limit is JSON: {"per_call": {"amount": 0.5, "unit": "ETH"}, '
+                      '"per_period": {"amount": 2, "unit": "ETH", "period": "P1D"}}') from None
+    if not isinstance(v, dict):
+        raise OfError("--limit is a JSON object")
+    return v
 
 
 def cmd_grant(args):
@@ -7244,11 +7326,29 @@ def main(argv=None):
     pf.add_argument("--to", required=True, help="the target's commit id (not a branch)")
     pf.set_defaults(fn=cmd_protected)
     acc = sub.add_parser("access", help="access through keepers: the map of who reaches what (docs/access.md)")
-    acc.add_argument("action", choices=["map"])
-    acc.add_argument("--org", help="one organization (default: every one with a local checkout)")
-    acc.add_argument("--position", help="one position's reach")
+    acc.add_argument("action", choices=["map", "request", "grant", "revoke"])
+    acc.add_argument("keeper_name", nargs="?", help="grant, revoke: the keeper")
+    acc.add_argument("position_name", nargs="?", help="grant, revoke: the position")
+    acc.add_argument("access_value", nargs="?", help="grant, revoke: item:<id>, dest:<address> or site:<domain>")
+    acc.add_argument("--org", help="map: one organization (default: every one with a local checkout); grant, revoke "
+                                   "from a plain terminal: the organization")
+    acc.add_argument("--position", help="map: one position's reach")
     acc.add_argument("--json", action="store_true")
-    acc.add_argument("--long", action="store_true", help="also what each credential acts as, and its paths or ref")
+    acc.add_argument("--long", action="store_true", help="map: also what each credential acts as, and its paths or ref")
+    acc.add_argument("--keeper", help="request: the keeper")
+    acc.add_argument("--access", help="request: item:<id>, dest:<address> or site:<domain>")
+    acc.add_argument("--actions", help="request, grant: a,b (default: the keeper kind's own)")
+    acc.add_argument("--limit", help='request, grant: JSON, {"per_call": {"amount", "unit"}, "per_period": '
+                                     '{"amount", "unit", "period"}}')
+    acc.add_argument("--why", help="request: the work it is for; revoke: why")
+    acc.add_argument("--tier", choices=["plain", "secret", "money", "production"], help="grant")
+    acc.add_argument("--decided", help="grant: the founder's card, or your commit for a plain entry")
+    acc.add_argument("--approval", help="grant: passkey:<record id> (secret and up)")
+    acc.add_argument("--grant", help="grant: the founder's signed grant (money and production)")
+    acc.add_argument("--expires", help="grant: a UTC time, optional")
+    acc.add_argument("--kind", choices=["vault", "signer", "browser"], help="grant: the kind, to start a keeper's list")
+    acc.add_argument("--host", help="grant: the machine the keeper runs on, to start its list")
+    acc.add_argument("--from", dest="sender", help="request: the position, when the session cannot tell")
     acc.set_defaults(fn=cmd_access)
     gr = sub.add_parser("grant", help="issue or revoke a signed grant (tenant only)")
     gr.add_argument("action", choices=["issue", "revoke", "rekey"])
