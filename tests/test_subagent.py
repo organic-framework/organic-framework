@@ -37,11 +37,16 @@ class Fake:
     def __init__(self, harness, tools=()):
         self.harness, self.tools, self.calls = harness, tools, []
 
+    @staticmethod
+    def _files(cwd):
+        return sorted(os.path.relpath(os.path.join(d, f), cwd) for d, _, fs in os.walk(cwd) for f in fs)
+
     def __call__(self, argv, stdin=None, stdout=None, stderr=None, env=None, cwd=None):
         self.calls.append({"argv": argv, "env": env, "cwd": cwd, "files": sorted(
             os.path.relpath(os.path.join(d, f), cwd) for d, _, fs in os.walk(cwd) for f in fs),
             "prompt": stdin.read().decode() if stdin else "",
-            "profile": open(argv[2]).read() if argv[0].endswith("sandbox-exec") else None})
+            "profile": open(argv[2]).read() if argv[0].endswith("sandbox-exec") else None,
+            "diffs": {f: open(os.path.join(cwd, f)).read() for f in self._files(cwd) if f.endswith(".of-review.diff")}})
         if self.harness == "codex":
             lines = [{"type": "item.started", "item": {"type": t}} for t in self.tools or ["command_execution"]]
             lines.append({"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40,
@@ -297,6 +302,54 @@ class SubagentTest(unittest.TestCase):
                 with open(os.devnull, "rb") as fin, open(stream, "wb") as fout, open(os.devnull, "wb") as ferr:
                     r = of_subagent.run_bounded(argv, fin, fout, ferr, None, d, stream, wall, steps, poll_s=0.2)
                 self.assertEqual((r.returncode, r.stopped), (124, why))
+
+    def test_a_user_organizations_security_review_of_the_excludes(self):
+        """Its security keeper on 48c7fe06 (through of_capacity, message 01a1ef27-a6d3): content filters, quoted
+        non-ASCII paths, case, and an ignore file that silences gitleaks."""
+        # (1) a content filter other than LFS's refuses the snapshot; LFS's is neutralized
+        self.git("config", "filter.crypt.smudge", "cat")
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            self.go()
+        self.assertIn("filter.crypt.smudge", str(e.exception))
+        self.git("config", "--unset", "filter.crypt.smudge")
+        self.git("config", "filter.lfs.smudge", "false")
+        self.git("config", "filter.lfs.required", "true")
+        self.assertEqual(self.go()[0]["exit"], 0)
+        # (2) an excluded file in a non-ASCII folder stays out of the diff; patterns match any case
+        folder = "\u043a\u043b"
+        os.makedirs(os.path.join(self.repo, folder))
+        for name in (folder + "/prod.env", "PROD.ENV", "Secrets/x.txt", ".gitleaksignore"):
+            os.makedirs(os.path.dirname(os.path.join(self.repo, name)) or self.repo, exist_ok=True)
+            with open(os.path.join(self.repo, name), "w") as fh:
+                fh.write("API=1\n")
+            self.git("add", "-f", name)
+        with open(os.path.join(self.repo, "a.py"), "a") as fh:
+            fh.write("print(5)\n")
+        self.git("add", "a.py")
+        self.git("commit", "-qm", "add")
+        _, call = self.go(diff="HEAD~1..HEAD")
+        self.assertEqual(call["files"], ["fw/.of-review.diff", "fw/a.py"])
+        diff = call["diffs"]["fw/.of-review.diff"]
+        self.assertIn("+print(5)", diff)
+        for gone in ("prod.env", "PROD.ENV", "Secrets/", ".gitleaksignore", "API=1"):
+            self.assertNotIn(gone, diff)
+
+    def test_the_gitleaks_check_is_pinned_and_honours_no_ignore_file(self):
+        import io
+        import of_gitleaks_check as g
+        fake = os.path.join(self.tmp.name, "gitleaks")
+        with open(fake, "w") as fh:
+            fh.write("#!/bin/sh\necho 8.30.1\n")
+        self.assertIn("is not the pinned gitleaks", g.pinned_why(fake))
+        self.assertIn("is not at", g.pinned_why(os.path.join(self.tmp.name, "none")))
+        d = os.path.join(self.tmp.name, "scan")
+        os.makedirs(os.path.join(d, "sub"))
+        with open(os.path.join(d, "sub", ".gitleaksignore"), "w") as fh:
+            fh.write("x\n")
+        ok = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="8.30.1\n")  # noqa: E731
+        out = io.StringIO()
+        self.assertEqual(g.check(d, exe="/bin/true", run=ok, out=out), 1)
+        self.assertIn("an ignore file in the scanned folder", out.getvalue())
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
