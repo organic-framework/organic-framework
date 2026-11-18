@@ -471,8 +471,11 @@ class RelayTest(unittest.TestCase):
 
     def test_a_reply_across_organizations_needs_no_grant(self):
         """docs/registry.md, Grants (of_architect 2eeabd5, 2026-11-09): a reply to a message from the other
-        organization, delivered to the replier at most 7 days ago, goes back to its sender only, without a grant
-        and without authority."""
+        organization to the replier, at most 7 days old and not expired or failed, goes back to its sender only,
+        without a grant and without authority. A queued or leased message counts: its holder reads it with
+        `of inbox --mine` before the relay marks it delivered (2026-11-18, a user organization's structure keeper,
+        msg 01a1ee56-f4f7: a busy receiver read, took and answered a message the relay held leased, three times
+        refused)."""
         a, b = self.machine("a", ["ofb"]), self.machine("b", ["zeta"])
         g = {"id": "g-zeta", "subject": "acme_org", "issuer": "tenant", "tier": "propose", "scope": {"to_org": ["ofb"]}}
         g["signature"] = of_grants.sign_ed25519(g, self.grant_key)
@@ -483,15 +486,16 @@ class RelayTest(unittest.TestCase):
                                     "text": "a guard request", "grants": [g]})["authority"],
                          "verified")
         reply = {"msg_id": "r1", "to": "zeta:acme_org", "from": "ofb:ofb_lead", "text": "done", "reply_to": "q1"}
-        with self.assertRaises(of_client.ServerError) as cm:              # not delivered yet
-            self.call(a, "POST", "/v1/messages", reply)
-        self.assertEqual(cm.exception.status, 403)
+        early = self.call(a, "POST", "/v1/messages", dict(reply, msg_id="r0"))  # queued: read with of inbox --mine
+        self.assertEqual(early["authority"], "none")
         self.assertEqual(self.call(a, "GET", "/v1/messages?wait=0")["messages"][0]["msg_id"], "q1")
+        leased = self.call(a, "POST", "/v1/messages", dict(reply, msg_id="r0l"))  # leased: the relay waits for idle
+        self.assertEqual(leased["authority"], "none")
         self.call(a, "POST", "/v1/messages/q1/ack", {"status": "delivered"})
         r = self.call(a, "POST", "/v1/messages", dict(reply, grant_id="g-claimed"))
         self.assertEqual((r["authority"], r["authority_reason"]),
                          ("none", "a reply to q1 (no grant needed; carries no authority)"))
-        got = self.call(b, "GET", "/v1/messages?wait=0")["messages"][0]
+        got = next(x for x in self.call(b, "GET", "/v1/messages?wait=0")["messages"] if x["msg_id"] == "r1")
         self.assertEqual(got["reply_to_from"], got["to"])  # a reply to its own message: typed at once (R9)
         self.assertEqual((got["msg_id"], got["reply_to"], got["authority"], got["grant_id"]), ("r1", "q1", "none", None))
         for bad, why in ((dict(reply, msg_id="r2", to="zeta:acme_other"),
@@ -511,6 +515,15 @@ class RelayTest(unittest.TestCase):
         self.assertIn("delivered more than 7 days ago", json.loads(cm.exception.body)["title"])
         with self.app.store.conn() as c:
             c.execute("UPDATE messages SET done_at = NULL WHERE msg_id = 'q1'")
+        for state, why in (("expired", "it expired unread"), ("dead", "its delivery failed")):  # never reached it
+            with self.app.store.conn() as c:
+                c.execute("UPDATE messages SET state = ? WHERE msg_id = 'q1'", (state,))
+            with self.assertRaises(of_client.ServerError) as cm:
+                self.call(a, "POST", "/v1/messages", dict(reply, msg_id=f"r-{state}"))
+            self.assertEqual(cm.exception.status, 403, state)
+            self.assertIn(f"reply_to q1 never reached ofb:ofb_lead: {why}", json.loads(cm.exception.body)["title"])
+        with self.app.store.conn() as c:
+            c.execute("UPDATE messages SET state = 'delivered' WHERE msg_id = 'q1'")
         self.call(a, "PUT", "/v1/presence", {"holders": [{"org": "ofb", "position": "ofb_lead", "session_id": "S-x"}]})
         with self.assertRaises(of_client.ServerError) as cm:              # the replier must hold the position
             self.call(a, "POST", "/v1/messages", dict(reply, msg_id="r6"))

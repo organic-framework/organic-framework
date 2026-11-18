@@ -652,7 +652,7 @@ Status: **v0, accepted** by `of_architect` (2026-11-05), after RFC 0001 §5.0. C
 
 - `registry/grants.yaml` in the repository of the **subject's** organization. A grant across organizations (for example, a position allowed to message another organization) lives with the subject and names `to_org`. The receiving organization's guard reads the issuing organization's grants through the same `orgs.yaml` list.
 - **A reply needs no grant** (2026-11-09, `of_architect`, on `of_server`'s proposal). A reply goes through without one when all of these hold:
-  - its `reply_to` names a message from the other organization that was delivered to the replier at most 7 days before;
+  - its `reply_to` names a message from the other organization to the replier, at most 7 days old and not expired or failed. One still queued for the replier counts: its holder reads it with `of inbox --mine` before the relay marks it delivered (2026-11-18, `of_server`; docs/server.md, `POST /v1/messages`);
   - it goes only to that message's sender.
 
   Such a reply carries no authority: the relay marks it as a reply and resolves no grant in it. It cannot start a new thread with any other position.
