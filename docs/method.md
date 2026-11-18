@@ -132,6 +132,21 @@ The founder, 2026-11-17 (prompt `01a1e9ab-a3ba`): "I'm tired of chasing the whol
 
 **The measure** is the owner's pushes on tempo per organization per day, which should fall. The booked starts without a basis, per position, lead it.
 
+### Users' success: a service other people use is watched after they start (2026-11-19, `of_architect`)
+
+On 2026-11-18 two services were found broken by the people using them before any agent knew: a user organization's own service, whose users found an outage first, and OF's questions panel, which another organization's agent could not set up. The founder asked for customer-success roles for services people use (relayed by `of_conductor`, message `01a1f05e-4aba`).
+
+- **What it is** (the practice of customer success management; sources below). It is the ongoing work of making sure the people who started using a service keep getting the result they came for. Onboarding gets them to the first useful use. Support answers when they report a problem. Success comes between and after the two: it reads their health, and reaches them before they report.
+- **What a success role does after onboarding:**
+  - **keeps a health line per user** (an organization, a team or a person), red, yellow or green, from evidence: use over time, failures, open issues, progress toward the goal agreed at the start;
+  - **watches use and failures, and acts before a report.** A failed setup or upgrade, a check that went red, a feature that stopped being used: it tells the user what it saw, with the machine and version, and offers the fix;
+  - **reviews adoption with the user** at the agreed points: actual use against the goal, the next step;
+  - **closes the loop.** It hands a symptom with its impact to support, a defect with its evidence to engineering (the system's keeper), and the workflow and obstacle to product, and it follows each to an answer the user can see.
+- **The signals it reads without asking the user** come from the service's own records. For OF these are each machine's health (docs/health.md), failed `of init` and `of spawn` runs, guard denials that stop a feature, the user organization's framework matters through its structure keeper, and its people's questions about OF. A stale signal is a gap, named as unknown, never as healthy.
+- **Through whom.** For OF the success role reaches another organization only through its structure keeper (AGENTS.md, "The OF team organizes; each organization operates"). An organization's own success role reaches its users through the channels its owner allows.
+- **One role can carry it** while users are few: an agreed goal per user, the health line, one place for incoming issues.
+- **Sources** (gathered by a Codex research run on 2026-11-18, `of subagent run`, record `01a1f05e-fc3c`; not re-read here): B. Hochstein et al., "Customer success management, customer health, and retention in B2B industries", International Journal of Research in Marketing, 2023, doi 10.1016/j.ijresmar.2023.09.002; GitLab Handbook, "CSM Responsibilities and Services" and "Customer Health Scoring", 2026; First Round Review, "The Founder's Guide to Building a V1 of Customer Success", 2025; Replicated documentation, "About instance and event data", for telemetry from installations customers run themselves.
+
 ### One team: rails for working together
 
 Founder, 2026-11-05:
