@@ -71,8 +71,15 @@ PATCH_DENY_NAMES = {".mcp.json", "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".
 # kept. Codex has no step cap of its own (none in codex exec --help, 0.169.0-alpha.11.1, or its config), so the wrapper
 # counts the tools it starts in its event stream. Values: the first patch runs of 2026-11-18 took under 3 minutes and
 # under 30 tool calls; 40 minutes and 200 tool calls leave room for a real change with its named tests.
-DENY_DIRS_LOWER = {d.lower() for d in PATCH_DENY_DIRS}
-DENY_NAMES_LOWER = {n.lower() for n in PATCH_DENY_NAMES}
+def fold(name):
+    """A name as a case-insensitive volume compares it: NFKC and full case folding, so U+017F (long s) reads as s
+    and the Kelvin sign as k (of_secrets-review on PR 334: AGENT\u017f.md passed a plain lower())."""
+    import unicodedata
+    return unicodedata.normalize("NFKC", str(name)).casefold()
+
+
+DENY_DIRS_LOWER = {fold(d) for d in PATCH_DENY_DIRS}
+DENY_NAMES_LOWER = {fold(n) for n in PATCH_DENY_NAMES}
 PATCH_WALL_S = 40 * 60
 PATCH_STEPS = 200
 PATCH_LINE = ("You may change files only inside the folder {name}/; your change is taken as a diff of that folder and "
@@ -203,7 +210,7 @@ def _exclude_rx(pattern):
     name at any depth ('*.pem'); one ending in a slash matches that folder at any depth with all under it
     ('secrets/'); one with a slash inside is anchored at the root ('host_vars/prod.yml', 'gateways/**'). '**' spans
     folders, '*' and '?' do not. An empty, absolute or '..' pattern is refused: excludes fail closed."""
-    p = str(pattern or "").strip()
+    p = fold(str(pattern or "").strip())
     if not p or p.startswith("/") or ".." in p.split("/"):
         raise SubagentError(f"exclude {pattern!r}: a path relative to the repository's root, without '..'")
     folder = p.endswith("/")
@@ -240,7 +247,7 @@ def excludes_for(registry, repo):
 
 
 def excluded(path, rxs):
-    return any(r.match(path) for r in rxs or ())
+    return any(r.match(fold(path)) for r in rxs or ())
 
 
 def changed_names(checkout, base, head):
@@ -618,7 +625,7 @@ def patch_refusals(raw):
     for old, new, path in _raw_entries(raw):
         # names compared in any case, as the Mac's disk and the tools that read them do (of_secrets-review on PR 334:
         # .Claude/settings.json, docs/Claude.md and Agents.md passed)
-        parts = path.lower().split("/")
+        parts = fold(path).split("/")
         if set(parts[:-1]) & DENY_DIRS_LOWER or parts[-1] in DENY_DIRS_LOWER:
             out.append((path, "an agent's settings or instructions, git control or CI"))
         elif parts[-1] in DENY_NAMES_LOWER:
