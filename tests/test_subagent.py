@@ -192,6 +192,7 @@ class SubagentTest(unittest.TestCase):
         self.assertFalse(rx("deploy/servers.yml").match("x/deploy/servers.yml"))
         self.assertFalse(rx("*.pem").match("a/pem.txt"))
         self.assertTrue(of_subagent.excluded("Secret\u017f/x.txt", [rx("secrets/")]))   # long s reads as s
+        self.assertTrue(of_subagent.excluded("a\nb/secrets/x", [rx("secrets/")]))         # a newline in a name
         for bad in ("", "/etc/x", "../x"):
             with self.subTest(bad=bad), self.assertRaises(of_subagent.SubagentError):
                 rx(bad)

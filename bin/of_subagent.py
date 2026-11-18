@@ -172,7 +172,7 @@ def repo_of(checkout):
 # missed; a user organization's security keeper, 2026-11-18), no LFS or other smudge filter fetching or decrypting
 # content (git archive applies them), no external diff or text conversion
 GIT_SAFE = ["-c", "core.quotePath=false", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=",
-            "-c", "filter.lfs.required=false", "-c", "diff.external="]
+            "-c", "filter.lfs.required=false", "-c", "diff.external=", "-c", "diff.submodule=short"]
 
 
 def _git(checkout, *args, text=True):
@@ -228,7 +228,8 @@ def _exclude_rx(pattern):
         else:
             out, i = out + re.escape(p[i]), i + 1
     lead = "" if "/" in p else "(?:.*/)?"
-    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"), re.I)   # 'Secrets/', 'PROD.ENV' too
+    # any case ('Secrets/', 'PROD.ENV'); re.S: a newline in a name is a character like any other, never an escape
+    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"), re.I | re.S)
 
 
 def excludes_for(registry, repo):
