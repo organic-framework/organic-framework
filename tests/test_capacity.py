@@ -2335,6 +2335,60 @@ class OtherHarnesses(unittest.TestCase):
             self.assertEqual(of_capacity.muse_status(path)["model"], "default")  # no model named: no guess
 
 
+
+class StartFolder(unittest.TestCase):
+    """2026-11-18: a user organization's structure keeper ran in the OF team's repository, so OF wrote no binding-rules
+    file for it; it asked to resume in its own folder at its next move or restart. capacity.yaml `start_in` names
+    that folder, and the move carries the transcript under the folder's project key."""
+
+    def test_the_start_folder_is_the_given_one_else_start_in_else_where_it_runs(self):
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ra, rb = os.path.realpath(a), os.path.realpath(b)
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={}), ra)
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": {"k": b}}), rb)
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": {"other": b}}), ra)
+            self.assertEqual(of_capacity.start_folder("k", ra, cwd=b, policy={"start_in": {"k": a}}), rb)
+            self.assertEqual(of_capacity.start_folder("k", a, policy={"start_in": {"k": a}}), a)  # already there
+            with self.assertRaisesRegex(of_capacity.MoveError, "does not exist"):
+                of_capacity.start_folder("k", ra, policy={"start_in": {"k": os.path.join(b, "gone")}})
+
+    def test_an_untrusted_start_folder_never_stops_a_move(self):
+        def untrusted(src, dst, cwd, dry_run=False):
+            raise of_capacity.MoveError(f"folder {cwd} is trusted in no config", untrusted=cwd)
+        logs = []
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            ra, rb = os.path.realpath(a), os.path.realpath(b)
+            pol = {"start_in": {"k": b}}
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol, log=logs.append,
+                                                       trust=untrusted), ra)
+            self.assertIn("trusted in no config", logs[0])
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol,
+                                                       trust=lambda *a, **k: ("trusted", b)), rb)
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", cwd=b, policy={}, trust=untrusted), rb)
+
+    def test_the_session_moves_under_the_new_key_and_one_copy_stays(self):
+        import of_carry
+        self.assertEqual(of_capacity.folder_key("/Users/alex/.claude/w_y"), of_carry.key_of("/Users/alex/.claude/w_y"))
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bk:
+            old = os.path.join(d, "projects", "-old")
+            os.makedirs(os.path.join(old, "s1", "subagents"))
+            for f, text in ((os.path.join(old, "s1.jsonl"), "main"), (os.path.join(old, "s1", "subagents", "a.jsonl"), "sub")):
+                with open(f, "w") as fh:
+                    fh.write(text)
+            os.makedirs(os.path.join(d, "projects", "-new"))
+            with open(os.path.join(d, "projects", "-new", "s1.jsonl"), "w") as fh:
+                fh.write("stale")
+            out = of_capacity.rekey_session(d, "s1", "-new", bk)
+            self.assertEqual(out, [os.path.join(d, "projects", "-new", "s1.jsonl"), os.path.join(d, "projects", "-new", "s1")])
+            self.assertEqual(of_capacity.find_transcript(d, "s1"), out[0])  # one copy in the account
+            with open(out[0]) as fh:
+                self.assertEqual(fh.read(), "main")
+            self.assertTrue(os.path.exists(os.path.join(out[1], "subagents", "a.jsonl")))
+            with open(os.path.join(bk, "projects", "-new", "s1.jsonl")) as fh:
+                self.assertEqual(fh.read(), "stale")  # what was there is kept aside, not lost
+            self.assertEqual(of_capacity.rekey_session(d, "s1", "-new", bk), [])  # already there: nothing to do
+
+
 class ConnectorsCache(unittest.TestCase):
     def test_a_plugin_installed_after_the_list_was_cached_reads_it_again(self):
         from unittest import mock
