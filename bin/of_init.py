@@ -986,8 +986,10 @@ This repository holds the organization {Org} as an app of Organic Framework: its
 
 def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=print, owner=None,
          pkg_dir=PACKAGE_DIR, language=None, model=None, effort=None, surface=None, plugins=(), refresh=False,
-         capacity=None):
+         capacity=None, server_port=None):
     import yaml
+    if server_port is not None and not (1024 <= int(server_port) <= 65535):
+        raise ValueError(f"--server-port {server_port}: a port from 1024 to 65535")
     display = display_name(org)
     org = _name(org)
     prefix = org_prefix(org)
@@ -1161,6 +1163,8 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     entry = next(o for o in lst if o.get("name") == org)
     if model or effort:  # an organization already listed changes only when asked
         entry["agents"] = start_on
+    if server_port:  # its own server (a second contour on one machine; of_lab's walkthrough, finding 1)
+        entry["server"] = f"http://127.0.0.1:{int(server_port)}"
     with open(orgs_path, "w") as fh:
         yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
     out(f"  {orgs_path}")
@@ -1187,12 +1191,19 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
         with open(os.open(srv_cfg, os.O_WRONLY | os.O_CREAT, 0o600), "w") as fh:
             fh.write("# of-server plugins (docs/server.md, Profiles)\nplugins:\n  storage: sqlite\n  buffer: disk\n"
                      "  blobs: fs\n  identity: machine_keys\n")
+    if server_port:
+        # --server-port: this contour's server listens there, and its clients (the shipper, the relay through
+        # orgs.yaml) reach it there, so a second contour on one machine never reaches the first one's server (of_lab's
+        # clean-VM walkthrough of 2026-11-19, finding 1: it got 401 from the first contour's 18200)
+        set_config_key(srv_cfg, "port", int(server_port))
+        set_config_key(of_events.config_path("ship.yaml"), "server_url", f"http://127.0.0.1:{int(server_port)}")
+        out(f"  this contour's server: 127.0.0.1:{int(server_port)} (server.yaml, ship.yaml, orgs.yaml)")
     store = of_server.Store(of_server.load_config()["state_dir"])
     of_server.enroll(store, of_events.machine_id(), of_client.ensure_key(), [o["name"] for o in lst],
                      [o["name"] for o in lst], tenant=True)
     out(f"  this machine is enrolled as the tenant ({of_events.machine_id()})")
     if service:
-        out("  " + install_service())
+        out("  " + install_service(int(server_port) if server_port else of_server.load_config().get("port", 18200)))
     else:
         out("  service not installed (--no-service); run `of server run` yourself")
 
@@ -1289,7 +1300,20 @@ def init(org, repo=None, paths=(), yes=False, cfg_dir=None, service=True, out=pr
     return 2 if failed else 0
 
 
-def install_service():
+def set_config_key(path, key, value):
+    """Set one top-level KEY in the YAML file at PATH (mode 600), keeping its other keys."""
+    import yaml
+    doc = {}
+    if os.path.exists(path):
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    doc[key] = value
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        yaml.safe_dump(doc, fh, sort_keys=False, allow_unicode=True)
+    os.chmod(path, 0o600)
+
+
+def install_service(port=18200):
     py = sys.executable
     state = os.path.expanduser("~/.local/state/of/server")
     os.makedirs(state, mode=0o700, exist_ok=True)
@@ -1298,7 +1322,8 @@ def install_service():
         # this template had been the Background, Nice 10, low-priority-I/O unit behind a hang after a wake (of_conductor,
         # msg 01a1d63f-d434; of_review on organic-framework PR 112). Unchanged agents are left running.
         import of_server
-        return _started("service installed: " + of_server.install_launchd())
+        return _started("service installed: " + of_server.install_launchd(),
+                        url=f"http://127.0.0.1:{port}/v1/health")
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(unit_dir, exist_ok=True)
     unit = os.path.join(unit_dir, "of-server.service")
@@ -1310,7 +1335,7 @@ def install_service():
     if r.returncode != 0:  # e.g. no systemd user session on a VM: "Failed to connect to bus"
         return (f"service file written ({unit}) but systemd could not start it: "
                 f"{(r.stderr or r.stdout).strip()[:120]}. Run `of server start` instead (it detaches and waits for the server).")
-    return _started(f"service installed: {unit}")
+    return _started(f"service installed: {unit}", url=f"http://127.0.0.1:{port}/v1/health")
 
 
 # The services that carry messages and the pulse (the founder, 2026-11-11 ~17:55Z: on a new organization's machine
