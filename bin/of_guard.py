@@ -167,7 +167,7 @@ NAMES_LINE_MAX = 8
 # (`abcdef.0123456789abcdef`, digits or none), 16 or more digits (of_review on PR 332)
 _VALUE_SHAPE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}"
                           r"|(?<![A-Za-z0-9])(?=[a-z0-9]*\d[a-z0-9]*\d)[a-z0-9]{16,}(?![A-Za-z0-9])"
-                          r"|(?<![a-z0-9])[a-z0-9]{6}\.[a-z0-9]{16}(?![a-z0-9])|\d{16,}")
+                          r"|(?<![a-z0-9])[a-z0-9]{6}\.[a-z0-9]{16}(?![a-z0-9])|\d{6,}")
 
 
 def _names_list_clean(p):
@@ -191,7 +191,7 @@ def _names_list_clean(p):
         return False
     if len(data) > NAMES_LIST_MAX or "\x00" in text or _KEY_ANYWHERE.search(text) or of_classify.SECRET.search(text):
         return False
-    if _REMOTE_BODY[0]:
+    if _REMOTE_BODY[0] or _LINE_REMOTE[0]:
         return False  # a remote command's file is another machine's: this one's copy says nothing about it
     names, first = [], True
     for line in text.splitlines():
@@ -1057,7 +1057,7 @@ def _segments(text):
 # The options of a wrapper that take a value as the next word: without them `nice -n 5 cat <key>`, `sudo -u root cat
 # <key>` and `exec -a x …` read the value as the command, and no rule saw what ran (G0.6; of_server, 2026-11-14,
 # probing G23).
-def _opt_takes_next(word, opts):
+def _opt_takes_next(word, opts, flags=frozenset()):
     """Does wrapper option WORD take the next word as its value? getopt's reading: `-u` or `--user` named in OPTS does;
     so does a cluster of short options whose last letter takes a value (`-nu root`, `-lo file`, `-ca label`); one whose
     value-taking letter is not its last holds its value in the rest of the word (`-uroot`, `-i0`). G0.6
@@ -1069,20 +1069,93 @@ def _opt_takes_next(word, opts):
     for k, c in enumerate(word[1:], 1):
         if f"-{c}" in opts:
             return 1 if k == len(word) - 1 else 0
+        if f"-{c}" not in flags:
+            return 0  # a letter the tables do not know: the next word may be the command (of_secrets-review, PR 332)
     return 0
 
 
+def _tokens_or_empty(stext):
+    try:
+        return _tokens(stext)
+    except ValueError:
+        return []
+
+
+def _option_known(word, opts, flags):
+    """Is every letter of a wrapper's option one the tables know, up to the one that takes a value?"""
+    if word in opts or word in flags or word.startswith("--"):
+        return True
+    for c in word[1:]:
+        if f"-{c}" in opts:
+            return True
+        if f"-{c}" not in flags:
+            return False
+    return True
+
+
+def _unknown_option_tails(words, limit=3):
+    """When a wrapper's option holds a letter the tables do not know (`sudo -Q root cat <key>`, `xargs -Z n cat`), the
+    tails that start at each of the next LIMIT words: any of them may be the command that runs (of_secrets-review on
+    organic-framework PR 332). [] when every option is known."""
+    i = 0
+    while i < len(words):
+        w = _fold_name(os.path.basename(words[i]))
+        if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc") or \
+                re.match(r"^[A-Za-z_]\w*=", words[i]):
+            i += 1
+            continue
+        if not (w in _WRAPPERS or w in ("timeout", "env")):
+            return []
+        opts, flags = _WRAPPER_VALUE_OPTS.get(w, frozenset()), _WRAPPER_FLAGS.get(w, frozenset())
+        i += 1
+        while i < len(words) and (words[i].startswith("-") or (w == "env" and "=" in words[i])) and words[i] != "--":
+            o = words[i]
+            if o.startswith("-") and not _option_known(o, opts, flags):
+                return [words[j:] for j in range(i + 1, min(len(words), i + 1 + limit))]
+            i += 1 + (_opt_takes_next(o, opts, flags) if o.startswith("-") else 0)
+        if i < len(words) and words[i] == "--":
+            i += 1
+        if w == "timeout" and i < len(words) and re.match(r"^[\d.]+[smhd]?$", words[i]):
+            i += 1
+        if w in _WRAPPER_POSITIONAL:
+            i += _WRAPPER_POSITIONAL[w]
+    return []
+
+
+def _env_split_cluster(word):
+    """The string an env cluster holding -S gives (`-iS'cat x'` -> "cat x"; "" when S ends the cluster and the next word
+    is the string), when every letter before S is a flag env knows; else None (of_secrets-review on PR 332)."""
+    if not word.startswith("-") or word.startswith("--") or len(word) < 3:
+        return None
+    for k, c in enumerate(word[1:], 1):
+        if c == "S":
+            return word[k + 1:]
+        if f"-{c}" not in _WRAPPER_FLAGS["env"]:
+            return None
+    return None
+
+
 _WRAPPER_VALUE_OPTS = {
-    "sudo": {"-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "--user", "--group", "--other-user",
-             "--close-from", "--chdir", "--host", "--prompt", "--role", "--type", "--command-timeout"},
+    "sudo": {"-u", "-g", "-U", "-C", "-D", "-h", "-p", "-r", "-R", "-t", "-T", "--user", "--group", "--other-user",
+             "--close-from", "--chdir", "--chroot", "--host", "--prompt", "--role", "--type", "--command-timeout"},
     "doas": {"-u", "-C"}, "nice": {"-n", "--adjustment"}, "exec": {"-a"}, "time": {"-o", "-f", "--output", "--format"},
     "timeout": {"-s", "--signal", "-k", "--kill-after"}, "stdbuf": {"-i", "-o", "-e"},
-    "xargs": {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
+    "xargs": {"-n", "-I", "-J", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
               "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
     "env": {"-u", "--unset", "-C", "--chdir", "-P"},
     "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
     "caffeinate": {"-t", "-w"}, "chrt": set(), "taskset": set(),
     "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p"}, "arch": {"-arch", "-e", "-d"}, "script": {"-F", "-t", "-T"},
+}
+# the flags (no value) each wrapper knows, so a cluster of them before a value-taking letter is read getopt's way;
+# a letter in neither table stops that reading (of_secrets-review on organic-framework PR 332)
+_WRAPPER_FLAGS = {
+    "sudo": frozenset("-A -B -b -E -e -H -i -K -k -l -N -n -P -S -s -V -v".split()),
+    "doas": frozenset("-n -s -L".split()), "exec": frozenset("-c -l".split()),
+    "time": frozenset("-p -l -a -h -v -q -V".split()), "timeout": frozenset(["-v"]),
+    "xargs": frozenset("-0 -o -p -r -t -x".split()), "env": frozenset("-0 -i -v".split()),
+    "ionice": frozenset(["-t"]), "caffeinate": frozenset("-d -i -m -s -u".split()),
+    "taskpolicy": frozenset("-b -B".split()), "script": frozenset("-a -d -e -k -p -q -r".split()),
 }
 
 
@@ -1151,19 +1224,28 @@ def _command_words_of(words):
                 if words[i] == "--":
                     i += 1
                     break
-                i += 1 + _opt_takes_next(words[i], opts)
+                i += 1 + _opt_takes_next(words[i], opts, _WRAPPER_FLAGS.get(w, frozenset()))
+            if w == "timeout" and i < len(words) and re.match(r"^[\d.]+[smhd]?$", words[i]):
+                i += 1  # `timeout -- 2 cat`: the duration after `--` (of_secrets-review on PR 332)
             if w in _WRAPPER_POSITIONAL and i < len(words):
                 i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
             i += 1  # env [opts] [VAR=x] cmd ...: the command after it runs
             while i < len(words) and (words[i].startswith("-") or "=" in words[i]):
-                if words[i] in ("-S", "--split-string") and i + 1 < len(words):
-                    try:  # env -S 'cmd args': the string is the command line (of_review on PR 136)
+                rest = None if words[i] in ("-S", "--split-string") else _env_split_cluster(words[i])
+                if (words[i] in ("-S", "--split-string") or rest == "") and i + 1 < len(words):
+                    try:  # env -S 'cmd args', env -iS 'cmd args': the string is the command line (of_review on PR 136)
                         words = words[:i] + shlex.split(words[i + 1]) + words[i + 2:]
                     except ValueError:
                         i += 2
                     continue
-                i += 1 + _opt_takes_next(words[i], _WRAPPER_VALUE_OPTS["env"])
+                if rest:  # env -iS'cmd args', env -iSX=u: the rest of the cluster is the string
+                    try:
+                        words = words[:i] + shlex.split(rest) + words[i + 1:]
+                    except ValueError:
+                        i += 1
+                    continue
+                i += 1 + _opt_takes_next(words[i], _WRAPPER_VALUE_OPTS["env"], _WRAPPER_FLAGS["env"])
         else:
             break
     return words[i:]
@@ -2958,6 +3040,12 @@ def _launch_file(path, cwd=None):
 
 # > 0 while _bash_deny reads a command another machine runs: there `~` is that machine's home (G29 reads only this one's)
 _REMOTE_BODY = [0]
+# does the Bash line critical_deny reads run a remote command anywhere (ssh, a container's or a VM's exec)? Then no file
+# on it is judged by this machine's content (G1.8.1): `ssh h python3 - <<'PY' … open('<names list>') …` reads the other
+# machine's (of_review on organic-framework PR 332)
+_LINE_REMOTE = [False]
+_REMOTE_LINE = re.compile(r"(?:^|[\s;&|(`])(?:[^\s;&|()]*/)?(?:ssh|autossh|docker|podman|nerdctl|kubectl|crictl|limactl"
+                          r"|lima|multipass|vagrant|orbctl|orb)(?=[\s;&|)]|$)", re.I)
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
 _REDIR_CTX = [None]  # (folder, line variables) of the simple command _bash_deny reads, for its `<` targets (G0.9)
 
@@ -3901,6 +3989,11 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     else _reads(s[1])
             head, args, words, to_file, herestr = s
             cmds.append((head, args))
+            if depth < 6:
+                for tail in _unknown_option_tails(_tokens_or_empty(stext)):
+                    hit = _bash_deny(" ".join(shlex.quote(t) for t in tail), depth + 1, reaches_agent=reaches_agent)
+                    if hit:
+                        return hit
             stage_reaches = reaches_agent and idx == last and not to_file
             if head == "security":  # G11, G20
                 hit = _security_deny(args)
@@ -4575,6 +4668,7 @@ def critical_deny(tool, tool_input, cwd=None):
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
     _REDIR_CTX[0] = None
+    _LINE_REMOTE[0] = tool == "Bash" and bool(_REMOTE_LINE.search(ti.get("command") or ""))
     if tool == "Bash":
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
