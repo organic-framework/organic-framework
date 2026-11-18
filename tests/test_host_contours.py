@@ -7,6 +7,9 @@ import stat
 import sys
 import unittest
 from contextlib import redirect_stderr
+from functools import partial
+from pathlib import Path
+from subprocess import CalledProcessError
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "deploy", "host"))
@@ -18,6 +21,8 @@ SAMPLE = ("--admin owner --org-user of --org-user acme "
 VAULT = "/var/lib/of-keepers/acme-vault"
 PROGRAM = "/opt/of-keepers/acme-vault"
 CHANNEL = "/srv/of-channel/acme"
+PGREP = ["pgrep", "-u", "owner"]
+SSHD = ["sshd", "-T", "-C", "user=owner"]
 
 
 def public_key(byte):
@@ -38,6 +43,7 @@ class State:
         self.paths = {"/home/owner": C.Directory("owner", "owner", 0o700)}
         self.status = {"owner": "P"}
         self.keys = {}
+        self.check_key_sources = Mock()
         self.system_max = 999
         self.tailscale = False
 
@@ -119,7 +125,7 @@ class HostContours(unittest.TestCase):
             C.plan(C.arguments(["apply", "--org-user", "of"]), s)
         a = C.arguments(["apply", "--admin", "owner", "--org-user", "of"])
         for member, status in ((False, "P"), (True, "L"), (True, "NP"), (True, "unexpected")):
-            invoke = Mock(return_value=Mock(stdout=f"owner {status}"))
+            invoke = Mock(side_effect=[CalledProcessError(1, PGREP), Mock(stdout=f"owner {status}")])
             with self.subTest(member=member, status=status), self.assertRaisesRegex(C.Refusal, "Completed: none"):
                 C.execute(a, C.plan(a, s), invoke, lambda n: member, guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
             self.assertFalse(any(call.args[0][0] == "gpasswd" for call in invoke.call_args_list))
@@ -141,14 +147,15 @@ class HostContours(unittest.TestCase):
             for rule in ("(root) /bin/true", "(ALL) NOPASSWD: /usr/bin/systemctl restart sshd", "(ALL : ALL) /bin/sh, /usr/bin/id", "(ALL : ALL) ALL", "(ALL) NOPASSWD: ALL"):
                 with self.subTest(primary=primary, rule=rule):
                     listing = f"User owner may run the following commands on host:\n    {rule}\n"
-                    invoke = Mock(side_effect=[Mock(stdout="owner P"), Mock(stdout=listing), Mock()])
+                    invoke = Mock(side_effect=[CalledProcessError(1, PGREP), Mock(stdout="owner P"),
+                                               Mock(stdout=listing), Mock()])
                     if rule.endswith(") ALL") or rule.endswith(": ALL"):
                         C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
-                        expected = [passwd, sudo, change]
+                        expected = [PGREP, passwd, sudo, change]
                     else:
                         with self.assertRaisesRegex(C.Refusal, "sudo -l"):
                             C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
-                        expected = [passwd, sudo]
+                        expected = [PGREP, passwd, sudo]
                     self.assertEqual([call.args[0] for call in invoke.call_args_list], expected)
 
     def test_keeper_and_channel_drift(self):
@@ -205,13 +212,15 @@ class HostContours(unittest.TestCase):
 
     def test_trusted_chain_uses_resolved_script_interpreter_and_libraries(self):
         libraries = {"stdlib": "/lib/python", "platstdlib": "/lib64/python"}
-        resolved = {C.__file__: "/opt/contours.py", sys.executable: "/bin/python",
+        interpreter = "/links/bin/python3"
+        python = os.path.realpath(sys.executable)
+        resolved = {C.__file__: "/opt/contours.py",
                     "/lib/python": "/usr/lib/python", "/lib64/python": "/usr/lib64/python"}
-        with patch.object(C.sysconfig, "get_paths", return_value=libraries), \
+        with patch.object(C.sys, "executable", interpreter), patch.object(C.sysconfig, "get_paths", return_value=libraries), \
                 patch.object(C.os.path, "realpath", side_effect=resolved.__getitem__), \
                 patch.object(C, "trust_problems") as check:
             self.assertIs(C.trusted_chain(), check.return_value)
-            self.assertCountEqual(check.call_args.args[0], resolved.values())
+            self.assertCountEqual(check.call_args.args[0], [*resolved.values(), python, "/links/bin"])
 
     def test_apply_requires_isolation_and_trusted_paths_before_host_inspection(self):
         for isolated, problems in ((0, []), (1, ["unsafe checkout"]), (0, ["unsafe checkout", "unsafe stdlib"])):
@@ -252,13 +261,15 @@ class HostContours(unittest.TestCase):
         a = C.arguments(["plan", "--admin", "owner", "--admin-key", backup, "--admin-key", OWNER,
                          "--org-user", "of", "--org-key", "of=" + AGENT])
         script = "/opt/reviewed/contours.py"
-        with patch.object(C.os.path, "realpath", return_value=script):
+        python = os.path.realpath(sys.executable)
+        with patch.object(C.sys, "executable", "/links/python3"), \
+                patch.object(C.os.path, "realpath", side_effect={C.__file__: script, "/links/python3": python}.__getitem__):
             steps = C.plan(a, s)
         self.assertEqual([argv for _, argv in steps if argv], [
-            [sys.executable, "-I", script, "_keys", "admin", "owner", backup, OWNER],
+            [python, "-I", script, "_keys", "admin", "owner", backup, OWNER],
             ["usermod", "-aG", "wheel", "owner"], ["sudo", "-l", "-U", "owner"],
             ["gpasswd", "-d", "of", "wheel"],
-            [sys.executable, "-I", script, "_keys", "org", "of", AGENT],
+            [python, "-I", script, "_keys", "org", "of", AGENT],
         ])
         invoke, output = Mock(), []
         C.execute(a, steps, invoke=invoke, out=output.append)
@@ -293,10 +304,99 @@ class HostContours(unittest.TestCase):
                 self.assertIn(fingerprint, str(refusal.exception))
                 self.assertIn("--admin-key", str(refusal.exception))
                 self.assertNotIn(line.split()[1], str(refusal.exception))
-                invoke = Mock()
+                invoke = Mock(side_effect=CalledProcessError(1, PGREP))
                 with self.assertRaisesRegex(C.Refusal, "--admin-key"):
                     C.execute(a, steps, invoke=invoke, get_keys=s.authorized_keys, out=Mock())
-                invoke.assert_not_called()
+                invoke.assert_called_once_with(PGREP, capture_output=True, text=True)
+
+    def test_sshd_key_sources_expand_tokens_and_fall_back_to_defaults(self):
+        home = Path("/home/owner")
+        config = ("authorizedkeysfile %h/.ssh/authorized_keys /etc/%u %U/%%u/%%%u\n"
+                  "authorizedkeyscommand /usr/bin/lookup %u\n")
+        invoke = Mock(return_value=Mock(stdout=config))
+        with patch.object(C.os, "geteuid", return_value=0):
+            self.assertEqual(C.authorized_key_sources("owner", str(home), 1000, invoke),
+                             ([home / ".ssh/authorized_keys", Path("/etc/owner"), home / "1000/%u/%owner"],
+                              "/usr/bin/lookup %u"))
+        invoke.assert_called_once_with(SSHD, capture_output=True, text=True)
+        for euid, failure in ((1000, None), (0, FileNotFoundError()), (0, CalledProcessError(1, SSHD))):
+            invoke = Mock(side_effect=failure)
+            with self.subTest(euid=euid, failure=failure), patch.object(C.os, "geteuid", return_value=euid):
+                self.assertEqual(C.authorized_key_sources("owner", str(home), 1000, invoke),
+                                 ([home / ".ssh/authorized_keys", home / ".ssh/authorized_keys2"], "none"))
+                self.assertEqual(invoke.call_count, int(euid == 0))
+
+    def test_alternate_key_sources_refuse_plan_live_wheel_and_admin_helper(self):
+        s = configured()
+        s.groups["wheel"].remove("owner")
+        wheel = C.arguments(["apply", "--admin", "owner"])
+        steps = C.plan(wheel, s)
+        s.groups["wheel"].add("owner")
+        a = C.arguments(["apply", "--admin", "owner", "--admin-key", OWNER])
+        user = Mock(pw_uid=1000, pw_dir="/home/alex")
+        files = "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2\n"
+        for command, error in (("none", r"remove \S+/\.ssh/authorized_keys2 for owner"),
+                               ("/usr/bin/lookup %u", "AuthorizedKeysCommand")):
+            config = Mock(stdout=files + "authorizedkeyscommand " + command)
+            invoke = Mock(return_value=config)
+            s.check_key_sources = partial(C.check_key_sources, invoke=invoke)
+            with self.subTest(command=command), patch.object(C.os, "geteuid", return_value=0), \
+                    patch.object(C.pwd, "getpwnam", return_value=user), patch.object(Path, "lstat"), \
+                    patch.object(C.os, "setgroups", side_effect=AssertionError) as drop:
+                with self.assertRaisesRegex(C.Refusal, error):
+                    C.plan(a, s)
+                with self.assertRaisesRegex(C.Refusal, error):
+                    C.import_keys("admin", "owner", [OWNER], invoke)
+                drop.assert_not_called()
+                invoke = Mock(side_effect=[CalledProcessError(1, PGREP), config])
+                with self.assertRaisesRegex(C.Refusal, error):
+                    C.execute(wheel, steps, invoke, out=Mock())
+                self.assertEqual([c.args[0] for c in invoke.call_args_list], [PGREP, SSHD])
+
+    def test_wheel_steps_exclude_only_the_scripts_own_process_chain(self):
+        a = C.arguments(["apply", "--admin", "owner", "--org-user", "of"])
+        parents = {"/proc/30/status": 20, "/proc/20/status": 10, "/proc/10/status": 0}
+
+        def proc_status(path, mode):
+            return io.BytesIO(f"Name:\tsh\nPPid:\t{parents[path]}\n".encode())
+
+        for already_member in (False, True):
+            s = configured()
+            s.groups["wheel"] = {"owner", "of"} if already_member else set()
+            steps = C.plan(a, s)
+            commands = [argv for _, argv in steps if argv]
+            for foreign in (False, True):
+                pids = "10\n20\n" + ("11\n" if foreign else "")
+                invoke = Mock(side_effect=[Mock(stdout=pids), Mock(stdout="owner P"),
+                                           Mock(stdout="(ALL) ALL"), Mock()])
+                with self.subTest(commands=commands, foreign=foreign), patch.object(C.os, "getpid", return_value=30), \
+                        patch("builtins.open", side_effect=proc_status):
+                    if foreign:
+                        with self.assertRaisesRegex(C.Refusal, "active PIDs .*11"):
+                            C.execute(a, steps, invoke, member=Mock(return_value=True), out=Mock(), get_keys=s.authorized_keys)
+                        invoke.assert_called_once_with(PGREP, capture_output=True, text=True)
+                    else:
+                        C.execute(a, steps, invoke, member=Mock(return_value=True), out=Mock(), get_keys=s.authorized_keys)
+                        self.assertEqual(invoke.call_args.args[0], commands[-1])
+
+    def test_key_added_after_admin_joins_wheel_refuses_the_next_wheel_step(self):
+        s = configured()
+        s.groups["wheel"] = {"of"}
+        a = C.arguments(["apply", "--admin", "owner", "--org-user", "of"])
+        steps = C.plan(a, s)
+        add = ["usermod", "-aG", "wheel", "owner"]
+
+        def run_step(argv, **kw):
+            if argv == PGREP:
+                raise CalledProcessError(1, argv)
+            self.assertEqual(argv, add)
+            s.keys["owner"] = AGENT.encode()
+
+        invoke = Mock(side_effect=run_step)
+        with self.assertRaises(C.Refusal) as refused:
+            C.execute(a, steps, invoke, out=Mock(), get_keys=s.authorized_keys)
+        self.assertIn(AGENT_ID, str(refused.exception))
+        self.assertEqual([c.args[0] for c in invoke.call_args_list], [PGREP, add, PGREP])
 
     def test_admin_replaces_in_pin_order_and_org_appends_missing_lines_once(self):
         first, second, agent = OWNER.encode(), public_key(b"c").encode(), AGENT.encode()

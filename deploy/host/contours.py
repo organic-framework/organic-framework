@@ -3,6 +3,7 @@
 
 Run from a root-owned checkout in the owner's terminal. Inspect the steps with plan
 before applying them. The owner's admin login may be where agents once worked.
+Before apply, close the admin's other sessions. Agents must not be logged in as the admin.
 Without -I, a Python module planted beside this script could run as root.
 
   sudo python3 -I /opt/organic-framework/deploy/host/contours.py apply --admin owner --org-user of --org-user acme --keeper acme-vault --channel acme --no-tailscale-operator
@@ -35,10 +36,12 @@ import sys
 import sysconfig
 from collections import Counter
 from contextlib import contextmanager
+from pathlib import Path
 from typing import NamedTuple
 
 
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+PYTHON = os.path.realpath(sys.executable)
 NOLOGIN = "/usr/sbin/nologin"
 NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 SUDO_ALL = re.compile(r"^[ \t]*\(ALL(?:[ \t]*:[ \t]*ALL)?\)[ \t]+(?:(?:NO)?(?:PASSWD|SETENV|EXEC):[ \t]*)*ALL[ \t]*$", re.MULTILINE)
@@ -54,7 +57,7 @@ def require(condition, message):
 
 
 def trust_problems(paths, lstat=os.lstat):
-    """Check each resolved absolute path and its parents through /."""
+    """Check each absolute path and its parents through /."""
     problems = []
     seen = set()
     for path in paths:
@@ -76,8 +79,9 @@ def trust_problems(paths, lstat=os.lstat):
 def trusted_chain():
     """Report problems with the paths used to run this script."""
     paths = sysconfig.get_paths()
-    roots = (__file__, sys.executable, paths["stdlib"], paths["platstdlib"])
-    return trust_problems([os.path.realpath(p) for p in roots])
+    roots = (__file__, paths["stdlib"], paths["platstdlib"])
+    resolved = [os.path.realpath(p) for p in roots]
+    return trust_problems([*resolved, PYTHON, os.path.dirname(os.path.abspath(sys.executable))])
 
 
 def arguments(argv):
@@ -163,6 +167,48 @@ def password(name, invoke=run):
     return fields[1]
 
 
+def authorized_key_sources(name, home, uid, invoke=run):
+    """Read the effective AuthorizedKeysFile paths and AuthorizedKeysCommand for this user."""
+    files = ".ssh/authorized_keys .ssh/authorized_keys2"
+    command = "none"
+    if os.geteuid() == 0:
+        try:
+            config = invoke(["sshd", "-T", "-C", f"user={name}"], capture_output=True, text=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            pass  # Use OpenSSH's defaults when sshd cannot run.
+        else:
+            for line in config.splitlines():
+                option, _, value = line.partition(" ")
+                if option == "authorizedkeysfile":
+                    files = value
+                elif option == "authorizedkeyscommand":
+                    command = value.strip()
+
+    tokens = {"%%": "%", "%h": home, "%u": name, "%U": str(uid)}
+    paths = []
+    for entry in shlex.split(files):
+        if entry.lower() == "none":
+            continue
+        if uid < 0 and "%U" in re.findall(r"%.", entry):
+            continue  # The live check after useradd has the assigned uid.
+        expanded = re.sub(r"%[%huU]", lambda m: tokens[m[0]], entry)
+        paths.append(Path(home, expanded))
+    return paths, command
+
+
+def check_key_sources(name, home, uid, invoke=run):
+    paths, command = authorized_key_sources(name, home, uid, invoke)
+    require(command.lower() == "none", f"disable AuthorizedKeysCommand for {name} before continuing")
+    for path in paths:
+        if path == Path(home, ".ssh/authorized_keys"):
+            continue
+        try:
+            path.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        raise Refusal(f"remove {path} for {name} before continuing")
+
+
 class Host:
     def __init__(self):
         self.groups = {g.gr_name: set(g.gr_mem) for g in grp.getgrall()}
@@ -178,6 +224,7 @@ class Host:
         self.system_max = limits.get("SYS_UID_MAX", limits.get("UID_MIN", 1000) - 1)
 
     directory = staticmethod(directory)
+    check_key_sources = staticmethod(check_key_sources)
 
     def authorized_keys(self, name):
         return authorized_keys(name)
@@ -201,7 +248,7 @@ def plan(a, state):
         for line in lines:
             step(f"keep {key_description(os.fsencode(line))} for {name}")
         step(f"set {name}'s pinned admin keys" if role == "admin" else f"ensure keys for {name}",
-             sys.executable, "-I", os.path.realpath(__file__), "_keys", role, name, *lines)
+             PYTHON, "-I", os.path.realpath(__file__), "_keys", role, name, *lines)
 
     def info(path):
         return paths[path] if path in paths else state.directory(path)
@@ -320,6 +367,8 @@ def plan(a, state):
             step("check Tailscale OperatorUser", "tailscale", "debug", "prefs")
         else:
             step("already clear: tailscale is absent")
+    if a.admin and (a.admin_key or any(wheel_step(argv) for _, argv in steps)):
+        state.check_key_sources(a.admin, admin.home, admin.uid)
     return steps
 
 
@@ -354,8 +403,9 @@ def read_keys(fd, name, uid):
         return data
 
 
-def authorized_keys(name):
-    user = pwd.getpwnam(name)
+def authorized_keys(name, user=None):
+    if user is None:
+        user = pwd.getpwnam(name)
     require(user.pw_uid != 0, f"{name} has uid zero")
     try:
         with key_folder(user.pw_dir + "/.ssh", user.pw_uid) as fd:
@@ -441,7 +491,7 @@ def key_contents(role, existing, lines):
     return existing + b"\n".join(missing) + b"\n"
 
 
-def import_keys(role, name, pins):
+def import_keys(role, name, pins, invoke=run):
     require(os.geteuid() == 0 and NAME.fullmatch(name), "key helper requires root and a valid user")
     require(role in ("admin", "org") and pins, "key helper requires a role and public key lines")
     for line in pins:
@@ -449,6 +499,8 @@ def import_keys(role, name, pins):
     lines = list(map(os.fsencode, pins))
     dst = pwd.getpwnam(name)
     require(dst.pw_uid != 0, f"{name} has uid zero")
+    if role == "admin":
+        check_key_sources(name, dst.pw_dir, dst.pw_uid, invoke)
 
     # This helper is a separate process. Give up root before creating anything
     # in a directory the target user can move. Replace the final file atomically.
@@ -506,10 +558,38 @@ def check_paths(argv):
         require(directory(home) is None, f"home appeared before useradd: {home}")
 
 
-def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print, get_keys=authorized_keys):
+def wheel_step(argv):
+    return argv[:3] in (["usermod", "-aG", "wheel"], ["sudo", "-l", "-U"])
+
+
+def wheel_keys(name, invoke):
+    user = pwd.getpwnam(name)
+    check_key_sources(name, user.pw_dir, user.pw_uid, invoke)
+    return authorized_keys(name, user)
+
+
+def require_quiet_admin(name, invoke):
+    try:
+        output = invoke(["pgrep", "-u", name], capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 1:  # No matching processes.
+            return
+        raise
+    processes = set(map(int, output.split()))
+    pid = os.getpid()
+    while pid and processes:
+        processes.discard(pid)
+        with open(f"/proc/{pid}/status", "rb") as f:
+            parent = re.search(rb"^PPid:[ \t]+(\d+)$", f.read(), re.MULTILINE)
+        require(parent, f"cannot read PPid for process {pid}")
+        pid = int(parent[1])
+    require(not processes, f"close other sessions of {name} before continuing (active PIDs {sorted(processes)})")
+
+
+def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print, get_keys=None):
     completed = []
     for label, argv in steps:
-        out(f"{label}  {shlex.join(argv)}" if argv and argv[0] != sys.executable else label)
+        out(f"{label}  {shlex.join(argv)}" if argv and argv[0] != PYTHON else label)
     for label, argv in steps:
         if not argv:
             continue
@@ -517,8 +597,10 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print,
         if a.action == "plan" and cmd != "tailscale":
             continue
         try:
-            if argv[:3] in (["usermod", "-aG", "wheel"], ["sudo", "-l", "-U"]):
-                require_pinned(a.admin, outside_pins(get_keys(a.admin), a.admin_key))
+            if wheel_step(argv):
+                require_quiet_admin(a.admin, invoke)
+                existing = wheel_keys(a.admin, invoke) if get_keys is None else get_keys(a.admin)
+                require_pinned(a.admin, outside_pins(existing, a.admin_key))
             if cmd == "tailscale":
                 data = json.loads(invoke(argv, capture_output=True, text=True).stdout)
                 require(isinstance(data, dict) and isinstance(data.get("OperatorUser", ""), str),
@@ -539,7 +621,7 @@ def execute(a, steps, invoke=run, member=in_wheel, guard=check_paths, out=print,
                 invoke(argv)
             completed.append(label)
         except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as e:
-            if cmd == sys.executable and isinstance(e, subprocess.CalledProcessError):
+            if cmd == PYTHON and isinstance(e, subprocess.CalledProcessError):
                 e = f"key helper exited with status {e.returncode}"
             raise Refusal(f"step '{label}' failed: {e}. Completed: {', '.join(completed) or 'none'}") from None
 
