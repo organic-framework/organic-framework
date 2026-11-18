@@ -4478,14 +4478,21 @@ def label_beside(entry, d, labels=None):
 
 
 def plugin_ids_installed(d):
-    """The plugin ids ("<name>@<marketplace>") installed on config dir `d`; None when installed_plugins.json is
-    missing or unreadable (then a plugin entry is judged by its server, as before)."""
-    try:
-        with open(os.path.join(os.path.expanduser(d), "plugins", "installed_plugins.json")) as fh:
-            j = json.load(fh)
-        return set((j.get("plugins") if isinstance(j.get("plugins"), dict) else j) or {})
-    except Exception:  # noqa: BLE001 - missing or broken: unknown, never a veto
+    """The plugin ids ("<name>@<marketplace>") installed on config dir `d`, read as plugins_seen reads the file: none
+    when installed_plugins.json is missing (of_review, PR 325); None when it is unreadable or `d` is no folder. An
+    account's `enabledPlugins: false` does not count here: a position's tool profile enables its own entry in the
+    session's settings, which take precedence."""
+    d = os.path.expanduser(d)
+    if not os.path.isdir(d):
         return None
+    try:
+        with open(os.path.join(d, "plugins", "installed_plugins.json")) as fh:
+            j = json.load(fh)
+    except FileNotFoundError:
+        return set()
+    except Exception:  # noqa: BLE001 - broken: unknown, never a veto
+        return None
+    return set((j.get("plugins") if isinstance(j.get("plugins"), dict) else j) or {})
 
 
 def with_labels(have, d, labels=None, now=None, run=None):
@@ -4812,60 +4819,6 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     return moves
 
 
-def restore_plan(rows, sessions, positions, policy, now, skip=(), tools=None, wcalib=None):
-    """Pure. A holder that lacks a plugin or an account-bound tool it uses where it runs goes back to an account that
-    has every one of them, once one accepts work and is not about to stop. A rescue moves a session without one when
-    no account that has it accepts work, and fill and relief never move it toward its tools (2026-11-18: a cloud keeper
-    ran 14 hours without Cloudflare after the rescue of 11-17 19:50Z, and its daily token watch failed, while
-    ~/.claude had it and room from 22:05Z). Idle holders only, as fill; never `hold` or `stay` positions, which move
-    only off an account that runs out. The account with the most capacity left first. tools: as rescue_plan.
-    Returns at most restore_moves."""
-    needs, seen = tools or ({}, {})
-    if not needs:
-        return []
-    pos_by_session = {((p.get("holder") or {}).get("session") or "").strip(): p for p in positions}
-    acct = {r["config_dir"]: r for r in rows if r.get("logged_in")}
-    step = policy.get("rescue_step", 2)
-
-    def cur(r, w):  # utilization now: a window whose reset has passed is empty
-        x = (r.get("windows") or {}).get(w) or {}
-        return (x.get("utilization") or 0) if (_ts(x.get("resets_at") or "") or float("inf")) > now else 0
-
-    def ok(r):
-        return not blocked_until(r, now) and cur(r, "five_hour") < policy["relief_at"] \
-            and cur(r, "seven_day") < policy["week_max"]
-
-    def veto(sid, d):
-        return sorted(x for x in lacking(needs.get(sid) or (), seen.get(d)) if x.startswith(VETO))
-
-    taken = {d: 0 for d in acct}
-
-    def room(r):
-        left = 100 - max(cur(r, "five_hour"), cur(r, "seven_day")) - step * taken[r["config_dir"]]
-        return left * ((wcalib or {}).get(r["config_dir"]) or TIER_WEEK_USD.get(r.get("tier"), 1.0))
-    moves = []
-    for d in sorted(sessions):
-        for s in sessions[d]:
-            sid = s["session"]
-            p = pos_by_session.get(sid)
-            if not p or p["name"] in policy["hold"] or p["name"] in (policy.get("stay") or ()) \
-                    or s.get("status") != "idle" or sid in skip:
-                continue
-            miss = veto(sid, d)
-            targets = [r for t, r in acct.items() if t != d and ok(r) and not veto(sid, t)] if miss else []
-            if not targets:
-                continue
-            t = max(targets, key=lambda r: (room(r), r["config_dir"]))
-            taken[t["config_dir"]] += 1
-            names = ", ".join(sorted({x.split(":", 1)[1].split("#", 1)[0].split("/")[-1] for x in miss}))
-            moves.append({"position": p["name"], "session": sid, "from": d, "to": t["config_dir"], "rate": 0.0,
-                          "reason": f"restore: {names} missing on {short(d)}; {short(t['config_dir'])} has all "
-                                    f"it uses and accepts work"})
-            if len(moves) >= policy.get("restore_moves", 2):
-                return moves
-    return moves
-
-
 def run_dirs(rows):
     """The accounts whose sessions a balancer run reads: all but a logged-out one (logged_in False). A probe with no
     reading (logged_in None: a timeout, a dropped link) is no evidence the account is gone; blocked_until takes it as
@@ -4995,27 +4948,39 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
            contexts=None, wcalib=None):
-    """Pure. Rescue first (observed stops, never vetoed by a prediction), then restore (a holder back to its tools),
-    then relief and fill (balance_plan) for the rest."""
+    """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief, restore (a holder back to its
+    tools) and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
                          tools=connectors)
-    restore = restore_plan(rows, sessions, positions, policy, now,
-                           skip=set(skip) | set(stopped or {}) | {m["session"] for m in rescue}, tools=connectors,
-                           wcalib=wcalib)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
-                        skip=set(skip) | {m["session"] for m in rescue + restore}, connectors=connectors,
-                        contexts=contexts, wcalib=wcalib)
-    return rescue + restore + rest
+                        skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
+                        wcalib=wcalib, stopped=set(stopped or {}))
+    return rescue + rest
 
 
 def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), connectors=None, contexts=None,
-                 wcalib=None):
+                 wcalib=None, stopped=()):
     """Pure. rows: status rows; sessions: {dir: live sessions}; rates: {session: $/h}; calib: {dir: $ per 1%
     of its 5-hour window}; connectors: ({session: claude.ai connectors it uses}, {dir: connectors seen there}).
     Fill never moves a session onto an account that lacks a connector or plugin it uses; relief does for a
-    connector (the move's note says what is missing), never for a plugin (2026-11-11: aws_keeper lost Cloudflare). Returns [{position, session, from, to, rate,
-    reason}], at most policy max_moves."""
+    connector (the move's note says what is missing), never for a plugin (2026-11-11: aws_keeper lost Cloudflare).
+    Restore, between them, moves a holder that lacks a plugin or account-bound tool where it runs to an account that
+    holds them all; `stopped` sessions are left to rescue and the wake. Returns [{position, session, from, to, rate,
+    reason}]: restore makes at most restore_moves, and fill adds only while the plan holds fewer than max_moves."""
     needs, seen = connectors or ({}, {})
+
+    def holds_all(sid, d):
+        """Every plugin and account-bound tool the session uses is read present on account `d`. lacking() counts a
+        side it could not read as present, which vetoes nothing but vouches for no target (of_review, PR 325: a
+        restore onto an account whose tools were never read, its note saying they are there)."""
+        have = seen.get(d)
+        if have is None:
+            return False
+        for x in needs.get(sid) or ():
+            side = "plugins:known" if x.startswith("plugin:") else "bound:known" if x.startswith("bound:") else None
+            if side and (side not in have or x not in have):
+                return False
+        return True
 
     def prior_calib(r, cal=None):
         """An account not yet calibrated: the others' $ per 1% scaled by plan tier (Pro is 1/20 of Max 20x)."""
@@ -5162,6 +5127,46 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                                   "reason": "relief: the account is about to stall"})
                     added[t["config_dir"]] += rate
                     break
+    # 1b. restore: a holder without a plugin or account-bound tool it uses where it runs (a rescue moves a session
+    #     without one when no account that has it accepts work; fill and relief never move it toward its tools) goes to
+    #     an account that holds them all, by fill's tests: not stalled (the week projection included), its rate within
+    #     the room, its resume within the cap; the most room first. 2026-11-18: a user organization's cloud keeper ran
+    #     14 hours without Cloudflare after a rescue, while the account with it had room from 8 hours after it.
+    #     of_review, PR 325: a check by current use alone put a holder on an account relief was shedding
+    planned = {m["session"] for m in moves}
+    added = {}
+    for m in moves:
+        added[m["to"]] = added.get(m["to"], 0.0) + m["rate"]
+    restored = 0
+    for d in sorted(acct):
+        for rate, name, sid in movable(d):
+            if restored >= policy.get("restore_moves", 2):
+                break
+            if sid in planned or sid in stopped:
+                continue
+            miss = sorted(x for x in lacking(needs.get(sid) or (), seen.get(d)) if x.startswith(VETO))
+            if not miss:
+                continue
+            best = None
+            for t in acct.values():
+                td = t["config_dir"]
+                if td == d or stalled(t) or not holds_all(sid, td):
+                    continue
+                room, resume_max = room_of(t, added.get(td, 0.0))
+                if room < max(rate, policy["min_rate"]) or not resume_ok(sid, resume_max):
+                    continue
+                if best is None or (room, td) > best:
+                    best = (room, td)
+            if best is None:
+                continue
+            td = best[1]
+            names = ", ".join(sorted({x.split(":", 1)[1].split("#", 1)[0].split("/")[-1] for x in miss}))
+            moves.append({"position": name, "session": sid, "from": d, "to": td, "rate": rate,
+                          "reason": f"restore: {names} missing on {short(d)}; {short(td)} holds all it uses and has "
+                                    f"room"})
+            added[td] = added.get(td, 0.0) + rate
+            planned.add(sid)
+            restored += 1
     # 2. fill: the account whose week resets first takes load until its 5-hour window is projected full; one with no
     #    room left, or none that fits what can move, passes the turn to the next, which still resets before its
     #    sources (2026-11-12: ~/.claude-a, resetting 3 hours before a freshly reset
