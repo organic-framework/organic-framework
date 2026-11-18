@@ -596,6 +596,43 @@ def record_training(harness, training, account, source, emit=None, cards=None, d
     (emit or of_events.emit)("harness_training", payload)
 
 
+def training_cards_problems(org, doc, cards=None, prefix=None):
+    """`of registry check`'s lines for an organization's `training_cards`: a mapping of a known harness to a card id
+    that resolves to a task in this organization (its card prefix), as the listener's asks view holds it (of_architect,
+    PR 334). An unknown harness, a malformed id, a card of another organization, or one that is no task is a problem."""
+    tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
+    if tc is None:
+        return []
+    where = f"{org}:registry/positions.yaml: training_cards"
+    if not isinstance(tc, dict):
+        return [f"{where}: a mapping of a harness to a card id, e.g. {{codex: OF-27}}"]
+    out = []
+    pre = str(prefix or of_events.card_prefix(org)).upper()
+    if cards is None:
+        try:
+            import of_asks
+            cards = of_asks.current_asks().get("asks") or []
+        except Exception:  # noqa: BLE001 - no store here: the card cannot be resolved
+            cards = []
+    for h, ref in tc.items():
+        if h not in TRAINING_HARNESSES:
+            out.append(f"{where}.{h}: not a harness this machine reads ({', '.join(TRAINING_HARNESSES)})")
+            continue
+        m = of_events.REF_RE.match(str(ref or "").strip())
+        if not m:
+            out.append(f"{where}.{h}: {ref!r} is no card id (like {pre}-27)")
+            continue
+        if m.group(1).upper() != pre:
+            out.append(f"{where}.{h}: {ref} is not a card of {org} (its cards are {pre}-…)")
+            continue
+        card = next((a for a in cards if str(a.get("ref") or "").upper() == str(ref).strip().upper()), None)
+        if not card:
+            out.append(f"{where}.{h}: no card {ref} in the asks")
+        elif not card.get("task"):
+            out.append(f"{where}.{h}: {ref} is a question, not a task for the owner's hands")
+    return out
+
+
 def training_verified(harness, readings=None, cards=None, docs=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
     card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's
