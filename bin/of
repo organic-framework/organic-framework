@@ -6884,7 +6884,8 @@ def main(argv=None):
     sa.add_argument("action", choices=["run", "selftest", "muse-login"])
     sa.add_argument("--harness", choices=["codex", "muse", "auto", "all"], help="run: codex|muse|auto (default auto); "
                     "selftest: codex|muse|all")
-    sa.add_argument("--kind", choices=["review", "read", "research"], default="review")
+    sa.add_argument("--kind", choices=["review", "read", "research", "patch"], default="review",
+                    help="patch: Codex writes in the snapshot of --at, and the run returns its diff, applied nowhere")
     sa.add_argument("--workspace", help="review and read: the checkout whose commit is exported (tracked files only)")
     sa.add_argument("--at", help="the commit to export")
     sa.add_argument("--diff", help="<base>..<head>: export head, with the diff beside it as .of-review.diff")
