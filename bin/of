@@ -2597,6 +2597,35 @@ def cmd_loop(args):
     return 0
 
 
+def cmd_owner(args):
+    """`of owner show` and `of owner set language|surface <value>`: this machine's owner settings
+    (~/.config/of/owner.yaml), set without an organization, since a laptop under contours holds none of its own and
+    only `of init --language` wrote the language before (of_asks, hand-over 830275c0; docs/server-several-machines.md
+    §4.9)."""
+    import of_init
+    if args.action == "show":
+        doc = of_init.owner_settings()
+        for k, default in (("language", "en"), ("surface", "herdr")):
+            v = doc.get(k)
+            print(f"{k}: " + (f"{v}" + (f" ({of_init.language_name(v)})" if k == "language" else "") if v
+                              else f"(not set: {default})"))
+        return 0
+    if not args.key or not args.value:
+        raise OfError("of owner set language <code or name> | of owner set surface herdr|remote")
+    if args.key == "language":
+        code = of_init.language_code(args.value)
+        if code not in of_init.LANGUAGES:
+            raise OfError(f"language {args.value!r}: one of {', '.join(sorted(of_init.LANGUAGES))}, or its name")
+        of_init.write_language(code)
+        print(f"language: {code} ({of_init.language_name(code)})")
+        return 0
+    if args.value not in of_init.SURFACES:
+        raise OfError(f"surface {args.value!r}: one of {', '.join(of_init.SURFACES)}")
+    of_init.write_owner_setting("surface", args.value)
+    print(f"surface: {args.value}")
+    return 0
+
+
 def cmd_subagent(args):
     """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
     import of_store
@@ -7207,6 +7236,12 @@ def main(argv=None):
                     help="also run the critical-deny guard before risky tools (PreToolUse; enforced)")
     hk.set_defaults(fn=lambda a: __import__("of_init").hooks(a.action, a.config_dir, a.yes, a.dry_run,
                                                              deny_secrets=a.deny_secrets, guard=a.guard))
+    ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
+                        "language <code or name> | set surface herdr|remote (~/.config/of/owner.yaml)")
+    ow.add_argument("action", choices=["show", "set"])
+    ow.add_argument("key", nargs="?", choices=["language", "surface"])
+    ow.add_argument("value", nargs="?")
+    ow.set_defaults(fn=cmd_owner)
     it = sub.add_parser("init", help="quickstart: an organization, positions, hooks and a local server")
     it.add_argument("org", help="the organization's name")
     it.add_argument("--repo", help="its repository (default ~/of/<org>)")
