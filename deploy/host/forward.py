@@ -3,9 +3,17 @@
 127.0.0.1:<port> (organic-framework-build reports/agent-host-continuation-plan-2026-11-18.md, section 2b: one server for
 both organizations, staying on the laptop at first). Owned by of_server.
 
-    python3 deploy/host/forward.py install --to <user>@<host> --key <private key file> [--port 18200] [--dry-run]
+    python3 deploy/host/forward.py keygen
+    python3 deploy/host/forward.py pin-host --to <user>@<host> --fingerprint SHA256:<the host key's, read elsewhere>
+    python3 deploy/host/forward.py install --to <user>@<host> [--key <private key file>] [--port 18200] [--dry-run]
     python3 deploy/host/forward.py status
     python3 deploy/host/forward.py uninstall
+
+`keygen` makes the forward's own key in its own folder (~/.ssh/of-forward/, mode 700) and prints only its public half,
+the host's authorized_keys line and sshd block, so the private key's path never appears on a command line. `pin-host`
+reads the host's ed25519 key, accepts it only when its fingerprint is the one given (read over another channel), and
+writes it to the forward's own known_hosts; the forward checks the host against that file alone
+(StrictHostKeyChecking=yes), never the person's own known_hosts.
 
 A user LaunchAgent (dev.organic-framework.forward) runs `ssh -N -R 127.0.0.1:<port>:127.0.0.1:<local port>` and launchd
 keeps it running: ExitOnForwardFailure and keep-alives make a dead or refused forward end, and launchd starts it again.
@@ -26,6 +34,9 @@ import subprocess
 import sys
 
 LABEL = "dev.organic-framework.forward"
+DIR = "~/.ssh/of-forward"
+KEY = DIR + "/id_ed25519"
+KNOWN = DIR + "/known_hosts"
 PORT = 18200        # on the host: the address OF's clients use
 LOCAL_PORT = 18201  # on the laptop: the server's TLS listener (of_server.TLS_PORT)
 HOST_USER = "of-forward"
@@ -35,10 +46,12 @@ def agent_path(home=None):
     return os.path.join(home or os.path.expanduser("~"), "Library", "LaunchAgents", f"{LABEL}.plist")
 
 
-def ssh_argv(to, key, port=PORT, local_port=LOCAL_PORT):
-    """The forward's ssh call: its own key, never an SSH agent; ends on a failed forward or a dead link."""
+def ssh_argv(to, key, port=PORT, local_port=LOCAL_PORT, known=KNOWN):
+    """The forward's ssh call: its own key, never an SSH agent, the host checked against the forward's own pinned
+    known_hosts; ends on a failed forward or a dead link."""
     return ["/usr/bin/ssh", "-N", "-R", f"127.0.0.1:{port}:127.0.0.1:{local_port}",
             "-i", os.path.expanduser(key), "-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes",
+            "-o", f"UserKnownHostsFile={os.path.expanduser(known)}", "-o", "StrictHostKeyChecking=yes",
             "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", to]
 
@@ -75,7 +88,59 @@ def sshd_block(user=HOST_USER, port=PORT):
             f"    ForceCommand /usr/bin/false\n")
 
 
-def install(to, key, port=PORT, dry_run=False, home=None, run=subprocess.run, out=print, local_port=LOCAL_PORT):
+def _no_agent_env():
+    env = {k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"}
+    env["SSH_AUTH_SOCK"] = ""
+    return env
+
+
+def keygen(key=KEY, run=subprocess.run, out=print):
+    """Make the forward's own key once (no passphrase: launchd starts it unattended) and print its public half."""
+    key = os.path.expanduser(key)
+    os.makedirs(os.path.dirname(key), mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(key), 0o700)
+    if not os.path.exists(key):
+        r = run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "of-forward", "-f", key], capture_output=True,
+                text=True, env=_no_agent_env())
+        if r.returncode != 0:
+            raise SystemExit(f"forward: ssh-keygen failed: {(r.stderr or '').strip()[:200]}")
+    with open(key + ".pub") as fh:
+        pub = fh.read().strip()
+    out(f"the forward's public key: {pub}")
+    out("on the host, the forwarding user's authorized_keys line:\n" + authorized_line(pub))
+    out("on the host, the sshd block:\n" + sshd_block())
+    return pub
+
+
+def pin_host(to, fingerprint, known=KNOWN, run=subprocess.run, out=print):
+    """Pin the host's ed25519 key in the forward's own known_hosts, only when its fingerprint is FINGERPRINT."""
+    import tempfile
+    host = to.split("@", 1)[-1]
+    if not fingerprint.startswith("SHA256:"):
+        raise SystemExit("forward: --fingerprint SHA256:<base64>, as ssh-keygen -lf prints it")
+    r = run(["ssh-keyscan", "-q", "-t", "ed25519", host], capture_output=True, text=True, timeout=30,
+            env=_no_agent_env())
+    lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip() and not ln.startswith("#")]
+    if not lines:
+        raise SystemExit(f"forward: {host} gave no ed25519 host key")
+    with tempfile.NamedTemporaryFile("w", suffix=".pub", delete=False) as fh:
+        fh.write(lines[0] + "\n")
+    try:
+        got = run(["ssh-keygen", "-lf", fh.name], capture_output=True, text=True, env=_no_agent_env()).stdout.split()
+    finally:
+        os.remove(fh.name)
+    if len(got) < 2 or got[1] != fingerprint:
+        raise SystemExit(f"forward: {host}'s key is {got[1] if len(got) > 1 else '?'}, not {fingerprint}: not pinned")
+    known = os.path.expanduser(known)
+    os.makedirs(os.path.dirname(known), mode=0o700, exist_ok=True)
+    with open(known, "w") as fh:
+        fh.write(lines[0] + "\n")
+    os.chmod(known, 0o600)
+    out(f"pinned {host}'s host key {fingerprint} in the forward's own known_hosts")
+    return lines[0]
+
+
+def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run, out=print, local_port=LOCAL_PORT):
     key = os.path.expanduser(key)
     if not os.path.isfile(key):
         raise SystemExit(f"forward: no key file at {key}")
@@ -124,17 +189,26 @@ def status(run=subprocess.run, out=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="The laptop's reverse forward to the agent host (deploy/host/forward.py).")
-    ap.add_argument("action", choices=["install", "uninstall", "status"])
+    ap.add_argument("action", choices=["keygen", "pin-host", "install", "uninstall", "status"])
     ap.add_argument("--to", help="<user>@<host>")
-    ap.add_argument("--key", help="the forward's own private key file")
+    ap.add_argument("--key", default=KEY, help="the forward's own private key file (default: keygen's)")
+    ap.add_argument("--fingerprint", help="pin-host: the host key's SHA256 fingerprint, read over another channel")
     ap.add_argument("--port", type=int, default=PORT, help="the port on the host (default 18200)")
     ap.add_argument("--local-port", type=int, default=LOCAL_PORT,
                     help="the server's TLS listener on this machine (default 18201)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if a.action == "keygen":
+        keygen(a.key)
+        return 0
+    if a.action == "pin-host":
+        if not (a.to and a.fingerprint):
+            ap.error("pin-host needs --to and --fingerprint")
+        pin_host(a.to, a.fingerprint)
+        return 0
     if a.action == "install":
-        if not (a.to and a.key):
-            ap.error("install needs --to and --key")
+        if not a.to:
+            ap.error("install needs --to")
         install(a.to, a.key, a.port, a.dry_run, local_port=a.local_port)
         return 0
     if a.action == "uninstall":
