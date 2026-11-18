@@ -86,6 +86,19 @@ Unchanged (RFC 0001 v3 §5.1). Each organization's machines ship to and message 
 - The coordination feed carries masked text only, to machines of that organization.
 - No secret value in a log, a ticket or a message; the masking key and the cluster passwords travel through the secret manager.
 
+### 4.8 A second machine through a reverse forward (2026-11-19, `of_server`)
+
+For a machine of the owner's own, such as the agent host, while the server stays on the laptop (organic-framework-build `reports/agent-host-continuation-plan-2026-11-18.md`, section 2b; one server for both organizations, `of_agent-server`'s message `01a1f018-a07d`). The laptop opens `ssh -N -R 127.0.0.1:18200:127.0.0.1:18200` to the host, so the host's own `127.0.0.1:18200`, the address OF uses by default, is the laptop's server. No port opens on the laptop.
+
+- **The unit.** `python3 deploy/host/forward.py install --to <user>@<host> --key <its key> [--dry-run]` writes and loads the user LaunchAgent `dev.organic-framework.forward`; `status` and `uninstall` too. `--dry-run` prints the unit and the host's `authorized_keys` line and changes nothing. As every OF process, it runs with `OF_AUTOMATION=1`, an empty `SSH_AUTH_SOCK`, its own key, `IdentityAgent=none`, `IdentitiesOnly=yes`, `BatchMode=yes` and `ForwardAgent=no`. `ExitOnForwardFailure=yes` and keep-alives (`ServerAliveInterval=30`, three missed) end a forward that is refused or dead, and launchd starts it again.
+- **The key** is made for this forward alone, with no passphrase, since launchd starts it unattended: `SSH_AUTH_SOCK= ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/of-forward_ed25519`. On the host its line in the forwarding user's `authorized_keys` is `restrict,port-forwarding,permitlisten="127.0.0.1:18200" <public key>`: no shell, no command, no agent or X11 forwarding, and no other port to listen on (sshd(8), "AUTHORIZED_KEYS FILE FORMAT"; `permitlisten` needs OpenSSH 7.8 or later on the host). The host's own key goes into the laptop's `known_hosts` once, checked against the host's fingerprint, since `BatchMode` never asks.
+- **Enrolling the host** in both organizations, as the owner's own machine, once the forward is up (`curl -s http://127.0.0.1:18200/v1/health` answers on the host):
+  1. On the laptop, in a plain terminal: `of invite --server http://127.0.0.1:18200 --org organic-framework-build --org <the other organization> --note "agent host"`, with no `--person`, since the machine is the owner's. It prints the `of enroll` command with a one-time code.
+  2. On the host, in a plain terminal the owner opens, never in an agent's pane and never pasted into a chat: that `of enroll http://127.0.0.1:18200 --code … --org … --org …`. It asks per organization whether the raw tier leaves the host; the typed tier always does (4.7).
+  3. Check: on the laptop, `of who` lists a position held on the host with the host's machine; a message to and from that position crosses; `of_lab` re-runs `lab-routing-v0`'s coordination check on this layout.
+- **Limits.** Every OS user on the host reaches that port. Without a credential it gets what the server shows anyone who reaches it: `/v1/health` with its counts and errors (a local server's `health_detail`), `/v1/terms`, `/v1/schema`, and enrollment with a valid invite code. Everything else needs a machine's own credential from its enrollment, or a single-use link (Studio, the passkey pages). While the laptop sleeps or the forward is down, the host's shipper and relay find no server and retry, and its records wait in its local spool.
+- **Later**, when the server moves to the host before the money positions (that plan), the store, the organization's database and each machine's enrollment move at one cutover, and this forward is removed.
+
 ## 5. Build steps
 
 | # | Step | Owner | Done when |
