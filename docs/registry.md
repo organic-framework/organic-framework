@@ -388,7 +388,7 @@ A top-level `subagent_harnesses:` says which other providers' harnesses may take
 ```yaml
 subagent_harnesses:
   codex:                              # a harness: codex or muse
-    kinds: [review, read, research]   # review and read send a snapshot of a repository; research sends only the prompt
+    kinds: [review, read, research, patch]   # review, read and patch send a snapshot of a repository (patch writes in it and returns a diff, RFC 0008 §3.3); research sends only the prompt
     repos: [organic-framework]        # the repositories (checkout folder names) whose snapshots may be sent
   prompt_check: "release/check.py"    # run on a folder holding only the prompt and the schema; exit 0 passes
   basis: "<the keeper's commit or diff, or the owner's card where the organization requires one>"
