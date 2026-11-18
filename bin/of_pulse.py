@@ -1154,7 +1154,11 @@ def loop_stalls(positions, agents, bind, mem, now, conn, works, prompt=None, thr
         # a person holds the owner's position (or there is none), where the 8 h level goes, the organization's
         # conductor; while the wait holds the clock that level never fires (of_architect, message 01a1e133-dbf4)
         to, role = (owner, "owner") if owner and (org, owner) in held else (_conductor_of(positions, org), "conductor")
-        for x in long_waits(card["waits"], now, esc_h) if to else ():
+        # only a wait the clock counts holds it as the note says: a restatement with a later end, or one a shorter
+        # restatement replaced, counts for nothing (2026-11-18: a user organization's owner was told two such waits,
+        # one of them restated 2 minutes after it, as holding; its structure keeper, message 01a1ed18-b0bf)
+        clk = of_diagnose_rules.loop_clock(card, now, thresholds) if to else None
+        for x in long_waits(card["waits"], now, esc_h, clk) if clk else ():
             k = f"{org}/{wid}/{x['ts']}/{x['on']}/{x.get('ref')}"
             a = live.get(to) or {}
             if k in long_told or not prompt or to in away or not a.get("pane_id") \
@@ -1290,12 +1294,18 @@ def booking_notes(positions, agents, bind, mem, now, conn, prompt=None, log=prin
     return told
 
 
-def long_waits(waits, now, esc_h):
+def long_waits(waits, now, esc_h, clock=None):
     """The stated waits whose expect_at lies past the escalation threshold from their statement, still to come and
     stated within the last day: each reaches the work's owner once, when it is stated (docs/registry.md, Works, "A
-    stated wait"). Not a cap: the wait holds as stated."""
+    stated wait"). Not a cap: the wait holds as stated. With CLOCK (of_diagnose_rules.loop_clock of the same card),
+    only the waits it counts: stated since its last run or decision and not a restatement it left uncounted."""
+    skip, last = set(), 0
+    if clock:
+        skip = {(x.get("ts"), x.get("on"), x.get("ref")) for x in clock.get("waits_not_counted") or []}
+        last = (clock.get("last") or {}).get("at") or 0
     return [x for x in waits or [] if x.get("ts") and x.get("expect_at") and x["expect_at"] > now
-            and x["ts"] >= now - 86400 and x["expect_at"] - x["ts"] > esc_h * 3600]
+            and x["ts"] >= now - 86400 and x["expect_at"] - x["ts"] > esc_h * 3600
+            and x["ts"] >= last and (x["ts"], x.get("on"), x.get("ref")) not in skip]
 
 
 def long_wait_note(work, x, esc_h, to="owner"):

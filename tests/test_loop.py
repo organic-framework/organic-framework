@@ -620,9 +620,15 @@ class LocatedRunTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             again = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+6h", "--source", "runner")
             self.assertIn("already waits on runner job-7; nothing written", again.stdout)   # a runner's re-sync
+            # a doer's restatement with a later end is written and counts for nothing, and it is told so when it
+            # states it (2026-11-18, a user organization's structure keeper, message 01a1ed18-b0bf)
+            later = run("wait", "w-speed", "--on", "runner", "--ref", "job-7", "--until", "+9h", "--hypothesis", hid)
+            self.assertEqual(later.returncode, 0, later.stderr)
+            self.assertIn("the stall clock still counts the earlier wait on runner job-7 until", later.stdout)
+            self.assertIn("never lengthen it", later.stdout)
             db = sqlite3.connect(os.path.join(root, "state", "of.db"))
-            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait' ORDER BY rowid DESC "
-                                      "LIMIT 1").fetchone()[0])
+            p = json.loads(db.execute("SELECT payload FROM event WHERE name = 'of.loop_wait' AND payload LIKE "
+                                      "'%nightly%'").fetchone()[0])
             expect = p.pop("expect_at")
             self.assertEqual(p, {"work": "w-speed", "on": "runner", "ref": "job-7", "hypothesis": hid,
                                  "note": "queued behind the nightly replay", "by": "lab_doer", "source": "runner"})
@@ -636,7 +642,7 @@ class LocatedRunTest(unittest.TestCase):
             self.assertAlmostEqual(c["left_h"], 5, delta=0.2)
             self.assertEqual(sorted((x["on"], x["status"]) for x in c["stated"]),
                              [("calendar", "calendar"), ("position", "counted"), ("position", "counted"),
-                              ("runner", "holder")])
+                              ("runner", "holder"), ("runner", "not_counted")])
             parked = of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "parked"})])
             self.assertEqual(parked, {})                     # a parked work has no clock (of_review on PR 239)
             self.assertEqual(of_loop.clocks(db, [("w-speed", "doer", LOOP, {"state": "done"})]), {})
