@@ -79,6 +79,7 @@ PAGES = [
         ("docs/health.md", "health", "OF's own health"),
         ("docs/capacity.md", "capacity", "Capacity"),
         ("docs/accounts.md", "accounts", "Accounts and the capacity package"),
+        ("docs/access.md", "access", "Access through keepers"),
         ("docs/agent-secrets.md", "agent-secrets", "Agents' secrets"),
         ("docs/tools.md", "tools", "Tools of a position"),
         ("docs/studio.md", "studio", "Model and Studio"),

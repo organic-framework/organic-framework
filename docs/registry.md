@@ -408,6 +408,10 @@ subagent_harnesses:
 - The limits of each run (the snapshot, the secret checks, read-only, no training, the record) are the wrapper's, not the entry's: RFC 0008 §3.1.
 - **`training_cards: {<harness>: <card id>}`**, a top-level key beside it, names the owner's card that confirms a harness account's training setting, such as `codex: OF-27`, his task to turn training off. `of_capacity` records the reading (`of.harness_training`, docs/capacity.md, "Training readings") only from a card a registry names here, done by the owner, and a run on non-public material takes the reading only while the card is still named (organic-framework PR 334). It lives in the registry, not in `capacity.yaml`, because agents can write that file.
 
+## Access lists (2026-11-19, `of_architect`; docs/access.md)
+
+Each keeper an organization runs on its agent host (a vault, a signer, a browser) has its list, `registry/access/<keeper>.yaml` in the organization's repository: per entry the position, the access, its actions and limit, its tier (`plain`, `secret`, `money`, `production`), the card or commit that decided it, and, from `secret` up, the passkey approval record and, for `money` and `production`, the grant. The shape and the rules are in [`access.md`](access.md) §2 to §4. Only `of access grant` and `of access revoke` write a list; the keeper reads it from the committed tip of the default branch and serves a line only once its approvals verify. `access_review: {unused_days: N}` at the top level sets the weekly review's threshold (30 when absent; §5).
+
 ## Where the binding rules come from (2026-11-18, hand-over 83b08e7b)
 
 The binding sections of an organization's `AGENTS.md` reach its positions whole. OF (`of apply` and the pulse,
