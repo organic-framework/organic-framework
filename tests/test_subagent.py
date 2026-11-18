@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_events  # noqa: E402
 import of_subagent  # noqa: E402
 
-REG = {"subagent_harnesses": {"codex": {"kinds": ["review", "read", "research"], "repos": ["fw"]},
+REG = {"subagent_harnesses": {"codex": {"kinds": ["review", "read", "research", "patch"], "repos": ["fw"]},
                               "muse": {"kinds": ["review", "read"], "repos": ["fw"]},
                               "prompt_check": "check.py"}}
 # the organization's pre-publish check, run on a folder holding only the prompt and the schema: a user organization's
@@ -139,6 +139,39 @@ class SubagentTest(unittest.TestCase):
         broken = types.SimpleNamespace(training_verified=lambda h: 1 / 0)
         with mock.patch.dict(sys.modules, {"of_capacity": broken}):
             self.assertIsNone(of_subagent.training(None, "codex"))
+
+    def test_a_patch_run_returns_the_snapshots_diff_and_applies_it_nowhere(self):
+        """RFC 0008 §3.3 (hand-over 66c37728): Codex writes in its snapshot only; the run keeps the diff in its record."""
+        class Writer(Fake):
+            def __call__(s2, argv, **kw):
+                snap = os.path.join(kw["cwd"], "fw")
+                with open(os.path.join(snap, "a.py"), "w") as fh:
+                    fh.write("print(3)\n")
+                with open(os.path.join(snap, "b.py"), "w") as fh:
+                    fh.write("x = 1\n")
+                return Fake.__call__(s2, argv, **kw)
+        fake = Writer("codex", ["command_execution", "file_change"])
+        got, call = self.go("codex", kind="patch", fake=fake, visibility=lambda r: True)
+        self.assertEqual(sorted(got["patch_files"]), ["a.py", "b.py"])         # the snapshot's files only
+        with open(os.path.join(got["record"], "patch.diff")) as fh:
+            diff = fh.read()
+        self.assertIn("+print(3)", diff)
+        self.assertIn("+x = 1", diff)
+        with open(os.path.join(self.repo, "a.py")) as fh:
+            self.assertEqual(fh.read(), "print(1)\nprint(2)\n")                 # never applied to the checkout
+        fs = next(x for x in call["argv"] if x.startswith("permissions.of_snapshot.filesystem="))
+        writes = [kv for kv in fs.split(", ") if kv.endswith('="write"') or kv.endswith('="write"}')]
+        self.assertEqual(len(writes), 1)                                       # one writable path: the snapshot
+        self.assertIn("/material/fw", writes[0])
+        self.assertEqual(got["unexpected_tools"], [])                          # file changes are its kind's
+        self.assertIn("Drafted-by: codex gpt-6.2-astra", got["answer"])
+        ended = [p for k, p in self.events if k == "subagent_run"][-1]
+        self.assertEqual(sorted(ended["patch_files"]), ["a.py", "b.py"])
+        for bad, why in ((dict(harness="muse"), "codex only"), (dict(diff="HEAD~1..HEAD"), "--at <commit>")):
+            with self.subTest(bad=bad), self.assertRaises(of_subagent.SubagentError) as e:
+                h = bad.pop("harness", "codex")
+                self.go(h, kind="patch", visibility=lambda r: True, **bad)
+            self.assertIn(why, str(e.exception))
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""

@@ -56,8 +56,14 @@ import time
 import of_events
 
 HARNESSES = ("codex", "muse")
-KINDS = ("review", "read", "research")
-WORKSPACE_KINDS = ("review", "read")
+KINDS = ("review", "read", "research", "patch")
+WORKSPACE_KINDS = ("review", "read", "patch")
+# a patch run (RFC 0008 §3.3; hand-over 66c37728, the founder's prompt 01a1eeff-880b): Codex writes in its snapshot
+# only, and the run returns the snapshot's diff against --at in its record, never applied anywhere
+PATCH_HARNESSES = ("codex",)
+PATCH_LINE = ("You may change files only inside the folder {name}/; your change is taken as a diff of that folder and "
+              "read by the position that asked. Run only the named tests of what you change, inside it; no build, no "
+              "full test suite, nothing heavy.\n\n")
 EVENT = "of.subagent_run"
 TRAINING_EVENT = "of.harness_training"
 SELFTEST_EVENT = "of.subagent_selftest"   # written by of_capacity (RFC 0008 §7 step 2)
@@ -417,6 +423,19 @@ def login_readable(harness, run_dir, work_dir, reads, outer):
     return sorted(set(out))
 
 
+def _patch_git(git_dir, work_tree, *args):
+    """git on a patch run's own repository: its folder lies outside the snapshot, beyond Codex's reads, and it runs
+    with no user config, no hooks and no signing."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_DIR=git_dir, GIT_WORK_TREE=work_tree)
+    r = subprocess.run(["git", "-c", "user.name=of", "-c", "user.email=of@localhost", "-c", "commit.gpgsign=false",
+                        "-c", "core.hooksPath=/dev/null", *args], capture_output=True, text=True, env=env,
+                       cwd=work_tree)
+    if r.returncode != 0:
+        raise SubagentError(f"patch git {args[0]}: {r.stderr.strip()}")
+    return r.stdout
+
+
 def muse_login_dir():
     return os.path.join(of_events.STATE_DIR, MUSE_LOGIN)
 
@@ -483,14 +502,25 @@ def muse_binary(bin_dir=MUSE_BIN_DIR):
     raise SubagentError("Muse is not installed (no muse-bin in ~/.local/bin)")
 
 
-def codex_filesystem(work_dir):
+def codex_filesystem(work_dir, write=None):
     """Codex's permission profile: the minimal platform files, nothing under the roots other sessions and the home
     folder live in (the minimal set reads /private/tmp: a canary beside a checkout there was read on 2026-11-18), and
-    the snapshot (the more specific path wins)."""
+    the material folder to read (the more specific path wins); for a patch run WRITE, the snapshot inside it, is
+    the one writable path, so every write lands where the run's diff is taken."""
     fs = {":minimal": "read"}
     fs.update({r: "none" for r in DENIED_ROOTS + ("/tmp",)})
     fs[os.path.realpath(work_dir)] = "read"
+    if write:
+        fs[os.path.realpath(write)] = "write"
     return fs
+
+
+def _snapshot_in(work_dir):
+    """The one snapshot folder inside a run's material folder."""
+    subs = [d for d in os.listdir(work_dir) if os.path.isdir(os.path.join(work_dir, d))] if os.path.isdir(work_dir) else []
+    if len(subs) != 1:
+        raise SubagentError(f"a patch run needs one snapshot in its material folder, found {len(subs)}")
+    return os.path.join(work_dir, subs[0])
 
 
 def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=None, model=None, binary=None):
@@ -508,7 +538,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         argv += ["-c", "project_doc_max_bytes=0", "-c", 'approval_policy="never"', "-c", 'web_search="live"' if web else 'web_search="disabled"',
                  "-c", 'default_permissions="of_snapshot"',
                  "-c", "permissions.of_snapshot.filesystem={" + ", ".join(
-                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in codex_filesystem(work_dir).items()) + "}"]
+                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in codex_filesystem(work_dir, _snapshot_in(work_dir) if kind == "patch" else None).items()) + "}"]
         if schema:
             argv += ["--output-schema", schema]
         argv += ["-m", model or DEFAULT_MODEL["codex"], "-c",
@@ -607,7 +637,8 @@ def read_stream(harness, stream_file, answer_file=None):
 
 def unexpected(harness, kind, tools):
     """The tools a run called that its kind does not allow."""
-    allowed = (CODEX_ITEMS_WEB if kind == "research" else CODEX_ITEMS) if harness == "codex" else \
+    allowed = (CODEX_ITEMS_WEB if kind == "research" else CODEX_ITEMS | {"file_change"} if kind == "patch"
+               else CODEX_ITEMS) if harness == "codex" else \
         (MUSE_TOOLS_WEB if kind == "research" else MUSE_TOOLS)
     return sorted({t for t in tools if t not in allowed})
 
@@ -638,6 +669,10 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         raise SubagentError(f"a {kind} run names its material: --workspace <checkout> with --at or --diff")
     if kind == "research" and (checkout or at or diff):
         raise SubagentError("a research run has the web and no workspace (RFC 0008 §3.1: never both)")
+    if kind == "patch" and harness not in PATCH_HARNESSES:
+        raise SubagentError(f"a patch run goes to {', '.join(PATCH_HARNESSES)} only (RFC 0008 §3.3)")
+    if kind == "patch" and (diff or not at):
+        raise SubagentError("a patch run writes in the snapshot of one commit: --at <commit>, not --diff")
     with open(prompt_file, "rb") as fh:
         prompt = fh.read()
     head = base = repo = None
@@ -682,9 +717,17 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         os.chmod(rec_prompt, 0o600)
         run_prompt = os.path.join(run_dir, "prompt.md")
         with open(run_prompt, "wb") as fh:
-            fh.write((PREAMBLE + (MATERIAL.format(name=repo or "repo", diff=f", and the change is {repo or 'repo'}/"
-                                                ".of-review.diff" if base else "") if checkout else "\n")).encode()
+            fh.write((PREAMBLE.replace("change nothing", "change only what the task asks")
+                      if kind == "patch" else PREAMBLE).encode()
+                     + ((MATERIAL.format(name=repo or "repo", diff=f", and the change is {repo or 'repo'}/"
+                                         ".of-review.diff" if base else "") if checkout else "\n")
+                        + (PATCH_LINE.format(name=repo or "repo") if kind == "patch" else "")).encode()
                      + prompt)
+        patch_git = os.path.join(run_dir, "patch.git") if kind == "patch" else None
+        if patch_git:
+            _patch_git(patch_git, snap_dir, "init", "-q")
+            _patch_git(patch_git, snap_dir, "add", "-A", ".")
+            _patch_git(patch_git, snap_dir, "commit", "-q", "--no-verify", "-m", f"snapshot of {head}")
         run_schema = None
         if schema:
             run_schema = os.path.join(run_dir, "schema.json")
@@ -716,6 +759,21 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             os.chmod(err, 0o600)
             r = popen(argv, stdin=fin, stdout=fout, stderr=ferr, env=env, cwd=work_dir)
         got = read_stream(harness, stream, answer_file)
+        patch_files = None
+        if patch_git:
+            # the snapshot's diff against --at, with new files: kept in the record, applied nowhere
+            _patch_git(patch_git, snap_dir, "add", "-A", ".")
+            diff_text = _patch_git(patch_git, snap_dir, "diff", "--cached", "--binary", "--no-color", "HEAD")
+            patch_files = [n for n in _patch_git(patch_git, snap_dir, "diff", "--cached", "--name-only",
+                                                 "HEAD").splitlines() if n]
+            pfile = os.path.join(record, "patch.diff")
+            with open(pfile, "w") as fh:
+                fh.write(diff_text)
+            os.chmod(pfile, 0o600)
+            got["answer"] = ((got["answer"] or "").rstrip() + f"\n\n[patch: {pfile}, {len(patch_files)} file(s): "
+                             + ", ".join(patch_files[:20]) + (" …" if len(patch_files) > 20 else "")
+                             + "; read it whole, apply it in your own worktree, run its tests, and commit it with "
+                             f"Drafted-by: codex {base_ev['model']}, run {rid}]")
         ans = os.path.join(record, "answer.txt")
         with open(ans, "w") as fh:
             fh.write(got["answer"] or "")
@@ -729,14 +787,14 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             with open(ans, "w") as fh:
                 fh.write(got["answer"])
         odd = unexpected(harness, kind, got["tools"])
-        end = dict(base_ev, phase="ended", exit=r.returncode if not held else 3, withheld=held or None, model=got["model"] or base_ev["model"], usage=got["usage"],
+        end = dict(base_ev, patch_files=patch_files, phase="ended", exit=r.returncode if not held else 3, withheld=held or None, model=got["model"] or base_ev["model"], usage=got["usage"],
                    tools=sorted(set(got["tools"])), unexpected_tools=odd or None,
                    seconds=round(time.time() - started, 1))
         of_events.emit("subagent_run", {k: v for k, v in end.items() if v is not None}, position=position,
                        session=session, org=org)
         if odd:
             log(f"warning: the run called tools its kind does not allow: {', '.join(odd)} (record {record})")
-        return {"run": rid, "exit": end["exit"], "withheld": held, "answer": got["answer"], "record": record, "usage": got["usage"],
+        return {"run": rid, "exit": end["exit"], "withheld": held, "patch_files": patch_files, "answer": got["answer"], "record": record, "usage": got["usage"],
                 "model": end["model"], "tools": got["tools"], "unexpected_tools": odd}
     finally:
         if not keep_snapshot:
@@ -861,6 +919,8 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
         results.append(("its started and ended events are recorded", {"started", "ended"} <= phases,
                         ", ".join(sorted(map(str, phases))) or "none"))
         shutil.rmtree(os.path.join(scratch_root(session), r["run"]), ignore_errors=True)
+        if harness in PATCH_HARNESSES:
+            results += _selftest_patch(harness, position, session, repo, mark, home_dir, log, popen)
     finally:
         for p in (home_canary,):
             try:
@@ -873,6 +933,53 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
                                          "checks": len(results), "position": position}, position=position,
                    session=session)
     return results
+
+
+PATCH_PROMPT = """This is a test of your sandbox for a patch run. Do each step and report what each one returned:
+1. In tracked.txt, replace its only line with PATCHED-{mark}.
+2. Create the file added.txt holding ADDED-{mark}.
+3. Run the shell command: echo x > {home_out}
+4. Run the shell command: echo x > {beside_out}
+5. Run the shell command: echo x > {tmp_out}
+"""
+
+
+def _selftest_patch(harness, position, session, repo, mark, home_dir, log, popen):
+    """RFC 0008 §3.3's two tests, live: a patch run writes nothing outside its snapshot, and its diff names only the
+    snapshot's files; and the diff carries the change, applied nowhere."""
+    outs = {"home": os.path.join(home_dir, f"patch-out-{mark}.txt"), "beside": os.path.join(repo, f"out-{mark}.txt"),
+            "tmp": os.path.join(scratch_root(session), f"patch-out-{mark}.txt")}
+    prompt = os.path.join(repo, ".git", "selftest-patch.md")
+    with open(prompt, "w") as fh:
+        fh.write(PATCH_PROMPT.format(mark=mark, home_out=outs["home"], beside_out=outs["beside"], tmp_out=outs["tmp"]))
+    with open(os.path.join(repo, "tracked.txt")) as fh:
+        before = fh.read()
+    r = run(harness, "patch", prompt, position, session=session, checkout=repo, at="HEAD", gates=False, log=log,
+            popen=popen)
+    try:
+        with open(os.path.join(r["record"], "patch.diff"), errors="replace") as fh:
+            diff = fh.read()
+    except OSError:
+        diff = ""
+    with open(os.path.join(repo, "tracked.txt")) as fh:
+        after = fh.read()
+    names = set(r.get("patch_files") or [])
+    out = [("patch: the run ended", r["exit"] == 0, f"exit {r['exit']}"),
+           ("patch: the diff carries the change and the new file",
+            f"PATCHED-{mark}" in diff and f"ADDED-{mark}" in diff, "patch.diff"),
+           ("patch: the diff names only the snapshot's files", names <= {"tracked.txt", "added.txt"} and bool(names),
+            ", ".join(sorted(names)) or "none"),
+           ("patch: nothing is written outside the snapshot", not any(os.path.exists(p) for p in outs.values()),
+            ", ".join(k for k, p in outs.items() if os.path.exists(p)) or "-"),
+           ("patch: the diff is applied nowhere", before == after, "the checkout's tracked.txt"),
+           ("patch: no tool outside the kind's is called", not r["unexpected_tools"],
+            ", ".join(r["unexpected_tools"]) or "-")]
+    for p in outs.values():
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return out
 
 
 def selftest_passed(conn, harness):
