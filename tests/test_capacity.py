@@ -2322,12 +2322,24 @@ class OtherHarnesses(unittest.TestCase):
         # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
         out = []
         emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
-        of_capacity.record_training("codex", "off", "ChatGPT pro", "ask:OF-27", emit=emit)
+        cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9"},
+                 {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open"},
+                 {"ref": "OF-26", "event_id": "01a1ee40-c757-743d", "task": None, "state": "answered", "closed_by": "e8"}]
+        of_capacity.record_training("codex", "off", "ChatGPT pro", "of-27", emit=emit, cards=cards)
         self.assertEqual(out[0], ("harness_training", {"harness": "codex", "training": "off", "account": "ChatGPT pro",
-                                                       "source": "ask:OF-27"}))
+                                                       "source": "of-27", "card": "OF-27",
+                                                       "card_event": "01a1ee41-3cdd-74bc", "closed_by": "e9"}))
+        of_capacity.record_training("codex", "off", None, "01a1ee40-c757", emit=emit, cards=cards)  # an answered ask
+        self.assertEqual(out[1][1]["card"], "OF-26")
+        # of_review, PR 334: a Codex 'off' stands only on the owner's closed card
+        for src in ("OF-99999", "the founder said so in my session", "x", "OF-30"):
+            with self.assertRaisesRegex(ValueError, "owner's card"):
+                of_capacity.record_training("codex", "off", None, src, emit=emit, cards=cards)
+        of_capacity.record_training("codex", "on", None, "a reading", emit=emit, cards=cards)  # 'on' locks: no card
         for bad in (("gemini", "off", "x"), ("codex", "maybe", "x"), ("codex", "off", " ")):
             with self.assertRaises(ValueError):
-                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit)
+                of_capacity.record_training(bad[0], bad[1], None, bad[2], emit=emit, cards=cards)
+        out.clear()
         with tempfile.TemporaryDirectory() as t:
             path = os.path.join(t, "settings.json")
             with open(path, "w") as fh:
@@ -2338,7 +2350,7 @@ class OtherHarnesses(unittest.TestCase):
                 json.dump({"contributor_mode_enabled": True}, fh)
             self.assertEqual(of_capacity.sync_muse_training(latest={"muse": {"training": "off"}}, path=path, emit=emit),
                              "on")
-        self.assertEqual([p["training"] for k, p in out[1:]], ["off", "on"])
+        self.assertEqual([p["training"] for k, p in out], ["off", "on"])
         self.assertIn("not read", of_capacity._training_text(None))
         self.assertIn("training off since", of_capacity._training_text({"training": "off", "ts": "2026-11-18T11:40:28Z",
                                                                          "source": "s"}))

@@ -533,15 +533,41 @@ def training_readings(conn=None):
     return out
 
 
-def record_training(harness, training, account, source, emit=None):
+def owner_closed_card(source, cards=None):
+    """The owner's card that `source` names (a card id such as OF-27, or its ask's event id or a prefix of it) when it
+    is a task marked done or an ask answered, else None. `cards`: the asks projection (of_asks.project), read from the
+    event log when not given."""
+    src = str(source or "").strip()
+    if not src:
+        return None
+    if cards is None:
+        import of_asks
+        import of_store
+        cards = of_asks.project(of_asks.load(of_store.connect()))
+    for a in cards or []:
+        ref, eid = str(a.get("ref") or ""), str(a.get("event_id") or "")
+        if ref.upper() == src.upper() or (len(src) >= 8 and eid.startswith(src)):
+            ok = a.get("state") == "done" if a.get("task") else a.get("state") == "answered"
+            return a if ok else None
+    return None
+
+
+def record_training(harness, training, account, source, emit=None, cards=None):
     """Write of.harness_training: whether the provider may train on the harness account's runs, and the reading's
-    source. Codex shows its data controls nowhere a program can read, so its reading is recorded from the owner's
-    confirmation (`of capacity training codex --set off --source <basis>`); Muse's comes from its settings
+    source. Codex shows its data controls nowhere a program can read, so its `off` stands only on the owner's card
+    that says so: a task he marked done or an ask he answered, resolved in the event log (of_review, PR 334: any text
+    was taken, and the reading unlocks material that is not public for Codex runs). Muse's comes from its settings
     (sync_muse_training)."""
     if harness not in TRAINING_HARNESSES or training not in ("off", "on") or not str(source or "").strip():
         raise ValueError(f"training: harness {'|'.join(TRAINING_HARNESSES)}, --set off|on and a --source are needed")
-    (emit or of_events.emit)("harness_training", {"harness": harness, "training": training,
-                                                  "account": account or "?", "source": str(source).strip()})
+    payload = {"harness": harness, "training": training, "account": account or "?", "source": str(source).strip()}
+    if harness == "codex" and training == "off":
+        card = owner_closed_card(source, cards)
+        if not card:
+            raise ValueError(f"training: codex off needs --source to name the owner's card that confirms it (a task "
+                             f"he marked done or an ask he answered); {str(source).strip()!r} is none")
+        payload.update(card=card.get("ref"), card_event=card.get("event_id"), closed_by=card.get("closed_by"))
+    (emit or of_events.emit)("harness_training", payload)
 
 
 def sync_muse_training(latest=None, path=None, emit=None):
