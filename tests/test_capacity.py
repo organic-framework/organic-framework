@@ -2149,6 +2149,95 @@ class Stay(unittest.TestCase):
         self.assertEqual([x["position"] for x in m], ["st1"])  # stopped on its limit: it moves anyway
 
 
+
+class Restore(unittest.TestCase):
+    """2026-11-18: a rescue of 11-17 19:50Z put a user organization's cloud keeper on an account without its Cloudflare; it ran there 14
+    hours and its daily token watch failed, while ~/.claude had the tool and room from 22:05Z. Nothing moved it back:
+    fill and relief only avoid an account without a session's tools."""
+    NOW = Rescue.NOW
+    POS = [{"name": n, "holder": {"session": n}} for n in ("cf", "k8s_keeper", "of_conductor")]
+    NEEDS = {"cf": {"plugin:cloudflare"}, "k8s_keeper": {"plugin:cloudflare"}, "of_conductor": {"plugin:cloudflare"}}
+
+    def seen(self, gg=(), ap=("plugin:cloudflare",)):
+        return {"/gg": of_capacity.account_tools(None, set(gg)), "/ap": of_capacity.account_tools(None, set(ap)),
+                "/mm": of_capacity.account_tools(None, {"plugin:cloudflare"}), "/cl": of_capacity.account_tools(None, set())}
+
+    def plan(self, rows=None, status="idle", who="cf", pol=None, seen=None, skip=()):
+        sess = {"/gg": [{"session": who, "status": status}], "/ap": [], "/mm": [], "/cl": []}
+        return of_capacity.restore_plan(rows or Rescue().rows(), sess, self.POS, pol or dict(POLICY), self.NOW,
+                                        skip=skip, tools=(self.NEEDS, seen or self.seen()))
+
+    def test_a_holder_without_its_tool_goes_back_to_one_that_has_it(self):
+        m = self.plan()
+        self.assertEqual([(x["position"], x["from"], x["to"]) for x in m], [("cf", "/gg", "/ap")])
+        self.assertTrue(m[0]["reason"].startswith("restore: cloudflare missing on /gg; /ap has all it uses"))
+        self.assertEqual(of_capacity.balance_why(m[0]["reason"]),
+                         "cloudflare (a tool your position uses) was missing on the old account; this one has it "
+                         "signed in.")
+
+    def test_only_an_idle_holder_with_a_tool_missing_and_a_target_that_takes_work(self):
+        self.assertEqual(self.plan(status="busy"), [])
+        self.assertEqual(self.plan(seen=self.seen(gg=("plugin:cloudflare",))), [])  # it has the tool where it runs
+        self.assertEqual(self.plan(seen=self.seen(ap=())), [])  # only /mm has it, and /mm refuses work
+        self.assertEqual(self.plan(skip={"cf"}), [])  # moved lately, or its move failed
+        rows = Rescue().rows()
+        rows[2]["windows"]["seven_day"]["utilization"] = 97  # /ap has it but is about to stop
+        self.assertEqual(self.plan(rows=rows), [])
+        unknown = dict(self.seen(), **{"/gg": None})  # what /gg has is unknown: no move on a guess
+        self.assertEqual(self.plan(seen=unknown), [])
+
+    def test_production_and_stay_positions_stay(self):
+        self.assertEqual(self.plan(who="k8s_keeper"), [])
+        self.assertEqual(self.plan(who="of_conductor", pol=dict(POLICY, stay=["of_conductor"])), [])
+
+    def test_decide_leaves_a_stopped_session_to_rescue_and_fill_does_not_move_it_again(self):
+        rows = Rescue().rows()
+        sess = {"/gg": [{"session": "cf", "status": "idle"}], "/ap": [], "/mm": [], "/cl": []}
+        m = of_capacity.decide(rows, sess, self.POS, {"cf": 50}, {}, dict(POLICY), self.NOW,
+                               connectors=(self.NEEDS, self.seen()))
+        self.assertEqual([(x["position"], x["reason"][:8]) for x in m], [("cf", "restore:")])
+        m = of_capacity.decide(rows, sess, self.POS, {"cf": 50}, {}, dict(POLICY), self.NOW,
+                               stopped={"cf": self.NOW - 600}, connectors=(self.NEEDS, self.seen()))
+        self.assertNotIn("restore", " ".join(x["reason"] for x in m))
+
+
+class PluginOfAnotherMarketplace(unittest.TestCase):
+    """2026-11-18: an account's only Cloudflare plugin was cloudflare@anthropic-plugin-directory, the founder's
+    key-creating sign-in (labelled), on the same server url as the catalogue's plain cloudflare@claude-plugins-official.
+    The check by url called the plain tool signed in there, so a rescue onto it never said Cloudflare was missing."""
+    CF = "https://mcp.cloudflare.com/mcp"
+    DOCS = {"acme": {"tools_mode": "enforce", "tools": {
+        "cf": {"kind": "plugin", "plugin": "cloudflare@claude-plugins-official", "url": CF, "account_bound": True,
+               "acts_as": "the owner", "scope": "write", "keeper": "acme_org"},
+        "cf-keys": {"kind": "plugin", "plugin": "cloudflare@anthropic-plugin-directory", "url": CF,
+                    "account_bound": True, "signin": "keys", "acts_as": "the owner", "scope": "write",
+                    "keeper": "acme_org"}},
+        "positions": [{"name": "aws", "tools": ["cf"]}, {"name": "net", "tools": ["cf-keys"]}]}}
+
+    def test_the_plain_tool_is_missing_where_only_the_other_plugin_is_installed_and_no_task_is_filed(self):
+        from unittest import mock
+        asks = []
+        with tempfile.TemporaryDirectory() as ml, tempfile.TemporaryDirectory() as cl:
+            for d, pid in ((ml, "cloudflare@anthropic-plugin-directory"), (cl, "cloudflare@claude-plugins-official")):
+                os.makedirs(os.path.join(d, "plugins"))
+                with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
+                    json.dump({"version": 2, "plugins": {pid: [{}]}}, fh)
+            labels = {os.path.realpath(ml): {"cloudflare@anthropic-plugin-directory": "keys"}}
+            servers = lambda d, now=None, run=None: [("plugin:cloudflare:cloudflare", self.CF, True)]  # noqa: E731
+            with mock.patch.multiple(of_capacity, tool_docs=lambda: self.DOCS, signin_labels=lambda: labels,
+                                     mcp_servers=servers, load_cache=lambda: {}, save_cache=lambda c: None,
+                                     config_dirs=lambda: [ml, cl], live_sessions=lambda d: [],
+                                     dir_of_position=lambda p, s: cl, account_of=lambda d: "x@example.com"):
+                self.assertEqual([i for i, _ in of_capacity.missing_signins("aws", ml)], ["acme/cf"])
+                self.assertEqual(of_capacity.missing_signins("aws", cl), [])
+                self.assertEqual(of_capacity.missing_signins("net", ml), [])  # the labelled one is there
+                self.assertEqual([i for i, _ in of_capacity.missing_signins("net", cl)], ["acme/cf-keys"])
+                with self.assertRaisesRegex(of_capacity.MoveError, "not signed in on .*acme/cf"):
+                    of_capacity.move({"name": "aws", "holder": {"session": "s1"}}, ml,
+                                     ask=lambda t, task=None: asks.append((t, task)), log=lambda x: None)
+        self.assertEqual(asks, [])  # signing in does not fix it: capacity.yaml `signins:` decides
+
+
 class ConnectorsCache(unittest.TestCase):
     def test_a_plugin_installed_after_the_list_was_cached_reads_it_again(self):
         from unittest import mock
