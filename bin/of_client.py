@@ -164,15 +164,28 @@ def tls_context(url):
 
 
 def _pinned_handler(context):
-    """An HTTPS handler whose connections end unless the server's certificate is the pinned one, byte for byte."""
+    """An HTTPS handler whose connections end unless the server's certificate is the pinned one, byte for byte; to a
+    host and port with a socket_path, the connection goes through that Unix socket, TLS and its name check alike."""
     import hashlib
     import http.client
+    import socket
     import ssl
     want = context.of_pin_sha256
 
     class Pinned(http.client.HTTPSConnection):
         def connect(self):
-            super().connect()
+            unix = socket_path(f"https://{self.host}:{self.port}")
+            if unix:
+                raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                raw.settimeout(self.timeout if isinstance(self.timeout, (int, float)) else None)
+                try:
+                    raw.connect(unix)
+                    self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+                except BaseException:
+                    raw.close()
+                    raise
+            else:
+                super().connect()
             der = self.sock.getpeercert(binary_form=True) or b""
             if not want or hashlib.sha256(der).hexdigest() != want:
                 self.sock.close()
@@ -259,6 +272,23 @@ def studio_requester(env=None, position_of_session=None):
 def _uuid7():
     u7 = getattr(uuid, "uuid7", None)
     return str(u7() if u7 else uuid.uuid4())
+
+
+def socket_path(url):
+    """The Unix socket this machine reaches URL's host and port through, or None: the file
+    ~/.config/of/servers/<host>_<port>.socket names it (`of enroll --socket`). Then no connection to that address
+    uses TCP, so whoever takes the port gets nothing (docs/server-several-machines.md 4.8; docs/contours.md §1)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(url)
+    if not u.hostname:
+        return None
+    port = u.port or (443 if u.scheme.lower() == "https" else 80)
+    try:
+        with open(os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{port}.socket")) as fh:
+            path = fh.read().strip()
+    except OSError:
+        return None
+    return path if path.startswith("/") else None
 
 
 def pinned_url(url):

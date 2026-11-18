@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The laptop's reverse forward to the agent host: the host reaches this machine's of-server at its own
-127.0.0.1:<port> (organic-framework-build reports/agent-host-continuation-plan-2026-11-18.md, section 2b: one server for
+"""The laptop's reverse forward to the agent host: the host's OF team reaches this machine's of-server through a Unix
+socket, by the name https://127.0.0.1:<port> (organic-framework-build reports/agent-host-continuation-plan-2026-11-18.md, section 2b: one server for
 both organizations, staying on the laptop at first). Owned by of_server.
 
     python3 deploy/host/forward.py keygen
@@ -15,8 +15,8 @@ reads the host's ed25519 key, accepts it only when its fingerprint is the one gi
 writes it to the forward's own known_hosts; the forward checks the host against that file alone
 (StrictHostKeyChecking=yes), never the person's own known_hosts.
 
-A user LaunchAgent (dev.organic-framework.forward) runs `ssh -N -R 127.0.0.1:<port>:127.0.0.1:<local port>` and launchd
-keeps it running: ExitOnForwardFailure and keep-alives make a dead or refused forward end, and launchd starts it again.
+A user LaunchAgent (dev.organic-framework.forward) runs `ssh -N -R /srv/of-forward/server.sock:127.0.0.1:<local port>`
+(the host's end a Unix socket only the OF team's user reaches, docs/contours.md §1) and launchd keeps it running: ExitOnForwardFailure and keep-alives make a dead or refused forward end, and launchd starts it again.
 The local port is the server's TLS listener (`of server tls-init`), so the host's clients trust only its pinned
 certificate and a process that takes the port while the forward is down gets nothing (of_secrets-review on
 organic-framework PR 350). As every OF process (AGENTS.md): OF_AUTOMATION=1, its own key, no SSH agent (SSH_AUTH_SOCK
@@ -37,19 +37,21 @@ LABEL = "dev.organic-framework.forward"
 DIR = "~/.ssh/of-forward"
 KEY = DIR + "/id_ed25519"
 KNOWN = DIR + "/known_hosts"
-PORT = 18200        # on the host: the address OF's clients use
+PORT = 18200        # the address OF's clients name: https://127.0.0.1:18200, reached on the host through SOCKET
 LOCAL_PORT = 18201  # on the laptop: the server's TLS listener (of_server.TLS_PORT)
 HOST_USER = "of-forward"
+SOCKET = "/srv/of-forward/server.sock"  # on the host: of-forward:of 2750, so of reaches it and no other user does
 
 
 def agent_path(home=None):
     return os.path.join(home or os.path.expanduser("~"), "Library", "LaunchAgents", f"{LABEL}.plist")
 
 
-def ssh_argv(to, key, port=PORT, local_port=LOCAL_PORT, known=KNOWN):
-    """The forward's ssh call: its own key, never an SSH agent, the host checked against the forward's own pinned
-    known_hosts; ends on a failed forward or a dead link."""
-    return ["/usr/bin/ssh", "-N", "-R", f"127.0.0.1:{port}:127.0.0.1:{local_port}",
+def ssh_argv(to, key, port=PORT, local_port=LOCAL_PORT, known=KNOWN, socket=SOCKET):
+    """The forward's ssh call: the host's end a Unix socket, never a TCP port another user of the host could reach
+    or take (of_agent-server, msg 01a1f098-02bb; docs/contours.md §1); its own key, never an SSH agent, the host
+    checked against the forward's own pinned known_hosts; ends on a failed forward or a dead link."""
+    return ["/usr/bin/ssh", "-N", "-R", f"{socket}:127.0.0.1:{local_port}",
             "-i", os.path.expanduser(key), "-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes",
             "-o", f"UserKnownHostsFile={os.path.expanduser(known)}", "-o", "StrictHostKeyChecking=yes",
             "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ExitOnForwardFailure=yes",
@@ -67,21 +69,24 @@ def unit(to, key, port=PORT, home=None, local_port=LOCAL_PORT):
 
 
 def authorized_line(pubkey, port=PORT):
-    """The host's authorized_keys line for the forward's key: no command, and a listen on that one address."""
-    return f'restrict,port-forwarding,permitlisten="127.0.0.1:{port}",command="/usr/bin/false" {pubkey.strip()}'
+    """The host's authorized_keys line for the forward's key: forwarding and no command; the sshd block allows only a
+    Unix-socket listen (permitlisten names TCP listens alone)."""
+    return f'restrict,port-forwarding,command="/usr/bin/false" {pubkey.strip()}'
 
 
 def sshd_block(user=HOST_USER, port=PORT):
-    """The host's sshd Match block for the forward's user (sshd_config(5)): remote forwarding to that one listen
-    address and nothing else: no local or dynamic forwarding (-L, -D, -W), no socket forwarding, no session. A closing
+    """The host's sshd Match block for the forward's user (sshd_config(5)): a remote Unix-socket listen and nothing
+    else: no TCP forwarding (-L, -D, -W, -R to a port), no session; the socket at mode 0660 in its setgid folder, a
+    stale one replaced. sshd limits no socket path, so the user's writable folders are the limit. A closing
     `Match all` ends it: a file under sshd_config.d is included near the top of sshd_config, and without it the main
     file's lines after the Include would apply to this user alone."""
     return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8)\n"
             f"Match User {user}\n"
-            f"    AllowTcpForwarding remote\n"
-            f"    PermitListen 127.0.0.1:{port}\n"
+            f"    AllowTcpForwarding no\n"
+            f"    AllowStreamLocalForwarding remote\n"
+            f"    StreamLocalBindUnlink yes\n"
+            f"    StreamLocalBindMask 0117\n"
             f"    PermitOpen none\n"
-            f"    AllowStreamLocalForwarding no\n"
             f"    AllowAgentForwarding no\n"
             f"    X11Forwarding no\n"
             f"    GatewayPorts no\n"
@@ -168,7 +173,7 @@ def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run
     r = run(["launchctl", "bootstrap", f"gui/{uid}", path], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"forward: launchctl bootstrap failed: {(r.stderr or '').strip()[:200]}")
-    out(f"forward installed: {LABEL} keeps ssh -N -R 127.0.0.1:{port}:127.0.0.1:{local_port} to {to} running")
+    out(f"forward installed: {LABEL} keeps ssh -N -R {SOCKET}:127.0.0.1:{local_port} to {to} running")
     return doc
 
 

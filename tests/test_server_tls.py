@@ -110,6 +110,37 @@ class TLSTest(unittest.TestCase):
         self.assertIn(("/v1/health/checks", "Bearer tok-1"), self.srv.seen)  # arrived, over the pinned TLS
         self.assertIn(("/v1/health", None), self.srv.seen)
 
+    def test_a_server_named_with_a_socket_is_reached_through_it_alone(self):
+        """docs/contours.md §1, of_agent-server msg 01a1f098-02bb: on the host the forward ends in a Unix socket, and
+        no OF client there uses TCP to that address, so whoever holds the port gets nothing."""
+        import socketserver
+
+        class UnixTLS(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+
+            def __init__(self, path, handler, cert, key):
+                super().__init__(path, handler)
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(cert, key)
+                self.socket = ctx.wrap_socket(self.socket, server_side=True)
+
+        short = tempfile.mkdtemp(dir="/tmp")
+        path = os.path.join(short, "s.sock")
+        srv = UnixTLS(path, Hello, self.cert, self.key)
+        srv.seen = []
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close(), shutil.rmtree(short, ignore_errors=True)))
+        url = "https://127.0.0.1:18299"  # nothing listens on that port: a TCP connection would be refused
+        dest = of_client.pin_path(url)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy(self.cert, dest)
+        with open(dest[:-len(".pem")] + ".socket", "w") as fh:
+            fh.write(path + "\n")
+        self.assertEqual(of_client.socket_path(url), path)
+        status, body = of_client.Client("http://127.0.0.1:18299")._request("GET", "/v1/x", token="tok-s")
+        self.assertEqual((status, body["ok"]), (200, True))
+        self.assertIn(("/v1/x", "Bearer tok-s"), srv.seen)  # over the socket, with TLS and the pin
+
     def test_the_server_keeps_its_error_handler(self):
         self.assertIn("handle_error", of_server.Server.__dict__)  # PR 350: it had been moved into tls_init
         self.assertTrue(issubclass(of_server.TLSServer, of_server.Server))

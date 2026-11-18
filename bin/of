@@ -6019,6 +6019,15 @@ def cmd_enroll(args):
             fh.write(pem)
         print(f"pinned the server's certificate for {args.server} in {dest}")
         _ship_server_url(args.server)  # the default too, so an entry with no server: never falls back to plain http
+    if getattr(args, "socket", None):  # docs/server-several-machines.md 4.8: never TCP to that address
+        if not (getattr(args, "pin", None) and args.server[:6].lower() == "https:"):
+            raise OfError("--socket goes with an https server and --pin")
+        if not os.path.isabs(args.socket):
+            raise OfError("--socket is an absolute path")
+        dest = of_client.pin_path(args.server)[:-len(".pem")] + ".socket"
+        with open(dest, "w") as fh:
+            fh.write(args.socket + "\n")
+        print(f"{args.server} is reached through the socket {args.socket} ({dest})")
     if args.code == "-":  # out of the process arguments, which other users of the machine can list
         import getpass
         args.code = getpass.getpass("invite code: ").strip()
@@ -7407,6 +7416,7 @@ def main(argv=None):
     en.add_argument("server")
     en.add_argument("--code", required=True, help="the invite code, or - to type it without echo")
     en.add_argument("--pin", help="an https server's certificate file: trust that certificate alone")
+    en.add_argument("--socket", help="with --pin: the Unix socket this machine reaches that server through")
     en.add_argument("--org", action="append", required=True)
     en.add_argument("--raw", action="append", help="send the raw tier for this organization (otherwise asked; default no)")
     en.add_argument("--yes", "-y", action="store_true", help="do not ask; raw only where --raw says so")
