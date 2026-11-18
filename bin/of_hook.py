@@ -1150,9 +1150,10 @@ def _guard(hook, sess):
         return
     why, subject = hit
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                     "permissionDecisionReason": f"Organic Framework critical deny: {why}. " + (
+                                     "permissionDecisionReason": (f"Organic Framework critical deny: {why}. " + (
                                          "" if of_guard.owns_advice(why) else
-                                         "Secrets stay in their files; ask the owner if you need a value.") + NO_WAY_ROUND}}
+                                         "Secrets stay in their files; ask the owner if you need a value.")).rstrip()
+                                     + NO_WAY_ROUND}}
     # the decision goes out before anything else can fail (recording needs the store and the registry)
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
     sys.stdout.flush()

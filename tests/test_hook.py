@@ -589,14 +589,18 @@ class HandleTest(unittest.TestCase):
         another tool after a deny. A subagent gets none of OF's binding rules, but it gets the deny's reason."""
         import contextlib
         import io
-        for extra in ({}, {"agent_id": "a1", "agent_type": "general-purpose"}):
+        # a reason with the secret rules' advice, and one that carries its own (G8): one space before the last sentence
+        cases = [({}, "cat ~/.ssh/id_ed25519"), ({"agent_id": "a1", "agent_type": "general-purpose"}, "cat ~/.ssh/id_ed25519"),
+                 ({}, "python3 -c \"print(open('.env').read())\"")]
+        for extra, cmd in cases:
             of_hook.OUTPUT = None
             out = io.StringIO()
             with contextlib.redirect_stdout(out):  # the decision goes to stdout first (OUTPUT is cleared after)
-                self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "cat ~/.ssh/id_ed25519"}, **extra)
+                self.fire("PreToolUse", tool_name="Bash", tool_input={"command": cmd}, **extra)
             why = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
             self.assertIn("another way", why, extra)
             self.assertIn("report the command to your structure keeper", why, extra)
+            self.assertNotIn("  ", why, extra)  # one space between the reason's sentences
 
     def test_a_guard_reason_is_recorded_masked(self):
         """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""
