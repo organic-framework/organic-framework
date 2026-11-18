@@ -159,8 +159,15 @@ def repo_of(checkout):
 
 # ---- the snapshot ----
 
+# what every git read of a checkout runs with: paths unquoted (an excluded name in a non-ASCII folder was quoted and
+# missed; a user organization's security keeper, 2026-11-18), no LFS or other smudge filter fetching or decrypting
+# content (git archive applies them), no external diff or text conversion
+GIT_SAFE = ["-c", "core.quotePath=false", "-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=",
+            "-c", "filter.lfs.required=false", "-c", "diff.external="]
+
+
 def _git(checkout, *args, text=True):
-    r = subprocess.run(["git", "-C", checkout, *args], capture_output=True, text=text,
+    r = subprocess.run(["git", "-C", checkout, *GIT_SAFE, *args], capture_output=True, text=text,
                        env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0"))
     if r.returncode != 0:
         raise SubagentError(f"git {' '.join(args[:2])}: {(r.stderr if text else r.stderr.decode(errors='replace')).strip()}")
@@ -183,7 +190,10 @@ def resolve(checkout, at=None, diff=None):
 # paths no run sends, in any repository (a user organization's security keeper's terms through its structure keeper,
 # 2026-11-18): removed from the snapshot and from a diff run's diff before anything leaves
 DEFAULT_EXCLUDES = ("kubeconfig*", "*.kubeconfig", "*.pem", "*.key", "*.env", ".env", ".env.*", "secrets/",
-                    ".generated/", "*.tfstate", "*.tfstate.*")
+                    ".generated/", "*.tfstate", "*.tfstate.*",
+                    # gitleaks 8.30.1 honours <source>/.gitleaksignore even with --gitleaks-ignore-path: an entry
+                    # silenced a key on 2026-11-18 (of_platform's check), so no snapshot carries one
+                    ".gitleaksignore")
 
 
 def _exclude_rx(pattern):
@@ -209,7 +219,7 @@ def _exclude_rx(pattern):
         else:
             out, i = out + re.escape(p[i]), i + 1
     lead = "" if "/" in p else "(?:.*/)?"
-    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"))
+    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"), re.I)   # 'Secrets/', 'PROD.ENV' too
 
 
 def excludes_for(registry, repo):
@@ -231,6 +241,22 @@ def excluded(path, rxs):
     return any(r.match(path) for r in rxs or ())
 
 
+def changed_names(checkout, base, head):
+    """The exact names a diff BASE..HEAD changes, both sides of a move (NUL-separated: no quoting)."""
+    return [n for n in _git(checkout, "diff", "-z", "--name-only", "--no-renames", base, head).split("\0") if n]
+
+
+def review_diff(checkout, base, head, rxs=None):
+    """The diff BASE..HEAD of the changed files no exclude names, built from their exact names as literal pathspecs,
+    so no header is parsed to drop a file (a quoted non-ASCII path once kept an excluded file in the diff)."""
+    keep = [n for n in changed_names(checkout, base, head) if not excluded(n, rxs)]
+    out = []
+    for i in range(0, len(keep), 500):
+        out.append(_git(checkout, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", base, head,
+                        "--", *[":(literal)" + n for n in keep[i:i + 500]]))
+    return "".join(out)
+
+
 def _drop_from_diff(text, rxs):
     """A unified git diff without the blocks of excluded files (either side's name)."""
     if not rxs:
@@ -245,15 +271,28 @@ def _drop_from_diff(text, rxs):
     return "".join(out)
 
 
+def smudge_filters(checkout):
+    """The content filters configured for the checkout other than LFS's (neutralized by GIT_SAFE): git archive would
+    run them on every file (git-crypt would decrypt), so a run on such a checkout is refused."""
+    r = subprocess.run(["git", "-C", checkout, "config", "--get-regexp", r"^filter\..*\.(smudge|process)$"],
+                       capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+    return sorted({ln.split()[0] for ln in r.stdout.splitlines() if ln.split()
+                   and not ln.split()[0].startswith("filter.lfs.")})
+
+
 def snapshot(checkout, dest, head, base=None, rxs=None):
     """Export HEAD's tracked files into DEST (a new folder), and for a diff run BASE..HEAD as .of-review.diff beside
     them. Never the live checkout: untracked and ignored files do not exist in the export. Files RXS excludes are
     removed, and their blocks dropped from the diff, before anything is checked or sent; returns DEST."""
+    filters = smudge_filters(checkout)
+    if filters:
+        raise SubagentError(f"the checkout configures content filters ({', '.join(filters)}): git archive would run "
+                            "them on its files (decrypting or fetching content), so no snapshot is made")
     os.makedirs(dest, mode=0o700)
     tar = os.path.join(os.path.dirname(dest), "snapshot.tar")
     with open(tar, "wb") as fh:
-        r = subprocess.run(["git", "-C", checkout, "archive", "--format=tar", head], stdout=fh, stderr=subprocess.PIPE,
-                           env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
+        r = subprocess.run(["git", "-C", checkout, *GIT_SAFE, "archive", "--format=tar", head], stdout=fh,
+                           stderr=subprocess.PIPE, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
     if r.returncode != 0:
         raise SubagentError(f"git archive: {r.stderr.decode(errors='replace').strip()}")
     with tarfile.open(tar) as tf:
@@ -269,8 +308,7 @@ def snapshot(checkout, dest, head, base=None, rxs=None):
                 shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
     if base:
         with open(os.path.join(dest, ".of-review.diff"), "w") as fh:
-            fh.write(_drop_from_diff(_git(checkout, "diff", "--no-color", "--no-ext-diff", "--no-renames", base, head),
-                                     rxs))
+            fh.write(review_diff(checkout, base, head, rxs))
     return dest
 
 
@@ -281,7 +319,7 @@ def diff_secrets(checkout, base, head, diff_text="", rxs=None):
     anywhere in the diff's text."""
     import of_classify
     out = []
-    names = _git(checkout, "diff", "--name-only", "--no-renames", base, head).splitlines()
+    names = changed_names(checkout, base, head)
     for n in names:
         if excluded(n, rxs):
             continue   # removed from the diff: not sent
