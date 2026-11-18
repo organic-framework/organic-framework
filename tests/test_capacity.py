@@ -2749,8 +2749,20 @@ class SigninTaskReconcile(unittest.TestCase):
                 mock.patch.object(of_capacity, "actor", return_value="of_capacity"), \
                 mock.patch.object(of_capacity.of_events, "emit", side_effect=lambda *a, **k: emitted.append(a)):
             out = of_capacity.reconcile_signin_tasks(sessions, now=5.0, log=lambda s: None, dry_run=dry_run,
-                                                     asks=asks, missing=lambda p, d, now=None: missing)
+                                                     asks=asks,
+                                                     missing=None if missing is None else lambda p, d, now=None: missing)
         return out, emitted, cache
+
+    def test_an_unknown_sign_in_keeps_the_task(self):
+        # of_review, PR 338: a failed claude mcp list reads unknown; the task is withdrawn as signed in only when
+        # every tool reads signed in
+        from unittest import mock
+        entry = {"kind": "plugin", "plugin": "linear@x", "url": "https://mcp.linear.app/mcp"}
+        for state, withdrawn in ((None, False), (False, False), (True, True)):
+            with mock.patch.object(of_capacity, "bound_tools", lambda name, docs=None: [("acme/linear", entry)]), \
+                    mock.patch.object(of_capacity, "signed_in", lambda e, d, now=None, run=None, v=state: v):
+                out, _, _ = self.run_it({"/ap": [{"name": "disp"}]}, None)
+            self.assertEqual(bool(out), withdrawn, state)
 
     def test_a_position_that_left_the_account_drops_its_task(self):
         out, emitted, cache = self.run_it({"/ap": [{"name": "else"}], "/ez": [{"name": "disp"}]}, [])
