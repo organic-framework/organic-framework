@@ -533,17 +533,29 @@ def training_readings(conn=None):
     return out
 
 
-def training_cards_named(harness, docs=None):
-    """The card ids the listed registries name for a harness's training setting (`training_cards: {<harness>: <card
-    id>}` at a registry's top level). A registry is its structure keeper's committed and reviewed file; capacity.yaml,
-    which any agent session may write, names none (of_review, PR 334, after of_server on start_in, PR 330)."""
+def training_cards_named(harness, docs=None, org=None):
+    """{organization: card id} the listed registries name for a harness's training setting (`training_cards:
+    {<harness>: <card id>}` at a registry's top level), each only when the card is that organization's own (its card
+    prefix): a registry is its structure keeper's committed and reviewed file, and it speaks for its own owner's cards
+    only. capacity.yaml, which any agent session may write, names none (of_review, PR 334, after of_server on
+    start_in, PR 330). `org`: that organization's alone."""
     docs = tool_docs_all() if docs is None else docs
-    out = set()
-    for doc in (docs or {}).values():
-        v = ((doc or {}).get("training_cards") or {}).get(harness) if isinstance(doc, dict) else None
-        if v:
-            out.add(str(v).upper())
+    out = {}
+    for o, doc in (docs or {}).items():
+        if org is not None and o != org:
+            continue
+        tc = (doc or {}).get("training_cards") if isinstance(doc, dict) else None
+        v = tc.get(harness) if isinstance(tc, dict) else None
+        m = of_events.REF_RE.match(str(v or "").strip())
+        if m and m.group(1).upper() == str(_card_prefix(o, doc)).upper():
+            out[o] = str(v).strip().upper()
     return out
+
+
+def _card_prefix(org, doc=None):
+    """An organization's card prefix: its registry's `card_prefix` when the doc says, else of_events'."""
+    v = (doc or {}).get("card_prefix") if isinstance(doc, dict) else None
+    return str(v) if v else of_events.card_prefix(org)
 
 
 def tool_docs_all():
@@ -555,14 +567,14 @@ def tool_docs_all():
         return {}
 
 
-def owner_closed_card(source, cards=None, harness="codex", docs=None):
+def owner_closed_card(source, cards=None, harness="codex", docs=None, org=None):
     """The owner's card that confirms a harness's training setting, when `source` names it (by card id, or by its
     whole event id: a prefix is shared by several cards) and the owner himself closed it; else None. Only a card a
     registry's `training_cards` names for that setting counts (training_cards_named), and only as a task he marked
     done (his claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks
     answered`, or an answered card about something else unlocks nothing (of_secrets-review and of_review, PR 334).
     `cards`: the asks as the listener's view holds them (of_asks.current_asks, never a read of the whole log)."""
-    named = training_cards_named(harness, docs)
+    named = set(training_cards_named(harness, docs, org).values())
     src = str(source or "").strip()
     if not named or not src:
         return None
@@ -633,15 +645,19 @@ def training_cards_problems(org, doc, cards=None, prefix=None):
     return out
 
 
-def training_verified(harness, readings=None, cards=None, docs=None):
+def training_verified(harness, readings=None, cards=None, docs=None, org=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
     card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's
-    own claim. A reading written any other way, or with no card, reads as None (unknown), so a gate that sends only
-    on 'off' stays shut (of_secrets-review, PR 334: the reader trusted the event, not the card)."""
+    own claim. `org`: for that organization's runs, only its own named card counts. With no `org`, every registry
+    that names a card must name the same one, or the reading is unknown (of_review, PR 334: one organization's card
+    unlocked every run while another's named card was still open). A reading written any other way, or with no card,
+    reads as None (unknown), so a gate that sends only on 'off' stays shut (of_secrets-review, PR 334)."""
     r = (readings if readings is not None else training_readings()).get(harness) or {}
     v = r.get("training")
-    if harness == "codex" and v == "off" and not owner_closed_card(r.get("card_event") or "", cards, harness, docs):
-        return None
+    if harness == "codex" and v == "off":
+        named = training_cards_named(harness, docs, org)
+        if len(set(named.values())) != 1 or not owner_closed_card(r.get("card_event") or "", cards, harness, docs, org):
+            return None
     return v if v in ("off", "on") else None
 
 

@@ -2322,7 +2322,7 @@ class OtherHarnesses(unittest.TestCase):
         # RFC 0008 §3.1: of subagent run sends Codex material that is not public only while the latest reading is off
         out = []
         emit = lambda kind, payload: out.append((kind, payload))  # noqa: E731
-        pol = {"acme": {"training_cards": {"codex": "OF-27"}}, "other": {"positions": []}}  # the registries
+        pol = {"ofteam": {"card_prefix": "OF", "training_cards": {"codex": "OF-27"}}, "other": {"positions": []}}
         cards = [{"ref": "OF-27", "event_id": "01a1ee41-3cdd-74bc", "task": True, "state": "done", "closed_by": "e9",
                   "claimed_at": "2026-11-18T10:56:22Z"},
                  {"ref": "OF-30", "event_id": "01a1ee50-0000-7000", "task": True, "state": "open"},
@@ -2360,6 +2360,18 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIsNone(of_capacity.training_verified("codex", {"codex": {"training": "off"}}, cards, pol))
         self.assertIsNone(of_capacity.training_verified("codex", good, unclaimed, pol))
         self.assertEqual(of_capacity.training_verified("codex", {"codex": {"training": "on"}}, cards, pol), "on")
+        # of_review, PR 334: another organization's own done task does not unlock when the registries disagree, and
+        # an organization names only its own cards
+        b12 = {"ref": "B-12", "event_id": "01a1ef0f-0000-7000", "task": True, "state": "done", "claimed_at": "t"}
+        open27 = [dict(cards[0], state="open", claimed_at=None)] + cards[1:] + [b12]
+        two = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "B-12"}})
+        rb = {"codex": {"training": "off", "card_event": "01a1ef0f-0000-7000"}}
+        self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two))  # OF-27 open, B-12 done: unknown
+        self.assertEqual(of_capacity.training_verified("codex", rb, open27, two, org="orgb"), "off")  # orgb's own runs
+        self.assertIsNone(of_capacity.training_verified("codex", rb, open27, two, org="ofteam"))
+        stolen = dict(pol, orgb={"card_prefix": "B", "training_cards": {"codex": "OF-27"}})  # names another org's card
+        self.assertEqual(of_capacity.training_cards_named("codex", stolen), {"ofteam": "OF-27"})
+        self.assertEqual(of_capacity.training_cards_named("codex", {"x": {"training_cards": "OF-27"}}), {})  # no crash
         out.clear()
         with tempfile.TemporaryDirectory() as t:
             path = os.path.join(t, "settings.json")
