@@ -6527,6 +6527,21 @@ def cmd_capacity(args):
               + ("" if of_capacity.load_policy().get("position_memory") else
                  "; of spawn starts on it; moves and resumes too once capacity.yaml has position_memory: true"))
         return 0
+    if args.action == "training":  # RFC 0008 §3.1: may the provider train on a harness account's runs
+        if args.set:
+            if not args.position or not args.source:
+                raise OfError("usage: of capacity training codex|muse --set off|on --source '<basis: an ask id, a "
+                              "reading>' [--account A]")
+            try:
+                of_capacity.record_training(args.position, args.set, args.account, args.source)
+            except ValueError as e:
+                raise OfError(str(e))
+        got = of_capacity.training_readings()
+        for h in of_capacity.TRAINING_HARNESSES:
+            r = got.get(h)
+            print(f"{h:<6} " + (f"training {r.get('training')} since {r.get('ts')}; {r.get('account')}; {r.get('source')}"
+                                if r else "not read"))
+        return 0
     if args.action == "spend":  # docs/registry.md, Goals, "Spend per goal": the month's spend per work, goal and condition
         import time
         import of_spend
@@ -6759,8 +6774,12 @@ def cmd_capacity(args):
         print(json.dumps(rows, indent=1, ensure_ascii=False))
         return 0
     print(of_capacity.format_table(rows))
+    try:
+        training = of_capacity.training_readings()
+    except Exception:  # noqa: BLE001 - a store that cannot be read: the lines say "not read"
+        training = {}
     other = of_capacity.format_other(of_capacity.codex_status(fresh=args.fresh, probe=not args.no_probe),
-                                     of_capacity.muse_status())
+                                     of_capacity.muse_status(), training)
     if other:
         print(other)
     for r in rows:
@@ -7339,10 +7358,13 @@ def main(argv=None):
     cp = sub.add_parser("capacity", help="model limits per account and who runs where: of capacity status [--fresh] | plan | move <position> --to <dir> | resume <position> --session S --to <dir> --pane P")
     cp.add_argument("action", nargs="?", choices=["status", "move", "resume", "plan", "close", "balance", "creds",
                                                   "vault", "vault-setup", "mint", "babysit", "memory", "reboot", "spend",
-                                                  "carry", "tick"],
+                                                  "carry", "tick", "training"],
                     default="status")
     cp.add_argument("--since", help="babysit: from this date (default: 7 days ago)")
     cp.add_argument("--month", help="spend: YYYY-MM (default: this month, UTC)")
+    cp.add_argument("--set", choices=["off", "on"], help="training <harness>: record whether the provider may train "
+                    "on that account's runs (RFC 0008 §3.1)")
+    cp.add_argument("--source", help="training --set: the reading's basis, e.g. the owner's ask id")
     cp.add_argument("--org", help="spend: this organization only; carry restore: the organization the bundle carries")
     cp.add_argument("--until", help="babysit: until this date or time (default: now)")
     cp.add_argument("--op-account", dest="op_account", help="vault-setup: the 1Password account (default: the business one)")
@@ -7352,7 +7374,8 @@ def main(argv=None):
                                     "vault, only its fingerprint is recorded (your own terminal only)")
     cp.add_argument("--adopt", help="creds: record a token that exists outside the broker, by name (fingerprint only)")
     cp.add_argument("--kind", choices=["setup_token", "api_key", "codex_auth"], help="creds --adopt: the token's kind")
-    cp.add_argument("--account", help="creds --adopt: the account that minted it (email)")
+    cp.add_argument("--account", help="creds --adopt: the account that minted it (email); training --set: the harness "
+                    "account")
     cp.add_argument("--expires", help="creds --adopt: expiry date, YYYY-MM-DD")
     cp.add_argument("--fingerprint", help="creds --adopt: the first 12 hex digits of its SHA-256, if not on stdin")
     cp.add_argument("--from-stdin", dest="from_stdin", action="store_true",
