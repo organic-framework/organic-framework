@@ -83,11 +83,17 @@ class Router:
         with open(orgs_file) as fh:
             doc = yaml.safe_load(fh) or {}
         self.unassigned = doc.get("unassigned_database") or cfg["unassigned_database"]
-        self.db_by_org, self.prefixes = {}, []
+        self.db_by_org, self.prefixes, self.known = {}, [], set()
         for o in doc.get("orgs") or []:
-            if not o.get("database"):
+            # An organization this machine ships to: directly (`database:`) or through its server (`server:`,
+            # which `of enroll` writes with no `database:`). Without the second, an enrolled machine routed none
+            # of that organization's records and sent them to its default server, unassigned: an answer given
+            # in the owner's panel to another organization's card crossed into it (docs/contours.md §3).
+            if not o.get("name") or not (o.get("database") or o.get("server")):
                 continue
-            self.db_by_org[o["name"]] = o["database"]
+            self.known.add(o["name"])
+            if o.get("database"):
+                self.db_by_org[o["name"]] = o["database"]
             for path in o.get("paths") or []:
                 full = os.path.realpath(os.path.expanduser(path))
                 self.prefixes.append((full, self._encode(full), o["name"]))
@@ -106,12 +112,12 @@ class Router:
         return "".join(c if c.isalnum() else "-" for c in path)
 
     def org_of(self, org=None, session=None, cwd=None, source_path=None, serves=None):
-        if serves and serves in self.db_by_org:  # decision 7: data follows its source
+        if serves and serves in self.known:  # decision 7: data follows its source
             return serves
         by_session = self.org_by_session.get(session or "")
-        if by_session in self.db_by_org:  # the position's `serves`, else its own organization
+        if by_session in self.known:  # the position's `serves`, else its own organization
             return by_session
-        if org and org in self.db_by_org:
+        if org and org in self.known:
             return org
         if cwd:
             cwd = os.path.expanduser(cwd.replace("~", os.path.expanduser("~"), 1) if cwd.startswith("~") else cwd)
