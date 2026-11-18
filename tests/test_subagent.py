@@ -415,6 +415,19 @@ class SubagentTest(unittest.TestCase):
         self.assertNotIn("API=1", diff)
         self.assertNotIn("prod.env", diff)
 
+    def test_a_workspace_below_the_root_snapshots_the_whole_repository(self):
+        os.makedirs(os.path.join(self.repo, "ops"))
+        for n in ("ops/production.yml", "ops/readme.md"):
+            with open(os.path.join(self.repo, n), "w") as fh:
+                fh.write("x\n")
+            self.git("add", n)
+        self.git("commit", "-qm", "ops")
+        reg = {"subagent_harnesses": dict(REG["subagent_harnesses"], excludes={"*": ["ops/production.yml"]})}
+        _, call = self.go(registry=reg, checkout=os.path.join(self.repo, "ops"))
+        self.assertIn("fw/ops/readme.md", call["files"])
+        self.assertNotIn("fw/ops/production.yml", call["files"])
+        self.assertNotIn("fw/production.yml", call["files"])
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():
