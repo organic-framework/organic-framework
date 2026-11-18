@@ -71,6 +71,11 @@ def server_health(url=None, timeout=20.0, opener=None):
             url = of_ship.config().get("server_url")
         if not url:
             return "none"
+        import of_client
+        url = of_client.pinned_url(url)  # docs/server-several-machines.md 4.8: never plain http to a pinned address
+        if opener is None:
+            ctx = of_client.tls_context(url) if of_client._https(url) else None
+            opener = lambda r, timeout: of_client.urlopen_no_redirect(r, timeout=timeout, context=ctx)  # noqa: E731
         req = urllib.request.Request(url.rstrip("/") + "/v1/health")
         try:
             import of_client
@@ -100,10 +105,14 @@ def server_checks(url=None, timeout=5.0, opener=None, token=None):
         if not url:
             return {}
         import of_client
+        url = of_client.pinned_url(url)  # the token below is this URL's; it goes nowhere else (of_secrets-review, PR 350)
         if token is None and opener is None:
             token = cached_token(of_client.Client(url).token_path)
             if not token:
                 return {}
+        if opener is None:
+            ctx = of_client.tls_context(url) if of_client._https(url) else None
+            opener = lambda r, timeout: of_client.urlopen_no_redirect(r, timeout=timeout, context=ctx)  # noqa: E731
         req = urllib.request.Request(url.rstrip("/") + "/v1/health/checks")
         secret = dict(of_client.access_headers(url), **({"Authorization": f"Bearer {token}"} if token else {}))
         for k, v in secret.items():  # never sent on to a redirect's host

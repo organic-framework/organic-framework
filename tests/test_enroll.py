@@ -107,7 +107,8 @@ class EnrollTest(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "config", "ship.yaml"), "w") as fh:
             fh.write(f"server_url: '{self.url}'\n")
         r = self.of("invite", "--server", self.url, "--org", "acme", "--ttl", "48h")
-        self.assertIn(f"of enroll {self.url} --code INV-123 --org acme", r.stdout)
+        self.assertIn(f"of enroll {self.url} --code - --org acme", r.stdout)  # the code apart, out of argv
+        self.assertIn("code: INV-123", r.stdout)
         inv = next(b for p, b, _ in Fake.seen if p == "/v1/invites")
         self.assertEqual(inv["ttl_s"], 48 * 3600)
         r = self.of("consent", "--raw", "off")

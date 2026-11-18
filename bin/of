@@ -3664,8 +3664,12 @@ def cmd_invite(args):
     if isinstance(exp, (int, float)):
         import time as _t
         exp = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(exp))
-    print(f"one-time invite for {', '.join(args.org)} (expires {exp}); give the person this command:\n")
-    print(f"  of enroll {args.server} --code {r['code']} {orgs}\n")
+    where = (getattr(args, "enroll_server", None) or args.server).rstrip("/")
+    pin = " --pin <the server's certificate>" if where[:6].lower() == "https:" else ""
+    print(f"one-time invite for {', '.join(args.org)} (expires {exp}); give the person this command, run in a plain "
+          f"terminal, and the code apart from it:\n")
+    print(f"  of enroll {where}{pin} --code - {orgs}\n")
+    print(f"  code: {r['code']}   (typed when `of enroll` asks for it, never as an argument)\n")
     print("The code is shown only now and not stored.")
     return 0
 
@@ -5978,6 +5982,25 @@ def cmd_machines(args):
     return 0
 
 
+def _ship_server_url(url):
+    """Set ship.yaml's server_url, the default server of the shipper and the relay, to URL."""
+    import of_events
+    path = of_events.config_path("ship.yaml")
+    text = ""
+    if os.path.exists(path):
+        with open(path) as fh:
+            text = fh.read()
+    line = f"server_url: {json.dumps(url.rstrip('/'))}  # docs/server-several-machines.md 4.8, by `of enroll --pin`"
+    if re.search(r"^server_url:.*$", text, re.M):
+        text = re.sub(r"^server_url:.*$", lambda m: line, text, count=1, flags=re.M)
+    else:
+        text += ("" if not text or text.endswith("\n") else "\n") + line + "\n"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+    print(f"ship.yaml's default server is now {url.rstrip('/')}")
+
+
 def cmd_enroll(args):
     import of_client
     if getattr(args, "pin", None):  # the server's certificate, to trust it alone (docs/server-several-machines.md 4.8)
@@ -5995,6 +6018,7 @@ def cmd_enroll(args):
         with open(dest, "w") as fh:
             fh.write(pem)
         print(f"pinned the server's certificate for {args.server} in {dest}")
+        _ship_server_url(args.server)  # the default too, so an entry with no server: never falls back to plain http
     if args.code == "-":  # out of the process arguments, which other users of the machine can list
         import getpass
         args.code = getpass.getpass("invite code: ").strip()
@@ -7203,6 +7227,8 @@ def main(argv=None):
     iv.add_argument("--ttl", default="72h")
     iv.add_argument("--note")
     iv.add_argument("--person", help="the colleague's id in the organization's registry (absent: your own machine)")
+    iv.add_argument("--enroll-server", help="the server's address as the person's machine reaches it, when it differs "
+                                            "from --server (a forward: https://127.0.0.1:18200)")
     iv.set_defaults(fn=cmd_invite)
     sd = sub.add_parser("send", help="send a message to a position on any machine (through its organization's server)")
     sd.add_argument("to", help="<org>:<position>, or a canonical name or alias")

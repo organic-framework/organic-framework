@@ -132,9 +132,25 @@ def pin_path(url):
     return os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{port}.pem")
 
 
+def _https(url):
+    return str(url or "")[:6].lower() == "https:"
+
+
+def pin_sha256(url):
+    """The SHA-256 of the DER of the certificate this machine pins for URL, or None."""
+    import hashlib
+    import ssl
+    try:
+        with open(pin_path(url)) as fh:
+            return hashlib.sha256(ssl.PEM_cert_to_DER_cert(fh.read())).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
 def tls_context(url):
     """The TLS context for an https server: only its pinned certificate when this machine pins one (never the
-    system's CAs then), else the system's verified default."""
+    system's CAs then), else the system's verified default. With a pin, the connection also compares the server's
+    certificate with it by the SHA-256 of its DER (urlopen_no_redirect)."""
     import ssl
     pin = pin_path(url)
     if not os.path.exists(pin):
@@ -143,12 +159,36 @@ def tls_context(url):
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_verify_locations(cafile=pin)
     ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN  # the pinned certificate itself is the trust anchor
+    ctx.of_pin_sha256 = pin_sha256(url)
     return ctx
+
+
+def _pinned_handler(context):
+    """An HTTPS handler whose connections end unless the server's certificate is the pinned one, byte for byte."""
+    import hashlib
+    import http.client
+    import ssl
+    want = context.of_pin_sha256
+
+    class Pinned(http.client.HTTPSConnection):
+        def connect(self):
+            super().connect()
+            der = self.sock.getpeercert(binary_form=True) or b""
+            if not want or hashlib.sha256(der).hexdigest() != want:
+                self.sock.close()
+                raise ssl.SSLError("the server's certificate is not the one this machine pins")
+
+    class Handler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(Pinned, req, context=context)
+    return Handler(context=context)
 
 
 def urlopen_no_redirect(req, timeout=None, context=None):
     """urllib.request.urlopen with redirects refused."""
-    handlers = [_NoRedirect()] + ([urllib.request.HTTPSHandler(context=context)] if context is not None else [])
+    pinned = context is not None and getattr(context, "of_pin_sha256", None) is not None
+    handlers = [_NoRedirect()] + ([_pinned_handler(context) if pinned else urllib.request.HTTPSHandler(context=context)]
+                                  if context is not None else [])
     return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
 
 
@@ -227,11 +267,11 @@ def pinned_url(url):
     machine behind the forward any user could answer (of_secrets-review on organic-framework PR 350;
     docs/server-several-machines.md 4.8)."""
     url = (url or "").rstrip("/")
-    if url.startswith("http://"):
+    if url[:7].lower() == "http://":
         import urllib.parse
         u = urllib.parse.urlsplit(url)
         if u.hostname and os.path.exists(pin_path(f"https://{u.hostname}:{u.port or 80}")):
-            return "https://" + url[len("http://"):]
+            return "https://" + url[7:]
     return url
 
 
@@ -256,7 +296,7 @@ class Client:
         secret = dict(access_headers(self.url), **({"Authorization": f"Bearer {token}"} if token else {}))
         for k, v in secret.items():
             req.add_unredirected_header(k, v)
-        ctx = tls_context(self.url) if self.url.startswith("https:") else None  # certificates always verified
+        ctx = tls_context(self.url) if _https(self.url) else None  # certificates always verified
         # Every endpoint is idempotent on retry (batch_id, msg_id, acks, PUTs), except POST /v1/enroll
         # (a single-use code: 410 on a retry after a lost response means it probably went through)
         # and the minting endpoints (a retry mints another code; only the last one is shown).
