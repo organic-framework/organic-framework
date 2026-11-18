@@ -142,9 +142,52 @@ ENV_FILE_NOTE = ("an env file holds values: read names only through a committed 
                  "name.env files will be secret paths once these flows have moved (docs/guard.md G1.9)")
 
 
+# A names list (G1.8): a file whose name also has a part `names` lists credentials by name, and is no secret file when
+# the guard reads it and finds no value in it (2026-11-18, a user organization's structure keeper, msg 01a1ee9d-ae5f: a
+# keeper's names-only table of its Secrets, `<kind>-secret-names.txt`, was denied by G1 and G8 for the word in its
+# name, and it blocked a manifest generator its owner had approved). An env file is never one: it holds values.
+_NAMES_PART = re.compile(r"(?:^|[._-])names(?=$|[._-])", re.I)
+NAMES_LIST_MAX = 256 * 1024
+# what a value looks like in a names list: a private key, a credential word given a value (of_classify.SECRET), a
+# token-shaped run (letters of both cases and digits: Kubernetes names are lower case), a long hex run
+_KEY_ANYWHERE = re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File-\d+:")
+_RUN = re.compile(r"[A-Za-z0-9+/_=-]{20,}")
+_HEX_RUN = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32,}(?![0-9A-Fa-f])")
+
+
+def _names_list_clean(p):
+    """Is the file at P (absolute or ~-rooted) a plain-text list with no value in it? Reads at most NAMES_LIST_MAX
+    bytes, keeps nothing and prints nothing; a file it cannot read, a larger one, a dataless one or one that is not
+    UTF-8 text is no."""
+    path = os.path.expanduser(p.strip().strip("'\""))
+    if not os.path.isabs(path):
+        return False
+    try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > NAMES_LIST_MAX or getattr(st, "st_flags", 0) & 0x40000000:
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            data = os.read(fd, NAMES_LIST_MAX + 1)
+        finally:
+            os.close(fd)
+        text = data.decode("utf-8")
+    except (OSError, ValueError):
+        return False
+    if len(data) > NAMES_LIST_MAX or "\x00" in text or _KEY_ANYWHERE.search(text) or of_classify.SECRET.search(text):
+        return False
+    if _HEX_RUN.search(text):
+        return False
+    return not any(re.search(r"\d", r) and re.search(r"[A-Z]", r) and re.search(r"[a-z]", r)
+                   for r in _RUN.findall(text))
+
+
 def _org_config_secret(p):
     m = _ORG_CONFIG_FILE.search(p)
-    return bool(m) and bool(_CRED_WORD.search(m.group(1))) and not _NO_CRED.search(m.group(1))
+    if not m or not _CRED_WORD.search(m.group(1)) or _NO_CRED.search(m.group(1)):
+        return False
+    name = m.group(1)
+    return not (_NAMES_PART.search(name) and not name.lower().endswith(".env") and _names_list_clean(p))
 
 
 def _env_file(q):
