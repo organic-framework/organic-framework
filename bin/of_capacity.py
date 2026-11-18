@@ -4833,8 +4833,11 @@ def connectors_seen(d, now=None, run=None):
         if run:
             text = run(d)
         else:
-            text = subprocess.run([claude_bin(), "mcp", "list"], env=probe_env(d), cwd=probe_dir, capture_output=True,
-                                  text=True, timeout=120).stdout
+            out = subprocess.run([claude_bin(), "mcp", "list"], env=probe_env(d), cwd=probe_dir, capture_output=True,
+                                 text=True, timeout=120)
+            if out.returncode != 0:  # a failed list is no reading: never cache it as an empty known set (PR 338)
+                return None
+            text = out.stdout
     except Exception:
         return None
     names = parse_mcp_list(text)
@@ -5002,7 +5005,14 @@ def signed_in(entry, d, now=None, run=None, labels=None):
     pid = str(entry.get("plugin") or "")
     ids = plugin_ids_installed(d) if "@" in pid else None
     if ids is None and "@" in pid and os.path.isdir(os.path.expanduser(d)):
-        return None  # its inventory is unreadable: another marketplace's plugin may answer on that url (unknown)
+        # its inventory is unreadable: a server connected at that url may be another marketplace's plugin (unknown),
+        # but one not connected, or not listed, is missing whichever plugin it is (of_review, PR 338: an open sign-in
+        # task was withdrawn as signed in)
+        u = str(entry.get("url") or "").rstrip("/")
+        servers = mcp_servers(d, now, run) if u else None
+        if servers is None:
+            return None
+        return None if any(x and x.rstrip("/") == u and ok for _, x, ok in servers) else False
     if ids is not None and pid not in ids:
         # another marketplace's plugin of the same name answers on the same url, signed in as another user: 2026-11-18,
         # a user organization's cloud keeper ran 14 hours where the only Cloudflare plugin was the founder's

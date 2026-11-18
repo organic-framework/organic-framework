@@ -2431,6 +2431,17 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIn("training off since", of_capacity._training_text({"training": "off", "ts": "2026-11-18T11:40:28Z",
                                                                          "source": "s"}))
 
+    def test_a_plugin_inventory_of_another_shape_is_unreadable_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "plugins"))
+            with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
+                fh.write("[]")
+            self.assertIsNone(of_capacity.plugin_ids_installed(d))
+            entry = {"kind": "plugin", "plugin": "cloudflare@claude-plugins-official", "url": "https://x/mcp"}
+            from unittest import mock
+            with mock.patch.object(of_capacity, "mcp_servers", lambda dd, now=None, run=None: [("p", "https://x/mcp", True)]):
+                self.assertIsNone(of_capacity.signed_in(entry, d, labels={}))  # connected: the url cannot tell the plugin
+
     def test_registry_check_reads_training_cards(self):
         # of_architect, PR 334: a known harness to a task card of this organization, or one its own organization names
         cards = [{"ref": "OF-27", "task": True, "org": "ofb"}, {"ref": "OF-31", "task": None, "org": "ofb"},
@@ -2457,14 +2468,28 @@ class OtherHarnesses(unittest.TestCase):
         self.assertIn("card prefix AS is also alpha-store's", lines[0])
         self.assertEqual(of_capacity.training_registry_problems({"acme-shop": docs["acme-shop"]}, cards), [])
 
-    def test_a_plugin_inventory_of_another_shape_is_unreadable_not_a_crash(self):
+    def test_an_unreadable_inventory_with_a_signed_out_server_is_missing_not_unknown(self):
+        # of_review, PR 338: unknown only when a server at the url is connected; signed out or absent is missing
+        from unittest import mock
+        entry = {"kind": "plugin", "plugin": "cloudflare@claude-plugins-official", "url": "https://mcp.cloudflare.com/mcp"}
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "plugins"))
             with open(os.path.join(d, "plugins", "installed_plugins.json"), "w") as fh:
-                fh.write("[]")
-            self.assertIsNone(of_capacity.plugin_ids_installed(d))
-            entry = {"kind": "plugin", "plugin": "cloudflare@claude-plugins-official", "url": "https://x/mcp"}
-            self.assertIsNone(of_capacity.signed_in(entry, d, labels={}))  # unknown: the url cannot tell the plugin
+                fh.write("{not json")
+            for servers, want in (([("plugin:cloudflare:cloudflare", entry["url"], False)], False),
+                                  ([("plugin:cloudflare:cloudflare", entry["url"], True)], None), ([], False), (None, None)):
+                with mock.patch.object(of_capacity, "mcp_servers", lambda dd, now=None, run=None, v=servers: v):
+                    self.assertEqual(of_capacity.signed_in(entry, d, labels={}), want, servers)
+
+    def test_a_failed_mcp_list_is_no_reading(self):
+        from unittest import mock
+        cache = {}
+        failed = mock.Mock(returncode=1, stdout="")
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as st, mock.patch.multiple(
+                of_capacity, load_cache=lambda: cache, save_cache=lambda c: None, STATE_DIR=st), \
+                mock.patch.object(of_capacity.subprocess, "run", lambda *a, **k: failed):
+            self.assertIsNone(of_capacity.connectors_seen(d, now=1000))
+        self.assertEqual(cache, {})
 
     def test_the_lines_say_what_each_harness_reports(self):
         r = {"plan": "pro", "observed_at": of_capacity._iso(self.T0),
