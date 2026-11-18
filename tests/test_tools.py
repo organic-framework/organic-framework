@@ -388,13 +388,41 @@ class SharedServerTest(unittest.TestCase):
         text = ("positions:\n  - name: a\n# a comment\ntools:\n  g:\n    shared: {port: 1}\n  # inside\n"
                 "\n  h: {kind: x}\nunits: []\n")
         self.assertEqual(of_tools._tools_block(text), "tools:\n  g:\n    shared: {port: 1}\n  # inside\n\n  h: {kind: x}\n")
-        self.assertEqual(sorted(of_tools._catalogue_from(text)), ["g", "h"])
+        cat, how = of_tools._catalogue_from(text)
+        self.assertEqual((sorted(cat), how), (["g", "h"], "block"))
         self.assertIsNone(of_tools._tools_block("tools: {g: {}}\n"))           # a flow mapping: the whole file
-        self.assertEqual(of_tools._catalogue_from("tools: {g: {kind: x}}\n"), {"g": {"kind": "x"}})
+        self.assertEqual(of_tools._catalogue_from("tools: {g: {kind: x}}\n"), ({"g": {"kind": "x"}}, "file"))
         aliased = "base: &b {port: 2}\ntools:\n  g:\n    shared: *b\n"         # an alias to outside the block
-        self.assertEqual(of_tools._catalogue_from(aliased), {"g": {"shared": {"port": 2}}})
-        self.assertEqual(of_tools._catalogue_from("positions: []\n"), {})
-        self.assertIsNone(of_tools._catalogue_from("tools:\n  g: [\n"))
+        self.assertEqual(of_tools._catalogue_from(aliased), ({"g": {"shared": {"port": 2}}}, "file"))
+        self.assertEqual(of_tools._catalogue_from("positions: []\n"), ({}, "file"))
+        self.assertEqual(of_tools._catalogue_from("tools:\n  g: [\n"), (None, None))
+
+    def test_an_anchor_outside_the_tools_block_is_in_the_cache_key(self):
+        # of_review's repro on PR 329: the shared: mapping as an anchor before the block, `shared: *gs` inside it;
+        # a port changed only in the anchor kept the old URL while the key hashed the block alone
+        import tempfile
+        import yaml
+        d = self.doc()
+        shared = d["tools"]["grafana-read"].pop("shared")
+        body = yaml.safe_dump({k: v for k, v in d.items() if k != "tools"})
+        tools = yaml.safe_dump({"tools": d["tools"]}).replace("grafana-read:\n", "grafana-read:\n    shared: *gs\n", 1)
+
+        def text(port):
+            return (f"grafana_shared: &gs {json.dumps(dict(shared, port=port))}\n" + body + tools)
+
+        with tempfile.TemporaryDirectory() as root:
+            st, reg = os.path.join(root, "state"), os.path.join(root, "acme", "registry", "positions.yaml")
+            os.makedirs(os.path.dirname(reg))
+            orgs = os.path.join(root, "orgs.yaml")
+            with open(orgs, "w") as fh:
+                yaml.safe_dump({"orgs": [{"name": "acme", "path": os.path.join(root, "acme")}]}, fh)
+            of_tools.shared_token("acme", "grafana-read", create=True, state_dir=st)
+            for port in (18310, 18399, 18310):
+                with open(reg, "w") as fh:
+                    fh.write(text(port))
+                self.assertEqual(of_tools._catalogue_from(text(port))[1], "file")
+                self.assertEqual(of_tools.shared_url("acme", "grafana-read", orgs_file=orgs, state_dir=st),
+                                 f"http://127.0.0.1:{port}/mcp")
 
     def test_check_shared(self):
         d = self.doc()
