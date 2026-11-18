@@ -158,9 +158,8 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(shlex.split(cmd), ["env", "OF_AUTOMATION=1", "/py dir/python3", "/of/bin/of_herdr_plugin.py",
                                             "keep", "--name", "the questions panel", "--", "/py dir/python3",
                                             "/of/bin/of", "asks", "--panel"])
-        self.assertEqual(of_views.panel_spec("requests = of conductor panel", "/p", "/b"),
-                         ("requests", "of conductor panel"))
-        for bad in ("requests", "questions=", "two words", "", "a/b=x"):
+        # no command of one's own: the listener would run it every minute as the person (of_review on PR 345)
+        for bad in ("requests", "requests = of conductor panel", "questions=touch x", "status=touch x", ""):
             with self.assertRaises(ValueError):
                 of_views.panel_spec(bad, "/p", "/b")
         v = {"name": "c", "workspace": "w", "tab": "t", "positions": ["of_conductor", "panel:questions"],

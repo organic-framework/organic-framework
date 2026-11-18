@@ -16,7 +16,6 @@ herdr's `pane move --ratio` sets the share of the EXISTING (target) pane, so the
 """
 
 import os
-import re
 import shlex
 
 import yaml
@@ -72,27 +71,24 @@ def check(view, position_names):
 
 
 QUESTIONS_PANEL = "questions"
-PANEL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+BUILTIN_PANELS = (QUESTIONS_PANEL,)
 
 
 def panel_spec(spec, python, bin_dir):
-    """(name, command) for `of view add --panel NAME[=COMMAND]`. The questions panel (`of asks --panel`) needs no
-    command: it runs under `of_herdr_plugin.py keep`, which starts it again when it exits, with this Python and this
-    bin/. Until 2026-11-18 a view's panel could be written only by hand into views.yaml, and `of view add --positions
-    …,panel:questions` was refused as an unknown position, so on a machine other than the one it was built on nobody
-    could set the panel up (the founder, ~18:16Z via of_conductor, msg 01a1efa8-8574). Raises ValueError with what
-    to write instead."""
-    name, sep, command = str(spec or "").partition("=")
-    name, command = name.strip(), command.strip()
-    if not PANEL_NAME.match(name):
-        raise ValueError(f"--panel {spec!r}: a panel's name is letters, digits, - or _ (at most 32)")
-    if sep and not command:
-        raise ValueError(f"--panel {spec!r}: give the command after =, or leave out =")
-    if not sep:
-        if name != QUESTIONS_PANEL:
-            raise ValueError(f"--panel {name}: only the {QUESTIONS_PANEL} panel has a built-in command; "
-                             f"give its command as --panel {name}=COMMAND")
-        q = shlex.quote
+    """(name, command) for `of view add --panel NAME`: a built-in panel only, whose command OF writes. The questions
+    panel (`of asks --panel`) runs under `of_herdr_plugin.py keep`, which starts it again when it exits, with this
+    Python and this bin/. Until 2026-11-18 a view's panel could be written only by hand into views.yaml, and
+    `of view add --positions …,panel:questions` was refused as an unknown position, so on a machine other than the one
+    it was built on nobody could set the panel up (the founder, ~18:16Z via of_conductor, msg 01a1efa8-8574). A
+    command of one's own is not taken: the listener runs a view's panels every minute through `of view apply`, as the
+    person, so `--panel NAME=COMMAND` let an agent register any command for it (of_review on organic-framework PR 345,
+    msg 01a1efc7-283b). Raises ValueError with what to do instead."""
+    name = str(spec or "").strip()
+    if name not in BUILTIN_PANELS:
+        raise ValueError(f"--panel {name!r}: of view add takes only a built-in panel ({', '.join(BUILTIN_PANELS)}); "
+                         "a panel with a command of its own is written into views.yaml by the person")
+    q = shlex.quote
+    if name == QUESTIONS_PANEL:
         command = (f"env OF_AUTOMATION=1 {q(python)} {q(os.path.join(bin_dir, 'of_herdr_plugin.py'))} keep --name "
                    f"{q('the questions panel')} -- {q(python)} {q(os.path.join(bin_dir, 'of'))} asks --panel")
     return name, command
