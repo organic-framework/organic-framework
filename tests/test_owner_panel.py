@@ -4,11 +4,15 @@ the panel leaves his machine only for that card's organization's server, and rea
 holds it through that organization's feed. The feed is simulated as in tests/test_several_machines.py: what one
 machine ships, the other stores with raw_ref coord:."""
 
+import fcntl
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -143,6 +147,67 @@ class OnePanelTwoOrganizationsTest(unittest.TestCase):
                 todo = of_asks_answer.pending(h.conn, asks, positions, min_age=0)
         self.assertEqual(sorted((t["position"], t["key"].split(":")[0]) for t in todo),
                          [("acme_ops", "answer"), ("acme_org", "handed")])
+
+
+class ShippedAtOnceTest(unittest.TestCase):
+    """On the owner's machine no agent's hook starts the ingest worker that ships, so the panel ships what he did."""
+
+    def test_an_answer_and_a_label_start_one_shipper_each_and_a_repeat_none(self):
+        with tempfile.TemporaryDirectory() as root, Machine(root, "laptop") as m:
+            of_store.add_event(m.conn, ask_record(ASK_OF, "ofb", "of_server", "Ship the relay fix?", "OF-7"), "r")
+            item = {"ids": [ASK_OF], "first": {"event_id": ASK_OF}, "who": ["of_server"], "kind": "question"}
+            started, saved = [], of_asks_answer.ship_soon
+            of_asks_answer.ship_soon = lambda: started.append(1)
+            try:
+                ok, _ = of_asks_answer.answer(m.conn, item, "yes", [], lambda name: None)
+                self.assertTrue(ok)
+                self.assertEqual(len(started), 1)
+                of_asks_answer.answer(m.conn, item, "yes", [], lambda name: None)  # recorded already
+                self.assertEqual(len(started), 1)
+                of_asks_answer.not_a_question({"ids": [ASK_OF], "text": "Ship the relay fix?"})
+                self.assertEqual(len(started), 2)
+            finally:
+                of_asks_answer.ship_soon = saved
+
+    def test_the_shipper_is_a_detached_child_and_none_under_no_detach(self):
+        started, saved, saved_env = [], subprocess.Popen, dict(os.environ)
+
+        class Child:
+            def __init__(self, argv, **kw):
+                started.append((argv, kw))
+        subprocess.Popen = Child
+        try:
+            of_asks_answer.ship_soon()  # tests/isolate.py: OF_NO_DETACH=1
+            self.assertEqual(started, [])
+            os.environ["OF_NO_DETACH"] = ""
+            of_asks_answer.ship_soon()
+        finally:
+            subprocess.Popen = saved
+            os.environ.clear()
+            os.environ.update(saved_env)
+        argv, kw = started[0]
+        self.assertEqual(argv[1:], [os.path.abspath(of_asks_answer.__file__), "--ship"])
+        self.assertTrue(kw["start_new_session"])
+        self.assertEqual((kw["env"]["OF_AUTOMATION"], kw["env"]["SSH_AUTH_SOCK"]), ("1", ""))
+
+    def test_the_child_waits_for_a_running_shipper_then_ships(self):
+        with tempfile.TemporaryDirectory() as root, Machine(root, "laptop"):
+            lock = open(os.open(os.path.join(of_events.STATE_DIR, "ship.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+            fcntl.flock(lock, fcntl.LOCK_EX)  # another shipper, which may have read its batches already
+            shipped, saved = [], of_ship.ship
+            of_ship.ship = lambda log=print, cfg=None: shipped.append(time.time()) or 0
+            try:
+                child = threading.Thread(target=of_asks_answer._ship_now)
+                child.start()
+                time.sleep(0.3)
+                self.assertEqual(shipped, [])
+                released = time.time()
+                lock.close()
+                child.join(5)
+            finally:
+                of_ship.ship = saved
+        self.assertEqual(len(shipped), 1)
+        self.assertGreaterEqual(shipped[0], released)
 
 
 if __name__ == "__main__":

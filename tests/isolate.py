@@ -16,6 +16,7 @@ VARS = {
     "GIT_TERMINAL_PROMPT": "0",        # git never asks for anything
     "SSH_AUTH_SOCK": "",               # never the SSH agent (1Password)
     "OF_AUTOMATION": "1",
+    "OF_NO_DETACH": "1",               # no background child (a hook's ingest, the panel's shipper) outlives a test
 }
 
 

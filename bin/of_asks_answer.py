@@ -369,6 +369,41 @@ def escalated_mark(ask_id):
     return f"ask {ask_id[-8:]}; escalated to the founder"
 
 
+def ship_soon():
+    """Send the owner's record just written (an answer, a label, a card handed over or put off) to its card's
+    organization's server now, in the background. On the owner's own machine under contours no agent runs
+    (docs/contours.md §3), so no hook starts the ingest worker that ships (of_hook._ingest_detached), and his
+    answer would wait in this store. The child (_ship_now) first waits for a shipper already running, which may
+    have read its batches before this record was written."""
+    import of_hook
+    if of_hook._no_detach():
+        return
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--ship"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                         env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
+    except Exception:  # noqa: BLE001 - the record stands; the next shipper sends it
+        pass
+
+
+def _ship_now():
+    """The child of ship_soon: the spool into the store (a record the busy store spooled), then `of ship` once no
+    other shipper holds its lock. Whichever shipper takes the lock after this record was written sends it."""
+    import fcntl
+    import of_events
+    import of_ship
+    import of_store
+    try:
+        conn = of_store.connect()
+        of_store.drain_spool(conn, wait_s=2.0)
+        conn.close()
+    except Exception:  # noqa: BLE001 - the listener drains the spool too
+        pass
+    with open(os.open(os.path.join(of_events.STATE_DIR, "ship.lock"), os.O_WRONLY | os.O_CREAT, 0o600), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # released when the file closes, before of_ship takes it
+    return of_ship.ship(log=lambda m: None)
+
+
 def record(ask_ids, answer, position=None, session=None, version=None):
     import of_events
     import of_hook
@@ -557,6 +592,8 @@ def _answer(conn, item, text, positions, pane_of):
             record(c["ids"], text, c["position"], c["session"], version=shown or 1)  # as the check reads it
     finally:
         lock.close()
+    if not again:
+        ship_soon()
     drop_draft(item)
     if again:
         return True, "answer recorded already; OF types it in when the agent's turn ends"
@@ -838,6 +875,7 @@ def not_a_question(item, kind=None):
     of_events.emit("question_labelled", {"ask_id": ids[0], "ask_ids": ids, "label": "not_a_question",
                                          "kind": kind or item.get("kind"), "text": (item.get("text") or "")[:600],
                                          "by": "owner"})
+    ship_soon()
     return "marked: not a question (kept as a label for the heuristic)"
 
 
@@ -862,4 +900,9 @@ def answer_blocked(c, text):
     of_events.emit("agent_question_answered", {"ask_id": c["ids"][0], "ask_ids": c["ids"], "answer": of_hook.mask(text),
                                                "via": "asks-ui", "keys": keys, "by": "owner"},
                    position=c.get("position"), session=c.get("session"))
+    ship_soon()
     return True, f"pressed {' '.join(keys)} in {c.get('position') or b['pane']}"
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--ship"]:  # ship_soon's child
+    sys.exit(_ship_now() or 0)

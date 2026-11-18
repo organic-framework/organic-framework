@@ -142,7 +142,7 @@ class HandleTest(unittest.TestCase):
                 started.append((argv, kw.get("env") or {}))
         saved, saved_env = subprocess.Popen, dict(os.environ)
         subprocess.Popen = Child
-        os.environ.update(HERDR_PANE_ID="p1", CLAUDE_CODE_SESSION_ID="S1")
+        os.environ.update(HERDR_PANE_ID="p1", CLAUDE_CODE_SESSION_ID="S1", OF_NO_DETACH="")  # Popen is the fake
         try:
             self.fire("Stop", last_assistant_message="ok")
             self.assertEqual(started, [])  # no listener on this machine: nothing to stand in for
