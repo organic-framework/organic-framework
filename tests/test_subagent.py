@@ -180,7 +180,7 @@ class SubagentTest(unittest.TestCase):
 
     def test_the_prompt_is_material_too(self):
         with open(self.prompt, "w") as fh:
-            fh.write("Check this key: -----BEGIN OPENSSH PRIVATE KEY-----\n")
+            fh.write("Check this key: " + SSH_HEAD + "\n")
         with self.assertRaises(of_subagent.SubagentError) as e:
             self.go("codex", visibility=lambda r: True)
         self.assertIn("private key", str(e.exception))
