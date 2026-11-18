@@ -2934,6 +2934,90 @@ def _tool_token_deny(head, args):
     return None
 
 
+# G31: `of` names its caller by these variables, and records an act as the owner's when both are unset (bin/of
+# _asks_actor: an ask answered or withdrawn, a task closed). An agent's shell could clear them (of_secrets-review, msg
+# 01a1ef00-6f57, 2026-11-18, on organic-framework PR 334, whose Codex training gate rests on that record).
+ACTOR_VARS = ("CLAUDE_CODE_SESSION_ID", "OF_POSITION")
+ACTOR_DENY = ("of run with the variables that name its caller cleared (docs/guard.md G31): with CLAUDE_CODE_SESSION_ID "
+              "and OF_POSITION unset, of records the act as the owner's. An agent answers, withdraws and closes as "
+              "itself: leave them as its session set them; an act that is the owner's waits for the owner")
+
+
+def _actor_cleared(stext, env):
+    """The ACTOR_VARS that one simple command runs with cleared: by the line's `unset` or `export NAME=` (ENV, an unset
+    as ""), or by its own prefix: `env -i`, `env -`, `env -u NAME`, `env --unset=NAME`, `NAME=` (a later `NAME=value`
+    sets it again)."""
+    out = {k for k in ACTOR_VARS if k in (env or {}) and not (env or {}).get(k)}
+    try:
+        toks = _tokens(stext)
+    except ValueError:
+        return out
+    prefix = toks[:max(0, len(toks) - len(_command_words_of(list(toks))))]
+    in_env, k = False, 0
+    while k < len(prefix):
+        w = prefix[k]
+        m = re.match(r"^([A-Za-z_]\w*)=(.*)$", w, re.S)
+        if os.path.basename(w).lower() == "env":
+            in_env = True
+        elif m:
+            if m.group(1) in ACTOR_VARS:
+                (out.discard if m.group(2) else out.add)(m.group(1))
+        elif in_env and w in ("-u", "--unset") and k + 1 < len(prefix):
+            if prefix[k + 1] in ACTOR_VARS:
+                out.add(prefix[k + 1])
+            k += 1
+        elif in_env and w.startswith("--unset="):
+            if w.split("=", 1)[1] in ACTOR_VARS:
+                out.add(w.split("=", 1)[1])
+        elif in_env and w in ("-", "--ignore-environment"):
+            out.update(ACTOR_VARS)
+        elif in_env and w.startswith("-") and not w.startswith("--"):
+            flags, _, rest = w[1:].partition("u")
+            if "i" in flags:
+                out.update(ACTOR_VARS)
+            if rest in ACTOR_VARS:  # -uNAME
+                out.add(rest)
+        elif not w.startswith("-"):
+            in_env = False  # a wrapper, or a wrapper option's value
+        k += 1
+    return out
+
+
+# the acts `of` records with its caller (bin/of _asks_actor: an ask answered or withdrawn; `answer` is a person's
+# answer given in a chat); `of status --done-task` needs the caller's position and fails without one
+ACTOR_ACTS = ("answered", "withdraw", "answer")
+
+
+def _actor_act(words):
+    return words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS
+
+
+def _actor_deny(head, args, stext, env):
+    """(reason, what) for G31 on one simple command, else None: `of asks answered|withdraw|answer` (also as `python3
+    bin/of`, or in a shell's `-c` code) with a variable that names its caller cleared, whatever HOME it is given (a
+    HOME of its own can link its state to the real one)."""
+    cleared = _actor_cleared(stext, env)
+    if not cleared:
+        return None
+    what = "of with " + " and ".join(sorted(cleared)) + " cleared"
+    h, words = _script_of(head, args)
+    if h == "of" and _actor_act(words):
+        return ACTOR_DENY, what
+    if head in _RUN_SHELLS:
+        i = next((n for n, a in enumerate(args) if a.startswith("-") and not a.startswith("--") and "c" in a[1:]), None)
+        body = args[i + 1] if i is not None and i + 1 < len(args) else None
+        try:
+            segs = _segments(body) if body else []
+        except ValueError:
+            segs = []
+        for seg in segs:
+            w = _command_words(seg)
+            h, words = _script_of(os.path.basename(w[0]), w[1:]) if w else ("", [])
+            if h == "of" and _actor_act(words):
+                return ACTOR_DENY, what
+    return None
+
+
 def _grant_deny(head, args, stext):
     """(reason, token) for G13 on one simple command, else None."""
     head, words = _script_of(head, args)  # python3 [-I …] bin/of grant issue
@@ -4357,6 +4441,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
                 or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) or _hook_entry(head, args) \
+                or _actor_deny(head, args, stext, {**exported, **_assignments(stext)}) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
                                                            **({"__lab_link": "1"} if lab_link else {})}) \
@@ -4476,7 +4561,7 @@ UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git":
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
 ESCAPE_DENY = "a pattern this machine's sed or awk does not read as written"
 OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target",
-              POD_ENV_DENY, SECRET_FETCH_DENY, ESCAPE_DENY, CODE_READS)
+              POD_ENV_DENY, SECRET_FETCH_DENY, ESCAPE_DENY, CODE_READS, ACTOR_DENY)
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
 _LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)
