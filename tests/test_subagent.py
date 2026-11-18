@@ -507,13 +507,17 @@ class SubagentTest(unittest.TestCase):
         self.assertTrue(g.checksummed_address(path, finding(ok)))
         self.assertFalse(g.checksummed_address(path, finding(ok.lower())))
         self.assertFalse(g.checksummed_address(path, finding(ok, rule="jwt")))
+        code = path
+        path = os.path.join(self.tmp.name, "addr.py")
+        self.assertFalse(g.checksummed_address(path, finding(ok)))                       # code: never a rule
+        path = code
         self.assertFalse(g.checksummed_address(path, finding(ok + "aa")))                 # 42 hex: not an address
         self.assertFalse(g.checksummed_address(path, finding(ok + " Zk3mQ9xW2vL8pR4tYb")))  # another value beside
         rx = re.compile(re.search(r"regexes = \['(\^\(\?:\[A-Za-df.*?)'\]", g.ALLOW).group(1))
-        for v in ("cfg.api.token", "self.config.api_token_value", "e.x", "eyB.c"):
+        for v in ("cfg.api.token", "self.config.api_token_value", "e.x", "eyB.c", "a." + "b" * 32, "c" * 32 + ".d"):
             self.assertTrue(rx.match(v), v)
-        for v in ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "token", "a-b.c", "1abc.d", "a." + "b" * 41,
-                  "cfg..token"):
+        for v in ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "token", "a-b.c", "1abc.d", "a." + "b" * 33,
+                  "c" * 33 + ".d", "ey" + "x" * 31 + ".d", "cfg..token"):
             self.assertFalse(rx.match(v), v)
 
     def publish(self):
