@@ -390,9 +390,9 @@ subagent_harnesses:
   codex:                              # a harness: codex or muse
     kinds: [review, read, research, patch]   # review, read and patch send a snapshot of a repository (patch writes in it and returns a diff, RFC 0008 §3.3); research sends only the prompt
     repos: [github.com/organic-framework/organic-framework]   # the repositories whose snapshots may be sent, by their origin
-    max_snapshot_mb: 50               # optional: a larger snapshot is refused
   prompt_check: "release/check.py"    # run on a folder holding only the prompt and the schema; exit 0 passes
   snapshot_check: "of:gitleaks"       # run the same way on the material folder (the snapshot) before it leaves
+  max_snapshot_mb: 50                 # optional, for every harness: a larger snapshot is refused
   excludes:                           # paths taken out of the snapshot and the diff, on top of a built-in list
     "*": ["fixtures/private/"]        # a repository's name, or "*" for every repository
   basis: "<the keeper's commit or diff, or the owner's card where the organization requires one>"
@@ -400,7 +400,7 @@ subagent_harnesses:
 
 - **The structure keeper writes it**, for the organization's own repositories. What leaves for another provider is the organization's choice (docs/plugins.md §1).
 - **`repos`, not systems, by origin** (2026-11-18, on a user organization's security keeper's terms, through `of_capacity` and `of_platform`, message `01a1ef2d-d6ad`). A run sends a repository's snapshot, and one repository often holds many systems. An item with a slash is the path of the repository's remote, `<host>/<owner>/<name>`, matched against the checkout's `origin` fetch URL; any folder can carry a repository's name, so this is the form to use. An item without a slash matches the checkout's folder name only, kept for entries written before. A checkout the entry does not name, or whose origin it cannot read for an item with a slash, is refused.
-- **`max_snapshot_mb`**, optional, refuses a snapshot larger than that, after `excludes`. Without it there is no size limit: the organization sets one if it wants one.
+- **`max_snapshot_mb`**, optional, beside `prompt_check` (for every harness, not under one), refuses a snapshot larger than that, after `excludes`. Without it there is no size limit: the organization sets one if it wants one.
 - **Read from a commit, not the working tree.** The wrapper reads `subagent_harnesses:` and `training_cards:` from the committed tip of the organization's default branch (`git show <branch>:registry/positions.yaml`), not the shared working copy, so an uncommitted edit by any agent widens nothing. A change counts once its keeper committed it.
 - **`excludes`** maps a repository's name, or `*`, to path patterns removed from the snapshot and from a patch run's diff, on top of the wrapper's built-in list of secret-like names (`DEFAULT_EXCLUDES` in `bin/of_subagent.py`). A pattern with no slash matches a name at any depth; one ending in a slash matches a folder at any depth; one with an inner slash is anchored at the repository's root; `**` spans folders. A malformed pattern refuses the run.
 - **`snapshot_check`** runs on the material folder before it leaves, as `prompt_check` runs on the prompt. Either may name the built-in `of:gitleaks` (a pinned gitleaks with its default rules, `bin/of_gitleaks_check.py`) instead of a path.
