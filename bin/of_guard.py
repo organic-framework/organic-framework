@@ -170,6 +170,20 @@ def _reads(p):
     return (f"a command that reads a secret file ({os.path.basename(p.rstrip('/')) or p})", p) if p else None
 
 
+CODE_READS = "code that names a secret file in a string"
+
+
+def _code_reads(lit):
+    """G8's reason: the string it matched, as written, and what to do when it is no file the code reads (a user
+    organization's structure keeper, msg 01a1ecc1-40a4: a filter word was denied as a read, and the reason did not say
+    which string it was, so the agent reshaped the string instead of reporting it)."""
+    shown = lit if len(lit) <= 120 else lit[:117] + "..."
+    return (f"{CODE_READS}: {shown!r} (docs/guard.md G8). Secrets stay in their files; ask the owner if you need a "
+            "value. In python a string the code only compares or searches for is a filter, not a read, when the code "
+            "lists no folder, runs no command and opens files only by literal names; if this string is no file the "
+            "code reads, report the command to of_server rather than reshape the string"), lit
+
+
 # G1.13 and G0.9 (2026-11-18; a user organization's security owner through its structure keeper, msg 01a1eb16-9ebf): a
 # subagent ran `for f in <kit>/*; do [ -f "$f" ] && head -40 "$f"; done` over its position's runner kit and printed the
 # kit's SSH private key into its tool output. No word on the line named the key: the shell expanded the glob, and the
@@ -554,6 +568,127 @@ def _lang(word):
     return "python" if _PYTHON.match(word or "") else None
 
 
+# G8's filters (2026-11-18; a user organization's security keeper through its structure keeper, msg 01a1ecc1-40a4): a
+# python one-liner searched a names-only secrets register for one credential kind, `if '<kind>' in row`, and was denied
+# as reading a secret file by that name. A string the code only compares or searches for is a filter: an operand of
+# `in`, `not in`, `==` or `!=` (alone or in a tuple, list or set), an argument of a string's own search (startswith,
+# endswith, find, index, count, removeprefix…), the pattern of `re` or `fnmatch`, a `case` value. It is no read when the
+# code cannot reach a file by a name it computes, since then the filter picks no file: it lists no folder, runs no
+# command, makes no code at run time, and opens a file only by a literal (which is checked as a path itself).
+_PY_STR_SEARCH = {"startswith", "endswith", "find", "rfind", "index", "rindex", "count", "removeprefix",
+                  "removesuffix", "__contains__"}
+_PY_RE_CALLS = {"search", "match", "fullmatch", "findall", "finditer", "sub", "subn", "split", "compile"}
+_PY_FN_CALLS = {"fnmatch", "fnmatchcase", "filter"}
+_PY_REACH = {"listdir", "scandir", "walk", "fwalk", "glob", "iglob", "iterdir", "rglob", "system", "run", "call",
+             "check_call", "check_output", "getoutput", "getstatusoutput", "startfile", "pty", "shutil", "fileinput",
+             "eval", "__import__", "importlib", "getattr", "globals", "locals", "vars", "__builtins__", "builtins",
+             "__dict__", "__getattribute__", "ctypes", "cffi", "copyfile"}
+_PY_REACH_PART = ("subprocess", "spawn", "exec", "popen")  # also inside a longer name: create_subprocess_exec, Popen
+_PY_OPENERS = {"open", "ZipFile", "TarFile", "FileIO", "fdopen", "connect", "load_workbook", "loadtxt", "genfromtxt",
+               "fromfile", "imread", "urlopen", "urlretrieve"}
+# modules whose opener takes the file's name first (`io.open(name)`, `pd.read_csv(name)`); any other receiver is an
+# object whose own name is opened (`Path(name).open('r')`, `ZipFile(z).open(name)`), so that object and the call must
+# both be a literal's
+_PY_FILE_MODULES = {"io", "os", "codecs", "gzip", "bz2", "lzma", "tarfile", "zipfile", "sqlite3", "json", "csv", "yaml",
+                    "pd", "pandas", "np", "numpy", "openpyxl", "imageio", "cv2"}
+
+
+def _py_reaches(tree, parent):
+    """Can python code (its ast; PARENT maps each node to its parent) reach a file by a name it computes? A listing, a
+    command, code made at run time, an opener used other than by a direct call (`o = open`, `map(open, names)`), or
+    an open of anything but a literal."""
+    import ast as _ast
+    for n in _ast.walk(tree):
+        names = []
+        if isinstance(n, _ast.Name):
+            names = [n.id]
+        elif isinstance(n, _ast.Attribute):
+            names = [n.attr]
+        elif isinstance(n, (_ast.Import, _ast.ImportFrom)):
+            names = [p for a in n.names for p in a.name.split(".")] + (getattr(n, "module", None) or "").split(".")
+        if any(x in _PY_REACH or any(w in x.lower() for w in _PY_REACH_PART) for x in names if x):
+            return True
+        if names and (names[0] in _PY_OPENERS or names[0].startswith("read_")) and not isinstance(n, (
+                _ast.Import, _ast.ImportFrom)):
+            p = parent.get(n)
+            if not (isinstance(p, _ast.Call) and p.func is n):
+                return True  # the opener itself handed on: what it opens is not seen
+        if isinstance(n, _ast.Call):
+            f = n.func
+            fname, recv = (f.id, None) if isinstance(f, _ast.Name) else (f.attr, f.value) if isinstance(
+                f, _ast.Attribute) else ("", None)
+            if fname not in _PY_OPENERS and not fname.startswith("read_"):
+                continue
+            if recv is None or (isinstance(recv, _ast.Name) and recv.id in _PY_FILE_MODULES):
+                if not n.args or not isinstance(n.args[0], _ast.Constant):
+                    return True
+            elif not (isinstance(recv, _ast.Call) and _py_literal_call(recv) and _py_literal_call(n)):
+                return True
+    return False
+
+
+def _py_literal_call(call):
+    """`Path('<literal>')`: a call whose every argument is a literal."""
+    import ast as _ast
+    return all(isinstance(a, _ast.Constant) for a in call.args) and not call.keywords
+
+
+def _py_filters(code):
+    """The strings python CODE only compares or searches for (each stripped), when the code reaches no file by a name it
+    computes (_py_reaches); else, or when the code does not parse, none. A string the code also uses any other way, or
+    one that is part of such a string, is no filter. Any slip here gives none: the deny stands, never the guard's
+    looser fallback match."""
+    try:
+        return _py_filters_of(code)
+    except Exception:  # noqa: BLE001
+        return frozenset()
+
+
+def _py_filters_of(code):
+    import ast as _ast
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tree = _ast.parse(code)
+    parent = {}
+    for n in _ast.walk(tree):
+        for c in _ast.iter_child_nodes(n):
+            parent[c] = n
+    if _py_reaches(tree, parent):
+        return frozenset()
+    filters, others = set(), []
+    for n in _ast.walk(tree):
+        if not isinstance(n, _ast.Constant) or not isinstance(n.value, (str, bytes)):
+            continue
+        value = n.value if isinstance(n.value, str) else n.value.decode("latin-1")
+        node, p = n, parent.get(n)
+        if isinstance(p, (_ast.Tuple, _ast.List, _ast.Set)):
+            node, p = p, parent.get(p)
+        is_filter = False
+        if isinstance(p, _ast.Compare) and all(isinstance(o, (_ast.In, _ast.NotIn, _ast.Eq, _ast.NotEq))
+                                               for o in p.ops):
+            is_filter = node is p.left or node in p.comparators
+        elif isinstance(p, _ast.keyword):
+            call = parent.get(p)
+            f = getattr(call, "func", None)
+            is_filter = (isinstance(f, _ast.Attribute) and isinstance(f.value, _ast.Name) and
+                         ((f.value.id in ("re", "regex") and f.attr in _PY_RE_CALLS and p.arg == "pattern") or
+                          (f.value.id == "fnmatch" and f.attr in _PY_FN_CALLS and p.arg == "pat")))
+        elif isinstance(p, _ast.Call) and node in p.args:
+            f, i = p.func, p.args.index(node)
+            if isinstance(f, _ast.Attribute) and f.attr in _PY_STR_SEARCH and f.value is not node:
+                is_filter = True
+            elif isinstance(f, _ast.Attribute) and isinstance(f.value, _ast.Name) and f.value.id in ("re", "regex"):
+                is_filter = f.attr in _PY_RE_CALLS and i == 0 and node is n
+            elif isinstance(f, _ast.Attribute) and isinstance(f.value, _ast.Name) and f.value.id == "fnmatch":
+                is_filter = f.attr in _PY_FN_CALLS and i == 1 and node is n
+            elif isinstance(f, _ast.Name) and f.id in ("fnmatch", "fnmatchcase"):
+                is_filter = i == 1 and node is n
+        elif hasattr(_ast, "MatchValue") and isinstance(p, _ast.MatchValue):
+            is_filter = True
+        (filters.add(value.strip()) if is_filter else others.append(value))
+    return frozenset(v for v in filters if v and not any(v in o for o in others))
+
+
 def plugin_deny(tool, excluded):
     """G22: (plugin id, basis) when TOOL is an MCP tool of a plugin in EXCLUDED ([{plugin, basis}], the session's
     organization's `tools_excluded`), else None. Claude Code names a plugin's MCP tools
@@ -627,11 +762,16 @@ def _code_deny(code, lang=None):
             _WARNINGS.append(note)
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
+    filters = None
     for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
         if " " not in lit and _secret_path(lit):
-            return _reads(lit)
+            if py is not None:
+                filters = _py_filters(code) if filters is None else filters
+                if lit.strip() in filters:
+                    continue  # a word the code only compares or searches for, and no file it may open by a name
+            return _code_reads(lit)
         if " " not in lit and _MEMORY_CODE.match(lit):
             return f"code that reads memory or a core dump ({lit})", lit
         first = lit.split()[0] if lit else ""
@@ -3653,7 +3793,7 @@ UNSET_TARGET_MODE = {"rm -r home": "deny", "rm -r": "warn", "cd": "warn", "git":
 MAYBE_HOME = "\0maybe-home"   # where a cd whose target may be unset left the line: the home folder, perhaps
 ESCAPE_DENY = "a pattern this machine's sed or awk does not read as written"
 OWN_ADVICE = ("a git repository at the home folder", "cd whose target", "rm -r whose target", "git whose target",
-              POD_ENV_DENY, SECRET_FETCH_DENY, ESCAPE_DENY)
+              POD_ENV_DENY, SECRET_FETCH_DENY, ESCAPE_DENY, CODE_READS)
 _EXPANSION = re.compile(r"\$\{([A-Za-z_]\w*)([^}]*)\}|\$([A-Za-z_]\w*)")
 _LEAD_KEYWORDS = re.compile(r"^\s*(?:(?:then|do|else|elif|if|while|until|!|\{)\s+)+")
 _CHECKED = re.compile(r"\$\{([A-Za-z_]\w*):?\?")   # ${NAME:?…}: past it, NAME is set (the shell stops otherwise)
