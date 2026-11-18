@@ -390,6 +390,20 @@ def withheld(harness, *files):
     return sorted(set(hits))
 
 
+def login_readable(harness, run_dir, work_dir, reads, outer):
+    """The harness's login files its run could read, by its read rules, not by what its model chose to do (of_secrets-
+    review on PR 328): under the outer sandbox, the run's folder and READS; under Codex's own profile, the material
+    folder (its minimal platform set holds no home folder). Names only."""
+    roots = [run_dir] + list(reads) if outer else [work_dir]
+    real = [os.path.realpath(os.path.expanduser(r)) for r in roots]
+    out = []
+    for f in login_files(harness):
+        rf = os.path.realpath(f)
+        if any(rf == r or rf.startswith(r.rstrip("/") + "/") for r in real):
+            out.append(os.path.basename(f))
+    return sorted(set(out))
+
+
 def muse_login_dir():
     return os.path.join(of_events.STATE_DIR, MUSE_LOGIN)
 
@@ -665,7 +679,13 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         answer_file = os.path.join(run_dir, "answer.txt")
         argv, env, reads, writes = command(harness, kind, run_dir, work_dir, run_prompt, answer_file, run_schema, model,
                                            binary)
-        if sandbox if sandbox is not None else OUTER_SANDBOX[harness]:
+        outer = sandbox if sandbox is not None else OUTER_SANDBOX[harness]
+        exposed = login_readable(harness, run_dir, work_dir, reads, outer) if gates else []
+        if exposed:
+            raise SubagentError(f"{harness}'s run could read its own login ({', '.join(exposed)}): its process must "
+                                "read it and its file tools read what the process may, so no run goes until the login "
+                                "comes another way (Muse: --api-key-stdin)")
+        if outer:
             prof = os.path.join(run_dir, "sandbox.sb")
             with open(prof, "w") as fh:
                 fh.write(sandbox_profile(run_dir, reads, writes))
