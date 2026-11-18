@@ -336,6 +336,8 @@ class SubagentTest(unittest.TestCase):
         peek = Peek("muse")
         self.assertEqual(self.go(fake=peek)[0]["exit"], 0)
         self.assertEqual(peek.seen, "pointer\n")
+        for k in ("filter.lfs.smudge", "filter.lfs.process", "filter.lfs.required"):
+            self.git("config", "--unset", k)          # the rest of the test commits with plain git
         self.assertEqual(of_subagent.smudge_filters(os.path.join(self.tmp.name, "no-repo")),
                          ["git config failed (exit 128)"])
         # (2) an excluded file in a non-ASCII folder stays out of the diff; patterns match any case
