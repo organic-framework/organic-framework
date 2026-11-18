@@ -527,6 +527,26 @@ class SubagentTest(unittest.TestCase):
         path = code
         self.assertFalse(g.checksummed_address(path, finding(ok + "aa")))                 # 42 hex: not an address
         self.assertFalse(g.checksummed_address(path, finding(ok + " Zk3mQ9xW2vL8pR4tYb")))  # another value beside
+        self.assertFalse(g.checksummed_address(path, finding(ok + "-v2")))                # a tail: not an address
+        self.assertTrue(g.checksummed_address(path, finding("0x" + ok)))
+        line = f'api_key = "{ok}"'
+        with open(path, "wb") as fh:                         # a U+2028 before: gitleaks counts LF lines and bytes
+            fh.write(("intro \u2028 more\n" + line + "\n").encode())
+        f2 = {"RuleID": "generic-api-key", "StartLine": 2, "EndLine": 2, "StartColumn": 1, "EndColumn": len(line)}
+        self.assertTrue(g.checksummed_address(path, f2))
+        # the private copy is hashed again from a held descriptor before each run; a changed copy fails closed
+        exe = os.path.join(self.tmp.name, "copy")
+        with open(exe, "wb") as fh:
+            fh.write(b"one")
+        runs = []
+        with mock.patch.object(g, "PINNED_SHA256", __import__("hashlib").sha256(b"one").hexdigest()):
+            go = g.held(lambda argv, **kw: runs.append(argv) or subprocess.CompletedProcess(argv, 0), exe)
+            go([exe, "version"])
+            with open(exe, "wb") as fh:
+                fh.write(b"two")
+            with self.assertRaises(OSError):
+                go([exe, "version"])
+        self.assertEqual(len(runs), 1)
         self.assertNotIn("dotted code identifier", g.ALLOW)          # dropped (of_secrets-review, PR 337)
 
     def publish(self):
