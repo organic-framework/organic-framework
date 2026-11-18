@@ -96,6 +96,22 @@ def load_pins(folder):
     return keys, creds
 
 
+def load_money_sites(folder):
+    """The domains a browser keeper treats as money (payment, banking), one per line in `pins/money_sites.txt` of its
+    root-owned folder, set by the host's setup with the owner; None when the file is missing or unreadable, and then
+    the browser keeper serves nothing (of_secrets-review on PR 357: with no list, a payment site passed at secret)."""
+    try:
+        with open(os.path.join(folder, "money_sites.txt")) as fh:
+            return {ln.strip().lower().rstrip(".") for ln in fh if ln.strip() and not ln.startswith("#")}
+    except OSError:
+        return None
+
+
+def _money_site(access, sites):
+    host = str(access or "")[len("site:"):].strip().lower().rstrip(".")
+    return any(host == s or host.endswith("." + s) for s in sites)
+
+
 def approval_problem(org, keeper, entry, record, keys, pinned, server=None):
     """Why RECORD does not approve this line, or None. PINNED: {credential: person} of the pinned enrollments; the
     people who approve are theirs."""
@@ -136,8 +152,9 @@ def grant_problem(grant, keeper, entry, keys, now_iso, revoked=()):
 
 
 def line_problem(org, keeper, kind, entry, *, root, positions, keys, pinned, grants, now_iso=None, revoked=(),
-                 sources_ok=True, server=None):
-    """Why this line must not be served now, or None (the module's docstring)."""
+                 sources_ok=True, server=None, money_sites=None, withdrawn=()):
+    """Why this line must not be served now, or None (the module's docstring). MONEY_SITES: a browser keeper's pinned
+    money domains (load_money_sites); WITHDRAWN: the approval records of lines removed since (ApprovalLog)."""
     import of_access
     now_iso = now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if not isinstance(entry, dict):
@@ -148,6 +165,15 @@ def line_problem(org, keeper, kind, entry, *, root, positions, keys, pinned, gra
     if entry.get("expires") and _norm(entry["expires"]) <= now_iso:
         return f"the line expired ({_norm(entry['expires'])})"
     tier = entry.get("tier")
+    if kind == "browser":
+        if money_sites is None:
+            return "the browser keeper pins no money-site list (pins/money_sites.txt): it serves no line"
+        if _money_site(entry.get("access"), money_sites) and of_access.RANK.get(tier, 0) < of_access.RANK["money"]:
+            return f"{entry.get('access')} is a payment or banking site: money at least (docs/access.md §2)"
+    rid = str(entry.get("approval") or "")[len("passkey:"):]
+    if rid and rid in set(withdrawn):
+        return (f"its approval passkey:{rid} was given for a line removed since: a line added again needs the "
+                "owner's new yes")
     if tier in MONEY and not sources_ok:
         return "the keeper cannot read its sources: it serves no money or production line"
     if of_access.RANK.get(tier, 0) >= of_access.RANK["secret"]:
@@ -171,18 +197,50 @@ class RevocationLog:
         self.path = path
 
     def _read(self):
-        seen, revoked = set(), set()
+        """(seen, revoked). Raises OSError when the log cannot be read whole: a line that is no record, or fewer
+        lines than its count file says it held (of_secrets-review on PR 357: an unreadable or truncated log read as
+        nothing revoked). The keeper then treats its sources as unreadable and serves no money or production line."""
+        seen, revoked, n = set(), set(), 0
         try:
             with open(self.path) as fh:
                 for ln in fh:
+                    n += 1
                     try:
                         r = json.loads(ln)
                     except ValueError:
-                        continue
+                        raise OSError(f"{self.path}: line {n} is no record") from None
+                    if not isinstance(r, dict) or not r.get("grant"):
+                        raise OSError(f"{self.path}: line {n} is no record")
                     (revoked if r.get("revoked") else seen).add(str(r.get("grant")))
-        except OSError:
-            pass
+        except FileNotFoundError:
+            n = 0
+        if n < self._count():
+            raise OSError(f"{self.path}: {n} records, fewer than the {self._count()} it held")
         return seen, revoked
+
+    def _count(self):
+        try:
+            with open(self.path + ".count") as fh:
+                return int(fh.read().strip() or 0)
+        except FileNotFoundError:
+            return 0
+        except ValueError:
+            raise OSError(f"{self.path}.count is not a number") from None
+
+    def _append(self, records):
+        if not records:
+            return
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        before = self._count()
+        with open(self.path, "a") as fh:
+            for r in records:
+                fh.write(json.dumps(r, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp = self.path + ".count.tmp"
+        with open(tmp, "w") as fh:
+            fh.write(str(before + len(records)))
+        os.replace(tmp, self.path + ".count")
 
     def revoked(self):
         return self._read()[1]
@@ -205,12 +263,29 @@ class RevocationLog:
         for gid in sorted({str(x) for x in revoked_events} - revoked):
             new.append({"grant": gid, "revoked": True, "at": now, "source": "of.grant_revoked"})
             revoked.add(gid)
-        if new:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path, "a") as fh:
-                for r in new:
-                    fh.write(json.dumps(r, sort_keys=True) + "\n")
+        self._append(new)
         return revoked
+
+
+class ApprovalLog(RevocationLog):
+    """The approvals of lines the keeper has seen, kept beside its revocations: when a line it saw is gone from the
+    committed list, the approval it carried is withdrawn for good, so a line removed and added again needs the owner's
+    new yes (of_secrets-review on PR 357: it came back on its old passkey record, whose recorded_at is unsigned)."""
+
+    def observe_lines(self, keeper, entries, now=None):
+        """Record what this read of KEEPER's list shows; returns every withdrawn approval id."""
+        seen, withdrawn = self._read()
+        now = now or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        here = {}
+        for e in entries or []:
+            if isinstance(e, dict) and str(e.get("approval") or "").startswith("passkey:"):
+                here[str(e["approval"])[len("passkey:"):]] = line_id(keeper, e.get("position"), e.get("access"))
+        new = [{"grant": rid, "line": lid, "at": now} for rid, lid in sorted(here.items()) if rid not in seen]
+        for rid in sorted(seen - set(here) - withdrawn):
+            new.append({"grant": rid, "revoked": True, "at": now, "source": "its line is gone from the list"})
+            withdrawn.add(rid)
+        self._append(new)
+        return withdrawn
 
 
 def descends(root, last, new, run=subprocess.run):
