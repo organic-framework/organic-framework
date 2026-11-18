@@ -2444,6 +2444,14 @@ class Resting(unittest.TestCase):
         m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW)
         self.assertNotIn("st1", [x["position"] for x in m])
 
+    def test_a_parked_session_stopped_on_a_spent_account_is_no_stall(self):
+        # of_review, PR 333: rescue leaves it, so the stall report must too, or invariant_step escalates it
+        r = Rescue()
+        stopped = {"st1": r.NOW - 600}
+        pos = [dict(p, status="parked") if p["name"] == "st1" else p for p in r.POS]
+        self.assertIn("st1", [x["position"] for x in of_capacity.stall_report(r.rows(), r.SESS, r.POS, stopped, [], r.NOW)])
+        self.assertNotIn("st1", [x["position"] for x in of_capacity.stall_report(r.rows(), r.SESS, pos, stopped, [], r.NOW)])
+
     def test_a_parked_positions_stopped_session_is_not_woken(self):
         w = WakeStopped()
         out, pressed, typed, _ = w.run_it(w.DIALOG, positions=[{"name": "sec", "holder": {"session": "s1"},

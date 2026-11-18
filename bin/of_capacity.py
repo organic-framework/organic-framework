@@ -5102,6 +5102,8 @@ def stall_report(rows, sessions, positions, stopped, moves, now):
             if m and m.get("done", True):
                 continue
             p = pos_by_session.get(s["session"])
+            if resting(p):  # parked or finished: rescue leaves it, so it is no stall (of_review, PR 333)
+                continue
             why = (f"move failed: {m.get('error')}" if m else "no position in any registry" if not p
                    else f"session status {s.get('status')}" if s.get("status") not in ("idle", "shell", "waiting")
                    else "a recent move of it failed, or over this run's rescue_moves")
