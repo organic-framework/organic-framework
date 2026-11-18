@@ -6250,6 +6250,15 @@ def cmd_protected(args):
           "changed, none that reaches the secret)")
 
 
+def cmd_access(args):
+    """`of access map`: who reaches what, through what, approved how, last used (docs/access.md §2; bin/of_access.py)."""
+    import of_access
+    try:
+        return of_access.cli(args)
+    except of_access.AccessError as e:
+        raise OfError(str(e)) from None
+
+
 def cmd_grant(args):
     """Issue or revoke a signed grant, or move every grant to the key in the owner's 1Password (rekey). Tenant only:
     it signs with the key file while one exists, else through 1Password's SSH agent (Touch ID)."""
@@ -7234,6 +7243,13 @@ def main(argv=None):
     pf.add_argument("entry", help="the protected_code entry's path, as its registry names it")
     pf.add_argument("--to", required=True, help="the target's commit id (not a branch)")
     pf.set_defaults(fn=cmd_protected)
+    acc = sub.add_parser("access", help="access through keepers: the map of who reaches what (docs/access.md)")
+    acc.add_argument("action", choices=["map"])
+    acc.add_argument("--org", help="one organization (default: every one with a local checkout)")
+    acc.add_argument("--position", help="one position's reach")
+    acc.add_argument("--json", action="store_true")
+    acc.add_argument("--long", action="store_true", help="also what each credential acts as, and its paths or ref")
+    acc.set_defaults(fn=cmd_access)
     gr = sub.add_parser("grant", help="issue or revoke a signed grant (tenant only)")
     gr.add_argument("action", choices=["issue", "revoke", "rekey"])
     gr.add_argument("--org")

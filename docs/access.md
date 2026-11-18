@@ -24,6 +24,8 @@ The keeper knows its caller from the process, not from anything the caller sends
 - the grants whose scope names a keeper (§4);
 - the keepers' records of each request, served or refused (`of.access_used`, `of.access_refused`, §5).
 
+Built so far, step 1 of §6 (2026-11-19, `of_server`; `bin/of_access.py`, `tests/test_access.py`): the map reads the catalogue and the grants only. A credential is reached by each position that lists it and by its keeper. Its APPROVED column is the organization repository's commit that last changed that line, with the commit's `Position:` trailer, or `uncommitted`. LAST USED comes from the secrets broker's records on a machine that runs the server, for a credential the broker serves by its `ref`: `none here` when it never served it, `no broker here` on a machine without a server. A file's use reads `not recorded` until the keepers write `of.access_used` (step 4). A grant shows whether its signature verifies against this machine's pinned grant key. `--long` adds what each credential acts as and its paths or reference. The map never opens a credential file.
+
 A keeper's list:
 
 ```yaml
