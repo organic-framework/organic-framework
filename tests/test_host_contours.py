@@ -20,12 +20,24 @@ PROGRAM = "/opt/of-keepers/acme-vault"
 CHANNEL = "/srv/of-channel/acme"
 
 
+def public_key(byte):
+    blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + byte * 32
+    return "ssh-ed25519 " + base64.b64encode(blob).decode("ascii")
+
+
+OWNER = public_key(b"a") + " laptop"
+AGENT = public_key(b"b") + " of-agent"
+OWNER_ID = "ssh-ed25519 SHA256:TGIk2D1DFZBKmjWssB2+Qdiona/OUK1TSuWAAHMK+n0"
+AGENT_ID = "ssh-ed25519 SHA256:tY51GDtdgY+0w0jAi5adr0DjfLY3KB1G5pQLtXMQD38"
+
+
 class State:
     def __init__(self):
         self.users = {"owner": C.User(1000, "owner", "/home/owner", "/bin/bash")}
         self.groups = {"owner": set(), "wheel": {"owner"}}
         self.paths = {"/home/owner": C.Directory("owner", "owner", 0o700)}
         self.status = {"owner": "P"}
+        self.keys = {}
         self.system_max = 999
         self.tailscale = False
 
@@ -34,6 +46,9 @@ class State:
 
     def password(self, name):
         return self.status[name]
+
+    def authorized_keys(self, name):
+        return self.keys.get(name, b"")
 
 
 def install(path, mode, owner="root", group="root"):
@@ -93,7 +108,7 @@ class HostContours(unittest.TestCase):
         for flags in (["--admin", ""], ["--org-user", "acme\n"], ["--keeper", "../vault"],
                       ["--channel=-group"],
                       ["--admin", "of", "--org-user", "of"], ["--keeper", "root"],
-                      ["--admin-key-from", "key.pub"]):
+                      ["--admin-key", OWNER]):
             with self.subTest(flags=flags), self.assertRaises(C.Refusal):
                 C.arguments(["plan", *flags])
 
@@ -106,7 +121,7 @@ class HostContours(unittest.TestCase):
         for member, status in ((False, "P"), (True, "L"), (True, "NP"), (True, "unexpected")):
             invoke = Mock(return_value=Mock(stdout=f"owner {status}"))
             with self.subTest(member=member, status=status), self.assertRaisesRegex(C.Refusal, "Completed: none"):
-                C.execute(a, C.plan(a, s), invoke, lambda n: member, guard=Mock(), out=Mock())
+                C.execute(a, C.plan(a, s), invoke, lambda n: member, guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
             self.assertFalse(any(call.args[0][0] == "gpasswd" for call in invoke.call_args_list))
 
     def test_sudo_rule_required_before_each_wheel_change(self):
@@ -128,11 +143,11 @@ class HostContours(unittest.TestCase):
                     listing = f"User owner may run the following commands on host:\n    {rule}\n"
                     invoke = Mock(side_effect=[Mock(stdout="owner P"), Mock(stdout=listing), Mock()])
                     if rule.endswith(") ALL") or rule.endswith(": ALL"):
-                        C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock())
+                        C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
                         expected = [passwd, sudo, change]
                     else:
                         with self.assertRaisesRegex(C.Refusal, "sudo -l"):
-                            C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock())
+                            C.execute(a, steps, invoke, member=lambda n: n == "owner", guard=Mock(), out=Mock(), get_keys=s.authorized_keys)
                         expected = [passwd, sudo]
                     self.assertEqual([call.args[0] for call in invoke.call_args_list], expected)
 
@@ -229,24 +244,79 @@ class HostContours(unittest.TestCase):
                     C.check_paths(install("/home/acme", "0700", "acme", "acme"))
                 inspect.assert_called_once_with("/home")
 
-    def test_ssh_import_selects_only_pinned_owner_lines_with_original_options(self):
-        prefix = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+    def test_key_plan_reports_fingerprints_and_uses_real_helper_path(self):
+        s = configured()
+        s.keys["owner"] = f"{OWNER}\n{AGENT}\nrestrict {OWNER}\n".encode()
+        s.groups["wheel"] = {"of"}
+        backup = public_key(b"c") + " backup"
+        a = C.arguments(["plan", "--admin", "owner", "--admin-key", backup, "--admin-key", OWNER,
+                         "--org-user", "of", "--org-key", "of=" + AGENT])
+        script = "/opt/reviewed/contours.py"
+        with patch.object(C.os.path, "realpath", return_value=script):
+            steps = C.plan(a, s)
+        self.assertEqual([argv for _, argv in steps if argv], [
+            [sys.executable, "-I", script, "_keys", "admin", "owner", backup, OWNER],
+            ["usermod", "-aG", "wheel", "owner"], ["sudo", "-l", "-U", "owner"],
+            ["gpasswd", "-d", "of", "wheel"],
+            [sys.executable, "-I", script, "_keys", "org", "of", AGENT],
+        ])
+        invoke, output = Mock(), []
+        C.execute(a, steps, invoke=invoke, out=output.append)
+        invoke.assert_not_called()
+        self.assertIn(f"keep {OWNER_ID} for owner", output)
+        self.assertIn(f"remove {AGENT_ID} from owner", output)
+        self.assertIn(f"remove {OWNER_ID} from owner", output)
+        self.assertIn(f"keep {AGENT_ID} for of", output)
+        for line in (OWNER, AGENT, backup):
+            self.assertNotIn(line.split()[1], "\n".join(output))
 
-        def key(byte):
-            return b"ssh-ed25519 " + base64.b64encode(prefix + byte * 32)
+    def test_admin_pins_must_be_plain_owner_key_lines(self):
+        for line in (AGENT, "restrict " + OWNER, 'command="a b" ' + OWNER, OWNER + "\n" + OWNER,
+                     "-----BEGIN OPENSSH " + "PRIVATE KEY-----"):
+            with self.subTest(line=line), self.assertRaisesRegex(C.Refusal, "--admin-key"):
+                C.arguments(["plan", "--admin", "owner", "--admin-key", line])
 
-        owner, other = key(b"a"), key(b"b")
-        selected = b'from="host1,host2",restrict\t' + owner + b" laptop"
-        source = b"\n".join([selected, selected, other + b" of-agent", other + b" " + owner, b"# " + owner])
-        self.assertEqual(C.selected_lines([owner + b" device\n"], source), [selected])
-        with self.assertRaisesRegex(C.Refusal, "agent key"):
-            C.selected_lines([owner], source + b"\n" + owner + b" of-agent")
-        for bad in (b"-----BEGIN OPENSSH " + b"PRIVATE KEY-----", owner + b" AGENT@host", other + b" other"):
-            with self.assertRaises(C.Refusal):
-                C.selected_lines([bad], selected)
-        for unsafe in (b'command="run this" ', b"cert-authority ", b'environment="X=Y" '):
-            with self.assertRaises(C.Refusal):
-                C.selected_lines([owner], unsafe + owner)
+    def test_org_key_requires_explicit_org_user(self):
+        with self.assertRaisesRegex(C.Refusal, "--org-user"):
+            C.arguments(["plan", "--org-user", "of", "--channel", "acme", "--org-key", "acme=" + AGENT])
+
+    def test_unpinned_keys_refuse_before_wheel_steps(self):
+        a = C.arguments(["apply", "--admin", "owner", "--org-user", "of"])
+        for members in ({"of"}, {"of", "owner"}):
+            s = configured()
+            s.groups["wheel"] = members
+            steps = C.plan(a, s)
+            for line, fingerprint in ((OWNER, OWNER_ID), (AGENT, AGENT_ID)):
+                s.keys["owner"] = line.encode()
+                with self.subTest(members=members, line=line), self.assertRaises(C.Refusal) as refusal:
+                    C.plan(a, s)
+                self.assertIn(fingerprint, str(refusal.exception))
+                self.assertIn("--admin-key", str(refusal.exception))
+                self.assertNotIn(line.split()[1], str(refusal.exception))
+                invoke = Mock()
+                with self.assertRaisesRegex(C.Refusal, "--admin-key"):
+                    C.execute(a, steps, invoke=invoke, get_keys=s.authorized_keys, out=Mock())
+                invoke.assert_not_called()
+
+    def test_admin_replaces_in_pin_order_and_org_appends_missing_lines_once(self):
+        first, second, agent = OWNER.encode(), public_key(b"c").encode(), AGENT.encode()
+        existing = b"\n".join((first, agent, b"# old entry", first))
+        self.assertEqual(C.key_contents("admin", existing, [second, first]), second + b"\n" + first + b"\n")
+        org = C.key_contents("org", existing, [agent, second, second])
+        self.assertEqual(org, existing + b"\n" + second + b"\n")
+        self.assertEqual(C.key_contents("org", org, [agent, second]), org)
+
+    def test_main_refuses_indirect_path_for_apply_and_key_helper(self):
+        for argv in (["apply", *SAMPLE], ["_keys", "admin", "owner", OWNER]):
+            with self.subTest(argv=argv), patch.object(C.os.path, "abspath", return_value="/link/contours.py"), \
+                    patch.object(C.os.path, "realpath", return_value="/opt/contours.py"), \
+                    patch.object(C, "trusted_chain", return_value=[]), patch.object(C.sys, "flags", isolated=1), \
+                    patch.object(C.os, "geteuid", return_value=0), patch.object(C.os, "open") as open_dir, \
+                    patch.object(C, "import_keys") as helper, redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(C.main(argv), 1)
+                self.assertIn("run the script by its real path", error.getvalue())
+                open_dir.assert_not_called()
+                helper.assert_not_called()
 
 
 if __name__ == "__main__":
