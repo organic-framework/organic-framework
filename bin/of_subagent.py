@@ -917,6 +917,12 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
     training reading's card (ORG is the events' organization id)."""
     if harness not in HARNESSES:
         raise SubagentError(f"--harness {harness!r}: one of {', '.join(HARNESSES)} (or auto)")
+    if sys.platform != "darwin":
+        # the confinement is macOS's (Codex's profile names macOS roots, Muse's outer sandbox is sandbox-exec): on
+        # another system /home would be readable and Muse unconfined, so no run goes until it is ported there
+        # (of_agent-server for the agent host move, message 01a1ef9c-454b)
+        raise SubagentError(f"of subagent run confines its harnesses on macOS only; on {sys.platform} it refuses until "
+                            "the confinement is ported (bwrap)")
     if kind not in KINDS:
         raise SubagentError(f"--kind {kind!r}: one of {', '.join(KINDS)}")
     if kind in WORKSPACE_KINDS and not checkout:
