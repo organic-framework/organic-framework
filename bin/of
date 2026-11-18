@@ -2598,12 +2598,23 @@ def cmd_subagent(args):
     """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
     import of_store
     import of_subagent
+    if args.action == "muse-login":
+        try:
+            return of_subagent.muse_login()
+        except of_subagent.SubagentError as e:
+            raise OfError(str(e))
     if args.action == "selftest":
         harnesses = of_subagent.HARNESSES if args.harness in (None, "all") else [args.harness]
         failed = 0
         for h in harnesses:
             print(f"{h}:", flush=True)
-            for check, ok, detail in of_subagent.selftest(h, session=os.environ.get("CLAUDE_CODE_SESSION_ID")):
+            try:
+                got = of_subagent.selftest(h, session=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+            except of_subagent.SubagentError as e:
+                failed += 1
+                print(f"  not run: {e}")
+                continue
+            for check, ok, detail in got:
                 failed += not ok
                 print(f"  {'pass' if ok else 'FAIL'}  {check}" + ("" if ok else f" ({detail})"))
         return 1 if failed else 0
@@ -2620,8 +2631,8 @@ def cmd_subagent(args):
         raise OfError("--prompt-file <file>: the run's prompt (a file, so its text is recorded as given)")
     harness = args.harness or "auto"
     if harness == "auto":
-        system = of_subagent.system_of(args.workspace, registry) if args.workspace else None
-        harness = of_subagent.pick(registry, args.kind, system)
+        repo = of_subagent.repo_of(args.workspace) if args.workspace else None
+        harness = of_subagent.pick(registry, args.kind, repo)
         if not harness:
             raise OfError(f"no outside harness is allowed for {args.kind} runs of {org} (subagent_harnesses:, RFC 0008 "
                           "§5), or none has room: use a Claude subagent")
@@ -2630,7 +2641,8 @@ def cmd_subagent(args):
         got = of_subagent.run(harness, args.kind, args.prompt_file, me["name"], org=me.get("_orgid") or org,
                               session=os.environ.get("CLAUDE_CODE_SESSION_ID"), work=args.work,
                               checkout=args.workspace, at=args.at, diff=args.diff, schema=args.schema, model=args.model,
-                              registry=registry, conn=conn,
+                              registry=registry, org_root=os.path.dirname(os.path.dirname(path)) if path else None,
+                              conn=conn,
                               log=lambda m: print(m, file=sys.stderr))
     except of_subagent.SubagentError as e:
         raise OfError(f"subagent run refused: {e}")
@@ -6850,7 +6862,7 @@ def main(argv=None):
     lp.set_defaults(fn=cmd_loop)
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
-    sa.add_argument("action", choices=["run", "selftest"])
+    sa.add_argument("action", choices=["run", "selftest", "muse-login"])
     sa.add_argument("--harness", choices=["codex", "muse", "auto", "all"], help="run: codex|muse|auto (default auto); "
                     "selftest: codex|muse|all")
     sa.add_argument("--kind", choices=["review", "read", "research"], default="review")
