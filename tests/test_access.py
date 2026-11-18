@@ -144,5 +144,117 @@ class AccessMapTest(unittest.TestCase):
         self.assertEqual({r["through"] for r in m["rows"] if r["access"] == "missing"}, {"nothing named"})
 
 
+LIMIT = {"per_call": {"amount": 0.5, "unit": "ETH"}, "per_period": {"amount": 2, "unit": "ETH", "period": "P1D"}}
+
+
+class KeeperListTest(AccessMapTest):
+    """Step 2: a keeper's list, written only by grant and revoke, and checked as `of registry check` checks it."""
+
+    def grant(self, *a, **kw):
+        kw.setdefault("by", "acme_org")
+        kw.setdefault("now_iso", self.now)
+        kw.setdefault("resolve", lambda card: card == "AC-7")
+        return of_access.grant(self.repo, *a, **kw)
+
+    def test_a_line_is_checked_before_it_is_written(self):
+        with self.assertRaisesRegex(of_access.AccessError, "give --kind"):
+            self.grant("acme-vault", "acme_obs", "item:abc", actions=["read"], tier="secret", decided="AC-7",
+                       approval="passkey:r1")
+        bad = [({"tier": "plain", "decided": "AC-7"}, "secret at least"),
+               ({"tier": "secret", "decided": "AC-7"}, "passkey"),
+               ({"tier": "secret", "decided": "abc1234", "approval": "passkey:r1"}, "founder's card"),
+               ({"tier": "secret", "decided": "AC-8", "approval": "passkey:r1"}, "no ask on this machine")]
+        for kw, why in bad:
+            with self.assertRaisesRegex(of_access.AccessError, why):
+                self.grant("acme-vault", "acme_obs", "item:abc", actions=["read"], kind="vault", host="h1", **kw)
+        with self.assertRaisesRegex(of_access.AccessError, "access is item:"):
+            self.grant("acme-vault", "acme_obs", "dest:0x12", actions=["read"], tier="secret", decided="AC-7",
+                       approval="passkey:r1", kind="vault", host="h1")
+        self.assertFalse(os.path.exists(of_access.list_path(self.repo, "acme-vault")))
+        e = self.grant("acme-vault", "acme_obs", "item:abc", actions=[], tier="secret", decided="AC-7",
+                       approval="passkey:r1", kind="vault", host="h1")
+        self.assertEqual(e["actions"], ["read"])
+        with open(of_access.list_path(self.repo, "acme-vault")) as fh:
+            self.assertTrue(fh.read().startswith("# A keeper's list"))
+        with self.assertRaisesRegex(of_access.AccessError, "already"):
+            self.grant("acme-vault", "acme_obs", "item:abc", actions=["read"], tier="secret", decided="AC-7",
+                       approval="passkey:r1")
+
+    def test_a_signer_line_is_money_with_a_signed_grant_and_both_caps(self):
+        kw = dict(actions=["send"], kind="signer", host="h1", decided="AC-7", approval="passkey:r1")
+        with self.assertRaisesRegex(of_access.AccessError, "money at least"):
+            self.grant("acme-signer", "acme_payer", "dest:0x12", tier="secret", limit=LIMIT, **kw)
+        with self.assertRaisesRegex(of_access.AccessError, "grant the founder signed"):
+            self.grant("acme-signer", "acme_payer", "dest:0x12", tier="money", limit=LIMIT, **kw)
+        with self.assertRaisesRegex(of_access.AccessError, "not in the organization"):
+            self.grant("acme-signer", "acme_payer", "dest:0x12", tier="money", limit=LIMIT, grant_id="g-9", **kw)
+        with open(os.path.join(self.repo, "registry", "grants.yaml"), "w") as fh:
+            fh.write("grants:\n  - id: g-9\n    subject: acme_payer\n    tier: act_and_report\n")
+        with self.assertRaisesRegex(of_access.AccessError, "per_period"):
+            self.grant("acme-signer", "acme_payer", "dest:0x12", tier="money", grant_id="g-9",
+                       limit={"per_call": LIMIT["per_call"]}, **kw)
+        with self.assertRaisesRegex(of_access.AccessError, "ISO 8601"):
+            self.grant("acme-signer", "acme_payer", "dest:0x12", tier="money", grant_id="g-9",
+                       limit={**LIMIT, "per_period": {"amount": 2, "unit": "ETH", "period": "a day"}}, **kw)
+        e = self.grant("acme-signer", "acme_payer", "dest:0x12", tier="money", grant_id="g-9", limit=LIMIT, **kw)
+        self.assertEqual(e["grant"], "g-9")
+
+    def test_revoke_removes_one_line_and_the_map_and_check_read_the_lists(self):
+        self.grant("acme-vault", "acme_obs", "item:abc", actions=["read"], tier="secret", decided="AC-7",
+                   approval="passkey:r1", kind="vault", host="h1")
+        self.grant("acme-vault", "acme_payer", "item:def", actions=["read"], tier="secret", decided="AC-7",
+                   approval="passkey:r2")
+        rows = [r for r in self.build()[0]["rows"] if r.get("keeper") == "acme-vault"]
+        self.assertEqual({(r["position"], r["access"]) for r in rows}, {("acme_obs", "item:abc"),
+                                                                        ("acme_payer", "item:def")})
+        self.assertTrue(all(r["approved"].endswith("uncommitted: serves nothing") for r in rows), rows)
+        self.assertEqual(of_access.check_lists(self.orgs, resolve=lambda c: c == "AC-7"), [])
+        removed = of_access.revoke(self.repo, "acme-vault", "acme_obs", "item:abc")
+        self.assertEqual(removed["access"], "item:abc")
+        rows = [r for r in self.build()[0]["rows"] if r.get("keeper") == "acme-vault"]
+        self.assertEqual([(r["position"], r["access"]) for r in rows], [("acme_payer", "item:def")])
+        with self.assertRaises(of_access.AccessError):
+            of_access.revoke(self.repo, "acme-vault", "acme_obs", "item:abc")
+
+    def test_the_check_names_a_hand_written_list_s_problems(self):
+        d = os.path.join(self.repo, "registry", "access")
+        os.makedirs(d)
+        with open(os.path.join(d, "acme-signer.yaml"), "w") as fh:
+            fh.write(textwrap.dedent("""\
+                keeper: other
+                kind: signer
+                host: h1
+                entries:
+                  - position: nobody
+                    access: "dest:0x12"
+                    actions: [send]
+                    tier: plain
+                    decided: AC-7
+                    added: {at: 2026-11-19T10:00:00Z, by: acme_org}
+                  - position: acme_payer
+                    access: "dest:0x34"
+                    actions: [send]
+                    tier: money
+                    decided: AC-7
+                    limit: {per_call: {amount: 1, unit: ETH}, per_period: {amount: 2, unit: ETH, period: P1D}}
+                    added: {at: "2026-11-19T10:00:00Z", by: acme_org}
+            """))
+        with open(os.path.join(d, "Notes.txt"), "w") as fh:
+            fh.write("x")
+        got = "\n".join(of_access.check_lists(self.orgs, resolve=lambda c: True))
+        for why in ("not a keeper's list", "not the file's name", "entry 1: position 'nobody' is no position",
+                    "entry 1: a signer entry is money at least", "entry 1: a signer entry needs a limit",
+                    "entry 2: a money entry needs approval", "entry 2: a money entry needs the grant"):
+            self.assertIn(why, got)
+        self.assertNotIn("added is", got)  # an unquoted time, as YAML reads it, is a time
+        self.assertTrue(all(ln.startswith("acme:registry/access/") for ln in got.splitlines()))
+
+    def test_the_request_names_the_floor_and_the_steps(self):
+        text = of_access.request_text("acme-signer", {"kind": "signer", "host": "h1"}, "acme_payer", "dest:0x12",
+                                      ["send"], LIMIT, "pay the hosting invoice")
+        self.assertIn("floor is money", text)
+        self.assertIn("pay the hosting invoice", text)
+        self.assertIn("of delegate", text)
+
 if __name__ == "__main__":
     unittest.main()

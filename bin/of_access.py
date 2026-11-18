@@ -1,10 +1,14 @@
 """`of access map`: who reaches what, through what, with which limit, approved how, and when each entry was last used
 (docs/access.md §2). Owned by of_server.
 
-This is step 1 of docs/access.md §6 (hand-over 64ece894 from of_architect): the map stands on what exists today, the
-credentials catalogue (docs/registry.md, Credentials) and the grants (docs/registry.md, Grants) of every organization
-listed in orgs.yaml. Keeper lists (registry/access/<keeper>.yaml) and their `of.access_used` records come with steps 2
-and 4. Names, paths and references only: it never opens a credential file and never reads a value.
+Steps 1 and 2 of docs/access.md §6 (hand-over 64ece894 from of_architect). The map reads the credentials catalogue
+(docs/registry.md, Credentials), the grants (docs/registry.md, Grants) and each keeper's list
+(`registry/access/<keeper>.yaml`, docs/access.md §2) of every organization listed in orgs.yaml; the keepers'
+`of.access_used` records come with step 4. Names, paths and references only: it never opens a credential file and
+never reads a value.
+
+`of access request`, `grant` and `revoke` (docs/access.md §3) are the only writers of a keeper's list; the structure
+keeper commits it, and a keeper reads it from the committed tip. `check_lists` is their part of `of registry check`.
 
 - A credential is reached by each position that lists it and by its keeper, which keeps it (docs/registry.md).
 - "Approved" is the organization repository's commit that last changed the line giving that reach (the position's
@@ -17,8 +21,10 @@ and 4. Names, paths and references only: it never opens a credential file and ne
   its source.
 """
 import datetime
+import glob
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -29,6 +35,300 @@ STORES = {"op": "1Password", "keychain": "keychain", "envfile": "env file"}
 
 class AccessError(Exception):
     pass
+
+
+# ---------------------------------------------------------------- keeper lists (docs/access.md §2)
+
+TIERS = ("plain", "secret", "money", "production")
+RANK = {t: i for i, t in enumerate(TIERS)}
+KINDS = {  # an entry's access form, its actions, and the kind's floor (docs/access.md §2, of_secrets-review on PR 349)
+    "vault": {"access": "item:", "actions": ("read",), "floor": "secret", "limit": ()},
+    "signer": {"access": "dest:", "actions": ("send",), "floor": "money", "limit": ("per_call", "per_period")},
+    "browser": {"access": "site:", "actions": None, "floor": "secret", "limit": ("per_period",)},
+}
+KEEPER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+ACTION_RE = re.compile(r"^[a-z][a-z_-]{0,31}$")
+PERIOD_RE = re.compile(r"^P(?!$)(?:\d+Y)?(?:\d+M)?(?:\d+W)?(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?$")
+ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z$")
+COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+HEADER = ("# A keeper's list (docs/access.md §2). Written only by `of access grant` and `of access revoke`; the structure\n"
+          "# keeper commits it, and the keeper reads it from the committed tip of the default branch.\n")
+
+
+def list_path(root, keeper):
+    if not KEEPER_RE.match(str(keeper or "")):
+        raise AccessError(f"a keeper's name matches {KEEPER_RE.pattern}: {keeper!r}")
+    return os.path.join(root, "registry", "access", f"{keeper}.yaml")
+
+
+def load_list(path):
+    """The list's document, or None when there is no list; AccessError on a list that cannot be read."""
+    import yaml
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as e:
+        raise AccessError(f"{path}: cannot be read ({str(e).splitlines()[0]})") from None
+    if not isinstance(doc, dict):
+        raise AccessError(f"{path}: not a mapping")
+    return doc
+
+
+def _write_list(path, doc):
+    import yaml
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    body = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(HEADER + body)
+    os.replace(tmp, path)
+
+
+def _limit_problems(limit, kind):
+    out = []
+    need = KINDS[kind]["limit"] if kind in KINDS else ()
+    if limit in (None, {}):
+        return [f"a {kind} entry needs a limit with {' and '.join(need)}"] if need else []
+    if not isinstance(limit, dict):
+        return ["limit is a mapping: {per_call: {amount, unit}, per_period: {amount, unit, period}}"]
+    for k, v in limit.items():
+        if k not in ("per_call", "per_period"):
+            out.append(f"limit has an unknown part {k!r} (per_call, per_period)")
+            continue
+        if not isinstance(v, dict):
+            out.append(f"limit.{k} is a mapping with amount and unit")
+            continue
+        amount = v.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount <= 0:
+            out.append(f"limit.{k}.amount is a number above 0")
+        if not isinstance(v.get("unit"), str) or not v["unit"].strip():
+            out.append(f"limit.{k}.unit is a word, such as ETH or calls")
+        if k == "per_period" and not (isinstance(v.get("period"), str) and PERIOD_RE.match(v["period"])):
+            out.append("limit.per_period.period is an ISO 8601 period, such as P1D or PT1H")
+    for k in need:
+        if k not in limit:
+            out.append(f"a {kind} entry's limit needs {k}")
+    return out
+
+
+def entry_problems(kind, e, positions, grant_ids=None, resolve=None, commit_ok=None):
+    """What is wrong with one entry of a list of KIND. POSITIONS: the organization's position names. GRANT_IDS: its
+    grants' ids (None: not checked). RESOLVE(card) -> bool: a card id is an ask; COMMIT_OK(sha) -> bool: a commit of
+    the organization's repository (None: not checked)."""
+    import of_events
+    if not isinstance(e, dict):
+        return ["an entry is a mapping"]
+    out = []
+    spec = KINDS.get(kind)
+    if str(e.get("position") or "") not in positions:
+        out.append(f"position {e.get('position')!r} is no position of the organization")
+    access = e.get("access")
+    if not isinstance(access, str) or (spec and not (access.startswith(spec["access"]) and len(access) > len(spec["access"]))):
+        out.append(f"access is {spec['access'] if spec else '<kind>:'}<what> for a {kind} keeper: {access!r}")
+    acts = e.get("actions")
+    if not isinstance(acts, list) or not acts or not all(isinstance(a, str) and ACTION_RE.match(a) for a in acts):
+        out.append("actions is a list of words")
+    elif spec and spec["actions"] and not set(acts) <= set(spec["actions"]):
+        out.append(f"a {kind} entry's actions are {', '.join(spec['actions'])}")
+    tier = e.get("tier")
+    if tier not in RANK:
+        out.append(f"tier is one of {', '.join(TIERS)}")
+    elif spec and RANK[tier] < RANK[spec["floor"]]:
+        out.append(f"a {kind} entry is {spec['floor']} at least (docs/access.md §2), not {tier}")
+    out += _limit_problems(e.get("limit"), kind)
+    decided = str(e.get("decided") or "").strip()
+    card = bool(of_events.REF_RE.match(decided))
+    if not decided:
+        out.append("decided names the founder's card, or the structure keeper's commit for a plain entry")
+    elif tier in RANK and RANK[tier] >= RANK["secret"] and not card:
+        out.append(f"a {tier} entry is decided by the founder's card (docs/access.md §3), not {decided!r}")
+    elif card and resolve is not None and not resolve(decided):
+        out.append(f"decided {decided} is no ask on this machine")
+    elif not card and not COMMIT_RE.match(decided):
+        out.append(f"decided {decided!r} is neither a card id nor a commit")
+    elif not card and commit_ok is not None and not commit_ok(decided):
+        out.append(f"decided {decided} is no commit of the organization's repository")
+    if tier in RANK and RANK[tier] >= RANK["secret"]:
+        if not (isinstance(e.get("approval"), str) and e["approval"].startswith("passkey:") and len(e["approval"]) > 8):
+            out.append(f"a {tier} entry needs approval: passkey:<record id> (docs/access.md §4)")
+    if tier in ("money", "production"):
+        g = e.get("grant")
+        if not isinstance(g, str) or not g.strip():
+            out.append(f"a {tier} entry needs the grant the founder signed (docs/access.md §4)")
+        elif grant_ids is not None and g not in grant_ids:
+            out.append(f"grant {g} is not in the organization's registry/grants.yaml")
+    added = e.get("added")
+    if not (isinstance(added, dict) and ISO_RE.match(_when(added.get("at")))
+            and isinstance(added.get("by"), str) and added["by"].strip()):
+        out.append("added is {at: <UTC time>, by: <position>}")
+    if e.get("expires") is not None and not ISO_RE.match(_when(e["expires"])):
+        out.append("expires is a UTC time such as 2026-12-01T00:00:00Z, or absent")
+    return out
+
+
+def list_problems(doc, keeper, positions, grant_ids=None, resolve=None, commit_ok=None):
+    if not isinstance(doc, dict):
+        return ["a keeper's list is a mapping"]
+    out = []
+    if doc.get("keeper") != keeper:
+        out.append(f"keeper is {doc.get('keeper')!r}, not the file's name {keeper!r}")
+    kind = doc.get("kind")
+    if kind not in KINDS:
+        out.append(f"kind is one of {', '.join(KINDS)}")
+    if not isinstance(doc.get("host"), str) or not doc["host"].strip():
+        out.append("host names the machine the keeper runs on")
+    entries = doc.get("entries")
+    if not isinstance(entries, list):
+        return out + ["entries is a list"]
+    seen = set()
+    for i, e in enumerate(entries):
+        key = (e.get("position"), e.get("access")) if isinstance(e, dict) else None
+        if key in seen:
+            out.append(f"entry {i + 1}: {key[0]} {key[1]} is listed twice")
+        seen.add(key)
+        out += [f"entry {i + 1}: {p}" for p in entry_problems(kind, e, positions, grant_ids, resolve, commit_ok)]
+    return out
+
+
+def _position_names(root):
+    import yaml
+    try:
+        with open(os.path.join(root, "registry", "positions.yaml")) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        return set()
+    return {str(p["name"]) for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")}
+
+
+def _grant_ids(root):
+    import yaml
+    try:
+        with open(os.path.join(root, "registry", "grants.yaml")) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except OSError:
+        return set()
+    except yaml.YAMLError:
+        return None
+    return {str(g.get("id")) for g in doc.get("grants") or [] if isinstance(g, dict) and g.get("id")}
+
+
+def _card_resolver():
+    """RESOLVE(card) -> bool from this machine's event store (of_asks.ref_id); None when the store cannot be read."""
+    try:
+        import of_asks
+        import of_store
+        conn = of_store.connect()
+    except Exception:  # noqa: BLE001 - no store here: cards are not checked, and the check says nothing about them
+        return None
+
+    def resolve(card):
+        try:
+            return bool(of_asks.ref_id(conn, card))
+        except Exception:  # noqa: BLE001
+            return False
+    return resolve
+
+
+def _commit_checker(root, run=subprocess.run):
+    def ok(sha):
+        return _git(root, ["cat-file", "-e", f"{sha}^{{commit}}"], run) is not None
+    return ok
+
+
+def check_lists(orgs_file=None, resolve=None, run=subprocess.run):
+    """`of registry check`'s part: every keeper list of every organization with a local checkout."""
+    out = []
+    resolve = _card_resolver() if resolve is None else resolve
+    for org, root in _orgs(orgs_file):
+        d = os.path.join(root, "registry", "access")
+        if not os.path.isdir(d):
+            continue
+        positions, grant_ids = _position_names(root), _grant_ids(root)
+        for fn in sorted(os.listdir(d)):
+            rel = f"{org}:registry/access/{fn}"
+            if not fn.endswith(".yaml") or not KEEPER_RE.match(fn[:-5]):
+                out.append(f"{rel}: not a keeper's list (registry/access/<keeper>.yaml)")
+                continue
+            try:
+                doc = load_list(os.path.join(d, fn))
+            except AccessError as e:
+                out.append(f"{rel}: {str(e).split(': ', 1)[-1]}")
+                continue
+            out += [f"{rel}: {p}" for p in list_problems(doc, fn[:-5], positions, grant_ids, resolve,
+                                                          _commit_checker(root, run))]
+    return out
+
+
+def org_root(org, orgs_file=None):
+    for o, root in _orgs(orgs_file):
+        if o == org:
+            return root
+    raise AccessError(f"no organization {org!r} with a local checkout in orgs.yaml")
+
+
+def grant(root, keeper, position, access, *, actions, tier, decided, by, limit=None, approval=None, grant_id=None,
+          expires=None, kind=None, host=None, now_iso=None, resolve=None, run=subprocess.run):
+    """Add one line to KEEPER's list (docs/access.md §3, step 5), checked as `of registry check` checks it; the list is
+    started when it does not exist and KIND and HOST are given. Returns the entry."""
+    path = list_path(root, keeper)
+    doc = load_list(path)
+    if doc is None:
+        if not (kind and host):
+            raise AccessError(f"no list for keeper {keeper} yet: give --kind ({', '.join(KINDS)}) and --host to start it")
+        doc = {"keeper": keeper, "kind": kind, "host": host, "entries": []}
+    elif (kind and kind != doc.get("kind")) or (host and host != doc.get("host")):
+        raise AccessError(f"keeper {keeper} is a {doc.get('kind')} on {doc.get('host')}; its list says so already")
+    doc.setdefault("entries", [])
+    if not isinstance(doc["entries"], list):
+        raise AccessError(f"{path}: entries is not a list")
+    if any(isinstance(e, dict) and e.get("position") == position and e.get("access") == access for e in doc["entries"]):
+        raise AccessError(f"{position} {access} is on {keeper}'s list already; revoke it before a new line")
+    e = {"position": position, "access": access, "actions": list(actions or KINDS.get(doc.get("kind"), {}).get("actions")
+                                                                 or []),
+         "limit": limit or None, "tier": tier, "decided": decided}
+    if approval:
+        e["approval"] = approval
+    if grant_id:
+        e["grant"] = grant_id
+    e["added"] = {"at": now_iso or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "by": by}
+    e["expires"] = expires or None
+    problems = list_problems({**doc, "entries": doc["entries"] + [e]}, keeper, _position_names(root),
+                             _grant_ids(root), _card_resolver() if resolve is None else resolve,
+                             _commit_checker(root, run))
+    if problems:
+        raise AccessError("; ".join(problems))
+    doc["entries"].append(e)
+    _write_list(path, doc)
+    return e
+
+
+def revoke(root, keeper, position, access):
+    """Remove one line from KEEPER's list (docs/access.md §3, step 6): it only narrows, so it needs nobody's yes."""
+    path = list_path(root, keeper)
+    doc = load_list(path)
+    entries = (doc or {}).get("entries") if isinstance((doc or {}).get("entries"), list) else []
+    keep = [e for e in entries if not (isinstance(e, dict) and e.get("position") == position
+                                       and e.get("access") == access)]
+    if doc is None or len(keep) == len(entries):
+        raise AccessError(f"{position} {access} is not on {keeper}'s list")
+    removed = [e for e in entries if e not in keep]
+    doc["entries"] = keep
+    _write_list(path, doc)
+    return removed[0]
+
+
+def request_text(keeper, doc, position, access, actions, limit, why):
+    """The routed ask to the structure keeper (docs/access.md §3, step 1), standing on its own."""
+    kind = doc.get("kind")
+    floor = KINDS.get(kind, {}).get("floor", "secret")
+    lim = json.dumps(limit, sort_keys=True) if limit else "none"
+    return (f"Give {position} {access} on keeper {keeper} ({kind} on {doc.get('host')}), actions "
+            f"{', '.join(actions)}, limit {lim}? The work it is for: {why.strip()}. Per docs/access.md §3: check the "
+            f"mandate with `of delegate`, then set the tier; this keeper's floor is {floor}. A plain entry is your "
+            f"`of access grant`; a secret, money or production entry needs one founder card first, then his passkey "
+            f"approval, and for money or production his signed grant.")
 
 
 # ---------------------------------------------------------------- reading
@@ -122,9 +422,9 @@ def _commits(root, shas, run=subprocess.run):
     return out
 
 
-def _approved(commit, info):
+def _approved(commit, info, in_git=False):
     if commit is None:
-        return "not in git"
+        return "uncommitted" if in_git else "not in git"
     if commit == UNCOMMITTED:
         return "uncommitted"
     short, date, position = info.get(commit) or (commit[:9], "?", None)
@@ -203,6 +503,32 @@ def _when(v):
     return str(v)
 
 
+def _limit_text(limit):
+    if not isinstance(limit, dict) or not limit:
+        return None
+    parts = []
+    for k in ("per_call", "per_period"):
+        v = limit.get(k)
+        if isinstance(v, dict):
+            parts.append(f"{v.get('amount')} {v.get('unit')}" + (f"/{v.get('period')}" if k == "per_period" else "/call"))
+    return ", ".join(parts) or None
+
+
+def _entry_lines(text):
+    """{entry index: line (1-based)} of a keeper's list, from the YAML's nodes."""
+    import yaml
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(root, yaml.MappingNode):
+        return {}
+    for k, v in root.value:
+        if isinstance(k, yaml.ScalarNode) and k.value == "entries" and isinstance(v, yaml.SequenceNode):
+            return {i: n.start_mark.line + 1 for i, n in enumerate(v.value)}
+    return {}
+
+
 def _scope_text(scope):
     parts = []
     for k in sorted(scope or {}):
@@ -231,6 +557,7 @@ def org_map(org, root, grants, keys, now_iso, uses, run=subprocess.run):
     positions = [p for p in doc.get("positions") or [] if isinstance(p, dict) and p.get("name")]
     lines = _lines(text)
     blame = _blame(root, rel, run)
+    in_git = _git(root, ["rev-parse", "--git-dir"], run) is not None  # a file git does not track is uncommitted
     reach = []  # (position, credential, how, line)
     for p in positions:
         for cid in p.get("credentials") or [] if isinstance(p.get("credentials"), list) else []:
@@ -262,12 +589,35 @@ def org_map(org, root, grants, keys, now_iso, uses, run=subprocess.run):
             last = "none here" if uses is not None else "no broker here"
         rows.append({"org": org, "position": position, "access": cid, "how": how, "through": _through(c),
                      "custody": c.get("custody") is True, "limit": None,
-                     "approved": _approved(commits.get(ln) if blame else None, info),
+                     "approved": _approved(commits.get(ln) if blame else None, info, in_git),
                      "last_used": last,
                      "acts_as": c.get("acts_as"),
                      "paths": [p for p in c.get("paths") or [] if isinstance(p, str)]
                      if isinstance(c.get("paths"), list) else [],
                      "ref": c.get("ref") if isinstance(c.get("ref"), str) else None})
+    for kpath in sorted(glob.glob(os.path.join(root, "registry", "access", "*.yaml"))):
+        keeper = os.path.basename(kpath)[:-5]
+        try:
+            kdoc = load_list(kpath) or {}
+        except AccessError as e:
+            problems.append(str(e))
+            continue
+        krel = os.path.relpath(kpath, root)
+        kblame, klines = _blame(root, krel, run), _entry_lines(_read(kpath) or "")
+        kinfo = _commits(root, kblame.values(), run)
+        for i, e in enumerate(kdoc.get("entries") or []):
+            if not isinstance(e, dict):
+                continue
+            ln = klines.get(i)
+            committed = _approved(kblame.get(ln) if kblame else None, kinfo, in_git)
+            rows.append({"org": org, "position": str(e.get("position") or "?"), "access": str(e.get("access") or "?"),
+                         "how": f"{e.get('tier') or '?'} line", "through": f"{keeper} ({kdoc.get('kind')}, "
+                                                                          f"{kdoc.get('host')})",
+                         "custody": False, "limit": _limit_text(e.get("limit")),
+                         "approved": f"{e.get('decided') or '?'}; " + (committed if committed != "uncommitted"
+                                                                       else "uncommitted: serves nothing"),
+                         "last_used": "not recorded", "acts_as": ", ".join(e.get("actions") or []),
+                         "paths": [], "ref": None, "keeper": keeper})
     reached = {cid for _, cid, _, _ in reach}
     unreached = sorted(str(cid) for cid in creds if str(cid) not in reached)
     import of_grants
@@ -347,8 +697,8 @@ def render(maps, long=False):
     out = []
     for m in maps:
         n_pos = len({r["position"] for r in m["rows"]})
-        out.append(f"{m['org']}: {len(m['rows'])} credential reaches by {n_pos} positions, {len(m['grants'])} grants"
-                   " (from the catalogue and grants; keeper lists come with docs/access.md §6 step 2)")
+        out.append(f"{m['org']}: {len(m['rows'])} reaches by {n_pos} positions, {len(m['grants'])} grants"
+                   " (from the catalogue, the keepers' lists and the grants)")
         if m["rows"]:
             body = [(r["position"], r["access"], r["how"] + (", custody" if r["custody"] else ""), r["through"],
                      r["limit"] or "-", r["approved"], r["last_used"]) for r in m["rows"]]
