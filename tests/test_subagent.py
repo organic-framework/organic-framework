@@ -565,8 +565,16 @@ class SubagentTest(unittest.TestCase):
     def test_codex_on_linux_runs_inside_bwrap(self):
         """The agent host move (of_agent-server, message 01a1efa2-919d): on Linux, Codex inside bwrap, with /home, /tmp
         and /run empty, the material read-only (a patch's snapshot writable) and its login bound in alone."""
+        prog = os.path.join(self.tmp.name, "someone-home", "bin", "codex")
+        os.makedirs(os.path.dirname(prog))
+        for n in ("codex", "codex-exec-server", "notes.txt"):
+            with open(os.path.join(os.path.dirname(prog), n), "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(os.path.join(os.path.dirname(prog), n), 0o755 if n != "notes.txt" else 0o644)
+        with open(os.path.join(self.tmp.name, "someone-home", ".secret"), "w") as fh:
+            fh.write("x")
         with mock.patch.object(of_subagent.sys, "platform", "linux"), \
-                mock.patch.dict(os.environ, {"OF_CODEX": "/bin/echo"}):
+                mock.patch.dict(os.environ, {"OF_CODEX": prog}):
             for kind in ("read", "patch"):
                 with self.subTest(kind=kind):
                     _, call = self.go("codex", kind=kind, visibility=lambda r: True)
@@ -585,7 +593,18 @@ class SubagentTest(unittest.TestCase):
                     self.assertTrue(login[1].endswith("/.codex/auth.json"))
                     fs = next(x for x in a if x.startswith("permissions.of_snapshot.filesystem="))
                     self.assertNotIn('"/tmp"="none"', fs)         # bwrap hides it; Codex's none would hide the run
-                    self.assertEqual(a[a.index("--") + 1], os.path.realpath("/bin/echo"))
+                    exe = os.path.realpath(prog)
+                    self.assertEqual(a[a.index("--") + 1], exe)
+                    self.assertIn(("--ro-bind", exe, exe), pairs)             # the program files alone
+                    side = os.path.join(os.path.dirname(exe), "codex-exec-server")
+                    self.assertIn(("--ro-bind", side, side), pairs)
+                    bound = [x[1] for x in pairs if x[0] == "--ro-bind"]
+                    self.assertNotIn(os.path.join(os.path.dirname(exe), "notes.txt"), bound)
+                    self.assertFalse([b for b in bound if b.startswith(os.path.dirname(os.path.dirname(exe)))
+                                      and not os.path.basename(b).startswith("codex")])
+                    self.assertNotIn(os.path.dirname(exe), [x[1] for x in pairs if x[0] == "--ro-bind"])
+                    self.assertIn(json.dumps(exe) + '="read"', fs)
+                    self.assertNotIn(json.dumps(os.path.dirname(exe)) + '="read"', fs)
 
     def test_linux_names_its_own_denied_roots(self):
         self.assertIn("/home", of_subagent.LINUX_DENIED_ROOTS)
