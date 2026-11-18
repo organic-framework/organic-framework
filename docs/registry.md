@@ -398,6 +398,7 @@ subagent_harnesses:
 - **`repos`, not systems.** A run sends a repository's snapshot, and one repository often holds many systems: a repository the entry does not name is refused, and so is a checkout whose folder name it cannot tell.
 - **`prompt_check`** is the organization's pre-publish check, a path relative to its repository. The prompt and the schema leave as they are, and a `research` run sends nothing else, so the wrapper runs this check on them, besides its own secret checks. Without one, a harness that may train on the run (RFC 0008 §3.1) gets no prompt.
 - The limits of each run (the snapshot, the secret checks, read-only, no training, the record) are the wrapper's, not the entry's: RFC 0008 §3.1.
+- **`training_cards: {<harness>: <card id>}`**, a top-level key beside it, names the owner's card that confirms a harness account's training setting, such as `codex: OF-27`, his task to turn training off. `of_capacity` records the reading (`of.harness_training`, docs/capacity.md, "Training readings") only from a card a registry names here, done by the owner, and a run on non-public material takes the reading only while the card is still named (organic-framework PR 334). It lives in the registry, not in `capacity.yaml`, because agents can write that file.
 
 ## Where the binding rules come from (2026-11-18, hand-over 83b08e7b)
 
