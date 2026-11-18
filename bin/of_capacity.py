@@ -535,22 +535,21 @@ def training_readings(conn=None):
 
 def owner_closed_card(source, cards=None, harness="codex", policy=None):
     """The owner's card that confirms a harness's training setting, when `source` names it (by card id, or by its
-    event id or a prefix of it) and the owner himself closed it; else None. Only the card capacity.yaml
-    `training_cards: {<harness>: <card id>}` names for that setting counts, and only as a task he marked done (his
-    claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks answered`, or
-    an answered card about something else unlocks nothing (of_secrets-review, PR 334). `cards`: the asks projection
-    (of_asks.project), read from the event log when not given."""
+    whole event id: a prefix is shared by several cards) and the owner himself closed it; else None. Only the card
+    capacity.yaml `training_cards: {<harness>: <card id>}` names for that setting counts, and only as a task he marked
+    done (his claim, then its asker's check). A task its asker closed on its own word, an ask closed by `of asks
+    answered`, or an answered card about something else unlocks nothing (of_secrets-review and of_review, PR 334).
+    `cards`: the asks as the listener's view holds them (of_asks.current_asks, never a read of the whole log)."""
     named = str(((policy if policy is not None else load_policy()).get("training_cards") or {}).get(harness) or "")
     src = str(source or "").strip()
     if not named or not src:
         return None
     if cards is None:
         import of_asks
-        import of_store
-        cards = of_asks.project(of_asks.load(of_store.connect()))
+        cards = of_asks.current_asks().get("asks") or []
     for a in cards or []:
         ref, eid = str(a.get("ref") or ""), str(a.get("event_id") or "")
-        if ref.upper() == src.upper() or (len(src) >= 8 and eid.startswith(src)):
+        if ref.upper() == src.upper() or eid == src:
             ok = ref.upper() == named.upper() and bool(a.get("task")) and a.get("state") == "done" \
                 and bool(a.get("claimed_at"))
             return a if ok else None
