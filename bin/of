@@ -2594,6 +2594,59 @@ def cmd_loop(args):
     return 0
 
 
+def cmd_subagent(args):
+    """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
+    import of_store
+    import of_subagent
+    if args.action == "selftest":
+        harnesses = of_subagent.HARNESSES if args.harness in (None, "all") else [args.harness]
+        failed = 0
+        for h in harnesses:
+            print(f"{h}:", flush=True)
+            for check, ok, detail in of_subagent.selftest(h, session=os.environ.get("CLAUDE_CODE_SESSION_ID")):
+                failed += not ok
+                print(f"  {'pass' if ok else 'FAIL'}  {check}" + ("" if ok else f" ({detail})"))
+        return 1 if failed else 0
+    positions = _load_quiet()
+    me = _me(positions, args.from_)
+    org = me.get("_org")
+    path = next((p for o, p, _ in org_registries() if o == org), None)
+    try:
+        with open(path) as fh:
+            registry = yaml.safe_load(fh) or {}
+    except (OSError, TypeError, yaml.YAMLError):
+        registry = {}
+    if not args.prompt_file:
+        raise OfError("--prompt-file <file>: the run's prompt (a file, so its text is recorded as given)")
+    harness = args.harness or "auto"
+    if harness == "auto":
+        system = of_subagent.system_of(args.workspace, registry) if args.workspace else None
+        harness = of_subagent.pick(registry, args.kind, system)
+        if not harness:
+            raise OfError(f"no outside harness is allowed for {args.kind} runs of {org} (subagent_harnesses:, RFC 0008 "
+                          "§5), or none has room: use a Claude subagent")
+    conn = of_store.connect()
+    try:
+        got = of_subagent.run(harness, args.kind, args.prompt_file, me["name"], org=me.get("_orgid") or org,
+                              session=os.environ.get("CLAUDE_CODE_SESSION_ID"), work=args.work,
+                              checkout=args.workspace, at=args.at, diff=args.diff, schema=args.schema, model=args.model,
+                              registry=registry, conn=conn,
+                              log=lambda m: print(m, file=sys.stderr))
+    except of_subagent.SubagentError as e:
+        raise OfError(f"subagent run refused: {e}")
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(got, ensure_ascii=False, indent=2))
+    else:
+        print(got["answer"] or "")
+        u = got["usage"]
+        print(f"\n[{harness} {got.get('model') or ''} {args.kind}: exit {got['exit']}, tokens in {u['input']} "
+              f"(cached {u['cached']}), out {u['output']}; record {got['record']}; check every finding against the code "
+              "before it counts (RFC 0008 §2)]".replace("  ", " "), file=sys.stderr)
+    return 0 if got["exit"] == 0 else 1
+
+
 def cmd_fit(args):
     """`of fit replay`: the mandate-fit judge over recorded messages; prints what it flags, records nothing."""
     import concurrent.futures
@@ -6795,6 +6848,22 @@ def main(argv=None):
     lp.add_argument("--org")
     lp.add_argument("--from", dest="sender")
     lp.set_defaults(fn=cmd_loop)
+    sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
+                        "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
+    sa.add_argument("action", choices=["run", "selftest"])
+    sa.add_argument("--harness", choices=["codex", "muse", "auto", "all"], help="run: codex|muse|auto (default auto); "
+                    "selftest: codex|muse|all")
+    sa.add_argument("--kind", choices=["review", "read", "research"], default="review")
+    sa.add_argument("--workspace", help="review and read: the checkout whose commit is exported (tracked files only)")
+    sa.add_argument("--at", help="the commit to export")
+    sa.add_argument("--diff", help="<base>..<head>: export head, with the diff beside it as .of-review.diff")
+    sa.add_argument("--prompt-file")
+    sa.add_argument("--schema", help="a JSON Schema file for the final answer")
+    sa.add_argument("--model")
+    sa.add_argument("--work", help="the work the run serves, for its spend")
+    sa.add_argument("--from", dest="from_", help="the calling position, when this session cannot tell")
+    sa.add_argument("--json", action="store_true")
+    sa.set_defaults(fn=cmd_subagent)
     ft = sub.add_parser("fit", help="mandate fit: does the work a position hands out belong to the receiver? "
                         "(bin/of_fit.py; replay records nothing)")
     ft.add_argument("action", choices=["replay"])
