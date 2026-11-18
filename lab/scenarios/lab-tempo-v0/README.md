@@ -38,6 +38,8 @@ also prints how many items the window held and how many were flagged in all.
 | tb-v1 | real | 10 | 1.00 | 0.80 | $0.066 |
 | tb-v2 | synthetic | 16 | 0.75 | 0.75 | $0.005 |
 | tb-v2 | real | 30 | 0.75 | 1.00 | $0.071 |
+| tb-v4 | synthetic | 16 | 0.86 | 0.75 | $0.005 |
+| tb-v4 | real | 15 of 30 | 0.91 | 1.00 | $0.045 |
 
 The real window held 152 items. The judge flagged 58 of them; only 10 are labelled, so the precision over all 58 is
 not known yet.
@@ -61,3 +63,14 @@ earlier. A slot holds only when it has a source; a slot a position picks for its
 five disputed real items are bookings, and they were relabelled `no_basis` after the tb-v2 verdicts had been seen.
 Their labels say so. From tb-v3 the notes are live, and each note's outcome measures the precision: the position runs
 the work, names a basis, or does neither.
+
+tb-v4 (2026-11-18) adds a line for a basis that lasts to a named day or period with no time of day: a hold "to the
+week of 11-23" ends at that day's start, so a start in that day's first hours is the basis's own time. A basis that
+names its own hour keeps it, so a start an hour after a hold lifted at 00:00Z is still a booking. The case was a user
+organization's one-shot cron for that Monday 08:07Z, flagged by tb-v3 though it named both the hold's decision and
+the review's postponement under its owner's card (its structure keeper, 2026-11-18). A first wording without the
+"no time of day" condition passed the real follower case lifted at 00:00Z (a false negative); the final wording
+judges both as labelled. On 2026-11-18 the real replay found only 15 of the 30 labelled items in the window: 15
+report "not found", so their precision is not known for tb-v4. Inference, unconfirmed: their source records left the
+store's live tables. It is not investigated (the precision sample is postponed to the week of 2026-11-23 by the
+founder's card OF-31).

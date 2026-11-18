@@ -27,7 +27,7 @@ import time
 
 import of_events
 
-VERSION = "tb-v3"
+VERSION = "tb-v4"
 MODEL = "haiku"
 TIMEOUT_S = 90
 AHEAD_MIN = 15            # a clock time this many minutes after the item's own time is a booking's candidate
@@ -206,6 +206,13 @@ people it needs are there only from then (of_architect, 2026-11-17). Not a booki
 daily note, four runs a month by its role design) at that cadence's time, and a check of data for a period that ends \
 then (a weekly check of the week's data). A run the item itself says should start as soon as something ends, booked \
 for hours after it, is a booking with no basis.
+A basis that lasts until a named day or period with no time of day (a hold or a postponement to a day, to next \
+week or to the week of a date, with whose decision or card it is) makes that day's start its own time: the hold ends then, so a start on that day, in its first \
+hours, is the basis's own time and needs no reason for its hour (verdict basis, basis_kind position or owner_card). \
+Example: "WAKE 11-23 08:07Z; waits on platform_owner's HOLD to the week of 11-23" is a booking with a basis. When \
+the basis names its own hour (a hold lifted at 00:00Z, a window from 14:00Z), that hour is its own time and a start \
+an hour after it is a booking with no basis. A start later in the period needs a basis of its own (2026-11-18: such a cron was flagged; a user organization's structure \
+keeper).
 A fixed clock time needs its own basis: when the item also waits for conditions (a merge, a check, another \
 step's end), ask whether the time itself is needed. If the conditions could be met earlier and nothing named requires \
 that hour, the time is a booking with no basis ("arm item 7 for 18:45Z with its merge gate": the merge gate does not \
