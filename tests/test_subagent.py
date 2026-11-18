@@ -549,6 +549,14 @@ class SubagentTest(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertNotIn("dotted code identifier", g.ALLOW)          # dropped (of_secrets-review, PR 337)
 
+    def test_another_system_than_macos_is_refused(self):
+        with mock.patch.object(of_subagent.sys, "platform", "linux"):
+            fake = Fake("codex")
+            with self.assertRaises(of_subagent.SubagentError) as e:
+                self.go("codex", fake=fake, visibility=lambda r: True)
+            self.assertIn("macOS only", str(e.exception))
+            self.assertEqual(fake.calls, [])
+
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""
         if "origin" not in self.git("remote").stdout.decode().split():
