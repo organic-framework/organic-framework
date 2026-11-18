@@ -251,6 +251,17 @@ class KeeperListTest(AccessMapTest):
         self.assertNotIn("added is", got)  # an unquoted time, as YAML reads it, is a time
         self.assertTrue(all(ln.startswith("acme:registry/access/") for ln in got.splitlines()))
 
+    def test_decided_is_the_cards_full_event_id_or_its_card_id(self):
+        """of_review on PR 357: the documented full event id was refused."""
+        full = "01a1f000-0000-7000-8000-000000000123"
+        e = self.grant("acme-vault", "acme_obs", "item:abc", actions=["read"], tier="secret", decided=full,
+                       approval="passkey:r1", kind="vault", host="h1", resolve=lambda c: c == full)
+        self.assertEqual(e["decided"], full)
+        with self.assertRaisesRegex(of_access.AccessError, "no ask on this machine"):
+            self.grant("acme-vault", "acme_payer", "item:def", actions=["read"], tier="secret",
+                       decided="01a1f000-0000-7000-8000-000000000999", approval="passkey:r2",
+                       resolve=lambda c: c == full)
+
     def test_the_request_names_the_floor_and_the_steps(self):
         text = of_access.request_text("acme-signer", {"kind": "signer", "host": "h1"}, "acme_payer", "dest:0x12",
                                       ["send"], LIMIT, "pay the hosting invoice")

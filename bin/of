@@ -6305,6 +6305,11 @@ def cmd_access(args):
         if args.action in ("link", "record"):
             return _access_approval(args, positions, of_access)
         sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        agentish = sid or os.environ.get("CLAUDECODE") or os.environ.get("OF_AUTOMATION") == "1" \
+            or not sys.stdin.isatty()  # of_review on PR 357: a cleared session id alone passed as the owner
+        if agentish and not sid:
+            raise OfError(f"of access {args.action}: the owner runs it in a plain terminal; an agent's session runs "
+                          "it with its own session, as its organization's structure keeper (docs/access.md §2)")
         if sid:  # an agent's session: only its organization's structure keeper writes a list (docs/access.md §2)
             me = _me(positions, None)
             org = me.get("_org")
@@ -6323,6 +6328,18 @@ def cmd_access(args):
                 raise OfError("of access grant needs --tier and --decided (the founder's card, or your commit for a "
                               "plain entry)")
             decided = args.decided.strip()
+            import of_events
+            if of_events.REF_RE.match(decided):  # a card id: the field keeps its full event id (AGENTS.md)
+                import of_asks
+                import of_store
+                conn = of_store.connect()
+                try:
+                    full = of_asks.ref_id(conn, decided)
+                finally:
+                    conn.close()
+                if not full:
+                    raise OfError(f"no ask has the card id {decided.upper()}")
+                decided = full
             e = of_access.grant(root, args.keeper_name, args.position_name, args.access_value,
                                 actions=[a.strip() for a in (args.actions or "").split(",") if a.strip()],
                                 tier=args.tier, decided=decided, by=by, limit=_access_limit(args.limit),
@@ -6347,6 +6364,9 @@ def _access_approval(args, positions, of_access):
     the keeper checks it, saved beside the list and named on the line, for the structure keeper to commit."""
     import of_keeper
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid and (os.environ.get("CLAUDECODE") or os.environ.get("OF_AUTOMATION") == "1" or not sys.stdin.isatty()):
+        raise OfError(f"of access {args.action}: the owner runs it in a plain terminal; an agent's session runs it "
+                      "with its own session, as its organization's structure keeper")
     if sid:
         me = _me(positions, None)
         org = me.get("_org")
