@@ -4,6 +4,7 @@ selftest`, run on the machine that has them."""
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -485,6 +486,35 @@ class SubagentTest(unittest.TestCase):
         self.assertNotIn("design/drafts", diff)
         self.assertIn("+print(7)", diff)
         self.assertFalse(any(f.startswith("fw/design/drafts") for f in call["files"]))
+
+    def test_the_gitleaks_check_allows_a_checksummed_address_and_a_dotted_identifier(self):
+        """A user organization's two further asks (through of_capacity, message 01a1ef50-7933), with the risks it
+        named: a bare 40-hex is also a legacy token's shape, and a JWT is dotted."""
+        import of_gitleaks_check as g
+        self.assertEqual(g.keccak256(b"").hex(), "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")
+        self.assertEqual(g.keccak256(b"abc").hex()[:16], "4e03657aea45a94f")
+        ok = "5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"            # EIP-55's own example
+        self.assertTrue(g.eip55(ok))
+        self.assertFalse(g.eip55(ok.lower()))                       # one case: no checksum, a token's shape
+        self.assertFalse(g.eip55(ok[:-1] + "e"))
+        path = os.path.join(self.tmp.name, "note.md")
+
+        def finding(value, rule="generic-api-key"):
+            line = f'api_key = "{value}"'
+            with open(path, "w") as fh:
+                fh.write("intro\n" + line + "\n")
+            return {"RuleID": rule, "StartLine": 2, "EndLine": 2, "StartColumn": 1, "EndColumn": len(line)}
+        self.assertTrue(g.checksummed_address(path, finding(ok)))
+        self.assertFalse(g.checksummed_address(path, finding(ok.lower())))
+        self.assertFalse(g.checksummed_address(path, finding(ok, rule="jwt")))
+        self.assertFalse(g.checksummed_address(path, finding(ok + "aa")))                 # 42 hex: not an address
+        self.assertFalse(g.checksummed_address(path, finding(ok + " Zk3mQ9xW2vL8pR4tYb")))  # another value beside
+        rx = re.compile(re.search(r"regexes = \['(\^\(\?:\[A-Za-df.*?)'\]", g.ALLOW).group(1))
+        for v in ("cfg.api.token", "self.config.api_token_value", "e.x", "eyB.c"):
+            self.assertTrue(rx.match(v), v)
+        for v in ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "token", "a-b.c", "1abc.d", "a." + "b" * 41,
+                  "cfg..token"):
+            self.assertFalse(rx.match(v), v)
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""

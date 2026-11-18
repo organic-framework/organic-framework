@@ -16,6 +16,7 @@ closed on any finding or scanner error").
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -59,8 +60,103 @@ description = "a bare EVM address (0x and 40 hex digits) is public"
 targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = ['^0x[0-9a-fA-F]{40}$']
+
+[[allowlists]]
+description = "a dotted code identifier (cfg.api.token): identifier parts of at most 40 characters, never a JWT"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['^(?:[A-Za-df-z_][A-Za-z0-9_]{0,39}|e|e[A-Za-xz0-9_][A-Za-z0-9_]{0,38}|ey|ey[A-IK-Za-z0-9_][A-Za-z0-9_]{0,37})(?:\\.[A-Za-z_][A-Za-z0-9_]{0,39})+$']
 """
+# the second allow rule (the same keeper, 2026-11-18): a dotted code identifier ('let token = cfg.api.token;'). Each
+# dot-separated part is an identifier (a letter or '_' first, no '-'), at most 40 characters, with at least one dot;
+# the first part never starts with eyJ (RE2 has no lookahead, so the first part's first three characters spell out
+# every start but that). A JWT (eyJ..., '-' and long parts) and a random key stay caught: checked live on 8.30.1.
+#
+# The third (the same keeper): a bare 40-hex address with no 0x, as research notes write one. 40 hex digits is also
+# the shape of a legacy GitHub OAuth token and other API keys, so it is allowed only when it carries an EIP-55
+# checksum that verifies (mixed case, keccak-256 of the lower-case address); an all-lower or all-upper value, which
+# has none, stays caught. gitleaks cannot verify a checksum, so the check reads the value back from the file at the
+# finding's position, in this process, never printed.
 RULES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules", f"gitleaks-{PINNED}.toml")
+
+
+_RC = [0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000, 0x000000000000808B,
+      0x0000000080000001, 0x8000000080008081, 0x8000000000008009, 0x000000000000008A, 0x0000000000000088,
+      0x0000000080008009, 0x000000008000000A, 0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
+      0x8000000000008003, 0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
+      0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
+_ROT = [[0, 36, 3, 41, 18], [1, 44, 10, 45, 2], [62, 6, 43, 15, 61], [28, 55, 25, 21, 56], [27, 20, 39, 8, 14]]
+_M = (1 << 64) - 1
+
+
+def _f(a):
+    for rc in _RC:
+        c = [a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4] for x in range(5)]
+        d = [c[(x - 1) % 5] ^ (((c[(x + 1) % 5] << 1) | (c[(x + 1) % 5] >> 63)) & _M) for x in range(5)]
+        a = [[a[x][y] ^ d[x] for y in range(5)] for x in range(5)]
+        b = [[0] * 5 for _ in range(5)]
+        for x in range(5):
+            for y in range(5):
+                r = _ROT[x][y]
+                b[y][(2 * x + 3 * y) % 5] = ((a[x][y] << r) | (a[x][y] >> (64 - r))) & _M if r else a[x][y]
+        a = [[b[x][y] ^ ((~b[(x + 1) % 5][y]) & b[(x + 2) % 5][y]) for y in range(5)] for x in range(5)]
+        a[0][0] ^= rc
+    return a
+
+
+def keccak256(data):
+    rate = 136
+    msg = bytearray(data) + b"\x01"
+    msg += b"\x00" * ((-len(msg)) % rate)
+    msg[-1] |= 0x80
+    a = [[0] * 5 for _ in range(5)]
+    for off in range(0, len(msg), rate):
+        block = msg[off:off + rate]
+        for i in range(rate // 8):
+            x, y = i % 5, i // 5
+            a[x][y] ^= int.from_bytes(block[8 * i:8 * i + 8], "little")
+        a = _f(a)
+    out = b"".join(a[i % 5][i // 5].to_bytes(8, "little") for i in range(25))
+    return out[:32]
+
+
+if False and __name__ == "__main__":
+    print(keccak256(b"").hex())
+    print(keccak256(b"abc").hex())
+
+
+def eip55(h):
+    """Does the 40-hex address H carry an EIP-55 checksum that verifies? Mixed case only: a value in one case has
+    none."""
+    if len(h) != 40 or h.lower() == h or h.upper() == h:
+        return False
+    d = keccak256(h.lower().encode()).hex()
+    return all((c.upper() if int(d[i], 16) >= 8 else c.lower()) == c for i, c in enumerate(h) if c.isalpha())
+
+
+_HEX40 = re.compile(r"(?<![0-9A-Za-z])([0-9a-fA-F]{40})(?![0-9A-Za-z])")
+_LONG = re.compile(r"[A-Za-z0-9+/_=-]{16,}")
+
+
+def checksummed_address(path, f):
+    """Is the generic-api-key finding F (a gitleaks report entry) a bare 40-hex address with a verified EIP-55
+    checksum and nothing else secret-shaped in its match? Reads the match from PATH at the finding's position."""
+    if f.get("RuleID") != "generic-api-key":
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+        line = lines[int(f.get("StartLine") or 0) - 1]
+    except (OSError, IndexError, ValueError):
+        return False
+    if int(f.get("EndLine") or f.get("StartLine") or 0) != int(f.get("StartLine") or 0):
+        return False
+    m = line[max(int(f.get("StartColumn") or 1) - 1, 0):int(f.get("EndColumn") or len(line))]
+    hexes = _HEX40.findall(m)
+    if len(hexes) != 1 or not eip55(hexes[0]):
+        return False
+    rest = m.replace(hexes[0], " ")
+    return not _LONG.search(rest)
 
 
 def pinned_why(exe):
@@ -134,6 +230,7 @@ def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
         except ValueError:
             print("gitleaks' report is unreadable: fail closed", file=out)
             return 1
+    findings = [f for f in findings if not checksummed_address(f.get("File") or "", f)]
     for f in findings:
         print(f"{os.path.relpath(f.get('File', '?'), root)}:{f.get('StartLine') or 0}:{f.get('RuleID') or '?'}",
               file=out)
