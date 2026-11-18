@@ -583,28 +583,50 @@ def folder_key(path):
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
-def start_folder(name, cur, cwd=None, policy=None):
-    """The folder a moved or restarted session resumes in: `cwd`, else the position's capacity.yaml `start_in`, else
-    the one it runs in (`cur`, returned unchanged). Raises MoveError for a start folder that does not exist.
+def spawn_folder(p):
+    """The folder `of spawn` starts position `p` in: its system's first repository under its organization's paths
+    (of_spawn.work_dir), from the registry and orgs.yaml; None when there is none."""
+    try:
+        import yaml
+        import of_spawn
+        with open(of_events.config_path("orgs.yaml")) as fh:
+            doc = yaml.safe_load(fh) or {}
+        paths = next((list(o.get("paths") or []) for o in doc.get("orgs") or [] if o.get("name") == p.get("_org")), [])
+        return of_spawn.work_dir(p, p.get("_systems") or {}, paths)
+    except Exception:  # noqa: BLE001 - no registry folder: no start folder
+        return None
+
+
+def start_folder(name, cur, cwd=None, policy=None, p=None, folder_of=None):
+    """The folder a moved or restarted session resumes in: `cwd`, else, for a position capacity.yaml lists in
+    `start_in`, the folder `of spawn` would start it in (from the registry), else the one it runs in (`cur`, returned
+    unchanged). capacity.yaml names positions only, never a folder: any agent may write it, and a folder decides the
+    instructions and hooks a session loads, so the folder comes from the registry, the structure keeper's reviewed
+    file (of_server, PR 330). Raises MoveError for a start folder that does not exist or is not named.
     2026-11-18: a user organization's structure keeper ran in the OF team's repository, so OF wrote no binding-rules
     file for it, and it asked to resume in its own folder at its next move or restart."""
-    want = cwd or ((policy if policy is not None else load_policy()).get("start_in") or {}).get(name)
+    want = cwd
     if not want:
-        return cur
+        listed = (policy if policy is not None else load_policy()).get("start_in") or []
+        if name not in (list(listed) if isinstance(listed, (list, tuple, dict)) else []):
+            return cur
+        want = (folder_of or spawn_folder)(p or {"name": name})
+        if not want:
+            raise MoveError(f"{name}: of spawn names no folder for it")
     want = os.path.realpath(os.path.expanduser(str(want)))
     if not os.path.isdir(want):
         raise MoveError(f"{name}: its start folder {want} does not exist")
     return cur if want == os.path.realpath(cur) else want
 
 
-def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trust=None):
+def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trust=None, p=None, folder_of=None):
     """start_folder, checked: a start folder from capacity.yaml that no account trusts never stops a move (a rescue
     least of all), so the session resumes where it runs and the log says why; the owner decides the trust. A folder
     given as `cwd` is the caller's explicit choice, and the move's own trust check refuses it."""
     if cwd:
         return start_folder(name, cur, cwd, policy)
     try:
-        want = start_folder(name, cur, None, policy)
+        want = start_folder(name, cur, None, policy, p=p, folder_of=folder_of)
     except MoveError as e:  # a start folder that is gone never stops a move either (of_review, PR 330)
         log(f"  {e}: resuming in {cur}")
         return cur
@@ -2277,7 +2299,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         tasks = [t.get("description") for t in cont.get("background_tasks") or [] if t.get("status") == "running"]
         raise MoveError(f"{name}: background shells are running ({'; '.join(map(str, tasks)) or 'see the pane'}); "
                         "exiting stops them. Agree with the holder, then pass --allow-shells")
-    run_cwd = resume_folder(name, s["cwd"], src, target, cwd, log=log)
+    run_cwd = resume_folder(name, s["cwd"], src, target, cwd, log=log, p=p)
     if run_cwd != s["cwd"]:
         extra_note = (f"Your working folder changed from {s['cwd']} to {run_cwd} (your position's start folder). "
                       f"Relative paths, git and the folder's agent rules now refer to the new folder; files you "

@@ -2342,16 +2342,22 @@ class StartFolder(unittest.TestCase):
     file for it; it asked to resume in its own folder at its next move or restart. capacity.yaml `start_in` names
     that folder, and the move carries the transcript under the folder's project key."""
 
-    def test_the_start_folder_is_the_given_one_else_start_in_else_where_it_runs(self):
+    def test_the_start_folder_is_the_given_one_else_of_spawns_for_a_listed_position_else_where_it_runs(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             ra, rb = os.path.realpath(a), os.path.realpath(b)
-            self.assertEqual(of_capacity.start_folder("k", ra, policy={}), ra)
-            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": {"k": b}}), rb)
-            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": {"other": b}}), ra)
-            self.assertEqual(of_capacity.start_folder("k", ra, cwd=b, policy={"start_in": {"k": a}}), rb)
-            self.assertEqual(of_capacity.start_folder("k", a, policy={"start_in": {"k": a}}), a)  # already there
+            spawn = lambda p: b  # noqa: E731  the folder of spawn would choose, from the registry
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={}, folder_of=spawn), ra)
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": ["k"]}, folder_of=spawn), rb)
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": ["other"]}, folder_of=spawn), ra)
+            self.assertEqual(of_capacity.start_folder("k", ra, cwd=b, policy={"start_in": ["k"]},
+                                                      folder_of=lambda p: a), rb)
+            self.assertEqual(of_capacity.start_folder("k", a, policy={"start_in": ["k"]}, folder_of=lambda p: a), a)
+            # of_server, PR 330: capacity.yaml never names the folder; one written there is not used
+            self.assertEqual(of_capacity.start_folder("k", ra, policy={"start_in": {"k": a}}, folder_of=spawn), rb)
             with self.assertRaisesRegex(of_capacity.MoveError, "does not exist"):
-                of_capacity.start_folder("k", ra, policy={"start_in": {"k": os.path.join(b, "gone")}})
+                of_capacity.start_folder("k", ra, policy={"start_in": ["k"]}, folder_of=lambda p: os.path.join(b, "gone"))
+            with self.assertRaisesRegex(of_capacity.MoveError, "names no folder"):
+                of_capacity.start_folder("k", ra, policy={"start_in": ["k"]}, folder_of=lambda p: None)
 
     def test_an_untrusted_start_folder_never_stops_a_move(self):
         def untrusted(src, dst, cwd, dry_run=False):
@@ -2359,15 +2365,16 @@ class StartFolder(unittest.TestCase):
         logs = []
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             ra, rb = os.path.realpath(a), os.path.realpath(b)
-            pol = {"start_in": {"k": b}}
+            pol, spawn = {"start_in": ["k"]}, (lambda p: b)
             self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol, log=logs.append,
-                                                       trust=untrusted), ra)
+                                                       trust=untrusted, folder_of=spawn), ra)
             self.assertIn("trusted in no config", logs[0])
-            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol,
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol, folder_of=spawn,
                                                        trust=lambda *a, **k: ("trusted", b)), rb)
             self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", cwd=b, policy={}, trust=untrusted), rb)
-            gone = {"start_in": {"k": os.path.join(b, "gone")}}  # of_review, PR 330: a gone folder never stops a move
-            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=gone, log=logs.append), ra)
+            gone = lambda p: os.path.join(b, "gone")  # noqa: E731  of_review, PR 330: a gone folder never stops a move
+            self.assertEqual(of_capacity.resume_folder("k", ra, "/s", "/t", policy=pol, log=logs.append,
+                                                       folder_of=gone), ra)
             self.assertIn("does not exist", logs[-1])
 
     def test_the_session_moves_under_the_new_key_and_one_copy_stays(self):
