@@ -129,8 +129,10 @@ _EXTRA_SECRET = re.compile(
 # or it is code. Outside such a directory these names are too common (a chart's templates/secrets.yaml, design
 # tokens.json).
 _ORG_CONFIG_FILE = re.compile(r"(?:^|/)\.config/[^/]+/(?:[^/]+/)*([^/]+)$")
-_CRED_WORD = re.compile(r"(?:^|[._-])(?:password|passwd|secrets?|tokens?|credentials?|creds|header|auth|authkey"
-                        r"|apikey|api-key|dsn)(?=$|[._-])|.\.env$", re.I)
+_CRED_WORDS = ("password", "passwd", "secret", "secrets", "token", "tokens", "credential", "credentials", "creds",
+               "header", "auth", "authkey", "apikey", "api-key", "dsn")
+_CRED_WORD = re.compile(r"(?:^|[._-])(?:" + "|".join(re.escape(w) for w in _CRED_WORDS) + r")(?=$|[._-])|.\.env$",
+                        re.I)
 _NO_CRED = re.compile(r"(?:^|[._-])(?:example|sample|template|placeholder|empty)(?=$|[._-])"
                       r"|\.(?:py|pyc|sh|bash|zsh|go|rs|js|mjs|ts|tsx|md|j2|tpl|tf|rb|pl|lua|html|css|lock|sum|mod)$",
                       re.I)
@@ -164,7 +166,8 @@ _HEADERS = frozenset("NAME NAMESPACE TYPE DATA AGE KIND STATUS CREATED LABELS".s
 # a field that names what a column holds as a credential: the file holds values, not names (of_review on PR 332:
 # `name,password` over `demo,public-test-passphrase` passed)
 _CRED_FIELDS = frozenset("password passwd passphrase pass pwd secret secrets token tokens key keys apikey api_key api-key "
-                         "private_key privatekey credential credentials auth pin otp value values".split())
+                         "private_key privatekey credential credentials auth pin otp value values".split()) | \
+    frozenset(_CRED_WORDS)  # the guard's own credential words too (`creds`: of_review on organic-framework PR 332)
 _COUNT_TOKEN = re.compile(r"\d{1,6}|(?:\d{1,5}[smhdy]){1,3}|-")
 NAMES_LINE_MAX = 8
 # a value in any field: a UUID, 32 or more hex digits, a lower-case run with digits, a Kubernetes bootstrap token
@@ -202,6 +205,15 @@ def _names_list_clean(p):
         toks = [t for t in re.split(r"[\s,]+", line.strip()) if t]
         if not toks:
             continue
+        # 12 or more digits in one field of a separated line, or in a run of digit groups (`4242 4242 4242 4242`:
+        # of_review on PR 332); a column table's line is no one field, its name's date and its counts apart
+        if re.search(r"[,\t;|]", line) and any(sum(c.isdigit() for c in f) >= 12 for f in re.split(r"[,\t;|]", line)):
+            return False
+        run = 0
+        for t in toks:
+            run = run + len(t) if t.isdigit() else 0
+            if run >= 12:
+                return False
         if len(toks) > NAMES_LINE_MAX:
             return False  # a table of names has a few columns; a seed phrase or a sentence has more
         if first and all(t in _HEADERS for t in toks):
@@ -1101,14 +1113,16 @@ def _option_known(word, opts, flags):
 _TIMEOUT_DURATION = re.compile(r"[+-]?(?:inf(?:inity)?|nan|0[xX][0-9a-fA-F.]+(?:[pP][+-]?\d+)?"
                                r"|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?", re.I)
 _REDIRECTION = re.compile(r"\d*(?:[<>]{1,2}|&>>?|>&|<&)")
+_NEGATIVE = re.compile(r"-(?:\d|\.\d)\S*")  # `timeout -1 cat`: a negative duration, not an option
 
 
 def _unknown_option_tails(words, limit=12):
     """When a wrapper's option holds a letter the tables do not know (`sudo -Q root cat <key>`, `xargs -Z n cat`), the
     tails that start at each of the next LIMIT words: any of them may be the command that runs (of_secrets-review on
     organic-framework PR 332). [] when every option is known. The line's leading redirections are passed over
-    (`</dev/null taskpolicy -ad x cat <key>`)."""
-    i = 0
+    (`</dev/null taskpolicy -ad x cat <key>`). It also gives GNU script's -c string as `bash -c <string>`, so a list
+    in it is judged as bash's is."""
+    i, extra = 0, []
     while i < len(words):
         m = _REDIRECTION.match(words[i])
         if m:  # `< f`, `2>/dev/null`, `</dev/null`: a redirection and its target, not the command
@@ -1120,51 +1134,83 @@ def _unknown_option_tails(words, limit=12):
             i += 1
             continue
         if not (w in _WRAPPERS or w in ("timeout", "env")):
-            return []
+            return extra
         opts, flags = _WRAPPER_VALUE_OPTS.get(w, frozenset()), _WRAPPER_FLAGS.get(w, frozenset())
         i += 1
-        while i < len(words) and (words[i].startswith("-") or (w == "env" and "=" in words[i])) and words[i] != "--":
+        start = i
+        while i < len(words) and (words[i].startswith("-") or (w == "env" and "=" in words[i])) and words[i] != "--" \
+                and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
             o = words[i]
             if o.startswith("-") and not _option_known(o, opts, flags):
-                return [words[j:] for j in range(i + 1, min(len(words), i + 1 + limit))]
+                return extra + [words[j:] for j in range(i + 1, min(len(words), i + 1 + limit))]
             i += 1 + (_opt_takes_next(o, opts, flags) if o.startswith("-") else 0)
+        if w == "script":
+            cmd = _script_command(words[start:i])
+            if cmd is not None:
+                extra.append(["bash", "-c", cmd])  # GNU script's -c string, a command line of its own
         if i < len(words) and words[i] == "--":
             i += 1
-        if w == "timeout" and i < len(words) and _TIMEOUT_DURATION.fullmatch(words[i]):
-            i += 1
+        if w == "timeout" and i < len(words):
+            i += 1  # its duration, whatever its form
         if w in _WRAPPER_POSITIONAL:
             i += _WRAPPER_POSITIONAL[w]
-    return []
+    return extra
 
 
 def _script_command(opts):
-    """The command string GNU script's -c (or --command) gives, among its options, or None."""
-    for k, o in enumerate(opts):
-        if o in ("-c", "--command") and k + 1 < len(opts):
-            return opts[k + 1]
+    """The command string GNU script's -c (or --command) gives among its options, or None. Read the getopt way: a
+    value option's operand is never taken for it (`script -q -t --command=x /dev/null cat <key>`: macOS's -t takes
+    `--command=x`; of_secrets-review on organic-framework PR 332), and an attached string counts (`-c'…'`, `-qc'…'`)."""
+    vals, flags = _WRAPPER_VALUE_OPTS["script"], _WRAPPER_FLAGS["script"]
+    k = 0
+    while k < len(opts):
+        o = opts[k]
+        if o == "--":
+            return None
+        if o in ("-c", "--command"):
+            return opts[k + 1] if k + 1 < len(opts) else None
         if o.startswith("--command="):
             return o.split("=", 1)[1]
-        if o.startswith("-") and not o.startswith("--") and o.endswith("c") and k + 1 < len(opts) and \
-                all(f"-{x}" in _WRAPPER_FLAGS["script"] for x in o[1:-1]):
-            return opts[k + 1]
+        if o.startswith("-") and not o.startswith("--"):
+            for j, ch in enumerate(o[1:], 1):
+                rest = o[j + 1:]
+                if ch == "c":
+                    return rest if rest else (opts[k + 1] if k + 1 < len(opts) else None)
+                if f"-{ch}" in vals:  # its value is the rest of the cluster, or the next word
+                    k += 0 if rest else 1
+                    break
+                if f"-{ch}" not in flags:
+                    break  # a letter neither table knows: _unknown_option_tails judges what follows
+        k += 1
     return None
 
 
 def _xargs_replstr(opts):
-    """xargs's replacement string among its options (-I X, -IX, -J X, -JX, --replace=X, -i or --replace as {}), or
-    None."""
+    """xargs's replacement string among its options, or None: -I X, -IX, -J X, -JX, --replace=X, -i[X] or --replace
+    as {}, read the getopt way inside a cluster (`xargs -tJ MARK MARK <key>`: of_secrets-review on PR 332)."""
+    vals = _WRAPPER_VALUE_OPTS["xargs"]
     out, k = None, 0
     while k < len(opts):
         o = opts[k]
-        if o in ("-I", "-J") and k + 1 < len(opts):
-            out, k = opts[k + 1], k + 2
-            continue
-        if (o.startswith("-I") or o.startswith("-J")) and not o.startswith("--") and len(o) > 2:
-            out = o[2:]
-        elif o.startswith("--replace="):
+        if o.startswith("--replace="):
             out = o.split("=", 1)[1]
-        elif o in ("-i", "--replace"):
+        elif o == "--replace":
             out = "{}"
+        elif o.startswith("-") and not o.startswith("--"):
+            for j, ch in enumerate(o[1:], 1):
+                rest = o[j + 1:]
+                if ch in "IJ":
+                    if rest:
+                        out = rest
+                    elif k + 1 < len(opts):
+                        out, k = opts[k + 1], k + 1
+                    break
+                if ch == "i":  # GNU: an optional string, attached
+                    out = rest or "{}"
+                    break
+                if f"-{ch}" in vals:
+                    k += 0 if rest else 1
+                    break
         k += 1
     return out
 
@@ -1269,24 +1315,20 @@ def _command_words_of(words):
             i += 1
             opts = _WRAPPER_VALUE_OPTS.get(w, ())
             start = i
-            while i < len(words) and (words[i].startswith("-") or (w == "timeout" and _TIMEOUT_DURATION.fullmatch(words[i]))):
+            while i < len(words) and words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
                 if words[i] == "--":
                     i += 1
                     break
                 i += 1 + _opt_takes_next(words[i], opts, _WRAPPER_FLAGS.get(w, frozenset()))
-            if w == "timeout" and i < len(words) and _TIMEOUT_DURATION.fullmatch(words[i]):
-                i += 1  # `timeout -- 2 cat`, `-- 1e1`, `-- +2`: the duration after `--` (of_secrets-review on PR 332)
+            if w == "timeout" and i < len(words):
+                i += 1  # its duration, in any form strtod reads (` 2`, `nan(x)`, `-- 1e1`; of_secrets-review on PR 332)
             if w == "xargs" and i < len(words) and words[i] == _xargs_replstr(words[start:i]):
                 # `echo cat | xargs -J X X <key>`: the utility is the replacement string, so the command comes from
                 # input and no name rule sees it; its arguments are judged as a reader's (of_secrets-review on PR 332)
                 words = words[:i] + ["cat"] + words[i + 1:]
-            cmd_string = _script_command(words[start:i]) if w == "script" else None
-            if cmd_string is not None:
-                try:  # GNU `script -c '<command>' <file>`: the string is the command line, as env -S gives one
-                    words, i = shlex.split(cmd_string), 0
-                    continue
-                except ValueError:
-                    pass
+            # GNU `script -c '<command>' <file>`: the string is a command line of its own, judged whole by
+            # _unknown_option_tails as `bash -c` is (a list in it, `true && cat <key>`: of_secrets-review on PR 332);
+            # the command here is BSD's reading, the words after the typescript file
             if w in _WRAPPER_POSITIONAL and i < len(words):
                 i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
@@ -3104,6 +3146,18 @@ _REMOTE_BODY = [0]
 # on it is judged by this machine's content (G1.8.1): `ssh h python3 - <<'PY' … open('<names list>') …` reads the other
 # machine's (of_review on organic-framework PR 332)
 _LINE_REMOTE = [False]
+
+
+def _remote_line(cmd):
+    """Does the line run a remote command: by its text, and by its words once the shell's quotes are gone
+    (`s's'h host cat <list>` is ssh: of_review on organic-framework PR 332), each name folded as G0.10 folds it."""
+    if _REMOTE_LINE.search(cmd):
+        return True
+    try:
+        words = shlex.split(cmd, comments=False)
+    except ValueError:
+        return True  # a line the shell's rules cannot split: not read as a local one
+    return any(_REMOTE_LINE.fullmatch(_fold_name(os.path.basename(w))) for w in words)
 _REMOTE_LINE = re.compile(r"(?<![\w-])(?:ssh|autossh|docker|podman|nerdctl|kubectl|crictl|limactl|lima|multipass"
                           r"|vagrant|orbctl|orb)(?![\w-])", re.I)
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
@@ -4040,6 +4094,12 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 continue
             _loop_header(stext, loops)
             _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
+            if depth < 6:  # before the simple command: `script -qc '<line>' <file>` runs nothing after its file
+                for tail in _unknown_option_tails(_tokens_or_empty(stext)):
+                    hit = _bash_deny(" ".join(shlex.quote(t) for t in tail), depth + 1, reaches_agent=reaches_agent)
+                    if hit:
+                        return hit
+                _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
             s = _simple(stext)
             if not s:
                 line_vars.update(_assignments(stext))  # `P=…;` alone: a shell variable the line reads later
@@ -4049,11 +4109,6 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     else _reads(s[1])
             head, args, words, to_file, herestr = s
             cmds.append((head, args))
-            if depth < 6:
-                for tail in _unknown_option_tails(_tokens_or_empty(stext)):
-                    hit = _bash_deny(" ".join(shlex.quote(t) for t in tail), depth + 1, reaches_agent=reaches_agent)
-                    if hit:
-                        return hit
             stage_reaches = reaches_agent and idx == last and not to_file
             if head == "security":  # G11, G20
                 hit = _security_deny(args)
@@ -4728,7 +4783,7 @@ def critical_deny(tool, tool_input, cwd=None):
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
     _REDIR_CTX[0] = None
-    _LINE_REMOTE[0] = tool == "Bash" and bool(_REMOTE_LINE.search(ti.get("command") or ""))
+    _LINE_REMOTE[0] = tool == "Bash" and _remote_line(ti.get("command") or "")
     if tool == "Bash":
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
