@@ -283,6 +283,23 @@ class MovePieces(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(dst, "projects", "-w", sid, "subagents", "a.jsonl")))
             self.assertFalse(os.path.exists(os.path.join(dst, "projects", "-w", "other.jsonl")))
 
+    def test_copy_over_read_only_file_history(self):
+        # a session moved back to an account it ran on finds its 0444 file-history copies there (2026-11-18)
+        with tempfile.TemporaryDirectory() as t:
+            src, dst, bak = (os.path.join(t, x) for x in ("src", "dst", "bak"))
+            sid = "abc"
+            for d, text in ((src, "new"), (dst, "old")):
+                for rel in (f"projects/-w/{sid}.jsonl", f"file-history/{sid}/f1@v1"):
+                    p = os.path.join(d, rel)
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    with open(p, "w") as fh:
+                        fh.write(text)
+                    os.chmod(p, 0o444)
+            of_capacity.copy_session(src, dst, sid, bak)
+            for rel in (f"projects/-w/{sid}.jsonl", f"file-history/{sid}/f1@v1"):
+                self.assertEqual(of_capacity._read(os.path.join(dst, rel)), b"new")
+                self.assertEqual(of_capacity._read(os.path.join(bak, rel)), b"old")
+
     def test_memory_merge_never_loses_an_edit(self):
         with tempfile.TemporaryDirectory() as t:
             src, dst, base, conf = (os.path.join(t, x) for x in ("src", "dst", "base", "conf"))
