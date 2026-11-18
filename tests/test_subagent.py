@@ -665,11 +665,26 @@ class SubagentTest(unittest.TestCase):
         os.remove(reg)
         os.symlink(os.path.join(org, "examples", "positions.yaml"), reg)
         self.assertEqual(of_subagent.committed_registry(reg)[0]["subagent_harnesses"]["codex"]["kinds"], ["review"])
+        # a folder link registry -> another organization's registry is refused (of_review on PR 342)
+        other = os.path.join(self.tmp.name, "org-b")
+        os.makedirs(os.path.join(other, "registry"))
+        gb = lambda *a: subprocess.run(["git", "-C", other, *G, *a], check=True, capture_output=True)  # noqa: E731
+        gb("init", "-q", "-b", "main")
+        with open(os.path.join(other, "registry", "positions.yaml"), "w") as fh:
+            fh.write("subagent_harnesses:\n  codex: {kinds: [patch], repos: ['*']}\n")
+        gb("add", "registry/positions.yaml")
+        gb("commit", "-qm", "b")
+        import shutil
+        shutil.rmtree(os.path.join(org, "registry"))
+        os.symlink(os.path.join(other, "registry"), os.path.join(org, "registry"))
+        with self.assertRaises(of_subagent.SubagentError) as e:
+            of_subagent.committed_registry(os.path.join(org, "registry", "positions.yaml"))
+        self.assertIn("not the organization repository's own", str(e.exception))
         # an exclude keyed by the repository's name reaches a clone in another folder matched by origin
         rx = of_subagent.excludes_for({"subagent_harnesses": {"excludes": {"fw": ["customers.csv"]}}}, "fw-review",
                                       "github.com/example/fw")
         self.assertTrue(of_subagent.excluded("customers.csv", rx))
-        for bad in ("nan", -1, 0, "x"):
+        for bad in ("nan", -1, 0, "x", True):
             with self.subTest(cap=bad), self.assertRaises(of_subagent.SubagentError):
                 self.go(registry={"subagent_harnesses": dict(REG["subagent_harnesses"], max_snapshot_mb=bad)})
 
