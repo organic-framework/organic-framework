@@ -143,11 +143,11 @@ class SubagentTest(unittest.TestCase):
 
     def test_codex_training_is_read_through_of_capacity_verified_reader(self):
         import types
-        fake = types.SimpleNamespace(training_verified=lambda h: "off" if h == "codex" else None)
+        fake = types.SimpleNamespace(training_verified=lambda h, org=None, **kw: "off" if h == "codex" else None)
         with mock.patch.dict(sys.modules, {"of_capacity": fake}):
             self.assertEqual(of_subagent.training(None, "codex"), "off")
             self.assertEqual(self.go("codex")[0]["exit"], 0)          # not public, but the verified reading is off
-        broken = types.SimpleNamespace(training_verified=lambda h: 1 / 0)
+        broken = types.SimpleNamespace(training_verified=lambda h, org=None, **kw: 1 / 0)
         with mock.patch.dict(sys.modules, {"of_capacity": broken}):
             self.assertIsNone(of_subagent.training(None, "codex"))
 
@@ -651,6 +651,27 @@ class SubagentTest(unittest.TestCase):
         doc, sha = of_subagent.committed_registry(reg)
         self.assertEqual(doc["subagent_harnesses"]["codex"]["kinds"], ["read"])
         self.assertEqual(len(sha), 40)
+        # a tag named main never wins over the branch; a working-tree link is never followed (of_review on PR 342)
+        g("tag", "main", "HEAD")
+        with open(reg, "w") as fh:
+            fh.write("subagent_harnesses:\n  codex: {kinds: [review], repos: [fw]}\n")
+        g("commit", "-qam", "review")
+        self.assertEqual(of_subagent.committed_registry(reg)[0]["subagent_harnesses"]["codex"]["kinds"], ["review"])
+        os.makedirs(os.path.join(org, "examples"))
+        with open(os.path.join(org, "examples", "positions.yaml"), "w") as fh:
+            fh.write("subagent_harnesses:\n  codex: {kinds: [patch], repos: ['*']}\n")
+        g("add", "examples/positions.yaml")
+        g("commit", "-qm", "example")
+        os.remove(reg)
+        os.symlink(os.path.join(org, "examples", "positions.yaml"), reg)
+        self.assertEqual(of_subagent.committed_registry(reg)[0]["subagent_harnesses"]["codex"]["kinds"], ["review"])
+        # an exclude keyed by the repository's name reaches a clone in another folder matched by origin
+        rx = of_subagent.excludes_for({"subagent_harnesses": {"excludes": {"fw": ["customers.csv"]}}}, "fw-review",
+                                      "github.com/example/fw")
+        self.assertTrue(of_subagent.excluded("customers.csv", rx))
+        for bad in ("nan", -1, 0, "x"):
+            with self.subTest(cap=bad), self.assertRaises(of_subagent.SubagentError):
+                self.go(registry={"subagent_harnesses": dict(REG["subagent_harnesses"], max_snapshot_mb=bad)})
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""

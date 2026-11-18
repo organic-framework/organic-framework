@@ -194,7 +194,7 @@ def allowance(registry, harness, kind, repo=None, origin=None):
 
 def repo_origin(checkout):
     """<host>/<owner>/<name> of the checkout's origin fetch URL (https, ssh or scp form, .git dropped), or None."""
-    r = subprocess.run(["git", "-C", checkout, "config", "--get", "remote.origin.url"], capture_output=True,
+    r = subprocess.run(["git", "-C", checkout, "remote", "get-url", "origin"], capture_output=True,
                        text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
     url = r.stdout.strip() if r.returncode == 0 else ""
     m = (re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?$", url, re.I)
@@ -211,17 +211,19 @@ def committed_registry(path):
     or master. Raises SubagentError when it cannot be read."""
     import yaml
     root = _git(os.path.dirname(os.path.abspath(path)), "rev-parse", "--show-toplevel").strip()
-    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+    # the fixed path, never a working-tree link followed to another file (of_review on PR 342)
+    rel = "registry/positions.yaml"
     branch = None
     r = subprocess.run(["git", "-C", root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], capture_output=True,
                        text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
     if r.returncode == 0 and r.stdout.strip():
         branch = r.stdout.strip().split("/", 1)[-1]
     for b in ([branch] if branch else []) + ["main", "master"]:
-        ok = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}"],
+        ok = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "--quiet", f"refs/heads/{b}^{{commit}}"],
                             capture_output=True, text=True, env=dict(os.environ, GIT_CONFIG_NOSYSTEM="1"))
         if ok.returncode == 0:
-            text = _git(root, "show", f"{b}:{rel}")
+            # the branch's verified commit, never a tag or another ref of that name (of_review on PR 342)
+            text = _git(root, "show", f"{ok.stdout.strip()}:{rel}")
             try:
                 return yaml.safe_load(text) or {}, ok.stdout.strip()
             except yaml.YAMLError as e:
@@ -311,7 +313,11 @@ def excludes_for(registry, repo, origin=None):
     if not isinstance(ex, dict):
         raise SubagentError("subagent_harnesses.excludes: a map of repository name to a list of path patterns")
     pats = list(DEFAULT_EXCLUDES)
+    # a key in either form: the folder's name, the origin (<host>/<owner>/<name>), or the origin's name, so a clone
+    # in another folder still gets the repository's excludes (of_review on PR 342)
     keys = ["*", repo] + [k for k in ex if origin and "/" in str(k) and fold(str(k).strip("/")) == fold(origin)]
+    if origin:
+        keys += [k for k in ex if "/" not in str(k) and fold(str(k)) == fold(origin.rsplit("/", 1)[-1])]
     for key in keys:
         v = ex.get(key) or []
         if not isinstance(v, list):
@@ -500,11 +506,9 @@ def training(conn, harness, org=None, docs=None):
         verified = None
     if verified is not None:
         try:
-            try:
-                # only that organization's own named card counts (a42864fc), read from its committed registry
-                return verified(harness, org=org, **({"docs": docs} if docs is not None else {}))
-            except TypeError:
-                return verified(harness)
+            # only that organization's own named card counts (a42864fc), read from its committed registry; no retry
+            # without org (of_secrets-review on PR 342)
+            return verified(harness, org=org, **({"docs": docs} if docs is not None else {}))
         except Exception:  # noqa: BLE001 - an unreadable reading is no reading: the gate stays shut
             return None
     if conn is None:
@@ -873,7 +877,7 @@ def muse_binary(bin_dir=MUSE_BIN_DIR):
     raise SubagentError("Muse is not installed (no muse-bin in ~/.local/bin)")
 
 
-def codex_filesystem(work_dir, write=None, reads=()):
+def codex_filesystem(work_dir, write=None, reads=(), hidden=()):
     """Codex's permission profile: the minimal platform files, nothing under the roots other sessions and the home
     folder live in (the minimal set reads /private/tmp: a canary beside a checkout there was read on 2026-11-18), and
     the material folder to read (the more specific path wins); for a patch run WRITE, the snapshot inside it, is
@@ -892,6 +896,8 @@ def codex_filesystem(work_dir, write=None, reads=()):
         fs[os.path.realpath(r)] = "read"
     if write:
         fs[os.path.realpath(write)] = "write"
+    for h in hidden:
+        fs[os.path.realpath(h)] = "none"
     return fs
 
 
@@ -917,6 +923,17 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         else:
             _link_login(login, os.path.join(codex_home, "auth.json"))
         exe = binary or codex_bin()
+        _private_dir(os.path.join(run_dir, "home"))
+        open(answer_file, "a").close()
+        # the run's own files, beside the material: none in Codex's profile, so its commands never read the prompt,
+        # the answer, the fresh home or CODEX_HOME with the login's copy (of_secrets-review on PR 342). Siblings, never
+        # a parent of the material: a parent set to none hides the material too (the host's selftest, 2026-11-18)
+        hidden = [os.path.join(run_dir, n) for n in sorted(os.listdir(run_dir))
+                  if os.path.join(run_dir, n) != os.path.realpath(work_dir) and n not in ("material", "empty")]
+        fs_map = codex_filesystem(work_dir, _snapshot_in(work_dir) if kind == "patch" else None,
+                                  codex_parts(exe) if sys.platform.startswith("linux") else (), hidden)
+        with open(os.path.join(run_dir, ".profile.json"), "w") as fh:
+            json.dump(fs_map, fh)
         argv = [exe, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                 "--skip-git-repo-check", "--json", "-o", answer_file, "-C", work_dir]
         for f in CODEX_OFF:
@@ -924,14 +941,13 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         argv += ["-c", "project_doc_max_bytes=0", "-c", 'approval_policy="never"', "-c", 'web_search="live"' if web else 'web_search="disabled"',
                  "-c", 'default_permissions="of_snapshot"',
                  "-c", "permissions.of_snapshot.filesystem={" + ", ".join(
-                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in codex_filesystem(work_dir, _snapshot_in(work_dir) if kind == "patch" else None,
-                                      codex_parts(exe) if sys.platform.startswith("linux") else ()).items()) + "}"]
+                     f"{json.dumps(k)}={json.dumps(v)}" for k, v in fs_map.items()) + "}"]
         if schema:
             argv += ["--output-schema", schema]
         argv += ["-m", model or DEFAULT_MODEL["codex"], "-c",
                  f'model_reasoning_effort="{DEFAULT_EFFORT["codex"]}"']
         argv.append("-")
-        fresh = _private_dir(os.path.join(run_dir, "home"))
+        fresh = os.path.join(run_dir, "home")
         # on Linux the program file alone, never its folder: a folder in the home would show the home and its login
         # (of_review on PR 342)
         reads = [CODEX_APP, login] if not sys.platform.startswith("linux") else [exe, login]
@@ -1114,6 +1130,13 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             # max_snapshot_mb, after excludes; absent means no limit (of_architect, docs/registry.md, 2026-11-18)
             cap = ((registry or {}).get("subagent_harnesses") or {}).get("max_snapshot_mb") if gates else None
             if cap is not None:
+                import math
+                try:
+                    cap = float(cap)
+                except (TypeError, ValueError):
+                    cap = float("nan")
+                if not math.isfinite(cap) or cap <= 0:
+                    raise SubagentError(f"subagent_harnesses.max_snapshot_mb {cap!r}: a positive number of MiB")
                 size = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(work_dir) for f in fs
                            if not os.path.islink(os.path.join(d, f)))
                 if size > float(cap) * 1024 * 1024:
@@ -1239,7 +1262,13 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
                                 + f". The diff is kept for reading only: {pfile}")
         if stop:
             log(f"the run was stopped: {stop} (record {record})")
-        return {"run": rid, "exit": end["exit"], "withheld": held, "patch_files": patch_files, "stopped": stop, "answer": got["answer"], "record": record, "usage": got["usage"],
+        try:
+            with open(os.path.join(run_dir, ".profile.json")) as fh:
+                codex_profile = json.load(fh)
+        except (OSError, ValueError):
+            codex_profile = None
+        return {"run": rid, "exit": end["exit"], "withheld": held, "patch_files": patch_files, "stopped": stop,
+                "codex_profile": codex_profile, "run_dir": run_dir, "answer": got["answer"], "record": record, "usage": got["usage"],
                 "model": end["model"], "tools": got["tools"], "unexpected_tools": odd}
     finally:
         if not keep_snapshot:
@@ -1327,6 +1356,13 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
             ("a canary in the home folder is not read", f"CANARY-HOME-{mark}" not in seen, home_canary),
             ("a canary beside the checkout is not read", f"CANARY-BESIDE-{mark}" not in seen, "untracked.txt"),
             ("a canary in the run's own folder is not read", f"CANARY-RUN-{mark}" not in seen, "run-canary.txt"),
+            # evidence, not the model's choice: each of these reads was tried and failed (of_secrets-review on PR 342)
+            # by the read rules, not the model's choice (of_secrets-review on PR 342): Codex's profile sets every file
+            # of the run's own folder but the material to none; and any read of them the model tried failed
+            ("the run's own files are none in Codex's profile", _run_files_hidden(r) if harness == "codex" else True,
+             "codex-home, prompt.md, answer.txt, home"),
+            ("a read of the run's canary or $CODEX_HOME/auth.json, when tried, failed",
+             _no_read_succeeded(stream, ("run-canary", "auth.json")), "one succeeded"),
             ("the snapshot holds no untracked file", not os.path.exists(os.path.join(snap, "untracked.txt")), snap),
             ("nothing is written", not os.path.exists(os.path.join(snap, "written.txt")), "written.txt"),
             ("the network is not reached", "Example Domain" not in text, "example.com"),
@@ -1430,6 +1466,46 @@ def _selftest_patch(harness, position, session, repo, mark, home_dir, log, popen
         except OSError:
             pass
     return out
+
+
+def _run_files_hidden(r):
+    """Does the run's recorded Codex profile set each of the run folder's own files to none?"""
+    prof = r.get("codex_profile") or {}
+    run_dir = r.get("run_dir") or ""
+    need = [os.path.realpath(os.path.join(run_dir, n)) for n in ("codex-home", "prompt.md", "answer.txt", "home")]
+    return bool(prof) and all(prof.get(n) == "none" for n in need)
+
+
+def _no_read_succeeded(stream, needles):
+    """Did no command naming a needle end with exit 0?"""
+    for line in stream.splitlines():
+        try:
+            x = json.loads(line)
+        except ValueError:
+            continue
+        it = x.get("item") or {} if isinstance(x, dict) else {}
+        if x.get("type") == "item.completed" and it.get("type") == "command_execution" and it.get("exit_code") == 0:
+            if any(n in str(it.get("command") or "") for n in needles):
+                return False
+    return True
+
+
+def _tried_and_failed(stream, needles):
+    """Did the run's stream show, for each needle, a command naming it that ended with a non-zero exit?"""
+    done = {n: False for n in needles}
+    for line in stream.splitlines():
+        try:
+            x = json.loads(line)
+        except ValueError:
+            continue
+        it = x.get("item") or {} if isinstance(x, dict) else {}
+        if x.get("type") != "item.completed" or it.get("type") != "command_execution":
+            continue
+        cmd = str(it.get("command") or "")
+        for n in needles:
+            if n in cmd and it.get("exit_code") not in (0, None):
+                done[n] = True
+    return all(done.values())
 
 
 def selftest_passed(conn, harness, kind="read"):
