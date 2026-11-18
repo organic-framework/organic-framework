@@ -103,6 +103,22 @@ class OnePanelTwoOrganizationsTest(unittest.TestCase):
         shown = [(of_asks_tui.card_ref(x), x["text"]) for x in groups["Waiting on you"]]
         self.assertEqual(sorted(shown), [("ACM-3", "Roll back the release?"), ("OF-7", "Ship the relay fix?")])
 
+    def test_the_same_question_in_two_organizations_stays_two_cards(self):
+        """of_review on PR 359: grouping by similar text merged two organizations' asks into one item, and the one
+        answer shipped under the first one's organization to its server alone."""
+        with tempfile.TemporaryDirectory() as root, Machine(root, "laptop") as m:
+            m.from_feed(ask_record(ASK_OF, "ofb", "of_server", "Approve the purchase order?", "OF-7"), "ofb", 1)
+            m.from_feed(ask_record(ASK_ACME, "acme", "acme_ops", "Approve the purchase order?", "ACM-3"), "acme", 1)
+            items = dict(of_asks_tui.load([], m.conn, from_log=True))["Waiting on you"]
+            self.assertEqual(sorted((of_asks_tui.card_ref(x), x["ids"]) for x in items),
+                             [("ACM-3", [ASK_ACME]), ("OF-7", [ASK_OF])])
+            acme = next(x for x in items if x["ids"] == [ASK_ACME])
+            ok, _ = of_asks_answer.answer(m.conn, acme, "yes", [], lambda name: None)
+            self.assertTrue(ok)
+            wire = m.wire()
+        self.assertEqual(list(wire), [ACME_URL])
+        self.assertEqual([json.loads(d["payload"])["ask_ids"] for d in wire[ACME_URL]], [[ASK_ACME]])
+
     def test_what_the_owner_does_on_a_card_ships_only_to_its_organizations_server(self):
         with tempfile.TemporaryDirectory() as root, Machine(root, "laptop") as m:
             m.from_feed(ask_record(ASK_OF, "ofb", "of_server", "Ship the relay fix?", "OF-7"), "ofb", 1)
