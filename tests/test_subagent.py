@@ -190,6 +190,9 @@ class SubagentTest(unittest.TestCase):
         self.assertTrue(rx("gateways/**").match("gateways/a/b"))
         self.assertTrue(rx("deploy/servers.yml").match("deploy/servers.yml"))
         self.assertFalse(rx("deploy/servers.yml").match("x/deploy/servers.yml"))
+        self.assertTrue(rx("design/drafts").match("design/drafts/notes.txt"))          # a folder named without '/'
+        self.assertTrue(rx("*.env").match("prod.env/inner.txt"))
+        self.assertFalse(rx("design/drafts").match("design/drafts-old/notes.txt"))
         self.assertFalse(rx("*.pem").match("a/pem.txt"))
         self.assertTrue(of_subagent.excluded("Secret\u017f/x.txt", [rx("secrets/")]))   # long s reads as s
         self.assertTrue(of_subagent.excluded("a\nb/secrets/x", [rx("secrets/")]))         # a newline in a name
@@ -462,6 +465,26 @@ class SubagentTest(unittest.TestCase):
         with mock.patch.object(g, "check", lambda d, out=None: got.setdefault("files", sorted(os.listdir(d))) and 0):
             self.assertEqual(g.dry_run(self.repo, "HEAD"), 0)
         self.assertEqual(got["files"], ["a.py"])
+
+    def test_a_folder_excluded_without_a_slash_leaves_the_diff_too(self):
+        os.makedirs(os.path.join(self.repo, "design", "drafts"))
+        note = os.path.join(self.repo, "design", "drafts", "notes.txt")
+        with open(note, "w") as fh:
+            fh.write("v1\n")
+        self.git("add", "design/drafts/notes.txt")
+        self.git("commit", "-qm", "v1")
+        with open(note, "w") as fh:
+            fh.write("v2 secret plan\n")
+        with open(os.path.join(self.repo, "a.py"), "a") as fh:
+            fh.write("print(7)\n")
+        self.git("commit", "-qam", "v2")
+        reg = {"subagent_harnesses": dict(REG["subagent_harnesses"], excludes={"*": ["design/drafts"]})}
+        _, call = self.go(diff="HEAD~1..HEAD", registry=reg)
+        diff = call["diffs"]["fw/.of-review.diff"]
+        self.assertNotIn("secret plan", diff)
+        self.assertNotIn("design/drafts", diff)
+        self.assertIn("+print(7)", diff)
+        self.assertFalse(any(f.startswith("fw/design/drafts") for f in call["files"]))
 
     def publish(self):
         """HEAD on the branch of a GitHub remote, as a pushed commit of a public repository is."""

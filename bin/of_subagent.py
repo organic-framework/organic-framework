@@ -229,7 +229,10 @@ def _exclude_rx(pattern):
             out, i = out + re.escape(p[i]), i + 1
     lead = "" if "/" in p else "(?:.*/)?"
     # any case ('Secrets/', 'PROD.ENV'); re.S: a newline in a name is a character like any other, never an escape
-    return re.compile("^" + lead + out + ("(?:/.*)?$" if folder else "$"), re.I | re.S)
+    # every pattern covers what lies under a folder it names, as .gitignore does: an anchored 'design/drafts' removed
+    # the folder from the snapshot while its files' hunks still went out in the diff (of_review on PR 334)
+    del folder
+    return re.compile("^" + lead + out + "(?:/.*)?$", re.I | re.S)
 
 
 def excludes_for(registry, repo):
