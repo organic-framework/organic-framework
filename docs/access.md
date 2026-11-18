@@ -1,6 +1,6 @@
 # Access through keepers: the map, a request, approval across machines, the weekly review
 
-Status: **design**, 2026-11-19, by `of_architect`, with `of_server` for the guard and the keepers. Basis: the founder's yes, 2026-11-18 20:13Z, prompt `01a1f04a-a868` in `of_conductor`'s session ("okay, let's try"), to `of_conductor`'s four-point plan for growing an organization's structure and access once its agents live on an agent host behind keepers (message `01a1f04d-13d3`).
+Status: **accepted** by the founder, 2026-11-18 21:01Z, prompt `01a1f077-09b7` in `of_conductor`'s session ("ok, access through keepers: approve"); designed 2026-11-19 by `of_architect`, with `of_server` for the guard and the keepers. Basis: the founder's yes, 2026-11-18 20:13Z, prompt `01a1f04a-a868` in `of_conductor`'s session ("okay, let's try"), to `of_conductor`'s four-point plan for growing an organization's structure and access once its agents live on an agent host behind keepers (message `01a1f04d-13d3`).
 
 ## 1. Keepers
 
