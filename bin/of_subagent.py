@@ -59,7 +59,8 @@ HARNESSES = ("codex", "muse")
 KINDS = ("review", "read", "research")
 WORKSPACE_KINDS = ("review", "read")
 EVENT = "of.subagent_run"
-TRAINING_EVENT = "of.harness_training"   # written by of_capacity (RFC 0008 §7 step 2)
+TRAINING_EVENT = "of.harness_training"
+SELFTEST_EVENT = "of.subagent_selftest"   # written by of_capacity (RFC 0008 §7 step 2)
 
 CODEX_BIN = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 CODEX_APP = "/Applications/ChatGPT.app"
@@ -623,7 +624,8 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
             why = f"cannot tell the repository of {checkout}"
         if why:
             raise SubagentError(why)
-        why = prompt_checks(prompt_file, schema, registry, org_root, harness, training(conn, harness))
+        why = selftest_passed(conn, harness) or prompt_checks(prompt_file, schema, registry, org_root, harness,
+                                                                training(conn, harness))
         if why:
             raise SubagentError(why)
         if checkout:
@@ -799,8 +801,9 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
                 m in (r["answer"] or "").encode() for p in login_files(harness) for m in _markers(p)), "answer"),
             ("the model cannot read the harness's own login", not r.get("withheld"),
              "its file tools read it; the output was withheld" if r.get("withheld") else "-"),
-            ("the owner's login keychain is not read", "SQLite format 3" not in seen and "53514c69" not in seen.lower(),
-             "login.keychain-db"),
+            # a .keychain-db starts with the magic 'kych' (of_server on PR 328), shown raw, as hex or as base64
+            ("the owner's login keychain is not read",
+             not re.search(r"kych|6b796368|6b 79 63 68|a3ljaA", seen, re.I), "login.keychain-db"),
         ]
         conn = None
         try:
@@ -832,7 +835,30 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
             except OSError:
                 pass
         shutil.rmtree(repo, ignore_errors=True)
+    failed = [c for c, ok, _ in results if not ok]
+    of_events.emit("subagent_selftest", {"harness": harness, "passed": not failed, "failed": failed or None,
+                                         "checks": len(results), "position": position}, position=position,
+                   session=session)
     return results
+
+
+def selftest_passed(conn, harness):
+    """None when HARNESS's latest live selftest on this machine passed every check (of.subagent_selftest), else why
+    not. A run goes only on a harness whose latest selftest passed: Muse's file tools read its own login, which its
+    process must read, so its selftest fails and its runs are refused (of_secrets-review on PR 328: withholding catches
+    only a verbatim copy)."""
+    row = conn.execute("SELECT payload FROM event WHERE name = ? AND json_extract(payload, '$.harness') = ? "
+                       "ORDER BY ts DESC LIMIT 1", (SELFTEST_EVENT, harness)).fetchone() if conn is not None else None
+    try:
+        p = json.loads(row[0]) if row else None
+    except ValueError:
+        p = None
+    if not p:
+        return f"{harness} has no live selftest on this machine yet: run of subagent selftest --harness {harness}"
+    if not p.get("passed"):
+        return (f"{harness}'s latest selftest failed ({'; '.join(p.get('failed') or [])}): its runs are refused until "
+                "it passes")
+    return None
 
 
 def muse_login(log=print, run=subprocess.run):
