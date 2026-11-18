@@ -577,6 +577,36 @@ class OwnerCommandTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(d, "orgs.yaml")))     # no organization is made
 
 
+class InitServerPortTest(unittest.TestCase):
+    """of init --server-port (of_lab's clean-VM walkthrough of 2026-11-19, finding 1): a second contour on one machine
+    gets its own server port, written to server.yaml, ship.yaml and its orgs.yaml entry."""
+
+    def test_one_key_set_the_others_kept(self):
+        import yaml
+        sys_path = os.path.join(HERE, "..", "bin")
+        __import__("sys").path.insert(0, sys_path)
+        import of_init
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "server.yaml")
+            with open(p, "w") as fh:
+                fh.write("plugins:\n  storage: sqlite\n")
+            of_init.set_config_key(p, "port", 18300)
+            with open(p) as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc, {"plugins": {"storage": "sqlite"}, "port": 18300})
+            self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o600")
+            q = os.path.join(d, "ship.yaml")
+            of_init.set_config_key(q, "server_url", "http://127.0.0.1:18300")
+            with open(q) as fh:
+                self.assertEqual(yaml.safe_load(fh), {"server_url": "http://127.0.0.1:18300"})
+
+    def test_a_port_out_of_range_is_refused(self):
+        import of_init
+        for bad in (80, 70000):
+            with self.subTest(port=bad), self.assertRaises(ValueError):
+                of_init.init("acme", server_port=bad, out=lambda *a: None)
+
+
 if __name__ == "__main__":
     unittest.main()
 
