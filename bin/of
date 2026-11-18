@@ -2805,10 +2805,11 @@ def _panel_panes(v, panes_now, dry_run, say, anchor=None, start=True):
             if anchor:
                 cmd = ["pane", "split", anchor, "--direction", "right", "--ratio", of_views.split_ratio(v),
                        "--cwd", home, "--no-focus"]
-            else:
+            else:  # tabs by their label without an ask marker, as view_apply finds the view's tab (of_review, PR 362)
+                tabs = [dict(t, label=base_label(t.get("label"))) for t in herdr_json("tab", "list")["tabs"]]
                 cmd, follow = of_capacity.place_command(
                     v["workspace"], v.get("tab") or v["name"], home, herdr_json("workspace", "list")["workspaces"],
-                    herdr_json("tab", "list")["tabs"], herdr_json("pane", "list")["panes"])
+                    tabs, herdr_json("pane", "list")["panes"])
             if dry_run:
                 say(f"  panel {name}: would start it: herdr {' '.join(cmd)}")
                 continue
