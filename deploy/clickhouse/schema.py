@@ -38,17 +38,22 @@ TABLES = {
     raw String CODEC(ZSTD(9))
 ) ENGINE = ReplacingMergeTree PARTITION BY toYYYYMM(ts) ORDER BY (session_id, record_uuid)""",
     "hook_record": """(
-    tenant_id LowCardinality(String), host_id LowCardinality(String), local_id UInt64,
+    tenant_id LowCardinality(String), org_id LowCardinality(String) DEFAULT '', host_id LowCardinality(String),
+    local_id UInt64,
     received_at DateTime64(3, 'UTC'), hook_event LowCardinality(String), session_id String,
     sha256 FixedString(64), raw String CODEC(ZSTD(9))
 ) ENGINE = ReplacingMergeTree ORDER BY (host_id, local_id)""",
     "runtime_record": """(
-    tenant_id LowCardinality(String), host_id LowCardinality(String), received_at DateTime64(3, 'UTC'),
+    tenant_id LowCardinality(String), org_id LowCardinality(String) DEFAULT '', host_id LowCardinality(String),
+    received_at DateTime64(3, 'UTC'),
     runtime LowCardinality(String), type LowCardinality(String), pane_id String,
     raw String CODEC(ZSTD(9))
 ) ENGINE = ReplacingMergeTree PARTITION BY toYYYYMM(received_at) ORDER BY (host_id, received_at, type, pane_id)""",
 }
 RAW = ("transcript_record", "hook_record", "runtime_record")
+# Tables that carried no organization before 2026-11-19: their vault rows of several organizations could not be told
+# apart when one organization's records moved to its own server (of_server; organic-framework-build's server move plan)
+ADDED_ORG = ("hook_record", "runtime_record")
 # The columns a redaction's condition reads (natural key, host, the event name it never deletes).
 REDACT_COLUMNS = {"event": ("event_id", "host_id", "name"), "transcript_record": ("session_id", "record_uuid", "host_id"),
                   "hook_record": ("host_id", "local_id"), "runtime_record": ("host_id", "received_at", "type", "pane_id")}
@@ -99,6 +104,9 @@ def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=Non
         out.append(f"CREATE DATABASE IF NOT EXISTS {db}{on};")
         for t, body in TABLES.items():
             out.append(f"CREATE TABLE IF NOT EXISTS {db}.{t}{on}\n{body};")
+            if t in ADDED_ORG:  # a table made before the column: the vault mixes organizations, so each row names one
+                out.append(f"ALTER TABLE {db}.{t}{on} ADD COLUMN IF NOT EXISTS org_id LowCardinality(String) "
+                           "DEFAULT '' AFTER tenant_id;")
         out.append(user_sql(f"{db}_ingest", password_dir, on, read))
         out.append(f"GRANT{on} INSERT ON {db}.* TO {db}_ingest;")
         # Redaction (docs/server.md): delete only, on the four tables, reading only the columns a
