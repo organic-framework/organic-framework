@@ -23,7 +23,7 @@ The framework defines the schema. Every organization that uses Organic Framework
       short: ac                     # optional: the prefix of unit workspaces (ac·shop); default: workspace
       database: of_acme
       paths: [~/acme]
-      hold: true                    # optional: `of apply` leaves this organization's panes alone
+      hold: true                    # optional: `of apply` leaves this organization's panes alone (`of org set acme hold on|off`)
       drain_from: local             # optional, after a cutover to the organization's own server: local | <url> | [list]
       server_access: ~/.config/acme/of-server/access.json  # optional: the machine's Cloudflare Access service token
       branches: {storefront: develop}  # optional: a repository's default branch, when OF cannot tell it

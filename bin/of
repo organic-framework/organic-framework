@@ -2626,6 +2626,35 @@ def cmd_owner(args):
     return 0
 
 
+def cmd_org(args):
+    """`of org show [<org>]` and `of org set <org> hold on|off`: an organization's settings in this machine's orgs.yaml,
+    which G33 (docs/guard.md) makes the owner's file: agents set hold: through this command, never with an edit of the
+    file (of_server's replay of 2026-11-18, through of_release msg 01a1f0f5-3d47)."""
+    import of_events
+    import of_init
+    path = of_events.config_path("orgs.yaml")
+    if not os.path.exists(path):
+        raise OfError(f"{path}: no organizations on this machine (of init <org>)")
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    entries = [o for o in (doc.get("orgs") or []) if isinstance(o, dict)]
+    if args.action == "show":
+        shown = [o for o in entries if not args.org or o.get("name") == args.org]
+        if args.org and not shown:
+            raise OfError(f"no organization {args.org!r} in {path}")
+        for o in shown:
+            print(f"{o.get('name')}: hold {'on' if o.get('hold') else 'off'}")
+        return 0
+    if not args.org or args.key not in of_init.ORG_KEYS or args.value not in ("on", "off"):
+        raise OfError("of org set <org> hold on|off")
+    try:
+        of_init.set_org_key(path, args.org, args.key, True if args.value == "on" else None)
+    except ValueError as e:
+        raise OfError(str(e))
+    print(f"{args.org}: hold {args.value}")
+    return 0
+
+
 def cmd_subagent(args):
     """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
     import of_store
@@ -7491,6 +7520,13 @@ def main(argv=None):
                     help="also run the critical-deny guard before risky tools (PreToolUse; enforced)")
     hk.set_defaults(fn=lambda a: __import__("of_init").hooks(a.action, a.config_dir, a.yes, a.dry_run,
                                                              deny_secrets=a.deny_secrets, guard=a.guard))
+    og = sub.add_parser("org", help="an organization's settings in this machine's orgs.yaml: show [<org>] | set <org> "
+                        "hold on|off (`of apply` and the desk leave a held organization's panes alone)")
+    og.add_argument("action", choices=["show", "set"])
+    og.add_argument("org", nargs="?")
+    og.add_argument("key", nargs="?", choices=["hold"])
+    og.add_argument("value", nargs="?", choices=["on", "off"])
+    og.set_defaults(fn=cmd_org)
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
                         "language <code or name> | set surface herdr|remote (~/.config/of/owner.yaml)")
     ow.add_argument("action", choices=["show", "set"])
