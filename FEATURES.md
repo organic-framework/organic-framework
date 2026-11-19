@@ -39,9 +39,9 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | The onboarding package: eight roles and eight steps, each with its source; charter templates | [`bench/onboarding/`](bench/onboarding/) | Early | `lab-onboarding-v0` |
 | Starting a position's agent in its place, on the account with the most headroom, with its brief | `of spawn <position>` | Works | `test_spawn`; 31 agents started on 5 days |
 | Bringing in past sessions | `of import` | Works | `test_derive`, `test_github` |
-| Installing through the person's own coding agent: the questions to ask, each step's check, the person's steps said in words | [`INSTALL.md`](INSTALL.md) | Early | the README quickstart, the same install by hand, passes on a clean lab VM (6 of 6); no lab run yet of an agent following `INSTALL.md` |
+| Installing through the person's own coding agent: the questions to ask, each step's check, the person's steps said in words | [`INSTALL.md`](INSTALL.md) | Early | an agent following `README.md`, `INSTALL.md` and the guides alone went from a clean lab VM to a running conductor with its questions panel (2026-11-18); `lab-quickstart-v0` runs the README quickstart from an archive without `INSTALL.md`, `bench/` or `herdr-plugin/` (6 of 6) |
 | Setup choices: the head's language, the agents' model and effort, the relay and the listener as services, OF's herdr plugin, Claude accounts and the capacity keeper, plugins; `--refresh` after an update | `of init --language`, `--model`, `--effort`, `--capacity`, `--plugin`, `--refresh` | Early | `test_of` |
-| A person's language on every screen and card, from one catalogue | `language` in `~/.config/of/owner.yaml`, `of owner set`; `bin/locale/` | Early | `test_locale`; Russian on one machine |
+| A person's language on screens, cards and messages, from one catalogue; a missing entry, and some screens, still show English | `language` in `~/.config/of/owner.yaml`, `of owner set`; `bin/locale/` | Early | `test_locale`; Russian on one machine |
 
 ## The conductor: one window per person
 
@@ -81,7 +81,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Structure changes as diffs with the owner's approval of the exact text | `of diff check/propose/apply` | Works | `test_diff`; 37 diffs applied on 6 days |
 | Who should do a task: a model reads every mandate | `of delegate`, `of fit replay` | Early | `test_fit`, `lab-fit-v0` |
 | The questions screen: the queue and the card side by side, in streams, with a search, a reply under the card, snooze and undo; `prefix+a` opens it | `of asks --watch` | Early | `test_asks_inbox`; `asks-screen-v0` in a lab herdr |
-| The questions panel, always in sight, with a button that opens the screen; the more room, the more it shows; pinned by `of init` beside the conductor, or by a command on a machine set up before | `of asks --panel`, `of view add --panel questions` | Early | `test_asks_inbox`, `test_owner_panel`; set up from the documents alone on a clean lab VM (2026-11-18) |
+| The questions panel, always in sight, with a button that opens the screen; the more room, the more it shows; pinned by `of init` beside the conductor, or by `of view add` on a machine set up before | `of asks --panel`, `of view add <name> --workspace <w> --tab <t> --panel questions` | Early | `test_asks_inbox`, `test_owner_panel`; set up from the documents alone on a clean lab VM (2026-11-18) |
 | Card IDs to cite in chat and commands; an open card corrected in place, an answer kept to the version shown | `of asks refs`, `card_prefix`, `of ask --amend` | Early | `test_card_ids`, `test_ask_amend` |
 | A position's own queue of questions routed to it; a copy to the owner when a due date comes near | `of asks --to-me`, `of ask --to`, `reporting.escalate_when` | Early | `test_asks_answer`, `test_pulse` |
 | Moving a parked position's queued messages to another position, or expiring one | `of inbox move`, `of inbox drop`, `of send --to-parked` | Early | `test_server_relay`, `test_send_parked` |
@@ -110,7 +110,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Each organization in its own OS user on an agent host, with a checked release and the owner's admin access kept | `deploy/host/setup.py`, `deploy/host/plane.py`, `deploy/host/contours.py` | Early | `test_host_setup`, `test_host_plane`, `test_host_contours` |
 | A second organization's server on its own port; enrollment over TLS with the certificate pinned, through a forwarded socket; a token per machine for a server behind an access gateway | `of init --server-port`, `of server tls-init`, `of enroll --pin`, `server_access` in `orgs.yaml` | Early | `test_server_tls`, `test_host_forward`, `test_enroll`, `test_client_access` |
 | The cluster's network policies and a check that the cluster enforces them | `networkPolicy` in the chart; `deploy/netcheck.py` | Early | `test_deploy_netcheck` |
-| Health: the server's and the relay's checks with their readings and limits, the positions that answer for them, and an owner-only page | `of health`, `GET /v1/health/checks`, `of studio --view health` | Early | `test_health`, `test_server_health` |
+| Health: the server's and the relay's checks with their readings and limits, the positions that answer for them, and a page for the machine's owner | `of health`, `GET /v1/health/checks`, `of studio --view health` | Early | `test_health`, `test_server_health` |
 
 ## Guard and secrets
 
@@ -122,7 +122,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | A broker that serves a credential only to the position's holder, at the moment of use (1Password) | `of secret run`; [`docs/agent-secrets.md`](docs/agent-secrets.md) | Early (built 2026-11-11) | `test_secrets_broker`, `lab-secrets-broker-v0` |
 | Where secrets are kept is the organization's choice, through the `secret_stores` plugins: 1Password, the macOS keychain, an env file for the lab | `plugins:` in the registry; [`docs/plugins.md`](docs/plugins.md) | Early | `test_secret_stores`, `test_family` |
 | Break-glass grants, rotation and hand-over of secrets | [`docs/agent-secrets.md`](docs/agent-secrets.md) §5.4–5.6 | Designed | — |
-| Grants signed through the owner's own SSH agent, the old key retired | `of grant rekey` | Early | `test_grant_rekey` |
+| Grants re-signed through the owner's own SSH agent, then the old key file deleted where it can be | `of grant rekey` | Early | `test_grant_rekey` |
 | Who may use each credential: requests, approvals with the owner's passkey, revocations and a weekly review | `of access map/request/grant/revoke`; [`docs/access.md`](docs/access.md) | Early | `test_access`, `test_keeper` |
 | Signed deny rules for Kubernetes, SSH routes and single CLI calls, with a replay of a proposed rule | `scope.kubectl`, `scope.ssh`, `scope.cli` in deny grants | Early | `test_guard_grants`, `test_guard_commands`, `test_guard_replay` |
 | Protected code: OF's own installed code kept from agents' writes, and a checked fast-forward of a protected worktree | `protected_code`, `of protected ff` | Early | `test_guard_protection`, `test_protected` |
