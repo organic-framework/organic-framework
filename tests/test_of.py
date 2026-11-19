@@ -635,6 +635,100 @@ class OrgCommandTest(unittest.TestCase):
                 self.assertEqual(fh.read(), "orgs:\n- name: one\n  hold: true\n  path: ~/one\n")
 
 
+class OrgSetReviewTest(unittest.TestCase):
+    """of_review on organic-framework PR 367: links, OF_ORGS, a type-strict check, notes, a last line, path-named
+    entries, extra words, and --ask read only on a wait on the founder."""
+
+    def setUp(self):
+        __import__("sys").path.insert(0, os.path.join(HERE, "..", "bin"))
+        self.d = tempfile.TemporaryDirectory()
+        self.addCleanup(self.d.cleanup)
+
+    def write(self, name, text):
+        p = os.path.join(self.d.name, name)
+        with open(p, "w") as fh:
+            fh.write(text)
+        return p
+
+    def read(self, p):
+        with open(p) as fh:
+            return fh.read()
+
+    def test_a_link_stays_a_link_and_no_fixed_temporary_name(self):
+        import of_init
+        target = self.write("real.yaml", "orgs:\n  - name: one\n    path: ~/one\n")
+        link = os.path.join(self.d.name, "orgs.yaml")
+        os.symlink(target, link)
+        elsewhere = self.write("elsewhere.yaml", "x: 1\n")
+        os.symlink(elsewhere, link + ".of-tmp")                    # a planted link at the old fixed name
+        of_init.set_org_key(link, "one", "hold", True)
+        self.assertTrue(os.path.islink(link))
+        self.assertIn("hold: true", self.read(target))
+        self.assertEqual(self.read(elsewhere), "x: 1\n")
+        self.assertEqual(sorted(os.listdir(self.d.name)), ["elsewhere.yaml", "orgs.yaml", "orgs.yaml.of-tmp", "real.yaml"])
+
+    def test_a_nested_key_or_another_type_is_never_touched(self):
+        import of_init
+        text = ("orgs:\n  -   # first organization\n    name: one\n    metadata:\n      name: two\n      hold: 1\n"
+                "  - name: two\n    hold: true\n")
+        p = self.write("orgs.yaml", text)
+        of_init.set_org_key(p, "two", "hold", True)
+        self.assertEqual(self.read(p), text)                        # already on: nothing changes
+        of_init.set_org_key(p, "one", "hold", True)
+        import yaml
+        doc = yaml.safe_load(self.read(p))
+        self.assertIs(doc["orgs"][0]["hold"], True)
+        self.assertIs(type(doc["orgs"][0]["metadata"]["hold"]), int)
+        self.assertNotEqual(of_init._same({"a": 1}, {"a": True}), True)
+
+    def test_a_note_on_the_line_stays_and_a_missing_last_newline(self):
+        import of_init
+        p = self.write("orgs.yaml", "orgs:\n  - name: one\n    hold: false  # resume Friday\n")
+        of_init.set_org_key(p, "one", "hold", True)
+        self.assertEqual(self.read(p), "orgs:\n  - name: one\n    hold: true  # resume Friday\n")
+        of_init.set_org_key(p, "one", "hold", None)
+        self.assertEqual(self.read(p), "orgs:\n  - name: one\n    hold: false  # resume Friday\n")
+        p = self.write("orgs.yaml", "orgs:\n  - name: one")
+        of_init.set_org_key(p, "one", "hold", True)
+        self.assertEqual(self.read(p), "orgs:\n  - name: one\n    hold: true\n")
+        p = self.write("orgs.yaml", "orgs:\n  - path: ~/src/three\n")   # named by its folder, as the loader names it
+        of_init.set_org_key(p, "three", "hold", True)
+        self.assertEqual(self.read(p), "orgs:\n  - path: ~/src/three\n    hold: true\n")
+        p = self.write("orgs.yaml", "orgs: [\n")
+        with self.assertRaises(ValueError):
+            of_init.set_org_key(p, "one", "hold", True)
+
+    def test_the_command_edits_what_of_apply_reads(self):
+        p = self.write("elsewhere-orgs.yaml", "orgs:\n  - name: one\n    path: ~/one\n")
+        env = dict(os.environ, OF_CONFIG_DIR=self.d.name, OF_ORGS=p)
+        of = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "org"]
+        run = lambda *a: subprocess.run(of + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+        self.assertEqual(run("set", "one", "hold", "on").returncode, 0)
+        self.assertIn("hold: true", self.read(p))
+        self.assertNotEqual(run("show", "one", "hold", "off").returncode, 0)   # show takes no setting
+        self.assertIn("one: hold on", run("show").stdout)
+
+    def test_an_unknown_card_on_an_external_wait_is_not_read(self):
+        import argparse
+        import importlib.machinery
+        import importlib.util
+        from unittest import mock
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        seen = []
+        stop = RuntimeError("stop after the refs")
+        with mock.patch.object(of, "_ask_refs", lambda a, *f: seen.append(f)), \
+                mock.patch.object(of, "_load_quiet", side_effect=stop):
+            for state, on in (("waiting", "external:vendor"), ("waiting", "founder"), ("working", None)):
+                ns = argparse.Namespace(state=state, on=on, wait_ask="AS-9", answered=None, done_task=None,
+                                        reopen_task=None)
+                with self.assertRaises(RuntimeError):
+                    of.cmd_status(ns)
+        self.assertEqual(["wait_ask" in f for f in seen], [False, True, False])
+
+
 class InitServerPortTest(unittest.TestCase):
     """of init --server-port (of_lab's clean-VM walkthrough of 2026-11-19, finding 1): a second contour on one machine
     gets its own server port, written to server.yaml, ship.yaml and its orgs.yaml entry."""

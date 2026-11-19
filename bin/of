@@ -2630,20 +2630,21 @@ def cmd_org(args):
     """`of org show [<org>]` and `of org set <org> hold on|off`: an organization's settings in this machine's orgs.yaml,
     which G33 (docs/guard.md) makes the owner's file: agents set hold: through this command, never with an edit of the
     file (of_server's replay of 2026-11-18, through of_release msg 01a1f0f5-3d47)."""
-    import of_events
     import of_init
-    path = of_events.config_path("orgs.yaml")
+    path = ORGS_FILE  # what of apply and the registry loader read (OF_ORGS honoured; of_review on PR 367)
     if not os.path.exists(path):
         raise OfError(f"{path}: no organizations on this machine (of init <org>)")
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
     entries = [o for o in (doc.get("orgs") or []) if isinstance(o, dict)]
     if args.action == "show":
-        shown = [o for o in entries if not args.org or o.get("name") == args.org]
+        if args.key or args.value:
+            raise OfError("of org show [<org>]")
+        shown = [o for o in entries if not args.org or of_init.org_entry_name(o) == args.org]
         if args.org and not shown:
             raise OfError(f"no organization {args.org!r} in {path}")
         for o in shown:
-            print(f"{o.get('name')}: hold {'on' if o.get('hold') else 'off'}")
+            print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}")
         return 0
     if not args.org or args.key not in of_init.ORG_KEYS or args.value not in ("on", "off"):
         raise OfError("of org set <org> hold on|off")
@@ -5701,7 +5702,8 @@ STATUS_ASK_FIELDS = ("answered", "done_task", "reopen_task", "wait_ask")
 
 def cmd_status(args):
     """Declare this position's state: working | waiting --on founder|<position> | idle | done."""
-    _ask_refs(args, *STATUS_ASK_FIELDS)
+    founder_wait = args.state == "waiting" and args.on in ("founder", "owner")  # --ask is read only then (PR 367)
+    _ask_refs(args, *(f for f in STATUS_ASK_FIELDS if f != "wait_ask" or founder_wait))
     import of_events
     positions = _load_quiet()
     me = _me(positions, args.sender)
