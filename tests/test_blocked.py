@@ -163,6 +163,53 @@ class RestingPositionTest(unittest.TestCase):
         self.assertIn((None, None), filed)                     # the parked position's open ask closes
 
 
+
+def _offer(keep_first, cursor_on_keep):
+    rows = ["Autocompact at ‹ 400k › tokens", "Keep 1m tokens"]
+    if keep_first:
+        rows.reverse()
+    marked = [("❯ " if (r.startswith("Keep") == cursor_on_keep) else "  ") + r for r in rows]
+    return ["", "  We recommend compacting earlier", "", "  Each message re-sends the whole conversation.", "",
+            "  Want to autocompact at 400k tokens instead?", "", *("  " + m for m in marked), "",
+            "  ↑/↓ choose · ←/→ change size · enter confirm · esc not now"]
+
+
+class KeepContextTest(unittest.TestCase):
+    """Claude Code's offer of a smaller window is answered Keep, the cursor checked before Enter (of_capacity, msg
+    01a1f61f-a7cc; the founder, 2026-11-18, prompt 01a1eeff-880b: an agent's context is never cut)."""
+
+    def run_answer(self, screens):
+        pressed, seen = [], list(screens)
+
+        def read():
+            return seen.pop(0) if len(seen) > 1 else seen[0]
+        ok, why = of_blocked.answer_keep(read, pressed.append, sleep=lambda s: None)
+        return ok, why, pressed
+
+    def test_either_order_reaches_keep_before_enter(self):
+        for keep_first in (False, True):
+            ok, why, pressed = self.run_answer([_offer(keep_first, False), _offer(keep_first, True), ["❯ "]])
+            self.assertTrue(ok, why)
+            self.assertEqual(pressed, ["Up" if keep_first else "Down", "Enter"])
+        ok, _, pressed = self.run_answer([_offer(False, True), ["❯ "]])   # already on Keep
+        self.assertEqual((ok, pressed), (True, ["Enter"]))
+
+    def test_no_enter_unless_the_cursor_is_on_keep(self):
+        ok, why, pressed = self.run_answer([_offer(False, False)])        # the cursor does not move
+        self.assertFalse(ok)
+        self.assertNotIn("Enter", pressed)
+        self.assertEqual(pressed[-1], "esc")
+        ok, _, pressed = self.run_answer([_offer(False, True), _offer(False, True)])   # still open after Enter
+        self.assertEqual((ok, pressed), (False, ["Enter", "esc"]))
+
+    def test_only_the_keep_form_is_answered(self):
+        older = ["  We recommend compacting earlier", "", "  ❯ Compact now", "    Not now"]
+        self.assertIsNone(of_blocked.compact_rows(older))
+        ok, _, pressed = self.run_answer([older])
+        self.assertEqual((ok, pressed), (False, []))
+        self.assertIsNone(of_blocked.compact_rows(["❯ Keep 1m tokens", "  Autocompact at 400k"]))  # no dialog title
+        self.assertEqual(of_blocked.detect("\n".join(_offer(False, False)))["type"], "compact")
+
 if __name__ == "__main__":
     unittest.main()
 

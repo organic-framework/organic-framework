@@ -731,6 +731,9 @@ class BlockedProcessor(Processor):
             # 01a1f0a9-d642: such stops of a user organization's parked positions reached the founder as a card)
             if d and d["type"] in ("limit", "login") and position in self.resting_names():
                 d = None
+            if d and d["type"] == "compact" and self.keep_context(pane, sid, position, d, scr.stdout):
+                changed = True
+                continue  # answered by the owner's standing rule; an older card for it closes below (dialog gone)
             have = opened.get(key) or opened.get(pane)
             if have and d and d["fingerprint"] == have[1]:
                 kept.add(have[0])
@@ -757,6 +760,36 @@ class BlockedProcessor(Processor):
                 changed = True
         return changed
 
+
+    @staticmethod
+    def keep_context(pane, sid, position, d, screen):
+        """Claude Code's offer of a smaller auto-compact window, answered Keep in this machine's own pane (of_blocked.
+        answer_keep), recorded as a blocked ask answered by the owner's standing rule; False leaves it to his card."""
+        import subprocess
+        import of_blocked
+        if of_blocked.compact_rows(of_blocked.tail(screen, 40)) is None:
+            return False
+
+        def read():
+            r = subprocess.run(["herdr", "pane", "read", pane, "--source", "visible", "--lines", "40"],
+                               capture_output=True, text=True, timeout=10)
+            return of_blocked.tail(r.stdout if r.returncode == 0 else "", 40)
+
+        def press(k):
+            subprocess.run(["herdr", "pane", "send-keys", pane, k], capture_output=True, text=True, timeout=10)
+        ok, why = of_blocked.answer_keep(read, press)
+        if not ok:
+            print(f"of listen: compaction offer in {pane}: {why}; the owner's card is filed", flush=True)
+            return False
+        eid = of_events.emit("agent_question", {
+            "detected_by": "blocked", "blocked_type": "compact", "pane": pane, "session": sid,
+            "fingerprint": d["fingerprint"], "snippet": d["snippet"], "options": d["options"], "to": "founder",
+            "since": of_events.now_iso(), "questions": [{"question": of_blocked.question(d, position), "options": []}]},
+            position=position, session=sid)
+        of_events.emit("agent_question_answered", {"ask_id": eid, "ask_ids": [eid], "via": "rule", "by": "of",
+                                                   "answer": "Keep (the current window)", "keys": ["Enter"],
+                                                   "basis": of_blocked.KEEP_BASIS}, position=position, session=sid)
+        return True
 
     _resting = (None, frozenset())
 

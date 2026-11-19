@@ -19,6 +19,7 @@ dialog is gone from the screen.
 
 import hashlib
 import re
+import time
 
 SNIPPET_LINES = 15
 TYPES = ("trust", "mcp_auth", "press_enter", "limit", "login", "exit", "compact", "permission", "menu")
@@ -144,6 +145,55 @@ def detect(screen):
         folder = m.group(1) if m else None
     return {"type": kind, "options": opts, "fingerprint": fingerprint(lines), "snippet": mask("\n".join(lines)),
             "folder": folder, "to": TO.get(kind, "founder")}
+
+
+# The offer's newer form (Claude Code 2.1.3xx): "Autocompact at ‹ 400k › tokens" and "Keep 1m tokens", in either order
+# (Claude Code shuffles it per account), ↑/↓ moving the cursor, ←/→ changing the size, Enter confirming. The answer is
+# always Keep: an agent's context is never cut (the founder, 2026-11-18, prompt 01a1eeff-880b; docs/method.md, "Sizing
+# positions"), and the dialog holds the input box and every delivery typed for the session (of_architect, msg
+# 01a1f605-7981; of_capacity, msg 01a1f61f-a7cc: three of a user organization's sessions on 2026-11-19).
+KEEP_BASIS = "the founder, 2026-11-18, prompt 01a1eeff-880b: an agent's context is never cut"
+_KEEP_ROW = re.compile(r"^\s*[│|]?\s*([❯›]\s*)?Keep \d+(?:\.\d+)?\s*[kKmM]?\s+tokens\b")
+_LOWER_ROW = re.compile(r"^\s*[│|]?\s*([❯›]\s*)?Autocompact at\b")
+
+
+def compact_rows(lines):
+    """{on_keep, toward_keep} for the offer's Keep form on this screen, or None (another dialog, or the older form)."""
+    lines = list(lines or [])
+    if not _COMPACT.search("\n".join(lines)):
+        return None
+    keep = [(i, bool(m.group(1))) for i, ln in enumerate(lines) for m in [_KEEP_ROW.match(ln)] if m]
+    lower = [(i, bool(m.group(1))) for i, ln in enumerate(lines) for m in [_LOWER_ROW.match(ln)] if m]
+    if len(keep) != 1 or len(lower) != 1 or (keep[0][1] and lower[0][1]) or not (keep[0][1] or lower[0][1]):
+        return None  # one row each and the cursor on exactly one of them, or it is not the dialog read here
+    return {"on_keep": keep[0][1], "toward_keep": "Down" if keep[0][0] > lower[0][0] else "Up"}
+
+
+def answer_keep(read, press, sleep=time.sleep, moves=3):
+    """Answer the offer with Keep: the cursor moved one row at a time and the screen read again after each press;
+    Enter only with the cursor on Keep, and the dialog must be gone after it. Anything else: Esc ("not now", the
+    session as it was) and (False, why), so the owner's card is filed as before. READ gives the screen's lines."""
+    rows = compact_rows(read())
+    if rows is None:
+        return False, "not the offer's Keep form"
+    for _ in range(moves):
+        if rows["on_keep"]:
+            break
+        press(rows["toward_keep"])
+        sleep(0.4)
+        rows = compact_rows(read())
+        if rows is None:
+            press("esc")
+            return False, "the dialog changed while the cursor moved"
+    if not rows["on_keep"]:
+        press("esc")
+        return False, "the cursor never reached Keep"
+    press("Enter")
+    sleep(0.8)
+    if _COMPACT.search("\n".join(read())):
+        press("esc")
+        return False, "the dialog stayed after Enter"
+    return True, "kept"
 
 
 def mask(text):
