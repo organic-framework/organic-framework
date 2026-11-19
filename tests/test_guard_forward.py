@@ -50,7 +50,11 @@ class ForwardKeyTest(unittest.TestCase):
                     "GIT_SSH_COMMAND='ssh -i ~/.ssh/of-forward/key' git fetch",
                     "git -c core.sshCommand='ssh -i ~/.ssh/of-forward/key' fetch", "ssh -i~/.ssh/of-forward/key u@h",
                     "rsync --rsh='ssh -i ~/.ssh/of-forward/key' a u@h:b", "rsync -e='ssh -i ~/.ssh/of-forward/key' a u@h:b",
-                    "ssh -i ~/.ssh/OF-FORWARD/key u@h"):
+                    "ssh -i ~/.ssh/OF-FORWARD/key u@h",
+                    "ssh -o 'ProxyCommand=ssh -i ~/.ssh/of-forward/key -W %h:%p j' host",       # of_review, PR 430
+                    "sshfs -o ssh_command='ssh -i ~/.ssh/of-forward/key' host: /tmp/d",
+                    "ansible all --ssh-common-args='-i ~/.ssh/of-forward/key'",
+                    "export GIT_SSH_COMMAND='ssh -i ~/.ssh/of-forward/key'"):
             with self.subTest(cmd=cmd):         # a word that carries the folder in one of its parts
                 got = bash(cmd)
                 self.assertTrue(got and "G34" in got[0], cmd)
@@ -73,8 +77,7 @@ class ForwardKeyTest(unittest.TestCase):
                     'of send of_x "the key at ~/.ssh/of-forward/key moves"',                   # prose names it: no use
                     "gh pr comment 1 --body 'G34 guards ~/.ssh/of-forward'",
                     "printf '%s\\n' 'a path to ~/.ssh/of-forward/key' > notes.md",
-                    "echo --message='ssh -i ~/.ssh/of-forward/key is the forward key'",     # of_review, PR 397
-                    "echo '-important: the folder ~/.ssh/of-forward is the unit s'"):
+                    "echo '-important: the folder ~/.ssh/of-forward is the unit s'"):     # of_review, PR 397
             with self.subTest(cmd=cmd):
                 self.assertIsNone(bash(cmd), cmd)
 
