@@ -1318,19 +1318,69 @@ def set_config_key(path, key, value):
 ORG_KEYS = {"hold": "on|off: `of apply` and the desk leave the organization's panes alone"}
 
 
+def org_entry_name(o):
+    """An orgs.yaml entry's name as the registry loader gives it: its name:, else its path's folder."""
+    return o.get("name") or (os.path.basename(os.path.expanduser(str(o["path"])).rstrip("/")) if o.get("path") else None)
+
+
+def _same(a, b):
+    """Parsed YAML compared by type as well (of_review on organic-framework PR 367: 1 == True let a wrong edit by)."""
+    return json.dumps(a, sort_keys=True, default=repr) == json.dumps(b, sort_keys=True, default=repr)
+
+
 def set_org_key(path, org, key, value):
-    """Set (VALUE None: remove) one scalar KEY of ORG's entry in the orgs.yaml at PATH, editing that one line so the
+    """Set (VALUE None: off) one scalar KEY of ORG's entry in the orgs.yaml at PATH, editing that one line so the
     file's comments and other entries stay. G33 (docs/guard.md) makes the file the owner's: agents change it only
     through OF's commands, and none set hold: before (of_server's replay, 2026-11-18: agents edited it with sed for the
     founder). Raises ValueError and writes nothing when the entry is not found or not written in block style, or when
-    the edited file would read differently anywhere else."""
+    the edited file would read differently anywhere else.
+
+    The file written is PATH's real path (a symlinked orgs.yaml stays a link), through a fresh temporary file in its
+    folder, under a lock on that folder, so two runs never lose an edit (of_review on organic-framework PR 367)."""
+    import fcntl
+    import tempfile
     import yaml
-    with open(path) as fh:
-        text = fh.read()
-    before = yaml.safe_load(text) or {}
-    entries = [o for o in (before.get("orgs") or []) if isinstance(o, dict)]
-    if not any(o.get("name") == org for o in entries):
-        raise ValueError(f"no organization {org!r} in {path}")
+    real = os.path.realpath(path)
+    folder = os.path.dirname(real)
+    lock = os.open(folder, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(real) as fh:
+            text = fh.read()
+        text2 = _org_key_edit(text, real, org, key, value)
+        if text2 == text:
+            return
+        mode = os.stat(real).st_mode & 0o777
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".orgs.yaml.")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(text2)
+            os.chmod(tmp, mode)
+            os.replace(tmp, real)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+    finally:
+        os.close(lock)
+
+
+def _org_key_edit(text, path, org, key, value):
+    """The text of orgs.yaml with ORG's KEY set (set_org_key), or ValueError."""
+    import yaml
+    try:
+        before = yaml.safe_load(text) or {}
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} does not parse as YAML ({e.__class__.__name__}); nothing was written")
+    orgs = before.get("orgs") if isinstance(before, dict) else None
+    if not isinstance(orgs, list):
+        raise ValueError(f"{path} has no orgs: list")
+    at_entry = [k for k, o in enumerate(orgs) if isinstance(o, dict) and org_entry_name(o) == org]
+    if len(at_entry) != 1:
+        raise ValueError(f"no organization {org!r} in {path}" if not at_entry else
+                         f"{path} lists {org!r} {len(at_entry)} times; change it by hand")
+    if not text.endswith("\n"):
+        text += "\n"
     lines = text.splitlines(keepends=True)
     top = next((i for i, ln in enumerate(lines) if re.match(r"^orgs\s*:\s*(#.*)?$", ln)), None)
     if top is None:
@@ -1341,50 +1391,59 @@ def set_org_key(path, org, key, value):
         if not ln.strip() or ln.lstrip().startswith("#"):
             continue
         ind = len(ln) - len(ln.lstrip(" "))
-        m = re.match(r"^( *)- +", ln)
+        m = re.match(r"^( *)-( +|$)", ln)
         if dash is None and m:
             dash = len(m.group(1))
         if m and len(m.group(1)) == dash:
-            items.append((i, len(m.group(0))))
+            items.append(i)
         elif dash is None or ind <= dash:
             end = i
             break
-    found = None
-    for k, (b, col) in enumerate(items):
-        e = items[k + 1][0] if k + 1 < len(items) else end
-        keyed = [b] + [i for i in range(b + 1, e) if re.match(rf"^ {{{col}}}[^ #-]", lines[i])]
-        for i in keyed:
-            body = lines[i][col:]
-            if re.match(r"name\s*:", body) and (yaml.safe_load(body) or {}).get("name") == org:
-                found = (b, e, col, keyed, i)
-        if found:
-            break
-    if not found or lines[found[0]][found[2]:].lstrip().startswith("{"):
-        raise ValueError(f"{path}: {org}'s entry is not in block style; change it by hand")
-    b, e, col, keyed, name_at = found
+    if len(items) != len(orgs):  # the k-th item in the text is the k-th entry parsed, or the layout is not plain
+        raise ValueError(f"{path}: its orgs: list is not in plain block style; change it by hand")
+    b = items[at_entry[0]]
+    e = next((i for i in items if i > b), end)
+    # the entry's key column, from its first key line: the dash line's own text, else the first line below it
+    first = re.match(r"^ *-( +)(?=[^\s#])", lines[b])
+    if first:
+        col = first.end()
+        if lines[b][col:].lstrip().startswith(("{", "[")):
+            raise ValueError(f"{path}: {org}'s entry is not in block style; change it by hand")
+    else:
+        below = next((i for i in range(b + 1, e) if lines[i].strip() and not lines[i].lstrip().startswith("#")), None)
+        if below is None:
+            raise ValueError(f"{path}: {org}'s entry is empty")
+        col = len(lines[below]) - len(lines[below].lstrip(" "))
+    keyed = ([b] if first else []) + [i for i in range(b + 1, e) if re.match(rf"^ {{{col}}}[^ #]", lines[i])]
     at = next((i for i in keyed if re.match(rf"{re.escape(key)}\s*:", lines[i][col:])), None)
-    new = None if value is None else \
-        " " * col + yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True).strip() + "\n"
+    rx = re.compile(rf"^(?P<pre>.{{{col}}}{re.escape(key)}\s*:\s*)(?P<val>[^#\n]*?)(?P<cmt>\s+#[^\n]*)?\n$")
     if at is not None:
-        lines[at:at + 1] = [new] if new else []
-    elif new:
-        lines.insert(name_at + 1, new)
+        m = rx.match(lines[at])
+        if not m:
+            raise ValueError(f"{path}: {org}'s {key}: line is not a plain scalar; change it by hand")
+        if value is None and not m.group("cmt"):
+            lines[at:at + 1] = []                     # off with no note on its line: the line goes
+        else:                                         # its own note stays
+            word = yaml.safe_dump({key: False if value is None else value}).split(":", 1)[1].strip()
+            lines[at] = m.group("pre") + word + (m.group("cmt") or "") + "\n"
+    elif value is not None:
+        line = " " * col + yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True).strip() + "\n"
+        lines.insert(keyed[0] + 1 if keyed else b + 1, line)
     text2 = "".join(lines)
-    after = yaml.safe_load(text2) or {}
+    try:
+        after = yaml.safe_load(text2) or {}
+    except yaml.YAMLError:
+        raise ValueError(f"{path}: the edit would not parse; nothing was written")
     want = yaml.safe_load(text) or {}
-    for o in want.get("orgs") or []:
-        if isinstance(o, dict) and o.get("name") == org:
-            o.pop(key, None)
-            if value is not None:
-                o[key] = value
-    if after != want:
+    o = want["orgs"][at_entry[0]]
+    o.pop(key, None)
+    if value is not None:
+        o[key] = value
+    elif at is not None and (after["orgs"][at_entry[0]] or {}).get(key) is False:
+        o[key] = False
+    if not _same(after, want):
         raise ValueError(f"{path}: the edit would change more than {org}'s {key}; nothing was written")
-    mode = os.stat(path).st_mode & 0o777
-    tmp = path + ".of-tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as fh:
-        fh.write(text2)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    return text2
 
 
 def install_service(port=18200):
