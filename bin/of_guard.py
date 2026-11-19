@@ -3776,19 +3776,23 @@ OWNER_CONFIG_MODE = "deny"
 # answer or mark, so a file an agent writes there would record an answer by the owner (of_platform, msg 01a1f4fc-801d,
 # 2026-11-19, beside efc87597, which makes `of asks answered|withdraw` take the owner only in their terminal)
 ASKS_OUTBOX_DIR = "~/.local/state/of/asks-outbox"
-ASKS_OUTBOX_DENY = ("the asks outbox, which only the owner's popup writes: its sender replays each file there as the "
-                    "owner's answer (docs/guard.md G35). An agent asks the owner with `of ask`, and closes an ask they "
+ASKS_OUTBOX_DENY = ("the owner's ask folders, the outbox and the drafts, which only his screens write: a draft there is "
+                    "what he sends as his answer (docs/guard.md G35). An agent asks the owner with `of ask`, and closes an ask they "
                     "answered with `of status working --answered <id>`")
 ASKS_OUTBOX_MODE = "deny"
 
 
+ASKS_OWNER_FOLDERS = ("asks-outbox", "asks-drafts", "asks-reply-drafts")
+
+
 def _outboxes():
-    """The asks outbox's real paths, without case: the default, and the one under OF_STATE when the hook's environment
-    sets it (the sender reads of_events.STATE_DIR; of_review on organic-framework PR 395)."""
-    out = {os.path.realpath(_expanduser(ASKS_OUTBOX_DIR)).casefold()}
+    """The owner's ask folders, real paths without case: the outbox and the two drafts folders (a draft the owner sends
+    with D is his answer: of_review's note on organic-framework PR 398), under the default state folder and under
+    OF_STATE when the hook's environment sets it (the screens read of_events.STATE_DIR)."""
+    bases = [_expanduser("~/.local/state/of")]
     if os.environ.get("OF_STATE"):
-        out.add(os.path.realpath(os.path.join(_expanduser(os.environ["OF_STATE"]), "asks-outbox")).casefold())
-    return out
+        bases.append(_expanduser(os.environ["OF_STATE"]))
+    return {os.path.realpath(os.path.join(b, f)).casefold() for b in bases for f in ASKS_OWNER_FOLDERS}
 
 
 def _in_outbox(path, cwd=None, removal=False):
