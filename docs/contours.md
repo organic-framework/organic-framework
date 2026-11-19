@@ -6,7 +6,7 @@ Status: **design**, 2026-11-19, by `of_architect`, with `of_agent-server` (the a
 
 A **contour** is everything one organization runs, closed to every other organization:
 - **its own OS user** on each machine it runs on, with a home of mode 0700 that no other organization's user reads;
-- **its own herdr server, services and OF install**, each listening on a Unix socket in its own home (mode 0700), never on a loopback TCP port, which every user of the machine can reach or take (`of_server`):
+- **its own herdr server, services and OF install**, each listening on a Unix socket in its own home (mode 0700), never on a loopback TCP port, which every user of the machine can reach or take (`of_server`). This is the target of §4 step 3, not today's state: today of-server listens on `127.0.0.1:18200`, and only the laptop's forward has a socket. A contour holds:
   - its listener, its pulse, its of-server with its relay and its event store;
   - its own Claude Code accounts and their sign-ins, and its own Codex sign-in;
   - its credential roots and its secret store;
