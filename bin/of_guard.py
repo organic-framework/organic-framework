@@ -998,9 +998,10 @@ def _code_deny(code, lang=None):
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
     box = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
-                and (re.search(r"/asks-outbox(?:/|$)", l.casefold()) or _in_outbox(l.strip().lstrip("<>+|& ")))),
+                and (re.search(r"/(?:" + "|".join(map(re.escape, ASKS_OWNER_FOLDERS)) + r")(?:/|$)", l.casefold())
+                     or _in_outbox(l.strip().lstrip("<>+|& ")))),
                None) \
-        if _CODE_WRITE.search(code) else None   # G35 in code: a write into the asks outbox (of_review on PR 395)
+        if _CODE_WRITE.search(code) else None   # G35 in code: a write into the owner's ask folders (PRs 395, 410)
     if box:
         if ASKS_OUTBOX_MODE == "deny":
             return ASKS_OUTBOX_DENY, box

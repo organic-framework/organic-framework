@@ -70,6 +70,8 @@ class AsksOutboxTest(unittest.TestCase):
                 self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)
                 self.assertEqual(bash(f"echo x > ~/.local/state/of/{folder}/a.json"), of_guard.ASKS_OUTBOX_DENY)
                 self.assertIsNone(bash(f"cat ~/.local/state/of/{folder}/a.json"))
+                perl = f"perl -e 'open(F,\">$ENV{{HOME}}/.local/state/of/{folder}/a.json\"); print F 1'"
+                self.assertEqual(bash(perl), of_guard.ASKS_OUTBOX_DENY)   # interpreter code (of_secrets-review, PR 410)
 
     def test_reading_it_and_writing_beside_it_stay_open(self):
         for cmd in (f"ls {BOX}", f"cat {BOX}/a.json", "echo x > ~/.local/state/of/notes.txt",
