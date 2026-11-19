@@ -3336,7 +3336,8 @@ def _actor_act(words):
 
 def _org_path_act(words):
     """`of org set <org> path <folder>`: the owner's, by the positive test (of_review on organic-framework PR 427)."""
-    return words[:1] == ["org"] and "set" in words[1:] and "path" in words[1:]
+    # by position, so `of org set path hold on` (an organization named path) stays the agents' hold (of_server)
+    return words[:2] == ["org", "set"] and words[3:4] == ["path"]
 
 
 def _actor_deny(head, args, stext, env):
