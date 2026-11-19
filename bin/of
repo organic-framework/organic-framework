@@ -4080,6 +4080,10 @@ def _inbox_manage(args):
     why = _queue_manager(me, target, positions)
     if why:
         raise OfError(why)
+    import of_server_relay
+    if of_server_relay.held_by_person(target):
+        raise OfError(f"a person holds {src}: its messages are theirs, kept in their own `of inbox`; nobody else "
+                      "moves or drops them")
     cfg = of_ship.config()
     client = of_client.Client(of_ship.org_servers(cfg).get(me["_org"]) or cfg["server_url"])
     if args.action == "drop":
@@ -4089,8 +4093,8 @@ def _inbox_manage(args):
             except Exception as e:  # noqa: BLE001 - the server's 403, 404 or 409 says why
                 raise OfError(f"of inbox drop {msg_id}: {e}")
             print(f"{r.get('msg_id')}: " + (f"already {r.get('state')}" if r.get("already") else
-                                            "dropped (expired; the server host's `of server relay-requeue --state "
-                                            "expired --msg-id <id>` undoes it)"))
+                                            "dropped (expired; `bin/of_server.py relay-requeue --state expired "
+                                            "--msg-id <id>` on the server host undoes it)"))
         return 0
     dst = _resolve_address(args.to, positions)
     if src.split(":")[0] != dst.split(":")[0]:
@@ -4104,6 +4108,7 @@ def _inbox_manage(args):
     except Exception as e:  # noqa: BLE001
         raise OfError(f"of inbox move: {e}")
     verb = "would move" if r.get("dry_run") else "moved"
+    dst = r.get("to") or dst  # the server's answer names where they went (the registry names it there)
     print(f"{verb} {len(r.get('moved') or [])} message(s) from {src} to {dst}"
           + ("" if r.get("dry_run") else f" (by {by}; each keeps its sender, id and reply-to, and carries no authority)"))
     for i in r.get("moved") or []:

@@ -55,15 +55,28 @@ def ensure_tables(conn):
     conn.executescript(INBOX_DDL)
 
 
+def _problem_type(e):
+    """The `type` of an of-server problem answer carried by a ServerError (its body is the answer's text), or None."""
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        return body.get("type")
+    try:
+        got = json.loads(body or "")
+    except (TypeError, ValueError):
+        return None
+    return got.get("type") if isinstance(got, dict) else None
+
+
 def header(m):
     """Exactly one frame line before the text, never presented as the owner's words (RFC 0001 §5.9)."""
     auth = m.get("authority") or "none"
     if m.get("authority_reason"):
         auth += f": {m['authority_reason']}"
     who = f"machine {m.get('sender_machine') or '?'}" + (f", person {m['sender_person']}" if m.get("sender_person") else "")
-    ref = f"msg {m.get('msg_id')}" + (f", reply to {m['reply_to']}" if m.get("reply_to") else "")
-    if m.get("moved_from"):  # moved here from a parked position's queue (`of inbox move`)
-        ref += f"; sent to {m['moved_from']}, moved here by {m.get('moved_by') or '?'}"
+    ref = f"msg {m.get('msg_id')}"
+    if m.get("moved_from"):  # moved here from a parked position's queue (`of inbox move`); before "reply to", which
+        ref += f", sent to {m['moved_from']} and moved here by {m.get('moved_by') or '?'}"  # ends the frame (of_classify)
+    ref += f", reply to {m['reply_to']}" if m.get("reply_to") else ""
     return (f"Message from {m.get('from')} (via relay, authority: {auth}; {who}; {ref})\n"
             f"{m.get('text') or ''}\n"
             f"[reply: of send {m.get('from')} --reply-to {m.get('msg_id')} \"…\"]")
@@ -957,6 +970,11 @@ def pull(client, key, session, take=None, pane_busy=False):
             except Exception as e:  # noqa: BLE001
                 if getattr(e, "status", None) != 409:
                     raise
+                if _problem_type(e) == "moved":
+                    # moved to another position meanwhile (`of inbox move`): it is that one's now, so neither taken
+                    # nor marked seen here, or a successor on this machine would never get it (of_secrets-review on
+                    # organic-framework PR 375)
+                    continue
                 if not pane_busy:
                     # 409 leased and the pane is idle: the relay types it in within seconds (the
                     # no-double-delivery rule): not taken here, the agent acts on it there.

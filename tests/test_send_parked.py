@@ -81,6 +81,27 @@ class ParkedRefusalTest(unittest.TestCase):
         finally:
             of_cli._load_quiet = saved
 
+    def test_to_parked_passes_the_refusal(self):
+        """of_review on PR 375: only the refusal's text was tested. With --to-parked the send goes on to its server
+        (stopped here at the first step after the refusal)."""
+        import argparse
+        import of_ship
+
+        class Reached(Exception):
+            pass
+
+        def stop():
+            raise Reached()
+        args = argparse.Namespace(to="acme:acme_watch", text="x", sender="acme:acme_dev", reply_to=None, grant=None,
+                                  fyi=False, urgent=False, to_parked=True)
+        saved, saved_cfg = of_cli._load_quiet, of_ship.config
+        of_cli._load_quiet, of_ship.config = (lambda: self.BASE + [self.WATCH]), stop
+        try:
+            with self.assertRaises(Reached):
+                of_cli.cmd_send(args)
+        finally:
+            of_cli._load_quiet, of_ship.config = saved, saved_cfg
+
     def test_only_the_structure_keeper_or_the_unit_owner_manages_a_queue(self):
         ps = self.BASE + [self.WATCH, dict(pos("zeta_org", role="org"), _org="zeta")]
         self.assertIsNone(of_cli._queue_manager(ps[0], self.WATCH, ps))           # the structure keeper
@@ -115,6 +136,16 @@ class ParkedRefusalTest(unittest.TestCase):
                                                            dry_run=True))
         self.assertIn("of inbox drop <position> --msg ID", self._inbox("drop", "S-acme_org", reason="stale"))
         self.assertIn("may move or drop", self._inbox("move", "S-acme_dev", to="acme:acme_ops"))
+
+    def test_a_persons_queue_is_refused_before_any_server(self):
+        desk = pos("acme_desk", holder={"person": "alex"}, _units={})
+        saved = self.BASE
+        self.BASE = saved + [desk]
+        try:
+            got = self._inbox("drop", "S-acme_org", id="acme:acme_desk", msg=["m1"], reason="stale")
+        finally:
+            self.BASE = saved
+        self.assertIn("a person holds acme:acme_desk", got)
 
 if __name__ == "__main__":
     unittest.main()
