@@ -67,5 +67,16 @@ class MachineId(unittest.TestCase):
         self.assertEqual(of_events.machine_id(), mid)
         self.assertFalse(os.path.islink(os.path.join(self.tmp.name, "machine_id")))
 
+    def test_a_folder_no_caller_can_fix_gives_one_id_per_process(self):
+        """of_review's note after PR 419: the fallback id was made per call; one process's events carry one host.id."""
+        os.mkdir(os.path.join(self.tmp.name, "machine_id"))   # a folder in its place: no id can be written there
+        of_events._FALLBACK_ID.clear()
+        try:
+            a, b = of_events.machine_id(wait_s=0.01), of_events.machine_id(wait_s=0.01)
+        finally:
+            of_events._FALLBACK_ID.clear()
+        self.assertTrue(a)
+        self.assertEqual(a, b)
+
 if __name__ == "__main__":
     unittest.main()
