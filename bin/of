@@ -3323,8 +3323,8 @@ def cmd_server(args):
             raise OfError(f"usage: of server {args.action} --org ORG <bundle folder>"
                           + (" --index-sha <the export's>" if args.action == "import" else ""))
         cfg = of_server.load_config()
-        if args.since and (args.action != "export" or args.check):
-            raise OfError("--since needs a ClickHouse export")
+        if args.since and (args.action != "export" or args.check or not args.since_sha):
+            raise OfError("--since <bulk bundle> goes with --since-sha <the bulk's index sha256>, on an export")
         db = os.path.join(cfg["state_dir"], "server.db")
         conn = None
         try:
@@ -3341,24 +3341,39 @@ def cmd_server(args):
                 return 0
             if args.check:
                 if args.action == "import":
-                    problems = ex.check_import(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg)
+                    problems = ex.check_import(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg,
+                                               plaintext=args.plaintext)
                 else:
                     problems = ex.check_bundle(args.path, args.identity, args.index_sha)
                 for p in problems:
                     print(f"MISMATCH {p}")
-                print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
+                if problems:
+                    print(f"{len(problems)} mismatches")
+                elif args.action == "export" and ex.load_index(args.path)["encrypted"] and not args.identity:
+                    print("ok: the files' ciphertext hashes match index.json; their contents were not checked "
+                          "(give --identity to check them)")
+                else:
+                    print("ok: the counts, keys and digests match")
                 return 0 if not problems else 1
             if args.action == "export":
+                if args.plaintext and not args.to:
+                    print("warning: --plaintext: the bundle's records, raw included, are written in clear")
                 m, index_sha = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION,
-                                               recipient=args.to, config=cfg, since=args.since, identity=args.identity)
+                                               recipient=args.to, config=cfg, since=args.since, since_sha=args.since_sha,
+                                               plaintext=args.plaintext)
                 rows = {t: v["rows"] for t, v in m["store"].items()}
                 rows.update({t: v["rows"] for t, v in m.get("clickhouse", {}).items()})
                 for name, per in m.get("clickhouse_left_behind", {}).items():  # stays on this server, counted
                     print(f"{name}: {sum(per.values())} rows left behind over {len(per)} days (no single organization)")
             else:
-                rows = ex.import_store(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg)
+                rows = ex.import_store(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg,
+                                       plaintext=args.plaintext)
         except ex.ExportError as e:
             raise OfError(f"of server {args.action}: {e}") from None
+        except OfError:
+            raise
+        except Exception as e:  # a traceback could echo a row (the user organization's sec_keeper, msg 01a1f638-5862)
+            raise OfError(f"of server {args.action}: failed ({type(e).__name__}); no row is shown") from None
         finally:
             if conn is not None:
                 conn.close()
@@ -8070,7 +8085,10 @@ def main(argv=None):
                     help="export: check a bundle against its manifest; import: check this server's rows against it")
     sv.add_argument("--to", help="export: the age recipient (age1…) every file of the bundle is encrypted to")
     sv.add_argument("--identity", help="import, export --check or --since: the age identity that decrypts the bundle")
-    sv.add_argument("--since", metavar="BULK", help="export ClickHouse days from each table's last day in BULK")
+    sv.add_argument("--since", metavar="BULK", help="export: the ClickHouse days changed or new since the bulk BULK")
+    sv.add_argument("--since-sha", help="export --since: the sha256 of the bulk's index.json, as its export printed")
+    sv.add_argument("--plaintext", action="store_true",
+                    help="export without --to, or import such a bundle: the records travel in clear (warned)")
     sv.add_argument("--index-sha", help="import, export --delete: the sha256 of index.json that the export printed")
     sv.add_argument("--delete", action="store_true",
                     help="export: remove the bundle after its import checked out, and read back that it is gone")
