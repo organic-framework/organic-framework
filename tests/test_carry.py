@@ -269,7 +269,7 @@ class CopyCommands(unittest.TestCase):
         self.assertEqual([c[:3] for c in push], [["taskpolicy", "-b", "rsync"]] * 2)
         ssh = push[0][push[0].index("-e") + 1]
         self.assertEqual(ssh, f"ssh -i {shlex.quote(self.key)} -o IdentityAgent=none "
-                              "-o IdentitiesOnly=yes -o BatchMode=yes")
+                              "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes")
         self.assertTrue(all("--chmod=go-rwx" in c for c in push))  # nothing readable by another user on the host
         spaced = os.path.join(self.d, "a key")
         shutil.copy2(self.key, spaced)
@@ -290,15 +290,21 @@ class CopyCommands(unittest.TestCase):
                                  known_hosts="~/agent host keys", dry_run=True, pats=[], log=lambda *_: None)
         for cmd in cmds:
             ssh = shlex.split(cmd[cmd.index("-e") + 1])
-            self.assertEqual(ssh[-4], "-o")
-            self.assertEqual(shlex.split(ssh[-3]), [f"UserKnownHostsFile={known_hosts}"])
-            self.assertEqual(ssh[-2:], ["-o", "StrictHostKeyChecking=yes"])
+            self.assertEqual(ssh[-4:-1], ["-o", "StrictHostKeyChecking=yes", "-o"])
+            self.assertEqual(shlex.split(ssh[-1]), [f"UserKnownHostsFile={known_hosts}"])
 
     def test_missing_known_hosts_file_stops_copy_before_rsync(self):
         run = mock.Mock()
         with self.assertRaisesRegex(of_carry.CarryError, "no known hosts file"):
             of_carry.copy(os.path.join(self.d, "b"), self.key, to="of@host:/c/b",
                           known_hosts=os.path.join(self.d, "missing"), run=run)
+        run.assert_not_called()
+
+    def test_known_hosts_values_interpreted_by_ssh_stop_copy_before_rsync(self):
+        run = mock.Mock()
+        for value in ("hosts-%h", "hosts-${HOME}", "none", "NoNe"):
+            with self.subTest(value=value), self.assertRaisesRegex(of_carry.CarryError, "--known-hosts"):
+                of_carry.copy(os.path.join(self.d, "b"), self.key, to="of@host:/c/b", known_hosts=value, run=run)
         run.assert_not_called()
 
     def test_background_priority_by_platform(self):
