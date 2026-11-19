@@ -14,6 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import of_events  # noqa: E402
 import of_grants  # noqa: E402
+import of_classify  # noqa: E402
 import of_guard  # noqa: E402
 import of_hook  # noqa: E402
 from tests.test_guard_grants import KeyCase  # noqa: E402
@@ -397,6 +398,29 @@ class HarnessLoginTest(unittest.TestCase):
         rules = of_classify.deny_rules()
         for g in of_classify._HARNESS_LOGINS:
             self.assertIn(f"Read(**/{g})", rules)
+
+
+class HarnessLoginShellFormsTest(unittest.TestCase):
+    """G1.14's Bash forms and G1.2's note from PR 387's reviews (of_secrets-review's comment 7017458194, point 3 and its
+    note; of_review's comment 7017518350): a login read after cd, names in another case, and the test-fixture exception
+    by a name that says it holds a credential or a path outside the test folder."""
+
+    def deny(self, cmd):
+        return of_guard.critical_deny("Bash", {"command": cmd}, cwd="/Users/alex/of")
+
+    def test_a_login_after_cd_or_in_another_case(self):
+        login = ".co" + "dex/auth.json"
+        for cmd in ("cd ~/.codex && cat auth.json", "cat ~/" + login.upper(), "cat ~/.SSH/ID_ED25519"):
+            self.assertTrue(self.deny(cmd), cmd)
+        self.assertIsNone(self.deny("cd ~/.codex && ls"))
+
+    def test_the_fixture_exception_is_narrow(self):
+        t = "tok" + "en"
+        for p in (f"tests/deploy_{t}_prod.txt", f"tests/github-{t}-live.txt", f"/Users/alex/fixtures/npm_{t}_live.txt",
+                  f"tests/../api_{t}_prod.txt", f"tests/access_{t}s_live.txt", f"tests/api-{t}-prod.txt"):
+            self.assertTrue(of_classify.secret_path(p), p)
+        for p in (f"tests/fixtures/crafted_{t}s.txt", f"tests/{t}-prices.txt", f"repo/tests/fixtures/erc20_{t}s.txt"):
+            self.assertFalse(of_classify.secret_path(p), p)
 
 
 if __name__ == "__main__":

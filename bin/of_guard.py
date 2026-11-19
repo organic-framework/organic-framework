@@ -283,6 +283,27 @@ def _secret_path(p):
             or _env_file(q) or (n is not None and _secret_path(n)))
 
 
+def _in_folder(here, fn, *a):
+    """FN(*A) judged with the session's folder set to HERE, the folder the line moved to; then set back."""
+    if not isinstance(here, str) or here == MAYBE_HOME:
+        return fn(*a)
+    saved = _DENY_CWD[0]
+    try:
+        _DENY_CWD[0] = here
+        return fn(*a)
+    finally:
+        _DENY_CWD[0] = saved
+
+
+def _secret_here(word, here):
+    """Is the relative path WORD a secret path once read from HERE, the folder the line moved to (`cd ~/.codex && cat
+    auth.json`: of_secrets-review on organic-framework PR 387)? A glob that names a folder needs it."""
+    w = str(word or "").strip("'\"")
+    if not w or not isinstance(here, str) or here == MAYBE_HOME or w.startswith(("/", "~", "$")):
+        return False
+    return _secret_path(os.path.join(here, w))
+
+
 def _reads(p):
     return (f"a command that reads a secret file ({os.path.basename(p.rstrip('/')) or p})", p) if p else None
 
@@ -919,6 +940,30 @@ def connector_deny(tool, excluded):
     return None
 
 
+# a write from interpreter code: a file opened to write or append, a whole-file write, a move, a removal or a dump
+# (of_review and of_secrets-review on organic-framework PR 387: python's open(…, 'a').write, ruby -e, node -e)
+_CODE_WRITE = re.compile(r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
+                         r"""write_bytes|\.write\s*\(|\bdump\s*\(|os\.(?:replace|rename|remove|unlink|truncate)|"""
+                         r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|open|delete|rename)|"""
+                         r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
+                         r"""\bsysopen\b|\bunlink\b|\brename\b""")
+
+
+def _owner_config_in_code(code, lits):
+    """The path G33 protects that interpreter CODE names and may write, else None: a literal that is orgs.yaml or
+    views.yaml in OF's config folder (or the bare name, with `.config` named in the code too), beside a write."""
+    names = [l.strip() for l in lits if not re.search(r"\s", l.strip())   # one path, as G8 reads one
+             and os.path.basename(l.strip().rstrip("/")) in OWNER_CONFIG_FILES]
+    if not names or not _CODE_WRITE.search(code):
+        return None
+    targets = _owner_config_targets()
+    for n in names:
+        if os.path.realpath(_expanduser(n)) in targets or \
+                re.search(r"(?:^|/)\.config/of/(?:orgs|views)\.yaml$", n):   # a home folder joined in code
+            return n
+    return None
+
+
 def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
@@ -951,6 +996,18 @@ def _code_deny(code, lang=None):
             _WARNINGS.append(note)
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
+    box = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
+                and ("/asks-outbox" in l.casefold() or _in_outbox(l.strip().lstrip("<>+|& ")))), None) \
+        if _CODE_WRITE.search(code) else None   # G35 in code: a write into the asks outbox (of_review on PR 395)
+    if box:
+        if ASKS_OUTBOX_MODE == "deny":
+            return ASKS_OUTBOX_DENY, box
+        _WARNINGS.append((ASKS_OUTBOX_DENY, box, "a warning now, a deny once the flows that write it have moved"))
+    owner_cfg = _owner_config_in_code(code, lits)  # G33 in code: a write to orgs.yaml or views.yaml
+    if owner_cfg:
+        if OWNER_CONFIG_MODE == "deny":
+            return OWNER_CONFIG_DENY, owner_cfg
+        _WARNINGS.append((OWNER_CONFIG_DENY, owner_cfg, "a warning now, a deny once the flows that write it have moved"))
     filters = None
     for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
@@ -1746,7 +1803,10 @@ def _split(text, ops=None):
             pipe.append(("sub", text[i + 1:j - 1]))
             i = j
         elif c == "|":
-            if text[i:i + 2] == "||":
+            if "".join(buf).endswith(">") and _redirect_before_amp("".join(buf)):  # `>|`: noclobber's override
+                buf.append(c)
+                i += 1
+            elif text[i:i + 2] == "||":
                 flush_pipe("||")
                 i += 2
             else:
@@ -2826,8 +2886,11 @@ def _write_targets(stext):
         toks = _tokens(stext)
     except ValueError:
         return []
-    return [toks[k + 1] for k, w in enumerate(toks[:-1]) if w and set(w) <= _REDIR and ">" in w and
-            not w.endswith("&") and toks[k + 1] not in _DEV_STREAMS and not toks[k + 1].isdigit()]
+    out = [toks[k + 1] for k, w in enumerate(toks[:-1]) if w and set(w) <= _REDIR and ">" in w and
+           not w.endswith("&") and toks[k + 1] not in _DEV_STREAMS and not toks[k + 1].isdigit()]
+    # `>| f` (the `|` its own word), `exec 3> f` (the number a descriptor): of_review's write forms on PR 395
+    out += [toks[k + 2] for k, w in enumerate(toks[:-2]) if w and set(w) <= _REDIR and ">" in w and toks[k + 1] == "|"]
+    return [t for t in out if t != "|"]
 
 
 _PY_VALUE_OPTS = {"-W", "-X", "--check-hash-based-pycs"}   # python options that take the next word as a value
@@ -2983,6 +3046,184 @@ def _actor_cleared(stext, env):
     return out
 
 
+# G31 over the whole line, a second layer behind bin/of's positive test for the owner (_asks_actor, `of access`): a line
+# that runs one of `of`'s acts anywhere (a group, a `-c` body, a quoted string) and anywhere also holds a way to clear
+# or replace the variables that name the caller is refused. Following each way one at a time missed a new one at each
+# review (of_secrets-review and of_review on organic-framework PR 387: `unset …; ( of asks answered )`, a leading
+# redirection, `env -P`, `sh -xc`, two bodies deep, `of access --org x grant`, `NAME="$NAME"`, `export -n`, `declare +x`,
+# `exec -c`, `NAME=$EMPTY`, `X=NAME; unset $X`, ssh localhost, at, osascript, launchctl submit, python's subprocess).
+_FRESH_ENV = frozenset("ssh at batch osascript launchctl systemd-run su sudo doas machinectl runuser setpriv "
+                       "nsenter unshare chroot".split())
+# a pseudo-terminal around the act: the way round bin/of's terminal test for the owner (of_server on hand-over 726902df)
+_PTY_WORDS = frozenset("script expect unbuffer socat empty ptyrun tmux screen dtach abduco zpty".split())
+_INTERPRETER_WORDS = frozenset("python python3 python2 pypy pypy3 node nodejs ruby perl php lua osascript "
+                               "swift deno bun".split())
+
+
+def _line_words(cmd):
+    """The line's words as a shell may see them once its quotes are gone, quoted bodies included: quote marks and
+    backslashes dropped (`'un'set` is unset), every operator and expansion character a separator."""
+    flat = re.sub(r"[\\'\"]", "", cmd)
+    return [w for w in re.split(r"[\s;&|()<>{}`$=,:\[\]]+", flat) if w]   # `:` too: socat's EXEC:'of …'
+
+
+def _line_act(words):
+    """Does the word stream run one of of's acts: `of asks answered|withdraw|answer <id>`, `of access … grant|revoke|
+    link|record` (its options may come first)? `--help` or `-h` after it is no act."""
+    for k, w in enumerate(words):
+        if _fold_name(os.path.basename(w)) not in ("of", "of.py"):
+            continue
+        rest = [_fold_name(x) for x in words[k + 1:k + 8]]
+        if rest[:1] == ["asks"] and len(rest) > 1 and rest[1] in ACTOR_ACTS:
+            if not any(x in ("--help", "-h") for x in rest[2:4]):
+                return True
+        if rest[:1] == ["access"]:
+            for j, x in enumerate(rest[1:], 1):
+                if x in ("grant", "revoke", "link", "record"):
+                    if not any(y in ("--help", "-h") for y in rest[j + 1:j + 3]):
+                        return True
+                    break
+    return False
+
+
+_PROSE_OF = frozenset({"send", "ask", "handover", "status", "event", "note", "diff", "loop"})
+
+
+# interpreter code that can start a process: only then can an act named in its text run (the 21-day replay of hand-over
+# 726902df: 153 of 384 new G31 denies were python edits of a document whose text names `of asks answered`)
+_LAUNCH_CODE = re.compile(r"subprocess|os\.(?:system|exec|spawn|posix_spawn|popen)|\bpopen\b|\bpty\.|child_process|"
+                          r"exec(?:File)?Sync|spawn(?:Sync)?\s*\(|\bsystem\s*\(|\bexec\s*\(|Open3|"
+                          r"IO\.popen|Process\.|\bKernel\.|shell_exec|passthru|proc_open|NSTask|do shell script")
+_LAUNCH_BACKTICK = re.compile(r"`|\bqx\b")   # a command in ruby, perl and php; in python or a document, text
+
+
+def _launches(head, code):
+    """Can interpreter HEAD's CODE start a process?"""
+    return bool(_LAUNCH_CODE.search(code)) or (not str(head).startswith(("python", "pypy", "node")) and
+                                               bool(_LAUNCH_BACKTICK.search(code)))
+
+
+def _without_code_text(cmd):
+    """CMD without the bodies of interpreter heredocs that cannot start a process (their text is data: a document an
+    edit writes, a pattern it searches)."""
+    try:
+        docs = _scan(cmd)[2]
+    except Exception:  # noqa: BLE001
+        return cmd
+    for _quoted, body, opener in docs:
+        head = _fold_name(_head(opener))
+        runs = head in _SHELLS or head in _FRESH_ENV or head in _PTY_WORDS or \
+            ((head in _INTERPRETERS or _lang(head)) and _launches(head, body))
+        if body and not runs:   # `cat > notes <<EOF`, a commit message, a test file: data, not a command
+            cmd = cmd.replace(body, "", 1)
+    return cmd
+
+
+def _fed_to_a_runner(pipe, idx):
+    """Does stage IDX of PIPE feed a stage that may run its text (a shell, at, ssh, a pty, an interpreter, xargs)?"""
+    for kind, stext in pipe[idx + 1:]:
+        try:
+            s = _simple(stext) if kind == "cmd" else None
+        except ValueError:
+            return True
+        head = _fold_name(s[0]) if s and s[0] != "<read" else ""
+        if head in _SHELLS or head in _FRESH_ENV or head in _PTY_WORDS or head in _INTERPRETERS or head == "xargs":
+            return True
+    return False
+
+
+def _without_prose(cmd):
+    """CMD without the top-level commands that only carry text (`of send "…"`, `of ask`, `of handover`, `of status
+    --note`, `git commit -m`, `gh … --body`, release/request.sh's note): naming a form there runs nothing. `echo` stays:
+    `echo '…' | at now` runs it."""
+    try:
+        pipes = _split(cmd)
+    except ValueError:
+        return cmd
+    kept = []
+    for pipe in pipes:
+        for idx, (kind, stext) in enumerate(pipe):
+            try:
+                s = _simple(stext) if kind == "cmd" else None
+            except ValueError:   # a line its rules cannot split: kept whole, never dropped as prose
+                s = None
+            if s and s[0] != "<read":
+                head, args = s[0], s[1]
+                h, words = _script_of(head, args)
+                if (h == "of" and words[:1] and words[0] in _PROSE_OF) or (head == "git" and "commit" in args[:3]) \
+                        or head == "gh" or os.path.basename(head) in ("request.sh", "commit.sh", "pcommit.sh"):
+                    continue
+                if head in ("echo", "printf") and not _fed_to_a_runner(pipe, idx):
+                    continue   # text printed or written to a file; `echo '…' | at now` is kept
+                if (head in _INTERPRETERS or _lang(head)) and h != "of" and \
+                        not _launches(head, " ".join(args)):   # `python3 -c "…"` that starts no process
+                    continue
+                if h == "of" and words[:1] == ["asks"] and words[1:2] and words[1] in ACTOR_ACTS:
+                    # its reason or its text is prose: the command is kept up to the ask's id, its prefix included
+                    try:
+                        toks = _tokens(stext)
+                    except ValueError:
+                        toks = []
+                    k = next((i for i in range(len(toks) - 1) if toks[i + 1] == "asks" and
+                              _fold_name(os.path.basename(toks[i])) in ("of", "of.py")), None)
+                    if k is not None:
+                        kept.append(" ".join(shlex.quote(x) for x in toks[:k + 4]))
+                        continue
+            kept.append(stext)
+    return " ; ".join(kept)
+
+
+# interpreter code that changes the environment of what it starts (python's env= or os.environ, node's env:, ruby's
+# ENV or unsetenv_others, perl's %ENV, a pty or an exec with its own environment)
+_ENV_CODE = re.compile(r"\benv\s*[=:]|environ|unsetenv|putenv|clearenv|\bENV\b|%ENV|\$ENV|pty\.|execve|execle|"
+                       r"posix_spawn|unsetenv_others")
+
+
+def _command_word(text, names, interpreters=False):
+    """Does a word of NAMES stand where a command starts in TEXT (its start, after `;`, `&`, `|`, `(`, `{`, a backtick,
+    `$(`, a newline or a quote that opens a body, past assignments and a folder)? A word in a message or a reason is
+    prose (`… answered at 12:00` is no `at`: the 21-day replay of hand-over 726902df)."""
+    for m in re.finditer(r"(?:^|[;&|({`\n]|\$\(|\b-c\s|\bexec\s|\bsudo\s|\bnohup\s|\btimeout\s+\S+\s)\s*"
+                         r"(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?([A-Za-z][\w.+-]*)", text):
+        w = _fold_name(m.group(1))
+        if w in names or (interpreters and _interpreter_name(w) in names):
+            return True
+    return False
+
+
+def _actor_line_deny(cmd):
+    """(reason, what) when the line runs one of of's acts and holds a way to clear or replace its caller's variables
+    anywhere (G31's line reading); else None."""
+    cmd = _without_prose(_without_code_text(cmd))
+    words = _line_words(cmd)
+    if not _line_act(words):
+        return None
+    folded = [_fold_name(os.path.basename(w)) for w in words]
+    flat = re.sub(r"[\\'\"]", "", cmd)
+    why = None
+    if any(re.search(rf"\b{v}=(?:\s|$|[;&|)]|\$)|\b(?:unset|export\s+-\w*n|declare|typeset|local|readonly)\b"
+                     rf"[^;&|\n]*\b{v}\b|(?:-u\s*|--unset=?\s*){v}\b", flat) for v in ACTOR_VARS):
+        why = "a variable that names its caller, cleared on the line"   # an empty value, unset, -u, export -n…
+    elif any(f == "env" and k + 1 < len(words) and words[k + 1].startswith("-") for k, f in enumerate(folded)):
+        why = "env with an option"
+    elif re.search(r"(?<![\w-])exec\s+-\w*c", flat):
+        why = "exec -c"
+    elif re.search(r"(?<![\w-])(?:unset|export\s+-\w*n|declare\s+[+-]\w*|typeset\s+[+-]\w*)\b[^;&|\n]*\$", flat):
+        why = "a variable cleared through an expansion"
+    elif re.search(r"(?<![\w-])(?:export\s+-\w*n|declare\s+\+|typeset\s+\+)", flat):
+        why = "a variable taken out of the environment"
+    elif _command_word(flat, _FRESH_ENV):
+        why = "a command that starts with an environment of its own"
+    elif _command_word(flat, _PTY_WORDS):
+        why = "a pseudo-terminal around it"
+    elif _command_word(flat, _INTERPRETER_WORDS, interpreters=True) and _ENV_CODE.search(flat):
+        k_of = next(k for k, w in enumerate(words) if _fold_name(os.path.basename(w)) in ("of", "of.py"))
+        before = folded[k_of - 1] if k_of else ""
+        if not (before in _INTERPRETER_WORDS or _interpreter_name(before) in _INTERPRETER_WORDS):
+            why = "interpreter code that runs it"   # `python3 bin/of asks answered` itself stays the plain act
+    return (ACTOR_DENY, "of's act with " + why) if why else None
+
+
 # the acts `of` records with its caller (bin/of _asks_actor: an ask answered or withdrawn; `answer` is a person's
 # answer given in a chat); `of status --done-task` needs the caller's position and fails without one
 ACTOR_ACTS = ("answered", "withdraw", "answer")
@@ -2991,6 +3232,8 @@ ACTOR_ACTS = ("answered", "withdraw", "answer")
 def _actor_act(words):
     # `of access grant|revoke|link|record` write a keeper's list or its approvals, and trust the caller's session the
     # same way (of_review on organic-framework PR 357)
+    if any(w in ("--help", "-h") for w in words[2:4]):
+        return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
         (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record"))
 
@@ -3041,15 +3284,112 @@ def _grant_deny(head, args, stext):
     return (GRANT_DENY, hit) if hit else None
 
 
+def _target_dir(args):
+    """The folder `-t DIR`, `-tDIR` or `--target-directory=DIR` names for cp, mv, install or ln, else None."""
+    for k, a in enumerate(args):
+        if a in ("-t", "--target-directory") and k + 1 < len(args):
+            return args[k + 1]
+        if a.startswith("--target-directory="):
+            return a.split("=", 1)[1]
+        if a.startswith("-t") and len(a) > 2 and not a.startswith("--"):
+            return a[2:]
+    return None
+
+
+def _download_targets(head, args):
+    """The files curl's -o/--output or wget's -O/--output-document write, and wget's -P folder."""
+    out, opts = [], (("-o", "--output") if head == "curl" else ("-O", "--output-document", "-P", "--directory-prefix"))
+    for k, a in enumerate(args):
+        for o in opts:
+            if a == o and k + 1 < len(args):
+                out.append(args[k + 1])
+            elif a.startswith(o + "=") and o.startswith("--"):
+                out.append(a.split("=", 1)[1])
+            elif len(o) == 2 and a.startswith("-") and not a.startswith("--") and o[1] in a[1:]:
+                rest = a[a.index(o[1], 1) + 1:]   # a cluster: `-qO f`, `-qOf`
+                out.append(rest if rest else (args[k + 1] if k + 1 < len(args) else ""))
+    return [x for x in out if x != "-"]
+
+
+def _sed_w_files(args):
+    """The files a sed program writes with its w command or the s command's w flag (`sed 's/a/b/w out'`)."""
+    import re as _re
+    progs, k = [], 0
+    while k < len(args):
+        a = args[k]
+        if a in ("-e", "--expression") and k + 1 < len(args):
+            progs.append(args[k + 1])
+            k += 2
+            continue
+        if not a.startswith("-"):
+            progs.append(a)
+            break
+        k += 1
+    out = []
+    for prog in progs:
+        out += _re.findall(r"(?:^|[;\n{}]|/[gpIiMme0-9]*)\s*w\s+([^\s;}]+)", prog)
+    return out
+
+
+def _awk_out_files(args):
+    """The files an awk program prints to (`print > "f"`, `printf … >> "f"`)."""
+    import re as _re
+    prog = next((a for a in args if not a.startswith("-")), "")
+    return _re.findall(r"""\bprintf?\b[^;\n}]*?>{1,2}\s*["']([^"']+)["']""", prog)
+
+
+def _find_exec_writes(args):
+    """The files `find … -exec CMD … ;` writes when CMD copies or moves (its destination), from each -exec part."""
+    out, k = [], 0
+    while k < len(args):
+        if args[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+            j = k + 1
+            while j < len(args) and args[j] not in (";", "\\;", "+"):
+                j += 1
+            part = args[k + 1:j]
+            if part and os.path.basename(part[0]) in _COPIERS | {"mv"}:
+                d = _target_dir(part[1:])
+                ops = [a for a in part[1:] if not a.startswith("-") and a != "{}"]
+                out += [d] if d is not None else ops[-1:]
+            k = j
+        k += 1
+    return out
+
+
 def _changed_files(head, args, stext):
     """The files one simple command writes, removes, moves over or changes in place (G13, G17)."""
     files = list(_write_targets(stext))
     if head == "tee" or head in _REMOVERS or (head in _IN_PLACE and any(a.startswith("-i") or a == "-pi" for a in args)):
         files += [a for a in args if not a.startswith("-")]
+    elif head in _COPIERS and _target_dir(args) is not None:
+        # `cp -t DIR src…`, `--target-directory=DIR`: each source lands under its name there (of_review on PR 395)
+        d = _target_dir(args)
+        files += [d] + [os.path.join(d, os.path.basename(a.rstrip("/"))) for a in args
+                        if not a.startswith("-") and a != d]
     elif head in _COPIERS:
-        files += [a for a in args if not a.startswith("-")][-1:]
+        ops = [a for a in args if not a.startswith("-")]
+        files += ops[-1:]
+        if len(ops) > 1 and (ops[-1].endswith("/") or os.path.isdir(_expanduser(ops[-1]))):
+            # into a folder: each source lands under its own name (`cp /tmp/orgs.yaml ~/.config/of/`: of_secrets-review
+            # on organic-framework PR 387)
+            files += [os.path.join(ops[-1], os.path.basename(a.rstrip("/"))) for a in ops[:-1]]
+    elif head == "find" and _find_exec_writes(args):
+        files += _find_exec_writes(args)
+    elif head == "find" and ("-delete" in args or any(
+            a in ("-exec", "-execdir", "-ok", "-okdir") and k + 1 < len(args) and os.path.basename(args[k + 1]) in
+            (_REMOVERS | _COPIERS | _IN_PLACE | {"tee", "chmod", "touch", "dd", "yq"}) for k, a in enumerate(args))):
+        files += [a for a in args[:next((k for k, a in enumerate(args) if a.startswith(("-", "(", "!"))), len(args))]]
+    elif head == "yq" and any(a in ("-i", "--inplace") or (a.startswith("-") and not a.startswith("--") and "i" in a)
+                              for a in args):
+        files += [a for a in args if not a.startswith("-")]
     elif head == "dd":
         files += [a[3:] for a in args if a.startswith("of=")]
+    elif head in ("curl", "wget"):
+        files += _download_targets(head, args)
+    elif head in ("sed", "gsed"):
+        files += _sed_w_files(args)
+    elif head in ("awk", "gawk", "mawk", "nawk"):
+        files += _awk_out_files(args)
     elif head in ("chmod", "chflags", "xattr"):
         files += [a for a in args[1:] if not a.startswith("-")]
     elif head == "git" and args[:1] and args[0] in ("checkout", "restore", "rm", "mv"):
@@ -3432,7 +3772,9 @@ def _in_outbox(path, cwd=None, removal=False):
     p = str(path or "").strip("'\"")
     if not p:
         return False
-    if not p.startswith(("/", "~", "$")) and cwd:
+    if not p.startswith(("/", "~", "$")):
+        if not cwd:
+            return False   # a relative word with no folder to read it from (a bare `*` matched every path)
         p = os.path.join(cwd, p)
     p = _expanduser(p)
     boxes = _outboxes()
@@ -3715,6 +4057,12 @@ def _tree_targets(head, args, cwd):
         return ops[-1:]
     if head in ("rsync", "ditto"):
         return ops[-1:]
+    if head == "git":
+        wt = next((args[k + 1] for k, a in enumerate(args) if a == "--work-tree" and k + 1 < len(args)), None) or \
+            next((a.split("=", 1)[1] for a in args if a.startswith("--work-tree=")), None)
+        if wt and set(ops) & {"checkout", "restore", "reset", "stash", "merge", "pull", "switch", "clean", "rm", "mv",
+                              "apply", "am", "rebase", "cherry-pick", "revert", "read-tree", "checkout-index"}:
+            return [wt]   # `git --work-tree=<dir> checkout …` writes there (of_review on PR 395)
     if head in ("tar", "bsdtar", "gtar"):
         first = args[0] if args else ""
         extracting = "x" in short or "--extract" in args or "--get" in args or \
@@ -4219,12 +4567,44 @@ def _find_runs_protected(args, cwd):
                         return hit
     return None
 
+_LINE_LINKS = {}   # links made earlier on the line critical_deny checks: {the link's path: what it points to}
+
+
+def _glob_now(word, cwd):
+    """What a glob in WORD names now, as the shell would expand it; [] for a word with no glob."""
+    w = str(word or "").strip("'\"")
+    if not any(ch in w for ch in "*?["):
+        return []
+    import glob as _glob
+    p = _expanduser(w if w.startswith(("/", "~", "$")) else os.path.join(cwd or ".", w))
+    try:
+        return _glob.glob(p)[:64]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None):
     """(reason, path) for G21 on one simple command run in CWD with ENV (the line's exports and its own
     assignments), SHVARS (those and the line's shell variables) and FED (a protected file an earlier stage of its
     pipe names), else None; and the guard's own state files, always."""
     removal = head in ("rm", "rmdir", "mv", "unlink", "shred")
     files = _changed_files(head, args, stext) + ([a for a in args if not a.startswith("-")] if head == "rmdir" else [])
+    # a path held in a line variable, as the shell fills it in (`d=$HOME/.config/of; cp x "$d/orgs.yaml"`:
+    # of_secrets-review on hand-over 726902df); the written words stay too
+    files += [x for x in (_expand_vars(f, shvars or {}) for f in files) if x not in files]
+    files += [m for f in list(files) for m in _glob_now(f, cwd) if m not in files]   # `rm …/2099*.json`, `> …yam[l]`
+    if head == "ln":
+        ops = [a for a in args if not a.startswith("-")]
+        if len(ops) >= 2:
+            _LINE_LINKS[os.path.normpath(_expanduser(os.path.join(cwd or ".", ops[-1])))] = ops[0]
+    for f in list(files):   # `ln -s <file> /tmp/x; echo y > /tmp/x` writes the file, and a link to a folder the files
+        # under it (`ln -s ~/.config/of /tmp/c && echo y > /tmp/c/orgs.yaml`: of_review on PR 395)
+        k = os.path.normpath(_expanduser(os.path.join(cwd or ".", f)))
+        for link, to in list(_LINE_LINKS.items()):
+            if k == link:
+                files.append(to)
+            elif k.startswith(link + "/"):
+                files.append(os.path.join(to, k[len(link) + 1:]))
     state = next((f for f in files if _guard_state_file(f, cwd)), None)
     if state:
         return GUARD_STATE_DENY, state
@@ -4603,6 +4983,12 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             s = _simple(stext)
             if not s:
                 line_vars.update(_assignments(stext))  # `P=…;` alone: a shell variable the line reads later
+                if _write_targets(stext):  # `>> <file>` with no command writes too (G21, G29, G33: of_secrets-review
+                    # on organic-framework PR 387)
+                    hit = _protected_code_deny(":", [], stext, here21, {**exported, **_assignments(stext)},
+                                               {**line_vars, **exported})
+                    if hit:
+                        return hit
                 continue
             if s[0] == "<read":
                 return (f"a command that reads memory or a core dump ({s[1]})", s[1]) if _memory_path(s[1]) \
@@ -4662,7 +5048,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     return hit
             if herestr is not None:
                 if head in _SHELLS:
-                    hit = _bash_deny(herestr, depth + 1)
+                    hit = _in_folder(here21, _bash_deny, herestr, depth + 1)
                 elif head in _INTERPRETERS:
                     hit = _code_deny(herestr, _lang(head))
                 else:
@@ -4672,8 +5058,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             remote_body = head in _REMOTE_HEADS  # ssh's remote command, a container's or a VM's exec
             for body in _nested(head, args):
                 _REMOTE_BODY[0] += remote_body
-                try:
-                    hit = _bash_deny(body, depth + 1)
+                try:  # a local body runs in this command's folder (`cd ~/.config/of && sh -c '… >> views.yaml'`)
+                    hit = _bash_deny(body, depth + 1) if remote_body else _in_folder(here21, _bash_deny, body, depth + 1)
                 finally:
                     _REMOTE_BODY[0] -= remote_body
                 if hit:
@@ -4709,7 +5095,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                         return _reads(a)
             if head in _FILE_READERS:
                 for a in _data_args(head, args):
-                    if _secret_path(a):
+                    if _secret_path(a) or _secret_here(a, here):
                         return _reads(a)
                     hit = _reader_key(a, here, loops, {**line_vars, **exported, **_assignments(stext)})  # G0.9, G1.13
                     if hit:
@@ -5295,6 +5681,7 @@ def critical_deny(tool, tool_input, cwd=None):
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
     _READINGS_SPENT[0] = 0
+    _LINE_LINKS.clear()
     _REDIR_CTX[0] = None
     _CAPPED[0] = None
     _READS[0] = 0
@@ -5303,7 +5690,7 @@ def critical_deny(tool, tool_input, cwd=None):
         cmd = ti.get("command") or ""
         _DENY_CWD[0] = cwd
         try:
-            hit = _bash_deny(cmd)
+            hit = _actor_line_deny(cmd) or _bash_deny(cmd)
         except Exception:  # a parser slip must not deny every command: the old, stricter text match
             bare = _strip_quoted(cmd)
             m = CRITICAL_DENY_BASH.search(bare)

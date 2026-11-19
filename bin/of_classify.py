@@ -602,9 +602,23 @@ _EXCEPT_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_EXC
 # security keeper through of_capacity, msg 01a1ef27-a8ad, 2026-11-18: a repository's tests/fixtures/crafted_tokens.txt
 # refused every outside run on it)
 _TOKEN_TXT = "*token*.txt"
-_SECRET_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_GLOBS if g != _TOKEN_TXT) + r")$")
-_TOKEN_TXT_RX = re.compile(r"(?:^|/)" + _glob_rx(_TOKEN_TXT) + r"$")
+# in any case: this Mac's volumes ignore it, so `~/.CODEX/AUTH.JSON` and `~/.SSH/ID_ED25519` are the same files
+# (of_secrets-review on organic-framework PR 387)
+_SECRET_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_GLOBS if g != _TOKEN_TXT) + r")$", re.I)
+_TOKEN_TXT_RX = re.compile(r"(?:^|/)" + _glob_rx(_TOKEN_TXT) + r"$", re.I)
 _FIXTURE_TOKENS_RX = re.compile(r"(?:^|/)(?:tests?|fixtures|testdata)/(?:[^/]+/)*[^/]*token(?:s|[-_])[^/]*\.txt$")
+# a name that says it holds a credential stays secret in a test folder too (of_review and of_secrets-review on
+# organic-framework PR 387: a deploy, live or prod token in a test folder passed)
+_CREDENTIAL_HINT = re.compile(r"(?:^|[^a-z])(?:access|api|auth|bearer|bot|cli|deploy|gh|github|gitlab|hf|live|npm|oauth|"
+                              r"pat|personal|prod|production|pypi|real|refresh|secret|service|session|slack|stripe)"
+                              r"(?:[^a-z]|$)", re.I)
+
+
+def _fixture_tokens(p):
+    """Is P a test fixture that lists tokens (G1.2): in a test folder once `..` is resolved, `token` no last part of
+    its name, and no word in its name that says it holds a credential?"""
+    n = os.path.normpath(p)
+    return bool(_FIXTURE_TOKENS_RX.search(n)) and not _CREDENTIAL_HINT.search(os.path.basename(n))
 
 
 def secret_path(path):
@@ -613,7 +627,7 @@ def secret_path(path):
     p = "/".join(x.strip().strip("'\"") for x in (path or "").strip().strip("'\"").split("/"))
     if not p or _EXCEPT_RX.search(p):
         return False
-    return bool(_SECRET_RX.search(p)) or (bool(_TOKEN_TXT_RX.search(p)) and not _FIXTURE_TOKENS_RX.search(p))
+    return bool(_SECRET_RX.search(p)) or (bool(_TOKEN_TXT_RX.search(p)) and not _fixture_tokens(p))
 
 
 # Claude Code's deny rules win over allow rules, so they cannot carry the guard's exceptions

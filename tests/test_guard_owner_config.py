@@ -53,5 +53,32 @@ class OwnerConfigTest(unittest.TestCase):
             self.assertIsNone(bash(cmd), cmd)
 
 
+class OwnerConfigFormsTest(unittest.TestCase):
+    """G33's forms from PR 387's reviews (of_secrets-review's comment 7017458194, point 2; of_review's comment
+    7017518350): a bare redirection, a copy into the folder, a body run after cd, find -delete, yq -i, and writes from
+    interpreter code. Nothing runs: the guard judges the text."""
+
+    def test_the_writes_are_denied(self):
+        o = "~/.config/of/orgs.yaml"
+        for cmd in (f">> {o}", "cp /tmp/orgs.yaml ~/.config/of/", "cd ~/.config/of && sh -c 'true >> views.yaml'",
+                    "find ~/.config/of/views.yaml -delete", f"yq -i '.orgs[0].hold = true' {o}",
+                    "python3 -c \"import os; open(os.path.expanduser('~/.config/of/orgs.yaml'),'a').write('x')\"",
+                    "python3 - <<'PY'\nimport os\nopen(os.path.expanduser('~/.config/of/views.yaml'), 'w').write('x')\nPY",
+                    "ruby -e \"File.write(File.expand_path('~/.config/of/orgs.yaml'), 'x')\"",
+                    "node -e \"require('fs').writeFileSync(require('os').homedir()+'/.config/of/orgs.yaml','x')\"",
+                    # a path in a line variable (of_secrets-review on hand-over 726902df, found on PR 395)
+                    'd=$HOME/.config/of; cp /tmp/o.yaml "$d/orgs.yaml"', "d=~/.config/of; echo x > $d/views.yaml"):
+            got = bash(cmd)
+            self.assertTrue(got and "G33" in got[0], cmd)
+
+    def test_reads_still_run(self):
+        o = "~/.config/of/orgs.yaml"
+        for cmd in (f"cat {o}", f"grep hold {o}", f"yq '.orgs' {o}", f"cat {o} > /tmp/orgs-copy.yaml",
+                    'd=/tmp; cp /tmp/o.yaml "$d/orgs.yaml"',
+                    "python3 -c \"import yaml,os; print(yaml.safe_load(open(os.path.expanduser('~/.config/of/orgs.yaml'))))\"",
+                    "find ~/.config/of -name '*.yaml' -exec grep -l hold {} \\;"):
+            self.assertIsNone(bash(cmd), cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
