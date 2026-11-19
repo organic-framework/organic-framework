@@ -65,6 +65,7 @@ class OwnerConfigFormsTest(unittest.TestCase):
                     "python3 -c \"import os; open(os.path.expanduser('~/.config/of/orgs.yaml'),'a').write('x')\"",
                     "python3 - <<'PY'\nimport os\nopen(os.path.expanduser('~/.config/of/views.yaml'), 'w').write('x')\nPY",
                     "ruby -e \"File.write(File.expand_path('~/.config/of/orgs.yaml'), 'x')\"",
+                    "ruby -e \"File.open(File.expand_path('~/.config/of/orgs.yaml'), 'w') { |f| f.write 'x' }\"",
                     "node -e \"require('fs').writeFileSync(require('os').homedir()+'/.config/of/orgs.yaml','x')\"",
                     # a path in a line variable (of_secrets-review on hand-over 726902df, found on PR 395)
                     'd=$HOME/.config/of; cp /tmp/o.yaml "$d/orgs.yaml"', "d=~/.config/of; echo x > $d/views.yaml"):
@@ -76,7 +77,11 @@ class OwnerConfigFormsTest(unittest.TestCase):
         for cmd in (f"cat {o}", f"grep hold {o}", f"yq '.orgs' {o}", f"cat {o} > /tmp/orgs-copy.yaml",
                     'd=/tmp; cp /tmp/o.yaml "$d/orgs.yaml"',
                     "python3 -c \"import yaml,os; print(yaml.safe_load(open(os.path.expanduser('~/.config/of/orgs.yaml'))))\"",
-                    "find ~/.config/of -name '*.yaml' -exec grep -l hold {} \\;"):
+                    "find ~/.config/of -name '*.yaml' -exec grep -l hold {} \\;",
+                    # of_review's notes on PR 399: a read through ruby, an outbox-like name, a grep for an act
+                    "ruby -e \"puts File.open(File.expand_path('~/.config/of/orgs.yaml'), 'r').read\"",
+                    "python3 -c \"print('/tmp/asks-outbox-notes.txt')  # write_text\"",
+                    'ssh -V && grep -F "of asks answered AS-1" guide.md', "cat ~/.ssh/ID_ED25519.PUB"):
             self.assertIsNone(bash(cmd), cmd)
 
 

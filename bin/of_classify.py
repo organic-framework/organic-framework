@@ -595,7 +595,8 @@ def _glob_rx(g):
     return out
 
 
-_EXCEPT_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_EXCEPT) + r")$")
+_EXCEPT_RX = re.compile(r"(?:^|/)(?:" + "|".join(_glob_rx(g) for g in SECRET_EXCEPT) + r")$", re.I)  # as the
+# secret globs, without case: `ID_ED25519.PUB` is a public key (of_review on organic-framework PR 399)
 # G1.2's `*token*.txt` alone does not hold inside a test folder when `token` is no last part of the name
 # (crafted_tokens.txt, token-prices.txt): such fixtures list tokens (a parser's, a chain's), not a credential, while
 # `token.txt` or `gh-token.txt` there stay secret, and so does anything another pattern matches (a user organization's

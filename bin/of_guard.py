@@ -944,7 +944,8 @@ def connector_deny(tool, excluded):
 # (of_review and of_secrets-review on organic-framework PR 387: python's open(…, 'a').write, ruby -e, node -e)
 _CODE_WRITE = re.compile(r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
                          r"""write_bytes|\.write\s*\(|\bdump\s*\(|os\.(?:replace|rename|remove|unlink|truncate)|"""
-                         r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|open|delete|rename)|"""
+                         r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
+                         r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""
                          r"""\bsysopen\b|\bunlink\b|\brename\b""")
 
@@ -997,7 +998,8 @@ def _code_deny(code, lang=None):
     if _GRANT_SIGN_CODE.search(bare):  # G13: signing a grant from code (of_grants.sign_ed25519, of's cmd_grant)
         return GRANT_DENY, _GRANT_SIGN_CODE.search(bare).group(0)
     box = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
-                and ("/asks-outbox" in l.casefold() or _in_outbox(l.strip().lstrip("<>+|& ")))), None) \
+                and (re.search(r"/asks-outbox(?:/|$)", l.casefold()) or _in_outbox(l.strip().lstrip("<>+|& ")))),
+               None) \
         if _CODE_WRITE.search(code) else None   # G35 in code: a write into the asks outbox (of_review on PR 395)
     if box:
         if ASKS_OUTBOX_MODE == "deny":
@@ -3159,7 +3161,7 @@ def _without_prose(cmd):
                 if (h == "of" and words[:1] and words[0] in _PROSE_OF) or (head == "git" and "commit" in args[:3]) \
                         or head == "gh" or os.path.basename(head) in ("request.sh", "commit.sh", "pcommit.sh"):
                     continue
-                if head in ("echo", "printf") and not fed[idx]:
+                if head in ("echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack") and not fed[idx]:
                     continue   # text printed or written to a file; `echo '…' | at now` is kept
                 if (head in _INTERPRETERS or _lang(head)) and h != "of" and \
                         not _launches(head, " ".join(args)):   # `python3 -c "…"` that starts no process
