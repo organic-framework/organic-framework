@@ -95,7 +95,12 @@ class ActorLineTest(unittest.TestCase):
                     f"export -n {V} {P}; script -q /dev/null of asks --json withdraw OF-1",
                     f"export -n {V} {P}; script -q /dev/null of asks --all answered OF-1",
                     f"export -n {V} {P}; printf \"%s\" \"$(script -q /dev/null of asks withdraw OF-1)\"",
-                    f"export -n {V} {P}; of send x \"$(script -q /dev/null of asks withdraw OF-1)\""):
+                    f"export -n {V} {P}; of send x \"$(script -q /dev/null of asks withdraw OF-1)\"",
+                    # a value option before the action (of_review on PR 404 at fef6358)
+                    f"export -n {V} {P}; script -q /dev/null of asks --pane p1 withdraw OF-1",
+                    f"export -n {V} {P}; script -q /dev/null of asks --text hello answer OF-1",
+                    f"export -n {V} {P}; script -q /dev/null of asks --version 2 answer OF-1",
+                    f"export -n {V} {P}; script -q /dev/null of asks --pane=p1 withdraw OF-1"):
             self.assertTrue(deny(cmd), cmd)
 
     def test_plain_acts_and_help_still_run(self):

@@ -3079,10 +3079,10 @@ def _line_act(words):
         # no `--help` exception here: the words have lost their quotes, so a reason `"--help me"` read as the flag,
         # while argparse takes it as the reason and runs the act (of_review on organic-framework PR 399 at 7c776fe);
         # the per-command reading, which has the real words, keeps it (_actor_act)
-        if rest[:1] == ["asks"]:
-            after = [x for x in rest[1:] if not x.startswith("-")]   # `of asks --json withdraw …`: options first
-            if after[:1] and after[0] in ACTOR_ACTS:
-                return True
+        if rest[:1] == ["asks"] and any(x in ACTOR_ACTS for x in rest[1:]):
+            # options before the action, with or without a value (`--json`, `--pane p1`, `--text hello`, `--pane=p1`:
+            # of_review on organic-framework PR 404): any act word among the words after `asks`
+            return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
     return False
