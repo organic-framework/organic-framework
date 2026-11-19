@@ -759,6 +759,18 @@ class SubagentTest(unittest.TestCase):
         _, c = self.go("codex", visibility=lambda r: True)
         self.assertTrue(c["argv"])                                          # the run started
 
+    def test_the_diff_scan_reads_the_whole_path_too(self):
+        """of_review on organic-framework PR 387: the diff scan's change had no test."""
+        base = self.git("rev-parse", "HEAD").stdout.strip()
+        os.makedirs(os.path.join(self.repo, "tests"), exist_ok=True)
+        for rel in ("tests/crafted_tokens.txt", "api_token.txt"):
+            with open(os.path.join(self.repo, rel), "w") as fh:
+                fh.write("x\n")
+            self.git("add", "-f", rel)
+        self.git("commit", "-qm", "two token lists")
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        self.assertEqual([p for p, _ in of_subagent.diff_secrets(self.repo, base, head)], ["api_token.txt"])
+
     def test_read_only_flags_no_web_with_a_workspace_and_no_workspace_with_the_web(self):
         _, c = self.go("codex", visibility=lambda r: True)
         a = c["argv"]

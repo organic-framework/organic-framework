@@ -608,7 +608,9 @@ _FIXTURE_TOKENS_RX = re.compile(r"(?:^|/)(?:tests?|fixtures|testdata)/(?:[^/]+/)
 
 
 def secret_path(path):
-    p = (path or "").strip().strip("'\"")
+    # each part stripped of the spaces and quotes around it, so `a/b/ "name"` is read as a/b/name (of_review on
+    # organic-framework PR 387: only the whole path was stripped)
+    p = "/".join(x.strip().strip("'\"") for x in (path or "").strip().strip("'\"").split("/"))
     if not p or _EXCEPT_RX.search(p):
         return False
     return bool(_SECRET_RX.search(p)) or (bool(_TOKEN_TXT_RX.search(p)) and not _FIXTURE_TOKENS_RX.search(p))
