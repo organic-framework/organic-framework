@@ -56,5 +56,16 @@ class MachineId(unittest.TestCase):
         self.assertFalse([n for n in os.listdir(self.tmp.name) if n.startswith(".machine_id.") and n != ".machine_id.lock"])
 
 
+    def test_a_link_to_nothing_is_replaced_and_never_hangs(self):
+        """of_review on PR 419 at 10ab82d: a dangling machine_id link made machine_id() spin forever."""
+        import time
+        os.symlink(os.path.join(self.tmp.name, "nowhere"), os.path.join(self.tmp.name, "machine_id"))
+        start = time.monotonic()
+        mid = of_events.machine_id(wait_s=0.05)
+        self.assertLess(time.monotonic() - start, 2)
+        self.assertTrue(mid)
+        self.assertEqual(of_events.machine_id(), mid)
+        self.assertFalse(os.path.islink(os.path.join(self.tmp.name, "machine_id")))
+
 if __name__ == "__main__":
     unittest.main()
