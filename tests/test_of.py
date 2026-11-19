@@ -646,6 +646,29 @@ class OrgCommandTest(unittest.TestCase):
             self.assertNotEqual(run("set", "two", "hold", "maybe").returncode, 0)
             self.assertNotEqual(run("set", "two", "path", "on").returncode, 0)  # only hold: has a command
 
+    def test_path_is_set_for_an_entry_joined_through_a_server(self):
+        """of_agent-server on the agent host (msg 01a1f5f7-1dee): the enrollment wrote an entry with server: alone, and
+        the registry, carried there later, had no command to name it."""
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "orgs.yaml")
+            with open(p, "w") as fh:
+                fh.write("orgs:\n- name: ofb\n  server: https://127.0.0.1:18200\n  raw: false\n")
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, "registry"))
+            open(os.path.join(repo, "registry", "positions.yaml"), "w").write("positions: {}\n")
+            env = dict(os.environ, OF_CONFIG_DIR=d, OF_ORGS=p)
+            of = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "org"]
+            run = lambda *a: subprocess.run(of + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+            r = run("set", "ofb", "path", repo)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            entry = yaml.safe_load(open(p))["orgs"][0]
+            self.assertEqual((entry["path"], entry["server"]), (os.path.realpath(repo), "https://127.0.0.1:18200"))
+            self.assertIn(f"path {os.path.realpath(repo)}", run("show", "ofb").stdout)
+            self.assertNotEqual(run("set", "ofb", "path", d).returncode, 0)        # no registry there: refused
+            self.assertEqual(yaml.safe_load(open(p))["orgs"][0]["path"], os.path.realpath(repo))
+            self.assertNotEqual(run("set", "ofb", "hold", "maybe").returncode, 0)
+
     def test_a_flow_style_entry_is_refused_unwritten(self):
         sys_path = os.path.join(HERE, "..", "bin")
         __import__("sys").path.insert(0, sys_path)

@@ -2627,7 +2627,8 @@ def cmd_owner(args):
 
 
 def cmd_org(args):
-    """`of org show [<org>]` and `of org set <org> hold on|off`: an organization's settings in this machine's orgs.yaml,
+    """`of org show [<org>]`, `of org set <org> hold on|off` and `of org set <org> path <folder>`: an organization's
+    settings in this machine's orgs.yaml,
     which G33 (docs/guard.md) makes the owner's file: agents set hold: through this command, never with an edit of the
     file (of_server's replay of 2026-11-18, through of_release msg 01a1f0f5-3d47)."""
     import of_init
@@ -2644,15 +2645,29 @@ def cmd_org(args):
         if args.org and not shown:
             raise OfError(f"no organization {args.org!r} in {path}")
         for o in shown:
-            print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}")
+            print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}, path "
+                  f"{o.get('path') or '(none: joined through a server only)'}")
         return 0
-    if not args.org or args.key not in of_init.ORG_KEYS or args.value not in ("on", "off"):
-        raise OfError("of org set <org> hold on|off")
+    usage = "of org set <org> hold on|off | of org set <org> path <its repository's folder>"
+    if not args.org or args.key not in of_init.ORG_KEYS or not args.value:
+        raise OfError(usage)
+    if args.key == "hold":
+        if args.value not in ("on", "off"):
+            raise OfError(usage)
+        value, shown_value = (True if args.value == "on" else None), args.value
+    else:
+        # the folder of the organization's repository, as the registry loader reads it (an entry the enrollment wrote
+        # with server: alone has none until it is set: of_agent-server on the agent host, msg 01a1f5f7-1dee)
+        folder = os.path.realpath(os.path.expanduser(args.value))
+        if not os.path.isfile(os.path.join(folder, "registry", "positions.yaml")):
+            raise OfError(f"{args.value}: no registry/positions.yaml there; give the organization's repository")
+        home = os.path.realpath(os.path.expanduser("~"))
+        value = shown_value = "~" + folder[len(home):] if folder == home or folder.startswith(home + "/") else folder
     try:
-        of_init.set_org_key(path, args.org, args.key, True if args.value == "on" else None)
+        of_init.set_org_key(path, args.org, args.key, value)
     except ValueError as e:
         raise OfError(str(e))
-    print(f"{args.org}: hold {args.value}")
+    print(f"{args.org}: {args.key} {shown_value}")
     return 0
 
 
@@ -7739,11 +7754,12 @@ def main(argv=None):
     hk.set_defaults(fn=lambda a: __import__("of_init").hooks(a.action, a.config_dir, a.yes, a.dry_run,
                                                              deny_secrets=a.deny_secrets, guard=a.guard))
     og = sub.add_parser("org", help="an organization's settings in this machine's orgs.yaml: show [<org>] | set <org> "
-                        "hold on|off (`of apply` and the desk leave a held organization's panes alone)")
+                        "hold on|off (`of apply` and the desk leave a held organization's panes alone) | set <org> path "
+                        "<its repository's folder>")
     og.add_argument("action", choices=["show", "set"])
     og.add_argument("org", nargs="?")
-    og.add_argument("key", nargs="?", choices=["hold"])
-    og.add_argument("value", nargs="?", choices=["on", "off"])
+    og.add_argument("key", nargs="?", choices=["hold", "path"])
+    og.add_argument("value", nargs="?")
     og.set_defaults(fn=cmd_org)
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
                         "language <code or name> | set surface herdr|remote (~/.config/of/owner.yaml)")
