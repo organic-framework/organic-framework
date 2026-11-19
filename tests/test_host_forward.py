@@ -119,5 +119,57 @@ class ForwardTest(unittest.TestCase):
             F.install("alex@192.0.2.10", self.key, home=self.home, run=Run(code=5), out=lambda s: None)
 
 
+
+class BridgeTest(unittest.TestCase):
+    """The stdio bridge to the host's server, from the cut on (of_agent-server's test sshds, msg 01a1f5f7-0d09: ssh -L to
+    a socket cannot be confined on OpenSSH 10.6, a forced socat command with no forwarding can)."""
+
+    def test_the_unit_runs_the_bridge_and_its_ssh_asks_for_no_forwarding(self):
+        u = F.unit("of-forward@192.0.2.10", "/k", home="/Users/alex", mode="bridge")
+        self.assertEqual(u["ProgramArguments"][2:], ["bridge", "--to", "of-forward@192.0.2.10", "--key", "/k"])
+        self.assertEqual(u["EnvironmentVariables"], {"OF_AUTOMATION": "1", "SSH_AUTH_SOCK": ""})
+        for argv in (F.master_argv("u@h", "/k"), F.stream_argv("u@h", "/k")):
+            self.assertIn("IdentityAgent=none", argv)
+            self.assertIn("BatchMode=yes", argv)
+            self.assertIn("StrictHostKeyChecking=yes", argv)
+            self.assertFalse({"-L", "-R", "-W", "-D", "-A", "-t"} & set(argv), argv)
+        self.assertIn("-T", F.stream_argv("u@h", "/k"))
+        self.assertIn("ControlMaster=no", F.stream_argv("u@h", "/k"))
+        self.assertEqual(F.master_argv("u@h", "/k")[:3], ["/usr/bin/ssh", "-M", "-N"])
+
+    def test_each_connection_gets_its_own_stream_both_ways_and_the_socket_is_this_users(self):
+        import socket
+        import threading
+        d = tempfile.mkdtemp(prefix="ofb-", dir="/tmp")
+        listen = os.path.join(d, "fwd", "s.sock")
+        echo = [sys.executable, "-c", "import sys; d = sys.stdin.buffer.read(); sys.stdout.buffer.write(d[::-1])"]
+        stop, ready = threading.Event(), threading.Event()
+        t = threading.Thread(target=F.serve_bridge, args=(listen, echo), kwargs={"stop": stop, "ready": ready},
+                             daemon=True)
+        t.start()
+        self.assertTrue(ready.wait(10))
+        try:
+            self.assertEqual(os.stat(listen).st_mode & 0o777, 0o600)
+            self.assertEqual(os.stat(os.path.dirname(listen)).st_mode & 0o777, 0o700)
+            for msg in (b"GET /v1/health", b"a second stream"):
+                c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                c.settimeout(10)
+                c.connect(listen)
+                c.sendall(msg)
+                c.shutdown(socket.SHUT_WR)
+                got = b""
+                while True:
+                    b = c.recv(4096)
+                    if not b:
+                        break
+                    got += b
+                c.close()
+                self.assertEqual(got, msg[::-1])
+        finally:
+            stop.set()
+            t.join(10)
+        self.assertFalse(os.path.exists(listen))
+
+
 if __name__ == "__main__":
     unittest.main()
