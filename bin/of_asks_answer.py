@@ -633,9 +633,9 @@ def _answer(conn, item, text, positions, pane_of):
     if of_asks.stale(shown, c.get("version")):
         return False, amended_refusal(c, shown), None
     act = item.get("act")  # the screen's act id: its thread and its leaving write one event (INSERT OR IGNORE)
-    if pane_of is None and has_event(conn, act):  # its thread recorded it: typed by the deliverer if it was not yet
-        drop_draft(item)
-        return True, "answer recorded already; OF types it in now", act
+    if pane_of is None and has_event(conn, act):  # its thread recorded it, and may be typing it now: never typed
+        drop_draft(item)  # twice from here (of_review on PR 398); the pulse or the turn's end types it if it did not
+        return True, "answer recorded already; OF types it in when the agent's turn ends", None
     lock = _record_lock(None if pane_of is not None else LEAVE_LOCK_S)  # the check and the record together
     eid = None
     try:

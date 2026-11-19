@@ -1146,9 +1146,10 @@ class LeaveTest(RedeliverTest):
         self.assertEqual((c["ask_ids"], c["by"], c.get("answer")), ([a1, a2], "owner", None))
         self.assertEqual(spawned, [[]])
 
-    def test_an_act_its_thread_recorded_is_one_event_and_still_typed(self):
-        """Codex's review of this change: a mark slow in its thread was recorded again as the screen left, and an
-        answer its thread had recorded was not typed until a later pass. Each act's id makes it one event."""
+    def test_an_act_its_thread_recorded_is_one_event_and_never_typed_twice(self):
+        """Codex's review of this change: a mark slow in its thread was recorded again as the screen left. Each act's
+        id makes it one event. An answer its thread recorded may be being typed by it: the deliverer is not given it
+        (of_review on PR 398); the pulse or the turn's end types it if the thread did not."""
         a1, a2, item = self.group()
         mark = dict(item, act="00000000-0000-4000-8000-00000000000a")
         with mock.patch.dict(os.environ, self.clean, clear=True), mock.patch.object(sys, "stdin", self.tty):
@@ -1161,7 +1162,7 @@ class LeaveTest(RedeliverTest):
         self.assertTrue(of_asks_answer.answer(self.conn, ans, "yes", self.positions(), lambda name: None)[0])
         out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": ans, "started": True}])
         self.assertEqual([e for e, _ in self.events("of.agent_question_answered")], [ans["act"]])
-        self.assertEqual((typed, spawned), ([], [[ans["act"]]]))  # the deliverer types it if its thread did not
+        self.assertEqual((typed, spawned), ([], [[]]))  # never handed to the deliverer: its thread may be typing it
 
     def test_a_copy_in_the_spool_and_a_second_flush_stay_one_event(self):
         _, _, item = self.group()
