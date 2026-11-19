@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -81,8 +82,12 @@ DEFAULTS = {
     # clients that reach this server through a forward
     # (docs/server-several-machines.md 4.8): they trust only its pinned certificate, so a process that takes the
     # forwarded port while the forward is down gets no bearer, batch or code. Its /v1/health answers {ok, version}.
-    # `of server tls-init` makes the certificate and adds this. Absent: no second listener.
+    # `of server tls-init` makes the certificate and adds this. Absent: no second listener. With `socket: <path>` it
+    # listens on that unix socket instead of a port (mode `socket_mode`, 0o660 unless given): a server on a shared host
+    # opens no TCP port any other user could reach, and the forward's user reaches it by the folder's group.
     "tls": None,
+    # A unix socket for the plain listener in place of host and port (mode 0o600: this user only). Absent: host, port.
+    "socket": None,
     # ClickHouse for the storage plugin: {url, user, password_file}; `<db>_ingest.password`
     # files sit next to password_file. Absent: the client's ship.yaml (the founder's Mac).
     "clickhouse": None,
@@ -1843,6 +1848,54 @@ class Server(ThreadingHTTPServer):
         traceback.print_exc()
 
 
+class UnixListener:
+    """A listener on a unix socket in place of a port (cfg `socket`, `tls.socket`). The path is taken only from a
+    stale socket: a live server on it, or any other file there, refuses the start. The socket gets its mode before
+    any client can reach it (umask), then exactly `socket_mode`."""
+    address_family = socket.AF_UNIX
+    socket_mode = 0o600
+
+    def server_bind(self):
+        import stat
+        path = self.server_address
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            st = None
+        if st is not None:
+            if not stat.S_ISSOCK(st.st_mode):
+                raise OSError(f"{path} exists and is not a socket")
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(1)
+                probe.connect(path)
+                raise OSError(f"a server already listens on {path}")
+            except (ConnectionRefusedError, FileNotFoundError, socket.timeout):
+                os.unlink(path)  # a stale socket from an earlier run
+            finally:
+                probe.close()
+        old = os.umask(0o777 & ~self.socket_mode)
+        try:
+            self.socket.bind(path)
+        finally:
+            os.umask(old)
+        os.chmod(path, self.socket_mode)
+        self.server_name, self.server_port = path, 0
+
+    def get_request(self):
+        request, _ = self.socket.accept()
+        return request, ("unix", 0)  # handlers read client_address[0]
+
+
+class UnixServer(UnixListener, Server):
+    pass
+
+
+def listener_name(httpd):
+    a = httpd.server_address
+    return a if isinstance(a, str) else f"{a[0]}:{a[1]}"
+
+
 class TLSServer(Server):
     """The listener for forwarded clients (cfg `tls`): TLS 1.2 or later; each handshake runs in its request's own
     thread, so a slow or silent client never holds up the accept loop."""
@@ -2005,11 +2058,17 @@ class App:
         t = self.cfg.get("tls")
         if not t:
             return None
+        if t.get("socket"):
+            cls = type("UnixTLSServer", (UnixListener, TLSServer), {"socket_mode": int(t.get("socket_mode") or 0o660)})
+            return cls(t["socket"], make_handler(self), t["cert"], t["key"])
         return TLSServer((t.get("host") or "127.0.0.1", int(t.get("port") or TLS_PORT)), make_handler(self),
                          t["cert"], t["key"])  # loopback unless named: the forward's end is this machine
 
     def serve(self, host=None, port=None):
-        httpd = Server((host or self.cfg["host"], self.cfg["port"] if port is None else port), make_handler(self))
+        if self.cfg.get("socket") and host is None and port is None:
+            httpd = UnixServer(self.cfg["socket"], make_handler(self))
+        else:
+            httpd = Server((host or self.cfg["host"], self.cfg["port"] if port is None else port), make_handler(self))
         self.writer.start()
         threading.Thread(target=self._housekeeping, daemon=True, name="of-server-housekeeping").start()
         threading.Thread(target=self.health_checks.run, args=(self.writer.stop,), daemon=True,
@@ -2038,12 +2097,12 @@ def run(log=None, config=None):
     of_stacks.install(signal.SIGUSR1, sys.stderr)
     app = App(load_config(config) if config else None, writer_process=True, config_path=config)
     httpd = app.serve()
-    log(f"of-server {VERSION} listening on {httpd.server_address[0]}:{httpd.server_address[1]}, "
+    log(f"of-server {VERSION} listening on {listener_name(httpd)}, "
         f"state {app.cfg['state_dir']}")
     tls_httpd = app.serve_tls()  # docs/server-several-machines.md 4.8
     if tls_httpd is not None:
         threading.Thread(target=tls_httpd.serve_forever, daemon=True, name="of-server-tls").start()
-        log(f"of-server: TLS for forwarded clients on {tls_httpd.server_address[0]}:{tls_httpd.server_address[1]}")
+        log(f"of-server: TLS for forwarded clients on {listener_name(tls_httpd)}")
     # SIGTERM (launchd, Kubernetes): stop accepting, let requests in flight answer, then exit.
     signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=httpd.shutdown, daemon=True).start())
     pid_file = os.path.join(app.cfg["state_dir"], "server.pid")
