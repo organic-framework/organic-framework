@@ -47,6 +47,14 @@ class Fake(BaseHTTPRequestHandler):
         if self.path == "/v1/invites":
             return self._send(200, {"code": "INV-123", "expires": "2026-11-08"})
         if self.path == "/v1/enroll":
+            if body.get("code") in ("INV-NORAW", "INV-OTHER403"):  # an invite that offers no raw tier
+                asked = [o for o, c in body["consent"].items() if "raw" in c["tiers"]]
+                if asked:
+                    title = (f"{asked[0]}: the raw tier is not offered by this invite" if body["code"] == "INV-NORAW"
+                             else "this person may not join")
+                    return self._send(403, {"type": "consent", "title": title, "status": 403})
+                return self._send(200, {"machine_id": body["machine_id"], "orgs": list(body["consent"]),
+                                        "raw_orgs": []})
             if body.get("code") != "INV-123":
                 return self._send(410, {"type": "gone"})
             raw = [o for o, c in body["consent"].items() if "raw" in c["tiers"]]
@@ -121,6 +129,25 @@ class EnrollTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)  # nothing answers there: the enrollment never happened
         with open(os.path.join(cfg, "ship.yaml")) as fh:
             self.assertEqual(fh.read(), "server_url: http://127.0.0.1:1\n")
+
+    def test_a_raw_tier_the_invite_does_not_offer_enrols_typed_and_says_so(self):
+        """of_conductor, msg 01a1f5e0-a4bb (2026-11-19): the owner answered y to the raw question twice and each
+        enrolment aborted on of-server's 403, though the invite had already answered it."""
+        r = self.of("enroll", self.url, "--code", "INV-NORAW", "--org", "acme", "--org", "other", "--raw", "acme",
+                    "--raw", "other", "--yes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sent = [b for p, b, _ in Fake.seen if p == "/v1/enroll"]
+        self.assertEqual(len(sent), 3)                                  # one more try per organization refused
+        self.assertEqual({o: c["tiers"] for o, c in sent[-1]["consent"].items()}, {"acme": ["typed"], "other": ["typed"]})
+        self.assertIn("does not offer the raw tier for acme", r.stdout)
+        self.assertIn("does not offer the raw tier for other", r.stdout)
+        self.assertIn("raw tier: none", r.stdout)
+
+    def test_another_403_still_fails(self):
+        r = self.of("enroll", self.url, "--code", "INV-OTHER403", "--org", "acme", "--raw", "acme", "--yes")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len([p for p, _, _ in Fake.seen if p == "/v1/enroll"]), 1)
+        self.assertIn("this person may not join", r.stderr + r.stdout)
 
     def test_bad_code_fails_cleanly(self):
         r = self.of("enroll", self.url, "--code", "WRONG", "--org", "x", "--yes")

@@ -6252,6 +6252,23 @@ def _ship_server_url(url):
     print(f"ship.yaml's default server is now {url.rstrip('/')}")
 
 
+def _raw_not_offered(err, consent):
+    """The organizations an enrolment's 403 says the invite offers no raw tier for, among those consent asked raw
+    for; [] for any other error (of-server's _check_consent: "<org>: the raw tier is not offered by this invite")."""
+    if getattr(err, "status", None) != 403:
+        return []
+    try:
+        body = json.loads(err.body) if isinstance(err.body, str) else (err.body or {})
+    except ValueError:
+        return []
+    title = str(body.get("title") or "")
+    if body.get("type") != "consent" or not title.endswith(": the raw tier is not offered by this invite"):
+        return []
+    asked = [o for o, v in consent.items() if "raw" in v["tiers"]]
+    org = title[:-len(": the raw tier is not offered by this invite")]
+    return [org] if org in asked else asked
+
+
 def cmd_enroll(args):
     import of_client
     if getattr(args, "pin", None):  # the server's certificate, to trust it alone (docs/server-several-machines.md 4.8)
@@ -6292,9 +6309,26 @@ def cmd_enroll(args):
     for org in args.org:
         raw = org in (args.raw or [])
         if not raw and not args.yes:
-            raw = input(f"Send the raw tier for {org}? [y/N] ").strip().lower() in ("y", "yes", "д", "да")
+            raw = input(f"Send the raw tier for {org}, if your invite offers it? [y/N] ").strip().lower() in (
+                "y", "yes", "д", "да")
         consent[org] = {"tiers": ["typed", "raw"] if raw else ["typed"], "terms": terms.get("current")}
-    r = c.enroll(args.code, consent)
+    for _ in range(len(consent) + 1):
+        try:
+            r = c.enroll(args.code, consent)
+            break
+        except of_client.ServerError as e:
+            # the client cannot see what the invite offers before it enrols: a raw tier the invite does not offer is
+            # refused before the code is used, so enrol again with typed for that organization and say so (2026-11-19:
+            # the owner answered y twice and each enrolment aborted on that 403; of_conductor's report). The server
+            # names one organization per answer, so each one asked raw for costs at most one more try.
+            off = _raw_not_offered(e, consent)
+            if not off:
+                raise
+            for org in off:
+                consent[org]["tiers"] = ["typed"]
+            print(f"The invite does not offer the raw tier for {', '.join(off)}: enrolling with typed only. Raw needs "
+                  "a new invite that offers it (of invite --raw-allowed), and this machine enrolled again with it "
+                  "after the server's keeper revokes it.")
     raw_orgs = r.get("raw_orgs") if r.get("raw_orgs") is not None else [o for o, v in consent.items() if "raw" in v["tiers"]]
     set_org_servers(r.get("orgs") or args.org, args.server, raw_orgs=raw_orgs)
     if getattr(args, "pin", None):
