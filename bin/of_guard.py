@@ -4840,7 +4840,21 @@ _GIT_BANG_KEY = re.compile(r"^(?:alias\.[^.]+|submodule\..+\.update)$")  # a she
 _GIT_CONFIG_VALUE_OPTS = frozenset("-f --file --blob -t --type --default --comment --value --url".split())
 # git config's modes that set no value: their second word is a pattern or nothing (of_review on PR 400)
 _GIT_CONFIG_READS = frozenset("--get --get-all --get-regexp --get-urlmatch --get-color --get-colorbool --unset "
-                              "--unset-all --list -l --edit -e --remove-section --rename-section --show-origin".split())
+                              "--unset-all --list -l --edit -e --remove-section --rename-section".split())
+
+
+def _git_config_flags(words):
+    """The option words git config gives itself, past the values its value options take (`--comment -e`, `--file -l`
+    give no mode: of_secrets-review on organic-framework PR 403)."""
+    out, k = set(), 0
+    while k < len(words):
+        if words[k] in _GIT_CONFIG_VALUE_OPTS:
+            k += 2
+            continue
+        if words[k].startswith("-"):
+            out.add(words[k].split("=", 1)[0])
+        k += 1
+    return out
 _GIT_CONFIG_SUBCOMMANDS = frozenset("set get unset list edit rename-section remove-section".split())
 _GIT_SHELL_ENV = frozenset({"GIT_PAGER", "PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND", "GIT_SSH",
                             "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SEQUENCE_EDITOR", "LESSOPEN",
@@ -4855,7 +4869,7 @@ def _git_shell_values(head, args, stext, env, depth):
     if head == "git":
         values += [v.lstrip("!") for k, v in _git_config_pairs(args, env)
                    if _GIT_SHELL_KEY.match(k) or (_GIT_BANG_KEY.match(k) and v.startswith("!"))]
-        if "config" in args and not _GIT_CONFIG_READS & set(args[args.index("config") + 1:]):
+        if "config" in args and not _GIT_CONFIG_READS & _git_config_flags(args[args.index("config") + 1:]):
             rest, k = [], args.index("config") + 1
             while k < len(args):
                 a = args[k]
