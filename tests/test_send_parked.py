@@ -45,7 +45,8 @@ class ParkedNoteTest(unittest.TestCase):
 
 class ParkedRefusalTest(unittest.TestCase):
     BASE = [pos("acme_org", role="org"), pos("acme_ops"), pos("acme_lead"), pos("acme_dev")]
-    WATCH = pos("acme_watch", status="parked", successor="acme_ops", _unit="ops", _unit_owner="acme_lead")
+    WATCH = pos("acme_watch", status="parked", successor="acme_ops", system="watch", _unit="ops",
+                _unit_owner="acme_lead", _units={"ops": {"owner": "acme_lead", "systems": ["watch"]}})
 
     def test_a_parked_position_whose_successor_is_active_is_refused_with_the_successor_named(self):
         got = of_cli._parked_refusal("acme:acme_watch", self.BASE + [self.WATCH], "acme:acme_dev")
@@ -86,6 +87,34 @@ class ParkedRefusalTest(unittest.TestCase):
         self.assertIsNone(of_cli._queue_manager(ps[2], self.WATCH, ps))           # its unit's owner
         self.assertIn("may move or drop", of_cli._queue_manager(ps[3], self.WATCH, ps))
         self.assertIn("not a position of acme", of_cli._queue_manager(ps[-1], self.WATCH, ps))
+
+    def _inbox(self, action, sid, **kw):
+        import argparse
+        args = argparse.Namespace(action=action, id="acme:acme_watch", to=None, msg=None, dry_run=False, reason=None,
+                                  sender=None, mine=False, take=None, taken=False, all=False)
+        for k, v in kw.items():
+            setattr(args, k, v)
+        saved, env = of_cli._load_quiet, os.environ.get("CLAUDE_CODE_SESSION_ID")
+        of_cli._load_quiet = lambda: self.BASE + [self.WATCH]
+        os.environ["CLAUDE_CODE_SESSION_ID"] = sid
+        try:
+            with self.assertRaises(of_cli.OfError) as cm:
+                of_cli.cmd_inbox(args)
+            return str(cm.exception)
+        finally:
+            of_cli._load_quiet = saved
+            if env is None:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            else:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = env
+
+    def test_drop_checks_the_role_and_never_takes_a_dry_run(self):
+        """of_secrets-review on PR 375: the client's drop checked no role, and drop --dry-run dropped."""
+        self.assertIn("may move or drop", self._inbox("drop", "S-acme_dev", msg=["m1"], reason="stale"))
+        self.assertIn("--dry-run is for move", self._inbox("drop", "S-acme_org", msg=["m1"], reason="stale",
+                                                           dry_run=True))
+        self.assertIn("of inbox drop <position> --msg ID", self._inbox("drop", "S-acme_org", reason="stale"))
+        self.assertIn("may move or drop", self._inbox("move", "S-acme_dev", to="acme:acme_ops"))
 
 if __name__ == "__main__":
     unittest.main()

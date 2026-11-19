@@ -4037,17 +4037,17 @@ def cmd_inbox(args):
 
 def _queue_manager(me, target, positions):
     """Why ME may not move or drop TARGET's queued messages, or None: only its organization's structure keeper and the
-    owner of its unit may (the server checks it too when it has the registry; docs/server.md, "Relay and presence")."""
-    import of_pulse
+    owner of its unit may, by the one rule the server applies too (of_server_relay.queue_managers)."""
+    import of_server_relay
     org = target.get("_org")
     if me.get("_org") != org:
         return f"{me['name']} is not a position of {org}"
-    keeper = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
-    if me["name"] in {keeper, target.get("_unit_owner")} - {None}:
+    mine = [p for p in positions if p.get("_org") == org]
+    allowed = of_server_relay.queue_managers(mine, target.get("_units"), target["name"])
+    if me["name"] in allowed:
         return None
-    return (f"only {org}'s structure keeper ({keeper or 'none active'})"
-            + (f" or {target['name']}'s unit owner ({target['_unit_owner']})" if target.get("_unit_owner") else "")
-            + f" may move or drop {target['name']}'s messages")
+    return (f"only {org}'s structure keeper or {target['name']}'s unit owner ({', '.join(sorted(allowed)) or 'none active'})"
+            f" may move or drop {target['name']}'s messages")
 
 
 def _inbox_manage(args):
@@ -4066,30 +4066,35 @@ def _inbox_manage(args):
     if not session:
         raise OfError(f"{me['name']}: no session to prove you hold it; run this from the holder's own session")
     by = f"{me['_org']}:{me['name']}"
-    cfg = of_ship.config()
-    client = of_client.Client(of_ship.org_servers(cfg).get(me["_org"]) or cfg["server_url"])
-    if args.action == "drop":
-        if not args.id or not args.reason:
-            raise OfError("of inbox drop <full message id> --reason \"…\"")
-        try:
-            r = client.drop_message(args.id, by, session, args.reason)
-        except Exception as e:  # noqa: BLE001 - the server's 403 or 404 says why
-            raise OfError(f"of inbox drop: {e}")
-        print(f"{r.get('msg_id')}: " + (f"already {r.get('state')}" if r.get("already") else
-                                        "dropped (expired; the server host's `of server relay-requeue --state expired "
-                                        "--msg-id <id>` undoes it)"))
-        return 0
-    if not args.id or not args.to:
-        raise OfError("of inbox move <position> --to <position> [--msg ID …] [--dry-run]")
-    src, dst = _resolve_address(args.id, positions), _resolve_address(args.to, positions)
-    if src.split(":")[0] != dst.split(":")[0]:
-        raise OfError("messages move only within their organization")
+    usage = ("of inbox drop <position> --msg ID [--msg ID …] --reason \"…\"" if args.action == "drop" else
+             "of inbox move <position> --to <position> [--msg ID …] [--dry-run]")
+    if not args.id or (args.action == "move" and not args.to) or (args.action == "drop" and not (args.msg and
+                                                                                                    args.reason)):
+        raise OfError(usage)
+    if args.action == "drop" and (args.dry_run or args.to):  # a preview must never drop (of_secrets-review, PR 375)
+        raise OfError(f"{'--dry-run' if args.dry_run else '--to'} is for move: {usage}")
+    src = _resolve_address(args.id, positions)
     target = next((p for p in positions if f"{p.get('_org')}:{p.get('name')}" == src), None)
     if target is None:
         raise OfError(f"{src} is not in the registries this machine lists")
     why = _queue_manager(me, target, positions)
     if why:
         raise OfError(why)
+    cfg = of_ship.config()
+    client = of_client.Client(of_ship.org_servers(cfg).get(me["_org"]) or cfg["server_url"])
+    if args.action == "drop":
+        for msg_id in args.msg:
+            try:
+                r = client.drop_message(msg_id, src, by, session, args.reason)
+            except Exception as e:  # noqa: BLE001 - the server's 403, 404 or 409 says why
+                raise OfError(f"of inbox drop {msg_id}: {e}")
+            print(f"{r.get('msg_id')}: " + (f"already {r.get('state')}" if r.get("already") else
+                                            "dropped (expired; the server host's `of server relay-requeue --state "
+                                            "expired --msg-id <id>` undoes it)"))
+        return 0
+    dst = _resolve_address(args.to, positions)
+    if src.split(":")[0] != dst.split(":")[0]:
+        raise OfError("messages move only within their organization")
     closed = _closed_receiver(dst, positions)
     if closed or _parked_cover(dst, positions):
         raise OfError(f"{dst} would not read them either: " + (closed or "it is parked on purpose")
@@ -7718,10 +7723,11 @@ def main(argv=None):
     ib = sub.add_parser("inbox", help="messages to positions held by people on this machine; move | drop: a structure "
                                       "keeper's or unit owner's hand on a position's queue on the server")
     ib.add_argument("action", nargs="?", choices=["list", "read", "move", "drop"], default="list")
-    ib.add_argument("id", nargs="?", help="read: a message id; move: the position whose queue moves (<org>:<position>"
-                                          " or a name); drop: the message's full id")
+    ib.add_argument("id", nargs="?", help="read: a message id; move, drop: the position whose queue it is "
+                                          "(<org>:<position> or a name)")
     ib.add_argument("--to", help="move: the position that gets the queue, in the same organization")
-    ib.add_argument("--msg", action="append", metavar="ID", help="move: only this message (full id; repeatable)")
+    ib.add_argument("--msg", action="append", metavar="ID", help="move: only this message; drop: this message (full "
+                                                                 "id; repeatable)")
     ib.add_argument("--dry-run", action="store_true", help="move: list what would move (no text), move nothing")
     ib.add_argument("--reason", help="drop: why (kept with the message and its event)")
     ib.add_argument("--all", action="store_true")

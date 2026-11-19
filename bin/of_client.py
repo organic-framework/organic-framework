@@ -476,11 +476,11 @@ class Client:
             body["msg_ids"] = list(msg_ids)
         return self._authed("POST", "/v1/messages/move", body=body)[1]
 
-    def drop_message(self, msg_id, by, session, reason):
-        """Expire one queued message, as BY (the receiver's structure keeper or unit owner, held by SESSION)."""
+    def drop_message(self, msg_id, to, by, session, reason):
+        """Expire one message queued for TO, as BY (TO's structure keeper or unit owner, held by SESSION)."""
         from urllib.parse import quote
         return self._authed("POST", f"/v1/messages/{quote(msg_id)}/drop",
-                            body={"by": by, "session": session, "reason": reason})[1]
+                            body={"to": to, "by": by, "session": session, "reason": reason})[1]
 
     def redact(self, body):
         """POST /v1/redactions (docs/server.md, Redaction): replace shipped rows with masked copies."""

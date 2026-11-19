@@ -85,7 +85,7 @@ class RelayTest(unittest.TestCase):
         return [(d, json.loads(r["payload"])) for d, t, rows in self.ch.inserts if t == "event" for r in rows
                 if r["name"] == name]
 
-    def _parked_registry(self):
+    def _parked_registry(self, extra=""):
         """ofb with a structure keeper, a parked position still held whose successor is active, and its unit's owner."""
         with open(os.path.join(self.tmp.name, "positions.yaml"), "w") as fh:
             fh.write("positions:\n"
@@ -95,6 +95,8 @@ class RelayTest(unittest.TestCase):
                      " holder: {session: S-watch}}\n"
                      "  - {name: ofb_ops, holder: {session: S-ops}}\n"
                      "  - {name: ofb_dev, holder: {session: S-dev}}\n"
+                     "  - {name: ofb_old, status: finished}\n"
+                     "  - {name: ofb_nap, status: parked}\n" + extra +
                      "units:\n  ops: {owner: ofb_lead, systems: [watch]}\n")
         a = self.machine("a", ["ofb"])
         self.call(a, "PUT", "/v1/presence", {"holders": [
@@ -104,6 +106,12 @@ class RelayTest(unittest.TestCase):
             self.call(a, "POST", "/v1/messages", {"msg_id": i, "to": "ofb:ofb_watch", "from": "ofb:ofb_dev",
                                                   "text": f"a note {i}", "reply_to": reply})
         return a
+
+    def refused(self, c, path, body, status, typ):
+        with self.assertRaises(of_client.ServerError) as cm:
+            self.call(c, "POST", path, body)
+        self.assertEqual(cm.exception.status, status, str(cm.exception))
+        self.assertIn(typ, str(cm.exception))
 
     def test_a_structure_keeper_moves_a_parked_positions_queue_to_its_successor(self):
         """A user organization's structure keeper, msg 01a1f3a8-b16b: mail piled up on parked positions that kept their
@@ -137,7 +145,7 @@ class RelayTest(unittest.TestCase):
                          [("w1", "ofb:ofb_watch", "ofb:ofb_ops", "ofb:ofb_org"),
                           ("w2", "ofb:ofb_watch", "ofb:ofb_ops", "ofb:ofb_org")])
 
-    def test_only_the_keeper_or_the_unit_owner_moves_and_only_within_the_organization(self):
+    def test_only_the_keeper_or_the_unit_owner_moves_and_only_to_an_active_position(self):
         a = self._parked_registry()
         base = {"from": "ofb:ofb_watch", "to": "ofb:ofb_ops"}
         for body, status, typ in (
@@ -145,12 +153,12 @@ class RelayTest(unittest.TestCase):
                 (dict(base, by="ofb:ofb_org", session="S-other"), 403, "not_holder"),
                 (dict(base, by="zeta:zeta_x", session="S-x"), 403, "forbidden"),
                 (dict(base, to="zeta:zeta_x", by="ofb:ofb_org", session="S-org"), 400, "bad_request"),
-                (dict(base, to="ofb:ofb_watch", by="ofb:ofb_org", session="S-org"), 400, "bad_request")):
+                (dict(base, to="ofb:ofb_watch", by="ofb:ofb_org", session="S-org"), 400, "bad_request"),
+                (dict(base, to="ofb:ofb_old", by="ofb:ofb_org", session="S-org"), 400, "bad_destination"),
+                (dict(base, to="ofb:ofb_nap", by="ofb:ofb_org", session="S-org"), 400, "bad_destination"),
+                (dict(base, to="ofb:ofb_nobody", by="ofb:ofb_org", session="S-org"), 400, "bad_destination")):
             with self.subTest(body=body):
-                with self.assertRaises(of_client.ServerError) as cm:
-                    self.call(a, "POST", "/v1/messages/move", body)
-                self.assertEqual(cm.exception.status, status)
-                self.assertIn(typ, str(cm.exception))
+                self.refused(a, "/v1/messages/move", body, status, typ)
         r = self.call(a, "POST", "/v1/messages/move", dict(base, by="ofb:ofb_lead", session="S-lead",   # unit owner
                                                            msg_ids=["w1", "nope"]))
         self.assertEqual(([i["msg_id"] for i in r["moved"]], r["not_queued"]), (["w1"], ["nope"]))
@@ -161,36 +169,66 @@ class RelayTest(unittest.TestCase):
                           if m["to"] == "ofb:ofb_watch"], ["w2"])               # leased to its pane now
         r = self.call(a, "POST", "/v1/messages/move", dict(base, by="ofb:ofb_org", session="S-org"))
         self.assertEqual((r["moved"], [i["msg_id"] for i in r["leased"]]), ([], ["w2"]))
+        self.refused(a, "/v1/messages/w2/drop", {"to": "ofb:ofb_watch", "by": "ofb:ofb_org", "session": "S-org",
+                                                 "reason": "x"}, 409, "leased")
+
+    def test_the_keeper_is_the_active_one_and_the_unit_owner_must_be_active(self):
+        """of_secrets-review on PR 375: the server took a finished position of role org as keeper, the client did not."""
+        import of_server_relay
+        ps = [{"name": "k_old", "role": "org", "status": "finished"}, {"name": "k_arch", "role": "architect"},
+              {"name": "k_lead", "status": "parked"}, {"name": "k_w", "system": "w"}]
+        units = {"u": {"owner": "k_lead", "systems": ["w"]}}
+        self.assertEqual(of_server_relay.queue_managers(ps, units, "k_w"), {"k_arch"})
+        ps[2]["status"] = "active"
+        self.assertEqual(of_server_relay.queue_managers(ps, units, "k_w"), {"k_arch", "k_lead"})
+        ps.insert(0, {"name": "k_org", "role": "org"})
+        self.assertEqual(of_server_relay.queue_managers(ps, units, "k_w"), {"k_org", "k_lead"})
 
     def test_a_keeper_drops_one_message_and_the_host_can_undo_it(self):
         a = self._parked_registry()
-        for body, status in (({"by": "ofb:ofb_org", "session": "S-org"}, 400),            # no reason
-                             ({"by": "ofb:ofb_dev", "session": "S-dev", "reason": "x"}, 403)):
-            with self.assertRaises(of_client.ServerError) as cm:
-                self.call(a, "POST", "/v1/messages/w1/drop", body)
-            self.assertEqual(cm.exception.status, status)
-        with self.assertRaises(of_client.ServerError) as cm:
-            self.call(a, "POST", "/v1/messages/nope/drop", {"by": "ofb:ofb_org", "session": "S-org", "reason": "x"})
-        self.assertEqual(cm.exception.status, 404)
-        drop = {"by": "ofb:ofb_org", "session": "S-org", "reason": "stale: the work moved"}
+        to = {"to": "ofb:ofb_watch"}
+        for body, status, typ in ((dict(to, by="ofb:ofb_org", session="S-org"), 400, "bad_request"),   # no reason
+                                  (dict(to, by="ofb:ofb_dev", session="S-dev", reason="x"), 403, "forbidden"),
+                                  ({"by": "ofb:ofb_org", "session": "S-org", "reason": "x"}, 400, "address"),
+                                  (dict(to, to="ofb:ofb_ops", by="ofb:ofb_org", session="S-org", reason="x"), 404,
+                                   "not_found")):
+            with self.subTest(body=body):
+                self.refused(a, "/v1/messages/w1/drop", body, status, typ)
+        self.refused(a, "/v1/messages/nope/drop", dict(to, by="ofb:ofb_org", session="S-org", reason="x"), 404,
+                     "not_found")
+        key = "ghp_" + "Zq3vX9kLm2Pw7RtY4nB8cD1fGh6Jk5Ls0QaE"
+        drop = dict(to, by="ofb:ofb_org", session="S-org", reason=f"stale: it named {key}")
         self.assertEqual(self.call(a, "POST", "/v1/messages/w1/drop", drop)["state"], "expired")
         self.assertTrue(self.call(a, "POST", "/v1/messages/w1/drop", drop)["already"])
-        self.assertEqual([(p["msg_id"], p["reason"], p["by"]) for _, p in self.events("of.message_expired")],
-                         [("w1", "dropped by ofb:ofb_org: stale: the work moved", "ofb:ofb_org")])
+        expired = self.events("of.message_expired")
+        self.assertEqual([(p["msg_id"], p["by"]) for _, p in expired], [("w1", "ofb:ofb_org")])   # once
+        self.assertNotIn(key, json.dumps(expired))
+        self.assertIn("dropped by ofb:ofb_org: stale: it named [secret:github-pat:", expired[0][1]["reason"])
+        with self.app.store.conn() as c:
+            self.assertNotIn(key, c.execute("SELECT reason FROM messages WHERE msg_id = 'w1'").fetchone()[0])
+        self.assertTrue(any(p.get("last_location") == "message:w1:drop_reason"
+                            for _, p in self.events("of.secret_detected")))
         self.assertEqual(self.app.relay.requeue(["w1"], state="expired"), ["w1"])
         r = self.call(a, "POST", "/v1/messages/move", {"from": "ofb:ofb_watch", "to": "ofb:ofb_ops",
                                                        "by": "ofb:ofb_org", "session": "S-org"})
         self.assertEqual([i["msg_id"] for i in r["moved"]], ["w1", "w2"])
+        self.refused(a, "/v1/messages/w2/drop", dict(drop, reason="x"), 404, "not_found")   # it is ops' now
 
-    def test_without_the_registry_any_holder_in_the_organization_may_move(self):
-        """zeta has no positions_files here: the server checks the holder and the organization, the client the role."""
+    def test_without_a_readable_registry_nobody_moves_or_drops(self):
+        """of_secrets-review on PR 375: with no positions_files (the default) or a missing file, any holder in the
+        organization could move another position's queue to itself. zeta has neither here, and orgs.yaml in the
+        tests' HOME lists no organization."""
         b = self.machine("b", ["zeta"])
         self.call(b, "PUT", "/v1/presence", {"holders": [{"org": "zeta", "position": "zeta_x", "session_id": "S-x",
                                                          "kind": "agent"}]})
         self.call(b, "POST", "/v1/messages", {"msg_id": "z1", "to": "zeta:zeta_a", "from": "zeta:zeta_x", "text": "hi"})
-        r = self.call(b, "POST", "/v1/messages/move", {"from": "zeta:zeta_a", "to": "zeta:zeta_b", "by": "zeta:zeta_x",
-                                                       "session": "S-x"})
-        self.assertEqual([i["msg_id"] for i in r["moved"]], ["z1"])
+        self.refused(b, "/v1/messages/move", {"from": "zeta:zeta_a", "to": "zeta:zeta_b", "by": "zeta:zeta_x",
+                                              "session": "S-x"}, 403, "no_registry")
+        self.refused(b, "/v1/messages/z1/drop", {"to": "zeta:zeta_a", "by": "zeta:zeta_x", "session": "S-x",
+                                                 "reason": "x"}, 403, "no_registry")
+        self.app.cfg["positions_files"]["zeta"] = os.path.join(self.tmp.name, "missing.yaml")
+        self.refused(b, "/v1/messages/move", {"from": "zeta:zeta_a", "to": "zeta:zeta_b", "by": "zeta:zeta_x",
+                                              "session": "S-x"}, 403, "no_registry")
 
     def test_store_and_forward_lease_ack_and_masking(self):
         a, b = self.machine("a", ["ofb"]), self.machine("b", ["ofb"])
