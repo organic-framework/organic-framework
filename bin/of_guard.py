@@ -3197,27 +3197,11 @@ def _command_word(text, names, interpreters=False):
     return False
 
 
-def _acts(words):
-    """The places in WORDS where one of of's acts starts, and whether `--help` or `-h` follows it within two words."""
-    out = []
-    for k, w in enumerate(words):
-        if _fold_name(os.path.basename(w)) in ("of", "of.py") and _line_act(words[k:k + 8]):
-            out.append(any(x in ("--help", "-h") for x in words[k + 3:k + 5]))
-    return out
-
-
-def _help_only(cmd):
-    """Does every act on the line ask only for help: `--help` or `-h` an unquoted word right after it, and no act
-    hidden in a quoted body? A quoted reason that begins with --help is a reason (of_review on PR 399 at 7c776fe)."""
-    bare = _acts(_line_words(_strip_quoted(cmd)))
-    return bool(bare) and all(bare) and len(bare) == len(_acts(_line_words(cmd)))
-
-
 def _actor_line_deny(cmd):
     """(reason, what) when the line runs one of of's acts and holds a way to clear or replace its caller's variables
-    anywhere (G31's line reading); else None."""
-    if _help_only(cmd):
-        return None
+    anywhere (G31's line reading); else None. A help call with a clear on the line is refused too: the line's words
+    cannot tell `--help` from a reason or an option value that holds it (`--help" me"`, `-- --help`, `label=--help`:
+    of_review on organic-framework PR 399 at 7c776fe and 45eb458)."""
     if not _line_act(_line_words(cmd)):   # no act of of anywhere on the raw line: nothing to read further (linear)
         return None
     cmd = _without_prose(_without_code_text(cmd))
