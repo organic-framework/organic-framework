@@ -37,8 +37,19 @@ def machine_id(wait_s=5.0):
         try:
             with open(path) as fh:
                 return fh.read().strip()
-        except OSError:   # missing, a link to nothing, a folder in its place: no id read
+        except (FileNotFoundError, IsADirectoryError):   # missing, a link to nothing, a folder in its place: no id
             return None
+
+    def fallback():
+        if not _FALLBACK_ID:
+            _FALLBACK_ID.append(str(uuid.uuid4()))
+        return _FALLBACK_ID[0]
+    try:
+        first = read()
+    except OSError:   # an id this process may not read (PermissionError): never replaced, the process's own id
+        return fallback()   # instead (of_review on organic-framework PR 423)
+    if first:
+        return first
     import tempfile
     d = os.path.dirname(path)
     os.makedirs(d, mode=0o700, exist_ok=True)
@@ -61,7 +72,10 @@ def machine_id(wait_s=5.0):
                 pass
     deadline, rounds = time.time() + wait_s, 0
     while True:
-        mid = read()
+        try:
+            mid = read()
+        except OSError:
+            return fallback()
         if mid:
             return mid
         if mid is None and link_new():
@@ -73,16 +87,17 @@ def machine_id(wait_s=5.0):
             if rounds > 2:   # a state folder no caller can fix: an id for this process, never a hang (every emit and
                 # hook asks for it; of_review on organic-framework PR 419), the same one for the process's life, so
                 # its events carry one host.id (of_review's note after PR 419)
-                if not _FALLBACK_ID:
-                    _FALLBACK_ID.append(str(uuid.uuid4()))
-                return _FALLBACK_ID[0]
+                return fallback()
             # an empty file an older writer left: one caller at a time, under a lock, replaces it if it is still empty,
             # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
             # gave six processes two ids)
             import fcntl
             with open(os.path.join(d, ".machine_id.lock"), "a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                cur = read()
+                try:
+                    cur = read()
+                except OSError:
+                    return fallback()
                 if cur == "" or (cur is None and os.path.lexists(path)):   # empty, or a link to nothing
                     fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
                     try:
