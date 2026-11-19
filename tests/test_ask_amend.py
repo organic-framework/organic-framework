@@ -430,7 +430,10 @@ class CliTest(unittest.TestCase):
         db.close()
         r = self.run_of("ask", "Lift it now?", "--amend", short, "--from", "of_a")
         self.assertIn("was filed on another machine of the organization: amend it there", r.stderr)
-        self.run_of("asks", "withdraw", short)
+        # withdrawn by its asker: with no terminal, no position is the owner (bin/of _asks_actor; of_review on PR 387)
+        w = subprocess.run([sys.executable, OF, "asks", "withdraw", short], env=dict(self.env, OF_POSITION="of_a"),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(w.returncode, 0, w.stdout + w.stderr)
         r = self.run_of("ask", "Lift it now?", "--amend", short, "--from", "of_a")
         self.assertIn("is withdrawn: only an open ask with no answer is amended", r.stderr)
 

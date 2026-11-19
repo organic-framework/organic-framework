@@ -744,6 +744,49 @@ class OrgSetReviewTest(unittest.TestCase):
         self.assertEqual(["wait_ask" in f for f in seen], [False, True, False])
 
 
+class AsksActorTest(unittest.TestCase):
+    """of asks answered / withdraw record the owner only by a positive test (of_review on organic-framework PR 387,
+    comment 7017518350: with the session id and OF_POSITION cleared any way G31 cannot see, an agent was the owner)."""
+
+    def setUp(self):
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli_actor", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli_actor", loader)
+        self.of = importlib.util.module_from_spec(spec)
+        loader.exec_module(self.of)
+
+    def actor(self, env, tty):
+        from unittest import mock
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE", "OF_AUTOMATION")}
+        stdin = mock.Mock()
+        stdin.isatty.return_value = tty
+        with mock.patch.dict(os.environ, dict(clean, **env), clear=True), mock.patch.object(self.of.sys, "stdin", stdin):
+            return self.of._asks_actor()
+
+    def test_the_owner_needs_a_terminal_and_no_agent(self):
+        self.assertEqual(self.actor({}, True), "owner")
+        self.assertEqual(self.actor({"OF_AUTOMATION": "1"}, True), "owner")       # the questions panel runs under it
+        for env, tty in (({}, False), ({"CLAUDECODE": "1"}, True), ({"CLAUDECODE": "1"}, False)):
+            with self.assertRaises(self.of.OfError):
+                self.actor(env, tty)
+        self.of._OUTBOX_OWNER[0] = True
+        try:
+            self.assertEqual(self.actor({}, False), "owner")                     # the popup's outbox, replayed
+        finally:
+            self.of._OUTBOX_OWNER[0] = False
+        self.of._load_quiet = lambda: []
+        self.assertEqual(self.actor({"OF_POSITION": "x"}, True), "agent")          # a position never is the owner
+
+    def test_the_outbox_sender_refuses_in_an_agent_session(self):
+        from unittest import mock
+        for var in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE"):
+            with mock.patch.dict(os.environ, {var: "x"}):
+                with self.assertRaises(self.of.OfError):
+                    self.of._send_outbox()
+
+
 class InitServerPortTest(unittest.TestCase):
     """of init --server-port (of_lab's clean-VM walkthrough of 2026-11-19, finding 1): a second contour on one machine
     gets its own server port, written to server.yaml, ship.yaml and its orgs.yaml entry."""
