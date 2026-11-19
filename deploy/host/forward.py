@@ -6,6 +6,7 @@ both organizations, staying on the laptop at first). Owned by of_server.
     python3 deploy/host/forward.py keygen
     python3 deploy/host/forward.py pin-host --to <user>@<host> --fingerprint SHA256:<the host key's, read elsewhere>
     python3 deploy/host/forward.py install --to <user>@<host> [--key <private key file>] [--port 18200] [--dry-run]
+    python3 deploy/host/forward.py install --mode bridge --to <user>@<host>   (from the server's move to the host)
     python3 deploy/host/forward.py status
     python3 deploy/host/forward.py uninstall
 
@@ -21,6 +22,12 @@ The local port is the server's TLS listener (`of server tls-init`), so the host'
 certificate and a process that takes the port while the forward is down gets nothing (of_secrets-review on
 organic-framework PR 350). As every OF process (AGENTS.md): OF_AUTOMATION=1, its own key, no SSH agent (SSH_AUTH_SOCK
 empty, IdentityAgent=none, IdentitiesOnly), BatchMode, no agent forwarding.
+
+From the server's move to the host on, `--mode bridge` runs the other way round, as a stdio bridge: the unit (`forward.py
+bridge`) holds one ControlMaster connection and listens on ~/.local/state/of/forward/of-server.sock (0600, its folder
+0700); each connection becomes one ssh session through the master, which the host's key line and ForceCommand turn
+into a stream into its server socket (socat to /srv/of-server/server.sock), with forwarding disabled there. ssh -L to a
+socket cannot be confined on OpenSSH 10.6 (of_agent-server's test sshds, 2026-11-20). The key stays this unit's alone.
 
 On the host the forward logs in as a user of its own, held to this one remote forward twice: by an sshd Match block
 (remote forwarding only, that one listen address, no local, dynamic or socket forwarding, no session, no command) and by
@@ -43,6 +50,111 @@ HOST_USER = "of-forward"
 SOCKET = "/srv/of-forward/server.sock"  # on the host: of-forward:of 2750, so of reaches it and no other user does
 
 
+BRIDGE_SOCKET = "~/.local/state/of/forward/of-server.sock"  # on the laptop: 0600 in a 0700 folder (the cut's bridge)
+CONTROL = DIR + "/ctl"  # the bridge's ControlMaster socket, in the forward's own folder
+
+
+def _ssh_opts(key, known=KNOWN):
+    return ["-i", os.path.expanduser(key), "-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes",
+            "-o", f"UserKnownHostsFile={os.path.expanduser(known)}", "-o", "StrictHostKeyChecking=yes",
+            "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3"]
+
+
+def master_argv(to, key, control=CONTROL, known=KNOWN):
+    """The bridge's one SSH connection, which every stream rides (ControlMaster): no session of its own, no
+    forwarding asked; the host's sshd allows none (DisableForwarding)."""
+    return ["/usr/bin/ssh", "-M", "-N", "-S", os.path.expanduser(control), "-o", "ControlPersist=no",
+            *_ssh_opts(key, known), to]
+
+
+def stream_argv(to, key, control=CONTROL, known=KNOWN):
+    """One stream into the host's server socket: a session through the master (or a connection of its own while the
+    master is down), no TTY, no command: the host's key line and ForceCommand run socat to /srv/of-server/server.sock
+    whatever is asked (of_agent-server's test sshds, msg 01a1f5f7-0d09)."""
+    return ["/usr/bin/ssh", "-T", "-S", os.path.expanduser(control), "-o", "ControlMaster=no",
+            *_ssh_opts(key, known), to]
+
+
+def _pump(src, dst):
+    try:
+        while True:
+            b = src.read1(65536) if hasattr(src, "read1") else src.recv(65536)
+            if not b:
+                break
+            if hasattr(dst, "sendall"):
+                dst.sendall(b)
+            else:
+                dst.write(b)
+                dst.flush()
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            dst.shutdown(1) if hasattr(dst, "shutdown") else dst.close()
+        except OSError:
+            pass
+
+
+def serve_bridge(listen, stream, master=None, stop=None, ready=None):
+    """Listen on the unix socket LISTEN (0600, its folder 0700); for each connection run STREAM (an argv) and copy
+    bytes both ways until either side ends. MASTER (an argv), when given, is kept running beside it, restarted with a
+    pause when it ends. STOP, a threading.Event, ends the loop; READY is set once the socket listens."""
+    import socket
+    import threading
+    import time
+    listen = os.path.expanduser(listen)
+    os.makedirs(os.path.dirname(listen), mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(listen), 0o700)
+    if os.path.exists(listen):
+        os.unlink(listen)  # only this unit listens here: a socket left by its last run
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    try:
+        srv.bind(listen)
+    finally:
+        os.umask(old)
+    os.chmod(listen, 0o600)
+    srv.listen(64)
+    srv.settimeout(1.0)
+    stop = stop or threading.Event()
+
+    def keep_master():
+        while not stop.is_set():
+            p = subprocess.Popen(master, stdin=subprocess.DEVNULL, env=_no_agent_env())
+            while p.poll() is None and not stop.is_set():
+                time.sleep(1)
+            if p.poll() is None:
+                p.terminate()
+            stop.wait(10)
+    if master:
+        threading.Thread(target=keep_master, daemon=True).start()
+
+    def handle(conn):
+        p = subprocess.Popen(stream, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=_no_agent_env())
+        t = threading.Thread(target=_pump, args=(conn, p.stdin), daemon=True)
+        t.start()
+        _pump(p.stdout, conn)
+        t.join(5)
+        conn.close()
+        if p.poll() is None:
+            p.terminate()
+        p.wait()
+    if ready:
+        ready.set()
+    try:
+        while not stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                continue
+            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+    finally:
+        srv.close()
+        if os.path.exists(listen):
+            os.unlink(listen)
+
+
 def agent_path(home=None):
     return os.path.join(home or os.path.expanduser("~"), "Library", "LaunchAgents", f"{LABEL}.plist")
 
@@ -58,11 +170,14 @@ def ssh_argv(to, key, port=PORT, local_port=LOCAL_PORT, known=KNOWN, socket=SOCK
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", to]
 
 
-def unit(to, key, port=PORT, home=None, local_port=LOCAL_PORT):
-    """The LaunchAgent's dictionary."""
+def unit(to, key, port=PORT, home=None, local_port=LOCAL_PORT, mode="reverse"):
+    """The LaunchAgent's dictionary. MODE reverse: today's ssh -R; bridge: the stdio bridge to the host's server,
+    from the cut on (organic-framework-build reports/server-move-to-host-2026-11-19.md §2)."""
     home = home or os.path.expanduser("~")
     log = os.path.join(home, ".local", "state", "of", "forward.log")
-    return {"Label": LABEL, "ProgramArguments": ssh_argv(to, key, port, local_port), "RunAtLoad": True,
+    argv = ssh_argv(to, key, port, local_port) if mode == "reverse" else \
+        [sys.executable, os.path.abspath(__file__), "bridge", "--to", to, "--key", key]
+    return {"Label": LABEL, "ProgramArguments": argv, "RunAtLoad": True,
             "KeepAlive": True,
             "ThrottleInterval": 30, "EnvironmentVariables": {"OF_AUTOMATION": "1", "SSH_AUTH_SOCK": ""},
             "StandardOutPath": log, "StandardErrorPath": log, "ProcessType": "Background"}
@@ -151,14 +266,15 @@ def pin_host(to, fingerprint, known=KNOWN, run=subprocess.run, out=print):
     return lines[0]
 
 
-def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run, out=print, local_port=LOCAL_PORT):
+def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run, out=print, local_port=LOCAL_PORT,
+            mode="reverse"):
     key = os.path.expanduser(key)
     if not os.path.isfile(key):
         raise SystemExit(f"forward: no key file at {key}")
     if "@" not in to:
         raise SystemExit("forward: --to <user>@<host>")
     path = agent_path(home)
-    doc = unit(to, key, port, home, local_port)
+    doc = unit(to, key, port, home, local_port, mode)
     if dry_run:
         out(plistlib.dumps(doc).decode())
         out("on the host, the sshd block:\n" + sshd_block(to.split("@", 1)[0], port))
@@ -176,7 +292,9 @@ def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run
     r = run(["launchctl", "bootstrap", f"gui/{uid}", path], capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"forward: launchctl bootstrap failed: {(r.stderr or '').strip()[:200]}")
-    out(f"forward installed: {LABEL} keeps ssh -N -R {SOCKET}:127.0.0.1:{local_port} to {to} running")
+    out(f"forward installed: {LABEL} keeps "
+        + (f"ssh -N -R {SOCKET}:127.0.0.1:{local_port}" if mode == "reverse" else f"the bridge on {BRIDGE_SOCKET}")
+        + f" to {to} running")
     return doc
 
 
@@ -200,7 +318,9 @@ def status(run=subprocess.run, out=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="The laptop's reverse forward to the agent host (deploy/host/forward.py).")
-    ap.add_argument("action", choices=["keygen", "pin-host", "install", "uninstall", "status"])
+    ap.add_argument("action", choices=["keygen", "pin-host", "install", "uninstall", "status", "bridge"])
+    ap.add_argument("--mode", choices=["reverse", "bridge"], default="reverse",
+                    help="install: today's reverse forward, or the stdio bridge to the host's server (from the cut)")
     ap.add_argument("--to", help="<user>@<host>")
     ap.add_argument("--key", default=KEY, help="the forward's own private key file (default: keygen's)")
     ap.add_argument("--fingerprint", help="pin-host: the host key's SHA256 fingerprint, read over another channel")
@@ -220,7 +340,12 @@ def main(argv=None):
     if a.action == "install":
         if not a.to:
             ap.error("install needs --to")
-        install(a.to, a.key, a.port, a.dry_run, local_port=a.local_port)
+        install(a.to, a.key, a.port, a.dry_run, local_port=a.local_port, mode=a.mode)
+        return 0
+    if a.action == "bridge":  # what the LaunchAgent runs in bridge mode
+        if not a.to:
+            ap.error("bridge needs --to")
+        serve_bridge(BRIDGE_SOCKET, stream_argv(a.to, a.key), master_argv(a.to, a.key))
         return 0
     if a.action == "uninstall":
         uninstall()
