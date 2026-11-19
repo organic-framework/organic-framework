@@ -1,14 +1,19 @@
 # of-server, profile 2 without Kubernetes: one VM, ClickHouse beside it (the Lab's compose arm).
 # Before `docker compose up -d`, make ./secrets/ (mode 700, files 600; never commit them):
 #   secret.key                         `of server export-secret-key secrets/secret.key` on the tenant's machine
-#   of_org_ingest.password, of_org_vault_ingest.password, of_org_unassigned_ingest.password, admin.password
+#   of_org_ingest.password, of_org_vault_ingest.password, of_org_unassigned_ingest.password (inserts),
+#   of_org_redact.password, of_org_vault_redact.password, of_org_unassigned_redact.password (redaction),
+#   of_org_read.password (Studio's views), admin.password: every user deploy/clickhouse/schema.py creates
 # and put the tenant's grant public key in server.yaml `trusted_grant_keys`.
 # TLS: put a reverse proxy (Caddy, nginx) or a Cloudflare tunnel in front of port 18200.
 services:
   clickhouse:
-    # ClickHouse's 26.8 LTS line (patches by this tag; v26.8.36.3 and later fix CVE-2026-116366). 25.8 had
-    # its last release on 2026-08-26. Move to the next LTS line before this one leaves support.
+    # ClickHouse's 26.8 LTS line: this tag carries its patches, and `always` pulls the newest at each
+    # `docker compose up` (v26.8.36.3 and later fix CVE-2026-116366, ClickHouse's security changelog,
+    # 2026-10-30). 25.8 had its last release on 2026-08-26. Move to the next LTS line before this one
+    # leaves support.
     image: clickhouse/clickhouse-server:26.8
+    pull_policy: always
     environment:
       CLICKHOUSE_USER: admin
       CLICKHOUSE_PASSWORD_FILE: /run/secrets/admin.password
