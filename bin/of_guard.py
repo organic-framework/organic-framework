@@ -1005,6 +1005,11 @@ def _code_deny(code, lang=None):
                      or _in_outbox(l.strip().lstrip("<>+|& ")))),
                None) \
         if _CODE_WRITE.search(code) else None   # G35 in code: a write into the owner's ask folders (PRs 395, 410)
+    fwd = next((l for l in lits if not re.search(r"\s", l.strip()) and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
+                and _in_folders(l.strip().lstrip("<>+|& "), {_forward_dir().casefold()})), None) \
+        if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
+    if fwd:
+        return FORWARD_DENY, fwd
     if box:
         if ASKS_OUTBOX_MODE == "deny":
             return ASKS_OUTBOX_DENY, box
@@ -3005,6 +3010,7 @@ def _forward_dir():
 
 
 _SSH_CARRIERS = ("ssh", "scp", "sftp", "autossh", "mosh")
+_SSH_VALUE_OPTIONS = ("-e", "--rsh", "--ssh", "--ssh-cmd", "-sshcmd")  # options whose value is an ssh command
 
 
 def _forward_deny(head, args, shvars=None, cwd=None):
@@ -3025,13 +3031,12 @@ def _forward_deny(head, args, shvars=None, cwd=None):
         # split on spaces only a word that carries an ssh command or an ssh option (`rsync -e 'ssh -i …'`, `-o
         # 'IdentityFile …'`), never prose: a message or a document that names the folder is no use of it (the G34
         # replay: 17 false denies of messages and edits when every word was split)
-        carried = os.path.basename(first) in _SSH_CARRIERS or re.match(r"(?i)(identityfile|-i|-o)", first)
+        carried = os.path.basename(first) in _SSH_CARRIERS or re.fullmatch(r"(?i)identityfile|-[io]", first) \
+            or re.match(r"-i[~/.$]", first)  # exact, never a prefix: a message starting `-important` is prose
         parts = re.split(r"[=:,\s]+", sw) if carried else (re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)])
-        for x in list(parts):  # an option's value after `=` that carries one (`--rsh='ssh -i …'`, `-e='ssh …'`; PR 397)
-            xs = x.strip().strip("'\"")
-            x0 = (xs.split(None, 1) or [""])[0]
-            if x is not sw and (os.path.basename(x0) in _SSH_CARRIERS or re.match(r"(?i)(identityfile|-i|-o)", x0)):
-                parts += re.split(r"[=:,\s]+", xs)
+        name, eq, value = sw.partition("=")
+        if eq and name in _SSH_VALUE_OPTIONS:  # an ssh command carried after `=` (`--rsh='ssh -i …'`, `-e='ssh …'`;
+            parts += re.split(r"[=:,\s]+", value.strip().strip("'\""))  # PR 397); `--message='ssh …'` is prose
         parts += [x[2:] for x in parts if re.match(r"-[A-Za-z].", x)]  # an option glued to its value: `ssh -i<key>`
         for part in parts:
             p = part.strip("'\"")

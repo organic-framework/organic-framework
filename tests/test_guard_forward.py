@@ -54,7 +54,8 @@ class ForwardKeyTest(unittest.TestCase):
             with self.subTest(cmd=cmd):         # a word that carries the folder in one of its parts
                 got = bash(cmd)
                 self.assertTrue(got and "G34" in got[0], cmd)
-        for cmd in ("echo x >> ~/.ssh/of-forward/known_hosts", "echo x > ~/.SSH/OF-FORWARD/known_hosts",
+        for cmd in ("python3 -c \"import os; open(os.path.expanduser('~/.ssh/of-forward/known_hosts'), 'w').write('x')\"",
+                    "echo x >> ~/.ssh/of-forward/known_hosts", "echo x > ~/.SSH/OF-FORWARD/known_hosts",
                     "echo x > ~/.ssh/of-f*/known_hosts", "cp /tmp/k ~/.ssh/of-forward/", "cd ~/.ssh && echo x > of-forward/k"):
             with self.subTest(cmd=cmd):         # a write's target, which no word G34 reads holds (PR 397)
                 got = bash(cmd)
@@ -71,7 +72,9 @@ class ForwardKeyTest(unittest.TestCase):
         for cmd in ("cat ~/.ssh/config", "ls ~/.ssh", "cd ~/.ssh && ls", "ls ~/*", "cat ~/*/notes.txt", "ls ~/.ssh/*.pub",
                     'of send of_x "the key at ~/.ssh/of-forward/key moves"',                   # prose names it: no use
                     "gh pr comment 1 --body 'G34 guards ~/.ssh/of-forward'",
-                    "printf '%s\\n' 'a path to ~/.ssh/of-forward/key' > notes.md"):
+                    "printf '%s\\n' 'a path to ~/.ssh/of-forward/key' > notes.md",
+                    "echo --message='ssh -i ~/.ssh/of-forward/key is the forward key'",     # of_review, PR 397
+                    "echo '-important: the folder ~/.ssh/of-forward is the unit s'"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(bash(cmd), cmd)
 
