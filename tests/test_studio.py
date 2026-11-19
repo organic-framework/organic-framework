@@ -1690,10 +1690,12 @@ class PageCacheTest(unittest.TestCase):
 
     def test_a_render_is_bounded_by_cpu_and_by_a_hang(self):
         """2026-11-17: 1200 s of wall time stopped renders the load starved while they still worked. The kernel now stops
-        a render after REFRESH_CPU_S of CPU, under any lower hard CPU limit; after REFRESH_MAX_S of wall time
-        faulthandler writes every thread's stack and ends it."""
-        import faulthandler
+        a render after REFRESH_CPU_S of CPU, under any lower hard CPU limit; after REFRESH_MAX_S of wall time a thread
+        writes every thread's stack and ends it. 2026-11-18: faulthandler, which did that before, walked the frames from
+        C with no lock ("<invalid frame>" in a dump; the same walk crashed a process on Python 3.15.2, of_server's msg
+        01a1f112-a648), so the stacks come from Python, and SIGALRM ends a render whose C code holds the lock."""
         import resource
+        import signal
         import subprocess
         from unittest import mock
         import of_studio_cli
@@ -1703,19 +1705,30 @@ class PageCacheTest(unittest.TestCase):
             with mock.patch.object(os, "nice", lambda n: seen.append(("nice", n))), \
                     mock.patch.object(resource, "getrlimit", lambda r: (resource.RLIM_INFINITY, hard)), \
                     mock.patch.object(resource, "setrlimit", lambda r, v: seen.append(("cpu", r, v))), \
-                    mock.patch.object(faulthandler, "dump_traceback_later",
-                                      lambda t, exit, file: seen.append(("wall", t, exit, file))):
+                    mock.patch.object(of_studio_cli, "_watch_render", lambda t, out: seen.append(("wall", t, out))):
                 of_studio_cli.bound_render(log)
             self.assertEqual(seen, [("nice", of_studio.REFRESH_NICE), ("cpu", resource.RLIMIT_CPU, (soft, hard)),
-                                    ("wall", of_studio.REFRESH_MAX_S, True, log)])
-        # the wall bound for real, in a child, with a main thread asleep: its stack in the output, the process ended
+                                    ("wall", of_studio.REFRESH_MAX_S, log)])
         here = os.path.dirname(os.path.abspath(of_studio_cli.__file__))
-        code = ("import sys, time; sys.path.insert(0, sys.argv[1]); import of_studio, of_studio_cli; "
-                "of_studio.REFRESH_MAX_S = 1; of_studio_cli.bound_render(); time.sleep(30)")
-        r = subprocess.run([sys.executable, "-c", code, here], capture_output=True, text=True, timeout=25)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("Timeout (0:00:01)!", r.stderr)
-        self.assertIn("<module>", r.stderr)
+
+        def child(body, wall=1, stuck=60):
+            code = ("import sys, time; sys.path.insert(0, sys.argv[1]); import of_studio, of_studio_cli; "
+                    f"of_studio.REFRESH_MAX_S = {wall}; of_studio.REFRESH_STUCK_S = {stuck}; "
+                    "of_studio_cli.bound_render(); " + body)
+            return subprocess.run([sys.executable, "-c", code, here], capture_output=True, text=True, timeout=25)
+        # a main thread asleep, and one busy in Python: its stack in the output, the process ended; the alarm set
+        for body in ("time.sleep(30)", "import json\nwhile True: json.loads('[' * 50 + ']' * 50)"):
+            r = child(body)
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertIn("Timeout (0:00:01)! The render is stopped.", r.stderr)
+            self.assertIn("<module>", r.stderr)
+            self.assertNotIn("render-watchdog", r.stderr)            # its own thread is left out
+        self.assertIn(child("import signal; left = signal.alarm(0); print(left)").stdout.strip(), ("60", "61"))
+        # a main thread whose C code holds the interpreter's lock: the watchdog never runs, SIGALRM ends it (3 s of
+        # wall before the watchdog, so a loaded machine still enters the C call first)
+        r = child("import re; re.match(r'(a+)+$', 'a' * 40 + 'b')", wall=3, stuck=1)
+        self.assertEqual(r.returncode, -signal.SIGALRM)
+        self.assertNotIn("Timeout", r.stderr)
         self.assertGreater(of_studio.REFRESH_CPU_S, 3 * 267)              # the most CPU a logged render used
         self.assertGreater(of_studio.REFRESH_MAX_S, of_studio.REFRESH_CPU_S)
 
