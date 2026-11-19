@@ -124,5 +124,12 @@ class ActorLineTest(unittest.TestCase):
         self.assertTrue(deny("echo 'of asks answered AS-1' | at now"))   # text a runner reads still counts
 
 
+class OrgPathActByPosition(unittest.TestCase):
+    def test_only_the_path_key_is_the_owners(self):
+        import of_guard
+        self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "path", "/r"]))
+        self.assertFalse(of_guard._org_path_act(["org", "set", "path", "hold", "on"]))   # an organization named path
+        self.assertFalse(of_guard._org_path_act(["org", "show", "path"]))
+
 if __name__ == "__main__":
     unittest.main()
