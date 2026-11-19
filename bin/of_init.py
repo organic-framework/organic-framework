@@ -1415,20 +1415,24 @@ def _org_key_edit(text, path, org, key, value):
             raise ValueError(f"{path}: {org}'s entry is empty")
         col = len(lines[below]) - len(lines[below].lstrip(" "))
     keyed = ([b] if first else []) + [i for i in range(b + 1, e) if re.match(rf"^ {{{col}}}[^ #]", lines[i])]
-    at = next((i for i in keyed if re.match(rf"{re.escape(key)}\s*:", lines[i][col:])), None)
-    rx = re.compile(rf"^(?P<pre>.{{{col}}}{re.escape(key)}\s*:\s*)(?P<val>[^#\n]*?)(?P<cmt>\s+#[^\n]*)?\n$")
+    named = rf"(?P<q>[\"']?){re.escape(key)}(?P=q)\s*:"   # hold:, "hold": or 'hold': (of_review, PR 367)
+    at = next((i for i in keyed if re.match(named, lines[i][col:])), None)
+    rx = re.compile(rf"^(?P<pre>.{{{col}}}{named}\s*)(?P<val>[^#\n]*?)(?P<cmt>\s+#[^\n]*)?\n$")
     if at is not None:
         m = rx.match(lines[at])
         if not m:
             raise ValueError(f"{path}: {org}'s {key}: line is not a plain scalar; change it by hand")
-        if value is None and not m.group("cmt"):
-            lines[at:at + 1] = []                     # off with no note on its line: the line goes
+        if value is None and not m.group("cmt") and at != b:
+            lines[at:at + 1] = []                     # off with no note on its line: the line goes (on the dash
+            # line it stays, as false, since the line carries the entry's dash)
         else:                                         # its own note stays
             word = yaml.safe_dump({key: False if value is None else value}).split(":", 1)[1].strip()
             lines[at] = m.group("pre") + word + (m.group("cmt") or "") + "\n"
     elif value is not None:
         line = " " * col + yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True).strip() + "\n"
-        lines.insert(keyed[0] + 1 if keyed else b + 1, line)
+        # after the entry's last line: after its first key, a nested value of that key would be split
+        last = max(i for i in range(b, e) if lines[i].strip() and not lines[i].lstrip().startswith("#"))
+        lines.insert(last + 1, line)
     text2 = "".join(lines)
     try:
         after = yaml.safe_load(text2) or {}
