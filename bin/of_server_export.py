@@ -8,9 +8,12 @@ A bundle is a folder (mode 0700, files 0600):
 - store/<table>.jsonl.gz: the organization's rows of each table, one JSON object per line, or .jsonl.gz.age when the
   export names an age recipient: the gzip stream goes straight into `age`, with no plaintext on disk (the user
   organization's sec_keeper's condition, through of_architect, message 01a1f5ff-f009);
-- manifest.json: no row content. It holds the format, the organization, the source's version, whether it is
-  encrypted, each file's sha256 and its gzip stream's (plain_sha256), and for each table the row count, a digest of
-  the rows in key order, and per UTC day the count and the first and last key.
+- manifest.json.gz (.age): no row content, but row keys. It holds the format, the organization, the source's version,
+  each file's sha256 and its gzip stream's (plain_sha256), and for each table the row count, a digest of the rows in
+  key order, and per UTC day the count and the first and last key. Encrypted with the rest, since keys name things;
+- index.json, the one plain file: the format, the organization, whether it is encrypted and each file's sha256. The
+  export prints index.json's sha256, which the operator carries to the import by another path: age authenticates no
+  sender, so only that hash ties a bundle to its export (of_secrets-review on organic-framework PR 425).
 
 The store part is small and its rows change after they are written (a message's state, a lease), so it is exported
 whole each time, at the bulk and again at the cut. Import replaces the organization's rows in one transaction.
@@ -26,7 +29,7 @@ import json
 import os
 import re
 
-FORMAT = 1
+FORMAT = 2  # 2: index.json plain, the manifest encrypted with the rest (PR 425)
 # table: (the organization's rows, the column that dates a row, the key columns in order)
 STORE = {
     "messages": ("to_org = :org OR from_org = :org", "created_at", ("msg_id",)),
@@ -177,9 +180,18 @@ def _file_sha(path):
     return h.hexdigest()
 
 
+def _belongs(table, row, org):
+    """Whether ROW is ORG's by its table's own rule (STORE's predicate), read from the row itself."""
+    if table == "messages":
+        return org in (row.get("to_org"), row.get("from_org"))
+    return row.get("org") == org
+
+
 def export_store(conn, org, out, version=None, recipient=None):
     """Write the store part of ORG's bundle into the new folder OUT, each file encrypted to the age RECIPIENT when
-    given; returns the manifest."""
+    given. Returns (manifest, the sha256 of index.json): the operator carries that sha256 to the import by another
+    path than the bundle (of_secrets-review on organic-framework PR 425: age authenticates no sender, so the bundle
+    alone proves nothing about who made it)."""
     if recipient is not None and not AGE_RECIPIENT.fullmatch(recipient):
         raise ExportError("the recipient is not an age X25519 recipient (age1…)")
     if recipient:
@@ -188,45 +200,63 @@ def export_store(conn, org, out, version=None, recipient=None):
         raise ExportError(f"{out} is not empty")
     _private_dir(out)
     _private_dir(os.path.join(out, "store"))
+    ext = ".age" if recipient else ""
     manifest = {"format": FORMAT, "org": org, "version": version, "encrypted": bool(recipient), "store": {},
                 "files": {}}
     conn.execute("BEGIN")  # one snapshot for every table
     try:
         for table in STORE:
             rows = list(_rows(conn, table, org))
-            rel = f"store/{table}.jsonl.gz" + (".age" if recipient else "")
+            rel = f"store/{table}.jsonl.gz{ext}"
             manifest["files"][rel] = _write_file(
                 os.path.join(out, rel),
                 (json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode() + b"\n" for r in rows), recipient)
             manifest["store"][table] = summarize(table, rows)
     finally:
         conn.execute("ROLLBACK")
-    with _open_private(os.path.join(out, "manifest.json")) as fh:
-        fh.write(json.dumps(manifest, indent=1, sort_keys=True).encode() + b"\n")
-    return manifest
+    # The manifest names rows (message ids, alias and position names, sightings' hmacs), so it is encrypted with the
+    # rest; index.json, the one plain file, holds only the organization and each file's sha256 (PR 425, point 3).
+    mrel = f"manifest.json.gz{ext}"
+    written = _write_file(os.path.join(out, mrel), [json.dumps(manifest, sort_keys=True).encode()], recipient)
+    index = {"format": FORMAT, "org": org, "encrypted": bool(recipient),
+             "files": dict({rel: f["sha256"] for rel, f in manifest["files"].items()}, **{mrel: written["sha256"]})}
+    with _open_private(os.path.join(out, "index.json")) as fh:
+        fh.write(json.dumps(index, indent=1, sort_keys=True).encode() + b"\n")
+    return manifest, _file_sha(os.path.join(out, "index.json"))
 
 
-def _store_file(bundle, table):
-    m = load_manifest(bundle)
-    return os.path.join(bundle, f"store/{table}.jsonl.gz" + (".age" if m.get("encrypted") else ""))
+def load_index(bundle):
+    with open(os.path.join(bundle, "index.json")) as fh:
+        ix = json.load(fh)
+    if ix.get("format") != FORMAT:
+        raise ExportError(f"bundle format {ix.get('format')!r}; this release reads {FORMAT}")
+    return ix
 
 
-def read_bundle_rows(bundle, table, identity=None, sha=None):
+def load_manifest(bundle, identity=None):
+    ix = load_index(bundle)
+    rel = "manifest.json.gz" + (".age" if ix.get("encrypted") else "")
+    raw = b"".join(x for x in _read_lines(os.path.join(bundle, rel), identity) if isinstance(x, bytes))
+    m = json.loads(raw)
+    if m.get("org") != ix.get("org") or m.get("format") != FORMAT:
+        raise ExportError("the manifest and index.json disagree on the organization or the format")
+    return m
+
+
+def _store_file(bundle, table, encrypted):
+    return os.path.join(bundle, f"store/{table}.jsonl.gz" + (".age" if encrypted else ""))
+
+
+def read_bundle_rows(bundle, table, identity=None, sha=None, encrypted=None):
     """The bundle's rows of TABLE; SHA, a list, receives the gzip stream's sha256 once they are all read."""
-    for item in _read_lines(_store_file(bundle, table), identity):
+    if encrypted is None:
+        encrypted = load_index(bundle).get("encrypted")
+    for item in _read_lines(_store_file(bundle, table, encrypted), identity):
         if isinstance(item, str):
             if sha is not None:
                 sha.append(item)
         else:
             yield json.loads(item)
-
-
-def load_manifest(bundle):
-    with open(os.path.join(bundle, "manifest.json")) as fh:
-        m = json.load(fh)
-    if m.get("format") != FORMAT:
-        raise ExportError(f"bundle format {m.get('format')!r}; this release reads {FORMAT}")
-    return m
 
 
 def _compare(want, got, where):
@@ -243,60 +273,83 @@ def _compare(want, got, where):
     return problems
 
 
-def check_bundle(bundle, identity=None):
-    """The manifest recomputed from the bundle's own files: [] when they match, else the differences. An encrypted
-    bundle checks its ciphertext hashes alone without IDENTITY, and everything with it."""
-    m = load_manifest(bundle)
-    problems = [f"{rel}: sha256 differs" for rel, f in m["files"].items()
-                if not os.path.exists(os.path.join(bundle, rel)) or _file_sha(os.path.join(bundle, rel)) != f["sha256"]]
-    if problems or (m.get("encrypted") and not identity):
+def check_bundle(bundle, identity=None, index_sha=None):
+    """The bundle against its index and manifest: [] when they match, else the differences. INDEX_SHA, when given, is
+    the sha256 the export printed, carried here by another path. An encrypted bundle checks its ciphertext hashes
+    alone without IDENTITY, and everything with it."""
+    if index_sha is not None and _file_sha(os.path.join(bundle, "index.json")) != index_sha:
+        return ["index.json: its sha256 is not the one the export printed"]
+    ix = load_index(bundle)
+    problems = [f"{rel}: sha256 differs" for rel, sha in ix["files"].items()
+                if not os.path.exists(os.path.join(bundle, rel)) or _file_sha(os.path.join(bundle, rel)) != sha]
+    if problems or (ix.get("encrypted") and not identity):
         return problems
+    m = load_manifest(bundle, identity)
     got = {}
     for table in STORE:
         sha = []
-        got[table] = summarize(table, read_bundle_rows(bundle, table, identity, sha))
-        rel = os.path.relpath(_store_file(bundle, table), bundle)
+        got[table] = summarize(table, read_bundle_rows(bundle, table, identity, sha, ix.get("encrypted")))
+        rel = os.path.relpath(_store_file(bundle, table, ix.get("encrypted")), bundle)
         if sha != [m["files"][rel]["plain_sha256"]]:
             problems.append(f"{rel}: the decrypted stream's sha256 differs")
     return problems + _compare(m["store"], got, "the bundle")
 
 
-def check_store(conn, bundle):
+def check_store(conn, bundle, identity=None, manifest=None):
     """The manifest recomputed from what CONN holds for the bundle's organization: [] when it matches."""
-    m = load_manifest(bundle)
+    m = manifest or load_manifest(bundle, identity)
     got = {table: summarize(table, list(_rows(conn, table, m["org"]))) for table in STORE}
     return _compare(m["store"], got, "the store")
 
 
-def import_store(conn, bundle, identity=None):
-    """Replace the bundle organization's rows with the bundle's, table by table, in one transaction, after the bundle
-    checks out. A row of another organization holding the same key (a sequence number, a message id) refuses the
-    whole import. Returns {table: rows}."""
-    problems = check_bundle(bundle, identity)
+def import_store(conn, bundle, org, index_sha, identity=None):
+    """Replace ORG's rows with the bundle's, table by table, in one transaction. Refused, with nothing changed, unless
+    the operator's ORG is the bundle's, the INDEX_SHA the export printed matches, the bundle checks out, every row is
+    ORG's by its own table's rule, and every column of every row exists here (of_secrets-review on organic-framework
+    PR 425). The store is checked against the manifest inside the transaction, which rolls back on any difference.
+    A key another organization's row holds here refuses the whole import too. Returns {table: rows}."""
+    if not index_sha:
+        raise ExportError("give the sha256 the export printed (--index-sha): the bundle alone proves nothing")
+    problems = check_bundle(bundle, identity, index_sha)
     if problems:
-        raise ExportError("the bundle does not match its manifest: " + "; ".join(problems))
-    m = load_manifest(bundle)
-    org, counts = m["org"], {}
+        raise ExportError("the bundle does not match its index: " + "; ".join(problems))
+    ix = load_index(bundle)
+    if ix.get("encrypted") and not identity:
+        raise ExportError("the bundle is encrypted: name its key with --identity")
+    m = load_manifest(bundle, identity)
+    if org != m["org"]:
+        raise ExportError(f"the bundle is {m['org']}'s, not {org}'s")
     have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     missing = [t for t in STORE if t not in have]
     if missing:  # the new server makes its own tables at its first start: run it once, empty, first
         raise ExportError(f"this store has no {', '.join(missing)}: start the new server once, empty, before importing")
+    rows = {}
+    for table in STORE:  # every row read and judged before anything here changes
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        rows[table] = list(read_bundle_rows(bundle, table, identity, encrypted=ix.get("encrypted")))
+        for r in rows[table]:
+            if not _belongs(table, r, org):
+                raise ExportError(f"{table}: a row is not {org}'s by the table's own rule; nothing imported")
+            extra = sorted(set(r) - cols)
+            if extra:
+                raise ExportError(f"{table}: this store has no column {', '.join(extra)}; nothing imported")
+    counts = {}
     conn.execute("BEGIN IMMEDIATE")
     try:
         for table, (where, _, _) in STORE.items():
             conn.execute(f"DELETE FROM {table} WHERE {where}", {"org": org})
-            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
-            n = 0
-            for r in read_bundle_rows(bundle, table, identity):
-                names = [c for c in cols if c in r]
+            for r in rows[table]:
+                names = list(r)
                 try:
                     conn.execute(f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
                                  [r[c] for c in names])
                 except Exception as e:  # sqlite3.IntegrityError: a key another organization holds here
                     raise ExportError(f"{table}: a row's key is held by another organization's row here "
                                       f"({type(e).__name__}); nothing imported") from None
-                n += 1
-            counts[table] = n
+            counts[table] = len(rows[table])
+        problems = check_store(conn, bundle, manifest=m)
+        if problems:
+            raise ExportError("the store would not match the bundle: " + "; ".join(problems) + "; nothing imported")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")
