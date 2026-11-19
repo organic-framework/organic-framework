@@ -56,22 +56,27 @@ def machine_id(wait_s=5.0):
                 os.unlink(tmp)
             except FileNotFoundError:
                 pass
-    deadline = time.time() + wait_s
+    deadline, rounds = time.time() + wait_s, 0
     while True:
         mid = read()
         if mid:
             return mid
-        if mid is None:
-            link_new()   # lost or won, the next read gives the one id in place
-            continue
+        if mid is None and link_new():
+            continue   # won: the next read gives this id
+        if mid is None and not os.path.lexists(path):
+            continue   # lost to a caller whose file is in place now
         if time.time() > deadline:
+            rounds += 1
+            if rounds > 2:   # a state folder no caller can fix: an id for this process, never a hang (every emit and
+                return str(uuid.uuid4())   # hook asks for it; of_review on organic-framework PR 419)
             # an empty file an older writer left: one caller at a time, under a lock, replaces it if it is still empty,
             # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
             # gave six processes two ids)
             import fcntl
             with open(os.path.join(d, ".machine_id.lock"), "a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                if read() == "":
+                cur = read()
+                if cur == "" or (cur is None and os.path.lexists(path)):   # empty, or a link to nothing
                     fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
                     try:
                         with os.fdopen(fd, "w") as fh:
@@ -81,6 +86,7 @@ def machine_id(wait_s=5.0):
                     except BaseException:
                         os.unlink(tmp)
                         raise
+            deadline = time.time() + wait_s
             continue
         time.sleep(0.02)
 
