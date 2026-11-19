@@ -975,12 +975,48 @@ def _position_of_session(sid):
     return None
 
 
+def _watch_render(seconds, out):
+    """The wall bound: a thread of its own writes "Timeout (H:MM:SS)!" and every other thread's stack to OUT after
+    SECONDS, and ends the process (exit 1). It reads the stacks from Python: sys._current_frames() copies the frames
+    under the interpreter's lock. faulthandler.dump_traceback_later, used before, walked the running main thread's
+    frames from C with no lock: on 2026-11-18 one of its dumps read "<invalid frame>", and the same walk crashed a
+    process on Python 3.15.2 with "Python quit unexpectedly" on the founder's screen (of_server, msg 01a1f112-a648).
+    A main thread whose C code holds that lock keeps this thread from running, so the kernel's SIGALRM ends the render
+    REFRESH_STUCK_S later all the same, with no stack (its default action leaves no crash report)."""
+    import signal
+    import threading
+    import traceback
+
+    def watch():
+        time.sleep(seconds)
+        try:
+            me = threading.get_ident()
+            names = {t.ident: t.name for t in threading.enumerate()}
+            text = f"Timeout ({seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d})! The render is stopped.\n"
+            for ident, frame in sorted(sys._current_frames().items()):
+                if ident != me:
+                    text += f"Thread 0x{ident:x} {names.get(ident, '?')} (most recent call last):\n"
+                    text += "".join(traceback.format_stack(frame))
+            try:
+                fd = out.fileno()
+            except (AttributeError, OSError, ValueError):
+                fd = 2
+            data = text.encode("utf-8", "backslashreplace")
+            while data:
+                data = data[os.write(fd, data):]
+        except Exception:  # noqa: BLE001 - a closed log: the stacks are lost, the render still ends
+            pass
+        finally:
+            os._exit(1)
+
+    threading.Thread(target=watch, name="render-watchdog", daemon=True).start()
+    signal.alarm(seconds + of_studio.REFRESH_STUCK_S)
+
+
 def bound_render(log=None):
     """A cache render's bounds (docs/studio.md 5.1a): it runs below the founder's own work. The kernel stops it after
-    REFRESH_CPU_S of CPU (a runaway). After REFRESH_MAX_S of wall time faulthandler's own thread writes every thread's
-    stack to the log and ends it, even while the main thread is stuck in C, so the log tells a hang from a render the
-    load starved. Its flock goes with it either way."""
-    import faulthandler
+    REFRESH_CPU_S of CPU (a runaway). After REFRESH_MAX_S of wall time _watch_render writes every thread's stack to the
+    log and ends it, so the log tells a hang from a render the load starved. Its flock goes with it either way."""
     import resource
     try:
         os.nice(of_studio.REFRESH_NICE)
@@ -992,7 +1028,7 @@ def bound_render(log=None):
         resource.setrlimit(resource.RLIMIT_CPU, (cap, hard))
     except (ValueError, OSError):
         pass
-    faulthandler.dump_traceback_later(of_studio.REFRESH_MAX_S, exit=True, file=log or sys.stderr)
+    _watch_render(of_studio.REFRESH_MAX_S, log or sys.stderr)
 
 
 def cmd_studio(args):
