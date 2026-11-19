@@ -7299,7 +7299,7 @@ def cmd_capacity(args):
                 print(f"bundle: {bundle}")
             elif step == "copy" and bundle:
                 of_carry.copy(bundle, args.key, to=args.to, frm=args.src, bwlimit=args.bwlimit or of_carry.BWLIMIT_KBPS,
-                              dry_run=args.dry_run)
+                              dry_run=args.dry_run, known_hosts=args.known_hosts)
             elif step == "restore" and bundle:
                 import of_spawn
                 done = of_carry.restore(bundle, positions, args.org, only=only, dry_run=args.dry_run,
@@ -7310,7 +7310,8 @@ def cmd_capacity(args):
                 return 1 if any(s == "failed" for _, s, _ in done) else 0
             else:
                 raise OfError("usage: of capacity carry prepare --only <org|positions> [--bundle DIR] | "
-                              "copy --bundle DIR (--to|--from) user@host:DIR --key FILE [--bwlimit KBPS] [--dry-run] | "
+                              "copy --bundle DIR (--to|--from) user@host:DIR --key FILE [--known-hosts FILE] "
+                              "[--bwlimit KBPS] [--dry-run] | "
                               "restore --bundle DIR --org ORG [--home DIR] [--only a,b] [--dry-run]")
         except (of_carry.CarryError, of_capacity.MoveError) as e:
             raise OfError(f"capacity carry: {e}")
@@ -8111,6 +8112,7 @@ def main(argv=None):
     cp.add_argument("--bundle", help="carry: the bundle directory (prepare: default under the capacity state)")
     cp.add_argument("--from", dest="src", help="carry copy: pull a bundle prepared on user@host:DIR")
     cp.add_argument("--key", help="carry copy: the SSH key file (never the owner's SSH agent)")
+    cp.add_argument("--known-hosts", metavar="FILE", help="carry copy: check the SSH host key against this file")
     cp.add_argument("--bwlimit", type=int, help="carry copy: KB/s (default 25000)")
     cp.add_argument("--home", help="carry restore: the home the paths are rewritten to (default: this user's)")
     cp.add_argument("--into", help="move from Zellij: the herdr WORKSPACE/TAB to resume in (default: the unit's "

@@ -2,6 +2,7 @@
 copy's commands and the restore, between two homes in a temporary folder and back."""
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -267,8 +268,8 @@ class CopyCommands(unittest.TestCase):
         push = of_carry.copy_commands("/b", self.key, to="of@host:/c/b", bwlimit=1000, wrapper=["taskpolicy", "-b"])
         self.assertEqual([c[:3] for c in push], [["taskpolicy", "-b", "rsync"]] * 2)
         ssh = push[0][push[0].index("-e") + 1]
-        for opt in ("-i " + self.key, "IdentityAgent=none", "IdentitiesOnly=yes", "BatchMode=yes"):
-            self.assertIn(opt, ssh)
+        self.assertEqual(ssh, f"ssh -i {shlex.quote(self.key)} -o IdentityAgent=none "
+                              "-o IdentitiesOnly=yes -o BatchMode=yes")
         self.assertTrue(all("--chmod=go-rwx" in c for c in push))  # nothing readable by another user on the host
         spaced = os.path.join(self.d, "a key")
         shutil.copy2(self.key, spaced)
@@ -280,6 +281,25 @@ class CopyCommands(unittest.TestCase):
         self.assertEqual(pull[-1][-3:], ["--files-from=/b/files.txt", "of@host:/", "/b/files/"])
         with self.assertRaises(of_carry.CarryError):
             of_carry.copy_commands("/b", self.key, to="a:/x", frm="b:/y")
+
+    def test_copy_checks_the_host_against_the_named_file(self):
+        known_hosts = Path(self.d, "agent host keys")
+        known_hosts.touch()
+        with mock.patch.dict(os.environ, {"HOME": self.d}):
+            cmds = of_carry.copy(os.path.join(self.d, "b"), self.key, frm="of@host:/c/b",
+                                 known_hosts="~/agent host keys", dry_run=True, pats=[], log=lambda *_: None)
+        for cmd in cmds:
+            ssh = shlex.split(cmd[cmd.index("-e") + 1])
+            self.assertEqual(ssh[-4], "-o")
+            self.assertEqual(shlex.split(ssh[-3]), [f"UserKnownHostsFile={known_hosts}"])
+            self.assertEqual(ssh[-2:], ["-o", "StrictHostKeyChecking=yes"])
+
+    def test_missing_known_hosts_file_stops_copy_before_rsync(self):
+        run = mock.Mock()
+        with self.assertRaisesRegex(of_carry.CarryError, "no known hosts file"):
+            of_carry.copy(os.path.join(self.d, "b"), self.key, to="of@host:/c/b",
+                          known_hosts=os.path.join(self.d, "missing"), run=run)
+        run.assert_not_called()
 
     def test_background_priority_by_platform(self):
         """of_lab's rehearsal, 2026-11-15: taskpolicy is macOS's, and a Linux end failed on it."""
