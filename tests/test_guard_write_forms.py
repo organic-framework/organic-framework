@@ -14,7 +14,12 @@ import of_guard  # noqa: E402
 class WriteForms(unittest.TestCase):
 
     def setUp(self):
+        # a HOME of its own, whatever runs the file: run alone as a script, tests/isolate.py does not set one, and
+        # setUp would write into the real outbox and orgs.yaml (of_review on organic-framework PR 399)
+        self.saved_home = os.environ.get("HOME")
+        os.environ["HOME"] = os.path.realpath(tempfile.mkdtemp())
         self.home = os.path.expanduser("~")
+        assert self.home != self.saved_home
         self.box = os.path.join(self.home, ".local/state/of/asks-outbox")
         os.makedirs(self.box, exist_ok=True)
         open(os.path.join(self.box, "20991231T000000-abcd.json"), "w").write("{}")
@@ -27,6 +32,10 @@ class WriteForms(unittest.TestCase):
         self.saved = os.environ.get("OF_STATE")
 
     def tearDown(self):
+        if self.saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = self.saved_home
         if self.saved is None:
             os.environ.pop("OF_STATE", None)
         else:
