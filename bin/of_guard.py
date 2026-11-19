@@ -2896,7 +2896,11 @@ def _write_targets(stext):
            not w.endswith("&") and toks[k + 1] not in _DEV_STREAMS and not toks[k + 1].isdigit()]
     # `>| f` (the `|` its own word), `exec 3> f` (the number a descriptor): of_review's write forms on PR 395
     out += [toks[k + 2] for k, w in enumerate(toks[:-2]) if w and set(w) <= _REDIR and ">" in w and toks[k + 1] == "|"]
-    return [t for t in out if t != "|"]
+    # `>& f` and `&> f`: stdout and stderr into a file, unless the word is a descriptor or `-` (`2>&1`, `>&-`); and
+    # `>|f` with no space, whose `|` the tokens leave on the name (of_review's notes on organic-framework PR 397)
+    out += [toks[k + 1] for k, w in enumerate(toks[:-1]) if w in (">&", "&>&") and not toks[k + 1].isdigit()
+            and toks[k + 1] != "-" and toks[k + 1] not in _DEV_STREAMS]
+    return [t[1:] if t.startswith("|") and len(t) > 1 else t for t in out if t != "|"]
 
 
 _PY_VALUE_OPTS = {"-W", "-X", "--check-hash-based-pycs"}   # python options that take the next word as a value
