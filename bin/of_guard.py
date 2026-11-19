@@ -1268,7 +1268,7 @@ WRAPPER_BOUND_DENY = ("a command run through a wrapper the guard must read every
 def _readings_past_bound(lines, depth):
     """WRAPPER_BOUND_DENY's (reason, subject) when LINES, judged at DEPTH + 1, would pass G0's depth or the readings'
     budget for this check (READINGS_MAX_CHARS); else None. Counts LINES against the budget."""
-    if depth + 1 > 4:
+    if depth + 1 > DEPTH_CAP:
         return WRAPPER_BOUND_DENY, "a wrapper's readings, nested past G0's depth"
     if _PAST_BUDGET in lines:
         return WRAPPER_BOUND_DENY, "a wrapper's readings, past their budget"
@@ -3360,6 +3360,20 @@ def _remote_line(cmd):
 _REMOTE_LINE = re.compile(r"(?<![\w-])(?:ssh|autossh|docker|podman|nerdctl|kubectl|crictl|limactl|lima|multipass"
                           r"|vagrant|orbctl|orb)(?![\w-])", re.I)
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
+_CAPPED = [None]  # the first reader that stopped at its depth cap in the command critical_deny checks (G0.11)
+# G0.11: a command nested deeper than a reader reads (its depth cap) was allowed unread: `_bash_deny` returned None past
+# depth 4, so any denied command passed five levels down (of_review, msg 01a1f412-7113, and of_secrets-review, msg
+# 01a1f440-6796, 2026-11-19; organic-framework PR 332). A reader that stops at its cap now marks the call, and
+# critical_deny refuses it. The readers read twelve levels down (four until then: the 21-day replay found 149 commands,
+# polling loops and kubectl pipelines, nested five to twelve levels), and `_bash_deny` reads at most READ_BUDGET bodies
+# per call, so a command built to outlast the hook's 5-second timeout, whose kill would lose the deny, is refused.
+DEPTH_CAP = 12
+READ_BUDGET = 400
+_READS = [0]
+DEPTH_CAP_MODE = "deny"
+DEPTH_CAP_DENY = ("a command nested deeper than the guard reads (more than twelve levels of subshells, substitutions or "
+                  "shell bodies inside one another, or more nested bodies than it reads in one call), so it cannot tell "
+                  "what runs. Write it with fewer levels (docs/guard.md G0.11)")
 _REDIR_CTX = [None]  # (folder, line variables) of the simple command _bash_deny reads, for its `<` targets (G0.9)
 
 
@@ -3784,7 +3798,8 @@ def _shell_runs_protected(head, args, cwd, stext=None, shvars=None, fed=None, de
     path, the script's interpreter line decides (2026-11-16, a user organization's script with `#!/bin/bash -p`).
     A shell that only reads the file (`bash -c 'cat file'`, `bash lint.sh file`) is G21's read, allowed."""
     args = [_expand_vars(a, shvars) for a in args]
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_shell_runs_protected"
         return None
     if head == "parallel":  # `parallel bash ::: f`, `parallel -j 4 'bash {}' ::: f`, `echo f | parallel bash`
         cut = next((k for k, a in enumerate(args) if a in (":::", "::::", ":::+")), len(args))
@@ -4217,7 +4232,12 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
     a secret FILE leave its place; prose that is only carried is skipped. `reaches_agent` is whether this
     line's stdout is shown (vs. piped on, redirected to a file, or captured by a parent that does not show it).
     See RFC 0002 §4.1 for the known limits (unknown wrappers, indirection, interpreters dumping the env)."""
-    if depth > 4:
+    _READS[0] += 1
+    if _READS[0] > READ_BUDGET:  # G0.11: more nested bodies than one call reads
+        _CAPPED[0] = _CAPPED[0] or "_bash_deny (read budget)"
+        return None
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_bash_deny"
         return None
     text, subs, docs, _ = _scan(cmd)
     raw = _cut_heredocs(cmd) if _ORG_PROTECTION["code"] and ("<<<" in cmd or "$(" in cmd or "`" in cmd) else ""
@@ -4669,7 +4689,8 @@ _SUB_MARK = re.compile(r"__OFSUB(\d+)__")
 
 
 def _targets(cmd, here, known, empty, values, nounset, exported, depth, bodies=None):
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_targets"
         return None
     text, subs, docs, _ = _scan(cmd)
     bodies = dict(bodies or {})
@@ -5004,6 +5025,8 @@ def critical_deny(tool, tool_input, cwd=None):
     _LOOPS[0] = {}
     _READINGS_SPENT[0] = 0
     _REDIR_CTX[0] = None
+    _CAPPED[0] = None
+    _READS[0] = 0
     _LINE_REMOTE[0] = tool == "Bash" and _remote_line(ti.get("command") or "")
     if tool == "Bash":
         cmd = ti.get("command") or ""
@@ -5018,6 +5041,11 @@ def critical_deny(tool, tool_input, cwd=None):
             hit = targets_deny(cmd, cwd)  # G26, G27
         if not hit:
             hit = escape_deny(cmd)  # G30
+        if not hit and _CAPPED[0]:  # G0.11: a reader stopped at its depth cap, so what runs there is unread
+            if DEPTH_CAP_MODE == "deny":
+                hit = (DEPTH_CAP_DENY,)
+            else:
+                _WARNINGS.append((DEPTH_CAP_DENY, cmd, None))
         return (hit[0], cmd) if hit else None
     path = ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or ""
     _DENY_CWD[0] = cwd
@@ -5226,7 +5254,8 @@ def kubectl_calls(cmd, env=None, depth=0):
     sh -c, eval, a heredoc read by a shell. Not followed: ssh and docker/kubectl exec, which run with another
     machine's or container's kubeconfig. Prose a command only carries (`of send "…"`, `git commit -m "…"`) is not
     a call."""
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "kubectl_calls"
         return []
     env = {k: v for k, v in (env or {}).items() if v}
     text, subs, docs, _ = _scan(cmd)
@@ -5512,7 +5541,8 @@ def ssh_calls(cmd, depth=0):
     """Every ssh-family call (ssh, scp, sftp, rsync, mosh, sshfs, autossh) the local shell runs for a command line, as
     {head, destinations: [(word, how)], config: the -F file or None}. Followed as kubectl_calls follows: wrappers,
     $( ), subshells, sh -c, eval, a heredoc read by a shell. Prose a command only carries is not a call."""
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "ssh_calls"
         return []
     text, subs, docs, _ = _scan(cmd)
     out = []
@@ -6177,7 +6207,8 @@ def command_findings(cmd, depth=0):
     NAME, None) for a variable assigned or exported on the line; ('code', text, language) for interpreter code
     (-c, -e, a here-string or a heredoc); ('unparsed', line, None) when the line cannot be read. A remote command (ssh,
     docker exec, kubectl exec) runs elsewhere and is not read."""
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "command_findings"
         return []
     out = []
     try:
@@ -6679,7 +6710,9 @@ def framework_writes(tool, tool_input, cwd=None, depth=0):
     a merge, a release, a workflow run, a secret or variable, a repository setting, a write through gh api (a
     status, a ruleset, a ref, a file). Comments and reviews are not writes here. The repository is the one the
     command names (a URL, -R, an api path) or the one it runs in (the session's directory, `cd`, `git -C`)."""
-    if tool != "Bash" or depth > 4:
+    if tool == "Bash" and depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "framework_writes"
+    if tool != "Bash" or depth > DEPTH_CAP:
         return []
     cmd = (tool_input or {}).get("command") or ""
     if "git" not in cmd and "gh" not in cmd:
@@ -6871,7 +6904,8 @@ def credential_refs(tool, tool_input, cwd=None, interesting=None, depth=0):
 
 
 def _cred_bash(cmd, cwd, env, keep, depth):
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_cred_bash"
         return []
     out = []
     try:
@@ -7080,7 +7114,8 @@ def scratch_write(tool, tool_input, cwd, roots):
 
 
 def _scratch_bash(cmd, cwd, env, roots, depth):
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_scratch_bash"
         return None
     try:
         text, subs, docs, _ = _scan(cmd)
@@ -7285,7 +7320,9 @@ def _authority_code(code, how):
 
 
 def _authority_bash(cmd, depth=0):
-    if depth > 4 or not _mentions_authority(cmd):
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "_authority_bash"
+    if depth > DEPTH_CAP or not _mentions_authority(cmd):
         return []
     out = []
     try:
@@ -7410,7 +7447,8 @@ def typing_declarations(cmd, depth=0):
     ('pane', id), ('agent', name or id), ('own', None) for $HERDR_PANE_ID, or ('unknown', None); sha256 is the
     typed text's typed_digest, or None when the guard cannot read it (keys, a substitution, a variable). Pure: the
     hook writes the declarations (of_hook._declare_typing), so a replay can call it."""
-    if depth > 4:
+    if depth > DEPTH_CAP:
+        _CAPPED[0] = _CAPPED[0] or "typing_declarations"
         return []
     out = []
     try:
