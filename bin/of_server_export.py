@@ -98,6 +98,8 @@ def ensure_schema(conn):
                 of_server_secrets.DDL):
         conn.executescript(ddl)
     of_server_relay.migrate(conn)
+    if "account" not in _columns(conn, "finance_facts"):  # of_server_finance._ensure's migration of an older store
+        conn.execute("ALTER TABLE finance_facts ADD COLUMN account TEXT NOT NULL DEFAULT ''")  # (of_review, PR 425)
 
 
 def _rows(conn, table, org, cols=None):
@@ -369,6 +371,9 @@ def _checked_bundle(bundle, identity, index_sha):
     indexed = ix["files"].keys() - required
     if not required <= ix["files"].keys() or any(not re.fullmatch(native_pattern, rel) for rel in indexed):
         return None, ["invalid bundle file inventory"]
+    for folder, dirs, names in os.walk(bundle):  # a link would make a check read a file outside the bundle
+        if any(os.path.islink(os.path.join(folder, n)) for n in dirs + names):
+            return None, ["the bundle holds a symbolic link"]
     for folder, _, names in os.walk(os.path.join(bundle, "clickhouse")):
         for name in names:
             rel = os.path.relpath(os.path.join(folder, name), bundle)
@@ -828,4 +833,3 @@ def delete_bundle(bundle, index_sha):
     if os.path.exists(bundle):
         raise ExportError("the bundle's folder is still there after its removal")
     return len(found)
-

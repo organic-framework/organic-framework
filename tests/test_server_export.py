@@ -279,6 +279,20 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(ex.delete_bundle(self.out, sha), len(ex.STORE) + 2)  # the tables, the manifest, the index
         self.assertFalse(os.path.exists(self.out))
 
+    def test_a_symbolic_link_in_the_bundle_and_an_older_finance_table(self):
+        """of_review's notes on organic-framework PR 425."""
+        _, sha = self.export()
+        rel = os.path.join(self.out, "store", "coord.jsonl.gz")
+        os.rename(rel, rel + ".real")
+        os.symlink(rel + ".real", rel)
+        self.assertEqual(ex.check_bundle(self.out, index_sha=sha), ["the bundle holds a symbolic link"])
+        old, _ = store(tables=False)
+        old.execute("CREATE TABLE finance_facts (event_id TEXT PRIMARY KEY, org TEXT NOT NULL, period TEXT NOT NULL, "
+                    "kind TEXT NOT NULL, category TEXT, product TEXT, position TEXT, sha TEXT, supersedes TEXT, "
+                    "batch_id TEXT, created_at TEXT)")
+        ex.ensure_schema(old)
+        self.assertIn("account", ex._columns(old, "finance_facts"))
+
     def test_an_export_refuses_a_folder_that_is_not_empty(self):
         os.makedirs(self.out)
         open(os.path.join(self.out, "x"), "w").close()
