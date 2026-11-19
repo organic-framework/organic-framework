@@ -77,6 +77,8 @@ report "not found", so their precision is not known for tb-v4. Inference, unconf
 store's live tables. It is not investigated (the precision sample is postponed to the week of 2026-11-23 by the
 founder's card OF-31).
 
+tb-v6 (2026-11-19) tells the judge that a session cron's fields are the machine's local time, with the zone and, for a one-shot cron, its run in UTC (`of_capacity`: `7 0 23 11 *` at +04 runs at 2026-11-22 20:07Z, seven minutes after the limit reset it waited for, and was judged as booked four hours after it, twice). Its scores are not measured yet: the precision sample waits for the week of 2026-11-23 (card OF-31).
+
 tb-v5 (2026-11-18) gives the judge a message's text without the relay's frame line and its reply hint, and for a
 long text the start and a window around each later time it names, instead of its first 700 characters. It also adds
 a line: a clock range that describes data or an event on another day the item names is a reading of the past, not a

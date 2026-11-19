@@ -27,7 +27,7 @@ import time
 
 import of_events
 
-VERSION = "tb-v5"
+VERSION = "tb-v6"
 MODEL = "haiku"
 TIMEOUT_S = 90
 AHEAD_MIN = 15            # a clock time this many minutes after the item's own time is a booking's candidate
@@ -144,8 +144,8 @@ def items(rows, positions, judged=(), before=None):
                     continue
                 if isinstance(c, dict) and c.get("id"):
                     add(dict(base, key=f"cron:{pos}:{c['id']}", source="cron", position=pos, ref=c["id"],
-                             text=f"schedule {c.get('schedule')!s}, recurring {bool(c.get('recurring'))}: "
-                                  f"{c.get('prompt') or ''}", times=[]))
+                             text=f"schedule {c.get('schedule')!s}, recurring {bool(c.get('recurring'))}"
+                                  f"{cron_zone_note(c.get('schedule'), ts)}: {c.get('prompt') or ''}", times=[]))
             for t in p.get("background_tasks") or []:
                 if isinstance(t, dict) and t.get("id") and t.get("id") not in had and t.get("type") == "shell" \
                         and waits_on_clock(t.get("command")):
@@ -494,6 +494,19 @@ OUTCOME_S = 2 * 3600   # what a position does within this after a note is its ou
 _CRON = re.compile(r"schedule (\S+) (\S+) (\S+) (\S+) (\S+), recurring (True|False)")
 _UNTIL = re.compile(r"-(?:g[et]|l[te])\s+[\"']?\$?\{?(\d{14}|\d{12}|\d{6}|\d{4})\b")
 _ISO = re.compile(r"(20\d\d-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z)")
+
+
+def cron_zone_note(schedule, ts):
+    """What a session cron's fields mean in UTC: the harness reads them in the machine's local time, and the judge read
+    them as UTC (of_capacity, msg 01a1f3db-cfe8: `7 0 23 11 *` at +04 fires at 2026-11-22 20:07Z, seven minutes after
+    the limit reset it waited for, and was judged a booking an hour past its basis). The offset is this machine's at
+    the item's time; a one-shot cron also gets its run in UTC."""
+    base = _epoch(ts or "") or time.time()
+    off = time.localtime(base).tm_gmtoff
+    zone = f"UTC{'+' if off >= 0 else '-'}{abs(off) // 3600:02d}:{abs(off) % 3600 // 60:02d}"
+    when, _ = booked_at({"source": "cron", "quote": f"schedule {schedule}, recurring False", "ts": ts})
+    one = f"; it runs at {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(when))}" if when else ""
+    return f" (its fields in the machine's local time, {zone}{one})"
 
 
 def booked_at(item):
