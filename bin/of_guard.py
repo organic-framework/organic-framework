@@ -3266,6 +3266,81 @@ def _sed_s_only(prog):
     return seen
 
 
+def _sed_run_texts(prog):
+    """The command lines a sed program runs: each e command's text, and an s command's replacement when its flags
+    hold e (GNU sed runs the pattern space it made), whatever the delimiter."""
+    out, i, n = [], 0, len(prog)
+    while i < n:
+        while i < n and prog[i] in " \t\n;{}":
+            i += 1
+        if i >= n:
+            break
+        m = _SED_ADDR.match(prog, i)
+        if m:
+            i = m.end()
+        if i >= n:
+            break
+        c = prog[i]
+        if c == "e":
+            end = n
+            for sep in "\n;}":
+                k = prog.find(sep, i + 1)
+                if k >= 0:
+                    end = min(end, k)
+            out.append(prog[i + 1:end])
+            i = end
+            continue
+        if c == "s" and i + 1 < n:
+            d, j, parts, rep = prog[i + 1], i + 2, 0, []
+            while j < n and parts < 2:
+                if prog[j] == "\\" and j + 1 < n:
+                    if parts == 1:
+                        rep.append(prog[j + 1])
+                    j += 2
+                    continue
+                if prog[j] == d:
+                    parts += 1
+                elif parts == 1:
+                    rep.append(prog[j])
+                j += 1
+            k = j
+            while k < n and (prog[k].isalnum()):
+                k += 1
+            if "e" in prog[j:k]:
+                out.append("".join(rep))
+            i = k
+            continue
+        k = min([x for x in (prog.find(sep, i) for sep in "\n;") if x >= 0] or [n])
+        i = k + 1
+    return [t for t in out if t.strip()]
+
+
+def _sed_run_lines(cmd):
+    """The command lines the line's sed programs run, read by G31 as lines of their own (of_server on a9d0635c: in
+    `sed '$eof asks answered …'` the act's first word is glued to the e command, so no word on the line is `of`)."""
+    if not re.search(r"\bg?sed\b", cmd):
+        return []
+    try:
+        pipes = _split(cmd)
+    except ValueError:
+        return []
+    out = []
+    for pipe in pipes:
+        for kind, stext in pipe:
+            if kind != "cmd":
+                continue
+            try:
+                toks = _tokens(stext)
+            except ValueError:
+                continue
+            k = next((i for i, t in enumerate(toks) if os.path.basename(t) in ("sed", "gsed")), None)
+            if k is None:
+                continue
+            for prog in _sed_programs(toks[k + 1:]):
+                out += _sed_run_texts(prog)
+    return out
+
+
 def _sed_text(args):
     """Is this sed's program on the line and unable to run a command? `-f FILE`/`--file` puts it elsewhere."""
     if any(re.match(r"^-[A-Za-z]*f", a) or a.startswith("--file") for a in args):
@@ -3372,6 +3447,9 @@ def _actor_line_deny(cmd):
     anywhere (G31's line reading); else None. A help call with a clear on the line is refused too: the line's words
     cannot tell `--help` from a reason or an option value that holds it (`--help" me"`, `-- --help`, `label=--help`:
     of_review on organic-framework PR 399 at 7c776fe and 45eb458)."""
+    runs = _sed_run_lines(cmd)
+    if runs:   # what a sed runs is a command line of its own (of_server on a9d0635c)
+        cmd = cmd + "\n" + "\n".join(runs)
     if not _line_act(_line_words(cmd)):   # no act of of anywhere on the raw line: nothing to read further (linear)
         return None
     cmd = _without_prose(_without_code_text(cmd))

@@ -155,6 +155,20 @@ class SedProgramIsText(unittest.TestCase):
                      "sed 's/x/" + "of org set o path r/' f | sh; at now"):
             self.assertIsNotNone(of_guard._actor_line_deny("export -n OF_POSITION; " + runs), runs)
 
+class SedRunsItsText(unittest.TestCase):
+    """of_server on a9d0635c: the act glued to sed's e command, or an s replacement with the e flag and a letter
+    delimiter, is read as a command line of its own."""
+
+    def test_what_a_sed_runs_is_read(self):
+        import of_guard
+        act = "of asks answ" + "ered AS-1 --option 1"
+        for form in (f"env -i sed '$e{act}' f", f"env -i sed '1e{act}' f", f"env -i sed -n 'sxaxecho {act}xe' f",
+                     f"env -i sed -n 's/.*/{act}/ge' f"):
+            self.assertIsNotNone(of_guard._actor_line_deny(form), form)
+        self.assertIsNone(of_guard._actor_line_deny("sed -n '$e" + act + "' f"))   # nothing clears a variable
+        self.assertEqual(of_guard._sed_run_texts("1s|a|b|g"), [])
+        self.assertEqual(of_guard._sed_run_texts("$eecho hi;p"), ["echo hi"])
+
 class OrgPathActByPosition(unittest.TestCase):
     def test_only_the_path_key_is_the_owners(self):
         import of_guard
