@@ -3010,7 +3010,6 @@ def _forward_dir():
 
 
 _SSH_CARRIERS = ("ssh", "scp", "sftp", "autossh", "mosh")
-_SSH_VALUE_OPTIONS = ("-e", "--rsh", "--ssh", "--ssh-cmd", "-sshcmd")  # options whose value is an ssh command
 
 
 def _forward_deny(head, args, shvars=None, cwd=None):
@@ -3034,9 +3033,12 @@ def _forward_deny(head, args, shvars=None, cwd=None):
         carried = os.path.basename(first) in _SSH_CARRIERS or re.fullmatch(r"(?i)identityfile|-[io]", first) \
             or re.match(r"-i[~/.$]", first)  # exact, never a prefix: a message starting `-important` is prose
         parts = re.split(r"[=:,\s]+", sw) if carried else (re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)])
-        name, eq, value = sw.partition("=")
-        if eq and name in _SSH_VALUE_OPTIONS:  # an ssh command carried after `=` (`--rsh='ssh -i …'`, `-e='ssh …'`;
-            parts += re.split(r"[=:,\s]+", value.strip().strip("'\""))  # PR 397); `--message='ssh …'` is prose
+        _, eq, value = sw.partition("=")
+        v0 = (value.strip().strip("'\"").split(None, 1) or [""])[0]
+        if eq and (os.path.basename(v0) in _SSH_CARRIERS or re.fullmatch(r"(?i)identityfile|-[io]", v0)
+                   or re.match(r"-i[~/.$]", v0)):  # a value after `=` that carries ssh, by its exact first word, for
+            parts += re.split(r"[=:,\s]+", value.strip().strip("'\""))  # any name: --rsh=, ProxyCommand=,
+            # ssh_command=, --ssh-common-args=, GIT_SSH_COMMAND= (of_review on organic-framework PR 430)
         parts += [x[2:] for x in parts if re.match(r"-[A-Za-z].", x)]  # an option glued to its value: `ssh -i<key>`
         for part in parts:
             p = part.strip("'\"")
