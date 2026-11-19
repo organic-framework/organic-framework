@@ -100,7 +100,10 @@ class ActorLineTest(unittest.TestCase):
                     f"export -n {V} {P}; script -q /dev/null of asks --pane p1 withdraw OF-1",
                     f"export -n {V} {P}; script -q /dev/null of asks --text hello answer OF-1",
                     f"export -n {V} {P}; script -q /dev/null of asks --version 2 answer OF-1",
-                    f"export -n {V} {P}; script -q /dev/null of asks --pane=p1 withdraw OF-1"):
+                    f"export -n {V} {P}; script -q /dev/null of asks --pane=p1 withdraw OF-1",
+                    # three and four value options before the action (of_review on PR 404 at 86a7b12)
+                    f"export -n {V} {P}; script -q /dev/null of asks --pane a --text b --version 2 answered OF-1",
+                    f"export -n {V} {P}; script -q /dev/null of asks --pane a --text b --version 2 --prompt p withdraw OF-1"):
             self.assertTrue(deny(cmd), cmd)
 
     def test_plain_acts_and_help_still_run(self):
