@@ -95,6 +95,33 @@ class CardIdTest(unittest.TestCase):
         self.assertEqual(of_asks_chat.names_card("as-12b: yes", ["01a1aaaa"], ["q"], refs=["AS-12b"]),
                          "its card id AS-12b")
 
+    def test_of_status_takes_a_card_id_in_every_ask_field(self):
+        """2026-11-19, via a user organization's structure keeper (msg 01a1f14d-1409): `of status waiting --on founder
+        --ask AS-394` said no open ask matches, because --ask took only an event id."""
+        import argparse
+        import importlib.machinery
+        import importlib.util
+        from unittest import mock
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
+        self.assertIn("wait_ask", of.STATUS_ASK_FIELDS)
+        a = self.ask("acme-shop")
+        with mock.patch.dict(os.environ, {"OF_DB": os.path.join(self.tmp.name, "of.db")}):
+            args = argparse.Namespace(wait_ask="as-1", answered=None, done_task=None, reopen_task=None)
+            of._ask_refs(args, *of.STATUS_ASK_FIELDS)
+            self.assertEqual(args.wait_ask, a["of.event.id"])
+            hexed = argparse.Namespace(wait_ask="1a2b3c4d", answered=None, done_task=None, reopen_task=None)
+            of._ask_refs(hexed, *of.STATUS_ASK_FIELDS)
+            self.assertEqual(hexed.wait_ask, "1a2b3c4d")          # an event id's tail passes as before
+            with self.assertRaises(of.OfError):
+                of._ask_refs(argparse.Namespace(wait_ask="AS-9", answered=None, done_task=None, reopen_task=None),
+                             *of.STATUS_ASK_FIELDS)
+        self.assertEqual(of._founder_wait_ask({"name": "ci"}, args.wait_ask,
+                                              asks=[{"event_id": a["of.event.id"], "state": "open", "position": "po"}]),
+                         a["of.event.id"])
+
 
 if __name__ == "__main__":
     unittest.main()

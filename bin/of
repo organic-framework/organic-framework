@@ -5664,9 +5664,15 @@ def cmd_prompts(args):
     return 0
 
 
+# Every ask id `of status` takes, a card id (AS-394) among them: --answered, --done-task, --reopen-task and the
+# --ask of a wait on the founder (2026-11-19, reported through a user organization's structure keeper, msg
+# 01a1f14d-1409: --ask took only an event id, though the card id is what positions see and quote).
+STATUS_ASK_FIELDS = ("answered", "done_task", "reopen_task", "wait_ask")
+
+
 def cmd_status(args):
     """Declare this position's state: working | waiting --on founder|<position> | idle | done."""
-    _ask_refs(args, "answered", "done_task", "reopen_task")
+    _ask_refs(args, *STATUS_ASK_FIELDS)
     import of_events
     positions = _load_quiet()
     me = _me(positions, args.sender)
