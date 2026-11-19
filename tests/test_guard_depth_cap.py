@@ -73,6 +73,22 @@ class DepthCapTest(unittest.TestCase):
         of_guard._code_runs_protected("echo $(true)", None, None, 0)
         self.assertIsNone(of_guard._CAPPED[0])
 
+    def test_with_protected_code_the_cap_is_the_same(self):
+        """of_review on organic-framework PR 391: with a protected_code entry, the code reader handed its own simple
+        commands to the shell reader one level deeper, so twelve `$( … )` levels were refused, though they are read."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="of-protected-")
+        of_guard.use_protection(code=[d])
+        try:
+            for n in (of_guard.DEPTH_CAP - 1, of_guard.DEPTH_CAP):
+                with self.subTest(levels=n):
+                    self.assertIsNone(deny("echo " + "$( " * n + "true" + " )" * n))
+            self.assertEqual(deny("echo " + "$( " * (of_guard.DEPTH_CAP + 2) + "true" + " )" * (of_guard.DEPTH_CAP + 2)),
+                             of_guard.DEPTH_CAP_DENY)
+            self.assertEqual(deny(f"bash -c 'bash {d}/run.sh'"), of_guard.PROTECTED_RUN_DENY)   # still read
+        finally:
+            of_guard.use_protection()
+
     def test_the_mark_is_per_call(self):
         deny(subshells("echo hi", of_guard.DEPTH_CAP + 2))
         self.assertIsNone(deny("echo hi"))

@@ -4100,7 +4100,8 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
             h, a = s1[0], s1[1]
             if h in ("cd", "pushd") and a:
                 here = os.path.join(here or ".", _expanduser(_expand_vars(a[0], shvars)))
-            hit = _shell_runs_protected(h, a, here, st, shvars, _fed(prior), depth + 1) or \
+            # the code's own simple command: its level, not one deeper (of_review on organic-framework PR 391)
+            hit = _shell_runs_protected(h, a, here, st, shvars, _fed(prior), depth) or \
                 (_find_runs_protected(a, here) if h == "find" else None)
             if hit:
                 return hit
