@@ -40,7 +40,11 @@ class GitShellValues(unittest.TestCase):
                     f"git -c 'credential.https://example.com.helper=!cat {KEY}' fetch",
                     f"git -c filter.a.b.clean='cat {KEY}' add x", f"git -c difftool.x.cmd='cat {KEY}' difftool",
                     f"git -c mergetool.x.cmd='cat {KEY}' mergetool", f"git -c core.alternateRefsCommand='cat {KEY}' fetch",
-                    f"git -c tar.tgz.command='cat {KEY}' archive HEAD", f"git config --global --add core.pager 'cat {KEY}'"):
+                    f"git -c tar.tgz.command='cat {KEY}' archive HEAD", f"git config --global --add core.pager 'cat {KEY}'",
+                    # Codex on PR 400's review: guitool, gc's hook, trailers, a submodule's update, sendemail
+                    f"git -c guitool.x.cmd='cat {KEY}' gui", f"git -c gc.recentObjectsHook='cat {KEY}' gc",
+                    f"git -c trailer.x.cmd='cat {KEY}' interpret-trailers", f"git -c submodule.a.update='!cat {KEY}' submodule update",
+                    f"git -c sendemail.toCmd='cat {KEY}' send-email x"):
             self.assertTrue(deny(cmd), cmd)
         for cmd in ("git -c core.pager=less log", "git log", "GIT_PAGER=cat git log", "git config core.pager less",
                     "git -c color.ui=always log", "git -c alias.st=status st", "git -c credential.helper=store fetch",
