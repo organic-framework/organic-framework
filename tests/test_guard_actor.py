@@ -37,6 +37,18 @@ class ActorTest(unittest.TestCase):
             self.assertTrue(got, cmd)
             self.assertIn("G31", got[0], cmd)
 
+    def test_the_keepers_list_writers_keep_their_caller_too(self):
+        """of_review on organic-framework PR 357: `of access grant` with the session id cleared passed as the owner."""
+        for cmd in ("env -u CLAUDE_CODE_SESSION_ID of access grant k p item:x --tier secret --decided AC-1 --org acme",
+                    "CLAUDE_CODE_SESSION_ID= of access revoke k p item:x --why x --org acme",
+                    "env -i python3 bin/of access record k p item:x --org acme",
+                    "env -u OF_POSITION of access link k p item:x"):
+            got = of_guard.critical_deny("Bash", {"command": cmd}, cwd="/Users/alex/of")
+            self.assertTrue(got and "G31" in got[0], cmd)
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": "of access map --org acme"}, cwd="/Users/alex/of"))
+        self.assertIsNone(of_guard.critical_deny("Bash", {"command": "env -u CLAUDE_CODE_SESSION_ID of access map"},
+                                                 cwd="/Users/alex/of"))
+
     def test_what_names_the_caller_or_runs_no_of_passes(self):
         for cmd in ("of asks answered AS-1 --option 1", "of status working --done-task 0a1b",
                     "env -u HERDR_ENV -u HERDR_PANE_ID of asks", "unset FOO; of status working",
