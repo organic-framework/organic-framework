@@ -3312,6 +3312,10 @@ def cmd_server(args):
             now = sorted(os.listdir(d)) if os.path.isdir(d) else []
         print("moving: " + (", ".join(now) or "none"))
         return 0
+    if args.action == "backup":  # nightly under systemd on the host (of-server-backup.timer)
+        for line in of_server.backup():
+            print(line)
+        return 0
     if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)
         import sqlite3
         import of_server_export as ex
@@ -8044,7 +8048,7 @@ def main(argv=None):
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "tls-init",
                                        "revoke", "status", "export-secret-key", "export", "import",
-                                       "moving"])
+                                       "moving", "backup"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "
