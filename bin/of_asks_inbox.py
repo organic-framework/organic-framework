@@ -1921,7 +1921,8 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
             of_asks_answer.ship_soon()
         return eid
 
-    handoff = T.leaving_as_owner(lambda pendings: T.leave(pendings, positions, of_path))
+    def handoff(pendings):  # leave checks the owner itself (of_asks_answer.not_the_owner)
+        T.leave(pendings, positions, of_path)
 
     def studio(item, done):
         def work():
