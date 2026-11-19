@@ -62,6 +62,17 @@ class DepthCapTest(unittest.TestCase):
         self.assertEqual(of_guard._CAPPED[0], "_bash_deny (read budget)")
         self.assertIsNone(deny("echo " + " ".join("$(echo a)" for _ in range(50))))
 
+    def test_the_code_reader_marks_its_limit_too(self):
+        """of_review on organic-framework PR 389: `_code_runs_protected` stopped at depth 4 without the mark."""
+        of_guard._CAPPED[0] = None
+        self.assertIsNone(of_guard._code_runs_protected("echo $(true)", None, None, of_guard.DEPTH_CAP))
+        self.assertTrue(of_guard._CAPPED[0])        # the first reader to stop keeps the mark
+        import inspect
+        self.assertIn('_capped(\n                    "_code_runs_protected")', inspect.getsource(of_guard._code_runs_protected))
+        of_guard._CAPPED[0] = None
+        of_guard._code_runs_protected("echo $(true)", None, None, 0)
+        self.assertIsNone(of_guard._CAPPED[0])
+
     def test_the_mark_is_per_call(self):
         deny(subshells("echo hi", of_guard.DEPTH_CAP + 2))
         self.assertIsNone(deny("echo hi"))

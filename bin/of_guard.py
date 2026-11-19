@@ -3470,12 +3470,19 @@ _REMOTE_LINE = re.compile(r"(?<![\w-])(?:ssh|autossh|docker|podman|nerdctl|kubec
                           r"|vagrant|orbctl|orb)(?![\w-])", re.I)
 _LOOPS = [{}]  # the `for` lists of the command critical_deny checks (G0.9)
 _CAPPED = [None]  # the first reader that stopped at its depth cap in the command critical_deny checks (G0.11)
+
+
+def _capped(reader):
+    """Mark the call as read only to a limit by READER (G0.11), and answer "nothing found" as the reader would."""
+    _CAPPED[0] = _CAPPED[0] or reader
+    return None
+
 # G0.11: a command nested deeper than a reader reads (its depth cap) was allowed unread: `_bash_deny` returned None past
 # depth 4, so any denied command passed five levels down (of_review, msg 01a1f412-7113, and of_secrets-review, msg
 # 01a1f440-6796, 2026-11-19; organic-framework PR 332). A reader that stops at its cap now marks the call, and
 # critical_deny refuses it. The readers read twelve levels down (four until then: the 21-day replay found 149 commands,
 # polling loops and kubectl pipelines, nested five to twelve levels), and `_bash_deny` reads at most READ_BUDGET bodies
-# per call, so a command built to outlast the hook's 5-second timeout, whose kill would lose the deny, is refused.
+# per call, so a command built to outlast the hook's limit (30 s for PreToolUse, DECIDING_TIMEOUT in bin/of_init.py), whose kill would lose the deny, is refused.
 DEPTH_CAP = 12
 READ_BUDGET = 400
 _READS = [0]
@@ -3859,6 +3866,8 @@ def _git_protected(args, cwd, env, shvars=None):
         hit = _bash_deny(f"cd {shlex.quote(at)} && {line}", 1)
         if hit and hit[0] in (PROTECTED_CODE_DENY, PROTECTED_RUN_DENY):
             return hit[1]
+        if hit and hit[0] in (WRAPPER_BOUND_DENY, DEPTH_CAP_DENY):  # a line read only to a limit: never dropped
+            _capped("_git_protected")  # (G0.11; of_review on organic-framework PR 389)
     if expanded is None:
         return None
     hit = next((o for o in _git_outputs(sub, rest) if _protected_code(o, where)), None)
@@ -4070,7 +4079,8 @@ def _code_runs_protected(code, cwd, shvars=None, depth=0):
                     hit = _text_names_protected(st, here)
                     if hit:
                         return hit
-                hit = _code_runs_protected(st, here, shvars, depth + 1) if depth < 4 else None
+                hit = _code_runs_protected(st, here, shvars, depth + 1) if depth < DEPTH_CAP else _capped(
+                    "_code_runs_protected")
                 if hit:
                     return hit
                 prev = None
