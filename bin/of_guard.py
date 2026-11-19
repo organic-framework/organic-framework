@@ -4427,6 +4427,40 @@ def _hooks_deny(head, args, stext, cwd, env=None):
     return None
 
 
+# git config values git runs through the shell: a pager, an editor, an ssh command, an external diff, a textconv, a
+# filter, a merge driver, a gpg program, a `!` alias or helper (of_secrets-review, msg 01a1f4fe-b2ad: `git -c
+# core.pager='cat <key>' log` passed on main); and the environment variables git and its pager read the same way
+_GIT_SHELL_KEY = re.compile(r"^(?:core\.(?:pager|editor|sshcommand|fsmonitor|askpass)|sequence\.editor|diff\.external|"
+                            r"diff\.[^.]+\.(?:textconv|command)|merge\.[^.]+\.driver|filter\.[^.]+\.(?:clean|smudge|"
+                            r"process)|gpg(?:\.[^.]+)?\.program|pager\.[^.]+|interactive\.difffilter|man\.[^.]+\.cmd|"
+                            r"browser\.[^.]+\.cmd|web\.browser|uploadpack\.packobjectshook|core\.hookspath)$")
+_GIT_BANG_KEY = re.compile(r"^(?:alias\.[^.]+|credential(?:\.[^.]+)?\.helper)$")  # a shell command when it starts with !
+_GIT_SHELL_ENV = frozenset({"GIT_PAGER", "PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND", "GIT_SSH",
+                            "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SEQUENCE_EDITOR", "LESSOPEN",
+                            "LESSCLOSE", "MANPAGER"})
+
+
+def _git_shell_values(head, args, stext, env, depth):
+    """A deny for one simple command when a git config value or an environment variable that git (or its pager) runs as
+    a shell command holds one the guard denies: `git -c KEY=VALUE`, `git config [scope] KEY VALUE` (it persists, so a
+    later call runs it), GIT_CONFIG_* pairs and `GIT_PAGER=… git …`."""
+    values = [v for k, v in env.items() if k in _GIT_SHELL_ENV and v]
+    if head == "git":
+        values += [v.lstrip("!") for k, v in _git_config_pairs(args, env)
+                   if _GIT_SHELL_KEY.match(k) or (_GIT_BANG_KEY.match(k) and v.startswith("!"))]
+        ops = [a for a in args if not a.startswith("-")]
+        if "config" in ops:
+            rest = ops[ops.index("config") + 1:]
+            if len(rest) >= 2 and (_GIT_SHELL_KEY.match(rest[0].lower()) or
+                                   (_GIT_BANG_KEY.match(rest[0].lower()) and rest[1].startswith("!"))):
+                values.append(" ".join(rest[1:]).lstrip("!"))
+    for v in values:
+        hit = _bash_deny(v, depth + 1)
+        if hit:
+            return hit
+    return None
+
+
 def _bash_deny(cmd, depth=0, reaches_agent=True):
     """(reason, matched token) for a shell command line, or None. The rule (of_architect, 2026-11-06): deny
     what will execute or be read as data by the command, and never let a secret VALUE reach the transcript or
@@ -4630,6 +4664,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     hit = _code_deny(code, "python")
                     if hit:
                         return hit
+            if head == "git" or _GIT_SHELL_ENV & set(_assignments(stext)):
+                hit = _git_shell_values(head, args, stext, {**exported, **_assignments(stext)}, depth)
+                if hit:
+                    return hit
             if head == "curl":
                 hit = _curl_deny(args)
                 if hit:
@@ -4638,7 +4676,13 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 hit = _wget_deny(args)
                 if hit:
                     return hit
-            elif head in _FILE_READERS:
+            elif re.search(r"__OFSUB|\$|`", head or ""):
+                # a command name the shell fills in (`$(echo cat) <key>`, `$C <key>`): any program may run, so its
+                # arguments are judged as a reader's (of_secrets-review, msg 01a1f4fe-b2ad, on main)
+                for a in args:   # an option's `name=value` (`custom-columns=N:.spec.secret`) names no file
+                    if not a.startswith("-") and "=" not in a.split("/")[0] and _secret_path(a):
+                        return _reads(a)
+            if head in _FILE_READERS:
                 for a in _data_args(head, args):
                     if _secret_path(a):
                         return _reads(a)
