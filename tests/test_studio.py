@@ -977,6 +977,20 @@ class StudioTest(unittest.TestCase):
         d.compute(of_model.build(DOC, d.rows, at=d.now, org="acme", rev="undated:x", window_h=168), unit)
         return d
 
+    def test_an_organization_joined_through_a_server_only_is_left_out(self):
+        """2026-11-20, of_platform: an enrollment writes an organization with server: and no path:, and the agent host's
+        listener failed every waits refresh on it with KeyError 'path'. Studio skips it, as bin/of's org_registries
+        does."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="of-orgs-")
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        f = os.path.join(d, "orgs.yaml")
+        with open(f, "w") as fh:
+            fh.write("orgs:\n  - name: acme\n    path: acme/org\n    paths: [~/acme/app]\n"
+                     "  - name: joined\n    server: https://of.example.org\n")
+        self.assertEqual(of_studio.orgs(f), [{"name": "acme", "repo": os.path.join(d, "acme/org"),
+                                              "paths": [os.path.expanduser("~/acme/app")]}])
+
     def test_colleague_sees_only_their_unit(self):
         rows = judged(MeasuresTest().rows())      # e6 is an ask from k8s_keeper, owned by the colleague
         d = self.data(rows, unit="colleague")

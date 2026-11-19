@@ -42,8 +42,12 @@ def orgs(orgs_file=None):
     with open(path) as fh:
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(path))
+    # An organization joined through a server only has server: and no path: (no local checkout of its repository
+    # yet); bin/of's org_registries skips it, and so does Studio (2026-11-20, of_platform: the agent host's listener
+    # failed every waits refresh on it with KeyError 'path').
     return [{"name": o.get("name"), "repo": os.path.join(base, os.path.expanduser(str(o["path"]))),
-             "paths": [os.path.expanduser(p) for p in o.get("paths") or []]} for o in doc.get("orgs") or []]
+             "paths": [os.path.expanduser(p) for p in o.get("paths") or []]} for o in doc.get("orgs") or []
+            if o.get("path")]
 
 
 def _home_tilde(p):
