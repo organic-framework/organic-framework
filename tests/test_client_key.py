@@ -55,6 +55,27 @@ class EnsureKeyTest(unittest.TestCase):
         finally:
             of_client.time.sleep = saved
 
+    def test_a_stale_public_half_is_replaced_by_the_private_halfs_own(self):
+        """of_review on organic-framework PR 409: a public half left from an earlier key, older than the private half,
+        was returned as it was (a crash between the links, or a reader before the winner's replace)."""
+        pub = of_client.ensure_key(self.path)
+        other = os.path.join(self.d, "other")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", other], check=True,
+                       env=of_client.no_agent_env())
+        with open(other + ".pub") as fh, open(self.path + ".pub", "w") as out:
+            out.write(fh.read())
+        st = os.stat(self.path)
+        os.utime(self.path + ".pub", (st.st_atime, st.st_mtime - 60))   # older than the private half
+        saved = of_client.time.sleep
+        of_client.time.sleep = lambda s: None
+        try:
+            got = of_client.ensure_key(self.path)
+        finally:
+            of_client.time.sleep = saved
+        self.assertEqual(got.split()[:2], pub.split()[:2])
+        self.assertEqual(got.split()[:2], derived(self.path))
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["machine_key", "machine_key.pub"])
+
     def test_an_existing_pair_runs_no_keygen(self):
         pub = of_client.ensure_key(self.path)
         saved = of_client.subprocess.run

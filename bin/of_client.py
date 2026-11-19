@@ -260,22 +260,24 @@ def ensure_key(path=KEY_PATH):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     pub = path + ".pub"
-    for _ in range(50):  # the winner links its public half right after its private one
-        if os.path.exists(pub):
+
+    def fresh():  # the public half is its pair once it is no older than the private half (a winner's link or replace)
+        try:
+            return os.stat(pub).st_mtime >= os.stat(path).st_mtime
+        except FileNotFoundError:
+            return False
+    for _ in range(50):  # the winner links or replaces its public half right after its private one
+        if fresh():
             break
         time.sleep(0.1)
-    else:  # a private half with no pair (a crash between the two links): derive it
+    else:  # no pair, or one older than the private half (a crash between the links, a stale one): derive it
         r = subprocess.run(["ssh-keygen", "-y", "-f", path], capture_output=True, text=True, check=True,
                            env=no_agent_env())
-        tmp_pub = f"{pub}.{os.getpid()}.tmp"
-        with open(tmp_pub, "w") as fh:
+        fd, tmp_pub = tempfile.mkstemp(prefix=".machine-pub-", dir=os.path.dirname(path))
+        with os.fdopen(fd, "w") as fh:
             fh.write(r.stdout.strip() + "\n")
-        try:
-            os.link(tmp_pub, pub)
-        except FileExistsError:
-            pass
-        finally:
-            os.unlink(tmp_pub)
+        os.chmod(tmp_pub, 0o644)
+        os.replace(tmp_pub, pub)  # the derived pair is the private half's own: it replaces whatever is there
     with open(pub) as fh:
         return fh.read().strip()
 
