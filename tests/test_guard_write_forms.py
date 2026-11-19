@@ -55,7 +55,9 @@ class WriteForms(unittest.TestCase):
                     f"git --work-tree={B} checkout HEAD -- a.json", f"rm {B}/2*.json", f"echo x > {B}/[2]*.json",
                     f"D={B}; echo x > $D/a.json"):
             self.assertTrue(self.deny(cmd), cmd)
-        for cmd in (f"cat {B}/a.json", f"ls {B}", "echo x > ~/.local/state/of/notes.txt"):
+        for cmd in (f"cat {B}/a.json", f"ls {B}", "echo x > ~/.local/state/of/notes.txt",
+                    # a read printed with sys.stdout.write (of_review's note on PR 410)
+                    f"python3 -c \"import sys; sys.stdout.write(open('{box}/a.json').read())\""):
             self.assertIsNone(self.deny(cmd), cmd)
 
     def test_into_orgs_yaml(self):
