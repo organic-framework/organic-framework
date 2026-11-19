@@ -137,6 +137,30 @@ INSTALL_FAILS = textwrap.dedent("""\
 """)
 
 
+LEFT_CLEAN = textwrap.dedent("""\
+    import os, signal, sys, threading, time
+    sys.path.insert(0, sys.argv[1])
+    import of_stacks
+    def fds():
+        return set(os.listdir("/dev/fd"))
+    if sys.argv[2] == "unrestorable":  # theirs was set, then made blocking: set_wakeup_fd refuses to put it back
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        signal.set_wakeup_fd(w)
+        os.set_blocking(w, True)
+    else:  # no thread can start
+        def no_thread(self):
+            raise RuntimeError("can't start new thread")
+        threading.Thread.start = no_thread
+    before = fds()
+    print("mode", of_stacks.install(signal.SIGUSR1, sys.stdout), flush=True)
+    print("wakeup fd", signal.set_wakeup_fd(-1), flush=True)
+    print("fds left", sorted(fds() - before), flush=True)
+    os.kill(os.getpid(), signal.SIGUSR1)
+    time.sleep(0.2)
+""")
+
+
 def run(code, *args, timeout=60):
     return subprocess.run([sys.executable, "-c", code, BIN, *args], capture_output=True, text=True, timeout=timeout)
 
@@ -228,6 +252,18 @@ class StacksTest(unittest.TestCase):
         self.assertIn("mode off", r.stdout)
         self.assertIn("started", r.stdout)
         self.assertIn("of_stacks: no stack dump on signal", r.stderr)
+
+    def test_a_failed_install_leaves_no_wakeup_fd_and_no_open_pipe(self):
+        """of_review on organic-framework PR 370: when the earlier owner's wakeup fd could not be put back, the new
+        pipe stayed the wakeup fd, both ends open, with no dumper."""
+        for case in ("unrestorable", "no-thread"):
+            with self.subTest(case=case):
+                r = run(LEFT_CLEAN, case)
+                self.assertEqual(r.returncode, 0, r.stderr[-500:])
+                self.assertIn("mode handler", r.stdout)
+                self.assertIn("wakeup fd -1", r.stdout)
+                self.assertIn("fds left []", r.stdout)
+                self.assertEqual(r.stdout.count("stack dump on SIGUSR1"), 1)
 
     def test_a_closed_stream_loses_the_dump_never_the_process(self):
         sys.path.insert(0, BIN)

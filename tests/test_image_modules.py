@@ -10,6 +10,8 @@ written reason (of_review's note on the same PR: the secrets broker reached of_c
 of_protected)."""
 
 import ast
+import glob
+import json
 import os
 import re
 import shutil
@@ -29,16 +31,31 @@ BIN = os.path.join(ROOT, "bin")
 
 def copied(text=None):
     """The of_* modules the Dockerfile's COPY instructions copy from the build context (a comment or another
-    instruction that names a module copies nothing)."""
+    instruction that names a module copies nothing). As Docker reads it: comment lines dropped first, also inside a
+    continued instruction; instructions in any case; a glob or the bin folder itself read against this checkout."""
     if text is None:
         with open(os.path.join(ROOT, "deploy", "Dockerfile"), encoding="utf-8") as fh:
             text = fh.read()
+    text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     text = re.sub(r"\\\n", " ", text)  # one line per instruction
     out = set()
     for line in text.splitlines():
         words = line.split()
-        if words[:1] == ["COPY"] and not any(w.startswith("--from=") for w in words):
-            out |= set(re.findall(r"\bbin/(of_\w+)\.py\b", line))
+        if not words or words[0].upper() != "COPY" or any(w.startswith("--from=") for w in words):
+            continue
+        rest = line.strip()[len(words[0]):].strip()
+        while rest.startswith("--"):  # the flags (--chown, --chmod, --link) come first
+            rest = rest.split(None, 1)[1] if len(rest.split(None, 1)) > 1 else ""
+        srcs = (json.loads(rest) if rest.startswith("[") else rest.split())[:-1]  # the last one is the destination
+        for src in srcs:
+            src = src.rstrip("/")
+            if src == "bin" or glob.has_magic(src):
+                paths = glob.glob(os.path.join(ROOT, src, "*.py") if src == "bin" else os.path.join(ROOT, src))
+                out |= {m.group(1) for m in (re.fullmatch(r"(of_\w+)\.py", os.path.basename(x)) for x in paths) if m}
+            else:
+                m = re.fullmatch(r"bin/(of_\w+)\.py", src)
+                if m:
+                    out.add(m.group(1))
     return out
 
 
@@ -51,59 +68,81 @@ NOT_IN_IMAGE = {
     "of_hook": {f"{m}.{f}": "inside a try that goes on without the collector"
                 for m, f in (("of_events", "card_prefix"), ("of_events", "record"), ("of_route", "_org_by_session"),
                              ("of_route", "_own_org_by_session"))},
-    "of_keeper": {"of_access._approval_notes": "`of access`, on a machine; the server uses the limit checks only"},
+    "of_keeper": {"of_access._approval_notes": "`of registry check`, on a machine; the server uses the limit checks "
+                                                "only"},
     "of_pulse": {"of_access.send_digests": "the listener's access digest, on a machine"},
     "of_relay_client": {"of_server.host_watchdog": "the agent host's watchdog, run from its checkout, not the image"},
 }
-STUDIO = ("of_studio's pages: which of them the image serves is of_studio's decision (of_server's message of "
-          "2026-11-19); until then such a page answers an error in the image")
-for _m, _by in (("of_capacity", "of_studio"), ("of_loop", "of_model"), ("of_loops", "of_model of_studio"),
-                ("of_router", "of_model"), ("of_spend", "of_studio"), ("of_studio_health", "of_studio"),
-                ("of_studio_views", "of_studio"), ("of_works", "of_studio")):
-    NOT_IN_IMAGE.setdefault(_m, {}).update({f"{b}.*": STUDIO for b in _by.split()})
+# Studio's pages (of_studio's decision which of them the image serves: of_server's message 01a1f369-887d).
+STUDIO_FAILS = ("imported outside a try, so a page that reaches it answers 500 in the image; every page built on Data "
+                "reaches of_loops (Data.loop_rows), so only /studio/health answers there (of_review's probe on "
+                "organic-framework PR 370; the image before it failed the same way)")
+STUDIO_DEGRADES = "imported inside a guard that goes on without it: cached usage, no spend, no fold view, a page that says so"
+for _m, _by, _why in (("of_loop", "of_model", STUDIO_FAILS), ("of_loops", "of_model of_studio", STUDIO_FAILS),
+                      ("of_router", "of_model", STUDIO_FAILS), ("of_works", "of_studio", STUDIO_FAILS),
+                      ("of_capacity", "of_studio", STUDIO_DEGRADES), ("of_spend", "of_studio", STUDIO_DEGRADES),
+                      ("of_studio_health", "of_studio", STUDIO_DEGRADES),
+                      ("of_studio_views", "of_studio", STUDIO_DEGRADES)):
+    NOT_IN_IMAGE.setdefault(_m, {}).update({f"{b}.*": _why for b in _by.split()})
+
+
+def _imported(node):
+    """The of_* modules of this repository that one AST node imports: `import`, `from … import`, or a call of
+    importlib.import_module or __import__ with a literal name."""
+    if isinstance(node, ast.Import):
+        names = [a.name for a in node.names]
+    elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+        names = [node.module]
+    elif (isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant)
+          and isinstance(node.args[0].value, str)
+          and ast.unparse(node.func) in ("importlib.import_module", "import_module", "__import__")):
+        names = [node.args[0].value]
+    else:
+        return set()
+    names = {n.split(".")[0] for n in names}
+    return {n for n in names if n.startswith("of_") and os.path.exists(os.path.join(BIN, f"{n}.py"))}
+
+
+def _parse(module):
+    with open(os.path.join(BIN, f"{module}.py"), encoding="utf-8") as fh:
+        return ast.parse(fh.read())
+
+
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
 def function_imports(module):
-    """{(imported of_* module, "module.function")} for each import inside a function of MODULE."""
-    with open(os.path.join(BIN, f"{module}.py"), encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
+    """{(imported of_* module, "module.qualname")} for each import that runs only when a function of MODULE runs,
+    under the innermost function that holds it ("Class.method" for a method)."""
     out = set()
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for sub in ast.walk(fn):
-            if isinstance(sub, ast.Import):
-                names = [a.name for a in sub.names]
-            elif isinstance(sub, ast.ImportFrom) and sub.module and not sub.level:
-                names = [sub.module]
+
+    def visit(node, scope, in_fn):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, FUNCTIONS):
+                visit(child, scope + [getattr(child, "name", "<lambda>")], True)
+            elif isinstance(child, ast.ClassDef):
+                visit(child, scope + [child.name], in_fn)
             else:
-                continue
-            for name in names:
-                name = name.split(".")[0]
-                if name.startswith("of_") and os.path.exists(os.path.join(BIN, f"{name}.py")):
-                    out.add((name, f"{module}.{fn.name}"))
+                if in_fn:
+                    out.update((name, f"{module}.{'.'.join(scope)}") for name in _imported(child))
+                visit(child, scope, in_fn)
+
+    visit(_parse(module), [], False)
     return out
 
 
 def load_imports(module):
-    """The of_* modules of this repository that MODULE imports at load: at module level, in a try or an if there."""
-    with open(os.path.join(BIN, f"{module}.py"), encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
+    """The of_* modules of this repository that MODULE imports when it loads: every import outside a function, at
+    module level, in a try, an if, a with or a class body there."""
     out = set()
-    for node in tree.body:
-        nodes = [node] if isinstance(node, (ast.Import, ast.ImportFrom)) else (
-            list(ast.walk(node)) if isinstance(node, (ast.Try, ast.If)) else [])
-        for sub in nodes:
-            if isinstance(sub, ast.Import):
-                names = [a.name for a in sub.names]
-            elif isinstance(sub, ast.ImportFrom) and sub.module and not sub.level:
-                names = [sub.module]
-            else:
-                continue
-            for name in names:
-                name = name.split(".")[0]
-                if name.startswith("of_") and os.path.exists(os.path.join(BIN, f"{name}.py")):
-                    out.add(name)
+
+    def visit(node):
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, FUNCTIONS):
+                out.update(_imported(child))
+                visit(child)
+
+    visit(_parse(module))
     return out
 
 
@@ -121,11 +160,43 @@ class ImageModulesTest(unittest.TestCase):
     def test_a_function_level_import_is_not_a_load_import(self):
         self.assertNotIn("of_hook", load_imports("of_events"))   # imported inside a function only
 
+    def test_the_import_scans_see_what_runs_where(self):
+        """of_review's note 4 on organic-framework PR 370: importlib and __import__, a class body, a nested function,
+        two classes' methods of one name."""
+        src = ("import importlib\nclass K:\n    import of_events\n    def run(self):\n        import of_mask\n"
+               "class L:\n    def run(self):\n        import of_route\n"
+               "def outer():\n    def inner():\n        importlib.import_module('of_store')\n    __import__('of_ship')\n")
+        tmp = tempfile.mkdtemp(prefix="of-scan-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with open(os.path.join(tmp, "of_scan_probe.py"), "w") as fh:
+            fh.write(src)
+        global BIN
+        real, BIN = BIN, tmp
+        try:
+            for m in ("of_events", "of_mask", "of_route", "of_store", "of_ship"):
+                open(os.path.join(tmp, f"{m}.py"), "w").close()
+            fns, loads = function_imports("of_scan_probe"), load_imports("of_scan_probe")
+        finally:
+            BIN = real
+        self.assertEqual(fns, {("of_mask", "of_scan_probe.K.run"), ("of_route", "of_scan_probe.L.run"),
+                               ("of_store", "of_scan_probe.outer.inner"), ("of_ship", "of_scan_probe.outer")})
+        self.assertEqual(loads, {"of_events"})
+
     def test_only_copy_instructions_count(self):
         text = ("# bin/of_hook.py is the client's\nCOPY bin/of_a.py \\\n     bin/of_b.py ./\n"
                 "COPY --from=keygen bin/of_c.py ./\nRUN cp bin/of_d.py /tmp\n")
         self.assertEqual(copied(text), {"of_a", "of_b"})
         self.assertIn("of_stacks", copied())
+
+    def test_copy_is_read_as_docker_reads_it(self):
+        """of_review's note 3 on organic-framework PR 370: a comment inside a continued COPY, a lowercase copy, a glob."""
+        self.assertEqual(copied("COPY bin/of_a.py \\\n# bin/of_y.py\n     bin/of_x.py ./\n"), {"of_a", "of_x"})
+        self.assertEqual(copied("copy bin/of_a.py ./\n"), {"of_a"})
+        self.assertEqual(copied("COPY bin/of_stack*.py ./\n"), {"of_stacks"})
+        self.assertEqual(copied('COPY --chown=of ["bin/of_a.py", "bin/of_b.py", "./"]\n'), {"of_a", "of_b"})
+        self.assertEqual(copied("COPY bin/of_a.py /app/bin/of_z.py\n"), {"of_a"})  # a destination copies nothing
+        self.assertIn("of_server", copied("COPY bin/ ./\n"))
+        self.assertEqual(copied("COPY\n"), set())
 
     def test_every_module_imported_inside_a_function_is_copied_or_has_its_reason(self):
         have = copied()
