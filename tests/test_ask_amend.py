@@ -35,6 +35,10 @@ class Store(unittest.TestCase):
         self.saved_live = of_asks_answer.live_session
         of_asks_answer.live_session = lambda position, positions: None  # no herdr in a test
         self.typed = []
+        from unittest import mock
+        owner = mock.patch.object(of_asks_answer, "not_the_owner", lambda: None)  # the owner's own screen
+        owner.start()
+        self.addCleanup(owner.stop)
         self.saved_deliver = of_asks_answer.deliver
         of_asks_answer.deliver = lambda pane, text, session, **k: self.typed.append((pane, text)) or "delivered"
 

@@ -15,13 +15,22 @@ import of_events  # noqa: E402
 import of_store  # noqa: E402
 
 
+REAL_OWNER_CHECK = of_asks_answer.not_the_owner
+
+
 class AnswerTest(unittest.TestCase):
+    SCREEN_OWNER = True  # these record as the owner's own screen does (of_asks_answer.not_the_owner holds)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.saved = of_events.STATE_DIR
         of_events.STATE_DIR = self.tmp.name
         of_events._CONN.clear()
         self.conn = of_store.connect(os.path.join(self.tmp.name, "of.db"))
+        if self.SCREEN_OWNER:
+            owner = mock.patch.object(of_asks_answer, "not_the_owner", lambda: None)  # the owner's own screen
+            owner.start()
+            self.addCleanup(owner.stop)
 
     def tearDown(self):
         of_events._CONN.clear()
@@ -322,6 +331,26 @@ class PopupUxTest(unittest.TestCase):
         finally:
             of_asks_tui.load = orig
         return sent
+
+    def test_d_shows_a_draft_and_sends_it_only_on_a_second_d(self):
+        """A draft is a file: d shows its words, to whom and why it waits, and only d again or y sends it (of_review's
+        trust notes on PR 398)."""
+        import of_asks_tui
+        import time as _t
+        draft = {"ask_id": "A1", "ask_ids": ["A1"], "who": ["of_a"], "text": "yes, tonight", "saved_at": _t.time(),
+                 "why": "store busy", "item": {"ids": ["A1"], "who": ["of_a"], "text": "q1?", "version": 1}}
+        for keys, want in (([ord("d"), ord("x"), 0.3, ord("q")], []),
+                           ([ord("d"), ord("d"), 0.3, ord("q")], ["yes, tonight"])):
+            got, self.lines = [], []
+            orig = of_asks_tui.load
+            of_asks_tui.load = lambda positions, conn: self.data()
+            try:
+                of_asks_tui.run(self.scr(keys), [], None, lambda what, x: (True, "ok"), None,
+                                lambda it, text: (got.append(text), (True, "ok"))[1], drafts=lambda: [draft])
+            finally:
+                of_asks_tui.load = orig
+            self.assertEqual(got, want)
+            self.assertTrue(any("«yes, tonight»" in t and "store busy" in t for f in self.lines for t in f))
 
     def test_answer_leaves_at_once_and_u_takes_it_back(self):
         sent = self.run_popup([ord("a"), ord("u"), 0.3, ord("q")])
@@ -1049,6 +1078,9 @@ class LeaveTest(RedeliverTest):
     owner's answers and marks, and a file any session wrote there was replayed too (of_review, msg 01a1f50c-c57a).
     The screen leaving now records the owner's acts in its own process; only the typing leaves it, and that types
     only what the store holds as his answer."""
+    def real(self):
+        """The owner's real test (of_asks_answer.not_the_owner), decided by each test's environment and terminal."""
+        return mock.patch.object(of_asks_answer, "not_the_owner", REAL_OWNER_CHECK)
 
     def setUp(self):
         super().setUp()
@@ -1073,7 +1105,7 @@ class LeaveTest(RedeliverTest):
                 mock.patch.object(of_asks_answer, "deliver", lambda *a, **k: typed.append(a) or "delivered"), \
                 mock.patch.object(of_asks_tui, "spawn_deliver", lambda of_path, events: spawned.append(list(events))), \
                 mock.patch.dict(os.environ, env if env is not None else self.clean, clear=True), \
-                mock.patch.object(sys, "stdin", tty or self.tty):
+                mock.patch.object(sys, "stdin", tty or self.tty), self.real():
             out = of_asks_tui.leave(pendings, self.positions(), "of")
         return out, typed, spawned
 
@@ -1099,9 +1131,12 @@ class LeaveTest(RedeliverTest):
         no_tty = mock.Mock()
         no_tty.isatty.return_value = False
         for env, tty in ((dict(self.clean, CLAUDECODE="1"), None), (dict(self.clean, OF_POSITION="of_x"), None),
-                         (dict(self.clean, CLAUDE_CODE_SESSION_ID="s"), None), (None, no_tty)):
-            out, _, _ = self.leave([{"what": "withdraw", "item": item}], env=env, tty=tty)
-            self.assertFalse(out[0][1])
+                         (dict(self.clean, CLAUDE_CODE_SESSION_ID="s"), None), (self.clean, no_tty)):
+            out, _, spawned = self.leave([{"what": "withdraw", "item": item}], env=env, tty=tty)
+            self.assertEqual((out, spawned), ([], []))  # leaving records nothing
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(sys, "stdin", tty or self.tty), \
+                    self.real():
+                self.assertFalse(of_asks_answer.owner_mark(self.conn, item, "withdraw")[0])  # nor the mark itself
         self.assertEqual(self.events("of.ask_withdrawn"), [])
         out, _, spawned = self.leave([{"what": "withdraw", "item": item}, {"what": "answered", "item": item}])
         self.assertEqual([x[1] for x in out], [True, True])
@@ -1175,13 +1210,18 @@ class LeaveTest(RedeliverTest):
         self.assertEqual(out, [])                        # its keys are never pressed twice
 
     def test_an_agents_session_records_nothing_as_the_owner(self):
+        """Every writer checks itself (of_review's trust notes on PR 398): leaving, the sending thread's answer and
+        record_answer refuse in an agent's session, whoever calls them."""
         import of_asks_tui
         _, _, item = self.group()
-        called = []
-        with mock.patch.dict(os.environ, dict(self.clean, CLAUDECODE="1"), clear=True):
-            self.assertEqual(of_asks_tui.leaving_as_owner(called.append)([{"what": "answer", "item": item}]), [])
+        agent = dict(self.clean, CLAUDECODE="1")
+        out, _, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}], env=agent)
+        self.assertEqual((out, spawned), ([], []))
+        with mock.patch.dict(os.environ, agent, clear=True), mock.patch.object(sys, "stdin", self.tty), self.real():
             self.assertFalse(of_asks_tui.threaded_answer(self.positions())(item, "yes")[0])
-        self.assertEqual((called, self.events("of.agent_question_answered")), ([], []))
+            self.assertFalse(of_asks_answer.record_answer(self.conn, item, "yes")[0])
+            self.assertFalse(of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda n: None)[0])
+        self.assertEqual((self.events("of.agent_question_answered"), of_asks_answer.unsent_drafts()), ([], []))
 
     def test_a_delivered_earlier_answer_never_hides_a_later_one(self):
         """Codex's review: `seen` took the earlier answer before its delivery check, so the same words given again

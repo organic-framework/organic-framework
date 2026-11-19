@@ -39,6 +39,17 @@ def ask_record(eid, org, position, text, ref):
                            "to": "founder", "questions": [{"question": text, "options": ["yes", "no"]}]}}
 
 
+def setUpModule():  # the panel records as the owner's own screen does (of_asks_answer.not_the_owner holds)
+    global _OWNER
+    from unittest import mock
+    _OWNER = mock.patch.object(of_asks_answer, "not_the_owner", lambda: None)
+    _OWNER.start()
+
+
+def tearDownModule():
+    _OWNER.stop()
+
+
 class Machine:
     """A machine's store and its orgs.yaml. `enrolled`: as `of enroll` leaves the owner's machine for two
     organizations, each named with its server and no database, ship.yaml's server the one enrolled last."""

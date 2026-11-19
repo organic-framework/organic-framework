@@ -959,6 +959,7 @@ class Inbox:
         self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
         self.store = reply_store  # where Esc's drafts outlive the window (ReplyDrafts)
         self.confirm_reply = None  # the field a written answer's confirm came from: any key but yes goes back to it
+        self.confirm_draft = None  # the draft D showed: D again or y sends it as it was kept
         self.writer = writer  # where the drafts' disk writes go (Writer); None: at once
         self.behind = None  # the listener's last heartbeat when it is not fresh (queue's note)
         self.pending_drafts = None  # unsent answers, as the last load found them (no disk read per frame)
@@ -1217,6 +1218,8 @@ class Inbox:
                      (curses.A_REVERSE if sel else 0) | a)
 
     def overlay_line(self):
+        if self.mode == "confirm" and self.confirm_draft:
+            return T.draft_line(self.confirm_draft, "D")
         if self.mode == "confirm" and self.confirm:
             item, n, text, _ = self.confirm
             if self.confirm_reply:
@@ -1576,7 +1579,14 @@ class Inbox:
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
             back, self.mode, self.confirm, self.confirm_reply = self.confirm_reply, "main", None, None
+            draft, self.confirm_draft = self.confirm_draft, None
             c = char_of(ch)
+            if draft:  # as it was kept: its version too, so an amended card still refuses it
+                if c == str(n) or c in YES:
+                    self.out.queue(item_, "answer", text)
+                else:
+                    self.msg = tr("kept as a draft")
+                return True
             if c == str(n) or c in YES:
                 if back:
                     self.keep_draft(back["key"], None)
@@ -1725,9 +1735,10 @@ class Inbox:
             self.msg = tr("Studio: opening…")
         elif ch == ord("D") and self.drafts:
             pend = self.pending_drafts if self.pending_drafts is not None else self.drafts()  # never one on its way
-            if pend:
+            if pend:  # never sent unseen: its words, to whom and why it waits, then D again or y (draft_line)
                 d = pend[0]
-                self.out.queue(dict(d["item"], first=None), "answer", d["text"])
+                self.mode, self.confirm, self.confirm_draft = "confirm", (dict(d["item"], first=None), "D", d["text"],
+                                                                           "answer"), d
         return True
 
     def autosave(self):
