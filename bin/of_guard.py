@@ -3071,20 +3071,18 @@ def _line_words(cmd):
 
 def _line_act(words):
     """Does the word stream run one of of's acts: `of asks answered|withdraw|answer <id>`, `of access … grant|revoke|
-    link|record` (its options may come first)? `--help` or `-h` after it is no act."""
+    link|record` (its options may come first)?"""
     for k, w in enumerate(words):
         if _fold_name(os.path.basename(w)) not in ("of", "of.py"):
             continue
         rest = [_fold_name(x) for x in words[k + 1:k + 8]]
+        # no `--help` exception here: the words have lost their quotes, so a reason `"--help me"` read as the flag,
+        # while argparse takes it as the reason and runs the act (of_review on organic-framework PR 399 at 7c776fe);
+        # the per-command reading, which has the real words, keeps it (_actor_act)
         if rest[:1] == ["asks"] and len(rest) > 1 and rest[1] in ACTOR_ACTS:
-            if not any(x in ("--help", "-h") for x in rest[2:4]):
-                return True
-        if rest[:1] == ["access"]:
-            for j, x in enumerate(rest[1:], 1):
-                if x in ("grant", "revoke", "link", "record"):
-                    if not any(y in ("--help", "-h") for y in rest[j + 1:j + 3]):
-                        return True
-                    break
+            return True
+        if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
+            return True
     return False
 
 
@@ -3199,9 +3197,27 @@ def _command_word(text, names, interpreters=False):
     return False
 
 
+def _acts(words):
+    """The places in WORDS where one of of's acts starts, and whether `--help` or `-h` follows it within two words."""
+    out = []
+    for k, w in enumerate(words):
+        if _fold_name(os.path.basename(w)) in ("of", "of.py") and _line_act(words[k:k + 8]):
+            out.append(any(x in ("--help", "-h") for x in words[k + 3:k + 5]))
+    return out
+
+
+def _help_only(cmd):
+    """Does every act on the line ask only for help: `--help` or `-h` an unquoted word right after it, and no act
+    hidden in a quoted body? A quoted reason that begins with --help is a reason (of_review on PR 399 at 7c776fe)."""
+    bare = _acts(_line_words(_strip_quoted(cmd)))
+    return bool(bare) and all(bare) and len(bare) == len(_acts(_line_words(cmd)))
+
+
 def _actor_line_deny(cmd):
     """(reason, what) when the line runs one of of's acts and holds a way to clear or replace its caller's variables
     anywhere (G31's line reading); else None."""
+    if _help_only(cmd):
+        return None
     if not _line_act(_line_words(cmd)):   # no act of of anywhere on the raw line: nothing to read further (linear)
         return None
     cmd = _without_prose(_without_code_text(cmd))
