@@ -5357,6 +5357,17 @@ TIER_RANK = {"default_claude_max_20x": 3, "default_claude_max_5x": 2, "default_c
 # $ per 1% of the week by plan, for ordering only, when an account's own week is not measured yet (2026-11-09:
 # ~/.claude-d $25, ~/.claude-b $29, ~/.claude-c on Max 5x $19; Pro about 1/20 of an Ultra)
 TIER_WEEK_USD = {"default_claude_max_20x": 26.0, "default_claude_max_5x": 19.0, "default_claude_ai": 1.3}
+# 2026-11-19, after relief moved a Fable session to Pro: "Fable now runs on usage credits. Fable was included
+# in Pro as a promotion until November 16, and now requires usage credits."
+CREDITS_ONLY = {"claude-fable": ("default_claude_ai",)}
+
+
+def model_fits(model, tier):
+    """False when the session's model runs on that plan only with usage credits (CREDITS_ONLY), which are never used:
+    the session would stand on Claude Code's dialog there. An unknown model or tier fits: no evidence, no veto."""
+    if not isinstance(model, str):
+        return True
+    return not any(model.startswith(family) and tier in tiers for family, tiers in CREDITS_ONLY.items())
 
 
 def blocked_until(r, now):
@@ -5401,7 +5412,7 @@ def recent_remote_moves(now, conn=None):
 
 
 def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None, remote_moves=None,
-                woken=None):
+                woken=None, models=None):
     """Pure. The invariant (founder, 2026-11-10): no session stands on a usage limit while another account accepts
     work. `stopped`: {session: epoch of its limit stop}, read from its transcript (limit_stop), an observation. A
     stopped holder between turns whose account refuses work, or whose wake there did not take, goes elsewhere.
@@ -5432,6 +5443,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
     taken = {r["config_dir"]: (remote_moves or {}).get(r.get("account"), 0) for r in targets}
 
     needs, seen = tools or ({}, {})
+    models = models or {}
 
     def key(r, sid=None):
         ok = cur(r, "five_hour") < policy["relief_at"] and cur(r, "seven_day") < policy["week_max"]
@@ -5463,9 +5475,12 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
             cands.append((not is_stopped, p["name"] not in policy["hold"], priority_tier(p, policy),
                           stopped.get(s["session"], until), p["name"], s["session"], d))
     moves = []
-    for later, _, _, since, name, sid, d in sorted(cands)[:policy.get("rescue_moves", 6)]:
-        t = min((r for r in targets if r["config_dir"] != d), key=lambda r: key(r, sid), default=None)
-        if t is None:  # its own account is the only one that accepts work: the wake is tried again there
+    for later, _, _, since, name, sid, d in sorted(cands):
+        if len(moves) >= policy.get("rescue_moves", 6):
+            break
+        t = min((r for r in targets if r["config_dir"] != d and model_fits(models.get(sid), r.get("tier"))),
+                key=lambda r: key(r, sid), default=None)
+        if t is None:  # only its own account accepts work, or none that does fits its model: the wake is tried there
             continue
         taken[t["config_dir"]] += 1
         if later:
@@ -5600,22 +5615,23 @@ def invariant_step(state, stalls, accepting, rescued, spent, now, numbers="", wi
 
 
 def decide(rows, sessions, positions, rates, calib, policy, now, stopped=None, skip=(), failed=(), connectors=None,
-           contexts=None, wcalib=None, remote_moves=None, woken=None):
+           contexts=None, wcalib=None, remote_moves=None, woken=None, models=None):
     """Pure. Rescue first (observed stops, never vetoed by a prediction), then relief, restore (a holder back to its
     tools) and fill (balance_plan) for the rest."""
     rescue = rescue_plan(rows, sessions, positions, stopped or {}, policy, now, skip=failed, wcalib=wcalib,
-                         tools=connectors, remote_moves=remote_moves, woken=woken)
+                         tools=connectors, remote_moves=remote_moves, woken=woken, models=models)
     incoming = {}
     for m in rescue:
         incoming[m["to"]] = incoming.get(m["to"], 0.0) + (rates or {}).get(m["session"], 0.0)
     rest = balance_plan(rows, sessions, positions, rates, calib, policy, now,
                         skip=set(skip) | {m["session"] for m in rescue}, connectors=connectors, contexts=contexts,
-                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming, remote_moves=remote_moves)
+                        wcalib=wcalib, stopped=dict(stopped or {}), incoming=incoming, remote_moves=remote_moves,
+                        models=models)
     return rescue + rest
 
 
 def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), connectors=None, contexts=None,
-                 wcalib=None, stopped=(), incoming=None, remote_moves=None):
+                 wcalib=None, stopped=(), incoming=None, remote_moves=None, models=None):
     """Pure. rows: status rows; sessions: {dir: live sessions}; rates: {session: $/h}; calib: {dir: $ per 1%
     of its 5-hour window}; connectors: ({session: claude.ai connectors it uses}, {dir: connectors seen there}).
     Fill never moves a session onto an account that lacks a connector or plugin it uses; relief does for a
@@ -5625,6 +5641,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
     `incoming` ({dir: $/h}) is what rescue sends each account in the same plan. Returns [{position, session, from, to, rate,
     reason}]: restore makes at most restore_moves, and fill adds only while the plan holds fewer than max_moves."""
     needs, seen = connectors or ({}, {})
+    models = models or {}
 
     def holds_all(sid, d, src=None):
         """Every plugin and account-bound tool the session uses is read present on account `d`, and every connector
@@ -5797,6 +5814,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
             if len(moves) >= policy.get("relief_moves", policy["max_moves"]):
                 break
             for t in targets:  # relief: the target must last a day, not its whole week (the source stalls otherwise)
+                if not model_fits(models.get(sid), t.get("tier")):
+                    continue
                 room, resume_max = room_of(t, horizon_h=relief_horizon(r))
                 room -= remote_load(t, rate)
                 if rate <= room and resume_ok(sid, resume_max) and not lacks_plugin(sid, t["config_dir"]):
@@ -5833,7 +5852,8 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
                 # a target needs a week reading, as fill's sinks do, accepts work by its windows, and saw no stop after
                 # its probe (Codex review, PR 328)
                 if td == d or stalled(t) or not win(t, "seven_day")[1] or blocked_until(t, now) \
-                        or stopped_after_probe(t) or not holds_all(sid, td, d):
+                        or not model_fits(models.get(sid), t.get("tier")) or stopped_after_probe(t) \
+                        or not holds_all(sid, td, d):
                     continue
                 room, resume_max = room_of(t)
                 room -= remote_load(t, rate)
@@ -5873,7 +5893,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         for rate, name, sid, src in cands:
             if sid in planned or len(moves) >= policy["max_moves"] or rate < policy["min_rate"] \
                     or rate + remote_load(sink, rate) > room \
-                    or lacks(sid, d):
+                    or not model_fits(models.get(sid), sink.get("tier")) or lacks(sid, d):
                 continue
             if not resume_ok(sid, resume_max):
                 continue  # its first turn would eat too much of the sink's 5-hour window
@@ -5994,6 +6014,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
              for d, xs in sessions.items() for x in xs if x.get("status") in ("idle", "shell", "waiting")}
     contexts = {x["session"]: context_tokens(find_transcript(d, x["session"]) or "")
                 for d, xs in sessions.items() for x in xs if x.get("status") == "idle"}
+    models = {x["session"]: last_model(find_transcript(d, x["session"]))
+              for d, xs in sessions.items() for x in xs if x.get("status") in ("idle", "shell", "waiting")}
     # connectors from claude mcp list (None: unknown, no veto); plugins from the config dir's files, less those whose
     # server the same list shows signed out
     seen = {d: account_tools(connectors_seen(d), with_labels(plugins_ready(d), d)) for d in dirs}
@@ -6009,7 +6031,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         remote_moves = {}
     plan_ = decide(rows, sessions, positions, rates, calib, policy, now, stopped=stopped, skip=set(recent),
                    failed=failed, connectors=(needs, seen), contexts=contexts, wcalib=wcalib,
-                   remote_moves=remote_moves, woken=prior_wakes)
+                   remote_moves=remote_moves, woken=prior_wakes, models=models)
     untrusted = {}
     offline = bool(plan_) and not dry_run and not api_online()
     if offline:

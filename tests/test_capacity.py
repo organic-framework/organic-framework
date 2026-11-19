@@ -779,6 +779,15 @@ class Balance(unittest.TestCase):
         of_capacity._apply_policy_tiers([row], {"tiers": {"/a": "default_claude_max_5x"}})
         self.assertEqual(row["tier"], "default_claude_max_5x")
 
+    def test_model_fits(self):
+        fable, pro = "claude-fable-5-2", "default_claude_ai"
+        self.assertFalse(of_capacity.model_fits(fable, pro))
+        self.assertTrue(of_capacity.model_fits(fable, "default_claude_max_20x"))
+        self.assertTrue(of_capacity.model_fits("claude-opus-5-5", pro))
+        self.assertTrue(of_capacity.model_fits(None, pro))
+        self.assertTrue(of_capacity.model_fits(fable, None))
+        self.assertTrue(of_capacity.model_fits(fable, "unknown"))
+
     def test_fill_the_account_that_expires_first(self):
         pol = dict(POLICY)
         m = of_capacity.balance_plan(self.rows(), self.SESS, self.POS, self.RATES, {"/ez": 12.0}, pol, self.NOW)
@@ -810,6 +819,20 @@ class Balance(unittest.TestCase):
         m = of_capacity.balance_plan(rows, sessions, self.POS, self.RATES, {"/pro": 0.6, "/max": 12.0}, POLICY, self.NOW)
         self.assertEqual([(x["position"], x["to"]) for x in m], [("c", "/max")])
         self.assertIn("relief", m[0]["reason"])
+
+    def test_relief_skips_pro_for_fable(self):
+        source = _row("/gg", 0, 98)
+        pro = dict(_row("/pro", 0, 0), tier="default_claude_ai")
+        max20 = dict(_row("/max", 0, 96), tier="default_claude_max_20x")  # the fresh Pro ranks first
+        sessions = {"/gg": [{"session": "c", "status": "waiting"}]}
+        for model, targets, expected in (("claude-fable-5-2", [pro, max20], ["/max"]),
+                                         ("claude-fable-5-2", [pro], []),
+                                         ("claude-opus-5-5", [pro], ["/pro"])):
+            with self.subTest(model=model, targets=targets):
+                moves = of_capacity.decide([source] + targets, sessions, self.POS, self.RATES,
+                                           {"/pro": 0.6, "/max": 12.0}, POLICY, self.NOW, models={"c": model})
+                self.assertEqual([m["to"] for m in moves], expected)
+                self.assertTrue(all(m["reason"].startswith("relief:") for m in moves))
 
     def test_after_a_reset_the_load_follows_the_next_expiry(self):
         pol = dict(POLICY)
@@ -946,6 +969,14 @@ class Rescue(unittest.TestCase):
         # not stopped, or mid-turn: not a rescue (relief and fill decide about them)
         self.assertNotIn("idle", [x["position"] for x in m])
         self.assertNotIn("busy", [x["position"] for x in m])
+
+    def test_rescue_skips_fable_when_only_pro_accepts(self):
+        rows = self.rows()[:2]
+        rows[1]["tier"] = "default_claude_ai"
+        stopped = {"st1": self.NOW - 600, "st2": self.NOW - 300}
+        moves = of_capacity.rescue_plan(rows, self.SESS, self.POS, stopped, dict(self.STOPS_ONLY, rescue_moves=1),
+                                        self.NOW, models={"st1": "claude-fable-5-2", "st2": "claude-opus-5-5"})
+        self.assertEqual([(m["session"], m["to"]) for m in moves], [("st2", "/gg")])
 
     def test_rescue_counts_recent_remote_moves_onto_the_same_account(self):
         import of_events
