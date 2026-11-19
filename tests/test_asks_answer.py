@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -75,8 +76,13 @@ class AnswerTest(unittest.TestCase):
         result = {}
         t = threading.Thread(target=lambda: result.update(
             out=of_asks_tui.threaded_answer([{"name": "of_a"}])(item, "yes, now")))
-        t.start()
-        t.join()
+        tty = mock.Mock()
+        tty.isatty.return_value = True
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE")}
+        with mock.patch.dict(os.environ, clean, clear=True), mock.patch.object(sys, "stdin", tty):  # the owner's screen
+            t.start()
+            t.join()
         self.assertEqual(result["out"][0], True, result)
         states = {a["event_id"]: a["state"] for a in of_asks.project(of_asks.load(self.conn))}
         self.assertEqual(states[a1], "answered")
@@ -331,9 +337,9 @@ class PopupUxTest(unittest.TestCase):
         hidden_frame = next(f for f in self.lines if any("sent ✓" in t for t in f))
         self.assertFalse(any("q1?" in t for t in hidden_frame))  # gone from the list at once
 
-    def test_q_leaves_at_once_and_the_sender_delivers(self):
-        """of_architect, URGENT 2026-11-06: q with three answers pending returns in under 200 ms; a detached
-        sender records all three."""
+    def test_q_leaves_at_once_and_hands_what_is_pending_over(self):
+        """of_architect, URGENT 2026-11-06: q with three answers pending returns in under 200 ms and hands all three
+        to `leave`, which records them in the screen's process (LeaveTest)."""
         import tempfile as _tf
         import time as _t
         import of_asks_tui
@@ -346,63 +352,19 @@ class PopupUxTest(unittest.TestCase):
                                              "kind": "question (declared)", "first": None, "section": "normal"}
                                             for w in ("a", "b", "c")]), ("Registry-declared (no notifications)", [])]
                 handed = []
-
-                def handoff(ps):
-                    handed.extend(ps)
-                    of_asks_tui.to_outbox(ps)
                 slow = lambda what, x: (_t.sleep(3), (True, "ok"))[1]  # a slow send must not hold q
                 orig = of_asks_tui.load
                 of_asks_tui.load = lambda positions, conn: data
                 try:
                     t0 = _t.perf_counter()
                     of_asks_tui.run(self.scr([ord("a"), ord("a"), ord("a"), ord("q")]), [], None, slow, None, None,
-                                    handoff=handoff)
+                                    handoff=handed.extend)
                     took = _t.perf_counter() - t0
                 finally:
                     of_asks_tui.load = orig
                 self.assertLess(took, 0.2)
-                self.assertEqual(len(handed), 3)
-                recorded, still = [], {"A", "B", "C"}
-                n = of_asks_tui.send_outbox(None, lambda what, x: (recorded.append(x["ids"][0]), still.discard(x["ids"][0]),
-                                                                   (True, "ok"))[2],
-                                            lambda ids: any(i in still for i in ids))
-                self.assertEqual((n, sorted(recorded)), (3, ["A", "B", "C"]))
-                self.assertEqual(of_asks_tui.outbox_waiting(older_than_s=0), [])
-                self.assertEqual(of_asks_tui.send_outbox(None, None, lambda ids: True), 0)  # nothing left
-            finally:
-                of_events.STATE_DIR = saved_dir
-
-    def test_the_sender_skips_an_answered_ask(self):
-        import tempfile as _tf
-        import of_asks_tui
-        import of_events
-        saved_dir = of_events.STATE_DIR
-        with _tf.TemporaryDirectory() as d:
-            of_events.STATE_DIR = d
-            try:
-                of_asks_tui.to_outbox([{"what": "answer", "text": "yes", "item": {"ids": ["X"], "who": ["a"]}}])
-                sent = []
-                n = of_asks_tui.send_outbox(lambda it, text: (sent.append(text), (True, "ok"))[1], None, lambda ids: False)
-                self.assertEqual((n, sent, of_asks_tui.outbox_waiting(older_than_s=0)), (0, [], []))
-            finally:
-                of_events.STATE_DIR = saved_dir
-
-    def test_a_failed_outbox_send_is_marked_so_the_screen_shows_its_card(self):
-        """of_review on PR 119: a failed send in the detached sender kept its card hidden as 'on its way'."""
-        import tempfile as _tf
-        import of_asks_tui
-        import of_events
-        import of_asks_inbox
-        saved_dir = of_events.STATE_DIR
-        with _tf.TemporaryDirectory() as d:
-            of_events.STATE_DIR = d
-            try:
-                of_asks_tui.to_outbox([{"what": "answer", "text": "yes", "item": {"ids": ["X"], "who": ["a"]}}])
-                self.assertEqual(of_asks_inbox.on_their_way(), {"X"})
-                n = of_asks_tui.send_outbox(lambda it, text: (False, "store busy"), None, lambda ids: True)
-                self.assertEqual(n, 0)
-                self.assertEqual(of_asks_inbox.on_their_way(), set())  # failed: no longer on its way
-                self.assertEqual(len(of_asks_tui.outbox_waiting(older_than_s=0)), 1)  # still there for the next run
+                self.assertEqual(sorted(p["item"]["ids"][0] for p in handed), ["A", "B", "C"])
+                self.assertTrue(all(p["done"] for p in handed))  # recorded once: a second flush hands nothing over
             finally:
                 of_events.STATE_DIR = saved_dir
 
@@ -1080,3 +1042,204 @@ class RedeliverTest(AnswerTest):
         self.assertEqual(run(), 0)  # the pulse leaves it to the popup's own attempt
         self.assertEqual(run(only="of_a", min_age=of_asks_answer.REDELIVER_SOON_S, need_idle=False), 1)
         self.assertEqual(typed, ["w1:pA"])  # of_b is idle, but this pass is of_a's turn end
+
+
+class LeaveTest(RedeliverTest):
+    """of_server, msg 01a1f51f-6c9e (2026-11-19): the popup's outbox held files that a detached sender replayed as the
+    owner's answers and marks, and a file any session wrote there was replayed too (of_review, msg 01a1f50c-c57a).
+    The screen leaving now records the owner's acts in its own process; only the typing leaves it, and that types
+    only what the store holds as his answer."""
+
+    def setUp(self):
+        super().setUp()
+        self.clean = {k: v for k, v in os.environ.items()
+                      if k not in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE")}
+        self.tty = mock.Mock()
+        self.tty.isatty.return_value = True
+
+    def leave(self, pendings, env=None, tty=None, own_store=False):
+        """own_store: the screen opens its own connections to the test's store, with their own waits."""
+        import of_asks_tui
+        conn, typed, spawned = self.conn, [], []
+
+        class Own:  # the screen's own connection: the test's store, not closed under it
+            def __getattr__(self, name):
+                return getattr(conn, name)
+
+            def close(self):
+                pass
+        real = of_store.connect
+        with mock.patch.object(of_store, "connect", real if own_store else (lambda *a, **k: Own())), \
+                mock.patch.object(of_asks_answer, "deliver", lambda *a, **k: typed.append(a) or "delivered"), \
+                mock.patch.object(of_asks_tui, "spawn_deliver", lambda of_path, events: spawned.append(list(events))), \
+                mock.patch.dict(os.environ, env if env is not None else self.clean, clear=True), \
+                mock.patch.object(sys, "stdin", tty or self.tty):
+            out = of_asks_tui.leave(pendings, self.positions(), "of")
+        return out, typed, spawned
+
+    def events(self, name):
+        return [(e, json.loads(p)) for e, p in self.conn.execute(
+            "SELECT event_id, payload FROM event WHERE name = ? ORDER BY ts", (name,))]
+
+    def test_an_answer_is_recorded_here_and_only_typed_by_the_deliverer(self):
+        a1, a2, item = self.group()
+        out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}])
+        answers = self.events("of.agent_question_answered")
+        self.assertEqual([(p["ask_ids"], p["answer"], p["by"]) for _, p in answers], [([a1, a2], "yes", "owner")])
+        self.assertTrue(out[0][1])
+        self.assertEqual(typed, [])                      # no pane waited on as the screen leaves
+        self.assertEqual(spawned, [[answers[0][0]]])     # the deliverer types exactly that recorded answer
+        self.assertEqual(of_asks_answer.unsent_drafts(), [])
+        out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}])  # its thread got there
+        self.assertEqual(len(self.events("of.agent_question_answered")), 1)
+        self.assertEqual(spawned, [[]])                  # nothing new to type; the ask tokens still follow
+
+    def test_a_mark_is_recorded_here_by_the_owner_and_refused_to_an_agent(self):
+        a1, a2, item = self.group()
+        no_tty = mock.Mock()
+        no_tty.isatty.return_value = False
+        for env, tty in ((dict(self.clean, CLAUDECODE="1"), None), (dict(self.clean, OF_POSITION="of_x"), None),
+                         (dict(self.clean, CLAUDE_CODE_SESSION_ID="s"), None), (None, no_tty)):
+            out, _, _ = self.leave([{"what": "withdraw", "item": item}], env=env, tty=tty)
+            self.assertFalse(out[0][1])
+        self.assertEqual(self.events("of.ask_withdrawn"), [])
+        out, _, spawned = self.leave([{"what": "withdraw", "item": item}, {"what": "answered", "item": item}])
+        self.assertEqual([x[1] for x in out], [True, True])
+        (_, w), = self.events("of.ask_withdrawn")
+        self.assertEqual((w["ask_id"], w["by"]), (a1, "owner"))
+        (_, c), = self.events("of.agent_question_answered")
+        self.assertEqual((c["ask_ids"], c["by"], c.get("answer")), ([a1, a2], "owner", None))
+        self.assertEqual(spawned, [[]])
+
+    def test_an_act_its_thread_recorded_is_one_event_and_still_typed(self):
+        """Codex's review of this change: a mark slow in its thread was recorded again as the screen left, and an
+        answer its thread had recorded was not typed until a later pass. Each act's id makes it one event."""
+        a1, a2, item = self.group()
+        mark = dict(item, act="00000000-0000-4000-8000-00000000000a")
+        with mock.patch.dict(os.environ, self.clean, clear=True), mock.patch.object(sys, "stdin", self.tty):
+            self.assertTrue(of_asks_answer.owner_mark(self.conn, mark, "answered")[0])  # its thread got there
+        out, _, _ = self.leave([{"what": "answered", "item": mark, "started": True, "done": False}])
+        self.assertTrue(out[0][1])
+        self.assertEqual(len(self.events("of.agent_question_answered")), 1)
+        self.conn.execute("DELETE FROM event WHERE name = 'of.agent_question_answered'")
+        ans = dict(item, act="00000000-0000-4000-8000-00000000000b")
+        self.assertTrue(of_asks_answer.answer(self.conn, ans, "yes", self.positions(), lambda name: None)[0])
+        out, typed, spawned = self.leave([{"what": "answer", "text": "yes", "item": ans, "started": True}])
+        self.assertEqual([e for e, _ in self.events("of.agent_question_answered")], [ans["act"]])
+        self.assertEqual((typed, spawned), ([], [[ans["act"]]]))  # the deliverer types it if its thread did not
+
+    def test_a_copy_in_the_spool_and_a_second_flush_stay_one_event(self):
+        _, _, item = self.group()
+        ans = dict(item, act="00000000-0000-4000-8000-00000000000c")
+        rec = of_events.record("agent_question_answered", {"ask_id": item["ids"][0], "ask_ids": item["ids"],
+                                                           "answer": "yes", "via": "asks-ui", "by": "owner"})
+        rec["of.event.id"] = ans["act"]
+        of_store.spool_append("events.jsonl", rec)  # its thread wrote while the store was busy
+        p = {"what": "answer", "text": "yes", "item": ans}
+        self.leave([p])
+        self.assertEqual(self.leave([p])[0], [])        # herdr's signal after q: nothing again
+        of_store.drain_spool(self.conn)
+        self.assertEqual(len(self.events("of.agent_question_answered")), 1)
+
+    def test_leaving_never_waits_on_a_busy_store(self):
+        import sqlite3
+        import time
+        _, _, item = self.group()
+        ans = dict(item, act="00000000-0000-4000-8000-00000000000d")
+        writer = sqlite3.connect(os.path.join(self.tmp.name, "of.db"), isolation_level=None)
+        writer.execute("BEGIN IMMEDIATE")  # the listener in a long write
+        try:
+            t0 = time.time()
+            out, _, spawned = self.leave([{"what": "answer", "text": "yes", "item": ans}], own_store=True)
+            took = time.time() - t0
+        finally:
+            writer.execute("ROLLBACK")
+            writer.close()
+        self.assertTrue(out[0][1], out)
+        self.assertLess(took, 3.0)                       # the store's own wait is 10 s
+        self.assertEqual(spawned, [[ans["act"]]])
+        self.assertEqual(self.events("of.agent_question_answered"), [])  # in the spool
+        of_store.drain_spool(self.conn)                  # the deliverer drains it first
+        self.assertEqual([e for e, _ in self.events("of.agent_question_answered")], [ans["act"]])
+
+    def test_an_answer_nothing_took_keeps_its_draft_and_a_dialog_answer_is_its_threads(self):
+        a1, _, item = self.group()
+        with mock.patch.object(of_events, "append", lambda rec, raw_ref=None: False):
+            out, _, spawned = self.leave([{"what": "answer", "text": "yes", "item": item}])
+        self.assertFalse(out[0][1])
+        self.assertEqual([(d["ask_id"], bool(d.get("failed_at"))) for d in of_asks_answer.unsent_drafts()],
+                         [(a1, True)])                   # its card comes back with the text, for D
+        self.assertEqual(spawned, [[]])
+        out, _, _ = self.leave([{"what": "answer", "text": "1", "item": dict(item, kind="blocked: dialog"),
+                                 "started": True}])
+        self.assertEqual(out, [])                        # its keys are never pressed twice
+
+    def test_an_agents_session_records_nothing_as_the_owner(self):
+        import of_asks_tui
+        _, _, item = self.group()
+        called = []
+        with mock.patch.dict(os.environ, dict(self.clean, CLAUDECODE="1"), clear=True):
+            self.assertEqual(of_asks_tui.leaving_as_owner(called.append)([{"what": "answer", "item": item}]), [])
+            self.assertFalse(of_asks_tui.threaded_answer(self.positions())(item, "yes")[0])
+        self.assertEqual((called, self.events("of.agent_question_answered")), ([], []))
+
+    def test_a_delivered_earlier_answer_never_hides_a_later_one(self):
+        """Codex's review: `seen` took the earlier answer before its delivery check, so the same words given again
+        after a reopen were never typed."""
+        a1, a2, _ = self.group()
+        self.answered(a1, a2, ts="2026-11-01T11:00:00Z")
+        for who, sess in (("of_a", "S1"), ("of_b", "S2")):
+            self.add("human_prompt", {"origin": "human", "channel": "asks-ui", "text": of_asks_answer.frame(a1, "yes")},
+                     "2026-11-01T11:00:02Z", session=sess, position=who)
+        self.answered(a1, a2, ts="2026-11-01T12:00:00Z")
+        got = of_asks_answer.pending(self.conn, [], self.positions(), self.now("2026-11-01T12:30:00Z"))
+        self.assertEqual(sorted(d["position"] for d in got), ["of_a", "of_b"])
+
+    def test_a_file_in_the_old_outbox_is_shown_as_a_draft_and_never_replayed(self):
+        import of_asks_inbox
+        import of_asks_tui
+        a1, a2, item = self.group()
+        d = of_asks_tui.outbox_dir()
+        os.makedirs(d)
+        for name, body in (("1.json", {"what": "answer", "text": "yes", "item": item}),
+                           ("2.json", {"what": "withdraw", "item": item}),
+                           ("3.json", {"what": "answer", "text": "no", "item": {"ids": ["../../escape"]}}),
+                           ("4.json", "not an entry"),
+                           ("5.json", {"what": "answer", "text": "older", "item": item})):  # his first draft kept
+            with open(os.path.join(d, name), "w") as fh:
+                json.dump(body, fh)
+        with open(os.path.join(d, "0.json"), "w") as fh:  # too deep to parse: set aside, the rest still taken
+            fh.write("[" * 100000 + "]" * 100000)
+        self.assertEqual(len(of_asks_tui.outbox_leftovers()), 6)
+        self.assertEqual(self.events("of.agent_question_answered") + self.events("of.ask_withdrawn"), [])
+        self.assertEqual([(x["ask_id"], x["text"], bool(x.get("failed_at"))) for x in of_asks_answer.unsent_drafts()],
+                         [(a1, "yes", True)])          # his card comes back with the text; only D sends it
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(of_events.STATE_DIR), "escape.json")))
+        self.assertEqual([f for f in os.listdir(d) if f.endswith(".json")], [])
+        self.assertEqual(of_asks_tui.outbox_leftovers(), [])
+        self.assertEqual(of_asks_inbox.on_their_way(), set())
+
+    def test_deliver_now_types_only_the_answers_named(self):
+        a1, a2, _ = self.group()
+        named = self.add("agent_question_answered", {"ask_id": a1, "ask_ids": [a1, a2], "answer": "yes",
+                                                     "via": "asks-ui", "by": "owner"}, "2026-11-01T11:00:00Z",
+                         session=None, position=None)
+        self.add("agent_question_answered", {"ask_id": a1, "ask_ids": [a1, a2], "answer": "later", "via": "asks-ui",
+                                             "by": "owner"}, "2026-11-01T11:00:02Z", session=None, position=None)
+        agents = [{"name": "of_a", "pane_id": "w1:pA", "agent_status": "working", "agent_session": {"value": "S1"}},
+                  {"name": "of_b", "pane_id": "w1:pB", "agent_status": "idle", "agent_session": {"value": "S2"}}]
+        bind = lambda positions, ags: ([(p, a) for p in positions for a in ags if a["name"] == p["name"]], [], [])  # noqa: E731
+        typed = []
+
+        def fake(pane, text, session, sender, channel, skip):
+            typed.append((pane, text))
+            return True, None
+        n = of_asks_answer.redeliver_pass(self.conn, [], self.positions(), agents, bind,
+                                          now=self.now("2026-11-01T11:00:03Z"), deliver_fn=fake, log=lambda m: None,
+                                          events={named}, min_age=0, need_idle=False)
+        self.assertEqual(n, 2)                          # both askers, the busy one too: herdr defers it
+        self.assertEqual(sorted(p for p, _ in typed), ["w1:pA", "w1:pB"])
+        self.assertTrue(all(": yes" in t and "later" not in t for _, t in typed))
+        self.assertEqual(of_asks_answer.redeliver_pass(self.conn, [], self.positions(), agents, bind,
+                                                       now=self.now("2026-11-01T11:00:03Z"), deliver_fn=fake,
+                                                       log=lambda m: None, events=set(), min_age=0), 0)

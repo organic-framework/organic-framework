@@ -183,19 +183,21 @@ def live_session(position, positions):
     return (p.get("holder") or {}).get("session")
 
 
-def card(conn, item, positions):
-    """Everything the popup shows for one item (a group of asks)."""
+def card(conn, item, positions, light=False):
+    """Everything the popup shows for one item (a group of asks). light: what the record needs and no more, for the
+    screen leaving (of_asks_tui.leave): no transcript context (16 to 198 ms of the card on the live store, 2026-11-19)
+    and no herdr call for a live session (the ask's own session, or none)."""
     first = item.get("first") or {}
     aid = (item.get("ids") or [None])[0]
     payload, session, position, ts = ask_details(conn, aid) if aid else ({}, None, None, None)
     position = position or first.get("position") or (item["who"][0] if item.get("who") else None)
     p = next((x for x in positions if x["name"] == position), {})
-    if not session and position:  # a declared ask names the position: its live holder's session
+    if not session and position and not light:  # a declared ask names the position: its live holder's session
         session = live_session(position, positions)
     q = full_question(payload, item.get("text"))
     opts = options(payload)
     kind = item.get("kind") or ""
-    full, ask_input = transcript_context(conn, session, ts) if aid else ("", None)
+    full, ask_input = transcript_context(conn, session, ts) if aid and not light else ("", None)
     if ask_input and (kind == "permission" or payload.get("detected_by") == "tool"):
         qs = ask_input.get("questions") or []
         if qs and isinstance(qs[0], dict):
@@ -212,7 +214,7 @@ def card(conn, item, positions):
         full = payload.get("snippet") or ""
         if payload.get("folder"):
             q = q + f"\nFolder: {payload['folder']}"
-    ctx = full or (last_message(conn, session, position, ts) if aid else "")
+    ctx = full or (last_message(conn, session, position, ts) if aid and not light else "")
     if ctx.strip() == q.strip():
         ctx = ""
     doing = payload.get("context") or {}
@@ -404,12 +406,35 @@ def _ship_now():
     return of_ship.ship(log=lambda m: None)
 
 
-def record(ask_ids, answer, position=None, session=None, version=None):
+def record(ask_ids, answer, position=None, session=None, version=None, event_id=None):
+    """event_id: the screen's act id (its item's `act`): the sending thread and the screen leaving write one event."""
     import of_events
     import of_hook
     return of_events.emit("agent_question_answered", {
         "ask_id": ask_ids[0], "ask_ids": list(ask_ids), "answer": of_hook.mask(answer), "via": "asks-ui",
-        "by": "owner", **({"version": version} if version else {})}, position=position, session=session)
+        "by": "owner", **({"version": version} if version else {})}, event_id=event_id, position=position,
+        session=session)
+
+
+def not_the_owner():
+    """Why this process may not act as the owner, or None: `_asks_actor`'s positive test in bin/of (no agent session,
+    a terminal on stdin). The questions screens apply it to what they record as his (of_asks_tui.leave,
+    threaded_answer, owner_mark); OF_AUTOMATION is no sign, the questions panel runs under it."""
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION"):
+        return "only the owner answers here: this runs in an agent's session"
+    try:
+        tty = sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        tty = False
+    return None if tty else "only the owner answers here, from his own screen in a terminal"
+
+
+def has_event(conn, event_id):
+    try:
+        return bool(event_id) and conn.execute("SELECT 1 FROM event WHERE event_id = ?", (event_id,)).fetchone() \
+            is not None
+    except Exception:  # noqa: BLE001 - a busy or broken store: not known to be there
+        return False
 
 
 AMENDED = "amended"  # the start of the status a refused answer gets: the card shows the new version
@@ -564,39 +589,61 @@ def answer(conn, item, text, positions, pane_of):
     Returns (ok, status line): ok once the answer is recorded; what is not typed now, the pulse types later.
     `conn` must belong to the calling thread (SQLite objects stay in the thread that made them).
     A failure leaves the draft marked failed (mark_failed): the screen shows the card again and D can send it."""
+    return _kept(conn, item, text, positions, pane_of)[:2]
+
+
+def record_answer(conn, item, text, positions=()):
+    """The owner's answer recorded here and typed nowhere: the screen leaving (of_asks_tui.leave) records it in its own
+    process and leaves the typing to `of asks deliver --now`. Returns (ok, status line, the recorded event's id, or
+    None when nothing new was recorded: refused, recorded already, or a dialog's keys)."""
+    return _kept(conn, item, text, positions, None)
+
+
+def _kept(conn, item, text, positions, pane_of):
     save_draft(item, text)
     try:
-        ok, status = _answer(conn, item, text, positions, pane_of)
+        ok, status, eid = _answer(conn, item, text, positions, pane_of)
     except Exception as e:  # noqa: BLE001 - marked, then raised as before
         mark_failed(item, f"{type(e).__name__}: {e}")
         raise
     if not ok:
         mark_failed(item, status)
-    return ok, status
+    return ok, status, eid
 
 
 def _answer(conn, item, text, positions, pane_of):
-    c = card(conn, item, positions)
+    """(ok, status, eid). pane_of None: recorded and not typed (record_answer)."""
+    c = card(conn, item, positions, light=pane_of is None)
     if not c["answerable"]:
-        return False, "cannot answer this item here"
+        return False, "cannot answer this item here", None
     if c.get("blocked"):
-        return answer_blocked(c, text)
+        return answer_blocked(c, text) + (None,)
     import of_asks
     shown = item.get("version")  # the version the card showed when the answer was given (None: the first)
     if of_asks.stale(shown, c.get("version")):
-        return False, amended_refusal(c, shown)
-    lock = _lock()  # the check and the record together: the popup's thread and the outbox sender race (see below)
+        return False, amended_refusal(c, shown), None
+    act = item.get("act")  # the screen's act id: its thread and its leaving write one event (INSERT OR IGNORE)
+    if pane_of is None and has_event(conn, act):  # its thread recorded it: typed by the deliverer if it was not yet
+        drop_draft(item)
+        return True, "answer recorded already; OF types it in now", act
+    lock = _record_lock(None if pane_of is not None else LEAVE_LOCK_S)  # the check and the record together
+    eid = None
     try:
-        again = recorded_already(conn, c["ids"], text)
+        again = recorded_already(conn, c["ids"], text)  # another act's same answer (ask 8ee7f1bc): typed by its own
         if not again:
-            record(c["ids"], text, c["position"], c["session"], version=shown or 1)  # as the check reads it
+            eid = record(c["ids"], text, c["position"], c["session"], version=shown or 1, event_id=act)
     finally:
-        lock.close()
-    if not again:
-        ship_soon()
-    drop_draft(item)
+        if lock:
+            lock.close()
     if again:
-        return True, "answer recorded already; OF types it in when the agent's turn ends"
+        drop_draft(item)
+        return True, "answer recorded already; OF types it in when the agent's turn ends", None
+    if not eid:  # neither the store nor the spool took it: the draft stays, marked failed, for D
+        return False, "not recorded: the store and the spool both refused it", None
+    ship_soon()
+    drop_draft(item)
+    if pane_of is None:
+        return True, "answer recorded; OF types it in now", eid
     rec = recipients(conn, c["ids"], c["position"], c["session"])
     out = []
     for position, session, ids in rec:
@@ -607,7 +654,38 @@ def _answer(conn, item, text, positions, pane_of):
                          session) if pane else \
             f"no live pane: OF types it when {position} has one (for {REDELIVER_MAX_AGE_H} h)"
         out.append(f"{position}: {status}" if len(rec) > 1 else status)
-    return True, "answer recorded; " + ("; ".join(out) or "no asker to deliver it to")
+    return True, "answer recorded; " + ("; ".join(out) or "no asker to deliver it to"), eid
+
+
+def owner_mark(conn, item, what):
+    """The owner's mark on a card from his own screen, recorded in the screen's process as `of asks answered|withdraw`
+    records it from his terminal: "answered" closes every ask of the item, "withdraw" withdraws its first. Refused, as
+    `_asks_actor` in bin/of refuses, in an agent's session or with no terminal on stdin. It leaves for its
+    organization's server at once (ship_soon), like an answer: the owner's own machine starts no ingest of its own
+    (docs/server-several-machines.md §4.9). Returns (ok, status line)."""
+    import of_events
+    why = not_the_owner()
+    if why:
+        return False, why
+    ids = [i for i in item.get("ids") or [] if i]
+    if not ids:
+        return False, "no ask on this card"
+    act = item.get("act")  # the screen's act id: its thread and its leaving write one event
+    if what == "answered":
+        eid = of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": "owner", "note": None},
+                             event_id=act)
+        status = f"answered: {len(ids)} ask(s) from {', '.join(item.get('who') or []) or '?'}"
+    elif what == "withdraw":
+        _, session, position, _ = ask_details(conn, ids[0])
+        eid = of_events.emit("ask_withdrawn", {"ask_id": ids[0], "reason": None, "by": "owner"}, event_id=act,
+                             position=position, session=session)
+        status = f"withdrawn: {ids[0]} ({position or session or '?'})"
+    else:
+        return False, f"no such mark: {what}"
+    if not eid:
+        return False, "not recorded: the store and the spool both refused it"
+    ship_soon()
+    return True, status
 
 
 def _tries_path():
@@ -691,8 +769,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             same = (position, tuple(marks), p["answer"])
             if same in seen:
                 continue  # the same answer recorded twice (before recorded_already) is typed once
-            seen.add(same)
             if (not only or position == only) and not delivered(conn, position, marks, ts):
+                seen.add(same)  # only one that is typed: a delivered earlier copy never hides a later answer
                 out.append({"key": f"answer:{eid}:{position}", "position": position, "marks": marks, "since": ts,
                             "text": typed_answer(p, ids[0], answered_question(conn, ids[0], p.get("version")))
                             + _late(ts, now, "the founder answered", busy=busy_since(conn, position, ts, now)),
@@ -787,6 +865,31 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
     return out
 
 
+LEAVE_LOCK_S = 0.5  # the screen leaving waits at most this for another answer's check and record, then goes on
+
+
+def _record_lock(wait_s=None):
+    """One answer's check and record at a time (recorded_already): never held across a delivery, so the screen leaving
+    never waits on a pass that is typing into a pane (_lock). wait_s: give up after it and return None (the screen
+    leaving; its act id keeps a duplicate of its own answer out of the store)."""
+    import fcntl
+    import of_events
+    fh = open(os.open(os.path.join(of_events.STATE_DIR, "answers.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    if wait_s is None:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return fh
+    end = time.time() + wait_s
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            if time.time() >= end:
+                fh.close()
+                return None
+            time.sleep(0.02)
+
+
 def _lock():
     """One delivery pass at a time (the pulse's and a turn end's): the second one reads the first one's tries."""
     import fcntl
@@ -815,15 +918,18 @@ def joined(items):
 
 
 def redeliver_pass(conn, asks, positions, agents, bind, now=None, deliver_fn=None, log=print, only=None,
-                   min_age=REDELIVER_MIN_AGE_S, wait_s=3, need_idle=True):
+                   min_age=REDELIVER_MIN_AGE_S, wait_s=3, need_idle=True, events=None):
     """Type what `pending` lists into the position's live pane when its agent is idle or done: one prompt per position
     (`prompts`), each item at most REDELIVER_TRIES typed attempts REDELIVER_EVERY_MIN apart (a typed text the
     collector never recorded). The pulse calls it with the herdr snapshot's idle agents; the end of a turn with
-    `only` its position, need_idle False and a longer wait (herdr may still say working for a moment). Returns the
+    `only` its position, need_idle False and a longer wait (herdr may still say working for a moment). `events`: only
+    these recorded answers (`of asks deliver --now`, after the questions screen recorded them as it left). Returns the
     number of items typed."""
     import of_relay_client
     now = now or time.time()
     todo = pending(conn, asks, positions, now, min_age=min_age, only=only)
+    if events is not None:
+        todo = [d for d in todo if d["key"].startswith("answer:") and d["key"][7:].rsplit(":", 1)[0] in events]
     if not todo:
         return 0
     live = {p["name"]: ag for p, ag in (bind(positions, agents)[0] if bind and agents is not None else [])}

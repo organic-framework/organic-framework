@@ -267,18 +267,25 @@ class AnswerTest(Store):
                                              "by": "owner", "version": 2}, "2026-11-15T11:06:00Z")
         self.assertEqual(self.asks()[other]["state"], "answered")  # the newest version's answer closes it
 
-    def test_the_outbox_drops_an_answer_refused_as_amended(self):
+    def test_leaving_with_an_answer_refused_as_amended_keeps_its_text_as_a_draft(self):
+        from unittest import mock
         aid = self.ask()
         self.amend(aid, 2, "2026-11-15T10:10:00Z", options=["yes, tonight", "no"])
-        of_asks_tui.to_outbox([{"what": "answer", "text": "yes", "item": dict(self.item(aid, 1), written=True)}])
-        with open(os.path.join(of_asks_tui.outbox_dir(), os.listdir(of_asks_tui.outbox_dir())[-1])) as fh:
-            body = json.load(fh)
-        self.assertEqual((body["item"]["version"], body["item"]["written"]), (1, True))
+        conn = self.conn
 
-        def answer(it, text):
-            return of_asks_answer.answer(self.conn, it, text, [{"name": "of_a"}], lambda p: None)
-        of_asks_tui.send_outbox(answer, lambda *a: (True, ""), lambda ids: True)
-        self.assertEqual([f for f in os.listdir(of_asks_tui.outbox_dir()) if f.endswith(".json")], [])  # never again
+        class Own:  # the screen's own connection: the test's store, not closed under it
+            def __getattr__(self, name):
+                return getattr(conn, name)
+
+            def close(self):
+                pass
+        with mock.patch.object(of_store, "connect", lambda *a, **k: Own()), \
+                mock.patch.object(of_asks_tui, "spawn_deliver", lambda *a: None):
+            (_, ok, status), = of_asks_tui.leave(
+                [{"what": "answer", "text": "yes", "item": dict(self.item(aid, 1), written=True)}], [{"name": "of_a"}],
+                "of")
+        self.assertEqual((ok, status[:7]), (False, "amended"))
+        self.assertEqual(self.answers(), [])
         draft = of_asks_answer.unsent_drafts()[0]  # its text waits as a draft the screen hands to r
         self.assertEqual((draft["text"], draft["item"]["written"], draft["why"][:7]), ("yes", True, "amended"))
 

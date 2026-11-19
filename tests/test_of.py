@@ -771,20 +771,21 @@ class AsksActorTest(unittest.TestCase):
         for env, tty in (({}, False), ({"CLAUDECODE": "1"}, True), ({"CLAUDECODE": "1"}, False)):
             with self.assertRaises(self.of.OfError):
                 self.actor(env, tty)
-        self.of._OUTBOX_OWNER[0] = True
-        try:
-            self.assertEqual(self.actor({}, False), "owner")                     # the popup's outbox, replayed
-        finally:
-            self.of._OUTBOX_OWNER[0] = False
         self.of._load_quiet = lambda: []
         self.assertEqual(self.actor({"OF_POSITION": "x"}, True), "agent")          # a position never is the owner
 
-    def test_the_outbox_sender_refuses_in_an_agent_session(self):
-        from unittest import mock
-        for var in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE"):
-            with mock.patch.dict(os.environ, {var: "x"}):
-                with self.assertRaises(self.of.OfError):
-                    self.of._send_outbox()
+
+class AsksDeliverNowTest(AsksActorTest):
+    def test_deliver_now_reaches_its_handler_with_the_ids(self):
+        got = []
+        self.of._asks_deliver = lambda position=None, now=None: got.append((position, now)) or 0
+        self.of._ask_refs = lambda args, *f: None
+        self.assertEqual(self.of.main(["asks", "deliver", "--now", "a,b"]), 0)
+        self.assertEqual(self.of.main(["asks", "deliver", "--now", ""]), 0)
+        self.assertEqual(self.of.main(["asks", "deliver", "of_a"]), 0)
+        self.assertEqual(got, [(None, "a,b"), (None, ""), ("of_a", None)])
+        with self.assertRaises(SystemExit):
+            self.of.main(["asks", "send-outbox"])
 
 
 class InitServerPortTest(unittest.TestCase):

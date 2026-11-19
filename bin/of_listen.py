@@ -1846,7 +1846,7 @@ def run(stop=None, log=print, rebuild=False):
             time.sleep(2)
     starting.set()
     heartbeat(conn)
-    last_beat = last_outbox = last_spool = time.time()
+    last_beat = last_purge = last_spool = time.time()
     ticks = {p.name: time.time() - (p.tick_s or 0) + 20 for p in processors}  # first tick after 20 s
     import threading
     locks = {p.name: threading.Lock() for p in processors}
@@ -1867,20 +1867,14 @@ def run(stop=None, log=print, rebuild=False):
                     of_store.drain_spool(conn, budget_s=BUDGET_S)
                 except Exception as e:  # noqa: BLE001
                     log(f"of listen: spool: {type(e).__name__}: {e}")
-            if now - last_outbox >= 30:  # answers a popup handed over whose sender died: send them
-                last_outbox = now
+            if now - last_purge >= 30:
+                last_purge = now
                 try:  # option A's backups hold secrets: never kept past 24 h
                     import of_redact
                     for d in of_redact.purge_backups():
                         log(f"of listen: purged redaction backup {d}")
                 except Exception as e:  # noqa: BLE001
                     log(f"of listen: backup purge: {type(e).__name__}: {e}")
-                try:
-                    import of_asks_tui
-                    if of_asks_tui.outbox_waiting():
-                        of_asks_tui.spawn_sender(os.path.join(os.path.dirname(os.path.realpath(__file__)), "of"))
-                except Exception as e:  # noqa: BLE001
-                    log(f"of listen: outbox: {type(e).__name__}: {e}")
             if now - last_beat >= HEARTBEAT_S and not any(
                     locks[n].locked() for n in SERVES_READERS if n in locks):
                 heartbeat(conn)

@@ -242,12 +242,9 @@ class StoreTest(unittest.TestCase):
         self.assertIn(a, self.shown(data))                       # failed: shown again at once
         self.assertEqual([d["ask_id"] for d in extra["drafts"]], [a])  # and counted, for D
         os.makedirs(T.outbox_dir(), exist_ok=True)
-        with open(os.path.join(T.outbox_dir(), "x.json"), "w") as fh:
+        with open(os.path.join(T.outbox_dir(), "x.json"), "w") as fh:  # the old outbox: no answer on its way
             json.dump({"what": "answer", "text": "no", "item": {"ids": [b]}, "queued_at": now}, fh)
-        self.assertNotIn(b, self.shown(I.screen_list(self.conn, now=now)[0]))  # on its way
-        with open(os.path.join(T.outbox_dir(), "x.json"), "w") as fh:
-            json.dump({"what": "answer", "text": "no", "item": {"ids": [b]}, "queued_at": now, "failed_at": now}, fh)
-        self.assertIn(b, self.shown(I.screen_list(self.conn, now=now)[0]))     # its send failed: back
+        self.assertIn(b, self.shown(I.screen_list(self.conn, now=now)[0]))  # a file there hides no card
 
     def test_the_tail_hangs_from_the_listeners_last_sign_of_life(self):
         """of_herdr's review of PR 119: with the listener down past NEW_H, an ask filed after it stopped showed
