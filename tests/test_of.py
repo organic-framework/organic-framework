@@ -632,7 +632,7 @@ class OrgCommandTest(unittest.TestCase):
                 fh.write(text)
             of_init.set_org_key(p, "one", "hold", True)
             with open(p) as fh:
-                self.assertEqual(fh.read(), "orgs:\n- name: one\n  hold: true\n  path: ~/one\n")
+                self.assertEqual(fh.read(), "orgs:\n- name: one\n  path: ~/one\n  hold: true\n")
 
 
 class OrgSetReviewTest(unittest.TestCase):
@@ -697,6 +697,21 @@ class OrgSetReviewTest(unittest.TestCase):
         p = self.write("orgs.yaml", "orgs: [\n")
         with self.assertRaises(ValueError):
             of_init.set_org_key(p, "one", "hold", True)
+
+    def test_a_first_key_hold_a_nested_list_and_a_quoted_key(self):
+        """of_review's non-blocking points on PR 367 (msg 01a1f161-ef65)."""
+        import of_init
+        import yaml
+        p = self.write("orgs.yaml", "orgs:\n  - hold: true\n    name: one\n")
+        of_init.set_org_key(p, "one", "hold", None)
+        self.assertEqual(self.read(p), "orgs:\n  - hold: false\n    name: one\n")
+        p = self.write("orgs.yaml", "orgs:\n  - paths:\n    - ~/a\n    - ~/b\n    name: one\n  - name: two\n")
+        of_init.set_org_key(p, "one", "hold", True)
+        doc = yaml.safe_load(self.read(p))
+        self.assertEqual(doc["orgs"][0], {"paths": ["~/a", "~/b"], "name": "one", "hold": True})
+        p = self.write("orgs.yaml", "orgs:\n  - name: one\n    \"hold\": false\n")
+        of_init.set_org_key(p, "one", "hold", True)
+        self.assertEqual(self.read(p), "orgs:\n  - name: one\n    \"hold\": true\n")
 
     def test_the_command_edits_what_of_apply_reads(self):
         p = self.write("elsewhere-orgs.yaml", "orgs:\n  - name: one\n    path: ~/one\n")
