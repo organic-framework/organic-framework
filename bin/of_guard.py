@@ -3020,6 +3020,11 @@ def _forward_deny(head, args, shvars=None, cwd=None):
         # replay: 17 false denies of messages and edits when every word was split)
         carried = os.path.basename(first) in _SSH_CARRIERS or re.match(r"(?i)(identityfile|-i|-o)", first)
         parts = re.split(r"[=:,\s]+", sw) if carried else (re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)])
+        for x in list(parts):  # an option's value after `=` that carries one (`--rsh='ssh -i …'`, `-e='ssh …'`; PR 397)
+            xs = x.strip().strip("'\"")
+            x0 = (xs.split(None, 1) or [""])[0]
+            if x is not sw and (os.path.basename(x0) in _SSH_CARRIERS or re.match(r"(?i)(identityfile|-i|-o)", x0)):
+                parts += re.split(r"[=:,\s]+", xs)
         parts += [x[2:] for x in parts if re.match(r"-[A-Za-z].", x)]  # an option glued to its value: `ssh -i<key>`
         for part in parts:
             p = part.strip("'\"")
@@ -3901,6 +3906,18 @@ def _in_outbox(path, cwd=None, removal=False):
     return _in_folders(path, _outboxes(), cwd, removal)
 
 
+def _forward_write(head, args, cwd, files, removal):
+    """G34 for writes, as G35 reads one: a redirection, cp, mv, ln or install into the forward's folder, or a
+    recursive copy or a removal over it (`echo x >> <it>/known_hosts` rewrites the host pin; of_secrets-review on
+    organic-framework PR 397). The words G34 reads do not hold a redirection's target."""
+    if _REMOTE_BODY[0]:
+        return None
+    box = {_forward_dir().casefold()}
+    hit = next((t for t in _tree_targets(head, args, cwd) if _in_folders(t, box, cwd, removal=True)), None) or \
+        next((f for f in files if _in_folders(f, box, cwd, removal)), None)
+    return (FORWARD_DENY, hit) if hit else None
+
+
 def _asks_outbox_write(head, args, cwd, files, removal):
     """G35 on one simple command: a write, removal, move or link into the asks outbox, or a recursive copy or an
     extraction into a folder that holds it."""
@@ -4713,7 +4730,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     if not _ORG_PROTECTION["code"]:
         launch = _launch_write(head, args, cwd, files, removal)
         return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
-                                                     _asks_outbox_write(head, args, cwd, files, removal))
+                                                     _asks_outbox_write(head, args, cwd, files, removal) or
+                                                     _forward_write(head, args, cwd, files, removal))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -4731,7 +4749,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         return PROTECTED_CODE_DENY, hit
     launch = _launch_write(head, args, cwd, files, removal)  # G29 after G21: where both hold, G21 names it
     return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
-                                                 _asks_outbox_write(head, args, cwd, files, removal))
+                                                 _asks_outbox_write(head, args, cwd, files, removal) or
+                                                 _forward_write(head, args, cwd, files, removal))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
