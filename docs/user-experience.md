@@ -94,7 +94,7 @@ Reading: the passkey on the phone is the main key, everywhere. The SSH key earns
 | ChatGPT with OF as a custom connector | 0 | 2 | 1 | 2 | — | 1 | 6/10 | Web only, a public address or OpenAI's tunnel, and answering needs a Business, Enterprise or Edu plan: on Pro a custom connector only reads. |
 | The terminal (`of asks`) | 1 | 1 | 0 | 2 | — | 0 | 4/10 | Exact, but only at the machine and only when the person looks. |
 
-Reading: the chat already scores as high as the connector. The connector lifts Clarity and costs a setup step and a public address: a second step, as `of_architect` recommends on `OF-110`, not a need.
+Reading: the chat already scores as high as the public connector. The public connector lifts Clarity and costs a setup step and a public address, so the address adds no ease for its risk. The local connector in Claude Desktop needs no address (7/10, and not on the phone): `OF-110`, version 2, recommends it, with the public one as a later step.
 
 ### 6.3 Approving an important decision: money, production, secrets, grants, structure, the list of keys
 
