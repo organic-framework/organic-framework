@@ -49,8 +49,14 @@ class ForwardKeyTest(unittest.TestCase):
         for cmd in ("ssh -o 'IdentityFile ~/.ssh/of-forward/key' u@h", "rsync -e 'ssh -i ~/.ssh/of-forward/key' a u@h:b",
                     "GIT_SSH_COMMAND='ssh -i ~/.ssh/of-forward/key' git fetch",
                     "git -c core.sshCommand='ssh -i ~/.ssh/of-forward/key' fetch", "ssh -i~/.ssh/of-forward/key u@h",
+                    "rsync --rsh='ssh -i ~/.ssh/of-forward/key' a u@h:b", "rsync -e='ssh -i ~/.ssh/of-forward/key' a u@h:b",
                     "ssh -i ~/.ssh/OF-FORWARD/key u@h"):
             with self.subTest(cmd=cmd):         # a word that carries the folder in one of its parts
+                got = bash(cmd)
+                self.assertTrue(got and "G34" in got[0], cmd)
+        for cmd in ("echo x >> ~/.ssh/of-forward/known_hosts", "echo x > ~/.SSH/OF-FORWARD/known_hosts",
+                    "echo x > ~/.ssh/of-f*/known_hosts", "cp /tmp/k ~/.ssh/of-forward/", "cd ~/.ssh && echo x > of-forward/k"):
+            with self.subTest(cmd=cmd):         # a write's target, which no word G34 reads holds (PR 397)
                 got = bash(cmd)
                 self.assertTrue(got and "G34" in got[0], cmd)
         home = os.path.expanduser("~")
