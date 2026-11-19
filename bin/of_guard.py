@@ -3398,6 +3398,51 @@ OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner wri
 OWNER_CONFIG_MODE = "deny"
 
 
+# G35: the asks outbox is the owner's popup's (bin/of_asks_tui.py): its sender replays each file there as the owner's
+# answer or mark, so a file an agent writes there would record an answer by the owner (of_platform, msg 01a1f4fc-801d,
+# 2026-11-19, beside efc87597, which makes `of asks answered|withdraw` take the owner only in their terminal)
+ASKS_OUTBOX_DIR = "~/.local/state/of/asks-outbox"
+ASKS_OUTBOX_DENY = ("the asks outbox, which only the owner's popup writes: its sender replays each file there as the "
+                    "owner's answer (docs/guard.md G35). An agent asks the owner with `of ask`, and closes an ask they "
+                    "answered with `of status working --answered <id>`")
+ASKS_OUTBOX_MODE = "deny"
+
+
+def _in_outbox(path, cwd=None, removal=False):
+    """Does PATH lie in the asks outbox (G35)? By real path, compared without case (the Mac's volume ignores it), and
+    by pattern for a glob; with REMOVAL (or a recursive copy's destination), a folder above it counts too."""
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    box = os.path.realpath(_expanduser(os.environ.get("OF_ASKS_OUTBOX") or ASKS_OUTBOX_DIR)).casefold()
+    if any(ch in p for ch in "*?["):
+        import fnmatch
+        rp = _real_pattern(p).casefold()
+        return fnmatch.fnmatchcase(box + "/x.json", rp) or fnmatch.fnmatchcase(box, rp)
+    real = os.path.realpath(p).casefold()
+    if real == box or real.startswith(box + "/"):
+        return True
+    return bool(removal) and box.startswith(real.rstrip("/") + "/")
+
+
+def _asks_outbox_write(head, args, cwd, files, removal):
+    """G35 on one simple command: a write, removal, move or link into the asks outbox, or a recursive copy or an
+    extraction into a folder that holds it."""
+    if _REMOTE_BODY[0]:
+        return None
+    hit = next((t for t in _tree_targets(head, args, cwd) if _in_outbox(t, cwd, removal=True)), None) or \
+        next((f for f in files if _in_outbox(f, cwd, removal)), None)
+    if not hit:
+        return None
+    if ASKS_OUTBOX_MODE == "deny":
+        return ASKS_OUTBOX_DENY, hit
+    _WARNINGS.append((ASKS_OUTBOX_DENY, hit, "a warning now, a deny once the flows that write it have moved"))
+    return None
+
+
 def _owner_config_targets():
     d = os.environ.get("OF_CONFIG_DIR") or "~/.config/of"
     return [os.path.realpath(_expanduser(os.path.join(d, f))) for f in OWNER_CONFIG_FILES]
@@ -4156,7 +4201,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         return GUARD_STATE_DENY, state
     if not _ORG_PROTECTION["code"]:
         launch = _launch_write(head, args, cwd, files, removal)
-        return (LAUNCH_DENY, launch) if launch else _owner_config_write(head, args, cwd, files, removal)
+        return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
+                                                     _asks_outbox_write(head, args, cwd, files, removal))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
         return PROTECTED_CODE_DENY, hit
@@ -4173,7 +4219,8 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     if hit:
         return PROTECTED_CODE_DENY, hit
     launch = _launch_write(head, args, cwd, files, removal)  # G29 after G21: where both hold, G21 names it
-    return (LAUNCH_DENY, launch) if launch else _owner_config_write(head, args, cwd, files, removal)
+    return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
+                                                 _asks_outbox_write(head, args, cwd, files, removal))
 
 
 def _owner_config_write(head, args, cwd, files, removal):
@@ -5194,6 +5241,10 @@ def critical_deny(tool, tool_input, cwd=None):
         return GUARD_STATE_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_outbox(path, cwd):  # G35
+        if ASKS_OUTBOX_MODE == "deny":
+            return ASKS_OUTBOX_DENY, path
+        _WARNINGS.append((ASKS_OUTBOX_DENY, path, "a warning now, a deny once the flows that write it have moved"))
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and \
             _launch_file(path, cwd, _owner_config_targets()):  # G33
         if OWNER_CONFIG_MODE == "deny":
