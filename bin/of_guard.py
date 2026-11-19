@@ -3220,10 +3220,44 @@ def _substitutions(stext):
         return [stext]
 
 
-# GNU sed runs a command with its `e` command (`e`, `e cmd`, after an address) or the s command's `e` flag; BSD sed has
-# neither. Read wide: a lone `e` word or an `e` among a closing delimiter's flags keeps the sed for the line reading.
-_SED_RUNS = re.compile(r"(?:^|[\s;{}'\"])\d*(?:,\d+)?e(?=$|[\s;}'\"])|"
-                       r"[/|#,@:!_%+][gpIiMm0-9w]*e[gpIiMm0-9w]*(?=$|[\s;}'\"])")
+# GNU sed runs a command with its `e` command, after any address (`1e`, `$e`, `1,$e`, `0~2e`, `/re/e`), or the s
+# command's `e` flag; BSD sed has neither. Read wide (of_server on 9b5de527, msg 01a1f62a-30ea): any `e` that is not
+# part of a word keeps the sed for the line reading; a lone e in prose is the cheap side.
+_SED_RUNS = re.compile(r"(?<![A-Za-z])e(?![A-Za-z])")
+
+
+def _sed_text(args):
+    """Is this sed's program on the line and unable to run a command? `-f FILE`/`--file` puts it elsewhere."""
+    if any(re.match(r"^-[A-Za-z]*f", a) or a.startswith("--file") for a in args):
+        return False
+    if any(_SED_RUNS.search(a) for a in args):
+        return False
+    # an s command whose delimiter is a letter hides its flags among letters (`sxaxbxe`: of_server on 9b5de527)
+    return not any(_SED_LETTER_S.search(prog) for prog in _sed_programs(args))
+
+
+_SED_LETTER_S = re.compile(r"(?:^|[;{}\n])\s*(?:[\d$~,]+|/[^/\n]*/)?\s*!?\s*s[A-Za-z]")
+
+
+def _sed_programs(args):
+    """The program words of a sed call: each -e/--expression value, else its first operand."""
+    progs, expr, i = [], False, 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-e", "--expression"):
+            progs.append(args[i + 1] if i + 1 < len(args) else "")
+            expr, i = True, i + 2
+            continue
+        if a.startswith("--expression="):
+            progs.append(a.split("=", 1)[1])
+            expr = True
+        elif re.match(r"^-[A-Za-z]*e.", a) and not a.startswith("--"):
+            progs.append(a[a.index("e") + 1:])
+            expr = True
+        elif not a.startswith("-") and not expr and not progs:
+            progs.append(a)
+        i += 1
+    return progs
 
 
 def _without_prose(cmd):
@@ -3252,7 +3286,7 @@ def _without_prose(cmd):
                 if head in ("echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack") and not fed[idx]:
                     kept += _substitutions(stext)
                     continue   # text printed or written to a file; `echo '…' | at now` is kept
-                if os.path.basename(head) in ("sed", "gsed") and not fed[idx] and not _SED_RUNS.search(stext):
+                if os.path.basename(head) in ("sed", "gsed") and not fed[idx] and _sed_text(args):
                     # a sed program is text it writes, unless its `e` command or the s command's `e` flag runs it
                     # (of_review's probe commit, 2026-11-19 23:15Z, of_architect msg 01a1f620-bc82: a header naming
                     # `of org set <org> path` beside `python3 -P` and `at` was read as an act and a launcher)
