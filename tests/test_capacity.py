@@ -260,6 +260,12 @@ class StatusAndTarget(unittest.TestCase):
         self.assertEqual(of_capacity.best_target([max20, pro]), pro)
         self.assertEqual(of_capacity.best_target([max20]), max20)
 
+    def test_best_target_prefers_an_accepting_account_over_threshold_to_a_rejected_one(self):
+        rejected = dict(_row("/a", 94, 10), status="rejected")
+        accepting = dict(_row("/b", 0, 90), status="allowed")
+        self.assertEqual(of_capacity.best_target([rejected, accepting]), accepting)
+        self.assertEqual(of_capacity.best_target([rejected]), rejected)
+
     def test_free_capacity_uses_the_measured_week(self):
         row = dict(_row("/max", 0, 40), tier="default_claude_max_5x")
         self.assertEqual(of_capacity.free_capacity(row), 60 * 19)
@@ -767,6 +773,11 @@ class Balance(unittest.TestCase):
                     {"session": "c", "status": "idle"}, {"session": "k8s_keeper", "status": "idle"}],
             "/gg": [{"session": "nonce", "status": "busy"}]}  # mid-turn: never moved, even off a stalled account
     RATES = {"of_x": 78, "a": 50, "b": 30, "c": 3, "k8s_keeper": 40}
+
+    def test_policy_supplies_a_tier_when_status_has_none(self):
+        row = dict(_row("/a", 0, 0), tier=None)
+        of_capacity._apply_policy_tiers([row], {"tiers": {"/a": "default_claude_max_5x"}})
+        self.assertEqual(row["tier"], "default_claude_max_5x")
 
     def test_fill_the_account_that_expires_first(self):
         pol = dict(POLICY)
