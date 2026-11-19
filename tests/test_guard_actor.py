@@ -136,6 +136,16 @@ class SedProgramIsText(unittest.TestCase):
                 "release/commit.sh -F m.txt -- probes/x.py")
         self.assertIsNone(of_guard._actor_line_deny(line))
         for runs in ("sed -n 's/x/" + "of org set o path r/e' f; at now",
+                     # e after any address, and a program from a file (of_server on 9b5de527)
+                     "sed '$e " + "of org set o path r' f; at now",
+                     "sed '1,$e " + "of org set o path r' f; at now",
+                     "sed '0~2e " + "of org set o path r' f; at now",
+                     "sed '/x/e " + "of org set o path r' f; at now",
+                     "sed -f prog.sed 'x " + "of org set o path r' f; at now",
+                     "sed -nf prog.sed 'x " + "of org set o path r' f; at now",
+                     "sed --file=prog.sed 'x " + "of org set o path r' f; at now",
+                     "sed 'sxaxbxe' 'x " + "of org set o path r' f; at now",
+                     "sed -e 'sxaxbxe' 'x " + "of org set o path r' f; at now",
                      "sed '1e " + "of org set o path r' f; at now",
                      "sed 's/x/" + "of org set o path r/' f | sh; at now"):
             self.assertIsNotNone(of_guard._actor_line_deny("export -n OF_POSITION; " + runs), runs)
