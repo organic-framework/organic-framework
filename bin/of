@@ -3812,12 +3812,9 @@ def _closed_receiver(to, positions):
                keeper != name else ""))
 
 
-def _parked_note(to, positions):
-    """What `of send` says when TO is parked on purpose and still held: the message goes, and its holder reads it only
-    when the position resumes; so it names who covers the work now (its active `successor`, else its unit's owner, else
-    its organization's structure keeper) and the command that sends there instead (a user organization's structure keeper,
-    msg 01a1f0a9-ad31: messages piled up unread on parked watchers and keepers that kept their sessions; docs/guard.md
-    R11). None for any other receiver."""
+def _parked_cover(to, positions):
+    """(position, cover, why) for TO parked on purpose and still held, else None: who covers its work now, its active
+    `successor`, else its unit's owner, else its organization's structure keeper."""
     org, _, name = to.partition(":")
     p = next((x for x in positions if x.get("_org") == org and x.get("name") == name), None)
     if p is None or (p.get("status") or "active") != "parked":
@@ -3826,15 +3823,48 @@ def _parked_note(to, positions):
     succ, owner = p.get("successor"), p.get("_unit_owner")
     import of_pulse
     if succ in live:
-        cover, why = succ, "its successor"
-    elif owner in live and owner != name:
-        cover, why = owner, f"the owner of its unit {p.get('_unit')}"
-    else:
-        cover = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
-        why = "its organization's structure keeper"
+        return p, succ, "its successor"
+    if owner in live and owner != name:
+        return p, owner, f"the owner of its unit {p.get('_unit')}"
+    return p, of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org), \
+        "its organization's structure keeper"
+
+
+def _parked_refusal(to, positions, sender):
+    """Why `of send` refuses TO, or None: parked on purpose, still held, and its `successor` is active, so its queue
+    piles up unread while the successor does its work (a user organization's structure keeper, msg 01a1f3a8-b16b: three
+    positions, 16 to 60 hours of mail; docs/guard.md R11). Its successor, its unit's owner and its organization's
+    structure keeper still reach it by name (a unit owner wakes a parked holder for a single task); anyone else names
+    `--to-parked`."""
+    got = _parked_cover(to, positions)
+    if not got or got[2] != "its successor":
+        return None
+    p, succ, _ = got
+    org = p["_org"]
+    import of_pulse
+    keeper = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
+    if sender in {f"{org}:{x}" for x in (succ, p.get("_unit_owner"), keeper) if x}:
+        return None
+    return (f"not sent: {to} is parked on purpose (its registry status) and {org}:{succ}, its successor, does its work "
+            f"now, so its holder would read this only when it resumes: send it there, `of send {org}:{succ} \"…\"`; "
+            f"for a single task its parked holder must do, send again with --to-parked")
+
+
+def _parked_note(to, positions, sender=None):
+    """What `of send` says when TO is parked on purpose and still held: the message goes, and its holder reads it only
+    when the position resumes; so it names who covers the work now (its active `successor`, else its unit's owner, else
+    its organization's structure keeper) and the command that sends there instead, unless the sender is that position
+    (a user organization's structure keeper, msg 01a1f0a9-ad31: messages piled up unread on parked watchers and keepers
+    that kept their sessions; docs/guard.md R11). None for any other receiver."""
+    got = _parked_cover(to, positions)
+    if not got:
+        return None
+    p, cover, why = got
+    org, name = p["_org"], p["name"]
+    there = cover and cover != name and sender != f"{org}:{cover}"
     return (f"note: {to} is parked on purpose (its registry status), so its holder reads this only when it resumes"
             + (f"; {org}:{cover}, {why}, covers its work now: to send it there instead, "
-               f"`of send {org}:{cover} \"…\"`" if cover and cover != name else ""))
+               f"`of send {org}:{cover} \"…\"`" if there else ""))
 
 
 def pick_grants(grants_by_org, position, to_org, now=None, to_position=None):
@@ -3894,6 +3924,9 @@ def cmd_send(args):
         sender = f"{me['_org']}:{me['name']}"
     elif ":" not in sender:
         sender = _resolve_address(sender, positions)
+    refused = None if getattr(args, "to_parked", False) else _parked_refusal(to, positions, sender)
+    if refused:
+        raise OfError(refused)
     grants = None
     to_org, from_org = to.split(":", 1)[0], sender.split(":", 1)[0]
     if not args.grant and to_org != from_org:  # across organizations: the sender's one grant for it, if it holds one
@@ -3973,7 +4006,7 @@ def cmd_send(args):
             and os.environ.get("OF_AUTOMATION") != "1" else None
         if note:
             print(note, file=sys.stderr)
-        parked = _parked_note(to, positions)
+        parked = _parked_note(to, positions, sender)
         if parked:
             print(parked, file=sys.stderr)
     return 0
@@ -3984,6 +4017,8 @@ def cmd_inbox(args):
     server for the agent that runs this command (no --from: only the holder reads its own queue)."""
     import of_relay_client as of_relay
     import of_store
+    if args.action in ("move", "drop"):
+        return _inbox_manage(args)
     if args.mine or args.take or getattr(args, "taken", False):
         return _inbox_mine(args)
     conn = of_store.connect()
@@ -3997,6 +4032,83 @@ def cmd_inbox(args):
     print(f"{len(rows)} message(s)")
     for mid, at, to, frm, auth, text, read in rows:
         print(f"\n{mid[:8]}  {at[:16]}  {frm} -> {to}  ({auth}){'  read' if read else ''}\n  {text}")
+    return 0
+
+
+def _queue_manager(me, target, positions):
+    """Why ME may not move or drop TARGET's queued messages, or None: only its organization's structure keeper and the
+    owner of its unit may (the server checks it too when it has the registry; docs/server.md, "Relay and presence")."""
+    import of_pulse
+    org = target.get("_org")
+    if me.get("_org") != org:
+        return f"{me['name']} is not a position of {org}"
+    keeper = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
+    if me["name"] in {keeper, target.get("_unit_owner")} - {None}:
+        return None
+    return (f"only {org}'s structure keeper ({keeper or 'none active'})"
+            + (f" or {target['name']}'s unit owner ({target['_unit_owner']})" if target.get("_unit_owner") else "")
+            + f" may move or drop {target['name']}'s messages")
+
+
+def _inbox_manage(args):
+    """`of inbox move <position> --to <position> [--msg ID …] [--dry-run]` and `of inbox drop <msg id> --reason R`:
+    a structure keeper's or a unit owner's hand on a position's queue on its organization's server (a user
+    organization's structure keeper, msg 01a1f3a8-b16b: a parked position's mail piled up with no way to hand it to
+    its successor or drop a stale one)."""
+    import of_client
+    import of_ship
+    positions = _load_quiet()
+    me = _me(positions, getattr(args, "sender", None))
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if getattr(args, "sender", None) and env_sid and session_of(me) and env_sid != session_of(me):
+        raise OfError(f"this session does not hold {me['name']} (its holder is session {session_of(me)[:8]}…)")
+    session = env_sid or session_of(me)
+    if not session:
+        raise OfError(f"{me['name']}: no session to prove you hold it; run this from the holder's own session")
+    by = f"{me['_org']}:{me['name']}"
+    cfg = of_ship.config()
+    client = of_client.Client(of_ship.org_servers(cfg).get(me["_org"]) or cfg["server_url"])
+    if args.action == "drop":
+        if not args.id or not args.reason:
+            raise OfError("of inbox drop <full message id> --reason \"…\"")
+        try:
+            r = client.drop_message(args.id, by, session, args.reason)
+        except Exception as e:  # noqa: BLE001 - the server's 403 or 404 says why
+            raise OfError(f"of inbox drop: {e}")
+        print(f"{r.get('msg_id')}: " + (f"already {r.get('state')}" if r.get("already") else
+                                        "dropped (expired; the server host's `of server relay-requeue --state expired "
+                                        "--msg-id <id>` undoes it)"))
+        return 0
+    if not args.id or not args.to:
+        raise OfError("of inbox move <position> --to <position> [--msg ID …] [--dry-run]")
+    src, dst = _resolve_address(args.id, positions), _resolve_address(args.to, positions)
+    if src.split(":")[0] != dst.split(":")[0]:
+        raise OfError("messages move only within their organization")
+    target = next((p for p in positions if f"{p.get('_org')}:{p.get('name')}" == src), None)
+    if target is None:
+        raise OfError(f"{src} is not in the registries this machine lists")
+    why = _queue_manager(me, target, positions)
+    if why:
+        raise OfError(why)
+    closed = _closed_receiver(dst, positions)
+    if closed or _parked_cover(dst, positions):
+        raise OfError(f"{dst} would not read them either: " + (closed or "it is parked on purpose")
+                      + "; move them to an active position")
+    try:
+        r = client.move_messages(src, dst, by, session, msg_ids=args.msg, dry_run=args.dry_run)
+    except Exception as e:  # noqa: BLE001
+        raise OfError(f"of inbox move: {e}")
+    verb = "would move" if r.get("dry_run") else "moved"
+    print(f"{verb} {len(r.get('moved') or [])} message(s) from {src} to {dst}"
+          + ("" if r.get("dry_run") else f" (by {by}; each keeps its sender, id and reply-to, and carries no authority)"))
+    for i in r.get("moved") or []:
+        print(f"  {i['msg_id']}  {(i.get('created_at') or '')[:16]}  from {i['from']}  {i.get('chars')} chars"
+              + (f"  {i['priority']}" if i.get("priority") not in (None, "normal") else "")
+              + (f"  reply to {i['reply_to']}" if i.get("reply_to") else ""))
+    for i in r.get("leased") or []:
+        print(f"  left: {i['msg_id']} from {i['from']}: the relay is typing it into {src}'s pane now")
+    for i in r.get("not_queued") or []:
+        print(f"  not queued for {src}: {i}")
     return 0
 
 
@@ -7599,10 +7711,19 @@ def main(argv=None):
                                                          "of inbox --mine when it chooses")
     pr.add_argument("--urgent", action="store_true",
                     help="kept for old scripts: every message is typed in as soon as the receiver is idle (guard R9)")
+    sd.add_argument("--to-parked", action="store_true",
+                    help="send to a position parked on purpose although its successor does its work now: a single "
+                         "task its parked holder must do (guard R11)")
     sd.set_defaults(fn=cmd_send)
-    ib = sub.add_parser("inbox", help="messages to positions held by people on this machine")
-    ib.add_argument("action", nargs="?", choices=["list", "read"], default="list")
-    ib.add_argument("id", nargs="?")
+    ib = sub.add_parser("inbox", help="messages to positions held by people on this machine; move | drop: a structure "
+                                      "keeper's or unit owner's hand on a position's queue on the server")
+    ib.add_argument("action", nargs="?", choices=["list", "read", "move", "drop"], default="list")
+    ib.add_argument("id", nargs="?", help="read: a message id; move: the position whose queue moves (<org>:<position>"
+                                          " or a name); drop: the message's full id")
+    ib.add_argument("--to", help="move: the position that gets the queue, in the same organization")
+    ib.add_argument("--msg", action="append", metavar="ID", help="move: only this message (full id; repeatable)")
+    ib.add_argument("--dry-run", action="store_true", help="move: list what would move (no text), move nothing")
+    ib.add_argument("--reason", help="drop: why (kept with the message and its event)")
     ib.add_argument("--all", action="store_true")
     ib.add_argument("--mine", action="store_true", help="messages queued on the server for you (the agent running this)")
     ib.add_argument("--take", metavar="ID|all", help="take queued messages: delivered now, never typed in later; "

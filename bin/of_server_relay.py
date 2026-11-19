@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, msg_
   to_org TEXT, to_position TEXT, from_org TEXT, from_position TEXT, text TEXT, reply_to TEXT, grant_id TEXT,
   authority TEXT, authority_reason TEXT, sender_machine TEXT, sender_person TEXT, created_at TEXT, created REAL,
   state TEXT, leased_to TEXT, lease_until REAL, attempts INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
-  done_at TEXT, reason TEXT, priority TEXT DEFAULT 'normal');
+  done_at TEXT, reason TEXT, priority TEXT DEFAULT 'normal', moved_from TEXT, moved_by TEXT);
 CREATE INDEX IF NOT EXISTS messages_to ON messages (to_org, to_position, state);
 CREATE INDEX IF NOT EXISTS messages_from ON messages (from_org, from_position, state);
 CREATE TABLE IF NOT EXISTS position_aliases (org TEXT, alias TEXT, position TEXT, machine_id TEXT, updated REAL,
@@ -73,22 +73,53 @@ def registered_holder(path, position):
     return None
 
 
+def queue_managers(path, position):
+    """Who may move or drop a position's queued messages, by the organization's registry file: its structure keeper
+    (its active position of role `org`, else `architect`, as of_pulse.structure_keeper reads it) and the owner of the
+    position's unit (its `unit:`, else the unit whose `systems` list its system). None when the file is not there."""
+    import os
+    import yaml
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    ps = [p for p in doc.get("positions") or [] if isinstance(p, dict)]
+    units = doc.get("units") if isinstance(doc.get("units"), dict) else {}
+    out = set()
+    for role in ("org", "architect"):
+        keeper = next((p.get("name") for p in ps if p.get("role") == role and p.get("status") != "parked"), None)
+        if keeper:
+            out.add(keeper)
+            break
+    p = next((x for x in ps if x.get("name") == position or position in (x.get("aliases") or [])), None)
+    if p is not None:
+        uid = p.get("unit") or next((k for k, u in units.items() if isinstance(u, dict)
+                                     and p.get("system") in (u.get("systems") or [])), None)
+        owner = (units.get(uid) or {}).get("owner") if uid else None
+        if owner:
+            out.add(owner)
+    return out
+
+
 _TAKE_COLS = ("msg_id, to_org, to_position, from_org, from_position, text, reply_to, authority, authority_reason,"
-              " grant_id, sender_machine, sender_person, created_at, attempts, state, lease_until, priority")
+              " grant_id, sender_machine, sender_person, created_at, attempts, state, lease_until, priority,"
+              " moved_from, moved_by")
 
 
 def _taken_fields(r):
     """A message row as `GET /v1/messages/queued` and `take` return it: the long-poll's fields,
     plus `state` (`leased` only under a live lease) and `lease_s`."""
     (msg_id, to_org, to_pos, f_org, f_pos, text, reply_to, auth, why, grant, s_machine, s_person, created_at,
-     attempts, state, lease_until, priority) = r
+     attempts, state, lease_until, priority, moved_from, moved_by) = r
     left = (lease_until or 0) - time.time()
     live = state == "leased" and left > 0
     return {"msg_id": msg_id, "to": f"{to_org}:{to_pos}", "from": f"{f_org}:{f_pos}", "text": text,
             "reply_to": reply_to, "authority": auth, "authority_reason": why, "grant_id": grant,
             "sender_machine": s_machine, "sender_person": s_person, "created_at": created_at, "attempt": attempts,
             "kind": "agent", "state": "leased" if live else ("queued" if state == "leased" else state),
-            "lease_s": round(left, 1) if live else 0, "priority": priority or "normal"}
+            "lease_s": round(left, 1) if live else 0, "priority": priority or "normal", "moved_from": moved_from,
+            "moved_by": moved_by}
 
 
 class RelayError(Exception):
@@ -112,8 +143,10 @@ class Relay:
         self.cond = threading.Condition()
         with app.store.conn() as c:
             c.executescript(DDL)
-            if "priority" not in [r[1] for r in c.execute("PRAGMA table_info(messages)")]:
-                c.execute("ALTER TABLE messages ADD COLUMN priority TEXT DEFAULT 'normal'")
+            have = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
+            for col, decl in (("priority", "TEXT DEFAULT 'normal'"), ("moved_from", "TEXT"), ("moved_by", "TEXT")):
+                if col not in have:
+                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
 
     # ------------------------------------------------------------ helpers
 
@@ -485,7 +518,7 @@ class Relay:
             rows = c.execute(
                 "SELECT m.seq, m.msg_id, m.to_org, m.to_position, m.from_org, m.from_position, m.text, m.reply_to,"
                 " m.authority, m.authority_reason, m.grant_id, m.sender_machine, m.sender_person, m.created_at, m.attempts, p.kind,"
-                " m.priority"
+                " m.priority, m.moved_from, m.moved_by"
                 " FROM messages m JOIN presence p ON p.org = m.to_org AND p.position = m.to_position"
                 " WHERE p.machine_id = ? AND p.updated > ? AND m.state IN ('queued', 'leased')"
                 " AND " + self._OFFERED.format(m="m") +
@@ -499,7 +532,8 @@ class Relay:
                 c.execute("UPDATE messages SET state = 'leased', leased_to = ?, lease_until = ?, attempts = attempts + 1"
                           " WHERE seq = ?", (machine_id, now + LEASE, r[0]))
         keys = ("msg_id", "to_org", "to_position", "from_org", "from_position", "text", "reply_to", "authority",
-                "authority_reason", "grant_id", "sender_machine", "sender_person", "created_at", "attempt", "kind", "priority")
+                "authority_reason", "grant_id", "sender_machine", "sender_person", "created_at", "attempt", "kind", "priority",
+                "moved_from", "moved_by")
         out = []
         for r in rows:
             d = dict(zip(keys, r[1:]))
@@ -562,7 +596,7 @@ class Relay:
         now = time.time()
         with self.app.store.tx() as c:
             row = c.execute(f"SELECT {_TAKE_COLS} FROM messages WHERE msg_id = ?", (msg_id,)).fetchone()
-            state, lease_until = row[-3], row[-2]
+            state, lease_until = row[14], row[15]
             if state in ("delivered", "dead", "expired"):
                 return {**_taken_fields(row), "state": state, "already": True}
             if state == "leased" and (lease_until or 0) > now:
@@ -620,6 +654,114 @@ class Relay:
                                                   "machine_id": m["machine_id"], "reason": (reason or "")[:300],
                                                   "failures": failures})])
         return {"msg_id": msg_id, "state": new}
+
+    # -------------------------------- a structure keeper or a unit owner moves or drops a position's queued messages
+
+    def _manager(self, m, org, by, session, receiver):
+        """`by` may act on RECEIVER's queue in ORG: this machine presents it with SESSION, it is a position of ORG,
+        and, when the server has ORG's registry (`positions_files`), it is ORG's structure keeper or RECEIVER's unit
+        owner. Without the registry the client checks that role (docs/server.md, "Relay and presence")."""
+        b_org, b_pos = parse_address(by)
+        if b_org != org:
+            raise RelayError(403, "forbidden", f"{by} is not a position of {org}: only its own organization moves or "
+                                               "drops its messages")
+        if not session:
+            raise RelayError(400, "bad_request", "session is required")
+        ok, why = self._holds(m, b_org, b_pos, session)
+        if not ok:
+            raise RelayError(403, "not_holder", why)
+        files = self.app.cfg.get("positions_files") or {}
+        allowed = queue_managers(files[org], receiver) if org in files else None
+        if allowed is not None and b_pos not in allowed:
+            raise RelayError(403, "forbidden", f"{by} is neither {org}'s structure keeper nor the owner of "
+                                               f"{receiver}'s unit")
+        return b_org, b_pos
+
+    def move(self, m, body):
+        """Move a position's queued messages (all, or `msg_ids`) to another position of its organization, for its
+        structure keeper or its unit's owner (a user organization's structure keeper, msg 01a1f3a8-b16b: mail piled
+        up on parked positions that kept their sessions). Each keeps its id, sender, reply_to, time and attempts; it
+        is offered at once; it carries no authority, which was resolved for its first receiver, and no grant;
+        `moved_from` keeps its first receiver. One under a live lease stays. `dry_run` lists them without text."""
+        body = body or {}
+        s_org, s_pos = parse_address(body.get("from"))
+        d_org, d_pos = parse_address(body.get("to"))
+        if s_org != d_org:
+            raise RelayError(400, "bad_request", "messages move only within their organization")
+        if not POSITION_NAME.match(d_pos):
+            raise RelayError(400, "bad_position", f"position {d_pos[:80]!r} breaks the name rule")
+        s_pos, d_pos = self._canonical(s_org, s_pos), self._canonical(d_org, d_pos)
+        if s_pos == d_pos:
+            raise RelayError(400, "bad_request", "the messages are already that position's")
+        by = "{}:{}".format(*self._manager(m, s_org, body.get("by"), body.get("session"), s_pos))
+        ids = body.get("msg_ids")
+        if ids is not None and (not isinstance(ids, list) or not all(isinstance(i, str) for i in ids)):
+            raise RelayError(400, "bad_request", "msg_ids must be a list of message ids")
+        src, dst, now = f"{s_org}:{s_pos}", f"{d_org}:{d_pos}", time.time()
+        out = {"from": src, "to": dst, "by": by, "moved": [], "leased": [], "not_queued": []}
+        with self.app.store.tx() as c:
+            rows = c.execute("SELECT msg_id, from_org, from_position, created_at, priority, length(text), reply_to,"
+                             " state, lease_until, authority, authority_reason, grant_id FROM messages"
+                             " WHERE to_org = ? AND to_position = ? AND state IN ('queued', 'leased') ORDER BY seq",
+                             (s_org, s_pos)).fetchall()
+            if ids is not None:
+                have = {r[0] for r in rows}
+                out["not_queued"] = [i for i in ids if i not in have]
+                rows = [r for r in rows if r[0] in set(ids)]
+            for (msg_id, f_org, f_pos, created_at, priority, chars, reply_to, state, lease_until, auth, why,
+                 grant) in rows:
+                item = {"msg_id": msg_id, "from": f"{f_org}:{f_pos}", "created_at": created_at,
+                        "priority": priority or "normal", "chars": chars, "reply_to": reply_to}
+                if state == "leased" and (lease_until or 0) > now:
+                    out["leased"].append(item)
+                    continue
+                out["moved"].append(dict(item, authority_was=auth, grant_was=grant))
+                if body.get("dry_run"):
+                    continue
+                c.execute("UPDATE messages SET to_position = ?, state = 'queued', leased_to = NULL, lease_until = NULL,"
+                          " failures = 0, moved_from = COALESCE(moved_from, ?), moved_by = ?, authority = 'none',"
+                          " authority_reason = ?, grant_id = NULL WHERE msg_id = ?",
+                          (d_pos, src, by, why if auth == "none" else f"moved: its authority ({auth}) was for {src}",
+                           msg_id))
+        if body.get("dry_run"):
+            for i in out["moved"]:
+                i.pop("authority_was"), i.pop("grant_was")
+            return dict(out, dry_run=True)
+        self._queue([self._event(s_org, "of.message_moved", {
+            "msg_id": i["msg_id"], "from_receiver": src, "to": dst, "by": by, "machine_id": m["machine_id"],
+            "authority_was": i["authority_was"], "grant_was": i["grant_was"]}) for i in out["moved"]])
+        with self.cond:
+            self.cond.notify_all()
+        for i in out["moved"]:
+            i.pop("authority_was"), i.pop("grant_was")
+        return out
+
+    def drop_by(self, m, msg_id, body):
+        """Expire one queued message, for the receiver's organization's structure keeper or its unit's owner: its
+        reason `dropped by <by>: <reason>`; the server host's `of server relay-requeue --state expired` undoes it."""
+        body = body or {}
+        reason = str(body.get("reason") or "").strip()
+        if not reason:
+            raise RelayError(400, "bad_request", "a reason is required")
+        with self.app.store.conn() as c:
+            r = c.execute("SELECT to_org, to_position, state, lease_until FROM messages WHERE msg_id = ?",
+                          (msg_id,)).fetchone()
+        if not r:
+            raise RelayError(404, "not_found", "unknown message (give its full id)")
+        by = "{}:{}".format(*self._manager(m, r[0], body.get("by"), body.get("session"), r[1]))
+        if r[2] not in ("queued", "leased"):
+            return {"msg_id": msg_id, "state": r[2], "already": True}
+        if r[2] == "leased" and (r[3] or 0) > time.time():
+            raise RelayError(409, "leased", "the relay is delivering this message into the pane now",
+                             {"retry_after": max(1, int(r[3] - time.time() + 0.999))})
+        why = f"dropped by {by}: {reason[:300]}"
+        with self.app.store.conn() as c:
+            c.execute("UPDATE messages SET state = 'expired', done_at = ?, leased_to = NULL, lease_until = NULL,"
+                      " reason = ? WHERE msg_id = ? AND state IN ('queued', 'leased')",
+                      (of_events.now_iso(), why, msg_id))
+        self._queue([self._event(r[0], "of.message_expired", {"msg_id": msg_id, "to": f"{r[0]}:{r[1]}",
+                                                              "reason": why, "by": by})])
+        return {"msg_id": msg_id, "state": "expired", "already": False}
 
     def requeue(self, msg_ids=None, state="dead"):
         """Offer dead (or expired) messages again, with their failures reset: after the receiving

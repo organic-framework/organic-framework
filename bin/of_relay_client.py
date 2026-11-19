@@ -62,6 +62,8 @@ def header(m):
         auth += f": {m['authority_reason']}"
     who = f"machine {m.get('sender_machine') or '?'}" + (f", person {m['sender_person']}" if m.get("sender_person") else "")
     ref = f"msg {m.get('msg_id')}" + (f", reply to {m['reply_to']}" if m.get("reply_to") else "")
+    if m.get("moved_from"):  # moved here from a parked position's queue (`of inbox move`)
+        ref += f"; sent to {m['moved_from']}, moved here by {m.get('moved_by') or '?'}"
     return (f"Message from {m.get('from')} (via relay, authority: {auth}; {who}; {ref})\n"
             f"{m.get('text') or ''}\n"
             f"[reply: of send {m.get('from')} --reply-to {m.get('msg_id')} \"…\"]")
