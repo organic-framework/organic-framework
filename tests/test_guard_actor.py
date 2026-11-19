@@ -85,12 +85,17 @@ class ActorLineTest(unittest.TestCase):
                     "python3 -c \"import pty; pty.spawn(['of','asks','answered','AS-1'])\"",
                     # a reason that begins with --help is a reason (of_review on PR 399 at 7c776fe)
                     f"export -n CLAUDECODE {V} {P}; script -q /dev/null of asks withdraw OF-1 \"--help me\"",
-                    f"declare +x CLAUDECODE {V} {P}; script -q /dev/null of asks answered OF-1 \"--help, done\""):
+                    f"declare +x CLAUDECODE {V} {P}; script -q /dev/null of asks answered OF-1 \"--help, done\"",
+                    f"export -n {V} {P}; script -q /dev/null of asks withdraw OF-1 --help\" me\"",
+                    f"export -n {V} {P}; script -q /dev/null of asks withdraw \"OF-1\" -- --help",
+                    f"export -n {V} {P}; script -q /dev/null of asks withdraw \"OF-1\" label=--help",
+                    # a help call with a clear on the line is refused too (of_review at 45eb458)
+                    "false && unset OF_POSITION; of asks withdraw --help"):
             self.assertTrue(deny(cmd), cmd)
 
     def test_plain_acts_and_help_still_run(self):
         for cmd in ("of asks answered AS-1", "of asks withdraw AS-2 stale", "python3 bin/of asks answered AS-1",
-                    "false && unset OF_POSITION; of asks withdraw --help", "of asks --all",
+                    "of asks --all",
                     "of status working --answered AS-1", "of asks answered AS-1 && of status working",
                     # the 21-day replay's false denies: a reason that says `at`, a document an edit writes, notes
                     'of asks withdraw AS-3 "superseded: answered at 12:00 by ssh"',
