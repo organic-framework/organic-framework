@@ -3866,7 +3866,7 @@ def _git_protected(args, cwd, env, shvars=None):
         hit = _bash_deny(f"cd {shlex.quote(at)} && {line}", 1)
         if hit and hit[0] in (PROTECTED_CODE_DENY, PROTECTED_RUN_DENY):
             return hit[1]
-        if hit and hit[0] in (WRAPPER_BOUND_DENY, DEPTH_CAP_DENY):  # a line read only to a limit: never dropped
+        if hit and hit[0] == WRAPPER_BOUND_DENY:  # a line read only to a limit: never dropped (a depth cap marks itself)
             _capped("_git_protected")  # (G0.11; of_review on organic-framework PR 389)
     if expanded is None:
         return None
