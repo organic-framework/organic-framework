@@ -116,6 +116,26 @@ NATIVE_READ = textwrap.dedent("""\
     print("read", got, flush=True)
 """)
 
+INSTALL_FAILS = textwrap.dedent("""\
+    import os, signal, sys, threading, time
+    sys.path.insert(0, sys.argv[1])
+    import of_stacks
+    if sys.argv[2] == "no-pipe":  # no descriptor left: the main thread's handler dumps instead
+        def no_pipe():
+            raise OSError(24, "Too many open files")
+        of_stacks.os.pipe = no_pipe
+        print("mode", of_stacks.install(signal.SIGUSR1, sys.stdout), flush=True)
+        os.kill(os.getpid(), signal.SIGUSR1)
+        time.sleep(0.2)
+    else:  # from a thread that is not the main one: signal.signal refuses, and install() says so
+        got = []
+        t = threading.Thread(target=lambda: got.append(of_stacks.install(signal.SIGUSR1, sys.stdout)))
+        t.start()
+        t.join()
+        print("mode", got[0], flush=True)
+    print("started", flush=True)
+""")
+
 
 def run(code, *args, timeout=60):
     return subprocess.run([sys.executable, "-c", code, BIN, *args], capture_output=True, text=True, timeout=timeout)
@@ -197,6 +217,17 @@ class StacksTest(unittest.TestCase):
         self.assertIn('"native" (most recent call first):', r.stderr)
         bare = run(NATIVE_READ, "bare")                         # the control: without SA_RESTART it fails
         self.assertIn(f"read [(-1, {__import__('errno').EINTR})]", bare.stdout)
+
+    def test_install_never_stops_the_service_it_starts_in(self):
+        r = run(INSTALL_FAILS, "no-pipe")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("mode handler", r.stdout)
+        self.assertEqual(r.stdout.count("stack dump on SIGUSR1"), 1)
+        r = run(INSTALL_FAILS, "not-main")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("mode off", r.stdout)
+        self.assertIn("started", r.stdout)
+        self.assertIn("of_stacks: no stack dump on signal", r.stderr)
 
     def test_a_closed_stream_loses_the_dump_never_the_process(self):
         sys.path.insert(0, BIN)
