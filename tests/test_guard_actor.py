@@ -90,7 +90,12 @@ class ActorLineTest(unittest.TestCase):
                     f"export -n {V} {P}; script -q /dev/null of asks withdraw \"OF-1\" -- --help",
                     f"export -n {V} {P}; script -q /dev/null of asks withdraw \"OF-1\" label=--help",
                     # a help call with a clear on the line is refused too (of_review at 45eb458)
-                    "false && unset OF_POSITION; of asks withdraw --help"):
+                    "false && unset OF_POSITION; of asks withdraw --help",
+                    # an option before the action, and an act in a substitution given to text (after PR 399)
+                    f"export -n {V} {P}; script -q /dev/null of asks --json withdraw OF-1",
+                    f"export -n {V} {P}; script -q /dev/null of asks --all answered OF-1",
+                    f"export -n {V} {P}; printf \"%s\" \"$(script -q /dev/null of asks withdraw OF-1)\"",
+                    f"export -n {V} {P}; of send x \"$(script -q /dev/null of asks withdraw OF-1)\""):
             self.assertTrue(deny(cmd), cmd)
 
     def test_plain_acts_and_help_still_run(self):

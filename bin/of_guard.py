@@ -3079,8 +3079,10 @@ def _line_act(words):
         # no `--help` exception here: the words have lost their quotes, so a reason `"--help me"` read as the flag,
         # while argparse takes it as the reason and runs the act (of_review on organic-framework PR 399 at 7c776fe);
         # the per-command reading, which has the real words, keeps it (_actor_act)
-        if rest[:1] == ["asks"] and len(rest) > 1 and rest[1] in ACTOR_ACTS:
-            return True
+        if rest[:1] == ["asks"]:
+            after = [x for x in rest[1:] if not x.startswith("-")]   # `of asks --json withdraw …`: options first
+            if after[:1] and after[0] in ACTOR_ACTS:
+                return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
     return False
@@ -3137,6 +3139,15 @@ def _runners_after(pipe):
     return out
 
 
+def _substitutions(stext):
+    """The command lines inside a stage's `$( … )` and backticks: they run even in a command that only carries text
+    (`of send x "$(… of asks withdraw …)"`: of_review after organic-framework PR 399)."""
+    try:
+        return list(_scan(stext)[1])
+    except Exception:  # noqa: BLE001
+        return [stext]
+
+
 def _without_prose(cmd):
     """CMD without the top-level commands that only carry text (`of send "…"`, `of ask`, `of handover`, `of status
     --note`, `git commit -m`, `gh … --body`, release/request.sh's note): naming a form there runs nothing. `echo` stays:
@@ -3158,8 +3169,10 @@ def _without_prose(cmd):
                 h, words = _script_of(head, args)
                 if (h == "of" and words[:1] and words[0] in _PROSE_OF) or (head == "git" and "commit" in args[:3]) \
                         or head == "gh" or os.path.basename(head) in ("request.sh", "commit.sh", "pcommit.sh"):
+                    kept += _substitutions(stext)   # its text is prose, but a `$( … )` in it runs
                     continue
                 if head in ("echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack") and not fed[idx]:
+                    kept += _substitutions(stext)
                     continue   # text printed or written to a file; `echo '…' | at now` is kept
                 if (head in _INTERPRETERS or _lang(head)) and h != "of" and \
                         not _launches(head, " ".join(args)):   # `python3 -c "…"` that starts no process
