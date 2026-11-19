@@ -1079,7 +1079,9 @@ def _permission_answer(hook):
     return answered
 
 
-# The deny's last sentence, on every deny (critical, an organization's rule, an excluded plugin). A subagent sees no
+# The deny's last sentence, on every deny of a tool call (critical, an organization's rule, an excluded plugin, an
+# authority contact, a release write, the scratch quota, a credential rule). Not on the ask dialog's deny, which names
+# its own way (`of ask`), nor on the @mention block, which stops a prompt, not a call. A subagent sees no
 # binding rules of OF's (they come with a main session's start; OF uses no SubagentStart), but it sees the reason of a
 # call it made (2026-11-18, a user organization's structure keeper, msg 01a1eedd-f437: a drafting subagent wrote a
 # file with another tool after a deny, the day's second way round one).
@@ -1257,7 +1259,7 @@ def _authority_guard(hook, sess):
         "agent never does that without the founder's explicit word. Ask him with `of ask`: who, what you would send "
         "and why. On his yes, a signed grant naming this one contact for your position lets it through; the `of "
         "grant issue` command goes to him as a task (docs/guard.md G16). Reading their public pages (WebFetch, a "
-        "plain GET) stays open.")}}
+        "plain GET) stays open." + NO_WAY_ROUND)}}
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
     sys.stdout.flush()
     OUTPUT = None
@@ -1304,7 +1306,7 @@ def _release_guard(hook, sess):
         f"Organic Framework guard: {writes[0]} changes the public repository on GitHub, and only of_release pushes "
         "and merges there (AGENTS.md; docs/guard.md G18). Commit on the working copy's main as before, then name the "
         "feature's commits and a reviewer to of_release with `of send of_release`. Reading, comments and reviews "
-        "(gh pr view, gh pr diff, gh pr comment) stay open.")}}
+        "(gh pr view, gh pr diff, gh pr comment) stay open." + NO_WAY_ROUND)}}
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
     sys.stdout.flush()
     OUTPUT = None
@@ -1449,7 +1451,7 @@ def _scratch_guard(hook, sess):
            f"quota, so nothing new is written into it ({what}). Prune it under {below} GiB first (rm, git worktree "
            f"remove; du -sh to check); the pulse lifts this within 5 minutes (docs/guard.md G15).")
     OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                     "permissionDecisionReason": why}}
+                                     "permissionDecisionReason": why + NO_WAY_ROUND}}
     sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
     sys.stdout.flush()
     OUTPUT = None
@@ -1511,7 +1513,7 @@ def _credential_guard(hook, sess):
     if mode == "deny":
         OUTPUT = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                          "permissionDecisionReason": f"Organic Framework credential rule of {owner}: "
-                                         f"{why}."}}
+                                         f"{why}." + NO_WAY_ROUND}}
         sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))  # the decision goes out before recording
         sys.stdout.flush()
         OUTPUT = None
