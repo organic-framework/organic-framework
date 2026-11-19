@@ -3298,6 +3298,20 @@ def cmd_server(args):
         of_server.revoke(store, args.machine_id)
         print(f"revoked {args.machine_id}")
         return 0
+    if args.action == "moving":  # the cut's hold: 503 for that organization until cleared (docs/server.md)
+        cfg = of_server.load_config()
+        if args.org:
+            if len(args.org) != 1 or (args.path or "").lower() not in ("on", "off"):
+                raise OfError("usage: of server moving --org ORG on|off")
+            try:
+                now = of_server.set_moving(cfg, args.org[0], args.path.lower() == "on")
+            except ValueError as e:
+                raise OfError(f"of server moving: {e}") from None
+        else:
+            d = of_server.moving_dir(cfg)
+            now = sorted(os.listdir(d)) if os.path.isdir(d) else []
+        print("moving: " + (", ".join(now) or "none"))
+        return 0
     if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)
         import sqlite3
         import of_server_export as ex
@@ -8029,7 +8043,8 @@ def main(argv=None):
                                        "revoke, status (docs/server.md)")
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "tls-init",
-                                       "revoke", "status", "export-secret-key", "export", "import"])
+                                       "revoke", "status", "export-secret-key", "export", "import",
+                                       "moving"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "
