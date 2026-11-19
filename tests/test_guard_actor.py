@@ -82,7 +82,10 @@ class ActorLineTest(unittest.TestCase):
                     # a pseudo-terminal around the act (of_server on hand-over 726902df)
                     f"script -q /dev/null {A}", f"unbuffer {A}", f"expect -c 'spawn {A}; interact'",
                     f"socat - EXEC:'{A}',pty", f"tmux new-session -d '{A}'",
-                    "python3 -c \"import pty; pty.spawn(['of','asks','answered','AS-1'])\""):
+                    "python3 -c \"import pty; pty.spawn(['of','asks','answered','AS-1'])\"",
+                    # a reason that begins with --help is a reason (of_review on PR 399 at 7c776fe)
+                    f"export -n CLAUDECODE {V} {P}; script -q /dev/null of asks withdraw OF-1 \"--help me\"",
+                    f"declare +x CLAUDECODE {V} {P}; script -q /dev/null of asks answered OF-1 \"--help, done\""):
             self.assertTrue(deny(cmd), cmd)
 
     def test_plain_acts_and_help_still_run(self):
