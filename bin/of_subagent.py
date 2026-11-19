@@ -932,6 +932,11 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
             _link_login(login, os.path.join(codex_home, "auth.json"))
         exe = binary or codex_bin()
         _private_dir(os.path.join(run_dir, "home"))
+        try:
+            if os.stat(answer_file).st_nlink > 1:
+                os.unlink(answer_file)   # a hard link elsewhere: codex refuses to write it, so it is made anew
+        except FileNotFoundError:
+            pass
         open(answer_file, "a").close()
         # the run's own files, beside the material: none in Codex's profile, so its commands never read the prompt,
         # the answer, the fresh home or CODEX_HOME with the login's copy (of_secrets-review on PR 342). Siblings, never
@@ -993,7 +998,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
 
 def read_stream(harness, stream_file, answer_file=None):
     """{answer, model, usage {input, cached, output, reasoning}, tools [names called]} from a run's JSONL stream."""
-    answer, model, tools = None, None, []
+    answer, model, tools, last_message = None, None, [], None
     usage = {"input": 0, "cached": 0, "output": 0, "reasoning": 0}
     try:
         lines = open(stream_file, errors="replace").read().splitlines()
@@ -1019,6 +1024,8 @@ def read_stream(harness, stream_file, answer_file=None):
                              else f"mcp:{item.get('server')}.{item.get('tool')}")
             elif d.get("type") == "item.completed" and item.get("type") in ("agent_message", "reasoning", "web_search",
                                                                             "file_change", "mcp_tool_call"):
+                if item["type"] == "agent_message" and isinstance(item.get("text"), str):
+                    last_message = item["text"]
                 if item["type"] not in ("agent_message", "reasoning"):
                     tools.append(item["type"] if item["type"] != "mcp_tool_call"
                                  else f"mcp:{item.get('server')}.{item.get('tool')}")
@@ -1046,6 +1053,10 @@ def read_stream(harness, stream_file, answer_file=None):
             answer = open(answer_file, errors="replace").read()
         except OSError:
             pass
+    if harness == "codex" and not (answer or "").strip() and last_message:
+        # the answer file could not be written (codex refuses one with a second hard link, which the reboot preparation's
+        # copy of the scratch folder gives it: of_review, msg 01a1f59d-761e), but the turn's last message is the answer
+        answer = last_message
     return {"answer": answer, "model": model, "usage": usage, "tools": tools}
 
 
