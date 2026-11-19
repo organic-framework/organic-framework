@@ -62,6 +62,9 @@ def copied(text=None):
 # A module the image lacks, imported inside a function of one it holds: where that runs, and why the image does
 # without it. "module.*": every function of that module. A new one fails the test until it is copied or listed here.
 NOT_IN_IMAGE = {
+    "of_systemd": {"of_server.install_systemd": "`of server install` on a Linux host; the image runs under compose or "
+                                                "Kubernetes, never under the user's systemd",
+                   "of_server.systemd_units": "the same: written only by `of server install` on a Linux host"},
     "of_client": {"of_ship._ship_server": "`of ship`'s client side; the server uses of_ship's batch code only"},
     "of_guard": {"of_credentials.report": "`of credentials`, on a machine",
                  "of_grants.shape_warnings": "`of registry check`, on a machine"},

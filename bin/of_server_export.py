@@ -73,9 +73,32 @@ def summarize(table, rows):
     return {"rows": sum(e[0] for e in days.values()), "digest": h.hexdigest(), "days": dict(sorted(days.items()))}
 
 
-def _rows(conn, table, org):
+def _tables(conn):
+    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+def _columns(conn, table):
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def ensure_schema(conn):
+    """The tables a server's modules make when they first serve (the feed, finance facts, passkeys, sightings): a new
+    server that has served nothing yet lacks some of them (of_review on organic-framework PR 425)."""
+    import of_server_coord
+    import of_server_finance
+    import of_server_passkey
+    import of_server_relay
+    import of_server_secrets
+    for ddl in (of_server_relay.DDL, of_server_coord.DDL, of_server_finance.DDL, of_server_passkey.DDL,
+                of_server_secrets.DDL):
+        conn.executescript(ddl)
+    of_server_relay.migrate(conn)
+
+
+def _rows(conn, table, org, cols=None):
     where, _, key_cols = STORE[table]
-    cur = conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY {', '.join(key_cols)}", {"org": org})
+    picked = ", ".join(cols) if cols else "*"
+    cur = conn.execute(f"SELECT {picked} FROM {table} WHERE {where} ORDER BY {', '.join(key_cols)}", {"org": org})
     names = [d[0] for d in cur.description]
     for r in cur:
         yield dict(zip(names, r))
@@ -202,11 +225,13 @@ def export_store(conn, org, out, version=None, recipient=None):
     _private_dir(os.path.join(out, "store"))
     ext = ".age" if recipient else ""
     manifest = {"format": FORMAT, "org": org, "version": version, "encrypted": bool(recipient), "store": {},
-                "files": {}}
+                "columns": {}, "files": {}}
     conn.execute("BEGIN")  # one snapshot for every table
     try:
-        for table in STORE:
-            rows = list(_rows(conn, table, org))
+        have = _tables(conn)
+        for table in STORE:  # a table this server never made holds no rows (of_review on PR 425: it stopped half-way)
+            manifest["columns"][table] = _columns(conn, table) if table in have else []
+            rows = list(_rows(conn, table, org)) if table in have else []
             rel = f"store/{table}.jsonl.gz{ext}"
             manifest["files"][rel] = _write_file(
                 os.path.join(out, rel),
@@ -296,10 +321,22 @@ def check_bundle(bundle, identity=None, index_sha=None):
 
 
 def check_store(conn, bundle, identity=None, manifest=None):
-    """The manifest recomputed from what CONN holds for the bundle's organization: [] when it matches."""
+    """The manifest recomputed from what CONN holds for the bundle's organization, over the source's own columns: a
+    store a column ahead still matches (of_review on organic-framework PR 425). [] when it matches."""
     m = manifest or load_manifest(bundle, identity)
-    got = {table: summarize(table, list(_rows(conn, table, m["org"]))) for table in STORE}
-    return _compare(m["store"], got, "the store")
+    have, got, problems = _tables(conn), {}, []
+    for table in STORE:
+        cols = m.get("columns", {}).get(table) or []
+        if not cols:
+            got[table] = summarize(table, [])
+            continue
+        missing = [c for c in cols if c not in (_columns(conn, table) if table in have else [])]
+        if missing:
+            problems.append(f"{table}: the store has no column {', '.join(missing)}")
+            continue
+        got[table] = summarize(table, list(_rows(conn, table, m["org"], cols)))
+    return problems + [p for p in _compare(m["store"], got, "the store")
+                       if p.split(":", 1)[0] not in {q.split(":", 1)[0] for q in problems}]
 
 
 def import_store(conn, bundle, org, index_sha, identity=None):
@@ -319,10 +356,9 @@ def import_store(conn, bundle, org, index_sha, identity=None):
     m = load_manifest(bundle, identity)
     if org != m["org"]:
         raise ExportError(f"the bundle is {m['org']}'s, not {org}'s")
-    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    missing = [t for t in STORE if t not in have]
-    if missing:  # the new server makes its own tables at its first start: run it once, empty, first
-        raise ExportError(f"this store has no {', '.join(missing)}: start the new server once, empty, before importing")
+    if "machines" not in _tables(conn):  # not a server's store: the new server makes it at its first start
+        raise ExportError("this is no server's store: start the new server once, empty, before importing")
+    ensure_schema(conn)  # the tables its modules make only when they first serve
     rows = {}
     for table in STORE:  # every row read and judged before anything here changes
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
