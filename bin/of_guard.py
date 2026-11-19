@@ -2989,7 +2989,10 @@ ACTOR_ACTS = ("answered", "withdraw", "answer")
 
 
 def _actor_act(words):
-    return words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS
+    # `of access grant|revoke|link|record` write a keeper's list or its approvals, and trust the caller's session the
+    # same way (of_review on organic-framework PR 357)
+    return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
+        (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record"))
 
 
 def _actor_deny(head, args, stext, env):
