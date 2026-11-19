@@ -219,7 +219,8 @@ def _names_list_clean(p):
         if first and all(t in _HEADERS for t in toks):
             first = False
             continue  # the first non-empty line, made of known column names only
-        if first and len(toks) > 1 and any(x in _CRED_FIELDS for t in toks for x in re.split(r"[-_.]", t.lower())):
+        if first and len(toks) > 1 and not any(_COUNT_TOKEN.fullmatch(t) or _TYPE_TOKEN.fullmatch(t) for t in toks) \
+                and any(x in _CRED_FIELDS for t in toks for x in re.split(r"[-_.]", t.lower())):
             return False  # a header row naming a credential column inside a joined word (`name,client-secret`:
             # of_review on organic-framework PR 332); a single name on the first line is a name
         first = False
@@ -1115,7 +1116,7 @@ def _option_known(word, opts, flags):
 # a duration timeout reads with strtod: 2, .5, 1e1, +2, 0x10, inf (of_secrets-review on organic-framework PR 332)
 _TIMEOUT_DURATION = re.compile(r"[+-]?(?:inf(?:inity)?|nan|0[xX][0-9a-fA-F.]+(?:[pP][+-]?\d+)?"
                                r"|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?", re.I)
-_REDIRECTION = re.compile(r"\d*(?:[<>]{1,2}|&>>?|>&|<&)")
+_REDIRECTION = re.compile(r"\d*(?:<<<|[<>]{1,2}|&>>?|>&|<&)")
 _NEGATIVE = re.compile(r"-(?:\d|\.\d)\S*")  # `timeout -1 cat`: a negative duration, not an option
 
 
@@ -1128,10 +1129,9 @@ def _redirection_at(words, i):
     """How many tokens a redirection at WORDS[i] takes (its operator and its target), or 0. The tokenizer splits
     `2>/dev/null` into `2`, `>`, `/dev/null`, so a number before an operator belongs to it."""
     k = i + 1 if words[i].isdigit() and i + 1 < len(words) and _REDIRECTION.fullmatch(words[i + 1]) else i
-    m = _REDIRECTION.match(words[k])
-    if not m:
-        return 0
-    return k - i + (1 if m.end() < len(words[k]) else 2)
+    if _REDIRECTION.fullmatch(words[k]):  # `>&`, `<<<`: the operator, then its target (`2>&1`: of_secrets-review)
+        return k - i + 2
+    return k - i + 1 if _REDIRECTION.match(words[k]) else 0
 
 
 def _option_exact(word, opts, flags):
@@ -1182,6 +1182,9 @@ def _wrapper_readings(words):
         start, doubt = i, w in _DOUBT_ALWAYS
         while not doubt and i < len(words) and words[i] != "--":
             if _redirection_at(words, i):
+                if w == "exec":  # `exec 3<>/dev/tcp/h/p`: the shell's own redirection, no option of a program
+                    i += _redirection_at(words, i)
+                    continue
                 doubt = True
             elif words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
                 doubt = not _option_exact(words[i], opts, flags)
@@ -1191,25 +1194,71 @@ def _wrapper_readings(words):
             else:
                 break
         if doubt:
-            return _doubted(words[start:], xargs=w == "xargs")
+            return _doubted(words[start:], xargs=w == "xargs", line=words)
         if i < len(words) and words[i] == "--":
             i += 1
         if w == "timeout" and i < len(words):
             i += 1  # its duration, whatever its form
-        if w in _WRAPPER_POSITIONAL:
+        if w in _WRAPPER_POSITIONAL and i < len(words) and _positional_here(w, words[i]):
             i += _WRAPPER_POSITIONAL[w]
     return []
 
 
+def _positional_here(w, word):
+    """Is WORD the wrapper W's positional operand? chrt's priority is optional for SCHED_OTHER, BATCH and IDLE, so it
+    is one only when it is a number (`chrt -o cat <key>`: of_secrets-review on organic-framework PR 332)."""
+    return w != "chrt" or bool(re.fullmatch(r"[+-]?\d+", word))
+
+
 _SHELL_CHARS = re.compile(r"[\s;&|()<>`$]")
+# What the readings of one check may hold in all, in characters, and how deep they may go: past either the command is
+# denied, never passed (of_review on organic-framework PR 332 at 16cfcee: an xargs line of 384 words took 41 s, past the
+# hook's 30 s, so the hook was killed and the deny lost; and four subshells around a doubted timeout put its readings past
+# G0's depth, where a reading returned nothing). The guard read about 45 microseconds a character there, so the bound keeps the
+# readings to a few seconds.
+READINGS_MAX_CHARS = 60_000
+_READINGS_SPENT = [0]
+WRAPPER_BOUND_DENY = ("a command run through a wrapper the guard must read every way (`script`, or an option it does not "
+                      "read exactly) is too long or nested too deep to read within the hook's time. Use the wrapper's full "
+                      "option names, or write the command to a script with the Edit tool and run that")
 
 
-def _doubted(rest, xargs=False):
-    """_wrapper_readings' lines for a doubted wrapper's words REST."""
-    out = []
+def _readings_past_bound(lines, depth):
+    """WRAPPER_BOUND_DENY's (reason, subject) when LINES, judged at DEPTH + 1, would pass G0's depth or the readings'
+    budget for this check (READINGS_MAX_CHARS); else None. Counts LINES against the budget."""
+    if depth + 1 > 4:
+        return WRAPPER_BOUND_DENY, "a wrapper's readings, nested past G0's depth"
+    _READINGS_SPENT[0] += sum(len(x) for x in lines)
+    if _READINGS_SPENT[0] > READINGS_MAX_CHARS:
+        return WRAPPER_BOUND_DENY, "a wrapper's readings, past their budget"
+    return None
+
+
+def _line_doubted(text):
+    """Does any simple command of the line TEXT run a doubted wrapper? A heredoc whose opener names no command
+    (`<<'END' script -q`) is fed to the command after it (of_secrets-review on organic-framework PR 332)."""
+    try:
+        pipes = _split(text)
+    except ValueError:
+        return True
+    return any(kind == "cmd" and _wrapper_readings(_tokens_or_empty(st)) for pipe in pipes for kind, st in pipe)
+
+
+def _doubted(rest, xargs=False, line=()):
+    """_wrapper_readings' lines for a doubted wrapper's words REST; its standard input is read from the whole LINE, so a
+    here-string or a `<` before the wrapper counts (`<<< '…' script -q`: of_secrets-review on organic-framework PR 332).
+    Never empty: a doubted wrapper always gives its readings' check a line to judge (`script <<'END'` with no words)."""
+    out = [""] if not rest else []
+    for k, wd in enumerate(line[:len(line) - len(rest)]):
+        if wd == "<<<" and k + 1 < len(line):
+            out.append(line[k + 1])
+        elif wd == "<" and k + 1 < len(line):
+            out.append("bash " + shlex.quote(line[k + 1]))
     for j in range(len(rest)):
+        if rest[j].startswith("-") or _REDIRECTION.match(rest[j]):
+            continue  # no command is named so (its attached text is read below)
         out.append(" ".join(shlex.quote(t) for t in rest[j:]))
-        if xargs and j + 1 <= len(rest):
+        if xargs:
             out.append(" ".join(shlex.quote(t) for t in ["cat"] + rest[j + 1:]))
     for k, wd in enumerate(rest):
         if wd == "<<<" and k + 1 < len(rest):
@@ -1230,38 +1279,10 @@ def _doubted(rest, xargs=False):
                     out.append(wd[n + 1:])
     seen, lines = set(), []
     for x in out:
-        if x and x not in seen:
+        if x not in seen:
             seen.add(x)
             lines.append(x)
-    return lines
-
-
-def _script_command(opts):
-    """The command string GNU script's -c (or --command) gives among its options, or None. Read the getopt way: a
-    value option's operand is never taken for it (`script -q -t --command=x /dev/null cat <key>`: macOS's -t takes
-    `--command=x`; of_secrets-review on organic-framework PR 332), and an attached string counts (`-c'…'`, `-qc'…'`)."""
-    vals, flags = _WRAPPER_VALUE_OPTS["script"], _WRAPPER_FLAGS["script"]
-    k = 0
-    while k < len(opts):
-        o = opts[k]
-        if o == "--":
-            return None
-        if o in ("-c", "--command"):
-            return opts[k + 1] if k + 1 < len(opts) else None
-        if o.startswith("--command="):
-            return o.split("=", 1)[1]
-        if o.startswith("-") and not o.startswith("--"):
-            for j, ch in enumerate(o[1:], 1):
-                rest = o[j + 1:]
-                if ch == "c":
-                    return rest if rest else (opts[k + 1] if k + 1 < len(opts) else None)
-                if f"-{ch}" in vals:  # its value is the rest of the cluster, or the next word
-                    k += 0 if rest else 1
-                    break
-                if f"-{ch}" not in flags:
-                    break  # a letter neither table knows: _wrapper_readings judges what follows
-        k += 1
-    return None
+    return [x for x in lines if x] or [":"]   # `:` judges nothing, but says a doubted wrapper runs here
 
 
 def _xargs_replstr(opts):
@@ -1327,9 +1348,11 @@ _WRAPPER_FLAGS = {
     "sudo": frozenset("-A -B -b -E -e -H -i -K -k -l -N -n -P -S -s -V -v".split()),
     "doas": frozenset("-n -s -L".split()), "exec": frozenset("-c -l".split()),
     "time": frozenset("-p -l -a -h -v -q -V".split()), "timeout": frozenset("-v -f -p --foreground --preserve-status --verbose".split()),
-    "xargs": frozenset("-0 -o -p -r -t -x".split()), "env": frozenset("-0 -i -v".split()),
+    "xargs": frozenset("-0 -o -p -r -t -x --null --verbose --no-run-if-empty --interactive --exit --open-tty "
+                       "--show-limits".split()), "env": frozenset("-0 -i -v".split()),
     "ionice": frozenset(["-t"]), "caffeinate": frozenset("-d -i -m -s -u".split()),
     "taskpolicy": frozenset("-b -B -a -s -x -X".split()), "script": frozenset("-a -d -e -F -f -k -p -q -r".split()),
+    "command": frozenset("-p -v -V".split()),  # bash's builtin: `command -v awk` (the PR 332 replay)
     # util-linux's man pages: taskset's mask (or list, with -c) and chrt's priority are their positional word; without
     # these, `taskset -c 0,16 nice …` read with doubt took a later `…/deploy/env` path for env (the PR 332 replay)
     "taskset": frozenset("-a -c -p --all-tasks --cpu-list --pid".split()),
@@ -1414,7 +1437,7 @@ def _command_words_of(words):
             # GNU `script -c '<command>' <file>`: the string is a command line of its own, judged whole by
             # _wrapper_readings as `bash -c` is (a list in it, `true && cat <key>`: of_secrets-review on PR 332);
             # the command here is BSD's reading, the words after the typescript file
-            if w in _WRAPPER_POSITIONAL and i < len(words):
+            if w in _WRAPPER_POSITIONAL and i < len(words) and _positional_here(w, words[i]):
                 i += _WRAPPER_POSITIONAL[w]
         elif w == "env" and any(not x.startswith("-") and "=" not in x for x in words[i + 1:]):
             i += 1  # env [opts] [VAR=x] cmd ...: the command after it runs
@@ -4142,15 +4165,15 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 hit = next((_prints(m.group(0)) for m in _VAR_REF.finditer(body) if _secret_name(m.group(1))), None)
         else:
             hit = None
-        if not hit and head not in _SHELLS and depth < 4:
+        if not hit and head not in _SHELLS:
             # a body fed to a doubted wrapper (`script -q -c sh /dev/null <<EOF`): a shell in it may read it as code
             # (of_review on organic-framework PR 332)
             try:
                 seg = _segments(opener)[-1]
             except (ValueError, IndexError):
                 seg = []
-            if _wrapper_readings(list(seg)):
-                hit = _bash_deny(body, depth + 1)
+            if _wrapper_readings(list(seg)) or (not _command_words(list(seg)) and _line_doubted(text)):
+                hit = _readings_past_bound([body], depth) or _bash_deny(body, depth + 1)
         if hit:
             return hit
     try:
@@ -4190,13 +4213,18 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 continue
             _loop_header(stext, loops)
             _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
-            if depth < 6:  # before the simple command: `script -qc '<line>' <file>` runs nothing after its file
-                # each reading is judged one level down, in the folder this command runs in (`cd bin && script -c …`;
-                # of_review on organic-framework PR 332)
+            # before the simple command: `script -qc '<line>' <file>` runs nothing after its file. Each reading is
+            # judged one level down, in the folder this command runs in, a variable's `cd` included (`cd bin && script
+            # -c …`, `cd "$d" && …`; of_review on organic-framework PR 332)
+            readings = _wrapper_readings(_tokens_or_empty(stext))
+            if readings:
+                past = _readings_past_bound(readings, depth)
+                if past:
+                    return past
                 saved = _DENY_CWD[0]
                 try:
-                    _DENY_CWD[0] = here
-                    for line in _wrapper_readings(_tokens_or_empty(stext)):
+                    _DENY_CWD[0] = here21
+                    for line in readings:
                         hit = _bash_deny(line, depth + 1, reaches_agent=reaches_agent)
                         if hit:
                             return hit
@@ -4885,6 +4913,7 @@ def critical_deny(tool, tool_input, cwd=None):
     _WARNINGS.clear()
     _REMOTE_BODY[0] = 0
     _LOOPS[0] = {}
+    _READINGS_SPENT[0] = 0
     _REDIR_CTX[0] = None
     _LINE_REMOTE[0] = tool == "Bash" and _remote_line(ti.get("command") or "")
     if tool == "Bash":
