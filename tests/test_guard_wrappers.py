@@ -68,6 +68,19 @@ class WrapperReadings(unittest.TestCase):
                     "cat <<'END' | grep x\nhello\nEND"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_the_eighth_pass(self):
+        """of_secrets-review on PR 332 at a1842fc: GNU xargs's optional long values, xargs's -a file, chrt's priority
+        through a variable, and script's input after other redirections or a list operator."""
+        for cmd in (f"xargs --verbose --replace cat {KEY}", f"xargs --verbose --eof cat {KEY}",
+                    f"xargs --verbose --max-lines cat {KEY}", f"xargs --verbose -a {KEY} true", f"xargs -a {KEY} true",
+                    f"xargs --arg-file={KEY} true", f"p=0; chrt -o \"$p\" cat {KEY}",
+                    f"2>&1 <<'END' script -q\ncat {KEY}\nEND", f"true && <<'END' script -q\ncat {KEY}\nEND",
+                    f"0<&0 script -q <<< 'cat {KEY}'"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("xargs --verbose --replace=X echo X", "printf a | xargs -a list.txt echo", "cat <&3",
+                    "ls 2>&1 | wc", "cat <<'EOF' > notes.txt\nhello\nEOF"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_plain_uses_still_run(self):
         for cmd in ("timeout 30 git status", "timeout --preserve-status 5 python3 -m unittest tests.test_of",
                     "timeout -k 5 60 make test", "printf x | xargs -0 -n1 grep foo", "find . -name '*.py' | xargs wc -l",
@@ -95,6 +108,11 @@ class TheReadingsAreBounded(unittest.TestCase):
             self.assertTrue(deny(cmd))
             self.assertLess(time.monotonic() - start, 5)
         self.assertIsNone(deny(f"xargs --verbose echo {words}"))    # a full option name is read exactly
+        # the tails are sized before any is built (of_review at a1842fc: 3,000 words took 7.3 s, 20,000 took 320 s)
+        for n in (3000, 20000):
+            start = time.monotonic()
+            self.assertTrue(deny("script -q /dev/null echo " + " ".join(["label"] * n) + f" ; {OP}"))
+            self.assertLess(time.monotonic() - start, 5)
 
     def test_past_the_depth_is_denied(self):
         self.assertTrue(deny(f"( ( ( ( timeout --kill-a 2 1 {OP} ) ) ) )"))

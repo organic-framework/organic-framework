@@ -1134,14 +1134,20 @@ def _redirection_at(words, i):
     return k - i + 1 if _REDIRECTION.match(words[k]) else 0
 
 
-def _option_exact(word, opts, flags):
+# long options whose value GNU takes only attached, `--flag=value`: bare, each is a flag (of_secrets-review on PR 332:
+# `xargs --verbose --replace cat <key>` read `cat` as --replace's value)
+_OPTIONAL_LONG = {"xargs": frozenset({"--replace", "--eof", "--max-lines"})}
+
+
+def _option_exact(word, opts, flags, wrapper=None):
     """Is WORD an option the wrapper's tables read exactly: a name they hold (`--kill-after`, never the abbreviation
     `--kill-a`), `--name=value` for a value option they hold, or a cluster of short letters they all know up to the
     one that takes a value?"""
     if word in opts or word in flags:
         return True
     if word.startswith("--"):
-        return "=" in word and word.split("=", 1)[0] in opts
+        name = word.split("=", 1)[0]
+        return "=" in word and (name in opts or name in _OPTIONAL_LONG.get(wrapper, ()))
     for c in word[1:]:
         if f"-{c}" in opts:
             return True
@@ -1164,7 +1170,7 @@ def _wrapper_readings(words):
     option's `=` or after each letter of an option cluster (`-qc'cat <key>'`, `--comm='…'`), is a `bash -c` body; and
     what the line feeds the command's standard input (`<<< '…'`, `< file`) is what a shell in it may read. The line's
     leading redirections, keywords and assignments are passed over (`2>/dev/null script -q -c '…' /dev/null`)."""
-    i = 0
+    i, extra = 0, []
     while i < len(words):
         r = _redirection_at(words, i)
         if r:
@@ -1176,7 +1182,7 @@ def _wrapper_readings(words):
             continue
         w = _fold_name(os.path.basename(words[i]))
         if not (w in _WRAPPERS or w in ("timeout", "env")):
-            return []
+            return extra
         opts, flags = _WRAPPER_VALUE_OPTS.get(w, frozenset()), _WRAPPER_FLAGS.get(w, frozenset())
         i += 1
         start, doubt = i, w in _DOUBT_ALWAYS
@@ -1187,21 +1193,26 @@ def _wrapper_readings(words):
                     continue
                 doubt = True
             elif words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
-                doubt = not _option_exact(words[i], opts, flags)
+                doubt = not _option_exact(words[i], opts, flags, w)
                 i += 0 if doubt else 1 + _opt_takes_next(words[i], opts, flags)
             elif w == "env" and "=" in words[i]:
                 i += 1
             else:
                 break
+        if w == "xargs":  # the file -a names is what xargs reads (of_secrets-review on PR 332)
+            extra += ["cat " + shlex.quote(f) for f in _xargs_arg_files(words[start:i + (1 if doubt else 0)])]
         if doubt:
-            return _doubted(words[start:], xargs=w == "xargs", line=words)
+            return extra + _doubted(words[start:], xargs=w == "xargs", line=words)
         if i < len(words) and words[i] == "--":
             i += 1
         if w == "timeout" and i < len(words):
             i += 1  # its duration, whatever its form
+        if w == "chrt" and i < len(words) and re.search(r"[$`]|__OF", words[i]):
+            # `p=0; chrt -o "$p" cat <key>`: the priority, or the command, as the shell fills it in
+            return extra + _doubted(words[i:], line=words)
         if w in _WRAPPER_POSITIONAL and i < len(words) and _positional_here(w, words[i]):
             i += _WRAPPER_POSITIONAL[w]
-    return []
+    return extra
 
 
 def _positional_here(w, word):
@@ -1218,6 +1229,7 @@ _SHELL_CHARS = re.compile(r"[\s;&|()<>`$]")
 # readings to a few seconds.
 READINGS_MAX_CHARS = 60_000
 _READINGS_SPENT = [0]
+_PAST_BUDGET = "\0past the readings' budget"  # _doubted's one line when its tails would not fit
 WRAPPER_BOUND_DENY = ("a command run through a wrapper the guard must read every way (`script`, or an option it does not "
                       "read exactly) is too long or nested too deep to read within the hook's time. Use the wrapper's full "
                       "option names, or write the command to a script with the Edit tool and run that")
@@ -1228,6 +1240,8 @@ def _readings_past_bound(lines, depth):
     budget for this check (READINGS_MAX_CHARS); else None. Counts LINES against the budget."""
     if depth + 1 > 4:
         return WRAPPER_BOUND_DENY, "a wrapper's readings, nested past G0's depth"
+    if _PAST_BUDGET in lines:
+        return WRAPPER_BOUND_DENY, "a wrapper's readings, past their budget"
     _READINGS_SPENT[0] += sum(len(x) for x in lines)
     if _READINGS_SPENT[0] > READINGS_MAX_CHARS:
         return WRAPPER_BOUND_DENY, "a wrapper's readings, past their budget"
@@ -1254,12 +1268,23 @@ def _doubted(rest, xargs=False, line=()):
             out.append(line[k + 1])
         elif wd == "<" and k + 1 < len(line):
             out.append("bash " + shlex.quote(line[k + 1]))
+    # the tails' size, from each word's quoted length, before any is built: past what the check has left, one marker
+    # stands for them all and the check denies (of_review on organic-framework PR 332 at a1842fc: building every tail
+    # first took 7.3 s for 3,000 words and 320 s for 20,000)
+    quoted = [shlex.quote(t) for t in rest]
+    size, total = 0, 0
+    for j in range(len(rest) - 1, -1, -1):
+        size += len(quoted[j]) + 1
+        if not (rest[j].startswith("-") or _REDIRECTION.match(rest[j])):
+            total += size * (2 if xargs else 1)
+    if total > READINGS_MAX_CHARS - _READINGS_SPENT[0]:
+        return [_PAST_BUDGET]
     for j in range(len(rest)):
         if rest[j].startswith("-") or _REDIRECTION.match(rest[j]):
             continue  # no command is named so (its attached text is read below)
-        out.append(" ".join(shlex.quote(t) for t in rest[j:]))
+        out.append(" ".join(quoted[j:]))
         if xargs:
-            out.append(" ".join(shlex.quote(t) for t in ["cat"] + rest[j + 1:]))
+            out.append(" ".join(["cat"] + quoted[j + 1:]))
     for k, wd in enumerate(rest):
         if wd == "<<<" and k + 1 < len(rest):
             out.append(rest[k + 1])                        # a here-string, read by a shell in the command
@@ -1283,6 +1308,34 @@ def _doubted(rest, xargs=False, line=()):
             seen.add(x)
             lines.append(x)
     return [x for x in lines if x] or [":"]   # `:` judges nothing, but says a doubted wrapper runs here
+
+
+def _xargs_arg_files(opts):
+    """The files xargs's -a or --arg-file names among its options: -a F, -aF, a cluster ending in a (-ta F),
+    --arg-file F, --arg-file=F."""
+    out, k = [], 0
+    while k < len(opts):
+        o = opts[k]
+        if o.startswith("--arg-file="):
+            out.append(o.split("=", 1)[1])
+        elif o == "--arg-file" and k + 1 < len(opts):
+            out.append(opts[k + 1])
+            k += 1
+        elif o.startswith("-") and not o.startswith("--"):
+            for j, ch in enumerate(o[1:], 1):
+                rest = o[j + 1:]
+                if ch == "a":
+                    if rest:
+                        out.append(rest)
+                    elif k + 1 < len(opts):
+                        out.append(opts[k + 1])
+                        k += 1
+                    break
+                if f"-{ch}" in _WRAPPER_VALUE_OPTS["xargs"]:
+                    k += 0 if rest else 1
+                    break
+        k += 1
+    return [f for f in out if f]
 
 
 def _xargs_replstr(opts):
@@ -1333,8 +1386,8 @@ _WRAPPER_VALUE_OPTS = {
              "--close-from", "--chdir", "--chroot", "--host", "--prompt", "--role", "--type", "--command-timeout"},
     "doas": {"-u", "-C"}, "nice": {"-n", "--adjustment"}, "exec": {"-a"}, "time": {"-o", "-f", "--output", "--format"},
     "timeout": {"-s", "--signal", "-k", "--kill-after"}, "stdbuf": {"-i", "-o", "-e"},
-    "xargs": {"-n", "-I", "-J", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs", "--max-lines",
-              "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
+    "xargs": {"-n", "-I", "-J", "-P", "-L", "-s", "-d", "-E", "-a", "-R", "-S", "--max-args", "--max-procs",
+              "--max-chars", "--delimiter", "--arg-file"},
     "env": {"-u", "--unset", "-C", "--chdir", "-P"},
     "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
     "caffeinate": {"-t", "-w"}, "taskset": set(),
@@ -1349,7 +1402,7 @@ _WRAPPER_FLAGS = {
     "doas": frozenset("-n -s -L".split()), "exec": frozenset("-c -l".split()),
     "time": frozenset("-p -l -a -h -v -q -V".split()), "timeout": frozenset("-v -f -p --foreground --preserve-status --verbose".split()),
     "xargs": frozenset("-0 -o -p -r -t -x --null --verbose --no-run-if-empty --interactive --exit --open-tty "
-                       "--show-limits".split()), "env": frozenset("-0 -i -v".split()),
+                       "--show-limits --replace --eof --max-lines".split()), "env": frozenset("-0 -i -v".split()),
     "ionice": frozenset(["-t"]), "caffeinate": frozenset("-d -i -m -s -u".split()),
     "taskpolicy": frozenset("-b -B -a -s -x -X".split()), "script": frozenset("-a -d -e -F -f -k -p -q -r".split()),
     "command": frozenset("-p -v -V".split()),  # bash's builtin: `command -v awk` (the PR 332 replay)
@@ -1668,7 +1721,8 @@ def _split(text, ops=None):
             if text[i:i + 2] == "&&":
                 flush_pipe("&&")
                 i += 2
-            elif "".join(buf).rstrip().endswith(">"):  # >& redirect, not a separator
+            elif "".join(buf).rstrip().endswith((">", "<")):  # >& or <& redirect, not a separator (`0<&0`:
+                # of_secrets-review on organic-framework PR 332)
                 buf.append(c)
                 i += 1
             else:
@@ -4172,7 +4226,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 seg = _segments(opener)[-1]
             except (ValueError, IndexError):
                 seg = []
-            if _wrapper_readings(list(seg)) or (not _command_words(list(seg)) and _line_doubted(text)):
+            if _wrapper_readings(list(seg)) or _line_doubted(text):  # `2>&1 <<END script -q`, `true && <<END …`
                 hit = _readings_past_bound([body], depth) or _bash_deny(body, depth + 1)
         if hit:
             return hit
