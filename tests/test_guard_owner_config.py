@@ -18,18 +18,20 @@ def bash(cmd):
 
 class OwnerConfigTest(unittest.TestCase):
 
-    def setUp(self):  # the rule as it denies once it switches; today it warns (test_it_warns_today)
-        self._mode = of_guard.OWNER_CONFIG_MODE
-        of_guard.OWNER_CONFIG_MODE = "deny"
-        self.addCleanup(lambda: setattr(of_guard, "OWNER_CONFIG_MODE", self._mode))
+    def test_it_denies_and_names_the_commands(self):
+        self.assertEqual(of_guard.OWNER_CONFIG_MODE, "deny")
+        got = bash("sed -i '' 's/hold: true/hold: false/' ~/.config/of/orgs.yaml")  # the replay's live flow
+        self.assertTrue(got and "G33" in got[0])
+        for named in ("of org set <org> hold on|off", "of view add|remove", "of init", "Edit tool"):
+            self.assertIn(named, got[0])
 
-    def test_it_warns_today(self):
-        self.assertEqual(self._mode, "warn")
-        of_guard.OWNER_CONFIG_MODE = "warn"
-        of_guard._WARNINGS.clear()
-        self.assertIsNone(bash("printf 'x' >> ~/.config/of/orgs.yaml"))
-        self.assertTrue(of_guard._WARNINGS and "G33" in of_guard._WARNINGS[0][0])
-        of_guard._WARNINGS.clear()
+    def test_the_remedies_it_names_pass(self):
+        self.assertIsNone(bash("of org set acme hold off"))
+        self.assertIsNone(bash("of org show acme"))
+        self.assertIsNone(of_guard.critical_deny(  # a help text that names the file, changed with the Edit tool
+            "Edit", {"file_path": os.path.join(HOME, "organic-framework", "bin", "of"), "old_string": "a",
+                     "new_string": "listed in ~/.config/of/orgs.yaml"}, cwd=HOME))
+        self.assertIsNone(bash("mkdir -p /tmp/t1/.config/of && printf 'orgs: []\\n' > /tmp/t1/.config/of/orgs.yaml"))
 
     def test_writing_it_is_denied(self):
         for name in ("orgs.yaml", "views.yaml"):
