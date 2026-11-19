@@ -4437,11 +4437,16 @@ def _hooks_deny(head, args, stext, cwd, env=None):
 # git config values git runs through the shell: a pager, an editor, an ssh command, an external diff, a textconv, a
 # filter, a merge driver, a gpg program, a `!` alias or helper (of_secrets-review, msg 01a1f4fe-b2ad: `git -c
 # core.pager='cat <key>' log` passed on main); and the environment variables git and its pager read the same way
-_GIT_SHELL_KEY = re.compile(r"^(?:core\.(?:pager|editor|sshcommand|fsmonitor|askpass)|sequence\.editor|diff\.external|"
-                            r"diff\.[^.]+\.(?:textconv|command)|merge\.[^.]+\.driver|filter\.[^.]+\.(?:clean|smudge|"
-                            r"process)|gpg(?:\.[^.]+)?\.program|pager\.[^.]+|interactive\.difffilter|man\.[^.]+\.cmd|"
-                            r"browser\.[^.]+\.cmd|web\.browser|uploadpack\.packobjectshook|core\.hookspath)$")
-_GIT_BANG_KEY = re.compile(r"^(?:alias\.[^.]+|credential(?:\.[^.]+)?\.helper)$")  # a shell command when it starts with !
+_GIT_SHELL_KEY = re.compile(r"^(?:core\.(?:pager|editor|sshcommand|fsmonitor|askpass|alternaterefscommand|hookspath)|"
+                            r"sequence\.editor|diff\.external|diff\..+\.(?:textconv|command)|merge\..+\.driver|"
+                            r"filter\..+\.(?:clean|smudge|process)|gpg(?:\..+)?\.program|pager\..+|"
+                            r"interactive\.difffilter|man\..+\.cmd|browser\..+\.cmd|web\.browser|difftool\..+\.cmd|"
+                            r"mergetool\..+\.cmd|tar\..+\.command|uploadpack\.packobjectshook|"
+                            r"credential(?:\..+)?\.helper)$")   # a helper runs as a command even with no `!`
+_GIT_BANG_KEY = re.compile(r"^alias\.[^.]+$")  # a shell command when it starts with !
+# git config's own options and the words they take (`--file f`, `set`: of_review on organic-framework PR 400)
+_GIT_CONFIG_VALUE_OPTS = frozenset("-f --file --blob --type --default --comment --value --url".split())
+_GIT_CONFIG_SUBCOMMANDS = frozenset("set get unset list edit rename-section remove-section".split())
 _GIT_SHELL_ENV = frozenset({"GIT_PAGER", "PAGER", "GIT_EDITOR", "EDITOR", "VISUAL", "GIT_SSH_COMMAND", "GIT_SSH",
                             "GIT_EXTERNAL_DIFF", "GIT_ASKPASS", "SSH_ASKPASS", "GIT_SEQUENCE_EDITOR", "LESSOPEN",
                             "LESSCLOSE", "MANPAGER"})
@@ -4455,9 +4460,20 @@ def _git_shell_values(head, args, stext, env, depth):
     if head == "git":
         values += [v.lstrip("!") for k, v in _git_config_pairs(args, env)
                    if _GIT_SHELL_KEY.match(k) or (_GIT_BANG_KEY.match(k) and v.startswith("!"))]
-        ops = [a for a in args if not a.startswith("-")]
-        if "config" in ops:
-            rest = ops[ops.index("config") + 1:]
+        if "config" in args:
+            rest, k = [], args.index("config") + 1
+            while k < len(args):
+                a = args[k]
+                if a in _GIT_CONFIG_VALUE_OPTS:
+                    k += 2
+                    continue
+                if a.startswith("-"):
+                    k += 1
+                    continue
+                rest.append(a)
+                k += 1
+            if rest[:1] and rest[0] in _GIT_CONFIG_SUBCOMMANDS:
+                rest = rest[1:] if rest[0] == "set" else []
             if len(rest) >= 2 and (_GIT_SHELL_KEY.match(rest[0].lower()) or
                                    (_GIT_BANG_KEY.match(rest[0].lower()) and rest[1].startswith("!"))):
                 values.append(" ".join(rest[1:]).lstrip("!"))
