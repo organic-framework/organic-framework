@@ -149,10 +149,10 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **Rule.** Over 7 days:
   - compactions per active day ≥ max(4, 3 × the organization's median, over the positions active in the window);
   - and ≥ 2 forgotten-fact errors after compactions.
-- **Decider:** the structure keeper. Both remedies, a fresh holder and a split, are structure changes, as for chatty@3.
+- **Decider:** the structure keeper. It sets both remedies: where the position's reading runs, in its brief, and a split, a structure change as for chatty@3.
 - **Evidence:** the compactions, the active days and the rate, the organization's median and the floor it sets, and each correction with its kind, rule, `repeat_of` and the minutes since the compaction before it.
-- **Default remedy.**
-  - A fresh holder with a written handover, if the load is history-bound (one long-lived session).
+- **Default remedy.** The position keeps its context: no fresh holder and no cleared context (the founder, 2026-11-18, prompt `01a1eeff-880b`: "Context is a very important part of the agents' understanding of the system, and so context must not be wiped"; [`method.md`](method.md), "Sizing positions").
+  - If the load is history-bound (one long-lived session whose working set is small): move its reading, searches and reviews to subagents and to other harnesses (RFC 0008), so fewer of its own turns fill the context.
   - A split at a seam, if the working set itself is too big (many systems, many inbound edges: see §2.8).
 - **ΔT basis:** corrections avoided × their mean cost, plus owner re-explain minutes freed. *p* = 0.5. *m_decide* = 10 min.
 
