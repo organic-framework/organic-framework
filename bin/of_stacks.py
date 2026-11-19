@@ -124,30 +124,39 @@ def _handler(file, wfd=None):
     return handle
 
 
+def _release(rfd, wfd):
+    """Close the dumper's pipe, unregistering its write end first while it is still the wakeup fd: a closed fd left
+    registered would take the next signal's byte, or a later pipe's number (of_review on organic-framework PR 370)."""
+    try:
+        cur = signal.set_wakeup_fd(-1)
+        if cur not in (-1, wfd):
+            signal.set_wakeup_fd(cur)  # someone else's: back in place
+    except (ValueError, OSError):
+        pass
+    for fd in (rfd, wfd):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def _install_thread(sig, file):
-    """The dumper thread and its wakeup fd: "thread", or None when another wakeup fd is in place (kept)."""
+    """The dumper thread and its wakeup fd: "thread", or None when another wakeup fd is in place (kept). On an error
+    the pipe is closed and no longer the wakeup fd, and the error goes on to install()."""
     rfd, wfd = os.pipe()  # not inherited by child processes (PEP 446)
     try:
         os.set_blocking(wfd, False)  # set_wakeup_fd requires it
         signal.signal(sig, _handler(file, wfd))  # Python's C handler is the one that writes the wakeup byte
         prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
-    except BaseException:
-        os.close(rfd)
-        os.close(wfd)
-        raise
-    if prev != -1:  # someone else's wakeup fd (an event loop's): keep theirs, dump from the main thread
-        signal.set_wakeup_fd(prev)
-        os.close(rfd)
-        os.close(wfd)
-        return None
-    try:
+        if prev != -1:  # someone else's wakeup fd (an event loop's): keep theirs, dump from the main thread
+            signal.set_wakeup_fd(prev)  # refused when theirs was closed or made blocking: then none is left
+            _release(rfd, wfd)
+            return None
         if hasattr(signal, "siginterrupt"):
             signal.siginterrupt(sig, False)  # SA_RESTART again: a native call in any thread goes on after the signal
         threading.Thread(target=_dumper, args=(rfd, sig, file), name="of-stacks", daemon=True).start()
     except BaseException:
-        signal.set_wakeup_fd(-1)
-        os.close(rfd)
-        os.close(wfd)
+        _release(rfd, wfd)
         raise
     return "thread"
 
