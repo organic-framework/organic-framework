@@ -38,6 +38,37 @@ class ForwardKeyTest(unittest.TestCase):
                     "ssh -i ~/.ssh/aws-tokyo.pem ubuntu@h hostname", "grep -n of-forward docs/guard.md"):
             self.assertIsNone(bash(cmd), cmd)
 
+    def test_case_globs_and_relative_paths_count(self):
+        """of_secrets-review on organic-framework PR 397: only the literal lower-case name counted. Read as G35 reads a
+        path: by real path without case, a glob, or relative to the line's folder."""
+        for cmd in ("cat ~/.SSH/OF-FORWARD/key", "cat ~/.ssh/of-f*/key", "cat ~/.ssh/*/key",
+                    "cd ~/.ssh && cat of-forward/key", "cd ~/.ssh/of-forward && cat key"):
+            with self.subTest(cmd=cmd):
+                got = bash(cmd)
+                self.assertTrue(got and "G34" in got[0], cmd)
+        for cmd in ("ssh -o 'IdentityFile ~/.ssh/of-forward/key' u@h", "rsync -e 'ssh -i ~/.ssh/of-forward/key' a u@h:b",
+                    "GIT_SSH_COMMAND='ssh -i ~/.ssh/of-forward/key' git fetch",
+                    "git -c core.sshCommand='ssh -i ~/.ssh/of-forward/key' fetch", "ssh -i~/.ssh/of-forward/key u@h",
+                    "ssh -i ~/.ssh/OF-FORWARD/key u@h"):
+            with self.subTest(cmd=cmd):         # a word that carries the folder in one of its parts
+                got = bash(cmd)
+                self.assertTrue(got and "G34" in got[0], cmd)
+        home = os.path.expanduser("~")
+        got = of_guard.critical_deny("Write", {"file_path": f"{home}/.SSH/OF-FORWARD/known_hosts"})
+        self.assertTrue(got and "G34" in got[0])
+        for ti in ({"pattern": "of-f*/*", "path": f"{home}/.ssh"}, {"pattern": "*", "path": f"{home}/.ssh/of-forward"},
+                   {"pattern": "*/known_hosts", "path": f"{home}/.ssh"}):
+            with self.subTest(glob=ti):
+                got = of_guard.critical_deny("Glob", ti)
+                self.assertTrue(got and "G34" in got[0], ti)
+        self.assertIsNone(of_guard.critical_deny("Glob", {"pattern": "*.pub", "path": f"{home}/.ssh"}))
+        for cmd in ("cat ~/.ssh/config", "ls ~/.ssh", "cd ~/.ssh && ls", "ls ~/*", "cat ~/*/notes.txt", "ls ~/.ssh/*.pub",
+                    'of send of_x "the key at ~/.ssh/of-forward/key moves"',                   # prose names it: no use
+                    "gh pr comment 1 --body 'G34 guards ~/.ssh/of-forward'",
+                    "printf '%s\\n' 'a path to ~/.ssh/of-forward/key' > notes.md"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(bash(cmd), cmd)
+
 
 
 class ForwardLineVariables(unittest.TestCase):

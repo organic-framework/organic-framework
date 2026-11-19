@@ -2997,26 +2997,40 @@ def _forward_dir():
     return os.path.realpath(_expanduser(FORWARD_DIR))
 
 
-def _forward_deny(head, args, shvars=None):
+_SSH_CARRIERS = ("ssh", "scp", "sftp", "autossh", "mosh")
+
+
+def _forward_deny(head, args, shvars=None, cwd=None):
     """G34 on one simple command: any word that names the forward's key folder, `ssh -i <its key>` included, since
     a key used is a key the session holds for that call (of_review on organic-framework PR 350: a laptop session
     could open its own forward with it, a listen on the host that the pin makes useless but that can take the
     forward's socket). A word is read as written and with the line's variables filled in (a path held in a variable,
-    or a part of one: of_secrets-review on organic-framework PR 397, hand-over b657e8bf)."""
-    d = _forward_dir()
+    or a part of one: of_secrets-review on organic-framework PR 397, hand-over b657e8bf), and as G35 reads a path
+    (`_in_folders`): by real path without case, a glob, or a path relative to the line's folder (of_secrets-review on
+    PR 397: only the literal lower-case name counted)."""
+    box = {_forward_dir().casefold()}
+    inside = bool(cwd) and _in_folders(cwd, box)
     words = [str(head), *map(str, args)]
     words += [x for x in (_expand_vars(w, shvars or {}) for w in list(words)) if x not in words]
     for w in words:
-        for part in re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)]:
+        sw = str(w).strip().strip("'\"")
+        first = (sw.split(None, 1) or [""])[0]
+        # split on spaces only a word that carries an ssh command or an ssh option (`rsync -e 'ssh -i …'`, `-o
+        # 'IdentityFile …'`), never prose: a message or a document that names the folder is no use of it (the G34
+        # replay: 17 false denies of messages and edits when every word was split)
+        carried = os.path.basename(first) in _SSH_CARRIERS or re.match(r"(?i)(identityfile|-i|-o)", first)
+        parts = re.split(r"[=:,\s]+", sw) if carried else (re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)])
+        parts += [x[2:] for x in parts if re.match(r"-[A-Za-z].", x)]  # an option glued to its value: `ssh -i<key>`
+        for part in parts:
             p = part.strip("'\"")
-            if "of-forward" not in p:
+            low = p.casefold()
+            if not p or not (inside or "forward" in low or ".ssh" in low or any(ch in p for ch in "*?[")):
                 continue
             try:
-                real = os.path.realpath(_expanduser(p))
+                if _in_folders(p, box, cwd):
+                    return FORWARD_DENY, part
             except (OSError, ValueError):
                 continue
-            if real == d or real.startswith(d + os.sep):
-                return FORWARD_DENY, part
     return None
 
 
@@ -3828,20 +3842,38 @@ def _outboxes():
     return {os.path.realpath(os.path.join(b, f)).casefold() for b in bases for f in ASKS_OWNER_FOLDERS}
 
 
-def _in_outbox(path, cwd=None, removal=False):
-    """Does PATH lie in the asks outbox (G35)? By real path, compared without case (the Mac's volume ignores it). A glob
-    counts when its folder is the outbox or lies in it, or when it names the outbox (with REMOVAL, or a recursive copy's
-    destination, a folder above it too): `rm <outbox>/2*.json` removes queued answers (of_review on PR 395)."""
+def _glob_match(path, pattern):
+    """Does PATH match the shell glob PATTERN as the shell expands one: part by part, so `*`, `?` and `[…]` never cross a
+    `/`; a part starting with `.` only by a pattern part starting with `.` (no dotglob); `**` any number of parts, as the
+    Glob tool reads it. fnmatch alone lets `*` cross `/`, so `~/*` named every folder under the home (of_review on PR 395;
+    the G34 replay, 118 false denies)."""
     import fnmatch
+    ps, qs = path.split("/"), pattern.split("/")
+
+    def match(i, j):
+        if j == len(qs):
+            return i == len(ps)
+        if qs[j] == "**":
+            return any(match(k, j + 1) for k in range(i, len(ps) + 1))
+        if i == len(ps):
+            return False
+        a, b = ps[i], qs[j]
+        if a.startswith(".") and not b.startswith(".") and a != b:
+            return False
+        return fnmatch.fnmatchcase(a, b) and match(i + 1, j + 1)
+    return match(0, 0)
+
+
+def _in_folders(path, boxes, cwd=None, removal=False):
+    """Does PATH lie in one of BOXES (real paths, case-folded)? By real path, compared without case (the Mac's volume
+    ignores it), a relative path by CWD. A glob counts when its folder is a box or lies in one, or when it names a box
+    (with REMOVAL, or a recursive copy's destination, a folder above it too). G35's reading, shared with G34."""
     p = str(path or "").strip("'\"")
     if not p:
         return False
-    if not p.startswith(("/", "~", "$")):
-        if not cwd:
-            return False   # a relative word with no folder to read it from (a bare `*` matched every path)
+    if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
     p = _expanduser(p)
-    boxes = _outboxes()
     if any(ch in p for ch in "*?["):
         rp = _real_pattern(p).casefold().rstrip("/")
         d = os.path.dirname(rp)
@@ -3849,9 +3881,9 @@ def _in_outbox(path, cwd=None, removal=False):
             chain = [box]
             while removal and os.path.dirname(chain[-1]) != chain[-1]:
                 chain.append(os.path.dirname(chain[-1]))
-            if any(fnmatch.fnmatchcase(c, rp) for c in chain):
-                return True        # the pattern names the outbox, or a folder above it that is removed
-            if fnmatch.fnmatchcase(box, d) or d == box or d.startswith(box + "/"):
+            if any(_glob_match(c, rp) for c in chain):
+                return True        # the pattern names the box, or a folder above it that is removed
+            if _glob_match(box, d) or d == box or d.startswith(box + "/"):
                 return True        # a file in it
         return False
     real = os.path.realpath(p).casefold()
@@ -3861,6 +3893,12 @@ def _in_outbox(path, cwd=None, removal=False):
         if removal and box.startswith(real.rstrip("/") + "/"):
             return True
     return False
+
+
+def _in_outbox(path, cwd=None, removal=False):
+    """Does PATH lie in the asks outbox (G35)? `_in_folders` over `_outboxes()`: `rm <outbox>/2*.json` removes queued
+    answers (of_review on PR 395)."""
+    return _in_folders(path, _outboxes(), cwd, removal)
 
 
 def _asks_outbox_write(head, args, cwd, files, removal):
@@ -5086,7 +5124,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
                 or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) or _hook_entry(head, args) \
-                or _forward_deny(head, args, {**line_vars, **exported, **_assignments(stext)}) \
+                or _forward_deny(head, args, {**line_vars, **exported, **_assignments(stext)}, here) \
                 or _actor_deny(head, args, stext, {**exported, **_assignments(stext)}) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),
@@ -5802,8 +5840,11 @@ def critical_deny(tool, tool_input, cwd=None):
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _guard_state_file(path, cwd):
         return GUARD_STATE_DENY, path
     if tool in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "Glob") and path and \
-            "of-forward" in str(path) and _forward_deny(str(_local(path, cwd)), []):  # G34
+            _in_folders(str(path), {_forward_dir().casefold()}, cwd):  # G34, as G35 reads a path
         return FORWARD_DENY, path
+    if tool == "Glob" and ti.get("pattern") and _in_folders(  # G34: the pattern, from its folder (PR 397)
+            os.path.join(str(ti.get("path") or cwd or "."), str(ti["pattern"])), {_forward_dir().casefold()}, cwd):
+        return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_outbox(path, cwd):  # G35
