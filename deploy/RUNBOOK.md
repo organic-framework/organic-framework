@@ -17,6 +17,8 @@ What runs: one `of-server` pod (one replica, a disk queue on a volume), its Clic
 
 For B, `deploy/clickhouse/clickhouse.yaml` is the reference: one pod, `Recreate`, a persistent volume (ClickHouse loses everything without one), 1–1.5 GiB of memory. The Lab ran it on k3s for `lab-profile2-v0` (2026-11-06).
 
+**Its version.** The reference follows ClickHouse's 26.8 LTS line (`clickhouse-server:26.8`; 2026-11-19, from 25.8, whose last release was on 2026-08-26). An instance made from an older reference is upgraded by the keeper who runs it. First back up its volume: it holds the vault. Then read ClickHouse's backward-incompatible changes between the two versions. Last, change the image and let the `Recreate` strategy restart the pod. OF's own store on the founder's Mac runs 26.10.
+
 Either way, the schema comes from `deploy/clickhouse/schema.py`:
 
 ```sh
