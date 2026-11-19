@@ -41,11 +41,19 @@ class MachineId(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.tmp.name)), ["machine_id"])   # no temporary file left
         self.assertEqual(of_events.machine_id(), got[0])
 
-    def test_an_empty_file_an_older_writer_left_is_replaced(self):
+    def test_an_empty_file_an_older_writer_left_is_replaced_once(self):
+        """of_review's note on PR 414: six processes that each replaced the empty file got two ids."""
         open(os.path.join(self.tmp.name, "machine_id"), "w").close()
-        mid = of_events.machine_id(wait_s=0.05)
-        self.assertTrue(mid)
-        self.assertEqual(of_events.machine_id(), mid)
+        got = []
+        threads = [threading.Thread(target=lambda: got.append(of_events.machine_id(wait_s=0.05))) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(set(got)), 1)
+        self.assertTrue(got[0])
+        self.assertEqual(of_events.machine_id(), got[0])
+        self.assertFalse([n for n in os.listdir(self.tmp.name) if n.startswith(".machine_id.") and n != ".machine_id.lock"])
 
 
 if __name__ == "__main__":
