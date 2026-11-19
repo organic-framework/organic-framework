@@ -50,7 +50,9 @@ class GitShellValues(unittest.TestCase):
                     # an option's value is no mode (of_secrets-review on PR 403 at 86494fc)
                     f"git config core.pager 'cat {KEY}' --show-origin", f"git config --comment -e core.pager 'cat {KEY}'",
                     f"git config --comment --list core.pager 'cat {KEY}'", f"git config --comment -l core.pager 'cat {KEY}'",
-                    f"git config --file -l core.pager 'cat {KEY}'"):
+                    f"git config --file -l core.pager 'cat {KEY}'",
+                    # a mode word after KEY VALUE is a value-pattern (of_review on PR 403 at 86494fc)
+                    f"git config core.pager 'cat {KEY}' -l", f"git config set --comment --get core.pager 'cat {KEY}'"):
             self.assertTrue(deny(cmd), cmd)
         for cmd in ("git -c core.pager=less log", "git log", "GIT_PAGER=cat git log", "git config core.pager less",
                     "git -c color.ui=always log", "git -c alias.st=status st", "git -c credential.helper=store fetch",

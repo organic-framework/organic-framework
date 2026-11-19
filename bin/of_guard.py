@@ -4851,8 +4851,10 @@ def _git_config_flags(words):
         if words[k] in _GIT_CONFIG_VALUE_OPTS:
             k += 2
             continue
-        if words[k].startswith("-"):
-            out.add(words[k].split("=", 1)[0])
+        if not words[k].startswith("-"):
+            break   # the key, or a subcommand: a mode word after it is a value-pattern, and git still sets the value
+            # (`git config KEY VALUE -l`, `--show-origin`: of_review on organic-framework PR 403)
+        out.add(words[k].split("=", 1)[0])
         k += 1
     return out
 _GIT_CONFIG_SUBCOMMANDS = frozenset("set get unset list edit rename-section remove-section".split())
