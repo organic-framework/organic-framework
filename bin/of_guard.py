@@ -3336,7 +3336,10 @@ def _actor_act(words):
 
 def _org_path_act(words):
     """`of org set <org> path <folder>`: the owner's, by the positive test (of_review on organic-framework PR 427)."""
-    # by position, so `of org set path hold on` (an organization named path) stays the agents' hold (of_server)
+    # by position, so `of org set path hold on` (an organization named path) stays the agents' hold (of_server); a
+    # double dash is no positional for argparse, so it is dropped before the places are read (of_review on PR 427 at
+    # 0159efd: `of org -- set ofb path`, `of org set -- ofb path`, `of org set ofb -- path` ran the act)
+    words = [w for w in words if w != "--"]
     return words[:2] == ["org", "set"] and words[3:4] == ["path"]
 
 

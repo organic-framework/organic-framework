@@ -130,6 +130,10 @@ class OrgPathActByPosition(unittest.TestCase):
         self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "path", "/r"]))
         self.assertFalse(of_guard._org_path_act(["org", "set", "path", "hold", "on"]))   # an organization named path
         self.assertFalse(of_guard._org_path_act(["org", "show", "path"]))
+        for words in (["org", "--", "set", "ofb", "path", "/r"], ["org", "set", "--", "ofb", "path", "/r"],
+                      ["org", "set", "ofb", "--", "path", "/r"], ["org", "set", "ofb", "path", "--", "/r"]):
+            self.assertTrue(of_guard._org_path_act(words), words)     # a double dash is no positional (of_review)
+        self.assertFalse(of_guard._org_path_act(["org", "set", "--", "path", "hold", "on"]))
 
 if __name__ == "__main__":
     unittest.main()
