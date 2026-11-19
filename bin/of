@@ -3323,32 +3323,40 @@ def cmd_server(args):
             raise OfError(f"usage: of server {args.action} --org ORG <bundle folder>"
                           + (" --index-sha <the export's>" if args.action == "import" else ""))
         cfg = of_server.load_config()
+        if args.since and (args.action != "export" or args.check):
+            raise OfError("--since needs a ClickHouse export")
         db = os.path.join(cfg["state_dir"], "server.db")
-        if not os.path.isfile(db):  # never made here: no store to read or write (of_review on organic-framework PR 425)
-            raise OfError(f"of server {args.action}: no server store at {db}")
-        mode = "ro" if args.action == "export" else "rw"  # neither command ever creates a store
-        conn = sqlite3.connect(f"file:{db}?mode={mode}", uri=True, timeout=10, isolation_level=None)
-        conn.execute("PRAGMA busy_timeout = 10000")
+        conn = None
         try:
+            if args.action == "import" or not args.check:
+                if not os.path.isfile(db):  # never made here: no store to read or write (of_review on PR 425)
+                    raise OfError(f"of server {args.action}: no server store at {db}")
+                mode = "ro" if args.action == "export" else "rw"  # neither command ever creates a store
+                conn = sqlite3.connect(f"file:{db}?mode={mode}", uri=True, timeout=10, isolation_level=None)
+                conn.execute("PRAGMA busy_timeout = 10000")
             if args.check:
-                problems = ex.check_bundle(args.path, args.identity, args.index_sha)
-                if args.action == "import" and not problems:
-                    if ex.load_index(args.path).get("org") != args.org[0]:
-                        problems = [f"the bundle is not {args.org[0]}'s"]
-                    else:
-                        problems = ex.check_store(conn, args.path, args.identity)
+                if args.action == "import":
+                    problems = ex.check_import(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg)
+                else:
+                    problems = ex.check_bundle(args.path, args.identity, args.index_sha)
                 for p in problems:
                     print(f"MISMATCH {p}")
                 print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
                 return 0 if not problems else 1
             if args.action == "export":
                 m, index_sha = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION,
-                                               recipient=args.to)
+                                               recipient=args.to, config=cfg, since=args.since, identity=args.identity)
                 rows = {t: v["rows"] for t, v in m["store"].items()}
+                rows.update({t: v["rows"] for t, v in m.get("clickhouse", {}).items()})
+                for name, per in m.get("clickhouse_left_behind", {}).items():  # stays on this server, counted
+                    print(f"{name}: {sum(per.values())} rows left behind over {len(per)} days (no single organization)")
             else:
-                rows = ex.import_store(conn, args.path, args.org[0], args.index_sha, args.identity)
+                rows = ex.import_store(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg)
         except ex.ExportError as e:
             raise OfError(f"of server {args.action}: {e}") from None
+        finally:
+            if conn is not None:
+                conn.close()
         print(", ".join(f"{t} {n}" for t, n in rows.items()))
         if args.action == "export":
             print(f"index sha256 {index_sha}: carry it to the import by another path than the bundle (--index-sha)")
@@ -8056,7 +8064,8 @@ def main(argv=None):
     sv.add_argument("--check", action="store_true",
                     help="export: check a bundle against its manifest; import: check this server's rows against it")
     sv.add_argument("--to", help="export: the age recipient (age1…) every file of the bundle is encrypted to")
-    sv.add_argument("--identity", help="import, export --check: the age identity file that decrypts the bundle")
+    sv.add_argument("--identity", help="import, export --check or --since: the age identity that decrypts the bundle")
+    sv.add_argument("--since", metavar="BULK", help="export ClickHouse days from each table's last day in BULK")
     sv.add_argument("--index-sha", help="import: the sha256 of index.json that the export printed")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
