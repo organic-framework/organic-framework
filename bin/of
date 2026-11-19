@@ -2942,11 +2942,32 @@ def cmd_registry(args):
 # ------------------------------------------------------------------- asks
 
 def _send_outbox():
-    """`of asks send-outbox`: the detached sender the popup hands its pending answers to on q/Esc/g."""
+    """`of asks send-outbox`: the detached sender the popup hands its pending answers to on q/Esc/g. Its marks
+    (answered, withdrawn) are the owner's, run here, not through a child `of asks`, which has no terminal; it refuses
+    in an agent's session (of_review on PR 387: the outbox is the popup's, never an agent's way to the owner's name)."""
+    import io
+    import contextlib
     import of_asks_answer
     import of_asks_tui
     import of_store
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION") or os.environ.get("CLAUDECODE"):
+        raise OfError("of asks send-outbox is the popup's sender, run by the popup or the listener, never from an agent's "
+                      "session")
     positions = _load_quiet()
+    cli = of_asks_tui.act_cli(os.path.realpath(__file__))
+
+    def act(what, item):
+        if what not in ("answered", "withdraw"):
+            return cli(what, item)
+        out = io.StringIO()
+        _OUTBOX_OWNER[0] = True
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                rc = main(["asks", what, item["ids"][0]])
+        finally:
+            _OUTBOX_OWNER[0] = False
+        lines = out.getvalue().strip().splitlines()
+        return rc == 0, (lines[-1] if lines else what)
 
     def pane_of(name):
         try:
@@ -2964,21 +2985,34 @@ def _send_outbox():
     def still_open(ids):
         open_ids = {a["event_id"] for a in _current_asks() if a["state"] == "open"}
         return not ids or any(i in open_ids for i in ids)
-    n = of_asks_tui.send_outbox(answer, of_asks_tui.act_cli(os.path.realpath(__file__)), still_open,
+    n = of_asks_tui.send_outbox(answer, act, still_open,
                                 reconcile=lambda: _reconcile_ask_tokens(positions),
                                 log=lambda m: print(m, file=sys.stderr))
     print(f"{n} answer(s) sent from the outbox")
     return 0
 
 
+_OUTBOX_OWNER = [False]  # set only while `of asks send-outbox` replays the popup's own actions (_send_outbox)
+
+
 def _asks_actor():
-    """Who closes or withdraws an ask: the founder in his own terminal is "owner"; an agent (an asker withdrawing its
-    own stale ask, a unit owner answering a routed one) is recorded by its position, never as the owner (task bd12d0)."""
+    """Who closes or withdraws an ask: an agent (an asker withdrawing its own stale ask, a unit owner answering a routed
+    one) is recorded by its position, never as the owner (task bd12d0); the owner only by a positive test, as `of
+    access` reads one (of_review on organic-framework PR 357): no CLAUDECODE and a terminal on stdin, or the popup's
+    outbox replayed by its sender. G31 could not see every way a shell clears the session id (of_review on PR 387,
+    comment 7017518350: `declare -x`, a parent shell, a script file, ssh localhost, at), so an agent with neither
+    variable had been recorded as the owner. OF_AUTOMATION is no sign here: the questions panel runs under it."""
     if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION"):
         try:
             return _me(_load_quiet())["name"]
         except OfError:
             return "agent"
+    if _OUTBOX_OWNER[0]:
+        return "owner"
+    if os.environ.get("CLAUDECODE") or not sys.stdin.isatty():
+        raise OfError("only the owner closes or withdraws an ask with no position: in a plain terminal or the popup. "
+                      "An agent closes its own with `of status working --answered <id>`, from its own session; a unit "
+                      "owner answers a routed ask from its session. Nothing was recorded.")
     return "owner"
 
 
@@ -3108,10 +3142,11 @@ def cmd_asks(args):
                 return next((a["pane_id"] for p, a in bind(positions, live_agents())[0] if p["name"] == name), None)
             except OfError:
                 return None
-        relayed_by = _asks_actor()
+        # who relayed it, when an agent did; the answer's authority is its prompt's, checked in of_asks_chat
+        relayed_by = _asks_actor() if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION") else None
         try:
             out = of_asks_chat.answer(conn, asks, positions, args.id, args.prompt, pane_of, option=args.option,
-                                      text=args.text, relayed_by=None if relayed_by == "owner" else relayed_by,
+                                      text=args.text, relayed_by=relayed_by,
                                       version=args.version)
         except ValueError as e:
             raise OfError(f"not recorded: {e}")
