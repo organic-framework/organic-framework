@@ -3087,7 +3087,14 @@ def _git_config_pairs(args, env):
             out.append((k.lower(), v))
             i += 2
             continue
-        if args[i] in ("-C", "--git-dir", "--work-tree", "--namespace", "--config-env") and i + 1 < len(args):
+        if args[i] == "--config-env" and i + 1 < len(args) or args[i].startswith("--config-env="):
+            # `--config-env=core.pager=VAR`: the value is VAR's, as the line sets it (of_secrets-review on PR 400)
+            spec = args[i + 1] if args[i] == "--config-env" else args[i].split("=", 1)[1]
+            k, _, var = spec.partition("=")
+            out.append((k.lower(), str((env or {}).get(var) or "")))
+            i += 2 if args[i] == "--config-env" else 1
+            continue
+        if args[i] in ("-C", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(args):
             i += 2
             continue
         i += 1

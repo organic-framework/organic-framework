@@ -32,7 +32,8 @@ class GitShellValues(unittest.TestCase):
                     f"GIT_PAGER='cat {KEY}' git log", f"PAGER='cat {KEY}' git log",
                     f"git -c core.sshCommand='cat {KEY}' fetch", f"git -c core.editor='cat {KEY}' commit",
                     f"git -c diff.external='cat {KEY}' diff", f"git -c alias.x='!cat {KEY}' x",
-                    f"git config core.pager 'cat {KEY}'"):
+                    f"git config core.pager 'cat {KEY}'",
+                    f"P='cat {KEY}' git --config-env=core.pager=P log", f"export P='cat {KEY}'; git --config-env core.pager=P log"):
             self.assertTrue(deny(cmd), cmd)
         for cmd in ("git -c core.pager=less log", "git log", "GIT_PAGER=cat git log", "git config core.pager less",
                     "git -c color.ui=always log", "git -c alias.st=status st"):
