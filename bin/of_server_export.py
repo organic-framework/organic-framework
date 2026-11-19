@@ -219,6 +219,8 @@ def export_store(conn, org, out, version=None, recipient=None):
         raise ExportError("the recipient is not an age X25519 recipient (age1…)")
     if recipient:
         _age()
+    if "machines" not in _tables(conn):  # an empty bundle from a file that is no server's store would, imported, wipe
+        raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
     if os.path.exists(out) and os.listdir(out):
         raise ExportError(f"{out} is not empty")
     _private_dir(out)
