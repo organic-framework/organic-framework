@@ -3276,6 +3276,41 @@ def cmd_server(args):
         of_server.revoke(store, args.machine_id)
         print(f"revoked {args.machine_id}")
         return 0
+    if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)
+        import sqlite3
+        import of_server_export as ex
+        if not args.path:
+            raise OfError(f"usage: of server {args.action} {'--org ORG ' if args.action == 'export' else ''}<bundle folder>")
+        cfg = of_server.load_config()
+        if args.check:
+            if args.action == "export":
+                problems = ex.check_bundle(args.path)
+            else:
+                conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
+                problems = ex.check_bundle(args.path) or ex.check_store(conn, args.path)
+            for p in problems:
+                print(f"MISMATCH {p}")
+            print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
+            return 0 if not problems else 1
+        conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        try:
+            if args.action == "export":
+                if len(args.org or []) != 1:
+                    raise OfError("of server export: name one organization with --org")
+                m = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION)
+                rows = {t: v["rows"] for t, v in m["store"].items()}
+            else:
+                rows = ex.import_store(conn, args.path)
+                problems = ex.check_store(conn, args.path)
+                if problems:
+                    for p in problems:
+                        print(f"MISMATCH {p}")
+                    raise OfError("of server import: the store does not match the bundle after the import")
+        except ex.ExportError as e:
+            raise OfError(f"of server {args.action}: {e}") from None
+        print(", ".join(f"{t} {n}" for t, n in rows.items()))
+        return 0
     if args.action == "export-secret-key":
         if not args.path:
             raise OfError("usage: of server export-secret-key <new file>")
@@ -7969,10 +8004,13 @@ def main(argv=None):
                                        "revoke, status (docs/server.md)")
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "tls-init",
-                                       "revoke", "status", "export-secret-key"])
+                                       "revoke", "status", "export-secret-key", "export", "import"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
-    sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key")
+    sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "
+                                             "export, import: the bundle's folder")
+    sv.add_argument("--check", action="store_true",
+                    help="export: check a bundle against its manifest; import: check this server's rows against it")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
