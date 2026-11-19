@@ -40,7 +40,8 @@ import of_guard
 
 SKIP_LARGER = 64 * 1024 * 1024        # a scratch or task-output file larger than this stays behind (named in the plan)
 BWLIMIT_KBPS = 25000                  # the copy's default limit, KB/s: the laptop runs light work only
-SSH_OPTS = ["-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
+SSH_OPTS = ["-o", "IdentityAgent=none", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=yes"]
 
 
 class CarryError(Exception):
@@ -605,7 +606,7 @@ def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=
     ssh_args = ["ssh", "-i", key] + SSH_OPTS
     if known_hosts is not None:
         # SSH reads a list of paths in UserKnownHostsFile after rsync splits its -e argument.
-        ssh_args += ["-o", f"UserKnownHostsFile={shlex.quote(known_hosts)}", "-o", "StrictHostKeyChecking=yes"]
+        ssh_args += ["-o", f"UserKnownHostsFile={shlex.quote(known_hosts)}"]
     ssh = shlex.join(ssh_args)
     # --chmod=go-rwx: on a host of one OS user per organization nothing arrives readable by another user; the
     # owner's bits stay, so a script stays executable (of_server on PR 116)
@@ -661,6 +662,8 @@ def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, lo
     key = _key_ok(key)
     if known_hosts is not None:
         known_hosts = os.path.expanduser(known_hosts)
+        if "%" in known_hosts or "$" in known_hosts or known_hosts.lower() == "none":
+            raise CarryError("--known-hosts cannot contain '%' or '$' or be 'none'")
         if not os.path.isfile(known_hosts):
             raise CarryError(f"no known hosts file at {known_hosts}")
     cmds = copy_commands(bundle, key, to=to, frm=frm, bwlimit=bwlimit, known_hosts=known_hosts)
