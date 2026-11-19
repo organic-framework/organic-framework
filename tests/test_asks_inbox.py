@@ -144,6 +144,11 @@ class StoreTest(unittest.TestCase):
         of_events.STATE_DIR = self.tmp.name
         of_events._CONN.clear()
         self.conn = of_store.connect(os.path.join(self.tmp.name, "of.db"))
+        from unittest import mock
+        import of_asks_answer
+        owner = mock.patch.object(of_asks_answer, "not_the_owner", lambda: None)  # the owner's own screen
+        owner.start()
+        self.addCleanup(owner.stop)
 
     def tearDown(self):
         of_events._CONN.clear()
@@ -382,7 +387,8 @@ class ScreenTest(unittest.TestCase):
     def text(self, frame):
         return "\n".join(t for _, t in sorted(frame.items()))
 
-    def inbox(self, keys, data, cards=None, size=(40, 140), loader=None, seq=None, store=None, flush=False):
+    def inbox(self, keys, data, cards=None, size=(40, 140), loader=None, seq=None, store=None, flush=False,
+              drafts=None):
         """flush: curses.flushinp drops the keys not read yet, as a terminal drops a paste's rest."""
         import curses
         cards = cards or {}
@@ -401,7 +407,7 @@ class ScreenTest(unittest.TestCase):
                       lambda what, it: (self.sent.append((it["ids"][0], what)) or (True, what)),
                       positions=lambda: [{"name": "of_b"}, {"name": "of_conductor"}],
                       record=lambda kind, payload: self.records.append((kind, payload)) or "E1", seq=seq,
-                      initial=(list(data), {}), reply_store=store)
+                      initial=(list(data), {}), reply_store=store, drafts=drafts)
         box.run()
         return box
 
@@ -462,6 +468,21 @@ class ScreenTest(unittest.TestCase):
         self.inbox([0.05, -1, 0.1, -1, ord("1"), 0.05], [a, b], loader=loader, seq=seq)
         self.assertEqual(self.sent, [])
         self.assertTrue(any("closed elsewhere" in self.text(f) for f in self.frames))
+
+    def test_d_shows_a_draft_and_sends_it_as_kept_only_on_a_second_d(self):
+        """A draft is a file: D shows its words, to whom and why it waits; only D again or y sends it, with the version
+        it was kept with (of_review's trust notes on PR 398)."""
+        draft = {"ask_id": "C", "ask_ids": ["C"], "who": ["of_a"], "text": "yes, tonight", "saved_at": time.time(),
+                 "why": "left in the outbox before 2026-11-19: not sent; D sends it",
+                 "item": {"ids": ["C"], "who": ["of_a"], "text": "Lift it?", "version": 1}}
+        data = [item("C", "Lift it?")]
+        self.inbox([0.05, ord("D"), ord("x"), 0.3, 0.05], data, drafts=lambda: [draft])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(any("«yes, tonight»" in self.text(f) and "outbox" in self.text(f) for f in self.frames))
+        self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
+        self.frames = []
+        self.inbox([0.05, ord("D"), ord("D"), 0.3, 0.05], data, drafts=lambda: [draft])
+        self.assertEqual(self.sent, [("C", "yes, tonight")])
 
     def test_money_takes_a_second_press(self):
         data = [item("C", "Pay 90 USD to the operator?")]

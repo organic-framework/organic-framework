@@ -425,8 +425,8 @@ def record(ask_ids, answer, position=None, session=None, version=None, event_id=
 
 def not_the_owner():
     """Why this process may not act as the owner, or None: `_asks_actor`'s positive test in bin/of (no agent session,
-    a terminal on stdin). The questions screens apply it to what they record as his (of_asks_tui.leave,
-    threaded_answer, owner_mark); OF_AUTOMATION is no sign, the questions panel runs under it."""
+    a terminal on stdin). Every writer of the screens' acts as his applies it itself (answer, record_answer,
+    owner_mark, of_asks_tui.leave); OF_AUTOMATION is no sign, the questions panel runs under it."""
     if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION"):
         return "only the owner answers here: this runs in an agent's session"
     try:
@@ -607,6 +607,9 @@ def record_answer(conn, item, text, positions=()):
 
 
 def _kept(conn, item, text, positions, pane_of):
+    why = not_the_owner()  # the writer checks itself, so a caller that forgot to never records as him (of_review's
+    if why:                # trust notes on PR 398, through of_server, msg 01a1f55d-b4d2)
+        return False, why, None
     save_draft(item, text)
     try:
         ok, status, eid = _answer(conn, item, text, positions, pane_of)

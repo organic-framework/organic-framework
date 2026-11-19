@@ -522,6 +522,7 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
     pending, hidden, errors = [], set(), {}  # answers waiting for their undo window; items they hide; failures
     expanded = {"panes": True}
     confirm_task = None  # the task whose "Done?" waits for y
+    confirm_draft = None  # the draft d showed, waiting for d again or y
     copied_at = 0.0      # when "copied" was shown (it goes after 2 s)
 
     def key_of(x):
@@ -751,9 +752,18 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 continue
             if ch == ord("u") and undo():
                 continue
-            if ch == ord("d") and pend:
-                d = pend[0]
-                queue(dict(d["item"], first=None), "answer", d["text"])
+            if confirm_draft is not None and ch != -1:  # the draft he was shown: d again or y sends it
+                import of_ask_text
+                if ch == ord("d") or ch in tuple(ord(k) for k in of_ask_text.YES_KEYS):
+                    queue(dict(confirm_draft["item"], first=None), "answer", confirm_draft["text"])
+                    msg = ""
+                else:
+                    msg = tr("kept as a draft")
+                confirm_draft = None
+                continue
+            if ch == ord("d") and pend:  # never sent unseen: a draft is a file, and he reads its text first
+                confirm_draft = pend[0]
+                msg = draft_line(confirm_draft, "d")
                 continue
             if ch == ord("r"):
                 reload()
@@ -899,6 +909,8 @@ def leave(pendings, positions, of_path):
     import of_asks_answer
     import of_events
     import of_store
+    if of_asks_answer.not_the_owner():  # outside the owner's own terminal nothing pending is recorded as his
+        return []
     out, typed, own, why = [], [], None, None
     saved = of_events.HOOK_TIMEOUT
     of_events.HOOK_TIMEOUT = LEAVE_DB_S
@@ -940,17 +952,6 @@ def leave(pendings, positions, of_path):
     return out
 
 
-def leaving_as_owner(leave_fn):
-    """The screen's leaving, refused outside the owner's own terminal (of_asks_answer.not_the_owner): what is pending
-    then stays unrecorded, as its sending thread would refuse it."""
-    def handoff(pendings):
-        import of_asks_answer
-        if of_asks_answer.not_the_owner():
-            return []
-        return leave_fn(pendings)
-    return handoff
-
-
 def spawn_deliver(of_path, events):
     """One detached `of asks deliver --now`: it types the answers just recorded (event ids) into their askers' panes and
     reconciles the herdr ask tokens; it outlives the screen and never touches the SSH agent."""
@@ -966,6 +967,20 @@ def spawn_deliver(of_path, events):
 def outbox_dir():
     import of_events
     return os.path.join(of_events.STATE_DIR, "asks-outbox")
+
+
+def draft_line(d, key):
+    """What D shows before it sends a draft: its words, to whom, when it was kept and why it was not sent. A draft is a
+    file, and only text he reads goes as his (of_review's trust notes on PR 398, through of_server, msg
+    01a1f55d-b4d2); before, D sent the first draft at once."""
+    try:
+        when = time.strftime("%d.%m %H:%M", time.localtime(float(d.get("saved_at"))))
+    except (TypeError, ValueError):
+        when = "?"
+    who = ", ".join(d.get("who") or (d.get("item") or {}).get("who") or []) or "?"
+    why = d.get("why") or tr("its send never finished")
+    return tr("Draft of {when} to {who}: «{text}» ({why}). {key} again (or y) sends it; any other key keeps it",
+              when=when, who=who, text=cut(str(d.get("text") or ""), 60), why=cut(str(why), 50), key=key)
 
 
 def new_act():
@@ -1125,9 +1140,6 @@ def threaded_answer(positions, pane_of=None, after=None):
 
     def answer(it, text):
         import of_store
-        why = of_asks_answer.not_the_owner()
-        if why:
-            return False, why
         own = of_store.connect()
         try:
             out = of_asks_answer.answer(own, it, text, _positions(positions), pane_of or (lambda name: None))
@@ -1170,7 +1182,8 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     answer = threaded_answer(positions, pane_of, later)
     import of_listen
 
-    handoff = leaving_as_owner(lambda pendings: leave(pendings, positions, of_path))
+    def handoff(pendings):
+        leave(pendings, positions, of_path)
 
     def studio(item, done):  # in a thread: the store read, the server's link and the browser never hold the popup
         import threading
