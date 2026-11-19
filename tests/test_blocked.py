@@ -183,7 +183,10 @@ class KeepContextTest(unittest.TestCase):
 
         def read():
             return seen.pop(0) if len(seen) > 1 else seen[0]
-        ok, why = of_blocked.answer_keep(read, pressed.append, sleep=lambda s: None)
+        def press(k):
+            pressed.append(k)
+            return True
+        ok, why = of_blocked.answer_keep(read, press, sleep=lambda s: None)
         return ok, why, pressed
 
     def test_either_order_reaches_keep_before_enter(self):
@@ -209,6 +212,27 @@ class KeepContextTest(unittest.TestCase):
         self.assertEqual((ok, pressed), (False, []))
         self.assertIsNone(of_blocked.compact_rows(["❯ Keep 1m tokens", "  Autocompact at 400k"]))  # no dialog title
         self.assertEqual(of_blocked.detect("\n".join(_offer(False, False)))["type"], "compact")
+
+    def test_the_offers_text_above_a_prompt_gets_no_key(self):
+        """of_review on PR 431: the offer's lines printed by an agent above an input box holding a half-typed reply."""
+        quoted = _offer(False, True) + ["", "✻ Done", "─" * 40, "❯ half a reply", "─" * 40,
+                                        "  ⏵⏵ bypass permissions on"]
+        self.assertIsNone(of_blocked.compact_rows(quoted))
+        ok, _, pressed = self.run_answer([quoted])
+        self.assertEqual((ok, pressed), (False, []))
+        ok, _, pressed = self.run_answer([_offer(False, False), quoted])   # the offer gone while moving: no Esc
+        self.assertEqual((ok, pressed), (False, ["Down"]))
+
+    def test_a_failed_read_or_key_ends_with_no_answer(self):
+        """of_review on PR 431: a failed read after Enter had counted as the dialog gone."""
+        ok, why, pressed = self.run_answer([_offer(False, True), None])
+        self.assertEqual((ok, pressed), (False, ["Enter"]))
+        self.assertIn("could not be read", why)
+        ok, _, pressed = self.run_answer([None])
+        self.assertEqual((ok, pressed), (False, []))
+        ok, why = of_blocked.answer_keep(lambda: _offer(False, False), lambda k: False, sleep=lambda s: None)
+        self.assertFalse(ok)
+        self.assertIn("could not be sent", why)
 
 if __name__ == "__main__":
     unittest.main()

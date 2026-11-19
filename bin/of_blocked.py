@@ -157,10 +157,18 @@ _KEEP_ROW = re.compile(r"^\s*[│|]?\s*([❯›]\s*)?Keep \d+(?:\.\d+)?\s*[kKmM]
 _LOWER_ROW = re.compile(r"^\s*[│|]?\s*([❯›]\s*)?Autocompact at\b")
 
 
+_KEEP_FOOTER = re.compile(r"(?i)\benter confirm\b.*\besc not now\b")
+
+
 def compact_rows(lines):
-    """{on_keep, toward_keep} for the offer's Keep form on this screen, or None (another dialog, or the older form)."""
+    """{on_keep, toward_keep} for the offer's Keep form open on this screen, or None (another dialog, the older form,
+    or the offer's text shown above a prompt: its footer must be the screen's last line, so nothing is typed into an
+    input box below text that only quotes it; of_review on organic-framework PR 431)."""
     lines = list(lines or [])
     if not _COMPACT.search("\n".join(lines)):
+        return None
+    shown = [ln.strip(" │|") for ln in lines if ln.strip(" │|")]
+    if not shown or not _KEEP_FOOTER.search(shown[-1]):
         return None
     keep = [(i, bool(m.group(1))) for i, ln in enumerate(lines) for m in [_KEEP_ROW.match(ln)] if m]
     lower = [(i, bool(m.group(1))) for i, ln in enumerate(lines) for m in [_LOWER_ROW.match(ln)] if m]
@@ -171,28 +179,43 @@ def compact_rows(lines):
 
 def answer_keep(read, press, sleep=time.sleep, moves=3):
     """Answer the offer with Keep: the cursor moved one row at a time and the screen read again after each press;
-    Enter only with the cursor on Keep, and the dialog must be gone after it. Anything else: Esc ("not now", the
-    session as it was) and (False, why), so the owner's card is filed as before. READ gives the screen's lines."""
-    rows = compact_rows(read())
+    Enter only with the cursor on Keep, and the dialog must be seen gone after it. READ gives the screen's lines or
+    None when the read failed; PRESS returns False when the key was not sent. A failed read or send ends the attempt
+    with no further key and no answer (of_review on organic-framework PR 431). A screen that is not the offer any more
+    gets Esc ("not now", the session as it was) only while the offer is still the one shown; (False, why) leaves it to
+    the owner's card."""
+    first = read()
+    if first is None:
+        return False, "the screen could not be read"
+    rows = compact_rows(first)
     if rows is None:
         return False, "not the offer's Keep form"
     for _ in range(moves):
         if rows["on_keep"]:
             break
-        press(rows["toward_keep"])
+        if not press(rows["toward_keep"]):
+            return False, "a key could not be sent"
         sleep(0.4)
-        rows = compact_rows(read())
+        now = read()
+        if now is None:
+            return False, "the screen could not be read"
+        rows = compact_rows(now)
         if rows is None:
-            press("esc")
-            return False, "the dialog changed while the cursor moved"
+            return False, "the screen changed while the cursor moved"
     if not rows["on_keep"]:
         press("esc")
         return False, "the cursor never reached Keep"
-    press("Enter")
+    if not press("Enter"):
+        return False, "a key could not be sent"
     sleep(0.8)
-    if _COMPACT.search("\n".join(read())):
+    after = read()
+    if after is None:
+        return False, "the screen could not be read after Enter"
+    if compact_rows(after) is not None:
         press("esc")
         return False, "the dialog stayed after Enter"
+    if _COMPACT.search("\n".join(after)):
+        return False, "the offer's text is still on the screen"
     return True, "kept"
 
 

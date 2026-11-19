@@ -769,14 +769,25 @@ class BlockedProcessor(Processor):
         import of_blocked
         if of_blocked.compact_rows(of_blocked.tail(screen, 40)) is None:
             return False
+        tried = BlockedProcessor._keep_tried
+        if d["fingerprint"] in tried:
+            return False  # one attempt per dialog: a failed one is the owner's card (of_review on PR 431)
+        tried.add(d["fingerprint"])
 
         def read():
-            r = subprocess.run(["herdr", "pane", "read", pane, "--source", "visible", "--lines", "40"],
-                               capture_output=True, text=True, timeout=10)
-            return of_blocked.tail(r.stdout if r.returncode == 0 else "", 40)
+            try:
+                r = subprocess.run(["herdr", "pane", "read", pane, "--source", "visible", "--lines", "40"],
+                                   capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return of_blocked.tail(r.stdout, 40) if r.returncode == 0 else None
 
         def press(k):
-            subprocess.run(["herdr", "pane", "send-keys", pane, k], capture_output=True, text=True, timeout=10)
+            try:
+                return subprocess.run(["herdr", "pane", "send-keys", pane, k], capture_output=True, text=True,
+                                      timeout=10).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                return False
         ok, why = of_blocked.answer_keep(read, press)
         if not ok:
             print(f"of listen: compaction offer in {pane}: {why}; the owner's card is filed", flush=True)
@@ -790,6 +801,8 @@ class BlockedProcessor(Processor):
                                                    "answer": "Keep (the current window)", "keys": ["Enter"],
                                                    "basis": of_blocked.KEEP_BASIS}, position=position, session=sid)
         return True
+
+    _keep_tried = set()   # the compaction offers' fingerprints this listener tried to answer Keep
 
     _resting = (None, frozenset())
 
