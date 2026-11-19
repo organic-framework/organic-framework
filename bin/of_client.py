@@ -234,11 +234,49 @@ def _backoff(i, retry_after=None):
 
 
 def ensure_key(path=KEY_PATH):
+    """The machine's key, made once. It is made in a temporary folder beside its place and linked in, so two callers at
+    once (the listener and the relay started together under systemd on the agent host: of_platform, 2026-11-19) never
+    run ssh-keygen on an existing path, which would ask to overwrite it and fail. The caller that links the private
+    half links its public half; one that finds a private half there keeps it and waits for its pair, or derives it."""
     if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"of-machine {of_events.machine_id()}",
-                        "-f", path], check=True, env=no_agent_env())
-    with open(path + ".pub") as fh:
+        import shutil
+        d = os.path.dirname(path)
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix=".machine-key-", dir=d)
+        try:
+            t = os.path.join(tmp, "key")
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", f"of-machine {of_events.machine_id()}",
+                            "-f", t], check=True, env=no_agent_env())
+            try:
+                os.link(t, path)  # the first caller's key wins; a second finds it there
+                won = True
+            except FileExistsError:
+                won = False
+            if won:
+                try:
+                    os.link(t + ".pub", path + ".pub")
+                except FileExistsError:  # a public half left from an earlier key: this one is its pair now
+                    os.replace(t + ".pub", path + ".pub")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    pub = path + ".pub"
+    for _ in range(50):  # the winner links its public half right after its private one
+        if os.path.exists(pub):
+            break
+        time.sleep(0.1)
+    else:  # a private half with no pair (a crash between the two links): derive it
+        r = subprocess.run(["ssh-keygen", "-y", "-f", path], capture_output=True, text=True, check=True,
+                           env=no_agent_env())
+        tmp_pub = f"{pub}.{os.getpid()}.tmp"
+        with open(tmp_pub, "w") as fh:
+            fh.write(r.stdout.strip() + "\n")
+        try:
+            os.link(tmp_pub, pub)
+        except FileExistsError:
+            pass
+        finally:
+            os.unlink(tmp_pub)
+    with open(pub) as fh:
         return fh.read().strip()
 
 
