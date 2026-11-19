@@ -3075,7 +3075,11 @@ def _line_act(words):
     for k, w in enumerate(words):
         if _fold_name(os.path.basename(w)) not in ("of", "of.py"):
             continue
-        rest = [_fold_name(x) for x in words[k + 1:k + 8]]
+        # every word up to the next `of`: options before the action may take values, any number of them (`--pane a
+        # --text b --version 2 answered`: of_review on organic-framework PR 404 at 86a7b12)
+        end = next((j for j in range(k + 1, len(words)) if _fold_name(os.path.basename(words[j])) in ("of", "of.py")),
+                   len(words))
+        rest = [_fold_name(x) for x in words[k + 1:end]]
         # no `--help` exception here: the words have lost their quotes, so a reason `"--help me"` read as the flag,
         # while argparse takes it as the reason and runs the act (of_review on organic-framework PR 399 at 7c776fe);
         # the per-command reading, which has the real words, keeps it (_actor_act)
