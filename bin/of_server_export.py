@@ -212,6 +212,12 @@ def _file_sha(path):
     return h.hexdigest()
 
 
+def _blob_count(cfg):
+    """The files in the server's file blob store (of_plugins.FsBlobs), which a bundle does not carry yet."""
+    d = os.path.join((cfg or {}).get("state_dir") or "", "blobs")
+    return sum(len(files) for _, _, files in os.walk(d)) if cfg and os.path.isdir(d) else 0
+
+
 def _belongs(table, row, org):
     """Whether ROW is ORG's by its table's own rule (STORE's predicate), read from the row itself."""
     if table == "messages":
@@ -232,6 +238,9 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
     if since is not None and not (config and _uses_clickhouse(config)):
         raise ExportError("--since needs a ClickHouse export")
+    blobs = _blob_count(config)
+    if blobs:  # the laptop's blob store held none on 2026-11-19; carrying them comes when a server keeps some
+        raise ExportError(f"this server's blob store holds {blobs} files, which this release does not carry yet")
     if os.path.exists(out) and os.listdir(out):
         raise ExportError(f"{out} is not empty")
     _private_dir(out)

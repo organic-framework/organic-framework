@@ -252,6 +252,19 @@ class ExportTest(unittest.TestCase):
         self.assertIn("no server's store", str(e.exception))
         self.assertFalse(os.path.exists(os.path.join(self.out, "index.json")))
 
+    def test_an_export_refuses_a_server_whose_blob_store_holds_files(self):
+        """A bundle does not carry the file blob store yet, so an export never silently leaves files behind."""
+        state = tempfile.mkdtemp(prefix="ofs-")
+        os.makedirs(os.path.join(state, "blobs", "ab"))
+        with open(os.path.join(state, "blobs", "ab", "ab12"), "wb") as fh:
+            fh.write(b"x")
+        with self.assertRaises(ex.ExportError) as e:
+            ex.export_store(self.src, "acme", self.out, config={"state_dir": state})
+        self.assertIn("blob store holds 1 files", str(e.exception))
+        empty = tempfile.mkdtemp(prefix="ofs-")
+        os.makedirs(os.path.join(empty, "blobs"))
+        ex.export_store(self.src, "acme", self.out, config={"state_dir": empty})   # an empty store: no refusal
+
     def test_an_export_refuses_a_folder_that_is_not_empty(self):
         os.makedirs(self.out)
         open(os.path.join(self.out, "x"), "w").close()
