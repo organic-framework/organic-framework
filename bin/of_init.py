@@ -1315,7 +1315,8 @@ def set_config_key(path, key, value):
     os.chmod(path, 0o600)
 
 
-ORG_KEYS = {"hold": "on|off: `of apply` and the desk leave the organization's panes alone"}
+ORG_KEYS = {"hold": "on|off: `of apply` and the desk leave the organization's panes alone",
+            "path": "<folder>: the organization's repository, which holds registry/positions.yaml"}
 
 
 def org_entry_name(o):

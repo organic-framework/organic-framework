@@ -3829,7 +3829,8 @@ LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session,
 OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml")
 OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner writes: orgs.yaml (which registries the "
                      "guard reads) and views.yaml (what runs in the person's panes). Agents change them through OF's "
-                     "commands, which write the file from their own process: `of org set <org> hold on|off`, "
+                     "commands, which write the file from their own process: `of org set <org> hold on|off` or "
+                     "`path <folder>`, "
                      "`of view add|remove`, `of init`. A script or text that only names the file: change that file "
                      "with the Edit tool. A test's own copy: write it by its own folder's path, not through $HOME "
                      "(docs/guard.md G33)")
