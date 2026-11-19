@@ -23,6 +23,9 @@ def _state_dir():
     return STATE_DIR
 
 
+_FALLBACK_ID = []   # machine_id's own id for this process, when no id file can be made or read
+
+
 def machine_id(wait_s=5.0):
     """This machine's id, made once. Several processes may make it at once on a fresh state folder (the agent host's
     listener and relay, started together: of_review on organic-framework PR 409, where 3 of 4 threads failed the
@@ -34,7 +37,7 @@ def machine_id(wait_s=5.0):
         try:
             with open(path) as fh:
                 return fh.read().strip()
-        except FileNotFoundError:
+        except OSError:   # missing, a link to nothing, a folder in its place: no id read
             return None
     import tempfile
     d = os.path.dirname(path)
@@ -68,7 +71,11 @@ def machine_id(wait_s=5.0):
         if time.time() > deadline:
             rounds += 1
             if rounds > 2:   # a state folder no caller can fix: an id for this process, never a hang (every emit and
-                return str(uuid.uuid4())   # hook asks for it; of_review on organic-framework PR 419)
+                # hook asks for it; of_review on organic-framework PR 419), the same one for the process's life, so
+                # its events carry one host.id (of_review's note after PR 419)
+                if not _FALLBACK_ID:
+                    _FALLBACK_ID.append(str(uuid.uuid4()))
+                return _FALLBACK_ID[0]
             # an empty file an older writer left: one caller at a time, under a lock, replaces it if it is still empty,
             # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
             # gave six processes two ids)
@@ -83,6 +90,8 @@ def machine_id(wait_s=5.0):
                             fh.write(str(uuid.uuid4()) + "\n")
                         os.chmod(tmp, 0o600)
                         os.replace(tmp, path)
+                    except OSError:   # a folder in its place: left as it is; the rounds end in this process's own id
+                        os.unlink(tmp)
                     except BaseException:
                         os.unlink(tmp)
                         raise
