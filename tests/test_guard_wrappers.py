@@ -81,6 +81,16 @@ class WrapperReadings(unittest.TestCase):
                     "ls 2>&1 | wc", "cat <<'EOF' > notes.txt\nhello\nEOF"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_the_ninth_pass(self):
+        """Both reviews on PR 332 at 228201a: an escaped `\\<` before a background `&` is a word, so the command after
+        it runs; chrt's priority by brace expansion; a redirection between nice's -n and its value."""
+        for cmd in (f"echo a\\< & {OP}", "echo a\\< & cat .env", f"printf %s x\\< & {OP}", f"echo a\\<& {OP}",
+                    f"echo \\< & cat {KEY}", f"echo a\\> & {OP}", f"chrt -o {{0..0}} cat {KEY}",
+                    f"p=0; nice -n </dev/null 0 chrt -o \"$p\" cat {KEY}"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("sleep 1 & echo done", "exec 3<>/dev/tcp/127.0.0.1/80", "cat <&3 && echo ok"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_plain_uses_still_run(self):
         for cmd in ("timeout 30 git status", "timeout --preserve-status 5 python3 -m unittest tests.test_of",
                     "timeout -k 5 60 make test", "printf x | xargs -0 -n1 grep foo", "find . -name '*.py' | xargs wc -l",
