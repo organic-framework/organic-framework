@@ -30,7 +30,9 @@ spec:
       securityContext: {fsGroup: 101}
       containers:
         - name: clickhouse
-          image: clickhouse/clickhouse-server:25.8
+          # ClickHouse's 26.8 LTS line (patches by this tag; v26.8.36.3 and later fix CVE-2026-116366). 25.8 had
+          # its last release on 2026-08-26. Move to the next LTS line before this one leaves support.
+          image: clickhouse/clickhouse-server:26.8
           env:
             - {name: CLICKHOUSE_USER, value: admin}
             - {name: CLICKHOUSE_PASSWORD, valueFrom: {secretKeyRef: {name: ch-admin, key: password}}}
