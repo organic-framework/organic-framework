@@ -93,6 +93,7 @@ PAGES = [
         ("docs/methodology.md", "methodology", "Methodology"),
         ("docs/success.md", "success", "How we see progress"),
         ("docs/onboarding-practice.md", "onboarding-practice", "Onboarding practice"),
+        ("docs/user-experience.md", "user-experience", "The user-experience criterion"),
     ]),
     ("Design records (RFCs)", [
         ("docs/rfc/0001-organic-framework-platform.md", "rfc/0001-platform", "0001 The platform"),
