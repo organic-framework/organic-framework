@@ -326,5 +326,28 @@ class ExcerptTest(unittest.TestCase):
         self.assertEqual(len(of_tempo.excerpt("c" * 2000, [])), 700)
 
 
+
+class CronZoneTest(unittest.TestCase):
+    """tb-v6 (of_capacity, msg 01a1f3db-cfe8): a session cron's fields are the machine's local time; the judge read them
+    as UTC, so a cron booked for a limit's reset read as four hours after it."""
+
+    def test_the_note_names_the_zone_and_the_run(self):
+        import time
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Dubai"}):
+            time.tzset()
+            try:
+                note = of_tempo.cron_zone_note("7 0 23 11 *", "2026-11-19T11:20:00.000Z")
+                self.assertEqual(note, " (its fields in the machine's local time, UTC+04:00; it runs at 2026-11-22T20:07Z)")
+                self.assertEqual(of_tempo.cron_zone_note("*/30 * * * *", "2026-11-19T11:20:00.000Z"),
+                                 " (its fields in the machine's local time, UTC+04:00)")
+                item = {"source": "cron", "ts": "2026-11-19T11:20:00.000Z",
+                        "quote": "schedule 7 0 23 11 *, recurring False" + note + ": Waits on: a limit's reset"}
+                self.assertEqual(of_tempo.booked_at(item)[0], of_tempo._epoch("2026-11-22T20:07:00Z"))  # still read
+            finally:
+                os.environ.pop("TZ", None)
+                time.tzset()
+
+
 if __name__ == "__main__":
     unittest.main()
