@@ -1226,6 +1226,34 @@ class LeaveTest(RedeliverTest):
         self.assertEqual((self.events("of.agent_question_answered"), self.events("of.question_labelled"),
                           self.events("of.ask_snoozed"), of_asks_answer.unsent_drafts()), ([], [], [], []))
 
+    def test_a_drafts_own_fields_never_name_a_path_outside_its_folder(self):
+        """of_review on PR 402 at 9d976bc: a draft whose item.ids[0] climbed out of the folder made D delete, and
+        save_draft overwrite, a .json two folders up."""
+        _, _, item = self.group()
+        victim = os.path.join(os.path.dirname(of_events.STATE_DIR), f"victim-{os.getpid()}.json")
+        with open(victim, "w") as fh:
+            fh.write("{}")
+        try:
+            bad = dict(item, ids=["../../" + os.path.basename(victim)[:-5]])
+            self.assertIsNone(of_asks_answer.save_draft(bad, "x"))
+            of_asks_answer.mark_failed(bad, "x")
+            of_asks_answer.drop_draft(bad)
+            planted = {"ask_id": "../" + os.path.basename(victim)[:-5], "ask_ids": item["ids"], "text": "x",
+                       "item": bad}
+            with open(os.path.join(of_asks_answer.drafts_dir(), "a.b.json"), "w") as fh:  # not a plain id: no draft
+                json.dump(planted, fh)
+            with open(os.path.join(of_asks_answer.drafts_dir(), item["ids"][0] + ".json"), "w") as fh:
+                json.dump(planted, fh)                   # its fields climb out; its own file name does not
+            listed = of_asks_answer.unsent_drafts()
+            self.assertEqual([d["file"] for d in listed], [item["ids"][0] + ".json"])
+            of_asks_answer.archive_drafts(set())          # its ask is closed: archived by the folder's own name
+            of_asks_answer.drop_draft_file("../" + os.path.basename(victim))
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "{}")         # untouched throughout
+            self.assertEqual(of_asks_answer.unsent_drafts(), [])
+        finally:
+            os.remove(victim)
+
     def test_a_delivered_earlier_answer_never_hides_a_later_one(self):
         """Codex's review: `seen` took the earlier answer before its delivery check, so the same words given again
         after a reopen were never typed."""

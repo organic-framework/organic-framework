@@ -1355,7 +1355,7 @@ class Inbox:
         text = d.get("text") or ""
         if not self.keep_draft(k, (mine + "\n\n" + text) if mine.strip() and mine.strip() != text.strip() else text) \
                 is False:
-            of_asks_answer.drop_draft(d.get("item") or {"ids": ids})
+            of_asks_answer.drop_draft_file(d.get("file"))  # by the folder's own name, never the file's fields
         self.start_reply(x)
 
     def take_amended(self, drafts=()):
