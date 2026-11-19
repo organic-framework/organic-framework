@@ -22,6 +22,22 @@ import of_server  # noqa: E402
 import of_server_export as ex  # noqa: E402
 
 
+
+def export_store(*a, **k):
+    """The tests not about encryption say --plaintext, as an operator must (sec_keeper, msg 01a1f638-5862)."""
+    k.setdefault("plaintext", True)
+    return ex.export_store(*a, **k)
+
+
+def import_store(*a, **k):
+    k.setdefault("plaintext", True)
+    return ex.import_store(*a, **k)
+
+
+def check_import(*a, **k):
+    k.setdefault("plaintext", True)
+    return ex.check_import(*a, **k)
+
 def store(tables=True):
     """A server store; with TABLES, also the tables its modules make when they first serve."""
     d = tempfile.mkdtemp(prefix="ofx-")
@@ -92,7 +108,7 @@ class ExportTest(unittest.TestCase):
         self.out = os.path.join(tempfile.mkdtemp(prefix="ofb-"), "bundle")
 
     def export(self, org="acme", out=None, **kw):
-        return ex.export_store(self.src, org, out or self.out, **kw)
+        return export_store(self.src, org, out or self.out, **kw)
 
     def test_an_export_holds_the_organizations_rows_alone_and_a_cross_message_in_both(self):
         m, sha = self.export(version="t")
@@ -113,12 +129,12 @@ class ExportTest(unittest.TestCase):
     def test_an_import_reproduces_the_rows_and_the_check_matches_on_both_sides(self):
         _, sha = self.export()
         dst, _ = store()
-        self.assertEqual(ex.import_store(dst, self.out, "acme", sha)["messages"], 2)
+        self.assertEqual(import_store(dst, self.out, "acme", sha)["messages"], 2)
         self.assertEqual(ex.check_store(dst, self.out), [])
         self.assertEqual(ex.check_store(self.src, self.out), [])
         got = dst.execute("SELECT seq, state FROM messages ORDER BY seq").fetchall()
         self.assertEqual(got, [(1, "done"), (2, "queued")])               # sequence numbers kept: feed cursors hold
-        self.assertEqual(ex.import_store(dst, self.out, "acme", sha)["messages"], 2)   # again: replaced, not doubled
+        self.assertEqual(import_store(dst, self.out, "acme", sha)["messages"], 2)   # again: replaced, not doubled
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 2)
 
     def test_the_operator_names_the_organization_and_carries_the_index_hash(self):
@@ -129,7 +145,7 @@ class ExportTest(unittest.TestCase):
         for org, given, words in (("other", sha, "not other's"), ("acme", None, "--index-sha"),
                                   ("acme", "0" * 64, "not the one the export printed")):
             with self.subTest(org=org, given=given), self.assertRaises(ex.ExportError) as e:
-                ex.import_store(dst, self.out, org, given)
+                import_store(dst, self.out, org, given)
             self.assertIn(words, str(e.exception))
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
 
@@ -137,7 +153,6 @@ class ExportTest(unittest.TestCase):
         """PR 425: a changed bundle with every hash recomputed wrote another organization's rows, and a column the
         destination lacks was dropped silently."""
         dst, _ = store()
-        dst.execute("INSERT INTO position_aliases (org, alias, position) VALUES ('other', 'x', 'other_x')")
         dst.execute("INSERT INTO position_aliases (org, alias, position) VALUES ('acme', 'old', 'acme_old')")
         for rows, words in (([{"org": "other", "alias": "x", "position": "taken"}], "not acme's"),
                             ([{"org": "acme", "alias": "y", "position": "p", "planted": 1}], "no column planted")):
@@ -146,10 +161,31 @@ class ExportTest(unittest.TestCase):
             sha = rebuild(out, "position_aliases", rows)
             self.assertEqual(ex.check_bundle(out, index_sha=sha), [])  # the hashes all agree: only the rows tell
             with self.subTest(words=words), self.assertRaises(ex.ExportError) as e:
-                ex.import_store(dst, out, "acme", sha)
+                import_store(dst, out, "acme", sha)
             self.assertIn(words, str(e.exception))
-        self.assertEqual(sorted(dst.execute("SELECT org, alias, position FROM position_aliases").fetchall()),
-                         [("acme", "old", "acme_old"), ("other", "x", "other_x")])     # nothing changed
+        self.assertEqual(dst.execute("SELECT org, alias, position FROM position_aliases").fetchall(),
+                         [("acme", "old", "acme_old")])                                  # nothing changed
+
+    def test_a_server_holding_another_organizations_records_takes_no_import(self):
+        """sec_keeper, msg 01a1f638-5862: a message between two organizations is in both bundles, so on a server that
+        serves the other one too the import would replace that organization's copy."""
+        _, sha = self.export()
+        dst, _ = store()
+        dst.execute("INSERT INTO messages (seq, msg_id, to_org, from_org) VALUES (7, 'z', 'other', 'other')")
+        with self.assertRaises(ex.ExportError) as e:
+            import_store(dst, self.out, "acme", sha)
+        self.assertIn("another organization's records", str(e.exception))
+        self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+
+    def test_records_travel_encrypted_unless_plaintext_is_said(self):
+        with self.assertRaises(ex.ExportError) as e:
+            ex.export_store(self.src, "acme", self.out)
+        self.assertIn("--plaintext", str(e.exception))
+        _, sha = self.export()
+        dst, _ = store()
+        with self.assertRaises(ex.ExportError) as e:
+            ex.import_store(dst, self.out, "acme", sha)
+        self.assertIn("not encrypted", str(e.exception))
 
     def test_a_difference_found_inside_the_transaction_rolls_it_back(self):
         _, sha = self.export()
@@ -158,7 +194,7 @@ class ExportTest(unittest.TestCase):
         from unittest import mock
         with mock.patch.object(ex, "check_store", return_value=["messages: the store differs"]):
             with self.assertRaises(ex.ExportError):
-                ex.import_store(dst, self.out, "acme", sha)
+                import_store(dst, self.out, "acme", sha)
         self.assertEqual(dst.execute("SELECT alias FROM position_aliases").fetchall(), [("old",)])
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
 
@@ -172,7 +208,7 @@ class ExportTest(unittest.TestCase):
         self.assertIn("store/coord.jsonl.gz: sha256 differs", ex.check_bundle(self.out))
         dst, _ = store()
         with self.assertRaises(ex.ExportError):
-            ex.import_store(dst, self.out, "acme", sha)
+            import_store(dst, self.out, "acme", sha)
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
 
     def test_a_key_another_organization_holds_refuses_the_whole_import(self):
@@ -181,7 +217,7 @@ class ExportTest(unittest.TestCase):
         dst.execute("INSERT INTO coord (seq, org, event_id, name, ts, record, added) VALUES "
                     "(1, 'other', 'z', 'of.ask', '2026-11-19T09:00:00Z', '{}', 1795130346.5)")
         with self.assertRaises(ex.ExportError) as e:
-            ex.import_store(dst, self.out, "acme", sha)
+            import_store(dst, self.out, "acme", sha)
         self.assertIn("another organization", str(e.exception))
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)   # rolled back whole
 
@@ -190,15 +226,15 @@ class ExportTest(unittest.TestCase):
         and a store one column ahead never matched, since its own columns entered the digest."""
         _, sha = self.export()
         fresh, _ = store(tables=False)                                       # the server's own tables only
-        self.assertEqual(ex.import_store(fresh, self.out, "acme", sha)["coord"], 1)
+        self.assertEqual(import_store(fresh, self.out, "acme", sha)["coord"], 1)
         self.assertEqual(ex.check_store(fresh, self.out), [])
         ahead, _ = store()
         ahead.execute("ALTER TABLE position_aliases ADD COLUMN newer TEXT DEFAULT 'x'")
-        self.assertEqual(ex.import_store(ahead, self.out, "acme", sha)["position_aliases"], 1)
+        self.assertEqual(import_store(ahead, self.out, "acme", sha)["position_aliases"], 1)
         self.assertEqual(ex.check_store(ahead, self.out), [])
         bare = sqlite3.connect(os.path.join(tempfile.mkdtemp(prefix="ofx-"), "x.db"), isolation_level=None)
         with self.assertRaises(ex.ExportError) as e:
-            ex.import_store(bare, self.out, "acme", sha)
+            import_store(bare, self.out, "acme", sha)
         self.assertIn("start the new server once", str(e.exception))
 
     def test_a_source_that_never_made_a_table_exports_it_empty(self):
@@ -208,7 +244,7 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(m["columns"]["finance_facts"], [])
         self.assertEqual(ex.check_bundle(self.out, index_sha=sha), [])
         dst, _ = store()
-        self.assertEqual(ex.import_store(dst, self.out, "acme", sha)["finance_facts"], 0)
+        self.assertEqual(import_store(dst, self.out, "acme", sha)["finance_facts"], 0)
 
     @unittest.skipUnless(__import__("shutil").which("age") and __import__("shutil").which("age-keygen"), "age")
     def test_an_encrypted_bundle_holds_no_plaintext_and_imports_with_its_key_alone(self):
@@ -233,12 +269,12 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(ex.check_bundle(self.out, ident, sha), [])            # and everything, decrypted
         dst, _ = store()
         with self.assertRaises(ex.ExportError):
-            ex.import_store(dst, self.out, "acme", sha)                        # no key: nothing imported
+            import_store(dst, self.out, "acme", sha)                        # no key: nothing imported
         other, _ = age_key(tempfile.mkdtemp(prefix="ofk-"))
         with self.assertRaises(ex.ExportError):
-            ex.import_store(dst, self.out, "acme", sha, other)                 # another key: refused
+            import_store(dst, self.out, "acme", sha, other)                 # another key: refused
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
-        self.assertEqual(ex.import_store(dst, self.out, "acme", sha, ident)["messages"], 2)
+        self.assertEqual(import_store(dst, self.out, "acme", sha, ident)["messages"], 2)
         self.assertEqual(ex.check_store(dst, self.out, ident), [])
         with self.assertRaises(ex.ExportError):
             self.export(out=self.out + "-x", recipient="age1short")
@@ -248,7 +284,7 @@ class ExportTest(unittest.TestCase):
         was no server's store, wiped the organization's rows when imported."""
         bare = sqlite3.connect(os.path.join(tempfile.mkdtemp(prefix="ofx-"), "x.db"), isolation_level=None)
         with self.assertRaises(ex.ExportError) as e:
-            ex.export_store(bare, "acme", self.out)
+            export_store(bare, "acme", self.out)
         self.assertIn("no server's store", str(e.exception))
         self.assertFalse(os.path.exists(os.path.join(self.out, "index.json")))
 
@@ -259,11 +295,11 @@ class ExportTest(unittest.TestCase):
         with open(os.path.join(state, "blobs", "ab", "ab12"), "wb") as fh:
             fh.write(b"x")
         with self.assertRaises(ex.ExportError) as e:
-            ex.export_store(self.src, "acme", self.out, config={"state_dir": state})
+            export_store(self.src, "acme", self.out, config={"state_dir": state})
         self.assertIn("blob store holds 1 files", str(e.exception))
         empty = tempfile.mkdtemp(prefix="ofs-")
         os.makedirs(os.path.join(empty, "blobs"))
-        ex.export_store(self.src, "acme", self.out, config={"state_dir": empty})   # an empty store: no refusal
+        export_store(self.src, "acme", self.out, config={"state_dir": empty})   # an empty store: no refusal
 
     def test_a_bundle_is_deleted_only_by_its_own_hash_and_only_with_the_files_it_names(self):
         _, sha = self.export()
@@ -319,6 +355,18 @@ class FakeClickHouse:
         self.conn.create_function("tuple", -1, lambda *key: json.dumps(key))
         self.conn.create_function("toString", 1, str)
         self.conn.create_function("notEmpty", 1, bool)
+        self.conn.create_function("cityHash64", -1, lambda *v: int(hashlib.sha256(json.dumps(v).encode()).hexdigest()[:15], 16))
+
+        class Xor:
+            def __init__(self):
+                self.v = 0
+
+            def step(self, x):
+                self.v ^= x
+
+            def finalize(self):
+                return self.v
+        self.conn.create_aggregate("groupBitXor", 1, Xor)
         for role in ("org", "vault"):
             db = prefix + "_" + role
             self.conn.execute(f"ATTACH ':memory:' AS {db}")
@@ -339,8 +387,18 @@ class FakeClickHouse:
         sql = re.sub(r"\{(\w+):\w+\}", r":\1", sql)
         if "FROM system.columns" in sql:
             db = params["db"]
+            if "t" in params:  # one table's columns, in order
+                yield from (f"{r[1]}\n".encode() for r in self.conn.execute(f"PRAGMA {db}.table_info({params['t']})"))
+                return
             yield from (f"{t}\n".encode() for t in self.schema
                         if "org_id" in [r[1] for r in self.conn.execute(f"PRAGMA {db}.table_info({t})")])
+            return
+        made = re.fullmatch(r"CREATE TABLE IF NOT EXISTS (\S+) AS (\S+)", sql)
+        if made:
+            self.conn.execute(f"CREATE TABLE IF NOT EXISTS {made[1]} AS SELECT * FROM {made[2]} WHERE 0")
+            return
+        if sql.startswith(("TRUNCATE TABLE ", "DROP TABLE ", "INSERT INTO ")):
+            self.conn.execute(sql.replace("TRUNCATE TABLE ", "DELETE FROM ", 1), params)
             return
         if sql.startswith("ALTER TABLE"):
             assert sql.endswith(" SETTINGS mutations_sync = 2")
@@ -351,7 +409,7 @@ class FakeClickHouse:
         if not sql.startswith("SELECT DISTINCT"):
             # FINAL models a ReplacingMergeTree selecting the last physical row for each sorting tuple.
             source = re.search(r"FROM (\w+\.(\w+)) FINAL", sql)
-            table, keys = source[1], self.schema[source[2]][0]
+            table, keys = source[1], self.schema[source[2].removesuffix("__import")][0]
             final = f"(SELECT * FROM {table} WHERE rowid IN (SELECT max(rowid) FROM {table} GROUP BY {keys}))"
             sql = sql.replace(f"FROM {table} FINAL", "FROM " + final, 1)
         rows = self.conn.execute(sql, params).fetchall()
@@ -403,11 +461,12 @@ class OrgColumnTest(unittest.TestCase):
         cols = ex._org_columns(src, dbs)
         self.assertTrue({"hook_record", "runtime_record"} <= cols)
         tables = {t.name: t for t in ex._ch_tables(dbs, "acme", cols)}
-        hook = ex._ch_days(src, tables["vault/hook_record"], None)
-        runtime = ex._ch_days(src, tables["vault/runtime_record"], None)
+        hook = ex._ch_days(src, tables["vault/hook_record"], ex._ch_columns(src, "src_vault.hook_record"))
+        runtime = ex._ch_days(src, tables["vault/runtime_record"], ex._ch_columns(src, "src_vault.runtime_record"))
         self.assertEqual(hook[d][0], 2)
         self.assertEqual(runtime[d][0], 1)
-        self.assertEqual(ex._left_behind(src, dbs, cols), {"vault/runtime_record": {d: 1}, "vault/hook_record": {d: 1}})
+        left = ex._left_behind(src, dbs, cols)
+        self.assertEqual((left["vault/runtime_record"], left["vault/hook_record"]), ({d: 1}, {d: 1}))
         legacy = {t.name for t in ex._ch_tables(dbs, "acme", frozenset({"event", "transcript_record"}))}
         self.assertNotIn("vault/runtime_record", legacy)   # a vault with no org_id there: every runtime row stays
 
@@ -451,11 +510,11 @@ class ClickHouseExportTest(unittest.TestCase):
 
     def export(self, path=None, **kw):
         with self.connection("src"):
-            return ex.export_store(self.store, self.org, path or self.bulk, config=self.cfg, **kw)
+            return export_store(self.store, self.org, path or self.bulk, config=self.cfg, **kw)
 
     def restore(self, sha, path=None, identity=None):
         with self.connection("dst"):
-            return ex.import_store(self.store, path or self.bulk, self.org, sha, identity, config=self.cfg)
+            return import_store(self.store, path or self.bulk, self.org, sha, identity, config=self.cfg)
 
     def test_native_files_follow_routing_and_vault_ownership(self):
         m, sha = self.export()
@@ -497,9 +556,9 @@ class ClickHouseExportTest(unittest.TestCase):
         # The hook remains on the source but its ownership evidence vanished. Delete it while the target still
         # has that evidence, even though this delta also replaces its transcript day.
         self.src.conn.execute("DELETE FROM src_vault.transcript_record WHERE session_id = 'own'")
-        m, sha = self.export(self.delta, since=self.bulk)
-        self.assertEqual(set(m["clickhouse"]["vault/event"]["days"]), {self.last, self.new})
-        self.assertEqual(m["clickhouse"]["vault/hook_record"]["days"], {self.last: [0, None, None]})
+        m, sha = self.export(self.delta, since=self.bulk, since_sha=sha)
+        self.assertEqual(set(m["clickhouse"]["vault/event"]["days"]), {self.last, self.new})   # changed or new only
+        self.assertEqual(m["clickhouse"]["vault/hook_record"]["days"], {self.last: ex.EMPTY_DAY})
         for _ in range(2):
             self.restore(sha, self.delta)
             self.assertEqual(len(self.dst.rows("dst_vault.event")), 5)
@@ -508,7 +567,7 @@ class ClickHouseExportTest(unittest.TestCase):
             self.assertEqual(len(self.dst.rows("dst_org.runtime_record")), 1)
         self.dst.conn.execute("UPDATE dst_vault.event SET event_id = 'changed' WHERE ts = ?", (self.new,))
         with self.connection("dst"):
-            self.assertEqual(ex.check_import(self.store, self.delta, self.org, sha, config=self.cfg),
+            self.assertEqual(check_import(self.store, self.delta, self.org, sha, config=self.cfg),
                              [f"vault/event: ClickHouse differs on {self.new}"])
 
     def test_failure_after_a_native_file_leaves_no_published_bundle(self):
@@ -542,7 +601,7 @@ class ClickHouseExportTest(unittest.TestCase):
         with self.assertRaisesRegex(ex.ExportError, "not the one the export printed"):
             self.restore("0" * 64)
         with self.connection("dst"), self.assertRaisesRegex(ex.ExportError, "not other's"):
-            ex.import_store(self.store, self.bulk, "other", sha, config=self.cfg)
+            import_store(self.store, self.bulk, "other", sha, config=self.cfg)
         with mock.patch.object(ex, "check_store", return_value=["messages: mismatch"]), self.assertRaises(ex.ExportError):
             self.restore(sha)
         m["files"][rel]["plain_sha256"] = "0" * 64
@@ -579,17 +638,17 @@ class ClickHouseExportTest(unittest.TestCase):
         pw.write_text("test-password")
         ch = ex.ClickHouseHTTP({"url": "http://localhost:8123", "user": "test", "password_file": pw})
         sql = "SELECT {org:String}"
-        with mock.patch("urllib.request.urlopen", return_value=io.BytesIO(b"response")) as post:
+        with mock.patch.object(ex, "_open", return_value=io.BytesIO(b"response")) as post:
             self.assertEqual(b"".join(ch.query(sql, {"org": "tab\tand\\slash"})), b"response")
             req = post.call_args.args[0]
             self.assertEqual(req.data, sql.encode())
             self.assertEqual(parse_qs(urlsplit(req.full_url).query), {"param_org": ["tab\\tand\\\\slash"]})
             self.assertNotIn("test-password", req.full_url)
-        with mock.patch("urllib.request.urlopen", return_value=io.BytesIO()) as post:
+        with mock.patch.object(ex, "_open", return_value=io.BytesIO()) as post:
             blocks = iter([b"one", b"two"])
             ch.insert("INSERT INTO dst_org.event FORMAT Native", blocks)
             self.assertIs(post.call_args.args[0].data, blocks)
-        with mock.patch("urllib.request.urlopen", side_effect=OSError("private credential or row")):
+        with mock.patch.object(ex, "_open", side_effect=OSError("private credential or row")):
             with self.assertRaisesRegex(ex.ExportError, "^ClickHouse request failed$"):
                 list(ch.query(sql, {"org": self.org}))
 
@@ -599,21 +658,71 @@ class ClickHouseExportTest(unittest.TestCase):
                 return_value=self.cfg), redirect_stdout(output), redirect_stderr(output):
             cli = runpy.run_path(str(Path(ex.__file__).with_name("of")))["main"]
             with self.connection("src"):
-                self.assertEqual(cli(["server", "export", "--org", self.org, str(self.bulk)]), 0)
-                self.assertEqual(cli(["server", "export", "--org", self.org, "--since", str(self.bulk),
-                                      str(self.delta)]), 0)
+                self.assertEqual(cli(["server", "export", "--org", self.org, "--plaintext", str(self.bulk)]), 0)
+                bulk_sha = hashlib.sha256((self.bulk / "index.json").read_bytes()).hexdigest()
+                self.src.add("src_vault.event", self.org, "ask", self.new, "new", "private")
+                self.assertEqual(cli(["server", "export", "--org", self.org, "--plaintext", "--since", str(self.bulk),
+                                      "--since-sha", bulk_sha, str(self.delta)]), 0)
             self.assertEqual(output.getvalue().count("index sha256 "), 2)
             self.assertEqual(cli(["server", "export", "--check", str(self.delta)]), 0)
             with self.connection("dst"):
                 for bundle in (self.bulk, self.delta):
                     sha = hashlib.sha256((bundle / "index.json").read_bytes()).hexdigest()
-                    args = ["server", "import", "--org", self.org, "--index-sha", sha, str(bundle)]
+                    args = ["server", "import", "--org", self.org, "--plaintext", "--index-sha", sha, str(bundle)]
                     self.assertEqual(cli(args), 0)
                     self.assertEqual(cli(args + ["--check"]), 0)
                 self.dst.conn.execute("DELETE FROM dst_org.runtime_record")
                 self.assertEqual(cli(args + ["--check"]), 1)
         self.assertIn(f"org/runtime_record: ClickHouse differs on {self.last}", output.getvalue())
         self.assertNotIn("private", output.getvalue())
+
+    def test_a_redaction_on_an_earlier_day_reaches_the_delta_and_another_release_is_refused(self):
+        """sec_keeper, msg 01a1f638-5862, 2(b) and 2(c): a delta by the bulk's last day never moved a redaction or a
+        late row of an earlier day, and the release was written but never compared."""
+        _, sha = self.export()
+        self.src.conn.execute("DELETE FROM src_vault.event WHERE ts = ? AND payload = 'private'", (self.early,))
+        m, dsha = self.export(self.delta, since=self.bulk, since_sha=sha)
+        self.assertIn(self.early, m["clickhouse"]["vault/event"]["days"])         # the redacted day is carried
+        self.assertNotIn(self.early, m["clickhouse"]["org/event"]["days"])        # an unchanged day is not
+        with mock.patch.object(ex, "_code", return_value="0" * 64), self.assertRaisesRegex(
+                ex.ExportError, "another release"):
+            self.restore(dsha, self.delta)
+        with mock.patch.object(ex, "_code", return_value="0" * 64), self.assertRaisesRegex(
+                ex.ExportError, "another release"):
+            self.export(self.bulk.with_name("delta2"), since=self.bulk, since_sha=sha)
+
+    def test_staged_rows_that_differ_from_the_bundle_leave_the_target_unchanged(self):
+        """sec_keeper, 5: the Native files were read again for the insert without a hash, and a failed insert left
+        the target's days deleted."""
+        _, sha = self.export()
+        self.dst.add("dst_org.event", "kept", "ask", self.last, "kept", "kept")
+        before = self.dst.rows("dst_org.event")
+        original = self.dst.insert
+
+        def short(sql, chunks):  # the stream arrives, but one row is lost on the way in
+            data = b"".join(chunks)
+            rows = json.loads(data[2:])[:-1]
+            original(sql, iter([b"\x00\xff" + json.dumps(rows).encode()]))
+        with mock.patch.object(self.dst, "insert", short), self.assertRaisesRegex(
+                ex.ExportError, "staged rows differ|stream inserted"):
+            self.restore(sha)
+        self.assertEqual(self.dst.rows("dst_org.event"), before)
+
+    def test_rows_naming_no_organization_are_counted_as_left_behind(self):
+        """sec_keeper, 6: a session whose transcript rows all name no organization counted as taken, and vault event
+        and transcript rows naming none were not counted."""
+        self.src.add("src_vault.event", "", "ask", self.last, "x", "nobody's")
+        self.src.add("src_vault.transcript_record", "S-none", "9", "", self.early)   # a session naming no organization
+        self.src.add("src_vault.hook_record", "host", 9, self.last, "S-none")
+        m, _ = self.export()
+        left = m["clickhouse_left_behind"]
+        self.assertEqual(left["vault/event"], {self.last: 1})
+        self.assertEqual(left["vault/transcript_record"], {self.early: 1})        # the session-less row of no org
+        self.assertGreaterEqual(sum(left["vault/hook_record"].values()), 2)      # unknown and the no-org session
+
+    def test_plain_http_only_on_the_loopback(self):
+        with self.assertRaisesRegex(ex.ExportError, "loopback"):
+            ex.ClickHouseHTTP({"url": "http://192.0.2.10:8123", "user": "u", "password_file": "/nonexistent"})
 
     @unittest.skipUnless(__import__("shutil").which("age") and __import__("shutil").which("age-keygen"), "age")
     def test_encrypted_native_and_bulk_manifest_streams(self):
@@ -629,9 +738,10 @@ class ClickHouseExportTest(unittest.TestCase):
             self.restore(sha)
         self.assertFalse(self.dst.calls or self.dst.inserts)
         self.restore(sha, identity=ident)
-        delta, sha = self.export(self.delta, since=self.bulk, recipient=rec, identity=ident)
-        self.assertEqual(delta["clickhouse_since"]["vault/event"], self.last)
-        self.restore(sha, self.delta, ident)
+        self.src.add("src_vault.event", self.org, "ask", self.new, "new", "private")
+        delta, dsha = self.export(self.delta, since=self.bulk, since_sha=sha, recipient=rec)   # no key needed here
+        self.assertEqual(set(delta["clickhouse"]["vault/event"]["days"]), {self.new})
+        self.restore(dsha, self.delta, ident)
 
 
 if __name__ == "__main__":
