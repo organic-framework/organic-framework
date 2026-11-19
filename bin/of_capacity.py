@@ -299,6 +299,7 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
     probe_fn = probe_fn or globals()["probe"]
     emit = emit if emit is not None else (lambda kind, payload: of_events.emit(kind, payload))
     cache = load_cache()
+    pol = load_policy()
     sessions = {d: sessions_fn(d) for d in dirs}
     by_dir = positions_by_dir(positions, sessions)
     rows, changed = [], False
@@ -321,6 +322,7 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
             changed, probed = True, True
         row = dict(snap or {"config_dir": d, "account": account_of(d, home), "logged_in": None, "windows": {},
                             "observed_at": None, "probe": {}, "error": "not probed yet"})
+        row.setdefault("tier", tier_of(d, pol))
         row.update(by_dir.get(d) or {"positions": [], "others": [], "sessions": 0, "busy": 0})
         rows.append(row)
         if probed and snap and snap.get("logged_in"):  # the week's growth calibrates it (calibrate_week)
@@ -345,23 +347,31 @@ def headroom(row):
     return min(vals) if vals else None
 
 
-def free_capacity(row):
-    """The tightest window's free share scaled by plan tier (TIER_SCALE; an unknown tier counts as Pro). 2026-11-19:
+def free_capacity(row, usd=None):
+    """The tightest window's free share weighted, as rescue weighs it, by dollars per 1% of the week: `usd`, the
+    account's measured figure, when given, else its plan's (TIER_WEEK_USD; an unknown tier counts as Pro). 2026-11-19:
     relief ranked targets by the share alone, so a fresh Pro at 0% took six sessions, one with a 541k-token context,
     while a Max 20x account had 69% of its week free."""
     free = headroom(row)
-    return None if free is None else free * TIER_SCALE.get(row.get("tier"), 1)
+    if free is None:
+        return None
+    if usd is None:
+        usd = TIER_WEEK_USD.get(row.get("tier"), TIER_WEEK_USD["default_claude_ai"])
+    return free * usd
 
 
 def best_target(rows, exclude=None, ok=None):
-    """The logged-in account with the most free capacity, other than `exclude` (a config dir), among those `ok(dir)`
-    accepts (default: all)."""
-    cands = [(free_capacity(r), r) for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
+    """The logged-in account to put work on, other than `exclude` (a config dir), among those `ok(dir)` accepts
+    (default: all): one below both thresholds before one over_threshold reports (that one only when nothing else is
+    left), then the most free_capacity, then the lowest week. With tiers, a Max 20x at 96% of its week would otherwise
+    beat a Pro at 40% (of_review, PR 385)."""
+    cands = [r for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
              and (ok is None or ok(r["config_dir"]))]
     if not cands:
         return None
-    cands.sort(key=lambda x: (-x[0], (x[1].get("windows") or {}).get("seven_day", {}).get("utilization") or 0))
-    return cands[0][1]
+    cands.sort(key=lambda r: (bool(over_threshold(r)), -free_capacity(r),
+                              (r.get("windows") or {}).get("seven_day", {}).get("utilization") or 0))
+    return cands[0]
 
 
 def over_threshold(row, thresholds=THRESHOLDS):
@@ -5300,6 +5310,17 @@ def rate_tier(d):
         return None
 
 
+def tier_of(d, policy=None):
+    """The account's plan tier: capacity.yaml `tiers:` for config dir D, which overrides a profile not yet refreshed
+    after a plan change, else the profile's own (rate_tier)."""
+    pol = load_policy() if policy is None else policy
+    tiers = pol.get("tiers") or {}
+    if isinstance(tiers, dict):
+        tiers = {os.path.expanduser(k): v for k, v in tiers.items() if isinstance(k, str)}
+        return tiers.get(d) or rate_tier(d)
+    return rate_tier(d)
+
+
 def context_tokens(transcript):
     """The session's context at its last main-thread response: what a resume writes to the new account's cache."""
     try:
@@ -5762,7 +5783,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         # a target with no reading at all is no target (headroom None; of_review, PR 55: it raised a TypeError here)
         targets = sorted((x for x in acct.values()
                           if not stalled(x) and x["config_dir"] != d and headroom(x) is not None),
-                         key=lambda x: -free_capacity(x))
+                         key=lambda x: -free_capacity(x, (wcalib or {}).get(x["config_dir"])))
         for rate, name, sid in movable(d, relief=True):
             if len(moves) >= policy.get("relief_moves", policy["max_moves"]):
                 break
@@ -5959,9 +5980,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
               for r in rows if r.get("logged_in")}
     cache = load_cache()
     recent = {sid: t for sid, t in (cache.get("_balanced") or {}).items() if now - t[0] < t[1]}
-    tiers = {os.path.expanduser(k): v for k, v in (policy.get("tiers") or {}).items()}
-    for r in rows:  # capacity.yaml `tiers:` overrides a profile not yet refreshed after a plan change
-        r.setdefault("tier", tiers.get(r["config_dir"]) or rate_tier(r["config_dir"]))
+    for r in rows:
+        r.setdefault("tier", tier_of(r["config_dir"], policy))
     needs = {x["session"]: tools_used(find_transcript(d, x["session"]) or "")
              for d, xs in sessions.items() for x in xs if x.get("status") in ("idle", "shell", "waiting")}
     contexts = {x["session"]: context_tokens(find_transcript(d, x["session"]) or "")
