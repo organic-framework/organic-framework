@@ -4175,16 +4175,42 @@ def _inbox_mine(args):
     return 0
 
 
+def _install_user_service(command, action):
+    """Select the user's service manager and report a failed systemctl action to the caller."""
+    linux = sys.platform.startswith("linux")
+    if not linux and sys.platform != "darwin":
+        raise OfError(f"of {command} {action}: {sys.platform} has neither launchd nor systemd support")
+    if command == "listen":
+        import of_listen as service
+    else:
+        import of_relay_client as service
+    uninstall = action == "uninstall"
+    if linux:
+        try:
+            lines = service.install_systemd(uninstall=uninstall)
+        except subprocess.CalledProcessError as e:
+            raise OfError(f"of {command} {action}: {(e.stderr or str(e)).strip()}") from e
+        except OSError as e:
+            raise OfError(f"of {command} {action}: {e}") from e
+    else:
+        lines = service.install_launchd(uninstall=uninstall)
+        if command == "relay":  # the relay's launchd installer returns its own formatted message
+            print(lines)
+            return 0
+    for line in lines:
+        print(f"of {command}: {line}")
+    return 0
+
+
 def cmd_relay(args):
+    if args.action in ("install", "uninstall"):
+        return _install_user_service("relay", args.action)
     import of_client
     import of_desk
     import of_relay_client as of_relay
     import of_ship
     if args.action in ("on", "off"):
         return _relay_service(args.action)
-    if args.action in ("install", "uninstall"):  # the relay's agent at Standard priority and its watchdog
-        print(of_relay.install_launchd(uninstall=args.action == "uninstall"))
-        return 0
     if args.action == "watchdog":  # one check; launchd runs it every minute (docs/health.md §5)
         return 0 if of_relay.watchdog() != "not-under-launchd" else 1
     import of_stacks
@@ -4594,6 +4620,8 @@ def view_apply(v, dry_run=False, quiet=False):
 
 def cmd_listen(args):
     """The listener (RFC 0001 §5.1a): of listen run|rebuild|status|install|uninstall."""
+    if args.action in ("install", "uninstall"):
+        return _install_user_service("listen", args.action)
     import of_listen
     import of_store
     if args.action == "status":
@@ -4616,15 +4644,9 @@ def cmd_listen(args):
         return 0
     if args.action in ("run", "rebuild"):
         return of_listen.run(log=lambda m: print(m, flush=True), rebuild=args.action == "rebuild") or 0
-    if args.action == "watchdog":  # launchd, every minute: a stuck listener is restarted (hand-over 6d9a8305)
+    if args.action == "watchdog":  # every minute: a stuck listener is restarted (hand-over 6d9a8305)
         print(of_listen.watchdog())
         return 0
-    import platform
-    if platform.system() != "Darwin":
-        raise OfError("of listen install: launchd only for now (systemd: run `of listen run` under your init)")
-    for line in of_listen.install_launchd(uninstall=args.action == "uninstall"):
-        print(f"of listen: {line}")
-    return 0
 
 
 # ------------------------------------------------------------------- structural diffs

@@ -3,6 +3,7 @@ loop, a watchdog that dumps and restarts a relay whose loops stopped, and its la
 
 import json
 import os
+from pathlib import Path
 import plistlib
 import sys
 import tempfile
@@ -151,6 +152,36 @@ class WatchdogTest(StateDir):
 
 
 class UnitTest(unittest.TestCase):
+    def test_systemd_relay_unit_and_install(self):
+        name = "of-relay.service"
+        calls = []
+
+        def run(cmd, **kw):
+            self.assertEqual(cmd[:2], ["systemctl", "--user"])
+            calls.append(cmd[2:])
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(of_events, "STATE_DIR", os.path.join(home, "state")), \
+                mock.patch.object(of_init, "service_path", return_value="/herdr tools:/usr/bin"):
+            log = os.path.join(of_events.STATE_DIR, "relay.log")
+            units = R.systemd_units(python="/py", of_bin="/of")
+            self.assertEqual(list(units), [name])
+            for directive in ("ExecStart=/py /of relay run", "Restart=always", "RestartSec=10", "WantedBy=default.target",
+                              "Environment=OF_AUTOMATION=1", "Environment=SSH_AUTH_SOCK=",
+                              'Environment="PATH=/herdr tools:/usr/bin"',
+                              f"StandardOutput=append:{log}", f"StandardError=append:{log}"):
+                self.assertIn(directive, units[name].splitlines())
+            self.assertEqual(R.install_systemd(run=run, units=units), [f"{name}: loaded"])
+            path = Path(home, ".config", "systemd", "user", name)
+            self.assertEqual(path.read_text(), units[name])
+            self.assertTrue(Path(log).parent.is_dir())
+            self.assertEqual(R.install_systemd(run=run, units=units), [f"{name}: unchanged"])
+            self.assertEqual(R.install_systemd(uninstall=True, run=run), [f"removed {name}"])
+            self.assertFalse(path.exists())
+        self.assertEqual(calls, [["daemon-reload"], ["enable", "--now", name], ["is-active", name],
+                                 ["disable", "--now", name], ["daemon-reload"]])
+
     def test_the_relay_and_the_listener_run_at_standard_priority(self):
         relay = next(u for u in of_init.UNITS if u["name"] == "relay")
         listen = next(u for u in of_init.UNITS if u["name"] == "listen")

@@ -1318,7 +1318,7 @@ def install_launchd(uninstall=False, run=None, of_bin=None, watchdog_only=False)
     import of_init
     import of_server
     if sys.platform != "darwin":
-        raise SystemExit("of relay install: launchd only (a Linux host runs the relay under systemd)")
+        raise SystemExit("of relay: launchd requires macOS")
     unit = next(u for u in of_init.UNITS if u["name"] == "relay")
     log = os.path.join(of_events.STATE_DIR, "relay.log")
     of_bin = of_bin or of_init.OF
@@ -1330,6 +1330,19 @@ def install_launchd(uninstall=False, run=None, of_bin=None, watchdog_only=False)
     if watchdog_only:
         plists.pop(RELAY_LABEL)
     return of_server.load_launchd(plists, uninstall=uninstall, run=run or subprocess.run)
+
+
+def systemd_units(python=None, of_bin=None):
+    """Keep the relay available for delivery across exits and append its diagnostics to relay.log."""
+    import of_systemd
+    return {"of-relay.service": of_systemd.service("relay", python, of_bin)}
+
+
+def install_systemd(uninstall=False, run=None, units=None, units_dir=None):
+    """Manage the user service while leaving an active relay on its current settings running."""
+    import of_systemd
+    return of_systemd.install(systemd_units() if units is None else units, ("of-relay.service",),
+                              uninstall, run, units_dir)
 
 
 def run(load, client_for, servers, default, log=print, stop=None, deliverer=herdr_deliver):
