@@ -143,7 +143,17 @@ LEFT_CLEAN = textwrap.dedent("""\
     import of_stacks
     def fds():
         return set(os.listdir("/dev/fd"))
-    if sys.argv[2] == "unrestorable":  # theirs was set, then made blocking: set_wakeup_fd refuses to put it back
+    calls = []
+    if sys.argv[2] == "theirs-kept":  # every set_wakeup_fd call install() makes, after theirs is set
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        signal.set_wakeup_fd(w)
+        real = signal.set_wakeup_fd
+        def spy(fd, **kw):
+            calls.append("theirs" if fd == w else fd)
+            return real(fd, **kw)
+        signal.set_wakeup_fd = spy
+    elif sys.argv[2] == "unrestorable":  # theirs was set, then made blocking: set_wakeup_fd refuses to put it back
         r, w = os.pipe()
         os.set_blocking(w, False)
         signal.set_wakeup_fd(w)
@@ -154,6 +164,10 @@ LEFT_CLEAN = textwrap.dedent("""\
         threading.Thread.start = no_thread
     before = fds()
     print("mode", of_stacks.install(signal.SIGUSR1, sys.stdout), flush=True)
+    print("calls", [c if c in ("theirs", -1) else "ours" for c in calls], flush=True)
+    if sys.argv[2] == "theirs-kept":
+        signal.set_wakeup_fd = real
+        print("theirs kept", signal.set_wakeup_fd(w) == w, flush=True)
     print("wakeup fd", signal.set_wakeup_fd(-1), flush=True)
     print("fds left", sorted(fds() - before), flush=True)
     os.kill(os.getpid(), signal.SIGUSR1)
@@ -264,6 +278,16 @@ class StacksTest(unittest.TestCase):
                 self.assertIn("wakeup fd -1", r.stdout)
                 self.assertIn("fds left []", r.stdout)
                 self.assertEqual(r.stdout.count("stack dump on SIGUSR1"), 1)
+
+    def test_someone_elses_wakeup_fd_is_never_taken_off_while_install_puts_it_back(self):
+        """of_review on organic-framework PR 373: the kept branch went through _release, which set -1 and then theirs
+        again, so a signal in between found no wakeup fd."""
+        r = run(LEFT_CLEAN, "theirs-kept")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("mode handler", r.stdout)
+        self.assertIn("calls ['ours', 'theirs']", r.stdout)
+        self.assertIn("theirs kept True", r.stdout)
+        self.assertIn("fds left []", r.stdout)
 
     def test_a_closed_stream_loses_the_dump_never_the_process(self):
         sys.path.insert(0, BIN)

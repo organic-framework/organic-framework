@@ -149,9 +149,15 @@ def _install_thread(sig, file):
         signal.signal(sig, _handler(file, wfd))  # Python's C handler is the one that writes the wakeup byte
         prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
         if prev != -1:  # someone else's wakeup fd (an event loop's): keep theirs, dump from the main thread
-            signal.set_wakeup_fd(prev)  # refused when theirs was closed or made blocking: then none is left
-            _release(rfd, wfd)
-            return None
+            signal.set_wakeup_fd(prev)  # refused when theirs was closed or made blocking: the except unregisters ours
+    except BaseException:
+        _release(rfd, wfd)
+        raise
+    if prev != -1:  # theirs is back and ours was never left registered: close the pipe, never touch theirs again
+        os.close(rfd)  # (_release would set -1 and put theirs back: a signal in between would miss it; of_review, PR 373)
+        os.close(wfd)
+        return None
+    try:
         if hasattr(signal, "siginterrupt"):
             signal.siginterrupt(sig, False)  # SA_RESTART again: a native call in any thread goes on after the signal
         threading.Thread(target=_dumper, args=(rfd, sig, file), name="of-stacks", daemon=True).start()
