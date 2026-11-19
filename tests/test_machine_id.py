@@ -78,5 +78,22 @@ class MachineId(unittest.TestCase):
         self.assertTrue(a)
         self.assertEqual(a, b)
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-000 file")
+    def test_an_id_this_process_cannot_read_is_kept(self):
+        """of_review on PR 423 at 0d9a551: a mode-000 machine_id was replaced by a new id."""
+        p = os.path.join(self.tmp.name, "machine_id")
+        with open(p, "w") as fh:
+            fh.write("kept-id\n")
+        os.chmod(p, 0)
+        of_events._FALLBACK_ID.clear()
+        try:
+            mid = of_events.machine_id(wait_s=0.01)
+        finally:
+            of_events._FALLBACK_ID.clear()
+            os.chmod(p, 0o600)
+        self.assertTrue(mid)
+        with open(p) as fh:
+            self.assertEqual(fh.read(), "kept-id\n")   # untouched
+
 if __name__ == "__main__":
     unittest.main()
