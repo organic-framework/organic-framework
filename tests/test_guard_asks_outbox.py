@@ -60,6 +60,17 @@ class AsksOutboxTest(unittest.TestCase):
             self.assertEqual(bash(f"echo x > {state}/asks-outbox/a.json"), of_guard.ASKS_OUTBOX_DENY)
             self.assertIsNone(bash(f"echo x > {state}/notes.txt"))
 
+    def test_the_drafts_folders_are_the_owners_too(self):
+        """of_review's note on organic-framework PR 398: a draft is what the owner sends as his answer with D, so the
+        drafts folders are a file route to his name like the outbox was."""
+        home = os.path.expanduser("~")
+        for folder in ("asks-drafts", "asks-reply-drafts"):
+            with self.subTest(folder=folder):
+                hit = of_guard.critical_deny("Write", {"file_path": f"{home}/.local/state/of/{folder}/a.json"})
+                self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)
+                self.assertEqual(bash(f"echo x > ~/.local/state/of/{folder}/a.json"), of_guard.ASKS_OUTBOX_DENY)
+                self.assertIsNone(bash(f"cat ~/.local/state/of/{folder}/a.json"))
+
     def test_reading_it_and_writing_beside_it_stay_open(self):
         for cmd in (f"ls {BOX}", f"cat {BOX}/a.json", "echo x > ~/.local/state/of/notes.txt",
                     "cp a.json /private/tmp/x/asks-outbox-copy.json"):
