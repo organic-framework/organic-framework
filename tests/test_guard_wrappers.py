@@ -91,6 +91,18 @@ class WrapperReadings(unittest.TestCase):
         for cmd in ("sleep 1 & echo done", "exec 3<>/dev/tcp/127.0.0.1/80", "cat <&3 && echo ok"):
             self.assertIsNone(deny(cmd), cmd)
 
+    def test_the_tenth_pass(self):
+        """of_secrets-review on PR 332 at 4a02efb: a number before a spaced redirection is an argument too (`7 >out`
+        reads like `7>out`), a redirection between a wrapper and its command makes doubt, and chrt's `~`."""
+        for cmd in (f"timeout 7 >/dev/null cat {KEY}", f"nice -n 7 >/dev/null cat {KEY}", f"xargs -n 1 >/dev/null cat {KEY}",
+                    f"timeout 7 2>/dev/null cat {KEY}", f"chrt -o ~ cat {KEY}",
+                    # of_review at 4a02efb: the operand before a spaced `<` read as its file descriptor
+                    "timeout 5 </dev/null cat .env", f"timeout 5 </dev/null {OP}", f"nice -n 5 </dev/null {OP}",
+                    f"nice -n 5 >/dev/null {OP}", f"ionice -c 2 </dev/null {OP}", f"taskset -c 0 </dev/null {OP}"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("timeout 7 >/dev/null git status", "nice -n 7 >/dev/null make", "timeout 5 git fetch 2>/dev/null"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_plain_uses_still_run(self):
         for cmd in ("timeout 30 git status", "timeout --preserve-status 5 python3 -m unittest tests.test_of",
                     "timeout -k 5 60 make test", "printf x | xargs -0 -n1 grep foo", "find . -name '*.py' | xargs wc -l",

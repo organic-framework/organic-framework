@@ -1157,6 +1157,17 @@ def _option_exact(word, opts, flags, wrapper=None):
 
 
 def _wrapper_readings(line):
+    """_wrapper_readings_of LINE; and, when a number stands before a redirection, also with that number kept as a word.
+    The tokens cannot tell `7>/dev/null` (a file descriptor) from `7 >/dev/null` (an argument, then a redirection), so
+    both readings count (`timeout 7 >/dev/null cat <key>`: of_secrets-review on organic-framework PR 332)."""
+    out = _wrapper_readings_of(line)
+    if any(w.isdigit() and k + 1 < len(line) and _REDIRECTION.fullmatch(line[k + 1]) for k, w in enumerate(line)):
+        kept = _wrapper_readings_of(line, fd_numbers=False)
+        out += [x for x in kept if x not in out]
+    return out
+
+
+def _wrapper_readings_of(line, fd_numbers=True):
     """The extra readings of a simple command run through a wrapper, as shell lines, each judged like the line itself
     (critical_deny). The plain reading (_command_words) stays; these are added to it, and a deny by any of them denies
     (of_secrets-review on organic-framework PR 332, sixth pass: "keep the previous reading and add the new one, and deny
@@ -1173,9 +1184,16 @@ def _wrapper_readings(line):
     # the shell takes every redirection out of the command's words before it runs (`nice -n </dev/null 0 chrt …` gives
     # nice `-n 0`: of_secrets-review on PR 332); what they feed the command's standard input is read from them
     words, stdin, k = [], [], 0
+    redir_at = set()   # where among the words a redirection stood: between a wrapper and its command, it is read with
+    # doubt (`timeout 7 >/dev/null cat <key>`, `nice -n 7 >/dev/null …`: of_secrets-review on PR 332)
     while k < len(line):
         r = _redirection_at(line, k)
+        if r and not fd_numbers and line[k].isdigit():
+            words.append(line[k])   # read as an argument before a spaced redirection
+            k += 1
+            continue
         if r:
+            redir_at.add(len(words))
             op = line[k + r - 2] if r >= 2 else ""
             if op == "<<<" and k + r - 1 < len(line):
                 stdin.append(line[k + r - 1])
@@ -1217,11 +1235,13 @@ def _wrapper_readings(line):
             i += 1
         if w == "timeout" and i < len(words):
             i += 1  # its duration, whatever its form
-        if w == "chrt" and i < len(words) and re.search(r"[$`{*?\[]|__OF", words[i]):
+        if w == "chrt" and i < len(words) and re.search(r"[$`{*?\[]|__OF|^~", words[i]):
             # `p=0; chrt -o "$p" cat <key>`: the priority, or the command, as the shell fills it in
             return extra + _doubted(words[i:], stdin=stdin)
         if w in _WRAPPER_POSITIONAL and i < len(words) and _positional_here(w, words[i]):
             i += _WRAPPER_POSITIONAL[w]
+        if w != "exec" and any(start <= r <= i for r in redir_at):   # exec's are the shell's own (`exec 3<>…`)
+            return extra + _doubted(words[start:], xargs=w == "xargs", stdin=stdin)
     return extra
 
 
