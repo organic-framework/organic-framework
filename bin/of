@@ -3279,37 +3279,35 @@ def cmd_server(args):
     if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)
         import sqlite3
         import of_server_export as ex
-        if not args.path:
-            raise OfError(f"usage: of server {args.action} {'--org ORG ' if args.action == 'export' else ''}<bundle folder>")
+        if not args.path or len(args.org or []) != 1 and not (args.action == "export" and args.check):
+            raise OfError(f"usage: of server {args.action} --org ORG <bundle folder>"
+                          + (" --index-sha <the export's>" if args.action == "import" else ""))
         cfg = of_server.load_config()
-        if args.check:
-            if args.action == "export":
-                problems = ex.check_bundle(args.path, args.identity)
-            else:
-                conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
-                problems = ex.check_bundle(args.path, args.identity) or ex.check_store(conn, args.path)
-            for p in problems:
-                print(f"MISMATCH {p}")
-            print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
-            return 0 if not problems else 1
         conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
         conn.execute("PRAGMA busy_timeout = 10000")
         try:
+            if args.check:
+                problems = ex.check_bundle(args.path, args.identity, args.index_sha)
+                if args.action == "import" and not problems:
+                    if ex.load_index(args.path).get("org") != args.org[0]:
+                        problems = [f"the bundle is not {args.org[0]}'s"]
+                    else:
+                        problems = ex.check_store(conn, args.path, args.identity)
+                for p in problems:
+                    print(f"MISMATCH {p}")
+                print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
+                return 0 if not problems else 1
             if args.action == "export":
-                if len(args.org or []) != 1:
-                    raise OfError("of server export: name one organization with --org")
-                m = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION, recipient=args.to)
+                m, index_sha = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION,
+                                               recipient=args.to)
                 rows = {t: v["rows"] for t, v in m["store"].items()}
             else:
-                rows = ex.import_store(conn, args.path, args.identity)
-                problems = ex.check_store(conn, args.path)
-                if problems:
-                    for p in problems:
-                        print(f"MISMATCH {p}")
-                    raise OfError("of server import: the store does not match the bundle after the import")
+                rows = ex.import_store(conn, args.path, args.org[0], args.index_sha, args.identity)
         except ex.ExportError as e:
             raise OfError(f"of server {args.action}: {e}") from None
         print(", ".join(f"{t} {n}" for t, n in rows.items()))
+        if args.action == "export":
+            print(f"index sha256 {index_sha}: carry it to the import by another path than the bundle (--index-sha)")
         return 0
     if args.action == "export-secret-key":
         if not args.path:
@@ -8013,6 +8011,7 @@ def main(argv=None):
                     help="export: check a bundle against its manifest; import: check this server's rows against it")
     sv.add_argument("--to", help="export: the age recipient (age1…) every file of the bundle is encrypted to")
     sv.add_argument("--identity", help="import, export --check: the age identity file that decrypts the bundle")
+    sv.add_argument("--index-sha", help="import: the sha256 of index.json that the export printed")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
