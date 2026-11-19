@@ -469,6 +469,24 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertTrue(any("closed elsewhere" in self.text(f) for f in self.frames))
 
+    def test_the_screen_starts_as_of_asks_watch_starts_it(self):
+        """of_review on PR 402: main still called a helper that had gone, and every test built Inbox directly, so
+        `of asks --watch` raised before its first frame unseen. This runs main itself, up to curses."""
+        import curses
+        import tempfile as _tf
+        import of_events
+        from unittest import mock
+        ran, saved = [], of_events.STATE_DIR
+        with _tf.TemporaryDirectory() as d:
+            of_events.STATE_DIR = d
+            try:
+                with mock.patch.object(curses, "wrapper", lambda fn, *a: ran.append(fn)):
+                    self.assertEqual(I.main(lambda: [], None, "of"), 0)
+                    self.assertEqual(T.main(lambda: [], None, "of"), 0)
+            finally:
+                of_events.STATE_DIR = saved
+        self.assertEqual(len(ran), 2)
+
     def test_d_shows_a_draft_and_sends_it_as_kept_only_on_a_second_d(self):
         """A draft is a file: D shows its words, to whom and why it waits; only D again or y sends it, with the version
         it was kept with (of_review's trust notes on PR 398)."""
