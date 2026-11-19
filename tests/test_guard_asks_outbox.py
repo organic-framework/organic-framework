@@ -28,6 +28,11 @@ class AsksOutboxTest(unittest.TestCase):
                 with self.subTest(tool=tool, path=path):
                     hit = of_guard.critical_deny(tool, {"file_path": path})
                     self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)
+        hit = of_guard.critical_deny("NotebookEdit", {"notebook_path": f"{home}/.local/state/of/asks-outbox/n.ipynb"})
+        self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)
+        hit = of_guard.critical_deny("Write", {"file_path": "asks-outbox/a.json"}, f"{home}/.local/state/of")
+        self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)                # a relative path, by its cwd
+        self.assertEqual(bash("echo x > asks-outbox/a.json", f"{home}/.local/state/of"), of_guard.ASKS_OUTBOX_DENY)
         self.assertIsNone(of_guard.critical_deny("Read", {"file_path": f"{home}/.local/state/of/asks-outbox/a.json"}))
         self.assertIsNone(of_guard.critical_deny("Write", {"file_path": f"{home}/.local/state/of/asks-outbox-notes.md"}))
 
