@@ -1158,11 +1158,13 @@ def make_handler(app):
                 except (AttributeError, OSError, ValueError):
                     pass
 
-        def _send(self, status, body, ctype="application/json"):
+        def _send(self, status, body, ctype="application/json", headers=()):
             data = json.dumps(body, ensure_ascii=False).encode()
             self.send_response(status)
             self.send_header("Content-Type", ctype if status < 400 else "application/problem+json")
             self.send_header("Content-Length", str(len(data)))
+            for k, v in headers:
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(data)
 
@@ -1203,6 +1205,21 @@ def make_handler(app):
                 except Exception as e:  # recording a view never breaks the page
                     print(f"of-server: studio_viewed not recorded: {type(e).__name__}: {e}", flush=True)
             return self._raw(status, ctype, body if isinstance(body, bytes) else str(body).encode())
+
+        def _moving(self, orgs):
+            """True after answering 503 when one of ORGS is being moved to another server (`of server moving`): the
+            client keeps the request and sends it again, and after the cut its retry reaches the new server
+            (organic-framework-build's server move plan, §4 step 2)."""
+            hit = sorted(set(orgs) & app.moving())
+            if not hit:
+                return False
+            self._send(503, {"type": "moving", "status": 503,
+                             "title": f"{', '.join(hit)} is moving to another server: send again later"},
+                       headers=(("Retry-After", str(MOVING_RETRY_S)),))
+            return True
+
+        def _machine_orgs_all(self, m):
+            return set(app.cfg.get("orgs") or {}) | app.moving() if m["tenant"] else set(json.loads(m["orgs"]))
 
         def _relay(self, fn, status=200):
             import of_server_relay as of_relay
@@ -1341,12 +1358,16 @@ def make_handler(app):
                 if u.path == "/v1/health/checks":  # the server's own checks, for `of health` (docs/health.md §3)
                     return self._send(200, {"checks": app.health_checks.states()})
                 if u.path == "/v1/messages":
+                    if self._moving(self._machine_orgs_all(m)):
+                        return None
                     return self._relay(lambda: app.relay.poll(m, (parse_qs(u.query).get("wait") or ["0"])[0]))
                 if u.path.startswith("/v1/redactions/"):
                     st = redaction_state(app, u.path[len("/v1/redactions/"):], m)
                     return self._send(200, st) if st else self._problem(404, "not_found", "unknown redaction")
                 if u.path == "/v1/coord":  # docs/server-several-machines.md §4.2
                     q = parse_qs(u.query)
+                    if self._moving([(q.get("org") or [""])[0]]):
+                        return None
                     try:
                         return self._send(200, of_server_coord.feed(
                             app.store, m, app.relay._machine_orgs(m), (q.get("org") or [""])[0],
@@ -1537,6 +1558,13 @@ def make_handler(app):
                         if rej else {}
                     return self._send(200 if status == 202 else status, out)
                 if u.path == "/v1/messages":
+                    try:
+                        sent = json.loads(raw or b"{}")
+                        ends = [str(sent.get(k) or "").partition(":")[0] for k in ("to", "from")]
+                    except (ValueError, AttributeError):
+                        ends = []
+                    if self._moving(ends):
+                        return None
                     return self._relay(lambda: app.relay.post(m, json.loads(raw or b"{}")), status=202)
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/ack"):
                     msg_id = u.path[len("/v1/messages/"):-len("/ack")]
@@ -1564,6 +1592,8 @@ def make_handler(app):
                         return self._problem(403, "forbidden", "organization not joined by this machine")
                     return self._send(200, app.verify_grant(body.get("grant_id"), body.get("subject"), body.get("action")))
                 if u.path == "/v1/batches":
+                    if self._moving(self._machine_orgs_all(m)):  # a batch may hold any of its machine's organizations
+                        return None
                     try:
                         batch = json.loads(raw)
                     except Exception:
@@ -2053,6 +2083,20 @@ class App:
         return of_grants.verify_request(self._grants, key, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                         grant_id, subject, action)
 
+    def moving(self):
+        """The organizations being moved to another server: their batches, sends, polls and feed get 503 until the
+        flag is cleared. Read at most once a second."""
+        now = time.monotonic()
+        cached = getattr(self, "_moving_cache", None)
+        if cached and now - cached[0] < 1.0:
+            return cached[1]
+        try:
+            orgs = {f for f in os.listdir(moving_dir(self.cfg)) if _ORG.fullmatch(f)}
+        except FileNotFoundError:
+            orgs = set()
+        self._moving_cache = (now, orgs)
+        return orgs
+
     def serve_tls(self):
         """The second listener (cfg `tls`), or None when it is not configured."""
         t = self.cfg.get("tls")
@@ -2082,6 +2126,29 @@ class App:
                 self.relay.expire()
             except Exception as e:  # keep the server alive; the writer's health shows real failures
                 self.writer.last_error = self.writer.last_error or f"relay expiry: {type(e).__name__}: {e}"
+
+
+MOVING_RETRY_S = 60  # what a 503 for a moving organization asks the client to wait
+MOVING_DIR = "moving"  # under the state folder: one empty file per organization being moved (`of server moving`)
+_ORG = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+
+
+def moving_dir(cfg):
+    return os.path.join(cfg["state_dir"], MOVING_DIR)
+
+
+def set_moving(cfg, org, on):
+    """Mark ORG as moving to another server, or clear it. Returns the organizations moving now."""
+    if not _ORG.fullmatch(org or ""):
+        raise ValueError(f"not an organization's name: {org!r}")
+    d = moving_dir(cfg)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    path = os.path.join(d, org)
+    if on:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+    elif os.path.exists(path):
+        os.unlink(path)
+    return sorted(os.listdir(d))
 
 
 WATCH_S = 2.0  # how often the server looks for a changed module under bin/

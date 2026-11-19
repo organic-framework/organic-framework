@@ -70,6 +70,35 @@ class RelayTest(unittest.TestCase):
         of_events.STATE_DIR = self.saved
         self.tmp.cleanup()
 
+    def test_a_moving_organization_gets_503_and_the_rest_go_on(self):
+        """The cut's hold (organic-framework-build's server move plan, §4 step 2): orgs.yaml's hold stops neither the
+        shipper nor the relay, so the old server answers the moving organization with 503 and Retry-After while its
+        records are copied; the client keeps the request and retries."""
+        import urllib.error
+        a, z = self.machine("a", ["ofb"]), self.machine("z", ["zeta"])
+        saved = of_client.RETRIES
+        of_client.RETRIES = 1
+        try:
+            self.assertEqual(of_server.set_moving(self.app.cfg, "ofb", True), ["ofb"])
+            self.app._moving_cache = None
+            for c, method, path, body in ((a, "POST", "/v1/batches", {"batch_id": "b", "records": []}),
+                                          (a, "GET", "/v1/messages?wait=0", None),
+                                          (z, "POST", "/v1/messages", {"to": "ofb:ofb_lead", "from": "zeta:zeta_x",
+                                                                         "text": "t", "msg_id": "01a1-m"}),
+                                          (z, "GET", "/v1/coord?org=ofb&after=0&wait=0", None)):
+                with self.subTest(path=path), self.assertRaises(of_client.ServerError) as e:
+                    c._authed(method, path, body=body)
+                self.assertEqual(e.exception.status, 503)
+                self.assertIn("moving", e.exception.body)
+            self.assertIsNotNone(self.call(z, "GET", "/v1/messages?wait=0"))    # another organization goes on
+            self.assertEqual(of_server.set_moving(self.app.cfg, "ofb", False), [])
+            self.app._moving_cache = None
+            self.assertIsNotNone(self.call(a, "GET", "/v1/messages?wait=0"))
+            with self.assertRaises(ValueError):
+                of_server.set_moving(self.app.cfg, "../x", True)
+        finally:
+            of_client.RETRIES = saved
+
     def machine(self, name, orgs, person=None):
         d = os.path.join(self.tmp.name, name)
         os.makedirs(d)
