@@ -3119,17 +3119,22 @@ def _without_code_text(cmd):
     return cmd
 
 
-def _fed_to_a_runner(pipe, idx):
-    """Does stage IDX of PIPE feed a stage that may run its text (a shell, at, ssh, a pty, an interpreter, xargs)?"""
-    for kind, stext in pipe[idx + 1:]:
+def _runners_after(pipe):
+    """For each stage of PIPE, does a later stage run its text (a shell, at, ssh, a pty, an interpreter, xargs)? Read
+    once from the pipe's end, so a long pipe costs one pass (of_review on PR 399: a lookahead per stage was quadratic)."""
+    out, seen = [False] * len(pipe), False
+    for idx in range(len(pipe) - 1, -1, -1):
+        out[idx] = seen
+        kind, stext = pipe[idx]
         try:
             s = _simple(stext) if kind == "cmd" else None
         except ValueError:
-            return True
+            seen = True
+            continue
         head = _fold_name(s[0]) if s and s[0] != "<read" else ""
         if head in _SHELLS or head in _FRESH_ENV or head in _PTY_WORDS or head in _INTERPRETERS or head == "xargs":
-            return True
-    return False
+            seen = True
+    return out
 
 
 def _without_prose(cmd):
@@ -3142,6 +3147,7 @@ def _without_prose(cmd):
         return cmd
     kept = []
     for pipe in pipes:
+        fed = _runners_after(pipe)
         for idx, (kind, stext) in enumerate(pipe):
             try:
                 s = _simple(stext) if kind == "cmd" else None
@@ -3153,7 +3159,7 @@ def _without_prose(cmd):
                 if (h == "of" and words[:1] and words[0] in _PROSE_OF) or (head == "git" and "commit" in args[:3]) \
                         or head == "gh" or os.path.basename(head) in ("request.sh", "commit.sh", "pcommit.sh"):
                     continue
-                if head in ("echo", "printf") and not _fed_to_a_runner(pipe, idx):
+                if head in ("echo", "printf") and not fed[idx]:
                     continue   # text printed or written to a file; `echo '…' | at now` is kept
                 if (head in _INTERPRETERS or _lang(head)) and h != "of" and \
                         not _launches(head, " ".join(args)):   # `python3 -c "…"` that starts no process
@@ -3194,6 +3200,8 @@ def _command_word(text, names, interpreters=False):
 def _actor_line_deny(cmd):
     """(reason, what) when the line runs one of of's acts and holds a way to clear or replace its caller's variables
     anywhere (G31's line reading); else None."""
+    if not _line_act(_line_words(cmd)):   # no act of of anywhere on the raw line: nothing to read further (linear)
+        return None
     cmd = _without_prose(_without_code_text(cmd))
     words = _line_words(cmd)
     if not _line_act(words):
