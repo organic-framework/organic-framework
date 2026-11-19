@@ -68,6 +68,7 @@ class WriteForms(unittest.TestCase):
     def test_into_orgs_yaml(self):
         O = "~/.config/of/orgs.yaml"
         for cmd in (f"echo x >| {O}", f"exec 3> {O}", f"F={O}; echo x > $F", "cp -t ~/.config/of orgs.yaml",
+                    f"echo x >& {O}", f"echo x >|{O}",   # of_review's notes on PR 397
                     f"curl -s -o {O} file:///tmp/x", f"sed -n 'w {O}' a",
                     f"awk '{{print > \"{self.home}/.config/of/orgs.yaml\"}}' a", f"find . -name x -exec cp {{}} {O} ';'",
                     "ln -s ~/.config/of /private/tmp/cfx && echo x > /private/tmp/cfx/orgs.yaml"):
