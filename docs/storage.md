@@ -26,6 +26,8 @@ Harnesses delete their own history (Claude Code's default `cleanupPeriodDays` is
 
 One file per machine: `~/.local/state/of/of.db`, in WAL mode.
 
+On Linux, `of listen install` and `of relay install` run the listener and relay as systemd user units, and the host administrator must run `loginctl enable-linger <user>` for them to run without a login session.
+
 - **Why SQLite.** No daemon; it ships with Python; many hook processes can write at once (WAL, `busy_timeout`, tiny transactions); FTS5 gives full-text search over prompts and messages; JSON functions query payloads. DuckDB can attach the file read-only for heavy analysis.
 - **Why hooks do not write to ClickHouse directly**, although it runs on the same Mac: tiny concurrent inserts from dozens of hook processes are an anti-pattern for it, and the hooks must keep working when it is down. DuckDB and chDB allow one writer process only.
 - **The local store is the spool.** A shipper sends batches to the central store when there is one. The machine keeps working offline.

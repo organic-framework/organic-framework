@@ -1567,17 +1567,36 @@ def install_launchd(uninstall=False, run=None, plists=None, agents_dir=None):
     return out
 
 
-def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log=print, settings=None, pid=None):
-    """One check, run by launchd every minute (`of listen watchdog`): of_server.watch for the listener (hand-over
-    6d9a8305; the same rule as of-server's and the relays'). A listener that launchd runs, but whose heartbeat is older
+def systemd_units(python=None, of_bin=None):
+    """The listener stays running and the timer starts one watchdog check every WATCHDOG['every'] seconds."""
+    import of_systemd
+    return {
+        "of-listen.service": of_systemd.service("listen", python, of_bin),
+        "of-listen-watchdog.service": of_systemd.service("listen", python, of_bin, watchdog=True),
+        "of-listen-watchdog.timer": (
+            "[Unit]\nDescription=Check the Organic Framework listener\n\n[Timer]\n"
+            f"OnBootSec=60\nOnUnitActiveSec={WATCHDOG['every']}\n\n[Install]\nWantedBy=timers.target\n"),
+    }
+
+
+def install_systemd(uninstall=False, run=None, units=None, units_dir=None):
+    """Enable the listener and its timer together so the watchdog follows the listener across logins."""
+    import of_systemd
+    return of_systemd.install(systemd_units() if units is None else units,
+                              ("of-listen.service", "of-listen-watchdog.timer"), uninstall, run, units_dir)
+
+
+def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log=print, settings=None, pid=None,
+             run=None):
+    """One check, run every minute (`of listen watchdog`): of_server.watch for the listener (hand-over
+    6d9a8305; the same rule as of-server's and the relays'). A running listener whose heartbeat is older
     than STALE_S or whose timers have not turned for `ticks_stale`, through `failing_for` seconds of checks, is
-    restarted at most once in `restart_gap`, its threads' stacks first written to listen.log. Its pid is launchd's,
+    restarted at most once in `restart_gap`, its threads' stacks first written to listen.log. Its pid is the manager's,
     never a file's: a dead pid left in listen.pid by `of listen rebuild` or a terminal run made a stuck listener look
     stopped (of_review on PR 145). Returns ok, failing, waiting, stopped, restarted or restart_failed.
     On the agent host a root daemon watches each organization user's listener (deploy/host/plane.py): OF_STATE is that
     user's state, OF_LISTEN_TARGET its system daemon (system/<label>), OF_LISTEN_WATCHDOG_STATE a file outside the
     user's home; it then writes no event into the user's store, which would leave root-owned files there."""
-    import of_relay_client
     import of_server
     s = dict(WATCHDOG, **(settings or {}))
     now = time.time() if now is None else now
@@ -1595,7 +1614,24 @@ def watchdog(now=None, probe=None, restart=None, dump=None, state_path=None, log
                     return None
             hb, ticks = age(heartbeat_path()), age(ticks_path())
             return hb is not None and hb <= STALE_S and (ticks is None or ticks <= s["ticks_stale"])
-    pid_of = (lambda: pid) if pid is not None else (lambda: of_relay_client.launchd_pid(label, domain))
+    user_systemd = sys.platform.startswith("linux") and not target
+
+    def pid_of():
+        if pid is not None:
+            return pid
+        if user_systemd:
+            import of_systemd
+            return of_systemd.main_pid("of-listen.service", run=run)
+        import of_relay_client
+        return of_relay_client.launchd_pid(label, domain)
+
+    if user_systemd and restart is None:
+        import subprocess
+        run = run or subprocess.run
+
+        def restart():
+            return run(["systemctl", "--user", "restart", "of-listen.service"],
+                       capture_output=True, timeout=30, check=True)
 
     def stamp(m):
         log(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {m}")

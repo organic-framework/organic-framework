@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
@@ -1007,7 +1008,8 @@ class WatchdogTest(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "listen.pid"), "w") as fh:
             fh.write("1")                                                       # a stale file: ignored
         asked = []
-        with mock.patch.object(of_relay_client, "launchd_pid", lambda label, domain=None: asked.append(
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(of_relay_client, "launchd_pid", lambda label, domain=None: asked.append(
                 (label, domain)) or os.getpid()), mock.patch.object(of_events, "emit", lambda *a, **k: None):
             got = [of_listen.watchdog(now=t, probe=lambda: False, log=lambda m: None,
                                       restart=lambda: self.calls.append("restart"),
@@ -1015,11 +1017,42 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(got[-1], "restarted")
         self.assertEqual(asked[0], (of_listen.LAUNCHD_LABEL, None))            # gui/<uid>, the listener's label
         self.assertIn(("dump", os.getpid()), self.calls)
-        with mock.patch.dict(os.environ, {"OF_LISTEN_TARGET": "system/dev.organic-framework.listen.of"}), \
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch.dict(os.environ, {"OF_LISTEN_TARGET": "system/dev.organic-framework.listen.of"}), \
                 mock.patch.object(of_relay_client, "launchd_pid", lambda label, domain=None: asked.append(
                     (label, domain)) or None):
             self.assertEqual(of_listen.watchdog(now=10_000, probe=lambda: False, log=lambda m: None), "stopped")
         self.assertEqual(asked[-1], ("dev.organic-framework.listen.of", "system"))  # the host's daemon
+
+    def test_linux_watchdog_dumps_the_main_pid_then_restarts_the_user_unit(self):
+        from unittest import mock
+        show = ["systemctl", "--user", "show", "-p", "MainPID", "--value", "of-listen.service"]
+        restart = ["systemctl", "--user", "restart", "of-listen.service"]
+
+        def run(cmd, **kw):
+            self.calls.append(cmd)
+            self.assertIn(cmd, (show, restart))
+            return mock.Mock(returncode=0, stdout=f"{os.getpid()}\n" if cmd == show else "")
+
+        with mock.patch.object(sys, "platform", "linux"), mock.patch.dict(os.environ, {"OF_LISTEN_TARGET": ""}), \
+                mock.patch("of_relay_client.launchd_pid", side_effect=AssertionError("unexpected launchd lookup")), \
+                mock.patch.object(of_events, "emit"):
+            for t in (0, 60, 120, 180):
+                result = of_listen.watchdog(now=t, probe=lambda: False, dump=self.calls.append, log=lambda m: None,
+                                            run=run)
+        self.assertEqual(result, "restarted")
+        self.assertEqual(self.calls, [show] * 4 + [os.getpid(), restart])
+
+    def test_linux_watchdog_leaves_a_listener_without_a_main_pid_stopped(self):
+        from unittest import mock
+        with mock.patch.object(sys, "platform", "linux"), mock.patch.dict(os.environ, {"OF_LISTEN_TARGET": ""}), \
+                mock.patch("of_relay_client.launchd_pid", side_effect=AssertionError("unexpected launchd lookup")):
+            for code, output in ((0, "0\n"), (0, ""), (0, "invalid\n"), (1, str(os.getpid()))):
+                with self.subTest(code=code, output=output):
+                    run = mock.Mock(return_value=mock.Mock(stdout=output, returncode=code))
+                    self.assertEqual(of_listen.watchdog(now=0, probe=lambda: False, run=run), "stopped")
+                    self.assertEqual(run.call_args.args[0], ["systemctl", "--user", "show", "-p", "MainPID",
+                                                            "--value", "of-listen.service"])
 
     def test_the_units_run_at_standard_priority_with_a_watchdog(self):
         units = of_listen.launchd_plists(python="/py", of_bin="/of")
@@ -1035,6 +1068,74 @@ class WatchdogTest(unittest.TestCase):
         self.assertEqual(out, [f"{of_listen.LAUNCHD_LABEL}: loaded", f"{of_listen.WATCHDOG_LABEL}: loaded"])
         self.assertEqual(of_listen.install_launchd(run=run, plists=units, agents_dir=self.tmp.name),
                          [f"{of_listen.LAUNCHD_LABEL}: unchanged", f"{of_listen.WATCHDOG_LABEL}: unchanged"])
+
+
+class SystemdTest(unittest.TestCase):
+    def test_listener_and_watchdog_units(self):
+        from unittest import mock
+        with mock.patch.dict(of_listen.WATCHDOG, {"every": 37}), mock.patch.object(of_events, "STATE_DIR", "/of state"):
+            units = of_listen.systemd_units(python="/my python", of_bin="/my repo/of")
+        self.assertEqual(set(units), {"of-listen.service", "of-listen-watchdog.service", "of-listen-watchdog.timer"})
+        for name, action in (("of-listen.service", "run"), ("of-listen-watchdog.service", "watchdog")):
+            lines = units[name].splitlines()
+            self.assertIn(f'ExecStart="/my python" "/my repo/of" listen {action}', lines)
+            self.assertIn("Environment=OF_AUTOMATION=1", lines)
+            self.assertIn("Environment=SSH_AUTH_SOCK=", lines)
+            log = "/of state/" + ("listen.log" if action == "run" else "listen-watchdog.log")
+            self.assertIn(f"StandardOutput=append:{log}", lines)
+            self.assertIn(f"StandardError=append:{log}", lines)
+        self.assertTrue({"Restart=always", "RestartSec=10", "WantedBy=default.target"}.issubset(
+            units["of-listen.service"].splitlines()))
+        self.assertIn("Type=oneshot", units["of-listen-watchdog.service"].splitlines())
+        self.assertIn("PartOf=of-listen-watchdog.timer", units["of-listen-watchdog.service"].splitlines())
+        self.assertNotIn("[Install]", units["of-listen-watchdog.service"])
+        self.assertTrue({"OnUnitActiveSec=37", "OnBootSec=60", "WantedBy=timers.target"}.issubset(
+            units["of-listen-watchdog.timer"].splitlines()))
+
+    def test_install_reinstall_and_uninstall(self):
+        from unittest import mock
+        listener, timer = "of-listen.service", "of-listen-watchdog.timer"
+        calls = []
+        active = set()
+
+        def run(cmd, **kw):
+            self.assertEqual(cmd[:2], ["systemctl", "--user"])
+            calls.append(cmd[2:])
+            return mock.Mock(returncode=3 if cmd[2] == "is-active" and cmd[3] not in active else 0)
+
+        reload = ["daemon-reload"]
+        checks = [["is-active", listener], ["is-active", timer]]
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(of_events, "STATE_DIR", root):
+            directory = Path(root) / "units"
+            units = of_listen.systemd_units()
+
+            def install(uninstall=False):
+                return of_listen.install_systemd(uninstall=uninstall, run=run, units=units, units_dir=directory)
+
+            self.assertEqual(len(install()), 3)
+            self.assertEqual({p.name: p.read_text() for p in directory.iterdir()}, units)
+            self.assertEqual(calls, [reload, ["enable", "--now", listener, timer]])
+            active.update((listener, timer))
+            calls.clear()
+            self.assertEqual(install(), [f"{name}: unchanged" for name in units])
+            self.assertEqual(calls, checks)
+
+            active.remove(timer)
+            calls.clear()
+            self.assertIn(f"{listener}: unchanged", install())
+            self.assertEqual(calls, checks + [reload, ["enable", "--now", timer]])
+            active.add(timer)
+
+            (directory / listener).write_text("old settings\n")
+            calls.clear()
+            self.assertIn(f"{timer}: unchanged", install())
+            self.assertEqual(calls, checks + [["stop", listener], reload, ["enable", "--now", listener]])
+            self.assertEqual((directory / listener).read_text(), units[listener])
+
+            calls.clear()
+            self.assertEqual(install(uninstall=True), [f"removed {name}" for name in units])
+            self.assertEqual(calls, [["disable", "--now", listener, timer], reload])
+            self.assertEqual(list(directory.iterdir()), [])
 
 
 class PruneTest(unittest.TestCase):

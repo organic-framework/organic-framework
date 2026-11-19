@@ -30,6 +30,38 @@ def agent(pane, session, name=None, tokens=None, status="idle", ws="w1", tab=Non
             "agent_session": {"value": session} if session else None, "cwd": "/x"}
 
 
+class ServiceInstallTest(unittest.TestCase):
+    def test_listen_and_relay_dispatch_to_the_platforms_user_manager(self):
+        from unittest import mock
+        import of_listen
+        import of_relay_client
+
+        for command, module in (("listen", of_listen), ("relay", of_relay_client)):
+            mac_result = ["mac unit"] if command == "listen" else "mac relay"
+            for platform in ("linux", "darwin", "freebsd"):
+                for action in ("install", "uninstall"):
+                    with self.subTest(command=command, platform=platform, action=action), \
+                            mock.patch.object(of.sys, "platform", platform), mock.patch("builtins.print") as output, \
+                            mock.patch.object(module, "install_systemd", return_value=["linux unit"]) as systemd, \
+                            mock.patch.object(module, "install_launchd", return_value=mac_result) as launchd:
+                        status = of.main([command, action])
+                        if platform == "freebsd":
+                            self.assertNotEqual(status, 0)
+                            self.assertIn("neither launchd nor systemd", output.call_args.args[0])
+                            systemd.assert_not_called()
+                            launchd.assert_not_called()
+                        elif platform == "linux":
+                            self.assertEqual(status, 0)
+                            systemd.assert_called_once_with(uninstall=action == "uninstall")
+                            launchd.assert_not_called()
+                            output.assert_called_once_with(f"of {command}: linux unit")
+                        else:
+                            self.assertEqual(status, 0)
+                            launchd.assert_called_once_with(uninstall=action == "uninstall")
+                            systemd.assert_not_called()
+                            output.assert_called_once_with("of listen: mac unit" if command == "listen" else "mac relay")
+
+
 class RegistryTest(unittest.TestCase):
     def write(self, root, rel, text):
         path = os.path.join(root, rel)
