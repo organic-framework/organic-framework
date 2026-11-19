@@ -5,9 +5,12 @@ own server there (2026-11-19, of_server; the founder's prompts 01a1f5e4-0343 and
 the server store's part. ClickHouse and the blob store come in their own sections of the same bundle.
 
 A bundle is a folder (mode 0700, files 0600):
-- store/<table>.jsonl.gz: the organization's rows of each table, one JSON object per line;
-- manifest.json: no row content. It holds the format, the organization, the source's version, and for each table the
-  row count, a digest of the rows in key order, and per UTC day the count and the first and last key.
+- store/<table>.jsonl.gz: the organization's rows of each table, one JSON object per line, or .jsonl.gz.age when the
+  export names an age recipient: the gzip stream goes straight into `age`, with no plaintext on disk (the user
+  organization's sec_keeper's condition, through of_architect, message 01a1f5ff-f009);
+- manifest.json: no row content. It holds the format, the organization, the source's version, whether it is
+  encrypted, each file's sha256 and its gzip stream's (plain_sha256), and for each table the row count, a digest of
+  the rows in key order, and per UTC day the count and the first and last key.
 
 The store part is small and its rows change after they are written (a message's state, a lease), so it is exported
 whole each time, at the bulk and again at the cut. Import replaces the organization's rows in one transaction.
@@ -21,6 +24,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 
 FORMAT = 1
 # table: (the organization's rows, the column that dates a row, the key columns in order)
@@ -83,6 +87,88 @@ def _open_private(path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
 
 
+AGE_RECIPIENT = re.compile(r"age1[0-9a-z]{58}")
+
+
+def _age():
+    import shutil
+    path = shutil.which("age")
+    if not path:
+        raise ExportError("age is not installed here: the bundle is encrypted with it")
+    return path
+
+
+class _Hashing:
+    """A file object that hashes every byte written to it or read from it on the way through."""
+
+    def __init__(self, fh):
+        self.fh, self.h = fh, hashlib.sha256()
+
+    def write(self, b):
+        self.h.update(b)
+        return self.fh.write(b)
+
+    def read(self, n=-1):
+        b = self.fh.read(n)
+        self.h.update(b)
+        return b
+
+    def flush(self):
+        return self.fh.flush()
+
+
+def _write_file(path, chunks, recipient=None):
+    """Write the gzip of CHUNKS to PATH (mode 0600, new), through `age -r RECIPIENT` when given, with no plaintext
+    on disk on the way. Returns {"sha256": of the file, "plain_sha256": of the gzip stream}."""
+    import subprocess
+    with _open_private(path) as out:
+        proc = None
+        if recipient:
+            proc = subprocess.Popen([_age(), "-r", recipient], stdin=subprocess.PIPE, stdout=out,
+                                    stderr=subprocess.DEVNULL)
+            sink = _Hashing(proc.stdin)
+        else:
+            sink = _Hashing(out)
+        try:
+            with gzip.GzipFile(fileobj=sink, mode="wb", mtime=0) as gz:
+                for c in chunks:
+                    gz.write(c)
+        finally:
+            if proc:
+                proc.stdin.close()
+                if proc.wait() != 0:
+                    raise ExportError(f"age failed writing {os.path.basename(path)}")
+    return {"sha256": _file_sha(path), "plain_sha256": sink.h.hexdigest()}
+
+
+def _read_lines(path, identity=None):
+    """The lines of the gzip file PATH, decrypted with `age -d -i IDENTITY` when it ends in .age. Yields the lines,
+    then the gzip stream's sha256 as the last item (a str)."""
+    import subprocess
+    if path.endswith(".age"):
+        if not identity:
+            raise ExportError("the bundle is encrypted: name its key with --identity")
+        proc = subprocess.Popen([_age(), "-d", "-i", identity, path], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+        src = _Hashing(proc.stdout)
+    else:
+        proc, src = None, _Hashing(open(path, "rb"))
+    try:
+        with gzip.GzipFile(fileobj=src, mode="rb") as gz:
+            for line in gz:
+                yield line
+        while src.read(1 << 16):  # whatever follows the gzip stream counts in its hash too
+            pass
+    finally:
+        if proc:
+            proc.stdout.close()
+            if proc.wait() != 0:
+                raise ExportError(f"age could not decrypt {os.path.basename(path)}")
+        else:
+            src.fh.close()
+    yield src.h.hexdigest()
+
+
 def _file_sha(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -91,24 +177,28 @@ def _file_sha(path):
     return h.hexdigest()
 
 
-def export_store(conn, org, out, version=None):
-    """Write the store part of ORG's bundle into the new folder OUT; returns the manifest."""
+def export_store(conn, org, out, version=None, recipient=None):
+    """Write the store part of ORG's bundle into the new folder OUT, each file encrypted to the age RECIPIENT when
+    given; returns the manifest."""
+    if recipient is not None and not AGE_RECIPIENT.fullmatch(recipient):
+        raise ExportError("the recipient is not an age X25519 recipient (age1…)")
+    if recipient:
+        _age()
     if os.path.exists(out) and os.listdir(out):
         raise ExportError(f"{out} is not empty")
     _private_dir(out)
     _private_dir(os.path.join(out, "store"))
-    manifest = {"format": FORMAT, "org": org, "version": version, "store": {}, "files": {}}
+    manifest = {"format": FORMAT, "org": org, "version": version, "encrypted": bool(recipient), "store": {},
+                "files": {}}
     conn.execute("BEGIN")  # one snapshot for every table
     try:
         for table in STORE:
             rows = list(_rows(conn, table, org))
-            rel = f"store/{table}.jsonl.gz"
-            path = os.path.join(out, rel)
-            with _open_private(path) as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
-                for r in rows:
-                    gz.write(json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+            rel = f"store/{table}.jsonl.gz" + (".age" if recipient else "")
+            manifest["files"][rel] = _write_file(
+                os.path.join(out, rel),
+                (json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode() + b"\n" for r in rows), recipient)
             manifest["store"][table] = summarize(table, rows)
-            manifest["files"][rel] = _file_sha(path)
     finally:
         conn.execute("ROLLBACK")
     with _open_private(os.path.join(out, "manifest.json")) as fh:
@@ -116,10 +206,19 @@ def export_store(conn, org, out, version=None):
     return manifest
 
 
-def read_bundle_rows(bundle, table):
-    with gzip.open(os.path.join(bundle, "store", f"{table}.jsonl.gz"), "rb") as fh:
-        for line in fh:
-            yield json.loads(line)
+def _store_file(bundle, table):
+    m = load_manifest(bundle)
+    return os.path.join(bundle, f"store/{table}.jsonl.gz" + (".age" if m.get("encrypted") else ""))
+
+
+def read_bundle_rows(bundle, table, identity=None, sha=None):
+    """The bundle's rows of TABLE; SHA, a list, receives the gzip stream's sha256 once they are all read."""
+    for item in _read_lines(_store_file(bundle, table), identity):
+        if isinstance(item, str):
+            if sha is not None:
+                sha.append(item)
+        else:
+            yield json.loads(item)
 
 
 def load_manifest(bundle):
@@ -144,17 +243,22 @@ def _compare(want, got, where):
     return problems
 
 
-def check_bundle(bundle):
-    """The manifest recomputed from the bundle's own files: [] when they match, else the differences."""
+def check_bundle(bundle, identity=None):
+    """The manifest recomputed from the bundle's own files: [] when they match, else the differences. An encrypted
+    bundle checks its ciphertext hashes alone without IDENTITY, and everything with it."""
     m = load_manifest(bundle)
-    problems = [f"{rel}: sha256 differs" for rel, sha in m["files"].items()
-                if not os.path.exists(os.path.join(bundle, rel)) or _file_sha(os.path.join(bundle, rel)) != sha]
-    if problems:
+    problems = [f"{rel}: sha256 differs" for rel, f in m["files"].items()
+                if not os.path.exists(os.path.join(bundle, rel)) or _file_sha(os.path.join(bundle, rel)) != f["sha256"]]
+    if problems or (m.get("encrypted") and not identity):
         return problems
     got = {}
     for table in STORE:
-        got[table] = summarize(table, read_bundle_rows(bundle, table))
-    return _compare(m["store"], got, "the bundle")
+        sha = []
+        got[table] = summarize(table, read_bundle_rows(bundle, table, identity, sha))
+        rel = os.path.relpath(_store_file(bundle, table), bundle)
+        if sha != [m["files"][rel]["plain_sha256"]]:
+            problems.append(f"{rel}: the decrypted stream's sha256 differs")
+    return problems + _compare(m["store"], got, "the bundle")
 
 
 def check_store(conn, bundle):
@@ -164,11 +268,11 @@ def check_store(conn, bundle):
     return _compare(m["store"], got, "the store")
 
 
-def import_store(conn, bundle):
+def import_store(conn, bundle, identity=None):
     """Replace the bundle organization's rows with the bundle's, table by table, in one transaction, after the bundle
     checks out. A row of another organization holding the same key (a sequence number, a message id) refuses the
     whole import. Returns {table: rows}."""
-    problems = check_bundle(bundle)
+    problems = check_bundle(bundle, identity)
     if problems:
         raise ExportError("the bundle does not match its manifest: " + "; ".join(problems))
     m = load_manifest(bundle)
@@ -183,7 +287,7 @@ def import_store(conn, bundle):
             conn.execute(f"DELETE FROM {table} WHERE {where}", {"org": org})
             cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
             n = 0
-            for r in read_bundle_rows(bundle, table):
+            for r in read_bundle_rows(bundle, table, identity):
                 names = [c for c in cols if c in r]
                 try:
                     conn.execute(f"INSERT INTO {table} ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",

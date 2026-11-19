@@ -3284,10 +3284,10 @@ def cmd_server(args):
         cfg = of_server.load_config()
         if args.check:
             if args.action == "export":
-                problems = ex.check_bundle(args.path)
+                problems = ex.check_bundle(args.path, args.identity)
             else:
                 conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
-                problems = ex.check_bundle(args.path) or ex.check_store(conn, args.path)
+                problems = ex.check_bundle(args.path, args.identity) or ex.check_store(conn, args.path)
             for p in problems:
                 print(f"MISMATCH {p}")
             print("ok: the counts, keys and digests match" if not problems else f"{len(problems)} mismatches")
@@ -3298,10 +3298,10 @@ def cmd_server(args):
             if args.action == "export":
                 if len(args.org or []) != 1:
                     raise OfError("of server export: name one organization with --org")
-                m = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION)
+                m = ex.export_store(conn, args.org[0], args.path, version=of_server.VERSION, recipient=args.to)
                 rows = {t: v["rows"] for t, v in m["store"].items()}
             else:
-                rows = ex.import_store(conn, args.path)
+                rows = ex.import_store(conn, args.path, args.identity)
                 problems = ex.check_store(conn, args.path)
                 if problems:
                     for p in problems:
@@ -8011,6 +8011,8 @@ def main(argv=None):
                                              "export, import: the bundle's folder")
     sv.add_argument("--check", action="store_true",
                     help="export: check a bundle against its manifest; import: check this server's rows against it")
+    sv.add_argument("--to", help="export: the age recipient (age1…) every file of the bundle is encrypted to")
+    sv.add_argument("--identity", help="import, export --check: the age identity file that decrypts the bundle")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
