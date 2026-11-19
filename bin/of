@@ -6258,15 +6258,17 @@ def _raw_not_offered(err, consent):
     if getattr(err, "status", None) != 403:
         return []
     try:
-        body = json.loads(err.body) if isinstance(err.body, str) else (err.body or {})
+        body = json.loads(err.body) if isinstance(err.body, str) else err.body
     except ValueError:
+        return []
+    if not isinstance(body, dict):  # a list, a number: no problem body of_server writes (of_review on PR 421)
         return []
     title = str(body.get("title") or "")
     if body.get("type") != "consent" or not title.endswith(": the raw tier is not offered by this invite"):
         return []
     asked = [o for o, v in consent.items() if "raw" in v["tiers"]]
     org = title[:-len(": the raw tier is not offered by this invite")]
-    return [org] if org in asked else asked
+    return [org] if org in asked else []  # an organization it never asked raw for: not this refusal (PR 421)
 
 
 def cmd_enroll(args):
@@ -6309,7 +6311,7 @@ def cmd_enroll(args):
     for org in args.org:
         raw = org in (args.raw or [])
         if not raw and not args.yes:
-            raw = input(f"Send the raw tier for {org}, if your invite offers it? [y/N] ").strip().lower() in (
+            raw = input(tr("Send the raw tier for {org}, if your invite offers it? [y/N] ", org=org)).strip().lower() in (
                 "y", "yes", "д", "да")
         consent[org] = {"tiers": ["typed", "raw"] if raw else ["typed"], "terms": terms.get("current")}
     for _ in range(len(consent) + 1):
@@ -6326,9 +6328,9 @@ def cmd_enroll(args):
                 raise
             for org in off:
                 consent[org]["tiers"] = ["typed"]
-            print(f"The invite does not offer the raw tier for {', '.join(off)}: enrolling with typed only. Raw needs "
-                  "a new invite that offers it (of invite --raw-allowed), and this machine enrolled again with it "
-                  "after the server's keeper revokes it.")
+            print(tr("The invite does not offer the raw tier for {orgs}: enrolling with typed only. Raw needs a new "
+                     "invite that offers it (of invite --raw-allowed), and this machine enrolled again with it after "
+                     "the server's keeper revokes it.", orgs=", ".join(off)))
     raw_orgs = r.get("raw_orgs") if r.get("raw_orgs") is not None else [o for o, v in consent.items() if "raw" in v["tiers"]]
     set_org_servers(r.get("orgs") or args.org, args.server, raw_orgs=raw_orgs)
     if getattr(args, "pin", None):
