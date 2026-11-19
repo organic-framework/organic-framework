@@ -596,13 +596,17 @@ def background(which=shutil.which):
     return ["nice", "-n", "19"]
 
 
-def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=None):
+def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=None, known_hosts=None):
     """Pure: the rsync commands of a copy, push (`to`, user@host:DIR) or pull (`frm`, user@host:DIR prepared there),
     each at background priority (`wrapper`, else this machine's `background()`) with the bandwidth limit, over ssh
     with only `key`."""
     if bool(to) == bool(frm):
         raise CarryError("carry copy needs exactly one of --to user@host:DIR (push) or --from user@host:DIR (pull)")
-    ssh = " ".join(["ssh", "-i", shlex.quote(key)] + SSH_OPTS)
+    ssh_args = ["ssh", "-i", key] + SSH_OPTS
+    if known_hosts is not None:
+        # SSH reads a list of paths in UserKnownHostsFile after rsync splits its -e argument.
+        ssh_args += ["-o", f"UserKnownHostsFile={shlex.quote(known_hosts)}", "-o", "StrictHostKeyChecking=yes"]
+    ssh = shlex.join(ssh_args)
     # --chmod=go-rwx: on a host of one OS user per organization nothing arrives readable by another user; the
     # owner's bits stay, so a script stays executable (of_server on PR 116)
     base = list(background() if wrapper is None else wrapper) + [
@@ -653,9 +657,13 @@ def _check_received(bundle, pats, log):
 
 
 def copy(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, dry_run=False, log=print, run=subprocess.run,
-         pats=None):
+         pats=None, known_hosts=None):
     key = _key_ok(key)
-    cmds = copy_commands(bundle, key, to=to, frm=frm, bwlimit=bwlimit)
+    if known_hosts is not None:
+        known_hosts = os.path.expanduser(known_hosts)
+        if not os.path.isfile(known_hosts):
+            raise CarryError(f"no known hosts file at {known_hosts}")
+    cmds = copy_commands(bundle, key, to=to, frm=frm, bwlimit=bwlimit, known_hosts=known_hosts)
     env = dict(os.environ, SSH_AUTH_SOCK="", OF_AUTOMATION="1")
     os.makedirs(bundle, mode=0o700, exist_ok=True)
     pats = custody_paths() if pats is None else pats
