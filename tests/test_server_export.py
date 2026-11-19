@@ -57,6 +57,15 @@ def fill(c):
         c.execute(f"INSERT INTO {table} ({', '.join(r)}) VALUES ({', '.join('?' * len(r))})", list(r.values()))
 
 
+def age_key(d):
+    """An age identity made for the test, and its recipient."""
+    import subprocess
+    ident = os.path.join(d, "key.txt")
+    subprocess.run(["age-keygen", "-o", ident], check=True, capture_output=True)
+    rec = subprocess.run(["age-keygen", "-y", ident], check=True, capture_output=True, text=True).stdout.strip()
+    return ident, rec
+
+
 class ExportTest(unittest.TestCase):
 
     def setUp(self):
@@ -120,6 +129,35 @@ class ExportTest(unittest.TestCase):
         with self.assertRaises(ex.ExportError) as e:
             ex.import_store(dst, self.out)
         self.assertIn("start the new server once", str(e.exception))
+
+    @unittest.skipUnless(__import__("shutil").which("age") and __import__("shutil").which("age-keygen"), "age")
+    def test_an_encrypted_bundle_holds_no_plaintext_and_imports_with_its_key_alone(self):
+        """The user organization's sec_keeper (through of_architect, message 01a1f5ff-f009): encrypt to its key, with
+        no plaintext temp file, and carry both hashes of each file."""
+        ident, rec = age_key(tempfile.mkdtemp(prefix="ofk-"))
+        m = ex.export_store(self.src, "acme", self.out, recipient=rec)
+        self.assertTrue(m["encrypted"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.out, "store"))),
+                         sorted(f"{t}.jsonl.gz.age" for t in ex.STORE))           # nothing else ever written there
+        for rel, f in m["files"].items():
+            self.assertNotEqual(f["sha256"], f["plain_sha256"])
+            with open(os.path.join(self.out, rel), "rb") as fh:
+                data = fh.read()
+            self.assertTrue(data.startswith(b"age-encryption.org/v1"))
+            self.assertNotIn(b"hello", data)
+        self.assertEqual(ex.check_bundle(self.out), [])                            # ciphertext hashes alone
+        self.assertEqual(ex.check_bundle(self.out, ident), [])                     # and everything, decrypted
+        dst, _ = store()
+        with self.assertRaises(ex.ExportError):
+            ex.import_store(dst, self.out)                                         # no key: nothing imported
+        other, _ = age_key(tempfile.mkdtemp(prefix="ofk-"))
+        with self.assertRaises(ex.ExportError):
+            ex.import_store(dst, self.out, other)                                  # another key: refused
+        self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+        self.assertEqual(ex.import_store(dst, self.out, ident)["messages"], 2)
+        self.assertEqual(ex.check_store(dst, self.out), [])
+        with self.assertRaises(ex.ExportError):
+            ex.export_store(self.src, "acme", self.out + "-x", recipient="age1short")
 
     def test_an_export_refuses_a_folder_that_is_not_empty(self):
         os.makedirs(self.out)
