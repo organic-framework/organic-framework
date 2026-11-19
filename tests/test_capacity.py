@@ -235,6 +235,13 @@ class StatusAndTarget(unittest.TestCase):
         self.assertEqual(of_capacity.best_target(rows)["config_dir"], "/b")
         self.assertIsNone(of_capacity.best_target([rows[3]]))
 
+    def test_best_target_uses_tier_when_known(self):
+        pro, max20 = _row("/pro", 0, 0), _row("/max", 0, 31)
+        self.assertEqual(of_capacity.best_target([max20, pro]), pro)
+        pro["tier"] = "default_claude_ai"
+        max20["tier"] = "default_claude_max_20x"
+        self.assertEqual(of_capacity.best_target([pro, max20]), max20)
+
     def test_over_threshold(self):
         self.assertEqual(of_capacity.over_threshold(_row("/a", 0, 99)), "seven_day 99% ≥ 90%")
         self.assertEqual(of_capacity.over_threshold(_row("/a", 96, 10)), "five_hour 96% ≥ 95%")
@@ -760,6 +767,14 @@ class Balance(unittest.TestCase):
         rows[0]["windows"]["five_hour"]["utilization"] = 96
         m = of_capacity.balance_plan(rows, self.SESS, self.POS, self.RATES, {"/ez": 12.0}, pol, self.NOW)
         self.assertEqual([(x["position"], x["to"]) for x in m], [("of_x", "/cl")])
+        self.assertIn("relief", m[0]["reason"])
+
+    def test_relief_prefers_a_max_20x_with_room_to_a_fresh_pro(self):
+        rows = [_row("/gg", 0, 100), dict(_row("/pro", 0, 0), tier="default_claude_ai"),
+                dict(_row("/max", 0, 31), tier="default_claude_max_20x")]
+        sessions = {"/gg": [{"session": "c", "status": "idle"}]}
+        m = of_capacity.balance_plan(rows, sessions, self.POS, self.RATES, {"/pro": 0.6, "/max": 12.0}, POLICY, self.NOW)
+        self.assertEqual([(x["position"], x["to"]) for x in m], [("c", "/max")])
         self.assertIn("relief", m[0]["reason"])
 
     def test_after_a_reset_the_load_follows_the_next_expiry(self):

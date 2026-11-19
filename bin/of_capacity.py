@@ -345,10 +345,18 @@ def headroom(row):
     return min(vals) if vals else None
 
 
+def free_capacity(row):
+    """The tightest window's free share scaled by plan tier (TIER_SCALE; an unknown tier counts as Pro). 2026-11-19:
+    relief ranked targets by the share alone, so a fresh Pro at 0% took six sessions, one with a 541k-token context,
+    while a Max 20x account had 69% of its week free."""
+    free = headroom(row)
+    return None if free is None else free * TIER_SCALE.get(row.get("tier"), 1)
+
+
 def best_target(rows, exclude=None, ok=None):
-    """The logged-in account with the most headroom, other than `exclude` (a config dir), among those `ok(dir)`
+    """The logged-in account with the most free capacity, other than `exclude` (a config dir), among those `ok(dir)`
     accepts (default: all)."""
-    cands = [(headroom(r), r) for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
+    cands = [(free_capacity(r), r) for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
              and (ok is None or ok(r["config_dir"]))]
     if not cands:
         return None
@@ -5754,7 +5762,7 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         # a target with no reading at all is no target (headroom None; of_review, PR 55: it raised a TypeError here)
         targets = sorted((x for x in acct.values()
                           if not stalled(x) and x["config_dir"] != d and headroom(x) is not None),
-                         key=lambda x: -headroom(x))
+                         key=lambda x: -free_capacity(x))
         for rate, name, sid in movable(d, relief=True):
             if len(moves) >= policy.get("relief_moves", policy["max_moves"]):
                 break
