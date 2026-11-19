@@ -4441,9 +4441,11 @@ _GIT_SHELL_KEY = re.compile(r"^(?:core\.(?:pager|editor|sshcommand|fsmonitor|ask
                             r"sequence\.editor|diff\.external|diff\..+\.(?:textconv|command)|merge\..+\.driver|"
                             r"filter\..+\.(?:clean|smudge|process)|gpg(?:\..+)?\.program|pager\..+|"
                             r"interactive\.difffilter|man\..+\.cmd|browser\..+\.cmd|web\.browser|difftool\..+\.cmd|"
-                            r"mergetool\..+\.cmd|tar\..+\.command|uploadpack\.packobjectshook|"
+                            r"mergetool\..+\.cmd|tar\..+\.command|uploadpack\.packobjectshook|guitool\..+\.cmd|"
+                            r"gc\.recentobjectshook|trailer\..+\.(?:cmd|command)|"
+                            r"sendemail\.(?:.+\.)?(?:tocmd|cccmd|headercmd|smtpserver)|"
                             r"credential(?:\..+)?\.helper)$")   # a helper runs as a command even with no `!`
-_GIT_BANG_KEY = re.compile(r"^alias\.[^.]+$")  # a shell command when it starts with !
+_GIT_BANG_KEY = re.compile(r"^(?:alias\.[^.]+|submodule\..+\.update)$")  # a shell command when it starts with !
 # git config's own options and the words they take (`--file f`, `set`: of_review on organic-framework PR 400)
 _GIT_CONFIG_VALUE_OPTS = frozenset("-f --file --blob --type --default --comment --value --url".split())
 _GIT_CONFIG_SUBCOMMANDS = frozenset("set get unset list edit rename-section remove-section".split())
