@@ -1156,7 +1156,7 @@ def _option_exact(word, opts, flags, wrapper=None):
     return True
 
 
-def _wrapper_readings(words):
+def _wrapper_readings(line):
     """The extra readings of a simple command run through a wrapper, as shell lines, each judged like the line itself
     (critical_deny). The plain reading (_command_words) stays; these are added to it, and a deny by any of them denies
     (of_secrets-review on organic-framework PR 332, sixth pass: "keep the previous reading and add the new one, and deny
@@ -1170,6 +1170,21 @@ def _wrapper_readings(words):
     option's `=` or after each letter of an option cluster (`-qc'cat <key>'`, `--comm='…'`), is a `bash -c` body; and
     what the line feeds the command's standard input (`<<< '…'`, `< file`) is what a shell in it may read. The line's
     leading redirections, keywords and assignments are passed over (`2>/dev/null script -q -c '…' /dev/null`)."""
+    # the shell takes every redirection out of the command's words before it runs (`nice -n </dev/null 0 chrt …` gives
+    # nice `-n 0`: of_secrets-review on PR 332); what they feed the command's standard input is read from them
+    words, stdin, k = [], [], 0
+    while k < len(line):
+        r = _redirection_at(line, k)
+        if r:
+            op = line[k + r - 2] if r >= 2 else ""
+            if op == "<<<" and k + r - 1 < len(line):
+                stdin.append(line[k + r - 1])
+            elif op == "<" and k + r - 1 < len(line):
+                stdin.append("bash " + shlex.quote(line[k + r - 1]))
+            k += r
+            continue
+        words.append(line[k])
+        k += 1
     i, extra = 0, []
     while i < len(words):
         r = _redirection_at(words, i)
@@ -1187,12 +1202,7 @@ def _wrapper_readings(words):
         i += 1
         start, doubt = i, w in _DOUBT_ALWAYS
         while not doubt and i < len(words) and words[i] != "--":
-            if _redirection_at(words, i):
-                if w == "exec":  # `exec 3<>/dev/tcp/h/p`: the shell's own redirection, no option of a program
-                    i += _redirection_at(words, i)
-                    continue
-                doubt = True
-            elif words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
+            if words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
                 doubt = not _option_exact(words[i], opts, flags, w)
                 i += 0 if doubt else 1 + _opt_takes_next(words[i], opts, flags)
             elif w == "env" and "=" in words[i]:
@@ -1202,14 +1212,14 @@ def _wrapper_readings(words):
         if w == "xargs":  # the file -a names is what xargs reads (of_secrets-review on PR 332)
             extra += ["cat " + shlex.quote(f) for f in _xargs_arg_files(words[start:i + (1 if doubt else 0)])]
         if doubt:
-            return extra + _doubted(words[start:], xargs=w == "xargs", line=words)
+            return extra + _doubted(words[start:], xargs=w == "xargs", stdin=stdin)
         if i < len(words) and words[i] == "--":
             i += 1
         if w == "timeout" and i < len(words):
             i += 1  # its duration, whatever its form
-        if w == "chrt" and i < len(words) and re.search(r"[$`]|__OF", words[i]):
+        if w == "chrt" and i < len(words) and re.search(r"[$`{*?\[]|__OF", words[i]):
             # `p=0; chrt -o "$p" cat <key>`: the priority, or the command, as the shell fills it in
-            return extra + _doubted(words[i:], line=words)
+            return extra + _doubted(words[i:], stdin=stdin)
         if w in _WRAPPER_POSITIONAL and i < len(words) and _positional_here(w, words[i]):
             i += _WRAPPER_POSITIONAL[w]
     return extra
@@ -1258,16 +1268,11 @@ def _line_doubted(text):
     return any(kind == "cmd" and _wrapper_readings(_tokens_or_empty(st)) for pipe in pipes for kind, st in pipe)
 
 
-def _doubted(rest, xargs=False, line=()):
+def _doubted(rest, xargs=False, stdin=()):
     """_wrapper_readings' lines for a doubted wrapper's words REST; its standard input is read from the whole LINE, so a
     here-string or a `<` before the wrapper counts (`<<< '…' script -q`: of_secrets-review on organic-framework PR 332).
     Never empty: a doubted wrapper always gives its readings' check a line to judge (`script <<'END'` with no words)."""
-    out = [""] if not rest else []
-    for k, wd in enumerate(line[:len(line) - len(rest)]):
-        if wd == "<<<" and k + 1 < len(line):
-            out.append(line[k + 1])
-        elif wd == "<" and k + 1 < len(line):
-            out.append("bash " + shlex.quote(line[k + 1]))
+    out = ([""] if not rest else []) + list(stdin)
     # the tails' size, from each word's quoted length, before any is built: past what the check has left, one marker
     # stands for them all and the check denies (of_review on organic-framework PR 332 at a1842fc: building every tail
     # first took 7.3 s for 3,000 words and 320 s for 20,000)
@@ -1622,6 +1627,16 @@ def _tokens(text):
     return list(lex)
 
 
+def _redirect_before_amp(buf):
+    """Does BUF (a command's text so far, outside quotes) end with a `<` or `>` operator, so the `&` after it is part of
+    `<&` or `>&`? An operator escaped by an odd run of backslashes is a word's character, not an operator."""
+    b = buf.rstrip()
+    if not b.endswith((">", "<")) or len(b) != len(buf):  # `a< &`: a space before & ends the operator
+        return False
+    slashes = len(b[:-1]) - len(b[:-1].rstrip("\\"))
+    return slashes % 2 == 0
+
+
 def _split(text, ops=None):
     """[pipelines]; each pipeline is a list of stages; a stage is ('cmd', raw) or ('sub', inner raw). Splits on
     ; && || & newline and top-level ( ); a single '|' (not '||') keeps the pipeline. Quotes are honored. Given a list
@@ -1721,8 +1736,8 @@ def _split(text, ops=None):
             if text[i:i + 2] == "&&":
                 flush_pipe("&&")
                 i += 2
-            elif "".join(buf).rstrip().endswith((">", "<")):  # >& or <& redirect, not a separator (`0<&0`:
-                # of_secrets-review on organic-framework PR 332)
+            elif _redirect_before_amp("".join(buf)):  # >& or <& redirect, not a separator (`0<&0`; an escaped
+                # `\<` is a word, and `echo a\< & cmd` runs cmd: of_review and of_secrets-review on PR 332)
                 buf.append(c)
                 i += 1
             else:
