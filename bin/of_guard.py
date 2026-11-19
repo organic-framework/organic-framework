@@ -3155,6 +3155,8 @@ def _line_act(words):
             return True
         if rest[:1] == ["access"] and any(x in ("grant", "revoke", "link", "record") for x in rest[1:]):
             return True
+        if _org_path_act(rest):
+            return True
     return False
 
 
@@ -3328,7 +3330,13 @@ def _actor_act(words):
     if any(w in ("--help", "-h") for w in words[2:4]):
         return False  # `of asks withdraw --help` records nothing (of_review on organic-framework PR 387)
     return (words[:1] == ["asks"] and len(words) > 1 and words[1] in ACTOR_ACTS) or \
-        (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record"))
+        (words[:1] == ["access"] and len(words) > 1 and words[1] in ("grant", "revoke", "link", "record")) or \
+        _org_path_act(words)
+
+
+def _org_path_act(words):
+    """`of org set <org> path <folder>`: the owner's, by the positive test (of_review on organic-framework PR 427)."""
+    return words[:1] == ["org"] and "set" in words[1:] and "path" in words[1:]
 
 
 def _actor_deny(head, args, stext, env):
@@ -3829,8 +3837,7 @@ LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session,
 OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml")
 OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner writes: orgs.yaml (which registries the "
                      "guard reads) and views.yaml (what runs in the person's panes). Agents change them through OF's "
-                     "commands, which write the file from their own process: `of org set <org> hold on|off` or "
-                     "`path <folder>`, "
+                     "commands, which write the file from their own process: `of org set <org> hold on|off`, "
                      "`of view add|remove`, `of init`. A script or text that only names the file: change that file "
                      "with the Edit tool. A test's own copy: write it by its own folder's path, not through $HOME "
                      "(docs/guard.md G33)")
