@@ -384,6 +384,13 @@ class HarnessLoginTest(unittest.TestCase):
                     "of capacity status"):
             self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
 
+    def test_each_part_of_a_path_is_read_without_its_padding(self):
+        """of_review on organic-framework PR 387: a nested name that starts with a space or a quote was missed."""
+        import of_classify
+        for p in ("a/b/ credentials.json", 'a/b/"credentials.json"', "a/ b /.env"):
+            self.assertTrue(of_classify.secret_path(p), p)
+        self.assertFalse(of_classify.secret_path("a/b/ notes.txt"))
+
     def test_the_logins_are_in_the_native_rules(self):
         """of_secrets-review on organic-framework PR 387: the row says native rules, and none was written."""
         import of_classify
