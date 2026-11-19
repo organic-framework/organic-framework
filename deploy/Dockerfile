@@ -47,10 +47,12 @@ COPY bin/of_server.py bin/of_server_relay.py bin/of_server_coord.py bin/of_serve
      bin/of_events.py bin/of_ship.py bin/of_store.py ./
 # What the server's start imports inside its functions: the stack dump on SIGUSR1, the health checks.
 COPY bin/of_stacks.py bin/of_server_health.py ./
+# What its requests import inside functions: a keepers grant's limit (of_grants), an ask's options (of_asks).
+COPY bin/of_access.py bin/of_classify.py ./
 # A diff approved with a passkey (docs/remote.md §6): of-server's half, the digest's shared code and the record's.
 COPY bin/of_server_passkey.py bin/of_diff.py bin/of_passkey.py ./
-# The secrets broker (docs/agent-secrets.md §5.3) and the catalogue it reads.
-COPY bin/of_server_secrets.py bin/of_credentials.py ./
+# The secrets broker (docs/agent-secrets.md §5.3), the catalogue it reads and its protected_code entries.
+COPY bin/of_server_secrets.py bin/of_credentials.py bin/of_protected.py ./
 # Studio (of_studio's modules), served under /studio/ when present.
 COPY bin/of_studio.py bin/of_studio.css bin/of_model.py bin/of_measures.py bin/of_asks.py bin/of_diagnose.py \
      bin/of_diagnose_rules.py ./

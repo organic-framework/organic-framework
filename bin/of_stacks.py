@@ -124,25 +124,55 @@ def _handler(file, wfd=None):
     return handle
 
 
-def install(sig=signal.SIGUSR1, file=None):
-    """Write every thread's stack to FILE (stderr) on SIG. Call it from the main thread; a second call changes
-    nothing. Returns how it dumps: "thread" (the dumper thread, woken by the wakeup fd) or "handler"."""
-    sig = int(sig)
-    if sig in _installed:
-        return _installed[sig]
+def _install_thread(sig, file):
+    """The dumper thread and its wakeup fd: "thread", or None when another wakeup fd is in place (kept)."""
     rfd, wfd = os.pipe()  # not inherited by child processes (PEP 446)
-    os.set_blocking(wfd, False)  # set_wakeup_fd requires it
-    signal.signal(sig, _handler(file, wfd))  # Python's C handler is the one that writes the wakeup byte
-    prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
+    try:
+        os.set_blocking(wfd, False)  # set_wakeup_fd requires it
+        signal.signal(sig, _handler(file, wfd))  # Python's C handler is the one that writes the wakeup byte
+        prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
+    except BaseException:
+        os.close(rfd)
+        os.close(wfd)
+        raise
     if prev != -1:  # someone else's wakeup fd (an event loop's): keep theirs, dump from the main thread
         signal.set_wakeup_fd(prev)
         os.close(rfd)
         os.close(wfd)
-        signal.signal(sig, _handler(file))
-        _installed[sig] = "handler"
-        return "handler"
-    if hasattr(signal, "siginterrupt"):
-        signal.siginterrupt(sig, False)  # SA_RESTART again: a native call in any thread goes on after the signal
-    threading.Thread(target=_dumper, args=(rfd, sig, file), name="of-stacks", daemon=True).start()
-    _installed[sig] = "thread"
+        return None
+    try:
+        if hasattr(signal, "siginterrupt"):
+            signal.siginterrupt(sig, False)  # SA_RESTART again: a native call in any thread goes on after the signal
+        threading.Thread(target=_dumper, args=(rfd, sig, file), name="of-stacks", daemon=True).start()
+    except BaseException:
+        signal.set_wakeup_fd(-1)
+        os.close(rfd)
+        os.close(wfd)
+        raise
     return "thread"
+
+
+def install(sig=signal.SIGUSR1, file=None):
+    """Write every thread's stack to FILE (stderr) on SIG. Call it from the main thread; a second call changes
+    nothing. Returns how it dumps: "thread" (the dumper thread, woken by the wakeup fd), "handler" (from the main
+    thread), or "off" when neither could be set up. It never raises: a service starts without its stack dump rather
+    than not at all (of_review on organic-framework PR 368)."""
+    sig = int(sig)
+    if sig in _installed:
+        return _installed[sig]
+    try:
+        mode = _install_thread(sig, file)
+    except Exception:  # noqa: BLE001: no pipe, no thread: the main thread's handler still dumps
+        mode = None
+    if mode is None:
+        try:
+            signal.signal(sig, _handler(file))
+            mode = "handler"
+        except Exception as e:  # noqa: BLE001: not the main thread, or no such signal
+            try:
+                os.write(2, f"of_stacks: no stack dump on signal {sig}: {type(e).__name__}: {e}\n".encode())
+            except OSError:
+                pass
+            return "off"
+    _installed[sig] = mode
+    return mode
