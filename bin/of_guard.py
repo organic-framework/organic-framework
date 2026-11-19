@@ -3220,6 +3220,12 @@ def _substitutions(stext):
         return [stext]
 
 
+# GNU sed runs a command with its `e` command (`e`, `e cmd`, after an address) or the s command's `e` flag; BSD sed has
+# neither. Read wide: a lone `e` word or an `e` among a closing delimiter's flags keeps the sed for the line reading.
+_SED_RUNS = re.compile(r"(?:^|[\s;{}'\"])\d*(?:,\d+)?e(?=$|[\s;}'\"])|"
+                       r"[/|#,@:!_%+][gpIiMm0-9w]*e[gpIiMm0-9w]*(?=$|[\s;}'\"])")
+
+
 def _without_prose(cmd):
     """CMD without the top-level commands that only carry text (`of send "…"`, `of ask`, `of handover`, `of status
     --note`, `git commit -m`, `gh … --body`, release/request.sh's note): naming a form there runs nothing. `echo` stays:
@@ -3246,6 +3252,12 @@ def _without_prose(cmd):
                 if head in ("echo", "printf", "grep", "egrep", "fgrep", "rg", "ag", "ack") and not fed[idx]:
                     kept += _substitutions(stext)
                     continue   # text printed or written to a file; `echo '…' | at now` is kept
+                if os.path.basename(head) in ("sed", "gsed") and not fed[idx] and not _SED_RUNS.search(stext):
+                    # a sed program is text it writes, unless its `e` command or the s command's `e` flag runs it
+                    # (of_review's probe commit, 2026-11-19 23:15Z, of_architect msg 01a1f620-bc82: a header naming
+                    # `of org set <org> path` beside `python3 -P` and `at` was read as an act and a launcher)
+                    kept += _substitutions(stext)
+                    continue
                 if (head in _INTERPRETERS or _lang(head)) and h != "of" and \
                         not _launches(head, " ".join(args)):   # `python3 -c "…"` that starts no process
                     continue
