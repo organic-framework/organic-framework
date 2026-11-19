@@ -496,12 +496,23 @@ def drafts_dir():
     return d
 
 
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}")  # an ask id as a draft's file name: no dot, no slash
+
+
+def _draft_file(aid):
+    """The draft file of ask id AID, or None when AID is no plain id: a draft's own fields come from a file, and one
+    whose ids climb out of the folder ("../..") must never name a path (of_review on PR 402)."""
+    return os.path.join(drafts_dir(), f"{aid}.json") if isinstance(aid, str) and SAFE_ID.fullmatch(aid) else None
+
+
 def save_draft(item, text):
-    """Every answer is on disk before it is sent: a failure loses nothing."""
+    """Every answer is on disk before it is sent: a failure loses nothing. None when its ask id is no plain id."""
     import time
     aid = (item.get("ids") or ["?"])[0]
-    path = os.path.join(drafts_dir(), f"{aid}.json")
-    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+    path = _draft_file(aid)
+    if not path:
+        return None
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
         json.dump({"ask_id": aid, "ask_ids": item.get("ids") or [], "who": item.get("who") or [], "text": text,
                    "saved_at": time.time(), "item": {k: item.get(k) for k in ("who", "text", "since", "ids", "kind",
                                                                               "version", "written")}},
@@ -513,9 +524,11 @@ def mark_failed(item, why):
     """The draft of an answer whose send failed says so (failed_at), so the screen shows its card again at once and
     offers the draft to D instead of taking it for an answer on its way (of_review on PR 119)."""
     import time
-    path = os.path.join(drafts_dir(), f"{(item.get('ids') or ['?'])[0]}.json")
+    path = _draft_file((item.get("ids") or ["?"])[0])
+    if not path:
+        return
     try:
-        with open(path) as fh:
+        with open(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as fh:
             d = json.load(fh)
         d.update(failed_at=time.time(), why=str(why)[:200])
         tmp = path + f".{os.getpid()}"
@@ -527,10 +540,21 @@ def mark_failed(item, why):
 
 
 def drop_draft(item):
+    path = _draft_file((item.get("ids") or ["?"])[0])
     try:
-        os.remove(os.path.join(drafts_dir(), f"{(item.get('ids') or ['?'])[0]}.json"))
+        if path:
+            os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def drop_draft_file(name):
+    """Remove the draft unsent_drafts listed under NAME (its "file"): a plain file name in the drafts folder only."""
+    if isinstance(name, str) and name.endswith(".json") and SAFE_ID.fullmatch(name[:-5]):
+        try:
+            os.remove(os.path.join(drafts_dir(), name))
+        except FileNotFoundError:
+            pass
 
 
 def archive_drafts(open_ids):
@@ -544,9 +568,9 @@ def archive_drafts(open_ids):
         if any(i in open_ids for i in d.get("ask_ids") or [d.get("ask_id")]):
             continue
         os.makedirs(arch, mode=0o700, exist_ok=True)
-        src = os.path.join(drafts_dir(), f"{d.get('ask_id')}.json")
+        name = d["file"]  # the folder's own file name (unsent_drafts), never the fields inside it
         try:
-            os.replace(src, os.path.join(arch, f"{d.get('ask_id')}-{int(time.time())}.json"))
+            os.replace(os.path.join(drafts_dir(), name), os.path.join(arch, f"{name[:-5]}-{int(time.time())}.json"))
             out.append(d.get("ask_id"))
         except OSError:
             continue
@@ -554,14 +578,18 @@ def archive_drafts(open_ids):
 
 
 def unsent_drafts():
+    """The drafts in the folder, each with its own file name ("file"); a file not named by a plain id is not one."""
     out = []
     for f in sorted(os.listdir(drafts_dir())):
-        if f.endswith(".json"):
+        if f.endswith(".json") and SAFE_ID.fullmatch(f[:-5]):
             try:
-                with open(os.path.join(drafts_dir(), f)) as fh:
-                    out.append(json.load(fh))
-            except (OSError, ValueError):
+                with open(os.open(os.path.join(drafts_dir(), f), os.O_RDONLY | os.O_NOFOLLOW)) as fh:
+                    d = json.load(fh)
+            except (OSError, ValueError, RecursionError):
                 continue
+            if isinstance(d, dict):
+                d["file"] = f
+                out.append(d)
     return out
 
 
