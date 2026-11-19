@@ -124,6 +124,22 @@ class ActorLineTest(unittest.TestCase):
         self.assertTrue(deny("echo 'of asks answered AS-1' | at now"))   # text a runner reads still counts
 
 
+class SedProgramIsText(unittest.TestCase):
+    """of_review's probe commit (of_architect msg 01a1f620-bc82): a sed program naming the path act, `python3 -P` and
+    `at` as prose was refused, with nothing on the line clearing a variable."""
+
+    def test_a_sed_program_is_prose_unless_it_runs(self):
+        import of_guard
+        act = "`" + "of org set <org> path`"
+        line = ("cp a.py probes/x.py && sed -i '' '1s|.*|\"\"\"G31 forms for " + act + " at PR 427: D = denied."
+                "\\n\\nRun: cd <tree> \\&\\& python3 -P <this file> <tree>\\n\"\"\"|' probes/x.py && "
+                "release/commit.sh -F m.txt -- probes/x.py")
+        self.assertIsNone(of_guard._actor_line_deny(line))
+        for runs in ("sed -n 's/x/" + "of org set o path r/e' f; at now",
+                     "sed '1e " + "of org set o path r' f; at now",
+                     "sed 's/x/" + "of org set o path r/' f | sh; at now"):
+            self.assertIsNotNone(of_guard._actor_line_deny("export -n OF_POSITION; " + runs), runs)
+
 class OrgPathActByPosition(unittest.TestCase):
     def test_only_the_path_key_is_the_owners(self):
         import of_guard
