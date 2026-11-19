@@ -990,6 +990,13 @@ class AnswerFromTheStream(unittest.TestCase):
             with open(answer, "w") as fh:
                 fh.write("from the file")
             self.assertEqual(of_subagent.read_stream("codex", stream, answer)["answer"], "from the file")
+            open(answer, "w").close()
+            self.assertEqual(of_subagent.read_stream("codex", stream, answer).get("answer_from"), "stream")
+            with open(stream, "w") as fh:   # an interrupted run: no turn.completed, so no answer from its messages
+                fh.write(_json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "working…"}})
+                         + "\n")
+            got = of_subagent.read_stream("codex", stream, answer)
+            self.assertEqual((got["answer"], got.get("answer_from")), ("", None))
 
 
 if __name__ == "__main__":

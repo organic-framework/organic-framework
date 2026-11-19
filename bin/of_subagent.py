@@ -998,7 +998,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
 
 def read_stream(harness, stream_file, answer_file=None):
     """{answer, model, usage {input, cached, output, reasoning}, tools [names called]} from a run's JSONL stream."""
-    answer, model, tools, last_message = None, None, [], None
+    answer, model, tools, last_message, completed = None, None, [], None, False
     usage = {"input": 0, "cached": 0, "output": 0, "reasoning": 0}
     try:
         lines = open(stream_file, errors="replace").read().splitlines()
@@ -1013,6 +1013,7 @@ def read_stream(harness, stream_file, answer_file=None):
             continue
         if harness == "codex":
             if d.get("type") == "turn.completed":
+                completed = True
                 u = d.get("usage") or {}
                 usage["input"] += int(u.get("input_tokens") or 0)
                 usage["cached"] += int(u.get("cached_input_tokens") or 0)
@@ -1053,11 +1054,18 @@ def read_stream(harness, stream_file, answer_file=None):
             answer = open(answer_file, errors="replace").read()
         except OSError:
             pass
-    if harness == "codex" and not (answer or "").strip() and last_message:
+    from_stream = False
+    if harness == "codex" and not (answer or "").strip() and last_message and completed:
+        # only a turn that completed: an interrupted run's last message is a progress note, no answer (of_review's
+        # note on organic-framework PR 411)
+        from_stream = True
         # the answer file could not be written (codex refuses one with a second hard link, which the reboot preparation's
         # copy of the scratch folder gives it: of_review, msg 01a1f59d-761e), but the turn's last message is the answer
         answer = last_message
-    return {"answer": answer, "model": model, "usage": usage, "tools": tools}
+    out = {"answer": answer, "model": model, "usage": usage, "tools": tools}
+    if from_stream:
+        out["answer_from"] = "stream"   # the record says where its answer came from
+    return out
 
 
 def unexpected(harness, kind, tools):
@@ -1269,7 +1277,7 @@ def run(harness, kind, prompt_file, position, org=None, session=None, work=None,
         stop = getattr(r, "stopped", None)
         end = dict(base_ev, patch_files=patch_files, patch_refused=(refused if patch_git else None) or None,
                    stopped=stop, phase="ended", exit=r.returncode if not held else 3, withheld=held or None, model=got["model"] or base_ev["model"], usage=got["usage"],
-                   tools=sorted(set(got["tools"])), unexpected_tools=odd or None,
+                   tools=sorted(set(got["tools"])), unexpected_tools=odd or None, answer_from=got.get("answer_from"),
                    seconds=round(time.time() - started, 1))
         of_events.emit("subagent_run", {k: v for k, v in end.items() if v is not None}, position=position,
                        session=session, org=org)
