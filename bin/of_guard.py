@@ -3380,15 +3380,19 @@ LAUNCH_DENY = ("the program OF starts in place of Claude Code for every session,
 
 # G33: OF's own configuration that decides, for every session, which registries the guard reads (orgs.yaml: their
 # protected_code, tools_excluded and keychain names) and what the listener runs in the person's panes (views.yaml)
-# is the owner's: agents change it through OF's own commands (of view add, of init), never by writing the file
-# (docs/guard.md G33; the gap "OF's own configuration is written by any agent", 2026-11-18; of_review on
+# is the owner's: agents change it through OF's own commands (of org set, of view add, of init), never by writing the
+# file (docs/guard.md G33; the gap "OF's own configuration is written by any agent", 2026-11-18; of_review on
 # organic-framework PR 345, msg 01a1efc7-283b, through of_herdr)
 OWNER_CONFIG_FILES = ("orgs.yaml", "views.yaml")
 OWNER_CONFIG_DENY = ("OF's own configuration, which only the machine's owner writes: orgs.yaml (which registries the "
-                     "guard reads) and views.yaml (what runs in the person's panes); agents change them through "
-                     "`of view add` or `of init`, never by writing the file (docs/guard.md G33)")
-OWNER_CONFIG_MODE = "warn"  # a deny once its live flows have an OF command: the 21-day replay (2026-11-19) found
-# agents editing orgs.yaml's hold: by sed for the founder, with no command for it (docs/guard.md G33)
+                     "guard reads) and views.yaml (what runs in the person's panes). Agents change them through OF's "
+                     "commands, which write the file from their own process: `of org set <org> hold on|off`, "
+                     "`of view add|remove`, `of init`. A script or text that only names the file: change that file "
+                     "with the Edit tool. A test's own copy: write it by its own folder's path, not through $HOME "
+                     "(docs/guard.md G33)")
+# A deny from 2026-11-19: the 21-day replay's live flow, agents editing orgs.yaml's hold: by sed for the founder, has
+# `of org set` (2026-11-19, of_platform); its two false positives have the remedies the deny names (docs/guard.md G33)
+OWNER_CONFIG_MODE = "deny"
 
 
 def _owner_config_targets():
