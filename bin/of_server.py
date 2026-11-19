@@ -2286,7 +2286,70 @@ def systemd_units(cfg=None, python=None, of_bin=None):
             "of-server-watchdog.service": of_systemd.service("server", python, of_bin, watchdog=True),
             "of-server-watchdog.timer": (
                 "[Unit]\nDescription=Check the Organic Framework server\n\n[Timer]\n"
-                f"OnBootSec=60\nOnUnitActiveSec={WATCHDOG['every']}\n\n[Install]\nWantedBy=timers.target\n")}
+                f"OnBootSec=60\nOnUnitActiveSec={WATCHDOG['every']}\n\n[Install]\nWantedBy=timers.target\n"),
+            "of-server-backup.service": of_systemd.service("server", python, of_bin, watchdog=True).replace(
+                "-watchdog", "-backup").replace("server watchdog", "server backup"),
+            "of-server-backup.timer": (
+                "[Unit]\nDescription=Back up the Organic Framework server\n\n[Timer]\n"
+                "OnCalendar=*-*-* 03:30:00 UTC\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n")}
+
+
+BACKUP_KEEP = 7  # days of backups kept on the host (organic-framework-build's server move plan, §5)
+_DB = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
+    """`of server backup`, nightly under systemd: the store copied by SQLite's online backup into
+    <backup dir>/<UTC day>/server.db (0600, folders 0700), each ClickHouse database backed up to the disk the config
+    names (`backup: {clickhouse_disk}`; ClickHouse's own BACKUP, onto its own disk), and days older than KEEP removed
+    from both places that are this user's files. Prints nothing of the data: the day, the files and their sizes."""
+    import shutil
+    import sqlite3
+    cfg = cfg or load_config()
+    b = cfg.get("backup") or {}
+    root = os.path.expanduser(b.get("dir") or os.path.join(cfg["state_dir"], "backups"))
+    day = today or time.strftime("%Y-%m-%d", time.gmtime())
+    dest = os.path.join(root, day)
+    os.makedirs(dest, mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    os.chmod(dest, 0o700)
+    out = []
+    target = os.path.join(dest, "server.db")
+    tmp = target + ".partial"
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    src = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=30)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)  # a consistent copy while the server writes
+    finally:
+        dst.close()
+        src.close()
+    os.replace(tmp, target)
+    out.append(f"{day}: server.db {os.path.getsize(target)} bytes")
+    disk = b.get("clickhouse_disk")
+    if disk and cfg.get("clickhouse"):
+        import of_route
+        if not _DB.fullmatch(disk):
+            raise ValueError("backup: clickhouse_disk is not a plain name")
+        post = ch_post or (lambda q: of_route.ClickHouse(cfg["clickhouse"]).post(q, timeout=3600, query_in_body=True))
+        dbs = sorted(set((cfg.get("orgs") or {}).values()) | {cfg.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
+                                                               cfg.get("unassigned_database") or
+                                                               ROUTE_DEFAULTS["unassigned_database"]})
+        for db in dbs:
+            if not _DB.fullmatch(db):
+                raise ValueError("a ClickHouse database name that is not a plain name")
+            post(f"BACKUP DATABASE {db} TO Disk('{disk}', '{day}/{db}.zip')")  # names checked above: no quoting gap
+            out.append(f"{day}: ClickHouse {db} backed up to its disk {disk}")
+    cutoff = time.strftime("%Y-%m-%d", time.gmtime((today and time.mktime(time.strptime(today, "%Y-%m-%d"))
+                                                    or time.time()) - keep * 86400))
+    for place in [root] + ([os.path.expanduser(b["clickhouse_path"])] if b.get("clickhouse_path") else []):
+        for name in sorted(os.listdir(place)) if os.path.isdir(place) else []:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name) and name < cutoff:
+                shutil.rmtree(os.path.join(place, name))
+                out.append(f"removed {name} from {place}")
+    return out
 
 
 def install_systemd(cfg=None, uninstall=False, run=None, units=None, units_dir=None):
@@ -2296,7 +2359,8 @@ def install_systemd(cfg=None, uninstall=False, run=None, units=None, units_dir=N
     cfg = cfg or load_config()
     os.makedirs(cfg["state_dir"], mode=0o700, exist_ok=True)
     return of_systemd.install(systemd_units(cfg) if units is None else units,
-                              (SYSTEMD_UNIT, "of-server-watchdog.timer"), uninstall, run, units_dir)
+                              (SYSTEMD_UNIT, "of-server-watchdog.timer", "of-server-backup.timer"), uninstall, run,
+                              units_dir)
 
 
 def _systemd_installed(units_dir=None):
