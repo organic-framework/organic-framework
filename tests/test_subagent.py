@@ -970,5 +970,27 @@ class SubagentTest(unittest.TestCase):
         self.assertIsNone(of_subagent.pick({}, "review"))
 
 
+
+class AnswerFromTheStream(unittest.TestCase):
+    """of_review, msg 01a1f59d-761e: codex refused to write answer.txt, which had a second hard link from the reboot
+    preparation's copy of the scratch folder; the answer was in the stream, and the run recorded none."""
+
+    def test_the_last_agent_message_stands_in_for_an_empty_answer_file(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as d:
+            stream, answer = os.path.join(d, "stream.jsonl"), os.path.join(d, "answer.txt")
+            open(answer, "w").close()
+            with open(stream, "w") as fh:
+                for ev in ({"type": "item.completed", "item": {"type": "agent_message", "text": "first"}},
+                           {"type": "item.completed", "item": {"type": "agent_message", "text": "the answer"}},
+                           {"type": "turn.completed", "usage": {"output_tokens": 7}}):
+                    fh.write(_json.dumps(ev) + "\n")
+            got = of_subagent.read_stream("codex", stream, answer)
+            self.assertEqual((got["answer"], got["usage"]["output"]), ("the answer", 7))
+            with open(answer, "w") as fh:
+                fh.write("from the file")
+            self.assertEqual(of_subagent.read_stream("codex", stream, answer)["answer"], "from the file")
+
+
 if __name__ == "__main__":
     unittest.main()
