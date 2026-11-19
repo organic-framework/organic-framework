@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -739,6 +740,24 @@ class SubagentTest(unittest.TestCase):
                 self.assertEqual(fake.calls, [])                           # nothing started
                 self.git("rm", "-q", name)
                 self.git("commit", "-qm", "drop " + name)
+
+    def test_a_fixture_that_lists_tokens_in_a_test_folder_never_refuses_the_run(self):
+        """G1.2's motivating case (of_review on organic-framework PR 387): both scans tested the bare file name too,
+        which has no test folder, so the exception never applied and every run on such a repository aborted."""
+        root = tempfile.mkdtemp(prefix="of-scan-")
+        self.addCleanup(shutil.rmtree, root, True)
+        os.makedirs(os.path.join(root, "tests"))
+        for rel in ("tests/crafted_tokens.txt", "api_token.txt"):
+            with open(os.path.join(root, rel), "w") as fh:
+                fh.write("x\n")
+        self.assertEqual([r for r, _ in of_subagent.secret_files(root)], ["api_token.txt"])
+        os.makedirs(os.path.join(self.repo, "tests"), exist_ok=True)
+        with open(os.path.join(self.repo, "tests", "crafted_tokens.txt"), "w") as fh:
+            fh.write("x\n")
+        self.git("add", "-f", "tests/crafted_tokens.txt")
+        self.git("commit", "-qm", "a fixture that lists tokens")
+        _, c = self.go("codex", visibility=lambda r: True)
+        self.assertTrue(c["argv"])                                          # the run started
 
     def test_read_only_flags_no_web_with_a_workspace_and_no_workspace_with_the_web(self):
         _, c = self.go("codex", visibility=lambda r: True)

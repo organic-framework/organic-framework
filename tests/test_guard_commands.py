@@ -384,6 +384,13 @@ class HarnessLoginTest(unittest.TestCase):
                     "of capacity status"):
             self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}), cmd)
 
+    def test_the_logins_are_in_the_native_rules(self):
+        """of_secrets-review on organic-framework PR 387: the row says native rules, and none was written."""
+        import of_classify
+        rules = of_classify.deny_rules()
+        for g in of_classify._HARNESS_LOGINS:
+            self.assertIn(f"Read(**/{g})", rules)
+
 
 if __name__ == "__main__":
     unittest.main()

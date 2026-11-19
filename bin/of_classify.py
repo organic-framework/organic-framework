@@ -624,7 +624,8 @@ DENY_READ_GLOBS = (".env", ".env.local", ".env.prod", ".env.production", ".env.d
                    "credentials.json", "service-account*.json",
                    "*.kubeconfig", "kubeconfig*", "*_ed25519", "*_rsa", ".config/of/clickhouse/**",
                    ".config/of/grant_ed25519", ".local/state/of/redact-backup/**", ".config/of/service-accounts/**",
-                   "executors.txt", *_CRED_SUFFIXES, *_CLOUD_CACHES)
+                   "executors.txt", *_CRED_SUFFIXES, *_CLOUD_CACHES,
+                   *_HARNESS_LOGINS)  # G1.14 in the native rules too (of_secrets-review on organic-framework PR 387)
 
 
 def deny_rules():

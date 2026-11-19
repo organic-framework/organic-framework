@@ -434,7 +434,7 @@ def diff_secrets(checkout, base, head, diff_text="", rxs=None):
     for n in names:
         if excluded(n, rxs):
             continue   # removed from the diff: not sent
-        if of_classify.secret_path(n) or of_classify.secret_path(os.path.basename(n)):
+        if of_classify.secret_path(n):  # the whole path: G1.2's test-folder exception needs its folder (PR 387)
             out.append((n, "a secret path (docs/guard.md G1)"))
             continue
         r = subprocess.run(["git", "-C", checkout, "cat-file", "-p", f"{base}:{n}"], capture_output=True,
@@ -456,7 +456,7 @@ def secret_files(root):
         for n in files + [x for x in dirs if of_classify.secret_path(os.path.relpath(os.path.join(d, x), root) + "/x")]:
             p = os.path.join(d, n)
             rel = os.path.relpath(p, root)
-            if of_classify.secret_path(rel) or of_classify.secret_path(n):
+            if of_classify.secret_path(rel):  # the relative path, never the bare name (G1.2, PR 387)
                 out.append((rel, "a secret path (docs/guard.md G1)"))
             elif os.path.isfile(p) and of_guard._key_file(p):
                 out.append((rel, "a private key's header (docs/guard.md G1.13)"))
