@@ -47,6 +47,11 @@ class Fake(BaseHTTPRequestHandler):
         if self.path == "/v1/invites":
             return self._send(200, {"code": "INV-123", "expires": "2026-11-08"})
         if self.path == "/v1/enroll":
+            if body.get("code") == "INV-ODDORG":  # a 403 naming an organization the consent never asked raw for
+                return self._send(403, {"type": "consent", "status": 403,
+                                        "title": "zz: the raw tier is not offered by this invite"})
+            if body.get("code") == "INV-LIST":  # a body that is no object
+                return self._send(403, ["consent"])
             if body.get("code") in ("INV-NORAW", "INV-OTHER403"):  # an invite that offers no raw tier
                 asked = [o for o, c in body["consent"].items() if "raw" in c["tiers"]]
                 if asked:
@@ -142,6 +147,16 @@ class EnrollTest(unittest.TestCase):
         self.assertIn("does not offer the raw tier for acme", r.stdout)
         self.assertIn("does not offer the raw tier for other", r.stdout)
         self.assertIn("raw tier: none", r.stdout)
+
+    def test_a_403_for_another_organization_or_a_body_that_is_no_object_still_fails(self):
+        """of_review on organic-framework PR 421: a mismatched organization downgraded every one still asking raw, and a
+        JSON body that is no object raised AttributeError."""
+        for code in ("INV-ODDORG", "INV-LIST"):
+            Fake.seen = []
+            r = self.of("enroll", self.url, "--code", code, "--org", "acme", "--raw", "acme", "--yes")
+            self.assertNotEqual(r.returncode, 0, code)
+            self.assertNotIn("Traceback", r.stderr, code)
+            self.assertEqual(len([p for p, _, _ in Fake.seen if p == "/v1/enroll"]), 1, code)
 
     def test_another_403_still_fails(self):
         r = self.of("enroll", self.url, "--code", "INV-OTHER403", "--org", "acme", "--raw", "acme", "--yes")
