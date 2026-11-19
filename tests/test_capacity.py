@@ -154,6 +154,18 @@ def _row(d, five, seven, logged_in=True):
 
 
 class StatusAndTarget(unittest.TestCase):
+    def test_status_tier_from_profile_and_policy(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
+                mock.patch.object(of_capacity, "STATE_DIR", home), mock.patch.object(of_capacity.of_events, "CONFIG_DIR", home):
+            d = os.path.join(home, ".claude-a")
+            os.mkdir(d)
+            with open(os.path.join(d, ".claude.json"), "w") as fh:
+                json.dump({"oauthAccount": {"organizationRateLimitTier": "default_claude_max_5x"}}, fh)
+            self.assertEqual(of_capacity.status([], [d], probe=False)[0]["tier"], "default_claude_max_5x")
+            with open(os.path.join(home, "capacity.yaml"), "w") as fh:
+                fh.write("tiers:\n  ~/.claude-a: default_claude_ai\n")
+            self.assertEqual(of_capacity.status([], [d], probe=False)[0]["tier"], "default_claude_ai")
+
     def test_probe_cache_30_minutes(self):
         calls = []
 
@@ -241,6 +253,17 @@ class StatusAndTarget(unittest.TestCase):
         pro["tier"] = "default_claude_ai"
         max20["tier"] = "default_claude_max_20x"
         self.assertEqual(of_capacity.best_target([pro, max20]), max20)
+
+    def test_best_target_keeps_an_account_over_threshold_as_a_fallback(self):
+        max20 = dict(_row("/max", 0, 96), tier="default_claude_max_20x")
+        pro = dict(_row("/pro", 0, 40), tier="default_claude_ai")
+        self.assertEqual(of_capacity.best_target([max20, pro]), pro)
+        self.assertEqual(of_capacity.best_target([max20]), max20)
+
+    def test_free_capacity_uses_the_measured_week(self):
+        row = dict(_row("/max", 0, 40), tier="default_claude_max_5x")
+        self.assertEqual(of_capacity.free_capacity(row), 60 * 19)
+        self.assertEqual(of_capacity.free_capacity(row, usd=12), 60 * 12)
 
     def test_over_threshold(self):
         self.assertEqual(of_capacity.over_threshold(_row("/a", 0, 99)), "seven_day 99% ≥ 90%")
