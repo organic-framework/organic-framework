@@ -219,6 +219,9 @@ def _names_list_clean(p):
         if first and all(t in _HEADERS for t in toks):
             first = False
             continue  # the first non-empty line, made of known column names only
+        if first and len(toks) > 1 and any(x in _CRED_FIELDS for t in toks for x in re.split(r"[-_.]", t.lower())):
+            return False  # a header row naming a credential column inside a joined word (`name,client-secret`:
+            # of_review on organic-framework PR 332); a single name on the first line is a name
         first = False
         for t in toks:
             if _VALUE_SHAPE.search(t) or t.lower() in _CRED_FIELDS or sum(c.isdigit() for c in t) >= 12:
@@ -1116,45 +1119,121 @@ _REDIRECTION = re.compile(r"\d*(?:[<>]{1,2}|&>>?|>&|<&)")
 _NEGATIVE = re.compile(r"-(?:\d|\.\d)\S*")  # `timeout -1 cat`: a negative duration, not an option
 
 
-def _unknown_option_tails(words, limit=12):
-    """When a wrapper's option holds a letter the tables do not know (`sudo -Q root cat <key>`, `xargs -Z n cat`), the
-    tails that start at each of the next LIMIT words: any of them may be the command that runs (of_secrets-review on
-    organic-framework PR 332). [] when every option is known. The line's leading redirections are passed over
-    (`</dev/null taskpolicy -ad x cat <key>`). It also gives GNU script's -c string as `bash -c <string>`, so a list
-    in it is judged as bash's is."""
-    i, extra = 0, []
+# wrappers whose every word is read as a possible command line: `script` exists to run one, and six review passes on
+# organic-framework PR 332 found each new branch of its reader dropping a reading the old one had (of_secrets-review)
+_DOUBT_ALWAYS = frozenset({"script"})
+
+
+def _redirection_at(words, i):
+    """How many tokens a redirection at WORDS[i] takes (its operator and its target), or 0. The tokenizer splits
+    `2>/dev/null` into `2`, `>`, `/dev/null`, so a number before an operator belongs to it."""
+    k = i + 1 if words[i].isdigit() and i + 1 < len(words) and _REDIRECTION.fullmatch(words[i + 1]) else i
+    m = _REDIRECTION.match(words[k])
+    if not m:
+        return 0
+    return k - i + (1 if m.end() < len(words[k]) else 2)
+
+
+def _option_exact(word, opts, flags):
+    """Is WORD an option the wrapper's tables read exactly: a name they hold (`--kill-after`, never the abbreviation
+    `--kill-a`), `--name=value` for a value option they hold, or a cluster of short letters they all know up to the
+    one that takes a value?"""
+    if word in opts or word in flags:
+        return True
+    if word.startswith("--"):
+        return "=" in word and word.split("=", 1)[0] in opts
+    for c in word[1:]:
+        if f"-{c}" in opts:
+            return True
+        if f"-{c}" not in flags:
+            return False
+    return True
+
+
+def _wrapper_readings(words):
+    """The extra readings of a simple command run through a wrapper, as shell lines, each judged like the line itself
+    (critical_deny). The plain reading (_command_words) stays; these are added to it, and a deny by any of them denies
+    (of_secrets-review on organic-framework PR 332, sixth pass: "keep the previous reading and add the new one, and deny
+    when either does").
+
+    A wrapper is read with doubt when it is `script` (_DOUBT_ALWAYS), or when one of its options is not one its tables
+    read exactly: a letter they do not know (`sudo -Q root cat <key>`), an abbreviated long option (`timeout --kill-a 1 2
+    cat <key>`), a redirection among its options (`script </dev/null -c '…'`). Then, from the wrapper's first argument:
+    every tail of its words is a possible command (an xargs tail also with its first word as the replacement string,
+    `xargs --max-a 1 -tJ MARK MARK <key>`); every word holding a space or a shell character, and the text after an
+    option's `=` or after each letter of an option cluster (`-qc'cat <key>'`, `--comm='…'`), is a `bash -c` body; and
+    what the line feeds the command's standard input (`<<< '…'`, `< file`) is what a shell in it may read. The line's
+    leading redirections, keywords and assignments are passed over (`2>/dev/null script -q -c '…' /dev/null`)."""
+    i = 0
     while i < len(words):
-        m = _REDIRECTION.match(words[i])
-        if m:  # `< f`, `2>/dev/null`, `</dev/null`: a redirection and its target, not the command
-            i += 1 if m.end() < len(words[i]) else 2
+        r = _redirection_at(words, i)
+        if r:
+            i += r
             continue
-        w = _fold_name(os.path.basename(words[i]))
         if words[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "coproc") or \
                 re.match(r"^[A-Za-z_]\w*=", words[i]):
             i += 1
             continue
+        w = _fold_name(os.path.basename(words[i]))
         if not (w in _WRAPPERS or w in ("timeout", "env")):
-            return extra
+            return []
         opts, flags = _WRAPPER_VALUE_OPTS.get(w, frozenset()), _WRAPPER_FLAGS.get(w, frozenset())
         i += 1
-        start = i
-        while i < len(words) and (words[i].startswith("-") or (w == "env" and "=" in words[i])) and words[i] != "--" \
-                and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
-            o = words[i]
-            if o.startswith("-") and not _option_known(o, opts, flags):
-                return extra + [words[j:] for j in range(i + 1, min(len(words), i + 1 + limit))]
-            i += 1 + (_opt_takes_next(o, opts, flags) if o.startswith("-") else 0)
-        if w == "script":
-            cmd = _script_command(words[start:i])
-            if cmd is not None:
-                extra.append(["bash", "-c", cmd])  # GNU script's -c string, a command line of its own
+        start, doubt = i, w in _DOUBT_ALWAYS
+        while not doubt and i < len(words) and words[i] != "--":
+            if _redirection_at(words, i):
+                doubt = True
+            elif words[i].startswith("-") and not (w == "timeout" and _NEGATIVE.fullmatch(words[i])):
+                doubt = not _option_exact(words[i], opts, flags)
+                i += 0 if doubt else 1 + _opt_takes_next(words[i], opts, flags)
+            elif w == "env" and "=" in words[i]:
+                i += 1
+            else:
+                break
+        if doubt:
+            return _doubted(words[start:], xargs=w == "xargs")
         if i < len(words) and words[i] == "--":
             i += 1
         if w == "timeout" and i < len(words):
             i += 1  # its duration, whatever its form
         if w in _WRAPPER_POSITIONAL:
             i += _WRAPPER_POSITIONAL[w]
-    return extra
+    return []
+
+
+_SHELL_CHARS = re.compile(r"[\s;&|()<>`$]")
+
+
+def _doubted(rest, xargs=False):
+    """_wrapper_readings' lines for a doubted wrapper's words REST."""
+    out = []
+    for j in range(len(rest)):
+        out.append(" ".join(shlex.quote(t) for t in rest[j:]))
+        if xargs and j + 1 <= len(rest):
+            out.append(" ".join(shlex.quote(t) for t in ["cat"] + rest[j + 1:]))
+    for k, wd in enumerate(rest):
+        if wd == "<<<" and k + 1 < len(rest):
+            out.append(rest[k + 1])                        # a here-string, read by a shell in the command
+            continue
+        if wd == "<" and k + 1 < len(rest):
+            out.append("bash " + shlex.quote(rest[k + 1]))  # a file on its standard input, run by a shell in it
+            continue
+        if _SHELL_CHARS.search(wd):
+            out.append(wd)
+        if wd.startswith("-") and len(wd) > 2:
+            if "=" in wd:
+                out.append(wd.split("=", 1)[1])
+            for n, c in enumerate(wd[1:], 1):
+                if not c.isalpha():
+                    break
+                if wd[n + 1:]:
+                    out.append(wd[n + 1:])
+    seen, lines = set(), []
+    for x in out:
+        if x and x not in seen:
+            seen.add(x)
+            lines.append(x)
+    return lines
 
 
 def _script_command(opts):
@@ -1180,7 +1259,7 @@ def _script_command(opts):
                     k += 0 if rest else 1
                     break
                 if f"-{ch}" not in flags:
-                    break  # a letter neither table knows: _unknown_option_tails judges what follows
+                    break  # a letter neither table knows: _wrapper_readings judges what follows
         k += 1
     return None
 
@@ -1237,7 +1316,8 @@ _WRAPPER_VALUE_OPTS = {
               "--max-chars", "--delimiter", "--eof", "--arg-file", "--replace"},
     "env": {"-u", "--unset", "-C", "--chdir", "-P"},
     "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
-    "caffeinate": {"-t", "-w"}, "chrt": set(), "taskset": set(),
+    "caffeinate": {"-t", "-w"}, "taskset": set(),
+    "chrt": {"-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"},
     "taskpolicy": {"-c", "-d", "-g", "-t", "-l", "-p", "-m", "-j", "-P", "-S"}, "arch": {"-arch", "-e", "-d"},
     "script": {"-t", "-T", "-c", "--command"},
 }
@@ -1250,6 +1330,11 @@ _WRAPPER_FLAGS = {
     "xargs": frozenset("-0 -o -p -r -t -x".split()), "env": frozenset("-0 -i -v".split()),
     "ionice": frozenset(["-t"]), "caffeinate": frozenset("-d -i -m -s -u".split()),
     "taskpolicy": frozenset("-b -B -a -s -x -X".split()), "script": frozenset("-a -d -e -F -f -k -p -q -r".split()),
+    # util-linux's man pages: taskset's mask (or list, with -c) and chrt's priority are their positional word; without
+    # these, `taskset -c 0,16 nice …` read with doubt took a later `…/deploy/env` path for env (the PR 332 replay)
+    "taskset": frozenset("-a -c -p --all-tasks --cpu-list --pid".split()),
+    "chrt": frozenset("-a -b -d -e -f -i -m -o -p -r -R -v --all-tasks --batch --deadline --fifo --idle --max --other "
+                      "--pid --rr --reset-on-fork --verbose".split()),
 }
 
 
@@ -1327,7 +1412,7 @@ def _command_words_of(words):
                 # input and no name rule sees it; its arguments are judged as a reader's (of_secrets-review on PR 332)
                 words = words[:i] + ["cat"] + words[i + 1:]
             # GNU `script -c '<command>' <file>`: the string is a command line of its own, judged whole by
-            # _unknown_option_tails as `bash -c` is (a list in it, `true && cat <key>`: of_secrets-review on PR 332);
+            # _wrapper_readings as `bash -c` is (a list in it, `true && cat <key>`: of_secrets-review on PR 332);
             # the command here is BSD's reading, the words after the typescript file
             if w in _WRAPPER_POSITIONAL and i < len(words):
                 i += _WRAPPER_POSITIONAL[w]
@@ -3153,8 +3238,10 @@ def _remote_line(cmd):
     (`s's'h host cat <list>` is ssh: of_review on organic-framework PR 332), each name folded as G0.10 folds it."""
     if _REMOTE_LINE.search(cmd):
         return True
-    try:
-        words = shlex.split(cmd, comments=False)
+    try:  # split at the shell's operators too: `true;s's'h host …` is two commands (of_review on PR 332)
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lex.whitespace_split, lex.commenters = True, ""
+        words = [p for w in lex for p in re.split(r"[`{}]", w) if p]
     except ValueError:
         return True  # a line the shell's rules cannot split: not read as a local one
     return any(_REMOTE_LINE.fullmatch(_fold_name(os.path.basename(w))) for w in words)
@@ -4055,6 +4142,15 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 hit = next((_prints(m.group(0)) for m in _VAR_REF.finditer(body) if _secret_name(m.group(1))), None)
         else:
             hit = None
+        if not hit and head not in _SHELLS and depth < 4:
+            # a body fed to a doubted wrapper (`script -q -c sh /dev/null <<EOF`): a shell in it may read it as code
+            # (of_review on organic-framework PR 332)
+            try:
+                seg = _segments(opener)[-1]
+            except (ValueError, IndexError):
+                seg = []
+            if _wrapper_readings(list(seg)):
+                hit = _bash_deny(body, depth + 1)
         if hit:
             return hit
     try:
@@ -4095,10 +4191,17 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             _loop_header(stext, loops)
             _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
             if depth < 6:  # before the simple command: `script -qc '<line>' <file>` runs nothing after its file
-                for tail in _unknown_option_tails(_tokens_or_empty(stext)):
-                    hit = _bash_deny(" ".join(shlex.quote(t) for t in tail), depth + 1, reaches_agent=reaches_agent)
-                    if hit:
-                        return hit
+                # each reading is judged one level down, in the folder this command runs in (`cd bin && script -c …`;
+                # of_review on organic-framework PR 332)
+                saved = _DENY_CWD[0]
+                try:
+                    _DENY_CWD[0] = here
+                    for line in _wrapper_readings(_tokens_or_empty(stext)):
+                        hit = _bash_deny(line, depth + 1, reaches_agent=reaches_agent)
+                        if hit:
+                            return hit
+                finally:
+                    _DENY_CWD[0] = saved
                 _REDIR_CTX[0] = (here, {**line_vars, **exported, **_assignments(stext)})
             s = _simple(stext)
             if not s:

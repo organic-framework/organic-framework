@@ -106,6 +106,19 @@ class NamesLists(unittest.TestCase):
         self.assertIsNone(deny("python3 - <<'PY'\n" + code + "\nPY"))                # here: the content is checked
         self.assertTrue(deny("ssh somehost python3 - <<'PY'\n" + code + "\nPY"))     # there: another machine's
         self.assertTrue(deny("'ssh' buildhost true; cat " + p))                       # a remote command in quotes
+        # after a shell separator, split by quotes (of_review on organic-framework PR 332 at c53d6f95)
+        for cmd in (f"true;s's'h buildhost true; cat {p}", f"true&&s's'h buildhost true; cat {p}",
+                    f"(s's'h buildhost true); cat {p}", f"echo `s's'h buildhost true`; cat {p}"):
+            self.assertTrue(deny(cmd), cmd)
+
+    def test_a_header_word_holding_a_credential_word(self):
+        """of_review on organic-framework PR 332 at c53d6f95: `name,client-secret` over `example,example` passed, since
+        `secret` counted only as a whole field."""
+        for text in ("name,client-secret\nexample,example\n", "name client_secret\nexample example\n",
+                     "name,db.password\ndemo,demo\n", "id,api-token\napp,app\n"):
+            self.assertTrue(deny("cat " + self.put("evm-secret-names.txt", text)), text)
+        for text in ("github-token\napp-db\n", "NAME TYPE\nci-deploy-token Opaque\n"):  # a name, not a header
+            self.assertIsNone(deny("cat " + self.put("evm-secret-names.txt", text)), text)
 
     def test_the_deny_without_names_is_unchanged(self):
         p = self.put("evm-secret-names.txt", "evm-signer  Opaque\n")
