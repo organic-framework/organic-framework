@@ -60,7 +60,7 @@ Each rule names the measure it serves.
 
 ## 6. The owner's keys and approvals: scores (2026-11-19)
 
-The platform facts behind the scores come from a Codex research run of 2026-11-19 (run `01a1f433-c9de`, record in `of_design`'s machine state), checked against the sources it cites: W3C WebAuthn Level 3 (a passkey is bound to the RP ID, a domain; the system dialog shows the site and the account, never page text), Apple's and Microsoft's passkey guides, Tailscale's HTTPS, Serve and Services pages, Anthropic's Remote Control and connector pages, and the macOS `sc_auth(8)` and `ssh-keychain(8)` manuals. Today's OF screens come from a Codex read of the working copy on 2026-11-19 (run `01a1f434-632a`).
+The platform facts behind the scores come from a Codex research run of 2026-11-19 (run `01a1f433-c9de-778e-b08c-33e8fb44ad0f`; its record and answer are under `~/.local/state/of/subagent/runs/` on the OF team's machine, readable by any OF position there), checked against the sources it cites: W3C WebAuthn Level 3 (a passkey is bound to the RP ID, a domain; the system dialog shows the site and the account, never page text), Apple's and Microsoft's passkey guides, Tailscale's HTTPS, Serve and Services pages, Anthropic's Remote Control and connector pages, and the macOS `sc_auth(8)` and `ssh-keychain(8)` manuals. Today's OF screens come from a Codex read of the working copy on 2026-11-19 (run `01a1f434-632a-7088-873f-ee9a62cfbfb6`, in the same place), with each finding used here checked against the file it names.
 
 The options are those of `of_architect`'s matrix of 2026-11-19 (cards `OF-109`, `OF-110`). The cases are `of_cjm`'s journeys (`docs/journeys.md`): **A** (§2), one person with agents on a second computer, driving it from a laptop and a phone, with no 1Password; **B** (§3), an owner with agents on a Linux server, one contour per organization, driving it from a Mac with 1Password. The scores are for journey A unless a line says otherwise. S, N, R, C, B and A stand for Simplicity, Nativeness, Reach, Clarity, Recovery and Attention.
 
@@ -76,9 +76,9 @@ The options are those of `of_architect`'s matrix of 2026-11-19 (cards `OF-109`, 
 | Secretive (macOS app) | 1 | 1 | 0 | — | 1 | 2 | 5/10 | An install for what `sc_auth` gives without one. |
 | TPM key on Linux (`ssh-tpm-agent`) or Windows (nCryptAgent) | 0 | 1 | 0 | — | 1 | 2 | 4/10 | An agent to install and configure; usable only on that computer. |
 | Windows Hello as an SSH key | ruled out | | | | | | | Signing fails (Win32-OpenSSH issues 2408 and 2040). |
-| A private key in a plain file | ruled out | | | | | | | Any program of the user can read it; OF refuses to enroll a passkey with it (docs/remote.md §6). |
+| A private key in a plain file | ruled out | | | | | | | Any program of the user can read it; `of passkey enroll` refuses to sign an enrollment with it (`bin/of_passkey_owner.py`). |
 
-Reading: the passkey on the phone is the main key, everywhere. The SSH key earns its place only on Recovery, so it is the spare, never the daily key. This is the founder's "passkey for everything" for daily use, and `of_architect`'s "a name-free recovery root" (message `01a1f419-dcea`) for the day the page's name changes.
+Reading: the passkey on the phone is the main key, everywhere. The SSH key earns its place only on Recovery, so it is the spare, never the daily key. This answers the founder's two questions in the same prompt (`01a1f417-1968`, in English rendering): "why do we need an SSH key?" and "Can we just use a passkey for everything?". For daily use, yes; the SSH key stays as `of_architect`'s "a name-free recovery root" (message `01a1f419-dcea`) for the day the page's name changes.
 
 ### 6.2 Answering an ordinary card
 
@@ -101,7 +101,7 @@ Reading: the chat already scores as high as the connector. The connector lifts C
 | Option | S | N | R | C | B | A | Total | Reason |
 |---|---|---|---|---|---|---|---|---|
 | The approval page with a passkey, opened from a link on any device | 1 | 2 | 2 | 2 | 2 | 2 | 11/12 | One tap and one Face ID over the exact text. S 1, not 2: with the page in the tailnet, every device that approves needs the Tailscale app on and signed in (6.5). |
-| The terminal with an SSH key (`of diff approve`, `of grant issue`) | 1 | 1 | 0 | 1 | 2 | 1 | 6/12 | For a person at their own terminal; the text scrolls past in a long diff. |
+| The terminal with an SSH key (`of grant issue` today; under the scheme also structure, secrets and the key list) | 1 | 1 | 0 | 1 | 2 | 1 | 6/12 | For a person at their own terminal; the text scrolls past in a long diff. Today's `of diff approve` is not this option: it takes the diff's id typed at a terminal and signs nothing. |
 | An SSH signature from a laptop without OF: the page shows a command, the person pastes the signature back | 0 | 0 | 1 | 1 | 2 | 1 | 5/12 | Copying between a page and a terminal is the kind of workaround rule 5 rules against. Keep it for recovery only. |
 | A word in the chat, or a button in a connector | ruled out | | | | | | | docs/remote.md §5; the connector only brings the link (`OF-110`). |
 
