@@ -2,12 +2,13 @@
 
 Made for the OF team's server moving to the agent host and, after it, a user organization's records moving to its
 own server there (2026-11-19, of_server; the founder's prompts 01a1f5e4-0343 and 01a1f5f2-8d26). This module carries
-the server store's part. ClickHouse and the blob store come in their own sections of the same bundle.
+the server store and ClickHouse parts.
 
 A bundle is a folder (mode 0700, files 0600):
 - store/<table>.jsonl.gz: the organization's rows of each table, one JSON object per line, or .jsonl.gz.age when the
   export names an age recipient: the gzip stream goes straight into `age`, with no plaintext on disk (the user
   organization's sec_keeper's condition, through of_architect, message 01a1f5ff-f009);
+- clickhouse/<org|vault>/<table>/<UTC day>.native.gz (.age): one day's Native blocks, streamed like the store files;
 - manifest.json.gz (.age): no row content, but row keys. It holds the format, the organization, the source's version,
   each file's sha256 and its gzip stream's (plain_sha256), and for each table the row count, a digest of the rows in
   key order, and per UTC day the count and the first and last key. Encrypted with the rest, since keys name things;
@@ -22,12 +23,16 @@ links expire within minutes. Machines, tokens, challenges and invites are not ca
 server. Nothing here prints a row: only counts, keys and digests.
 """
 
+from contextlib import contextmanager
 import datetime
 import gzip
 import hashlib
 import json
 import os
 import re
+import urllib.parse
+import urllib.request
+from typing import NamedTuple
 
 FORMAT = 2  # 2: index.json plain, the manifest encrypted with the rest (PR 425)
 # table: (the organization's rows, the column that dates a row, the key columns in order)
@@ -167,9 +172,9 @@ def _write_file(path, chunks, recipient=None):
     return {"sha256": _file_sha(path), "plain_sha256": sink.h.hexdigest()}
 
 
-def _read_lines(path, identity=None):
-    """The lines of the gzip file PATH, decrypted with `age -d -i IDENTITY` when it ends in .age. Yields the lines,
-    then the gzip stream's sha256 as the last item (a str)."""
+@contextmanager
+def _read_file(path, identity=None):
+    """Hash the compressed plaintext on the way to the JSON reader or the Native insert."""
     import subprocess
     if path.endswith(".age"):
         if not identity:
@@ -181,8 +186,7 @@ def _read_lines(path, identity=None):
         proc, src = None, _Hashing(open(path, "rb"))
     try:
         with gzip.GzipFile(fileobj=src, mode="rb") as gz:
-            for line in gz:
-                yield line
+            yield gz, src.h
         while src.read(1 << 16):  # whatever follows the gzip stream counts in its hash too
             pass
     finally:
@@ -192,7 +196,12 @@ def _read_lines(path, identity=None):
                 raise ExportError(f"age could not decrypt {os.path.basename(path)}")
         else:
             src.fh.close()
-    yield src.h.hexdigest()
+
+
+def _read_lines(path, identity=None):
+    with _read_file(path, identity) as (gz, digest):
+        yield from gz
+    yield digest.hexdigest()
 
 
 def _file_sha(path):
@@ -210,8 +219,8 @@ def _belongs(table, row, org):
     return row.get("org") == org
 
 
-def export_store(conn, org, out, version=None, recipient=None):
-    """Write the store part of ORG's bundle into the new folder OUT, each file encrypted to the age RECIPIENT when
+def export_store(conn, org, out, version=None, recipient=None, *, config=None, since=None, identity=None):
+    """Write ORG's store and configured ClickHouse tables into OUT, each file encrypted to the age RECIPIENT when
     given. Returns (manifest, the sha256 of index.json): the operator carries that sha256 to the import by another
     path than the bundle (of_secrets-review on organic-framework PR 425: age authenticates no sender, so the bundle
     alone proves nothing about who made it)."""
@@ -221,6 +230,8 @@ def export_store(conn, org, out, version=None, recipient=None):
         _age()
     if "machines" not in _tables(conn):  # an empty bundle from a file that is no server's store would, imported, wipe
         raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
+    if since is not None and not (config and _uses_clickhouse(config)):
+        raise ExportError("--since needs a ClickHouse export")
     if os.path.exists(out) and os.listdir(out):
         raise ExportError(f"{out} is not empty")
     _private_dir(out)
@@ -241,32 +252,61 @@ def export_store(conn, org, out, version=None, recipient=None):
             manifest["store"][table] = summarize(table, rows)
     finally:
         conn.execute("ROLLBACK")
+    if config and _uses_clickhouse(config):
+        ch, databases = clickhouse_connection(config, org)
+        _export_clickhouse(ch, databases, out, manifest, recipient, since, identity)
     # The manifest names rows (message ids, alias and position names, sightings' hmacs), so it is encrypted with the
     # rest; index.json, the one plain file, holds only the organization and each file's sha256 (PR 425, point 3).
     mrel = f"manifest.json.gz{ext}"
     written = _write_file(os.path.join(out, mrel), [json.dumps(manifest, sort_keys=True).encode()], recipient)
     index = {"format": FORMAT, "org": org, "encrypted": bool(recipient),
              "files": dict({rel: f["sha256"] for rel, f in manifest["files"].items()}, **{mrel: written["sha256"]})}
-    with _open_private(os.path.join(out, "index.json")) as fh:
-        fh.write(json.dumps(index, indent=1, sort_keys=True).encode() + b"\n")
-    return manifest, _file_sha(os.path.join(out, "index.json"))
+    raw = json.dumps(index, indent=1, sort_keys=True).encode() + b"\n"
+    path = os.path.join(out, "index.json")
+    fh = _open_private(path)
+    try:
+        with fh:
+            fh.write(raw)
+    except BaseException:
+        os.unlink(path)  # an incomplete index must never mark the bundle as ready
+        raise
+    return manifest, hashlib.sha256(raw).hexdigest()
 
 
-def load_index(bundle):
-    with open(os.path.join(bundle, "index.json")) as fh:
-        ix = json.load(fh)
-    if ix.get("format") != FORMAT:
-        raise ExportError(f"bundle format {ix.get('format')!r}; this release reads {FORMAT}")
+def load_index(bundle, index_sha=None):
+    try:
+        with open(os.path.join(bundle, "index.json"), "rb") as fh:
+            raw = fh.read()
+        if index_sha is not None and hashlib.sha256(raw).hexdigest() != index_sha:
+            raise ExportError("index.json: its sha256 is not the one the export printed")
+        ix = json.loads(raw)
+    except (OSError, ValueError):
+        raise ExportError("missing or unreadable index.json") from None
+    if not isinstance(ix, dict) or ix.get("format") != FORMAT:
+        raise ExportError(f"unsupported bundle format; this release reads {FORMAT}")
+    if (not isinstance(ix.get("org"), str) or type(ix.get("encrypted")) is not bool or
+            not isinstance(ix.get("files"), dict)):
+        raise ExportError("invalid bundle file inventory")
     return ix
 
 
-def load_manifest(bundle, identity=None):
-    ix = load_index(bundle)
+def load_manifest(bundle, identity=None, *, index=None):
+    ix = index if index is not None else load_index(bundle)
     rel = "manifest.json.gz" + (".age" if ix.get("encrypted") else "")
-    raw = b"".join(x for x in _read_lines(os.path.join(bundle, rel), identity) if isinstance(x, bytes))
-    m = json.loads(raw)
-    if m.get("org") != ix.get("org") or m.get("format") != FORMAT:
-        raise ExportError("the manifest and index.json disagree on the organization or the format")
+    path = os.path.join(bundle, rel)
+    try:
+        if ix["files"].get(rel) != _file_sha(path):
+            raise ExportError("the manifest's sha256 differs from index.json")
+        with _read_file(path, identity) as (gz, _):
+            m = json.load(gz)
+    except (OSError, ValueError, EOFError):
+        raise ExportError("cannot read the bundle manifest") from None
+    if not isinstance(m, dict) or any(m.get(k) != ix[k] for k in ("org", "format", "encrypted")):
+        raise ExportError("the manifest and index.json disagree")
+    files = m.get("files")
+    if (not isinstance(files, dict) or files.keys() != ix["files"].keys() - {rel} or
+            any(not isinstance(f, dict) or f.get("sha256") != ix["files"][name] for name, f in files.items())):
+        raise ExportError("the manifest and index.json disagree on the file inventory")
     return m
 
 
@@ -304,14 +344,38 @@ def check_bundle(bundle, identity=None, index_sha=None):
     """The bundle against its index and manifest: [] when they match, else the differences. INDEX_SHA, when given, is
     the sha256 the export printed, carried here by another path. An encrypted bundle checks its ciphertext hashes
     alone without IDENTITY, and everything with it."""
-    if index_sha is not None and _file_sha(os.path.join(bundle, "index.json")) != index_sha:
-        return ["index.json: its sha256 is not the one the export printed"]
-    ix = load_index(bundle)
+    return _checked_bundle(bundle, identity, index_sha)[1]
+
+
+def _checked_bundle(bundle, identity, index_sha):
+    """Return the very manifest whose inventory and day files were checked for this import."""
+    try:
+        ix = load_index(bundle, index_sha)
+    except ExportError as e:
+        return None, [str(e)]
+    ext = ".age" if ix["encrypted"] else ""
+    required = {f"store/{t}.jsonl.gz{ext}" for t in STORE} | {f"manifest.json.gz{ext}"}
+    native_pattern = (r"clickhouse/(org|vault)/(" + "|".join(CH_TABLES) +
+                      r")/[0-9]{4}-[0-9]{2}-[0-9]{2}\.native\.gz" + re.escape(ext))
+    indexed = ix["files"].keys() - required
+    if not required <= ix["files"].keys() or any(not re.fullmatch(native_pattern, rel) for rel in indexed):
+        return None, ["invalid bundle file inventory"]
+    for folder, _, names in os.walk(os.path.join(bundle, "clickhouse")):
+        for name in names:
+            rel = os.path.relpath(os.path.join(folder, name), bundle)
+            if name.endswith((".native.gz", ".native.gz.age")) and rel not in indexed:
+                return None, ["index.json omits a Native file"]
     problems = [f"{rel}: sha256 differs" for rel, sha in ix["files"].items()
                 if not os.path.exists(os.path.join(bundle, rel)) or _file_sha(os.path.join(bundle, rel)) != sha]
     if problems or (ix.get("encrypted") and not identity):
-        return problems
-    m = load_manifest(bundle, identity)
+        return None, problems
+    try:
+        m = load_manifest(bundle, identity, index=ix)
+        native = _ch_inventory(m)
+    except ExportError as e:
+        return None, [str(e)]
+    if native != indexed:
+        return None, ["the manifest and index.json disagree on the file inventory"]
     got = {}
     for table in STORE:
         sha = []
@@ -319,7 +383,16 @@ def check_bundle(bundle, identity=None, index_sha=None):
         rel = os.path.relpath(_store_file(bundle, table, ix.get("encrypted")), bundle)
         if sha != [m["files"][rel]["plain_sha256"]]:
             problems.append(f"{rel}: the decrypted stream's sha256 differs")
-    return problems + _compare(m["store"], got, "the bundle")
+    for rel in sorted(native):
+        try:
+            with _read_file(os.path.join(bundle, rel), identity) as (gz, digest):
+                while gz.read(1 << 16):
+                    pass
+            if digest.hexdigest() != m["files"][rel]["plain_sha256"]:
+                problems.append(f"{rel}: the decrypted stream's sha256 differs")
+        except Exception:
+            problems.append(f"{rel}: cannot read the Native file")
+    return m, problems + _compare(m["store"], got, "the bundle")
 
 
 def check_store(conn, bundle, identity=None, manifest=None):
@@ -341,30 +414,46 @@ def check_store(conn, bundle, identity=None, manifest=None):
                        if p.split(":", 1)[0] not in {q.split(":", 1)[0] for q in problems}]
 
 
-def import_store(conn, bundle, org, index_sha, identity=None):
+def _check_import(bundle, org, index_sha, identity):
+    if not index_sha:
+        raise ExportError("give the sha256 the export printed (--index-sha): the bundle alone proves nothing")
+    m, problems = _checked_bundle(bundle, identity, index_sha)
+    if not problems:
+        if m is None:
+            raise ExportError("the bundle is encrypted: name its key with --identity")
+        if org != m["org"]:
+            problems.append(f"the bundle is {m['org']}'s, not {org}'s")
+    return m, problems
+
+
+def check_import(conn, bundle, org, index_sha, identity=None, *, config=None):
+    """Compare the target only after checking the bundle for the operator's organization and hash."""
+    m, problems = _check_import(bundle, org, index_sha, identity)
+    if not problems:
+        problems = check_store(conn, bundle, manifest=m)
+    if not problems and "clickhouse" in m:
+        ch, databases = clickhouse_connection(config, org)
+        problems = _check_clickhouse(ch, databases, m)
+    return problems
+
+
+def import_store(conn, bundle, org, index_sha, identity=None, *, config=None):
     """Replace ORG's rows with the bundle's, table by table, in one transaction. Refused, with nothing changed, unless
     the operator's ORG is the bundle's, the INDEX_SHA the export printed matches, the bundle checks out, every row is
     ORG's by its own table's rule, and every column of every row exists here (of_secrets-review on organic-framework
     PR 425). The store is checked against the manifest inside the transaction, which rolls back on any difference.
-    A key another organization's row holds here refuses the whole import too. Returns {table: rows}."""
-    if not index_sha:
-        raise ExportError("give the sha256 the export printed (--index-sha): the bundle alone proves nothing")
-    problems = check_bundle(bundle, identity, index_sha)
+    A key another organization's row holds here refuses the whole import too. Once the store commits, replace the
+    verified ClickHouse days and compare the target's FINAL summaries. Returns {table: rows}."""
+    m, problems = _check_import(bundle, org, index_sha, identity)
     if problems:
         raise ExportError("the bundle does not match its index: " + "; ".join(problems))
-    ix = load_index(bundle)
-    if ix.get("encrypted") and not identity:
-        raise ExportError("the bundle is encrypted: name its key with --identity")
-    m = load_manifest(bundle, identity)
-    if org != m["org"]:
-        raise ExportError(f"the bundle is {m['org']}'s, not {org}'s")
     if "machines" not in _tables(conn):  # not a server's store: the new server makes it at its first start
         raise ExportError("this is no server's store: start the new server once, empty, before importing")
     ensure_schema(conn)  # the tables its modules make only when they first serve
     rows = {}
     for table in STORE:  # every row read and judged before anything here changes
         cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        rows[table] = list(read_bundle_rows(bundle, table, identity, encrypted=ix.get("encrypted")))
+        rows[table] = list(read_bundle_rows(bundle, table, identity, encrypted=m["encrypted"]))
         for r in rows[table]:
             if not _belongs(table, r, org):
                 raise ExportError(f"{table}: a row is not {org}'s by the table's own rule; nothing imported")
@@ -388,8 +477,324 @@ def import_store(conn, bundle, org, index_sha, identity=None):
         problems = check_store(conn, bundle, manifest=m)
         if problems:
             raise ExportError("the store would not match the bundle: " + "; ".join(problems) + "; nothing imported")
+        if "clickhouse" in m:
+            ch, databases = clickhouse_connection(config, org)  # missing target configuration still rolls back
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")
         raise
+    if "clickhouse" in m:
+        _import_clickhouse(ch, databases, bundle, identity, m)
+        problems = _check_clickhouse(ch, databases, m)
+        if problems:
+            raise ExportError("; ".join(problems))
+        counts.update({name: v["rows"] for name, v in m["clickhouse"].items()})
     return counts
+
+
+# ---------------------------------------------------------------- ClickHouse
+
+# UTC DateTime64 column and complete ReplacingMergeTree sorting tuple in deploy/clickhouse/schema.py.
+CH_TABLES = {
+    "event": ("ts", "org_id, name, ts, event_id"),
+    "transcript_record": ("ts", "session_id, record_uuid"),
+    "hook_record": ("received_at", "host_id, local_id"),
+    "runtime_record": ("received_at", "host_id, received_at, type, pane_id"),
+}
+
+
+class ClickHouseHTTP:
+    """Stream both directions with the tenant credential. Driver errors can contain rows and passwords."""
+
+    def __init__(self, cfg):
+        import of_route
+        try:
+            self.url = cfg["url"].rstrip("/") + "/?"
+            self.auth = of_route.ClickHouse(cfg).auth
+        except Exception:
+            raise ExportError("cannot read the ClickHouse connection settings") from None
+
+    def _post(self, params, body):
+        try:
+            req = urllib.request.Request(self.url + urllib.parse.urlencode(params), data=body,
+                                         headers={"Authorization": self.auth, "Content-Type": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=600) as response:
+                yield from iter(lambda: response.read(1 << 16), b"")
+        except Exception:
+            raise ExportError("ClickHouse request failed") from None
+
+    def query(self, sql, params):
+        # ClickHouse HTTP parameters are escaped text, then URL-encoded.
+        escapes = str.maketrans({"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r", "\0": "\\0"})
+        return self._post({"param_" + k: str(v).translate(escapes) for k, v in params.items()}, sql.encode())
+
+    def insert(self, sql, chunks):
+        for _ in self._post({"query": sql}, chunks):
+            pass
+
+
+def _uses_clickhouse(cfg):
+    """Whether this server stores in ClickHouse: its storage plugin, as of_plugins.load chooses it. The connection may
+    come from ship.yaml alone (the laptop's server has no `clickhouse` in server.yaml)."""
+    import of_plugins
+    return dict(of_plugins.DEFAULT_PLUGINS, **(cfg.get("plugins") or {})).get("storage") == "clickhouse"
+
+
+def clickhouse_connection(cfg, org):
+    """Use the same database mapping and configuration precedence as of_server.App."""
+    import of_route
+    import of_server
+    import of_ship
+    if not (cfg and _uses_clickhouse(cfg)):
+        raise ExportError("the bundle includes ClickHouse but this server's storage is not ClickHouse")
+    try:
+        ship = of_ship.config()
+        ship.update(of_server.route_settings(cfg, ship))
+        ship.update(cfg.get("clickhouse") or {})  # server.yaml's over ship.yaml's, as of_server.App does
+        if cfg.get("orgs"):
+            orgs, unassigned = cfg["orgs"], ship["unassigned_database"]
+        else:
+            router = of_route.Router(ship)
+            orgs, unassigned = router.db_by_org, router.unassigned
+        if org not in orgs:
+            raise ExportError("no ClickHouse database configured for this organization")
+        db, vault = orgs[org], ship["vault_database"]
+        if not all(isinstance(d, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", d) for d in (db, vault)):
+            raise ExportError("invalid ClickHouse database name")
+        if db in (vault, unassigned) or list(orgs.values()).count(db) != 1:
+            raise ExportError("the organization needs its own ClickHouse database")
+        return ClickHouseHTTP(ship), {"org": db, "vault": vault}
+    except ExportError:
+        raise
+    except Exception:
+        raise ExportError("cannot read the ClickHouse connection settings") from None
+
+
+class _CHTable(NamedTuple):
+    name: str
+    source: str
+    date: str
+    keys: str
+    scope: str
+    params: dict
+
+    def where(self, condition=""):
+        predicates = [p for p in (self.scope, condition) if p]
+        return " WHERE " + " AND ".join(predicates) if predicates else ""
+
+
+def _org_columns(ch, databases):
+    """The vault tables that carry org_id here: hook_record and runtime_record have it only once
+    deploy/clickhouse/schema.py's ALTER ran on this ClickHouse (601dacfe, 2026-11-19)."""
+    sql = ("SELECT table FROM system.columns WHERE database = {db:String} AND name = 'org_id' "
+           "FORMAT TabSeparated")
+    try:
+        return set(b"".join(ch.query(sql, {"db": databases["vault"]})).decode("ascii").split())
+    except Exception:
+        raise ExportError("cannot read the vault's columns") from None
+
+
+# A vault hook row of an older day names no organization; its session's transcript rows do, when they name one alone.
+_ONE_ORG_SESSIONS = ("session_id IN (SELECT session_id FROM {db}.transcript_record WHERE notEmpty(session_id) "
+                     "GROUP BY session_id HAVING min(org_id) = {{org:String}} AND max(org_id) = {{org:String}})")
+
+
+def _ch_tables(databases, org, org_cols=frozenset({"event", "transcript_record"})):
+    """Each table's rows that are ORG's. The organization's own database holds only its rows. In the vault: event and
+    transcript_record by org_id; hook_record by org_id, or, on a row that names none, by its session's one
+    organization; runtime_record by org_id alone, so a row that names none stays behind (counted by
+    _left_behind). ORG_COLS: the vault tables that have org_id here (_org_columns)."""
+    for role, db in databases.items():
+        for table, (stamp, keys) in CH_TABLES.items():
+            scope = ""
+            if role == "vault":
+                has = table in org_cols
+                if table == "hook_record":
+                    legacy = _ONE_ORG_SESSIONS.format(db=db)
+                    scope = f"(org_id = {{org:String}} OR (org_id = '' AND {legacy}))" if has else legacy
+                elif table == "runtime_record":
+                    if not has:
+                        continue  # no row here names an organization: every one stays behind
+                    scope = "org_id = {org:String}"
+                else:
+                    scope = "org_id = {org:String}"
+            yield _CHTable(f"{role}/{table}", f"{db}.{table}", f"toDate({stamp})", keys, scope,
+                           {"org": org} if scope else {})
+
+
+def _left_behind(ch, databases, org_cols):
+    """Per vault table and UTC day, the rows that no organization's export takes: runtime rows naming no organization,
+    and hook rows naming none whose session names no organization or two (the user organization's keeper, through
+    of_architect, msg 01a1f620-c225: counted per table and day, for the founder's card on deleting the laptop's copy)."""
+    v = databases["vault"]
+    queries = {
+        "vault/runtime_record": (f"SELECT toDate(received_at), count() FROM {v}.runtime_record FINAL"
+                                 + (" WHERE org_id = ''" if "runtime_record" in org_cols else "")),
+        "vault/hook_record": (f"SELECT toDate(received_at), count() FROM {v}.hook_record FINAL WHERE "
+                              + ("org_id = '' AND " if "hook_record" in org_cols else "")
+                              + f"session_id NOT IN (SELECT session_id FROM {v}.transcript_record WHERE "
+                                "notEmpty(session_id) GROUP BY session_id HAVING min(org_id) = max(org_id))"),
+    }
+    out = {}
+    for name, sql in queries.items():
+        try:
+            rows = b"".join(ch.query(sql + " GROUP BY 1 ORDER BY 1 FORMAT JSONCompactEachRow", {})).splitlines()
+            out[name] = {_ch_day(d): int(n) for d, n in map(json.loads, rows)}
+        except Exception:
+            raise ExportError(f"{name}: cannot count the rows left behind") from None
+    return out
+
+
+def _ch_day(day):
+    if not isinstance(day, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
+        raise ValueError
+    datetime.date.fromisoformat(day)
+    return day
+
+
+def _ch_days(ch, table, start):
+    """Compare typed tuples before rendering them, so both servers use ClickHouse sorting semantics."""
+    params = dict(table.params)
+    condition = ""
+    if start is not None:
+        params["start"] = start
+        condition = f"{table.date} >= {{start:Date}}"
+    sql = (f"SELECT {table.date} AS day, count(), toString(min(tuple({table.keys}))), "
+           f"toString(max(tuple({table.keys}))) FROM {table.source} FINAL{table.where(condition)} "
+           "GROUP BY day ORDER BY day FORMAT JSONCompactEachRow")
+    try:
+        rows = map(json.loads, b"".join(ch.query(sql, params)).splitlines())
+        days = {_ch_day(d): [int(n), first, last] for d, n, first, last in rows}
+        if start is not None:
+            # An emptied last bulk day still needs to remove the target's old rows.
+            days.setdefault(start, [0, None, None])
+        return days
+    except Exception:
+        raise ExportError(f"{table.name}: cannot read daily totals") from None
+
+
+def _ch_file(name, day, encrypted):
+    return f"clickhouse/{name}/{day}.native.gz" + (".age" if encrypted else "")
+
+
+def _ch_inventory(m):
+    """Derive the allowed paths from complete tables and validated dates before any destructive operation."""
+    if "clickhouse" not in m and "clickhouse_since" not in m:
+        return set()
+    names = {f"{role}/{t}" for role in ("org", "vault") for t in CH_TABLES}
+    files = set()
+    try:
+        starts = m.get("clickhouse_since", {})
+        if set(m["clickhouse"]) != names or set(starts) - names:
+            raise ValueError
+        left = m.get("clickhouse_left_behind", {})
+        if set(left) - {"vault/runtime_record", "vault/hook_record"} or any(
+                type(n) is not int or n < 0 or _ch_day(d) != d for per in left.values() for d, n in per.items()):
+            raise ValueError
+        for name, summary in m["clickhouse"].items():
+            days = summary["days"]
+            start = _ch_day(starts[name]) if name in starts else None
+            if start and start not in days:
+                raise ValueError
+            total = 0
+            for d, (n, first, last) in days.items():
+                _ch_day(d)
+                empty = d == start and [n, first, last] == [0, None, None]
+                if (start and d < start or type(n) is not int or
+                        not empty and (n < 1 or not isinstance(first, str) or not isinstance(last, str))):
+                    raise ValueError
+                total += n
+                files.add(_ch_file(name, d, m["encrypted"]))
+            if type(summary["rows"]) is not int or summary["rows"] != total:
+                raise ValueError
+        if files != {rel for rel in m["files"] if rel.startswith("clickhouse/")}:
+            raise ValueError
+    except (TypeError, ValueError, KeyError, AttributeError):
+        raise ExportError("invalid ClickHouse manifest or file inventory") from None
+    return files
+
+
+def _ch_since(bundle, org, identity):
+    """Only the indexed bulk manifest is needed to find each table's open day."""
+    try:
+        m = load_manifest(bundle, identity)
+        if m["org"] != org or "clickhouse_since" in m or "clickhouse" not in m:
+            raise ValueError
+        _ch_inventory(m)
+        return {name: max(s["days"]) for name, s in m["clickhouse"].items() if s["days"]}
+    except (OSError, TypeError, ValueError, KeyError):
+        raise ExportError("expected a ClickHouse bulk bundle for this organization") from None
+
+
+def _export_clickhouse(ch, databases, out, m, recipient, since, identity):
+    starts = {}
+    if since is not None:
+        starts = m["clickhouse_since"] = _ch_since(since, m["org"], identity)
+    summaries = m["clickhouse"] = {}
+    org_cols = _org_columns(ch, databases)
+    m["clickhouse_left_behind"] = _left_behind(ch, databases, org_cols)
+    summaries["vault/runtime_record"] = {"rows": 0, "days": {}}  # replaced below when its rows name organizations
+    root = os.path.join(out, "clickhouse")
+    _private_dir(root)
+    for role in databases:
+        _private_dir(os.path.join(root, role))
+    for table in _ch_tables(databases, m["org"], org_cols):
+        days = _ch_days(ch, table, starts.get(table.name))
+        summaries[table.name] = {"rows": sum(v[0] for v in days.values()), "days": days}
+        if days:
+            _private_dir(os.path.join(root, table.name))
+        where = table.where(f"{table.date} = {{d:Date}}")
+        sql = f"SELECT * FROM {table.source} FINAL{where} FORMAT Native"
+        for d in days:
+            rel = _ch_file(table.name, d, m["encrypted"])
+            try:
+                blocks = ch.query(sql, dict(table.params, d=d))
+                m["files"][rel] = _write_file(os.path.join(out, rel), blocks, recipient)
+            except Exception:
+                raise ExportError(f"{table.name} {d}: export failed") from None
+
+
+def _check_clickhouse(ch, databases, m):
+    problems = []
+    for table in _ch_tables(databases, m["org"], _org_columns(ch, databases)):
+        want = m["clickhouse"][table.name]["days"]
+        got = _ch_days(ch, table, m.get("clickhouse_since", {}).get(table.name))
+        bad = sorted(d for d in want.keys() | got.keys() if want.get(d) != got.get(d))
+        if bad:
+            problems.append(f"{table.name}: ClickHouse differs on {', '.join(bad)}")
+    return problems
+
+
+def _import_clickhouse(ch, databases, bundle, identity, m):
+    """Delete using the target's original transcript ownership, then restore transcripts before their hooks."""
+    tables = list(_ch_tables(databases, m["org"], _org_columns(ch, databases)))
+    present = {}
+    for table in tables:
+        days = m["clickhouse"][table.name]["days"]
+        if days:
+            # Physical rows include duplicates hidden by FINAL. A fresh target needs no mutations.
+            where = table.where(f"{table.date} BETWEEN {{first:Date}} AND {{last:Date}}")
+            sql = f"SELECT DISTINCT {table.date} FROM {table.source}{where} FORMAT TabSeparated"
+            try:
+                rows = ch.query(sql, dict(table.params, first=min(days), last=max(days)))
+                present[table.name] = days.keys() & set(b"".join(rows).decode("ascii").splitlines())
+            except Exception:
+                raise ExportError(f"{table.name}: cannot read target days") from None
+    for table in reversed(tables):  # hook deletes must finish before transcript deletes change their scope
+        where = table.where(f"{table.date} = {{d:Date}}")
+        sql = f"ALTER TABLE {table.source} DELETE{where} SETTINGS mutations_sync = 2"
+        for d in sorted(present.get(table.name, ())):
+            try:
+                for _ in ch.query(sql, dict(table.params, d=d)):
+                    pass
+            except Exception:
+                raise ExportError(f"{table.name} {d}: delete failed") from None
+    for table in tables:
+        for d, (count, _, _) in m["clickhouse"][table.name]["days"].items():
+            if count:
+                rel = _ch_file(table.name, d, m["encrypted"])
+                try:
+                    with _read_file(os.path.join(bundle, rel), identity) as (gz, _):
+                        ch.insert(f"INSERT INTO {table.source} FORMAT Native", iter(lambda: gz.read(1 << 16), b""))
+                except Exception:
+                    raise ExportError(f"{table.name} {d}: insert failed") from None
