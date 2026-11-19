@@ -942,10 +942,11 @@ def connector_deny(tool, excluded):
 
 # a write from interpreter code: a file opened to write or append, a whole-file write, a move, a removal or a dump
 # (of_review and of_secrets-review on organic-framework PR 387: python's open(…, 'a').write, ruby -e, node -e)
-# a bare `.write(` is no write into a file: sys.stdout.write prints, and a file is written only through a handle
-# opened for writing, which the open-mode forms name (of_review's note on organic-framework PR 410)
+# `.write(` is a write but for sys.stdout and sys.stderr, which print (of_review's note on organic-framework PR 410):
+# a handle may come from Path.open('w'), os.open, a mode held in a name, a node stream (of_secrets-review on PR 413)
 _CODE_WRITE = re.compile(r"""open\s*\(.*?,\s*['"][rbtU]*[wax+][rbtwax+U]*['"]|open\s*\([^,]*,\s*['"]\s*\+?>|\bmode\s*=\s*['"][rbt]*[wax+]|write_text|"""
-                         r"""write_bytes|\bdump\s*\(|os\.(?:replace|rename|remove|unlink|truncate)|"""
+                         r"""write_bytes|(?<!sys\.stdout)(?<!sys\.stderr)\.write\s*\(|\bdump\s*\(|"""
+                         r"""os\.(?:replace|rename|remove|unlink|truncate)|"""
                          r"""shutil\.|\.unlink\s*\(|\.touch\s*\(|\.rename\s*\(|File\.(?:write|delete|rename)|"""
                          r"""File\.open\s*\(.*?,\s*['"][rbt]*[wa+]|"""
                          r"""FileUtils\.|fs\.(?:write|append|rename|unlink|rm|copy)|writeFile|appendFile|"""

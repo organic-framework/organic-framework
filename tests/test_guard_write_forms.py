@@ -53,7 +53,12 @@ class WriteForms(unittest.TestCase):
                     f"python3 -c \"open('{box}/a.json','w').write('x')\"", f"perl -e 'open(F, \">{box}/a.json\"); print F 1'",
                     f"node -e \"require('fs').writeFileSync('{box}/a.json','x')\"", f"yq -i '.a=1' {B}/a.json",
                     f"git --work-tree={B} checkout HEAD -- a.json", f"rm {B}/2*.json", f"echo x > {B}/[2]*.json",
-                    f"D={B}; echo x > $D/a.json"):
+                    f"D={B}; echo x > $D/a.json",
+                    # handles a write comes through (of_secrets-review on PR 413 at 350448c)
+                    f"python3 -c \"from pathlib import Path; Path('{box}/a.json').open('w').write('x')\"",
+                    f"python3 -c \"import os; os.write(os.open('{box}/a.json', os.O_WRONLY|os.O_CREAT), b'x')\"",
+                    f"python3 -c \"m='w'; open('{box}/a.json', m).write('x')\"",
+                    f"node -e \"require('fs').createWriteStream('{box}/a.json').write('x')\""):
             self.assertTrue(self.deny(cmd), cmd)
         for cmd in (f"cat {B}/a.json", f"ls {B}", "echo x > ~/.local/state/of/notes.txt",
                     # a read printed with sys.stdout.write (of_review's note on PR 410)
