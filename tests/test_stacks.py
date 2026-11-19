@@ -153,6 +153,22 @@ LEFT_CLEAN = textwrap.dedent("""\
             calls.append("theirs" if fd == w else fd)
             return real(fd, **kw)
         signal.set_wakeup_fd = spy
+    elif sys.argv[2] in ("stale", "fails-early"):
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        signal.set_wakeup_fd(w)
+        if sys.argv[2] == "stale":  # theirs closed while registered: our pipe gets its numbers back
+            os.close(r)
+            os.close(w)
+        else:  # a failure before set_wakeup_fd: theirs must never be taken off
+            def refuse(fd, flag):
+                raise OSError(22, "refused")
+            of_stacks.os.set_blocking = refuse
+        real = signal.set_wakeup_fd
+        def spy(fd, **kw):
+            calls.append("theirs" if fd == w and sys.argv[2] == "fails-early" else fd)
+            return real(fd, **kw)
+        signal.set_wakeup_fd = spy
     elif sys.argv[2] == "unrestorable":  # theirs was set, then made blocking: set_wakeup_fd refuses to put it back
         r, w = os.pipe()
         os.set_blocking(w, False)
@@ -165,6 +181,10 @@ LEFT_CLEAN = textwrap.dedent("""\
     before = fds()
     print("mode", of_stacks.install(signal.SIGUSR1, sys.stdout), flush=True)
     print("calls", [c if c in ("theirs", -1) else "ours" for c in calls], flush=True)
+    if sys.argv[2] == "fails-early":
+        signal.set_wakeup_fd = real
+        print("theirs kept", signal.set_wakeup_fd(w) == w, flush=True)
+        signal.set_wakeup_fd(w)
     if sys.argv[2] == "theirs-kept":
         signal.set_wakeup_fd = real
         print("theirs kept", signal.set_wakeup_fd(w) == w, flush=True)
@@ -286,6 +306,23 @@ class StacksTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
         self.assertIn("mode handler", r.stdout)
         self.assertIn("calls ['ours', 'theirs']", r.stdout)
+        self.assertIn("theirs kept True", r.stdout)
+        self.assertIn("fds left []", r.stdout)
+
+    def test_a_stale_registration_our_pipe_reuses_is_no_earlier_owner(self):
+        """of_review on organic-framework PR 376: a wakeup fd closed while registered, whose number the new pipe got,
+        was taken for another owner's: install() put it back and closed the pipe, leaving a closed fd registered."""
+        r = run(LEFT_CLEAN, "stale")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("mode thread", r.stdout)
+        self.assertNotIn("wakeup fd -1", r.stdout)          # ours, open, read by the dumper
+        self.assertEqual(r.stdout.count("stack dump on SIGUSR1"), 1)   # cut off by the scenario: the handler writes it
+
+    def test_a_failure_before_set_wakeup_fd_never_touches_another_owners(self):
+        r = run(LEFT_CLEAN, "fails-early")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("mode handler", r.stdout)
+        self.assertIn("calls []", r.stdout)                 # no -1, no putting theirs back
         self.assertIn("theirs kept True", r.stdout)
         self.assertIn("fds left []", r.stdout)
 
