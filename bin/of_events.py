@@ -36,35 +36,52 @@ def machine_id(wait_s=5.0):
                 return fh.read().strip()
         except FileNotFoundError:
             return None
-    mid = read()
-    if mid:
-        return mid
     import tempfile
     d = os.path.dirname(path)
     os.makedirs(d, mode=0o700, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(str(uuid.uuid4()) + "\n")
-        os.chmod(tmp, 0o600)
+
+    def link_new():
+        """Link a fresh id into place; False when another caller's file is there."""
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
         try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(str(uuid.uuid4()) + "\n")
+            os.chmod(tmp, 0o600)
             os.link(tmp, path)
+            return True
         except FileExistsError:
-            pass   # another caller's id is in place: read it below
-    finally:
-        os.unlink(tmp)
+            return False
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
     deadline = time.time() + wait_s
     while True:
         mid = read()
         if mid:
             return mid
-        if time.time() > deadline:   # an empty file an older writer left: replaced whole, never appended to
-            fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
-            with os.fdopen(fd, "w") as fh:
-                fh.write(str(uuid.uuid4()) + "\n")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
-            return read() or ""
+        if mid is None:
+            link_new()   # lost or won, the next read gives the one id in place
+            continue
+        if time.time() > deadline:
+            # an empty file an older writer left: one caller at a time, under a lock, replaces it if it is still empty,
+            # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
+            # gave six processes two ids)
+            import fcntl
+            with open(os.path.join(d, ".machine_id.lock"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if read() == "":
+                    fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
+                    try:
+                        with os.fdopen(fd, "w") as fh:
+                            fh.write(str(uuid.uuid4()) + "\n")
+                        os.chmod(tmp, 0o600)
+                        os.replace(tmp, path)
+                    except BaseException:
+                        os.unlink(tmp)
+                        raise
+            continue
         time.sleep(0.02)
 
 
