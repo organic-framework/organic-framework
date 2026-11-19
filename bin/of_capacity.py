@@ -362,14 +362,16 @@ def free_capacity(row, usd=None):
 
 def best_target(rows, exclude=None, ok=None):
     """The logged-in account to put work on, other than `exclude` (a config dir), among those `ok(dir)` accepts
-    (default: all): one below both thresholds before one over_threshold reports (that one only when nothing else is
-    left), then the most free_capacity, then the lowest week. With tiers, a Max 20x at 96% of its week would otherwise
-    beat a Pro at 40% (of_review, PR 385)."""
+    (default: all): one that accepts work before an exhausted one (its probe says rejected, or a window is full), one
+    below both thresholds before one over_threshold reports, each later kind only when nothing else is left; then the
+    most free_capacity, then the lowest week. With tiers, a Max 20x at 96% of its week would otherwise beat a Pro at
+    40%, and over_threshold alone, reading utilization only, put a rejected account under both thresholds first
+    (of_review, PR 385)."""
     cands = [r for r in rows if r.get("config_dir") != exclude and headroom(r) is not None
              and (ok is None or ok(r["config_dir"]))]
     if not cands:
         return None
-    cands.sort(key=lambda r: (bool(over_threshold(r)), -free_capacity(r),
+    cands.sort(key=lambda r: (exhausted(r), bool(over_threshold(r)), -free_capacity(r),
                               (r.get("windows") or {}).get("seven_day", {}).get("utilization") or 0))
     return cands[0]
 
@@ -5321,6 +5323,13 @@ def tier_of(d, policy=None):
     return rate_tier(d)
 
 
+def _apply_policy_tiers(rows, policy):
+    """Each row's tier from the policy balance() was given, when it names one: status() set it from the file's policy,
+    and a `tiers:` override passed in would otherwise be lost (of_review, PR 385)."""
+    for r in rows:
+        r["tier"] = tier_of(r["config_dir"], policy) or r.get("tier")
+
+
 def context_tokens(transcript):
     """The session's context at its last main-thread response: what a resume writes to the new account's cache."""
     try:
@@ -5980,8 +5989,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
               for r in rows if r.get("logged_in")}
     cache = load_cache()
     recent = {sid: t for sid, t in (cache.get("_balanced") or {}).items() if now - t[0] < t[1]}
-    for r in rows:
-        r.setdefault("tier", tier_of(r["config_dir"], policy))
+    _apply_policy_tiers(rows, policy)
     needs = {x["session"]: tools_used(find_transcript(d, x["session"]) or "")
              for d, xs in sessions.items() for x in xs if x.get("status") in ("idle", "shell", "waiting")}
     contexts = {x["session"]: context_tokens(find_transcript(d, x["session"]) or "")
