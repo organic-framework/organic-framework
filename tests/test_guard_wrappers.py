@@ -23,7 +23,7 @@ class WrapperReadings(unittest.TestCase):
 
     def test_the_forms_the_parent_denied(self):
         """of_secrets-review, item 1: seven forms c53d6f95's parent denied and c53d6f95 passed."""
-        for cmd in (f"taskset -c 0,16 cat {KEY}", f"chrt -f 10 cat {KEY}", f"taskset -Z 0,16 x cat {KEY}",
+        for cmd in (f"exec 3<{KEY} cat <&3", f"command cat {KEY}", f"command -p cat {KEY}", f"taskset -c 0,16 cat {KEY}", f"chrt -f 10 cat {KEY}", f"taskset -Z 0,16 x cat {KEY}",
                     f"timeout --kill-a 1 2 cat {KEY}",
                     f"script -t --command='cat {KEY}' /dev/null",
                     f"script -c 'cat {KEY}' -E never /dev/null",
@@ -57,6 +57,17 @@ class WrapperReadings(unittest.TestCase):
                     f"script -qc'{OP}' /dev/null"):
             self.assertTrue(deny(cmd), cmd)
 
+    def test_the_second_reviews_forms_at_16cfcee(self):
+        """of_secrets-review on PR 332 at 16cfcee: chrt's optional priority, and script's input when the redirection
+        comes first or script has no other word."""
+        for cmd in (f"chrt -o cat {KEY}", f"chrt --other cat {KEY}", f"chrt -b cat {KEY}", f"chrt -i cat {KEY}",
+                    f"<<< 'cat {KEY}' script -q", f"2>&1 script -q <<< 'cat {KEY}'", f"script <<'END'\ncat {KEY}\nEND",
+                    f"<<'END' script -q\ncat {KEY}\nEND", f"< /dev/null 2>&1 script <<< 'cat {KEY}'"):
+            self.assertTrue(deny(cmd), cmd)
+        for cmd in ("chrt -f 10 ls", "chrt -o ls -la", "chrt -o 0 ls", "script -q <<'END'\nls\nEND",
+                    "cat <<'END' | grep x\nhello\nEND"):
+            self.assertIsNone(deny(cmd), cmd)
+
     def test_plain_uses_still_run(self):
         for cmd in ("timeout 30 git status", "timeout --preserve-status 5 python3 -m unittest tests.test_of",
                     "timeout -k 5 60 make test", "printf x | xargs -0 -n1 grep foo", "find . -name '*.py' | xargs wc -l",
@@ -64,8 +75,30 @@ class WrapperReadings(unittest.TestCase):
                     "2>/dev/null timeout 5 git fetch",
                     # the replay's two new denies: a later path ending in /env read as env under a doubted taskset
                     "taskset -c 0,16 nice -n 19 docker run --rm --env-file /srv/app/deploy/env img run",
-                    "chrt -f 10 nice -n 5 docker run --env-file /srv/app/deploy/env img run"):
+                    "chrt -f 10 nice -n 5 docker run --env-file /srv/app/deploy/env img run",
+                    # the follow-up's replay: the shell's fd idiom and `command -v`, nested where the depth bound bites
+                    "sh -c '( ( for p in 1 2; do (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null && echo $p; done ) )'",
+                    "sh -c 'echo $(readlink -f $(command -v awk))'", "command -v qemu-system-x86_64"):
             self.assertIsNone(deny(cmd), cmd)
+
+
+class TheReadingsAreBounded(unittest.TestCase):
+    """of_review on organic-framework PR 332 at 16cfcee: an xargs line of 384 words took 41 s to judge, past the hook's
+    30 s, so the hook was killed and its deny lost; four subshells put a doubted timeout's readings past G0's depth, where
+    a reading passed. Past either bound the command is denied."""
+
+    def test_a_long_doubted_line_is_denied_fast(self):
+        import time
+        words = " ".join(["label"] * 384)
+        for cmd in (f"xargs --verbos echo {words} ; {OP}", f"xargs --verbos echo {words}"):
+            start = time.monotonic()
+            self.assertTrue(deny(cmd))
+            self.assertLess(time.monotonic() - start, 5)
+        self.assertIsNone(deny(f"xargs --verbose echo {words}"))    # a full option name is read exactly
+
+    def test_past_the_depth_is_denied(self):
+        self.assertTrue(deny(f"( ( ( ( timeout --kill-a 2 1 {OP} ) ) ) )"))
+        self.assertTrue(deny(f"( ( ( ( script -q -c '{OP}' /dev/null ) ) ) )"))
 
 
 class TheFolderAWrapperRunsIn(unittest.TestCase):
@@ -89,6 +122,9 @@ class TheFolderAWrapperRunsIn(unittest.TestCase):
                     f"cd {self.bin} && script -q -c 'sh run.sh' /dev/null"):
             self.assertIn("protected_code", (deny(cmd, self.root) or [""])[0], cmd)
         self.assertIsNone(deny(f"cd {top} && script -q -c 'cat bin/run.sh' /dev/null", self.root))
+        # a folder held in a variable (of_review, non-blocking)
+        self.assertIn("protected_code", (deny(f'd={top}; cd "$d" && script -q -c "bash bin/run.sh" /dev/null',
+                                              self.root) or [""])[0])
 
 
 if __name__ == "__main__":

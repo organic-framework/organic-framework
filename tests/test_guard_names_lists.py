@@ -117,7 +117,8 @@ class NamesLists(unittest.TestCase):
         for text in ("name,client-secret\nexample,example\n", "name client_secret\nexample example\n",
                      "name,db.password\ndemo,demo\n", "id,api-token\napp,app\n"):
             self.assertTrue(deny("cat " + self.put("evm-secret-names.txt", text)), text)
-        for text in ("github-token\napp-db\n", "NAME TYPE\nci-deploy-token Opaque\n"):  # a name, not a header
+        for text in ("github-token\napp-db\n", "NAME TYPE\nci-deploy-token Opaque\n",  # a name, not a header
+                     "ci-deploy-token Opaque 1 12d\n", "app-api-token Opaque 3 40d\nghcr-pull Opaque 1 2d\n"):
             self.assertIsNone(deny("cat " + self.put("evm-secret-names.txt", text)), text)
 
     def test_the_deny_without_names_is_unchanged(self):
