@@ -426,7 +426,8 @@ def record(ask_ids, answer, position=None, session=None, version=None, event_id=
 def not_the_owner():
     """Why this process may not act as the owner, or None: `_asks_actor`'s positive test in bin/of (no agent session,
     a terminal on stdin). Every writer of the screens' acts as his applies it itself (answer, record_answer,
-    owner_mark, of_asks_tui.leave); OF_AUTOMATION is no sign, the questions panel runs under it."""
+    answer_blocked, owner_mark, not_a_question, of_asks_tui.leave, the questions screen's snooze and hand-over);
+    OF_AUTOMATION is no sign, the questions panel runs under it."""
     if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION"):
         return "only the owner answers here: this runs in an agent's session"
     try:
@@ -993,6 +994,9 @@ def not_a_question(item, kind=None):
     group) and stores a label for calibrating the heuristic (the classifier's version goes up after a
     re-calibration). Returns a status line."""
     import of_events
+    why = not_the_owner()
+    if why:
+        return why
     ids = item.get("ids") or []
     if not ids:
         return "nothing to mark"
@@ -1008,6 +1012,9 @@ def not_a_question(item, kind=None):
 def answer_blocked(c, text):
     """Press the option's keys in that pane, only if the screen still shows the same dialog."""
     import of_blocked
+    why = not_the_owner()
+    if why:
+        return False, why
     b = c["blocked"]
     opt = next((o for o in b["options"] if text.startswith(o["key"] + " ") or text == o["key"]), None)
     if not opt:

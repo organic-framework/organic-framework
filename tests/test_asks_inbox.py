@@ -487,20 +487,28 @@ class ScreenTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
         self.assertEqual(len(ran), 2)
 
-    def test_d_shows_a_draft_and_sends_it_as_kept_only_on_a_second_d(self):
-        """A draft is a file: D shows its words, to whom and why it waits; only D again or y sends it, with the version
-        it was kept with (of_review's trust notes on PR 398)."""
-        draft = {"ask_id": "C", "ask_ids": ["C"], "who": ["of_a"], "text": "yes, tonight", "saved_at": time.time(),
-                 "why": "left in the outbox before 2026-11-19: not sent; D sends it",
-                 "item": {"ids": ["C"], "who": ["of_a"], "text": "Lift it?", "version": 1}}
-        data = [item("C", "Lift it?")]
-        self.inbox([0.05, ord("D"), ord("x"), 0.3, 0.05], data, drafts=lambda: [draft])
-        self.assertEqual(self.sent, [])
-        self.assertTrue(any("«yes, tonight»" in self.text(f) and "outbox" in self.text(f) for f in self.frames))
-        self.assertTrue(any("kept as a draft" in self.text(f) for f in self.frames))
-        self.frames = []
-        self.inbox([0.05, ord("D"), ord("D"), 0.3, 0.05], data, drafts=lambda: [draft])
-        self.assertEqual(self.sent, [("C", "yes, tonight")])
+    def test_d_opens_a_draft_whole_in_its_cards_field_and_ctrl_d_sends_it(self):
+        """A draft is a file: D opens it whole in its card's answer field, under the card that names the asker from the
+        store, and only Ctrl+D sends it (of_review on PR 398 and PR 402: D sent it unread, then after a one-line
+        preview naming the asker from the file)."""
+        import of_asks_answer
+        with tempfile.TemporaryDirectory() as d:
+            saved, of_events.STATE_DIR = of_events.STATE_DIR, d
+            try:
+                it = {"ids": ["C"], "who": ["of_a"], "text": "Lift it?", "version": 1}
+                of_asks_answer.save_draft(it, "yes, tonight\nand tell the operator")
+                data = [item("C", "Lift it?")]
+                self.inbox([0.1, ord("D"), 0.3, "\x1b", 0.3, 0.05], data,
+                           drafts=of_asks_answer.unsent_drafts)
+                self.assertEqual(self.sent, [])                       # Esc: kept in the field, nothing sent
+                self.assertTrue(any("and tell the operator" in self.text(f) for f in self.frames))  # the whole text
+                self.assertEqual(of_asks_answer.unsent_drafts(), [])  # it moved into the field's own drafts
+                of_asks_answer.save_draft(it, "yes, tonight")
+                self.inbox([0.1, ord("D"), 0.3, "\x04", 0.3, 0.05], data,
+                           drafts=of_asks_answer.unsent_drafts)
+                self.assertEqual(self.sent, [("C", "yes, tonight")])  # Ctrl+D sends it as a written answer
+            finally:
+                of_events.STATE_DIR = saved
 
     def test_money_takes_a_second_press(self):
         data = [item("C", "Pay 90 USD to the operator?")]
