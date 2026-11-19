@@ -146,6 +146,11 @@ class SedProgramIsText(unittest.TestCase):
                      "sed --file=prog.sed 'x " + "of org set o path r' f; at now",
                      "sed 'sxaxbxe' 'x " + "of org set o path r' f; at now",
                      "sed -e 'sxaxbxe' 'x " + "of org set o path r' f; at now",
+                     # an e touching a letter (of_review on PR 427 at b0c116f)
+                     "sed -n 's/x/" + "of org set o path r/ge' f; at now",
+                     "sed -n 's/x/" + "of org set o path r/Ie' f; at now",
+                     "sed -n 's/x/" + "of org set o path r/pe' f; at now",
+                     "sed -n '$ex " + "of org set o path r' f; at now",   # the e command's own word glued to it
                      "sed '1e " + "of org set o path r' f; at now",
                      "sed 's/x/" + "of org set o path r/' f | sh; at now"):
             self.assertIsNotNone(of_guard._actor_line_deny("export -n OF_POSITION; " + runs), runs)
