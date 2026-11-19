@@ -903,7 +903,8 @@ def leave(pendings, positions, of_path):
     of_review, msg 01a1f50c-c57a). The record is a store read and a write, without the card's transcript read or a
     herdr call: at most 42 ms, median 0.6 ms per ask on the live store (10 open asks, 2026-11-19); a busy store spools
     it after LEAVE_DB_S. Each act carries its id (`act`, set when it was queued), so its thread and this write one
-    event, and a second flush (herdr's signal during q) records nothing again. A started dialog answer is its
+    event, and a second flush (herdr's signal during q) records nothing again. Only what this records is typed now:
+    one its thread recorded may be being typed by it, and the pulse or the turn's end types it if it was not. A started dialog answer is its
     thread's: its keys are never pressed twice. A failed answer keeps its draft marked failed (its card comes back
     and D sends it); a failed mark leaves its card open. Returns [(pending, ok, status)]."""
     import of_asks_answer
