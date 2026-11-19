@@ -1315,6 +1315,78 @@ def set_config_key(path, key, value):
     os.chmod(path, 0o600)
 
 
+ORG_KEYS = {"hold": "on|off: `of apply` and the desk leave the organization's panes alone"}
+
+
+def set_org_key(path, org, key, value):
+    """Set (VALUE None: remove) one scalar KEY of ORG's entry in the orgs.yaml at PATH, editing that one line so the
+    file's comments and other entries stay. G33 (docs/guard.md) makes the file the owner's: agents change it only
+    through OF's commands, and none set hold: before (of_server's replay, 2026-11-18: agents edited it with sed for the
+    founder). Raises ValueError and writes nothing when the entry is not found or not written in block style, or when
+    the edited file would read differently anywhere else."""
+    import yaml
+    with open(path) as fh:
+        text = fh.read()
+    before = yaml.safe_load(text) or {}
+    entries = [o for o in (before.get("orgs") or []) if isinstance(o, dict)]
+    if not any(o.get("name") == org for o in entries):
+        raise ValueError(f"no organization {org!r} in {path}")
+    lines = text.splitlines(keepends=True)
+    top = next((i for i, ln in enumerate(lines) if re.match(r"^orgs\s*:\s*(#.*)?$", ln)), None)
+    if top is None:
+        raise ValueError(f"{path}: its orgs: list is not in block style; change it by hand")
+    dash, items, end = None, [], len(lines)
+    for i in range(top + 1, len(lines)):
+        ln = lines[i]
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        ind = len(ln) - len(ln.lstrip(" "))
+        m = re.match(r"^( *)- +", ln)
+        if dash is None and m:
+            dash = len(m.group(1))
+        if m and len(m.group(1)) == dash:
+            items.append((i, len(m.group(0))))
+        elif dash is None or ind <= dash:
+            end = i
+            break
+    found = None
+    for k, (b, col) in enumerate(items):
+        e = items[k + 1][0] if k + 1 < len(items) else end
+        keyed = [b] + [i for i in range(b + 1, e) if re.match(rf"^ {{{col}}}[^ #-]", lines[i])]
+        for i in keyed:
+            body = lines[i][col:]
+            if re.match(r"name\s*:", body) and (yaml.safe_load(body) or {}).get("name") == org:
+                found = (b, e, col, keyed, i)
+        if found:
+            break
+    if not found or lines[found[0]][found[2]:].lstrip().startswith("{"):
+        raise ValueError(f"{path}: {org}'s entry is not in block style; change it by hand")
+    b, e, col, keyed, name_at = found
+    at = next((i for i in keyed if re.match(rf"{re.escape(key)}\s*:", lines[i][col:])), None)
+    new = None if value is None else \
+        " " * col + yaml.safe_dump({key: value}, default_flow_style=False, allow_unicode=True).strip() + "\n"
+    if at is not None:
+        lines[at:at + 1] = [new] if new else []
+    elif new:
+        lines.insert(name_at + 1, new)
+    text2 = "".join(lines)
+    after = yaml.safe_load(text2) or {}
+    want = yaml.safe_load(text) or {}
+    for o in want.get("orgs") or []:
+        if isinstance(o, dict) and o.get("name") == org:
+            o.pop(key, None)
+            if value is not None:
+                o[key] = value
+    if after != want:
+        raise ValueError(f"{path}: the edit would change more than {org}'s {key}; nothing was written")
+    mode = os.stat(path).st_mode & 0o777
+    tmp = path + ".of-tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode), "w") as fh:
+        fh.write(text2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
 def install_service(port=18200):
     py = sys.executable
     state = os.path.expanduser("~/.local/state/of/server")

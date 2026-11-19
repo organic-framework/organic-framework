@@ -577,6 +577,64 @@ class OwnerCommandTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(d, "orgs.yaml")))     # no organization is made
 
 
+class OrgCommandTest(unittest.TestCase):
+    """`of org set <org> hold on|off` (G33, docs/guard.md: orgs.yaml is the owner's, and agents edited its hold: with
+    sed for want of a command; of_server's replay of 2026-11-18): one line changes, comments and the rest stay."""
+
+    TEXT = ("desk: desk\n# this machine's organizations\norgs:\n  - name: one\n    path: ~/one  # its repo\n"
+            "    workspace: one\n  - name: two\n    path: ~/two\n    # hold lifted on a date\n    workspace: two\n"
+            "    paths: [~/two]\nunassigned_database: of_unassigned\n")
+
+    def test_hold_on_and_off_keeps_the_rest(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "orgs.yaml")
+            with open(p, "w") as fh:
+                fh.write(self.TEXT)
+            os.chmod(p, 0o644)
+            env = dict(os.environ, OF_CONFIG_DIR=d)
+            of = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "org"]
+            run = lambda *a: subprocess.run(of + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+            self.assertEqual(run("set", "two", "hold", "on").returncode, 0)
+            with open(p) as fh:
+                text = fh.read()
+            self.assertEqual(yaml.safe_load(text)["orgs"][1]["hold"], True)
+            self.assertNotIn("hold", yaml.safe_load(text)["orgs"][0])
+            self.assertIn("# hold lifted on a date", text)
+            self.assertIn("path: ~/one  # its repo", text)
+            self.assertEqual(os.stat(p).st_mode & 0o777, 0o644)
+            self.assertIn("two: hold on", run("show").stdout)
+            self.assertEqual(run("set", "two", "hold", "on").returncode, 0)    # again: its line, not a second one
+            with open(p) as fh:
+                self.assertEqual(fh.read().count("hold: true"), 1)
+            self.assertEqual(run("set", "two", "hold", "off").returncode, 0)
+            with open(p) as fh:
+                self.assertEqual(fh.read(), self.TEXT)                         # back byte for byte
+            self.assertNotEqual(run("set", "three", "hold", "on").returncode, 0)
+            self.assertNotEqual(run("set", "two", "hold", "maybe").returncode, 0)
+            self.assertNotEqual(run("set", "two", "path", "on").returncode, 0)  # only hold: has a command
+
+    def test_a_flow_style_entry_is_refused_unwritten(self):
+        sys_path = os.path.join(HERE, "..", "bin")
+        __import__("sys").path.insert(0, sys_path)
+        import of_init
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "orgs.yaml")
+            for text in ("orgs:\n  - {name: one, path: ~/one}\n", "orgs: [{name: one}]\n"):
+                with open(p, "w") as fh:
+                    fh.write(text)
+                with self.assertRaises(ValueError):
+                    of_init.set_org_key(p, "one", "hold", True)
+                with open(p) as fh:
+                    self.assertEqual(fh.read(), text)
+            text = "orgs:\n- name: one\n  path: ~/one\n"                    # the dash at the list's own indent
+            with open(p, "w") as fh:
+                fh.write(text)
+            of_init.set_org_key(p, "one", "hold", True)
+            with open(p) as fh:
+                self.assertEqual(fh.read(), "orgs:\n- name: one\n  hold: true\n  path: ~/one\n")
+
+
 class InitServerPortTest(unittest.TestCase):
     """of init --server-port (of_lab's clean-VM walkthrough of 2026-11-19, finding 1): a second contour on one machine
     gets its own server port, written to server.yaml, ship.yaml and its orgs.yaml entry."""
