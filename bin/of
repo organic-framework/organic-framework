@@ -3238,8 +3238,14 @@ def cmd_server(args):
     if args.action == "run":
         of_server.run()
         return 0
-    if args.action in ("install", "uninstall"):  # the launchd agents on this Mac: the server and its watchdog
-        print(of_server.install_launchd(uninstall=args.action == "uninstall"))
+    if args.action in ("install", "uninstall"):  # the server and its watchdog: launchd on a Mac, systemd on Linux
+        if sys.platform.startswith("linux"):
+            try:
+                print("\n".join(of_server.install_systemd(uninstall=args.action == "uninstall")))
+            except (subprocess.CalledProcessError, OSError) as e:
+                raise OfError(f"of server {args.action}: {(getattr(e, 'stderr', None) or str(e)).strip()}") from e
+        else:
+            print(of_server.install_launchd(uninstall=args.action == "uninstall"))
         return 0
     if args.action == "watchdog":  # one check; launchd runs it every minute (docs/server.md, "On this Mac")
         return 0 if of_server.watchdog() in ("ok", "failing", "waiting", "restarted") else 1
