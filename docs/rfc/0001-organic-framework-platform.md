@@ -227,7 +227,7 @@ A versioned catalogue of anti-patterns, each with a detection rule, evidence and
 | Owner relaying between positions | relays, `carries_owner_words` | a direct interface, or a merge |
 | Coordination gap | a required edge with no interaction or read | an announce rule on the interface; or move the seam |
 | Over-coupled split | mutual peer waits, a high interface ratio, sequential work | merge, if the working set fits |
-| Context overload | rising compactions and rereads, forgotten-fact errors | a fresh holder (if history-bound), or a split at a seam (if the working set is too big) |
+| Context overload | rising compactions and rereads, forgotten-fact errors | its reading moved to subagents and other harnesses (if history-bound: the context itself is kept, never cleared to save tokens; the founder, 2026-11-18, prompt `01a1eeff-880b`), or a split at a seam (if the working set is too big) |
 | Fragmented ownership | several writers to one system | hand writes to the system agent |
 | Orphan work | `mandate_check: unowned` clusters | a new position, or an extended mandate |
 | Bottleneck broker | top betweenness; peer waits spike when it pauses | a second path; split its interfaces |
@@ -248,7 +248,7 @@ Metrics are computed on the whole organization and filtered only for display. Re
 
 ### 5.5 Generate: incremental first, greenfield second
 
-**Incremental.** An issue becomes one or a few candidate diffs from the remedy templates of the sizing rule ([`method.md`](../method.md)): subagents, fresh holder, split by fork, merge, hand-over, new position, verifier. These map onto the Dynamic Reteaming patterns: grow-and-split, merging, switching, isolation. Most of the value is here.
+**Incremental.** An issue becomes one or a few candidate diffs from the remedy templates of the sizing rule ([`method.md`](../method.md)): subagents and other harnesses, split by fork, merge, hand-over, new position, verifier. These map onto the Dynamic Reteaming patterns: grow-and-split, merging, switching, isolation. Most of the value is here.
 
 **Greenfield.** For onboarding step 3 and for units from Bench packages, size-capped clustering of the system DSM (Thebeau or Leiden) proposes a whole structure. The formulation is a constrained multi-objective search over partitions:
 - **Hard constraints:**
@@ -286,7 +286,7 @@ Architecture search over agents (MaAS, AFlow and similar) belongs **inside** a p
 
 | Tier | Operations | Approval |
 |---|---|---|
-| Low | use subagents; a fresh holder for an agent; hand a task to the owning position | later: auto-apply under a standing `act_and_report` grant, with notification and an abort window |
+| Low | use subagents or other harnesses; hand a task to the owning position | later: auto-apply under a standing `act_and_report` grant, with notification and an abort window |
 | Medium | split or merge agent positions; a new agent position; a mandate rewrite | the owner's yes; a canary or shadow for N tasks; an automatic revert proposal on regression |
 | High | anything touching a human holder; reassigning the accountable human; **moving a position between machines** or organizations; widening grants | always the owner's explicit yes; never automatic |
 
