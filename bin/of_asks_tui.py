@@ -574,8 +574,8 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
         if what == "answer":  # the version on screen goes with it (of ask --amend: a later version refuses it)
             shown = c.get("version") if c is not None and it is not None and key_of(it) == k else None
             x = dict(x, version=shown or ((x.get("first") or {}).get("version") or 1))
-        pending.append({"key": k, "item": x, "what": what, "text": text, "at": time.time(), "started": False,
-                        "done": False, "ok": None, "status": None})
+        pending.append({"key": k, "item": dict(x, act=new_act()), "what": what, "text": text, "at": time.time(),
+                        "started": False, "done": False, "ok": None, "status": None})
 
     def start(p):
         p["started"] = True
@@ -624,14 +624,15 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
         return True
 
     def flush():
-        """q, Esc or g with answers pending: hand them to a detached sender and leave at once (never wait
-        here, never drop an answer: founder, 2026-11-06). One already being sent finishes or is sent again
-        by the sender, which skips an ask that is answered by then."""
+        """q, Esc or g with answers pending: record them here and leave (`leave`: never wait on a pane, never drop
+        an answer: founder, 2026-11-06). One already being sent is recorded once (recorded_already)."""
         left = [p for p in pending if not p["done"]]
         if not left:
             return
         if handoff:
             handoff(left)
+            for p in left:  # recorded: never twice
+                p["done"] = True
             return
         for p in left:  # no handoff (tests of the old path): send here
             if not p["started"]:
@@ -878,115 +879,136 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
             lines = card_lines(c, max(20, stdscr.getmaxyx()[1] - 4))
 
 
-# ------------------------------------------------------------------ the outbox: q never waits (2026-11-06)
+# ------------------------------------------------------------------ leaving: q never waits (2026-11-06)
+
+LEAVE_DB_S = 0.3  # leaving waits at most this for a busy store, then the record goes to the spool, as a hook's does
+
+
+def leave(pendings, positions, of_path):
+    """q, Esc or g with answers or marks still pending: the owner's acts are done here, in his own screen's process,
+    before it leaves (an answer recorded, a mark recorded, a dialog's keys pressed); only the typing into the askers'
+    panes is left behind, to one detached `of asks deliver --now`, which drains the spool and types what the store
+    holds as his answer and nothing else. Until 2026-11-19 they went to a folder of files that a detached sender
+    replayed as the owner's, and a file any session wrote there was replayed too (of_server, msg 01a1f51f-6c9e;
+    of_review, msg 01a1f50c-c57a). The record is a store read and a write, without the card's transcript read or a
+    herdr call: at most 42 ms, median 0.6 ms per ask on the live store (10 open asks, 2026-11-19); a busy store spools
+    it after LEAVE_DB_S. Each act carries its id (`act`, set when it was queued), so its thread and this write one
+    event, and a second flush (herdr's signal during q) records nothing again. A started dialog answer is its
+    thread's: its keys are never pressed twice. A failed answer keeps its draft marked failed (its card comes back
+    and D sends it); a failed mark leaves its card open. Returns [(pending, ok, status)]."""
+    import of_asks_answer
+    import of_events
+    import of_store
+    out, typed, own, why = [], [], None, None
+    saved = of_events.HOOK_TIMEOUT
+    of_events.HOOK_TIMEOUT = LEAVE_DB_S
+    try:
+        try:
+            own = of_store.connect(timeout=LEAVE_DB_S)
+        except Exception as e:  # noqa: BLE001 - every answer below still keeps its draft
+            why = f"{type(e).__name__}: {e}"
+        for p in pendings:
+            item = p["item"]
+            if p.get("done") or p["what"] not in ("answer", "answered", "withdraw") or \
+                    (p.get("started") and str(item.get("kind") or "").startswith("blocked:")):
+                continue
+            try:
+                if own is None:
+                    raise RuntimeError(why)
+                if p["what"] == "answer":
+                    ok, status, eid = of_asks_answer.record_answer(own, item, p["text"])
+                    if eid:
+                        typed.append(eid)
+                else:
+                    ok, status = of_asks_answer.owner_mark(own, item, p["what"])
+            except Exception as e:  # noqa: BLE001 - one failure never stops the others
+                ok, status = False, f"{type(e).__name__}: {e}"
+                if p["what"] == "answer":
+                    try:  # its card comes back with his text
+                        of_asks_answer.save_draft(item, p["text"])
+                        of_asks_answer.mark_failed(item, status)
+                    except Exception:  # noqa: BLE001
+                        pass
+            p.update(done=True, ok=ok, status=status)
+            out.append((p, ok, status))
+    finally:
+        of_events.HOOK_TIMEOUT = saved
+        if own is not None:
+            own.close()
+    if out:
+        spawn_deliver(of_path, typed)
+    return out
+
+
+def leaving_as_owner(leave_fn):
+    """The screen's leaving, refused outside the owner's own terminal (of_asks_answer.not_the_owner): what is pending
+    then stays unrecorded, as its sending thread would refuse it."""
+    def handoff(pendings):
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():
+            return []
+        return leave_fn(pendings)
+    return handoff
+
+
+def spawn_deliver(of_path, events):
+    """One detached `of asks deliver --now`: it types the answers just recorded (event ids) into their askers' panes and
+    reconciles the herdr ask tokens; it outlives the screen and never touches the SSH agent."""
+    env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
+    try:
+        subprocess.Popen([sys.executable, of_path, "asks", "deliver", "--now", ",".join(events)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, env=env)
+    except OSError:
+        pass  # the pulse and the end of the asker's turn type them later (of_asks_answer.redeliver_pass)
+
 
 def outbox_dir():
     import of_events
     return os.path.join(of_events.STATE_DIR, "asks-outbox")
 
 
-def to_outbox(pendings):
-    """Write each pending answer as a file (ask ids, text, the item as the popup saw it). Returns the paths."""
+def new_act():
+    """The id of one act the owner queued (an answer or a mark): its event's id, whoever writes it first (`leave`)."""
     import uuid
-    d = outbox_dir()
-    os.makedirs(d, mode=0o700, exist_ok=True)
-    out = []
-    for p in pendings:
-        path = os.path.join(d, f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}.json")
-        body = {"what": p["what"], "text": p.get("text"), "item": {k: p["item"].get(k) for k in
-                ("who", "text", "since", "ids", "kind", "first", "version", "written")}, "queued_at": time.time()}
-        tmp = path + ".tmp"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            json.dump(body, fh, ensure_ascii=False, default=str)
-        os.replace(tmp, path)
-        out.append(path)
-    return out
+    return str(uuid.uuid4())
 
 
-def spawn_sender(of_path):
-    """One detached sender (`of asks send-outbox`): it outlives the popup and never touches the SSH agent."""
-    env = dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK="")
-    subprocess.Popen([sys.executable, of_path, "asks", "send-outbox"], stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+EVENT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
-def send_outbox(answer, act, still_open, reconcile=None, log=lambda m: None):
-    """Send every answer in the outbox once (flock: one sender at a time), oldest first, then ONE reconcile.
-    An answer whose asks are all closed already (the popup's thread got there first) is dropped, not sent
-    twice. A failed one stays in the outbox for the next run (the listener starts one). Returns sent count."""
-    import fcntl
-    d = outbox_dir()
-    os.makedirs(d, mode=0o700, exist_ok=True)
-    lock = open(os.open(os.path.join(d, ".lock"), os.O_WRONLY | os.O_CREAT, 0o600))
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return 0  # another sender runs
-    sent = 0
-    try:
-        while True:
-            files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
-            if not files:
-                break
-            progressed = False
-            for f in files:
-                path = os.path.join(d, f)
-                try:
-                    with open(path) as fh:
-                        body = json.load(fh)
-                except (OSError, ValueError):
-                    os.replace(path, path + ".bad")
-                    continue
-                item = body["item"]
-                if not still_open(item.get("ids") or []):
-                    os.remove(path)  # answered already
-                    progressed = True
-                    continue
-                try:
-                    if body["what"] == "answer":
-                        ok, status = answer(item, body["text"])
-                    else:
-                        out = act(body["what"], item)
-                        ok, status = out if isinstance(out, tuple) else (True, out)
-                except Exception as e:  # noqa: BLE001
-                    ok, status = False, f"{type(e).__name__}: {e}"
-                if ok:
-                    os.remove(path)
-                    sent += 1
-                    progressed = True
-                elif str(status or "").startswith("amended"):  # of_asks_answer.AMENDED: final, never tried again;
-                    log(f"outbox {f}: {status}")  # its draft, marked failed, brings the card's new version back
-                    os.remove(path)
-                    progressed = True
-                else:
-                    log(f"outbox {f}: {status}")
-                    try:  # failed: the screen shows its card again at once instead of taking it for one on its way
-                        body.update(failed_at=time.time(), why=str(status)[:200])
-                        with open(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-                            json.dump(body, fh, ensure_ascii=False, default=str)
-                        os.replace(path + ".tmp", path)
-                    except OSError:
-                        pass
-            if not progressed:
-                break  # what is left failed this time; the next run tries again
-    finally:
-        lock.close()
-    if sent and reconcile:
-        try:
-            reconcile()
-        except Exception:  # noqa: BLE001
-            pass
-    return sent
-
-
-def outbox_waiting(older_than_s=60):
-    """Answers left in the outbox longer than older_than_s (a sender died): the listener starts one."""
+def outbox_leftovers():
+    """Files in the old outbox (before 2026-11-19, `leave`; a screen still open across the update writes one) are never
+    replayed: an answer there becomes a draft marked failed, so its card comes back on the owner's screen with his
+    text and only D sends it; a mark there is not done and its card stays open. A file any session wrote is shown,
+    never acted on, and its ask ids must be event ids (a draft's file is named by the first). Returns the files."""
+    import of_asks_answer
     d = outbox_dir()
     try:
-        return [f for f in os.listdir(d) if f.endswith(".json")
-                and time.time() - os.path.getmtime(os.path.join(d, f)) > older_than_s]
+        files = sorted(f for f in os.listdir(d) if f.endswith(".json"))
     except OSError:
         return []
+    for f in files:
+        path = os.path.join(d, f)
+        try:
+            with open(path) as fh:
+                body = json.load(fh)
+            item = body.get("item") if isinstance(body, dict) else None
+            ids = item.get("ids") if isinstance(item, dict) else None
+            if body.get("what") == "answer" and isinstance(ids, list) and ids and isinstance(body.get("text"), str) \
+                    and all(isinstance(i, str) and EVENT_ID.fullmatch(i) for i in ids) and \
+                    not os.path.lexists(os.path.join(of_asks_answer.drafts_dir(), f"{ids[0]}.json")):  # his newer one
+                of_asks_answer.save_draft(item, body["text"])
+                of_asks_answer.mark_failed(item, "left in the outbox before 2026-11-19: not sent; D sends it")
+        except OSError:
+            continue  # not taken: the next screen tries it again
+        except Exception:  # noqa: BLE001 - not JSON, not an entry, too deep: set aside, never acted on
+            pass
+        try:
+            os.replace(path, path + ".seen")
+        except OSError:
+            pass
+    return files
 
 
 def debounced(fn, wait_s=2.0):
@@ -1068,15 +1090,26 @@ def _first_org(positions):
     return next((p.get("_orgid") or p.get("_org") for p in positions or [] if p.get("_org")), None)
 
 
-def act_cli(of_path):
+def acts(of_path, after=None):
+    """The screen's acts on a card: g goes to the asker's pane; a mark ("answered", "withdraw") is recorded here, in the
+    screen's own process (of_asks_answer.owner_mark), then the herdr ask tokens follow (after)."""
     def act(what, item):
         if what == "go":
             subprocess.run([sys.executable, of_path, "go", item["who"][0]], capture_output=True)
             return ""
-        args = ["asks", "answered", item["ids"][0]] if what == "answered" else ["asks", "withdraw", item["ids"][0]]
-        r = subprocess.run([sys.executable, of_path, *args], capture_output=True, text=True)
-        out = (r.stdout or r.stderr).strip().splitlines()[-1] if (r.stdout or r.stderr) else what
-        return r.returncode == 0, out
+        import of_asks_answer
+        import of_store
+        own = of_store.connect()  # in the sending thread: its own connection
+        try:
+            ok, status = of_asks_answer.owner_mark(own, item, what)
+        finally:
+            own.close()
+        if ok and after:
+            try:
+                after()
+            except Exception:  # noqa: BLE001
+                pass
+        return ok, status
     return act
 
 
@@ -1092,6 +1125,9 @@ def threaded_answer(positions, pane_of=None, after=None):
 
     def answer(it, text):
         import of_store
+        why = of_asks_answer.not_the_owner()
+        if why:
+            return False, why
         own = of_store.connect()
         try:
             out = of_asks_answer.answer(own, it, text, _positions(positions), pane_of or (lambda name: None))
@@ -1120,6 +1156,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
 
     def loader():  # in a thread: the true list first (the view: a few ms), the cache written from it at once
         import of_store
+        outbox_leftovers()  # shown as drafts, never replayed
         own = of_store.connect()
         try:
             pos = _positions(positions)  # a callable loads the registry here, after the first frame
@@ -1129,12 +1166,11 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         write_cache(data)  # the next open draws this at once
         return data
 
-    answer = threaded_answer(positions, pane_of, debounced(after) if after else None)
+    later = debounced(after) if after else None
+    answer = threaded_answer(positions, pane_of, later)
     import of_listen
 
-    def handoff(pendings):
-        to_outbox(pendings)
-        spawn_sender(of_path)
+    handoff = leaving_as_owner(lambda pendings: leave(pendings, positions, of_path))
 
     def studio(item, done):  # in a thread: the store read, the server's link and the browser never hold the popup
         import threading
@@ -1151,7 +1187,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
                 own.close()
         threading.Thread(target=work, daemon=True).start()
 
-    curses.wrapper(run, [], conn, act_cli(of_path), card_of, answer, None, None,
+    curses.wrapper(run, [], conn, acts(of_path, later), card_of, answer, None, None,
                    of_asks_answer.unsent_drafts, loader, refresh, of_listen.seq, handoff, studio,
                    of_asks_answer.archive_drafts)
     return 0

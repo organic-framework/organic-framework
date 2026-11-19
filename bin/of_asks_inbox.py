@@ -28,8 +28,9 @@ closes what is open, else the window, like q.
 What must hold (the design's "behaviour that must hold"):
 - The selection is an ask id: new cards never move it, and a key answers the card on the screen. When the selected
   card closes elsewhere, the selection moves to its neighbour and answer keys wait MOVED_GUARD_S, said on screen.
-- An answer is recorded as the popup records it (of_asks_answer.answer through the same undo window and outbox); its
-  row stays in the queue, marked, until the record exists, and leaves only then. A failed send brings it back in red.
+- An answer is recorded as the popup records it (of_asks_answer.answer through the same undo window; leaving with one
+  in its window records it before the screen goes, of_asks_tui.leave); its row stays in the queue, marked, until the
+  record exists, and leaves only then. A failed send brings it back in red.
 - A money or irreversible answer needs a second press of the same key (or y); any other key cancels.
 - Below NARROW_W columns: one card per screen, ↑↓ page through the stream and ←→ switch streams (layout B), the
   same keys otherwise.
@@ -383,8 +384,8 @@ class Writer:
 class ReplyDrafts:
     """The answers he put aside with Esc while writing one, kept across openings: one file per ask id under
     asks-reply-drafts in OF's state folder (mode 600). A draft whose ask closed goes to its archive folder, never lost.
-    Not the outbox's drafts (of_asks_answer.save_draft): those are answers sent and not yet recorded, which D sends;
-    these are unfinished (of_herdr's review of PR 98: Esc's draft lived only while the window was open)."""
+    Not the sent answers' drafts (of_asks_answer.save_draft): those are answers sent and not yet recorded, which D
+    sends; these are unfinished (of_herdr's review of PR 98: Esc's draft lived only while the window was open)."""
 
     def __init__(self, path=None):
         if path is None:
@@ -446,8 +447,8 @@ def char_of(ch):
 
 NEW_H = 6         # the log's tail read for asks the listener's view has not taken yet
 CLOSED_H = 48     # and for the closures it may not show yet
-SENDING_S = 180   # an answer in the outbox or being sent, unmarked, hides its card this long at most (a failure marks
-# its draft or outbox entry failed_at and shows the card at once; this bounds a sender that died before it could)
+SENDING_S = 180   # an answer being sent, unmarked, hides its card this long at most (a failure marks its draft
+# failed_at and shows the card at once; this bounds a send that died before it could)
 
 
 def _iso(t):
@@ -576,23 +577,11 @@ def reader():
 
 
 def on_their_way(now=None):
-    """The ask ids of answers handed on and not recorded yet: the outbox (the detached sender's) and the drafts an
-    answer writes before it is sent, from the last SENDING_S. Older ones failed and are shown again."""
+    """The ask ids of answers handed on and not recorded yet: the drafts an answer writes before it is sent, from the
+    last SENDING_S. Older ones failed and are shown again. The old outbox is not read: a file there is no answer on its
+    way (of_asks_tui.outbox_leftovers)."""
     now = now or time.time()
     out = set()
-    try:
-        d = T.outbox_dir()
-        for f in os.listdir(d):
-            if f.endswith(".json"):
-                try:
-                    with open(os.path.join(d, f)) as fh:
-                        b = json.load(fh)
-                    if not b.get("failed_at") and now - float(b.get("queued_at") or 0) < SENDING_S:
-                        out |= set((b.get("item") or {}).get("ids") or [])
-                except (OSError, ValueError, TypeError):
-                    continue
-    except OSError:
-        pass
     try:
         import of_asks_answer
         for dr in of_asks_answer.unsent_drafts():
@@ -850,8 +839,8 @@ class Outgoing:
     def queue(self, item, what, text=None, written=False):
         k = key_of(item)
         self.errors.pop(k, None)
-        self.pending.append({"key": k, "item": item, "what": what, "text": text, "at": time.time(), "started": False,
-                             "written": written,
+        self.pending.append({"key": k, "item": dict(item, act=T.new_act()), "what": what, "text": text,
+                             "at": time.time(), "started": False, "written": written,
                              "done": False, "ok": None, "status": None})
 
     def _start(self, p):
@@ -914,12 +903,15 @@ class Outgoing:
         return tr("sent ✓ · u to undo ({s} s)", s=max(0, int(T.UNDO_S - (time.time() - p["at"]) + 0.99)))
 
     def flush(self):
-        """Leaving with answers in their window: hand them to the detached sender (never wait, never drop)."""
+        """Leaving with answers in their window: record them before the screen goes (of_asks_tui.leave: never wait on
+        a pane, never drop)."""
         left = [p for p in self.pending if not p["done"]]
         if not left:
             return
         if self.handoff:
             self.handoff(left)
+            for p in left:  # recorded: a second flush (the signal's, after q) records nothing again
+                p["done"] = True
             return
         for p in left:
             if not p["started"]:
@@ -1338,7 +1330,8 @@ class Inbox:
     def take_amended(self, drafts=()):
         """Answers refused because the asker amended the card after he saw it (of ask --amend): the
         card loads its new version, and what he wrote waits in r for it (the founder, 2026-11-12: no path loses typed
-        text); a pick of an option is not kept. DRAFTS: the detached sender's refusals, as the loader found them."""
+        text); a pick of an option is not kept. DRAFTS: the refusals of answers sent as the screen left, as the loader
+        found them."""
         import of_asks_answer
         refused = [(p["key"], p["item"], p.get("text"), p.get("written")) for p in self.out.amended]
         self.out.amended = []
@@ -1893,6 +1886,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     def loader():  # in a thread: the true list, written to the cache for the next first frame
         """The queue from its one source (queue: the view and the log's tail, never the whole log), the registry's
         rows once it is there, and what the screen would otherwise read from disk on its own thread."""
+        _quiet(T.outbox_leftovers)  # shown as drafts, never replayed
         own = reader()
         try:
             data, over, extra = screen_list(own, T._positions(positions) if registry.is_set() else [],
@@ -1916,9 +1910,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
             of_asks_answer.ship_soon()
         return eid
 
-    def handoff(pendings):
-        T.to_outbox(pendings)
-        T.spawn_sender(of_path)
+    handoff = T.leaving_as_owner(lambda pendings: T.leave(pendings, positions, of_path))
 
     def studio(item, done):
         def work():
@@ -1932,13 +1924,14 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
                 own.close()
         threading.Thread(target=work, daemon=True).start()
 
-    answer = T.threaded_answer(positions, pane_of, T.debounced(after) if after else None)
+    later = T.debounced(after) if after else None
+    answer = T.threaded_answer(positions, pane_of, later)
     first = (T.read_cache(), {})
     size, boxes, store, writer = [], [], ReplyDrafts(), Writer()
 
     def run(scr):
         size.extend(scr.getmaxyx())
-        box = Inbox(scr, loader, card_of, answer, T.act_cli(of_path),
+        box = Inbox(scr, loader, card_of, answer, T.acts(of_path, later),
                     positions=lambda: T._positions(positions) if registry.is_set() else [],
               record=record, handoff=handoff, studio=studio, drafts=of_asks_answer.unsent_drafts, seq=of_listen.seq,
               initial=([x for _, g in first[0] for x in g], first[1]), chat=T.chat_screen,
@@ -1960,6 +1953,8 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
         writer.flush()
         if boxes and boxes[0].reply:  # closed while he wrote: what he wrote is a draft
             _quiet(lambda: store.save(boxes[0].reply["key"], boxes[0].reply["ed"].text()))
+        if boxes:  # closed by herdr's signal with answers or marks in their window: recorded before it goes
+            _quiet(boxes[0].out.flush)
         log_open(timing, size)
     return 0
 

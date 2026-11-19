@@ -185,6 +185,22 @@ class ShippedAtOnceTest(unittest.TestCase):
             finally:
                 of_asks_answer.ship_soon = saved
 
+    def test_a_mark_from_the_screen_starts_one_shipper(self):
+        """A card marked done or withdrawn in the screen is recorded in its process (of_asks_answer.owner_mark) and
+        leaves at once, like an answer; before 2026-11-19 it went through a child `of asks` that shipped nothing."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root, Machine(root, "laptop") as m:
+            of_store.add_event(m.conn, ask_record(ASK_OF, "ofb", "of_server", "Ship the relay fix?", "OF-7"), "r")
+            item = {"ids": [ASK_OF], "who": ["of_server"]}
+            started, tty = [], mock.Mock()
+            tty.isatty.return_value = True
+            clean = {k: v for k, v in os.environ.items()
+                     if k not in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE")}
+            with mock.patch.object(of_asks_answer, "ship_soon", lambda: started.append(1)), \
+                    mock.patch.dict(os.environ, clean, clear=True), mock.patch.object(sys, "stdin", tty):
+                self.assertTrue(of_asks_answer.owner_mark(m.conn, item, "withdraw")[0])
+                self.assertEqual(len(started), 1)
+
     def test_the_shipper_is_a_detached_child_and_none_under_no_detach(self):
         started, saved, saved_env = [], subprocess.Popen, dict(os.environ)
 

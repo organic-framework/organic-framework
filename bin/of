@@ -2941,74 +2941,20 @@ def cmd_registry(args):
 
 # ------------------------------------------------------------------- asks
 
-def _send_outbox():
-    """`of asks send-outbox`: the detached sender the popup hands its pending answers to on q/Esc/g. Its marks
-    (answered, withdrawn) are the owner's, run here, not through a child `of asks`, which has no terminal; it refuses
-    in an agent's session (of_review on PR 387: the outbox is the popup's, never an agent's way to the owner's name)."""
-    import io
-    import contextlib
-    import of_asks_answer
-    import of_asks_tui
-    import of_store
-    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION") or os.environ.get("CLAUDECODE"):
-        raise OfError("of asks send-outbox is the popup's sender, run by the popup or the listener, never from an agent's "
-                      "session")
-    positions = _load_quiet()
-    cli = of_asks_tui.act_cli(os.path.realpath(__file__))
-
-    def act(what, item):
-        if what not in ("answered", "withdraw"):
-            return cli(what, item)
-        out = io.StringIO()
-        _OUTBOX_OWNER[0] = True
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-                rc = main(["asks", what, item["ids"][0]])
-        finally:
-            _OUTBOX_OWNER[0] = False
-        lines = out.getvalue().strip().splitlines()
-        return rc == 0, (lines[-1] if lines else what)
-
-    def pane_of(name):
-        try:
-            return next((a["pane_id"] for p, a in bind(positions, live_agents())[0] if p["name"] == name), None)
-        except OfError:
-            return None
-
-    def answer(item, text):
-        own = of_store.connect()
-        try:
-            return of_asks_answer.answer(own, item, text, positions, pane_of)
-        finally:
-            own.close()
-
-    def still_open(ids):
-        open_ids = {a["event_id"] for a in _current_asks() if a["state"] == "open"}
-        return not ids or any(i in open_ids for i in ids)
-    n = of_asks_tui.send_outbox(answer, act, still_open,
-                                reconcile=lambda: _reconcile_ask_tokens(positions),
-                                log=lambda m: print(m, file=sys.stderr))
-    print(f"{n} answer(s) sent from the outbox")
-    return 0
-
-
-_OUTBOX_OWNER = [False]  # set only while `of asks send-outbox` replays the popup's own actions (_send_outbox)
-
-
 def _asks_actor():
     """Who closes or withdraws an ask: an agent (an asker withdrawing its own stale ask, a unit owner answering a routed
     one) is recorded by its position, never as the owner (task bd12d0); the owner only by a positive test, as `of
-    access` reads one (of_review on organic-framework PR 357): no CLAUDECODE and a terminal on stdin, or the popup's
-    outbox replayed by its sender. G31 could not see every way a shell clears the session id (of_review on PR 387,
-    comment 7017518350: `declare -x`, a parent shell, a script file, ssh localhost, at), so an agent with neither
-    variable had been recorded as the owner. OF_AUTOMATION is no sign here: the questions panel runs under it."""
+    access` reads one (of_review on organic-framework PR 357): no CLAUDECODE and a terminal on stdin. The questions
+    screens record his marks in their own process with the same test (of_asks_answer.owner_mark); nothing replays a
+    file as his (of_server, msg 01a1f51f-6c9e). G31 could not see every way a shell clears the session id (of_review
+    on PR 387, comment 7017518350: `declare -x`, a parent shell, a script file, ssh localhost, at), so an agent with
+    neither variable had been recorded as the owner. OF_AUTOMATION is no sign here: the questions panel runs under
+    it."""
     if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("OF_POSITION"):
         try:
             return _me(_load_quiet())["name"]
         except OfError:
             return "agent"
-    if _OUTBOX_OWNER[0]:
-        return "owner"
     if os.environ.get("CLAUDECODE") or not sys.stdin.isatty():
         raise OfError("only the owner closes or withdraws an ask with no position: in a plain terminal or the popup. "
                       "An agent closes its own with `of status working --answered <id>`, from its own session; a unit "
@@ -3016,17 +2962,29 @@ def _asks_actor():
     return "owner"
 
 
-def _asks_deliver(position=None):
+def _asks_deliver(position=None, now=None):
     """`of asks deliver [<position>]`: type now what the founder answered, and the questions routed to a unit owner,
     that has no record in the pane yet. The listener runs it when the position ends a turn, so an answer given while
     the agent was busy goes in then, not at the next pulse. It reads the listener's asks view when it is live (the
-    whole projection takes seconds)."""
+    whole projection takes seconds). `--now <event ids>`: the answers a questions screen recorded as it left
+    (of_asks_tui.leave), typed at once into their askers' panes, then the herdr ask tokens; it types only what the
+    store holds as the owner's answer."""
     import time
     import of_asks
     import of_asks_answer
     import of_listen
     import of_store
     conn = of_store.connect()
+    if now is not None:
+        _drain_spool_now(conn)  # the screen leaving spools what a busy store would not take at once
+        asks = _asks_now(conn, quiet=True)
+        positions = _load_quiet()
+        events = {e for e in now.split(",") if e}
+        n = of_asks_answer.redeliver_pass(conn, asks, positions, live_agents(), bind, events=events, min_age=0,
+                                          wait_s=3, need_idle=False) if events else 0
+        _reconcile_ask_tokens(positions)
+        print(f"{_now_iso()} deliver now: {n} typed")
+        return 0
     asks = _asks_now(conn)  # whole asks, escalated_from included: the view and the log's tail (of_asks.current_asks)
     soon = bool(position)
     n = of_asks_answer.redeliver_pass(
@@ -3062,13 +3020,11 @@ def _ask_refs(args, *fields):
 
 def cmd_asks(args):
     _ask_refs(args, "id")
-    if args.action == "send-outbox":
-        return _send_outbox()
     if args.action == "judge":  # bin/of_judge.py: does a question left in a pane wait on the owner?
         import of_judge
         return of_judge.run([x for x in [args.id, *(args.reason or [])] if x], args.pending, args.pane, args.dry_run)
     if args.action == "deliver":  # the listener, at the end of a position's turn (of_asks_answer.redeliver_pass)
-        return _asks_deliver(args.id)
+        return _asks_deliver(args.id, getattr(args, "now", None))
     if args.action == "refs":  # card ids for the open asks filed before ids existed, oldest first, once each
         import of_asks
         import of_events
@@ -7580,8 +7536,7 @@ def main(argv=None):
     imp.add_argument("--since", help="github: merged on or after this date (default: the day before the last import)")
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
-    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "send-outbox", "judge",
-                                                  "deliver", "refs"],
+    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "judge", "deliver", "refs"],
                     default="list", help="refs: give the open asks filed before card ids existed their ids (once); "
                     "deliver [<position>]: type the founder's answers not yet in the pane; "
                     "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
@@ -7589,6 +7544,8 @@ def main(argv=None):
                     "quotes its option")
     ak.add_argument("id", nargs="?")
     ak.add_argument("reason", nargs="*")
+    ak.add_argument("--now", metavar="EVENTS", help="deliver: the answers a questions screen recorded as it left "
+                    "(event ids, comma-separated), typed at once")
     ak.add_argument("--all", action="store_true", help="also answered, denied, superseded and expired asks")
     ak.add_argument("--to-me", action="store_true", help="the open asks routed to the calling position (a unit owner)")
     ak.add_argument("--watch", action="store_true", help="a live list for a herdr popup (prefix+a): the queue and the "
