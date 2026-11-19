@@ -169,7 +169,6 @@ def password(name, invoke=run):
 
 def authorized_key_sources(name, home, uid, invoke=run):
     """Read the effective AuthorizedKeysFile paths and AuthorizedKeysCommand for this user."""
-    files = ".ssh/authorized_keys .ssh/authorized_keys2"
     command = "none"
     if os.geteuid() == 0:
         # As root the effective configuration must be read: OpenSSH's defaults could miss an AuthorizedKeysFile set
@@ -180,17 +179,22 @@ def authorized_key_sources(name, home, uid, invoke=run):
             config = invoke(["sshd", "-T", "-C", spec], capture_output=True, text=True).stdout
         except (OSError, subprocess.CalledProcessError) as e:
             raise Refusal(f"sshd -T -C {spec} did not answer ({e}): the admin's key sources cannot be read") from None
+        files = None
         ca = "none"
         for line in config.splitlines():
             option, _, value = line.partition(" ")
+            option = option.lower()
             if option == "authorizedkeysfile":
                 files = value
             elif option == "authorizedkeyscommand":
                 command = value.strip()
             elif option == "trustedusercakeys":
                 ca = value.strip()
+        require(files is not None, f"sshd -T -C {spec} output could not be read: missing AuthorizedKeysFile")
         require(ca.lower() == "none", f"sshd trusts user certificates signed by {ca}: any certificate it signs logs in "
                                       f"as {name}; set TrustedUserCAKeys none before continuing")
+    else:
+        files = ".ssh/authorized_keys .ssh/authorized_keys2"
 
     tokens = {"%%": "%", "%h": home, "%u": name, "%U": str(uid)}
     paths = []
