@@ -1,0 +1,52 @@
+"""of_events.machine_id on a fresh state folder, many callers at once (of_review on organic-framework PR 409: 3 of 4
+threads failed the O_EXCL create, and a reader could find the file empty)."""
+
+import os
+import sys
+import tempfile
+import threading
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin"))
+import of_events  # noqa: E402
+
+
+class MachineId(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = of_events.STATE_DIR
+        of_events.STATE_DIR = self.tmp.name
+
+    def tearDown(self):
+        of_events.STATE_DIR = self.saved
+        self.tmp.cleanup()
+
+    def test_many_callers_get_one_id(self):
+        got, errors = [], []
+
+        def call():
+            try:
+                got.append(of_events.machine_id())
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+        threads = [threading.Thread(target=call) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(len(set(got)), 1)
+        self.assertTrue(got[0])
+        self.assertEqual(sorted(os.listdir(self.tmp.name)), ["machine_id"])   # no temporary file left
+        self.assertEqual(of_events.machine_id(), got[0])
+
+    def test_an_empty_file_an_older_writer_left_is_replaced(self):
+        open(os.path.join(self.tmp.name, "machine_id"), "w").close()
+        mid = of_events.machine_id(wait_s=0.05)
+        self.assertTrue(mid)
+        self.assertEqual(of_events.machine_id(), mid)
+
+
+if __name__ == "__main__":
+    unittest.main()

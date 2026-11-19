@@ -23,17 +23,49 @@ def _state_dir():
     return STATE_DIR
 
 
-def machine_id():
+def machine_id(wait_s=5.0):
+    """This machine's id, made once. Several processes may make it at once on a fresh state folder (the agent host's
+    listener and relay, started together: of_review on organic-framework PR 409, where 3 of 4 threads failed the
+    O_EXCL create and a reader could find the file empty). The id is written whole into a temporary file and linked
+    into place; a caller whose link loses reads the winner's, waiting for it to be non-empty."""
     path = os.path.join(_state_dir(), "machine_id")
-    try:
-        with open(path) as fh:
-            return fh.read().strip()
-    except FileNotFoundError:
-        mid = str(uuid.uuid4())
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(mid + "\n")
+
+    def read():
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except FileNotFoundError:
+            return None
+    mid = read()
+    if mid:
         return mid
+    import tempfile
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(str(uuid.uuid4()) + "\n")
+        os.chmod(tmp, 0o600)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass   # another caller's id is in place: read it below
+    finally:
+        os.unlink(tmp)
+    deadline = time.time() + wait_s
+    while True:
+        mid = read()
+        if mid:
+            return mid
+        if time.time() > deadline:   # an empty file an older writer left: replaced whole, never appended to
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".machine_id.")
+            with os.fdopen(fd, "w") as fh:
+                fh.write(str(uuid.uuid4()) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+            return read() or ""
+        time.sleep(0.02)
 
 
 def _uuid7():
