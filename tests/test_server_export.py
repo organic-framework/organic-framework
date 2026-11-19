@@ -265,6 +265,20 @@ class ExportTest(unittest.TestCase):
         os.makedirs(os.path.join(empty, "blobs"))
         ex.export_store(self.src, "acme", self.out, config={"state_dir": empty})   # an empty store: no refusal
 
+    def test_a_bundle_is_deleted_only_by_its_own_hash_and_only_with_the_files_it_names(self):
+        _, sha = self.export()
+        with self.assertRaises(ex.ExportError):
+            ex.delete_bundle(self.out, "0" * 64)
+        stray = os.path.join(self.out, "store", "planted")
+        open(stray, "w").close()
+        with self.assertRaises(ex.ExportError) as e:
+            ex.delete_bundle(self.out, sha)
+        self.assertIn("does not name", str(e.exception))
+        self.assertTrue(os.path.exists(os.path.join(self.out, "index.json")))   # nothing removed
+        os.unlink(stray)
+        self.assertEqual(ex.delete_bundle(self.out, sha), len(ex.STORE) + 2)  # the tables, the manifest, the index
+        self.assertFalse(os.path.exists(self.out))
+
     def test_an_export_refuses_a_folder_that_is_not_empty(self):
         os.makedirs(self.out)
         open(os.path.join(self.out, "x"), "w").close()

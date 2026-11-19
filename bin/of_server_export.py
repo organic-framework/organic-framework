@@ -807,3 +807,25 @@ def _import_clickhouse(ch, databases, bundle, identity, m):
                         ch.insert(f"INSERT INTO {table.source} FORMAT Native", iter(lambda: gz.read(1 << 16), b""))
                 except Exception:
                     raise ExportError(f"{table.name} {d}: insert failed") from None
+
+
+def delete_bundle(bundle, index_sha):
+    """Remove the bundle once its import checked out (the user organization's sec_keeper, through of_architect,
+    message 01a1f5ff-f009: nothing left in clear, and the deletion read back). Only a bundle whose index.json has the
+    sha256 the export printed is removed, and only the files its index names: any other file refuses it, with nothing
+    removed. Returns the number of files removed after reading back that the folder is gone."""
+    ix = load_index(bundle, index_sha)
+    named = set(ix["files"]) | {"index.json"}
+    found = set()
+    for folder, _, names in os.walk(bundle):
+        found |= {os.path.relpath(os.path.join(folder, n), bundle) for n in names}
+    if found - named:
+        raise ExportError(f"the bundle holds {len(found - named)} files its index does not name; nothing removed")
+    for rel in sorted(found - {"index.json"}) + ["index.json"]:  # the index last: a partial removal stays unimportable
+        os.unlink(os.path.join(bundle, rel))
+    for folder, _, _ in sorted(os.walk(bundle), key=lambda w: -len(w[0])):
+        os.rmdir(folder)
+    if os.path.exists(bundle):
+        raise ExportError("the bundle's folder is still there after its removal")
+    return len(found)
+

@@ -3319,7 +3319,7 @@ def cmd_server(args):
     if args.action in ("export", "import"):  # one organization's records between servers (bin/of_server_export.py)
         import sqlite3
         import of_server_export as ex
-        if not args.path or len(args.org or []) != 1 and not (args.action == "export" and args.check):
+        if not args.path or len(args.org or []) != 1 and not (args.action == "export" and (args.check or args.delete)):
             raise OfError(f"usage: of server {args.action} --org ORG <bundle folder>"
                           + (" --index-sha <the export's>" if args.action == "import" else ""))
         cfg = of_server.load_config()
@@ -3334,6 +3334,11 @@ def cmd_server(args):
                 mode = "ro" if args.action == "export" else "rw"  # neither command ever creates a store
                 conn = sqlite3.connect(f"file:{db}?mode={mode}", uri=True, timeout=10, isolation_level=None)
                 conn.execute("PRAGMA busy_timeout = 10000")
+            if getattr(args, "delete", False):
+                if args.action != "export" or not args.index_sha:
+                    raise OfError("usage: of server export --delete <bundle folder> --index-sha <the export's>")
+                print(f"removed {ex.delete_bundle(args.path, args.index_sha)} files; the folder is gone")
+                return 0
             if args.check:
                 if args.action == "import":
                     problems = ex.check_import(conn, args.path, args.org[0], args.index_sha, args.identity, config=cfg)
@@ -8066,7 +8071,9 @@ def main(argv=None):
     sv.add_argument("--to", help="export: the age recipient (age1…) every file of the bundle is encrypted to")
     sv.add_argument("--identity", help="import, export --check or --since: the age identity that decrypts the bundle")
     sv.add_argument("--since", metavar="BULK", help="export ClickHouse days from each table's last day in BULK")
-    sv.add_argument("--index-sha", help="import: the sha256 of index.json that the export printed")
+    sv.add_argument("--index-sha", help="import, export --delete: the sha256 of index.json that the export printed")
+    sv.add_argument("--delete", action="store_true",
+                    help="export: remove the bundle after its import checked out, and read back that it is gone")
     sv.add_argument("--machine-id")
     sv.add_argument("--tls-port", type=int, help="tls-init: the TLS listener's port (default 18201)")
     sv.add_argument("--pubkey", help="the machine's public key file (default: this machine's key)")
