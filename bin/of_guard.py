@@ -2997,13 +2997,16 @@ def _forward_dir():
     return os.path.realpath(_expanduser(FORWARD_DIR))
 
 
-def _forward_deny(head, args):
+def _forward_deny(head, args, shvars=None):
     """G34 on one simple command: any word that names the forward's key folder, `ssh -i <its key>` included, since
     a key used is a key the session holds for that call (of_review on organic-framework PR 350: a laptop session
     could open its own forward with it, a listen on the host that the pin makes useless but that can take the
-    forward's socket)."""
+    forward's socket). A word is read as written and with the line's variables filled in (a path held in a variable,
+    or a part of one: of_secrets-review on organic-framework PR 397, hand-over b657e8bf)."""
     d = _forward_dir()
-    for w in [head, *args]:
+    words = [str(head), *map(str, args)]
+    words += [x for x in (_expand_vars(w, shvars or {}) for w in list(words)) if x not in words]
+    for w in words:
         for part in re.split(r"[=:,]", str(w)) if "=" in str(w) else [str(w)]:
             p = part.strip("'\"")
             if "of-forward" not in p:
@@ -5083,7 +5086,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             hit = _cluster_secret_deny(head, args, to_file, {**line_vars, **exported, **_assignments(stext)}) \
                 or _memory_deny(head, args) \
                 or _op_founder_deny(head, args, stext) or _op_deny(head, args) or _grant_deny(head, args, stext) or _tool_token_deny(head, args) or _hook_entry(head, args) \
-                or _forward_deny(head, args) \
+                or _forward_deny(head, args, {**line_vars, **exported, **_assignments(stext)}) \
                 or _actor_deny(head, args, stext, {**exported, **_assignments(stext)}) \
                 or _hooks_deny(head, args, stext, here, {**exported, **_assignments(stext)}) \
                 or _plugins_deny(head, args, stext, here, {**exported, **_assignments(stext),

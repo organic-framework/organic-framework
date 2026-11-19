@@ -39,5 +39,18 @@ class ForwardKeyTest(unittest.TestCase):
             self.assertIsNone(bash(cmd), cmd)
 
 
+
+class ForwardLineVariables(unittest.TestCase):
+    """G34 through a line's variable (of_secrets-review on organic-framework PR 397; hand-over b657e8bf)."""
+
+    def test_a_path_held_in_a_variable(self):
+        folder = "~/.ssh/of-" + "forward"
+        for cmd in (f"K={folder}/key; ssh -i $K host", "d=of-" + "forward; cat ~/.ssh/$d/key",
+                    f"K=$HOME/.ssh/of-{'forward'}; ls $K", f"export F={folder}/key; ssh -i \"$F\" h",
+                    f"K={folder}; cp /tmp/k \"${{K}}/key\""):
+            self.assertTrue(of_guard.critical_deny("Bash", {"command": cmd}, cwd="/Users/alex/of"), cmd)
+        for cmd in ("K=~/.ssh/other_key; ssh -i $K host", "d=of-other; ls ~/.ssh/$d"):
+            self.assertIsNone(of_guard.critical_deny("Bash", {"command": cmd}, cwd="/Users/alex/of"), cmd)
+
 if __name__ == "__main__":
     unittest.main()
