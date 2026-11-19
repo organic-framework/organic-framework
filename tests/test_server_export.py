@@ -15,23 +15,12 @@ import of_server_export as ex  # noqa: E402
 
 
 def store(tables=True):
-    """A server store with the tables its modules make at the server's start."""
-    import of_server_coord
-    import of_server_finance
-    import of_server_passkey
-    import of_server_relay
-    import of_server_secrets
+    """A server store; with TABLES, also the tables its modules make when they first serve."""
     d = tempfile.mkdtemp(prefix="ofx-")
     of_server.Store(d)
     c = sqlite3.connect(os.path.join(d, "server.db"), isolation_level=None)
     if tables:
-        for ddl in (of_server_relay.DDL, of_server_coord.DDL, of_server_finance.DDL, of_server_passkey.DDL,
-                    of_server_secrets.DDL):
-            c.executescript(ddl)
-        have = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
-        for col, decl in (("priority", "TEXT DEFAULT 'normal'"), ("moved_from", "TEXT"), ("moved_by", "TEXT")):
-            if col not in have:
-                c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+        ex.ensure_schema(c)
     return c, d
 
 
@@ -188,12 +177,30 @@ class ExportTest(unittest.TestCase):
         self.assertIn("another organization", str(e.exception))
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)   # rolled back whole
 
-    def test_an_import_into_a_server_never_started_is_refused(self):
+    def test_a_new_server_that_served_nothing_and_a_store_a_column_ahead_both_take_the_import(self):
+        """of_review on organic-framework PR 425: a fresh server had no feed or finance table, so the import refused;
+        and a store one column ahead never matched, since its own columns entered the digest."""
         _, sha = self.export()
-        dst, _ = store(tables=False)
+        fresh, _ = store(tables=False)                                       # the server's own tables only
+        self.assertEqual(ex.import_store(fresh, self.out, "acme", sha)["coord"], 1)
+        self.assertEqual(ex.check_store(fresh, self.out), [])
+        ahead, _ = store()
+        ahead.execute("ALTER TABLE position_aliases ADD COLUMN newer TEXT DEFAULT 'x'")
+        self.assertEqual(ex.import_store(ahead, self.out, "acme", sha)["position_aliases"], 1)
+        self.assertEqual(ex.check_store(ahead, self.out), [])
+        bare = sqlite3.connect(os.path.join(tempfile.mkdtemp(prefix="ofx-"), "x.db"), isolation_level=None)
         with self.assertRaises(ex.ExportError) as e:
-            ex.import_store(dst, self.out, "acme", sha)
+            ex.import_store(bare, self.out, "acme", sha)
         self.assertIn("start the new server once", str(e.exception))
+
+    def test_a_source_that_never_made_a_table_exports_it_empty(self):
+        self.src.execute("DROP TABLE finance_facts")
+        m, sha = self.export()
+        self.assertEqual(m["store"]["finance_facts"]["rows"], 0)
+        self.assertEqual(m["columns"]["finance_facts"], [])
+        self.assertEqual(ex.check_bundle(self.out, index_sha=sha), [])
+        dst, _ = store()
+        self.assertEqual(ex.import_store(dst, self.out, "acme", sha)["finance_facts"], 0)
 
     @unittest.skipUnless(__import__("shutil").which("age") and __import__("shutil").which("age-keygen"), "age")
     def test_an_encrypted_bundle_holds_no_plaintext_and_imports_with_its_key_alone(self):

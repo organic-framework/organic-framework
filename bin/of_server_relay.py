@@ -179,6 +179,17 @@ def parse_address(a):
     return org, pos
 
 
+MIGRATIONS = (("priority", "TEXT DEFAULT 'normal'"), ("moved_from", "TEXT"), ("moved_by", "TEXT"))  # on messages
+
+
+def migrate(c):
+    """The columns added to messages after its DDL, in an older store (shared with of server import)."""
+    have = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
+    for col, decl in MIGRATIONS:
+        if col not in have:
+            c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+
+
 class Relay:
     """State lives in server.db; `notify` wakes long-polls when a message arrives."""
 
@@ -187,10 +198,7 @@ class Relay:
         self.cond = threading.Condition()
         with app.store.conn() as c:
             c.executescript(DDL)
-            have = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
-            for col, decl in (("priority", "TEXT DEFAULT 'normal'"), ("moved_from", "TEXT"), ("moved_by", "TEXT")):
-                if col not in have:
-                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} {decl}")
+            migrate(c)
 
     # ------------------------------------------------------------ helpers
 
