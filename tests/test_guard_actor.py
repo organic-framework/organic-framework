@@ -64,5 +64,41 @@ class ActorTest(unittest.TestCase):
             self.assertIsNone(deny(cmd), cmd)
 
 
+class ActorLineTest(unittest.TestCase):
+    """G31 over the whole line (of_secrets-review's PR 387 comment 7017458194, point 1, and of_review's comment
+    7017518350): an act of `of` anywhere on a line with any way to clear or replace its caller's variables."""
+
+    def test_the_reviews_forms(self):
+        V, P, A = "CLAUDE_CODE_SESSION_ID", "OF_POSITION", "of asks answered AS-1"
+        for cmd in (f"unset {V} {P}; ({A})", f"> /dev/null env -u {V} -u {P} {A}", f"env -P /usr/bin -u {V} -u {P} {A}",
+                    f"sh -xc 'unset {V} {P}; {A}'", f"env -i sh -c \"sh -c '{A}'\"",
+                    f"env -u {V} -u {P} of access --org demo grant x", f"unset {V} {P}; {V}=\"${V}\" {A}",
+                    f"export -n {V} {P}; {A}", f"declare +x {V}; {A}", f"typeset +x {V}; {A}", f"exec -c {A}",
+                    f"declare -x {V}=; {A}", f"typeset -x {V}=; {A}", f"{V}=$EMPTY {A}", f"X={V}; unset $X; {A}",
+                    f"ssh localhost {A}", f"echo '{A}' | at now", f"osascript -e 'do shell script \"{A}\"'",
+                    "python3 -c \"import subprocess; subprocess.run(['of','asks','answered','AS-1'], env={'PATH':'/b'})\"",
+                    "launchctl submit -l x -- /Users/alex/organic-framework/bin/of asks answered AS-1",
+                    f"'un'set {P}; {A}", f"OF ASKS answered AS-1; unset {P}",
+                    # a pseudo-terminal around the act (of_server on hand-over 726902df)
+                    f"script -q /dev/null {A}", f"unbuffer {A}", f"expect -c 'spawn {A}; interact'",
+                    f"socat - EXEC:'{A}',pty", f"tmux new-session -d '{A}'",
+                    "python3 -c \"import pty; pty.spawn(['of','asks','answered','AS-1'])\""):
+            self.assertTrue(deny(cmd), cmd)
+
+    def test_plain_acts_and_help_still_run(self):
+        for cmd in ("of asks answered AS-1", "of asks withdraw AS-2 stale", "python3 bin/of asks answered AS-1",
+                    "false && unset OF_POSITION; of asks withdraw --help", "of asks --all",
+                    "of status working --answered AS-1", "of asks answered AS-1 && of status working",
+                    # the 21-day replay's false denies: a reason that says `at`, a document an edit writes, notes
+                    'of asks withdraw AS-3 "superseded: answered at 12:00 by ssh"',
+                    "python3 - <<'EOF'\np='AGENTS.md'; s=open(p).read()\nb='run `of asks answered <id>`; ssh host; "
+                    "unset OF_POSITION'\nopen(p,'w').write(s+b)\nEOF",
+                    "cat > notes.md <<'EOF'\nenv -u OF_POSITION of asks answered AS-1 passed\nEOF",
+                    "printf '%s\\n' 'unset OF_POSITION; of asks answered AS-1' > note.txt",
+                    'export SSH_AUTH_SOCK= ; ID=$(echo AS-1); of asks withdraw "${ID}" done'):
+            self.assertIsNone(deny(cmd), cmd)
+        self.assertTrue(deny("echo 'of asks answered AS-1' | at now"))   # text a runner reads still counts
+
+
 if __name__ == "__main__":
     unittest.main()
