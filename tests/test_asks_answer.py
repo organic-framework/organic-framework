@@ -332,25 +332,22 @@ class PopupUxTest(unittest.TestCase):
             of_asks_tui.load = orig
         return sent
 
-    def test_d_shows_a_draft_and_sends_it_only_on_a_second_d(self):
-        """A draft is a file: d shows its words, to whom and why it waits, and only d again or y sends it (of_review's
-        trust notes on PR 398)."""
+    def test_d_sends_no_draft_here_and_says_where_they_are_sent(self):
+        """of_review on PR 402: drafts are sent only from the questions screen, whole in their card's field."""
         import of_asks_tui
         import time as _t
         draft = {"ask_id": "A1", "ask_ids": ["A1"], "who": ["of_a"], "text": "yes, tonight", "saved_at": _t.time(),
-                 "why": "store busy", "item": {"ids": ["A1"], "who": ["of_a"], "text": "q1?", "version": 1}}
-        for keys, want in (([ord("d"), ord("x"), 0.3, ord("q")], []),
-                           ([ord("d"), ord("d"), 0.3, ord("q")], ["yes, tonight"])):
-            got, self.lines = [], []
-            orig = of_asks_tui.load
-            of_asks_tui.load = lambda positions, conn: self.data()
-            try:
-                of_asks_tui.run(self.scr(keys), [], None, lambda what, x: (True, "ok"), None,
-                                lambda it, text: (got.append(text), (True, "ok"))[1], drafts=lambda: [draft])
-            finally:
-                of_asks_tui.load = orig
-            self.assertEqual(got, want)
-            self.assertTrue(any("«yes, tonight»" in t and "store busy" in t for f in self.lines for t in f))
+                 "item": {"ids": ["A1"], "who": ["of_a"], "text": "q1?", "version": 1}}
+        got, self.lines = [], []
+        orig = of_asks_tui.load
+        of_asks_tui.load = lambda positions, conn: self.data()
+        try:
+            of_asks_tui.run(self.scr([ord("d"), ord("d"), 0.3, ord("q")]), [], None, lambda what, x: (True, "ok"), None,
+                            lambda it, text: (got.append(text), (True, "ok"))[1], drafts=lambda: [draft])
+        finally:
+            of_asks_tui.load = orig
+        self.assertEqual(got, [])
+        self.assertTrue(any("D in the questions screen" in t for f in self.lines for t in f))
 
     def test_answer_leaves_at_once_and_u_takes_it_back(self):
         sent = self.run_popup([ord("a"), ord("u"), 0.3, ord("q")])
@@ -1222,7 +1219,12 @@ class LeaveTest(RedeliverTest):
             self.assertFalse(of_asks_tui.threaded_answer(self.positions())(item, "yes")[0])
             self.assertFalse(of_asks_answer.record_answer(self.conn, item, "yes")[0])
             self.assertFalse(of_asks_answer.answer(self.conn, item, "yes", self.positions(), lambda n: None)[0])
-        self.assertEqual((self.events("of.agent_question_answered"), of_asks_answer.unsent_drafts()), ([], []))
+            self.assertIn("only the owner", of_asks_answer.not_a_question(item))
+            import of_asks_inbox
+            self.assertIsNone(of_asks_inbox.record_as_owner("ask_snoozed", {"ask_id": item["ids"][0], "by": "owner"}))
+            self.assertFalse(of_asks_answer.answer_blocked({"ids": item["ids"], "blocked": {}}, "1")[0])
+        self.assertEqual((self.events("of.agent_question_answered"), self.events("of.question_labelled"),
+                          self.events("of.ask_snoozed"), of_asks_answer.unsent_drafts()), ([], [], [], []))
 
     def test_a_delivered_earlier_answer_never_hides_a_later_one(self):
         """Codex's review: `seen` took the earlier answer before its delivery check, so the same words given again

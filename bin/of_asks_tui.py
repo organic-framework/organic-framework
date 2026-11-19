@@ -11,8 +11,8 @@ within milliseconds, and only then the reconcile with live sessions and the herd
 background. Refresh by signal: views.seq is polled every 250 ms; a full reload every 5 s is the safety net.
 
 List: ↑/↓ or j/k select (kept by ask id across refreshes), Enter open the question card, g go to
-the asking agent, a mark answered, w withdraw, r refresh, d send unsent drafts, q quit. Card: the full
-question and the agent's full last message from the transcript, wrapped and scrolled (↑/↓, PgUp/PgDn,
+the asking agent, a mark answered, w withdraw, r refresh, q quit (unsent drafts: D in the questions screen).
+Card: the full question and the agent's full last message from the transcript, wrapped and scrolled (↑/↓, PgUp/PgDn,
 Home/End), its options, who asks and how long it waits, links; 1..9 pick an option (Enter sends), r a
 free answer, b a side chat through a read-only fork of the session (bin/of_side_chat.py), g go, Esc back.
 
@@ -522,7 +522,6 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
     pending, hidden, errors = [], set(), {}  # answers waiting for their undo window; items they hide; failures
     expanded = {"panes": True}
     confirm_task = None  # the task whose "Done?" waits for y
-    confirm_draft = None  # the draft d showed, waiting for d again or y
     copied_at = 0.0      # when "copied" was shown (it goes after 2 s)
 
     def key_of(x):
@@ -734,7 +733,10 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 idx += 1
             pend = drafts() if drafts else []
             if pend:
-                _put(stdscr, 1, 0, f"{len(pend)} unsent answer(s) kept as drafts: d sends them", curses.A_BOLD)
+                # sent only from the questions screen, whole in its card's field (of_review on PR 402)
+                line = tr("{n} unsent answer(s) kept as drafts: D in the questions screen opens each in its "
+                          "card's field", n=len(pend))
+                _put(stdscr, 1, 0, line, curses.A_BOLD)
             line = undo_line() or msg
             if line:  # _put never writes the last row (curses), so the status line is the one above it
                 _put(stdscr, h - 2, 0, line, curses.color_pair(1) if line.startswith(tr("not sent: {why}", why=""))
@@ -751,19 +753,6 @@ def run(stdscr, positions, conn, act, card_of=None, answer=None, btw=None, tail_
                 confirm_task = None
                 continue
             if ch == ord("u") and undo():
-                continue
-            if confirm_draft is not None and ch != -1:  # the draft he was shown: d again or y sends it
-                import of_ask_text
-                if ch == ord("d") or ch in tuple(ord(k) for k in of_ask_text.YES_KEYS):
-                    queue(dict(confirm_draft["item"], first=None), "answer", confirm_draft["text"])
-                    msg = ""
-                else:
-                    msg = tr("kept as a draft")
-                confirm_draft = None
-                continue
-            if ch == ord("d") and pend:  # never sent unseen: a draft is a file, and he reads its text first
-                confirm_draft = pend[0]
-                msg = draft_line(confirm_draft, "d")
                 continue
             if ch == ord("r"):
                 reload()
@@ -968,20 +957,6 @@ def spawn_deliver(of_path, events):
 def outbox_dir():
     import of_events
     return os.path.join(of_events.STATE_DIR, "asks-outbox")
-
-
-def draft_line(d, key):
-    """What D shows before it sends a draft: its words, to whom, when it was kept and why it was not sent. A draft is a
-    file, and only text he reads goes as his (of_review's trust notes on PR 398, through of_server, msg
-    01a1f55d-b4d2); before, D sent the first draft at once."""
-    try:
-        when = time.strftime("%d.%m %H:%M", time.localtime(float(d.get("saved_at"))))
-    except (TypeError, ValueError):
-        when = "?"
-    who = ", ".join(d.get("who") or (d.get("item") or {}).get("who") or []) or "?"
-    why = d.get("why") or tr("its send never finished")
-    return tr("Draft of {when} to {who}: «{text}» ({why}). {key} again (or y) sends it; any other key keeps it",
-              when=when, who=who, text=cut(str(d.get("text") or ""), 60), why=cut(str(why), 50), key=key)
 
 
 def new_act():

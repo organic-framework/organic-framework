@@ -959,7 +959,7 @@ class Inbox:
         self.reply, self.reply_drafts, self.cursor = None, {}, None  # the answer being written under its card
         self.store = reply_store  # where Esc's drafts outlive the window (ReplyDrafts)
         self.confirm_reply = None  # the field a written answer's confirm came from: any key but yes goes back to it
-        self.confirm_draft = None  # the draft D showed: D again or y sends it as it was kept
+        self.draft_wanted = None  # the draft D asked for while its card loaded (take_draft)
         self.writer = writer  # where the drafts' disk writes go (Writer); None: at once
         self.behind = None  # the listener's last heartbeat when it is not fresh (queue's note)
         self.pending_drafts = None  # unsent answers, as the last load found them (no disk read per frame)
@@ -1218,8 +1218,6 @@ class Inbox:
                      (curses.A_REVERSE if sel else 0) | a)
 
     def overlay_line(self):
-        if self.mode == "confirm" and self.confirm_draft:
-            return T.draft_line(self.confirm_draft, "D")
         if self.mode == "confirm" and self.confirm:
             item, n, text, _ = self.confirm
             if self.confirm_reply:
@@ -1329,6 +1327,36 @@ class Inbox:
         self.mode, self.msg = "reply", ""
         self.reply = {"key": k, "item": item, "ed": Editor(self.reply_drafts.get(k) or ""), "top": 0}
         curses.curs_set(1)
+
+    def take_draft(self, d):
+        """D: a draft of an answer whose send did not finish opens whole in its card's answer field, under the card
+        that names its asker from the store; Ctrl+D sends it as any written answer (the card's version, a second press
+        for money), Esc keeps it there. A draft is a file: before, D sent its whole text unread (of_review on PR 398),
+        and then after a one-line preview that named the asker from the file (of_review on PR 402)."""
+        import of_asks_answer
+        self.draft_wanted = None
+        ids = [i for i in (d.get("ask_ids") or [d.get("ask_id")]) if i]
+        hit = next(((s, x) for s in self.tabs(self.groups()) for x in self.groups().get(s) or []
+                    if set(x.get("ids") or []) & set(ids)), None)
+        if not hit:
+            self.msg = tr("its card is not in the queue: the draft stays")
+            return
+        s, x = hit
+        k = key_of(x)
+        self.cur, self.sel[s] = s, k
+        c = self.card(x)  # loads it if it is not yet
+        if c.get("loading"):  # the field opens once the card is in (run)
+            self.draft_wanted, self.msg = d, tr("loading…")
+            return
+        if not c.get("answerable"):
+            self.msg = tr("Answered in its pane: g goes there.")
+            return
+        mine = self.reply_drafts.get(k) or ""  # his own unfinished one stays, above it
+        text = d.get("text") or ""
+        if not self.keep_draft(k, (mine + "\n\n" + text) if mine.strip() and mine.strip() != text.strip() else text) \
+                is False:
+            of_asks_answer.drop_draft(d.get("item") or {"ids": ids})
+        self.start_reply(x)
 
     def take_amended(self, drafts=()):
         """Answers refused because the asker amended the card after he saw it (of ask --amend): the
@@ -1579,14 +1607,7 @@ class Inbox:
         if self.mode == "confirm":
             item_, n, text, what = self.confirm
             back, self.mode, self.confirm, self.confirm_reply = self.confirm_reply, "main", None, None
-            draft, self.confirm_draft = self.confirm_draft, None
             c = char_of(ch)
-            if draft:  # as it was kept: its version too, so an amended card still refuses it
-                if c == str(n) or c in YES:
-                    self.out.queue(item_, "answer", text)
-                else:
-                    self.msg = tr("kept as a draft")
-                return True
             if c == str(n) or c in YES:
                 if back:
                     self.keep_draft(back["key"], None)
@@ -1735,10 +1756,8 @@ class Inbox:
             self.msg = tr("Studio: opening…")
         elif ch == ord("D") and self.drafts:
             pend = self.pending_drafts if self.pending_drafts is not None else self.drafts()  # never one on its way
-            if pend:  # never sent unseen: its words, to whom and why it waits, then D again or y (draft_line)
-                d = pend[0]
-                self.mode, self.confirm, self.confirm_draft = "confirm", (dict(d["item"], first=None), "D", d["text"],
-                                                                           "answer"), d
+            if pend:
+                self.take_draft(pend[0])
         return True
 
     def autosave(self):
@@ -1789,6 +1808,8 @@ class Inbox:
             for line in self.out.settle(present):
                 self.msg = line
             self.take_amended()
+            if self.draft_wanted and self.mode == "main":  # D on a card still loading: its field opens once it is in
+                self.take_draft(self.draft_wanted)
             if self.studio_note.get("m"):
                 self.msg = self.studio_note.pop("m")
             self.autosave()
@@ -1860,6 +1881,20 @@ def help_rows():
             tr("Any key closes this help.")]
 
 
+def record_as_owner(kind, payload):
+    """A card put off, woken or handed over (of.ask_snoozed, of.ask_handed), recorded as the owner's only from his own
+    terminal (of_asks_answer.not_the_owner; of_review on PR 402), and leaving for its organization's server at once.
+    Returns the event id, or None."""
+    import of_asks_answer
+    import of_events
+    if of_asks_answer.not_the_owner():
+        return None
+    eid = of_events.emit(kind, payload)
+    if eid:
+        of_asks_answer.ship_soon()
+    return eid
+
+
 def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
     """The window: the same answer path as the classic popup (of_asks_tui.main), its cache for the first frame."""
     import of_asks_answer
@@ -1914,13 +1949,7 @@ def main(positions, conn, of_path, pane_of=None, after=None, refresh=None):
             threading.Thread(target=reconcile, daemon=True).start()
         return data, over, extra
 
-    def record(kind, payload):  # a card put off or handed over: it leaves for its organization's server now
-        import of_events
-        eid = of_events.emit(kind, payload)
-        if eid:
-            of_asks_answer.ship_soon()
-        return eid
-
+    record = record_as_owner
     def handoff(pendings):  # leave checks the owner itself (of_asks_answer.not_the_owner)
         T.leave(pendings, positions, of_path)
 

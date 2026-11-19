@@ -272,7 +272,6 @@
  "{who} changed this card after you saw it: look at the new version": "{who}: карточка изменена уже после показа, посмотри новую версию",
  "Send the raw tier for {org}, if your invite offers it? [y/N] ": "Отправлять сырой уровень (raw) для {org}, если приглашение его предлагает? [y/N] ",
  "The invite does not offer the raw tier for {orgs}: enrolling with typed only. Raw needs a new invite that offers it (of invite --raw-allowed), and this machine enrolled again with it after the server's keeper revokes it.": "Приглашение не предлагает сырой уровень (raw) для {orgs}: регистрирую только с typed. Для raw нужны новое приглашение, которое его предлагает (of invite --raw-allowed), и повторная регистрация этой машины с ним после того, как хранитель сервера её отзовёт.",
- "Draft of {when} to {who}: «{text}» ({why}). {key} again (or y) sends it; any other key keeps it": "Черновик от {when} для {who}: «{text}» ({why}). {key} ещё раз (или y/н) отправит его; любая другая клавиша оставит его черновиком",
- "its send never finished": "отправка не завершилась",
- "kept as a draft": "оставлено черновиком"
+ "its card is not in the queue: the draft stays": "её карточки нет в очереди: черновик остаётся",
+ "{n} unsent answer(s) kept as drafts: D in the questions screen opens each in its card's field": "неотправленных ответов в черновиках: {n}; D в экране вопросов открывает каждый в поле его карточки"
 }
