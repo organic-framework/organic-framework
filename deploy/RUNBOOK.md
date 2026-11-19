@@ -19,6 +19,8 @@ For B, `deploy/clickhouse/clickhouse.yaml` is the reference: one pod, `Recreate`
 
 **Its version.** The reference follows ClickHouse's 26.8 LTS line (`clickhouse-server:26.8`; 2026-11-19, from 25.8, whose last release was on 2026-08-26). An instance made from an older reference is upgraded by the keeper who runs it. First back up its volume: it holds the vault. Then read ClickHouse's backward-incompatible changes between the two versions. Last, change the image and let the `Recreate` strategy restart the pod. OF's own store on the founder's Mac runs 26.10.
 
+The Deployment and Compose pull at every start (`imagePullPolicy: Always`, `pull_policy: always`), so a restart takes the newest 26.8 patch by itself, untested here. A start then needs the registry: while it is unreachable, the pod waits in `ImagePullBackOff` and `docker compose up` stops. Where that risk outweighs late patches, pin the image by digest and move it by hand.
+
 Either way, the schema comes from `deploy/clickhouse/schema.py`:
 
 ```sh
