@@ -233,11 +233,17 @@ def _backoff(i, retry_after=None):
     return RETRY_BASE_S * 2 ** i * (0.75 + random.random() / 2)
 
 
+_KEY_CHECKED = set()  # machine keys whose public half this process has checked against the private half
+
+
 def ensure_key(path=KEY_PATH):
     """The machine's key, made once. It is made in a temporary folder beside its place and linked in, so two callers at
     once (the listener and the relay started together under systemd on the agent host: of_platform, 2026-11-19) never
     run ssh-keygen on an existing path, which would ask to overwrite it and fail. The caller that links the private
-    half links its public half; one that finds a private half there keeps it and waits for its pair, or derives it."""
+    half links its public half. Any other caller lets the private half decide: once per process it checks the public
+    half against `ssh-keygen -y` and, when they differ (a stale half, a crash between the links, another caller's
+    half), replaces it with the derived one (of_review on organic-framework PRs 409 and 412)."""
+    won = False
     if not os.path.exists(path):
         import shutil
         d = os.path.dirname(path)
@@ -251,7 +257,7 @@ def ensure_key(path=KEY_PATH):
                 os.link(t, path)  # the first caller's key wins; a second finds it there
                 won = True
             except FileExistsError:
-                won = False
+                pass
             if won:
                 try:
                     os.link(t + ".pub", path + ".pub")
@@ -260,24 +266,26 @@ def ensure_key(path=KEY_PATH):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     pub = path + ".pub"
-
-    def fresh():  # the public half is its pair once it is no older than the private half (a winner's link or replace)
-        try:
-            return os.stat(pub).st_mtime >= os.stat(path).st_mtime
-        except FileNotFoundError:
-            return False
-    for _ in range(50):  # the winner links or replaces its public half right after its private one
-        if fresh():
-            break
-        time.sleep(0.1)
-    else:  # no pair, or one older than the private half (a crash between the links, a stale one): derive it
+    if not won and path not in _KEY_CHECKED:
         r = subprocess.run(["ssh-keygen", "-y", "-f", path], capture_output=True, text=True, check=True,
                            env=no_agent_env())
-        fd, tmp_pub = tempfile.mkstemp(prefix=".machine-pub-", dir=os.path.dirname(path))
-        with os.fdopen(fd, "w") as fh:
-            fh.write(r.stdout.strip() + "\n")
-        os.chmod(tmp_pub, 0o644)
-        os.replace(tmp_pub, pub)  # the derived pair is the private half's own: it replaces whatever is there
+        want = r.stdout.split()[:2]
+        try:
+            with open(pub) as fh:
+                have = fh.read().split()[:2]
+        except FileNotFoundError:
+            have = None
+        if have != want:
+            fd, tmp_pub = tempfile.mkstemp(prefix=".machine-pub-", dir=os.path.dirname(path))
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(r.stdout.strip() + "\n")
+                os.chmod(tmp_pub, 0o644)
+                os.replace(tmp_pub, pub)
+            finally:
+                if os.path.exists(tmp_pub):
+                    os.unlink(tmp_pub)
+        _KEY_CHECKED.add(path)
     with open(pub) as fh:
         return fh.read().strip()
 

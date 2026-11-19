@@ -48,12 +48,8 @@ class EnsureKeyTest(unittest.TestCase):
     def test_a_private_half_alone_gets_its_public_half_derived(self):
         pub = of_client.ensure_key(self.path)
         os.unlink(self.path + ".pub")
-        saved = of_client.time.sleep
-        of_client.time.sleep = lambda s: None
-        try:
-            self.assertEqual(of_client.ensure_key(self.path).split()[:2], pub.split()[:2])
-        finally:
-            of_client.time.sleep = saved
+        of_client._KEY_CHECKED.discard(self.path)
+        self.assertEqual(of_client.ensure_key(self.path).split()[:2], pub.split()[:2])
 
     def test_a_stale_public_half_is_replaced_by_the_private_halfs_own(self):
         """of_review on organic-framework PR 409: a public half left from an earlier key, older than the private half,
@@ -66,25 +62,40 @@ class EnsureKeyTest(unittest.TestCase):
             out.write(fh.read())
         st = os.stat(self.path)
         os.utime(self.path + ".pub", (st.st_atime, st.st_mtime - 60))   # older than the private half
-        saved = of_client.time.sleep
-        of_client.time.sleep = lambda s: None
-        try:
-            got = of_client.ensure_key(self.path)
-        finally:
-            of_client.time.sleep = saved
+        of_client._KEY_CHECKED.discard(self.path)
+        got = of_client.ensure_key(self.path)
         self.assertEqual(got.split()[:2], pub.split()[:2])
         self.assertEqual(got.split()[:2], derived(self.path))
         self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["machine_key", "machine_key.pub"])
 
-    def test_an_existing_pair_runs_no_keygen(self):
+    def test_an_existing_pair_is_checked_once_and_never_made_again(self):
         pub = of_client.ensure_key(self.path)
-        saved = of_client.subprocess.run
-        of_client.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(AssertionError("ssh-keygen ran"))
+        of_client._KEY_CHECKED.discard(self.path)          # a new process
+        calls, real = [], of_client.subprocess.run
+
+        def spy(argv, *a, **k):
+            calls.append(argv[1] if len(argv) > 1 else "")
+            return real(argv, *a, **k)
+        of_client.subprocess.run = spy
         try:
             self.assertEqual(of_client.ensure_key(self.path), pub)
+            self.assertEqual(of_client.ensure_key(self.path), pub)
         finally:
-            of_client.subprocess.run = saved
+            of_client.subprocess.run = real
+        self.assertEqual(calls, ["-y"])                    # one check against the private half, no new key
 
+    def test_a_mismatched_half_written_after_the_private_one_is_replaced(self):
+        """of_review on organic-framework PR 412: 'no older' stood for 'the pair', so a mismatched half written later
+        was kept."""
+        pub = of_client.ensure_key(self.path)
+        other = os.path.join(self.d, "other2")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", other], check=True,
+                       env=of_client.no_agent_env())
+        with open(other + ".pub") as fh, open(self.path + ".pub", "w") as out:
+            out.write(fh.read())                              # newer than the private half, and not its pair
+        of_client._KEY_CHECKED.discard(self.path)
+        self.assertEqual(of_client.ensure_key(self.path).split()[:2], pub.split()[:2])
+        self.assertEqual(sorted(os.listdir(os.path.dirname(self.path))), ["machine_key", "machine_key.pub"])
 
 if __name__ == "__main__":
     unittest.main()
