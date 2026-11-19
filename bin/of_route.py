@@ -411,6 +411,4 @@ def fanout(table, rows, router, cfg, mask=None, copies=True):
             shaped = shape_hook(out, own) if own else None
         if shaped:
             groups.setdefault(router.database(own), []).append(shaped)
-    if table in ("hook_record", "runtime_record"):
-        groups = {db: [{k: v for k, v in x.items() if k != "org_id"} for x in rs] for db, rs in groups.items()}
-    return groups
+    return groups  # org_id kept on every table: the vault holds several organizations (deploy/clickhouse/schema.py ADDED_ORG)
