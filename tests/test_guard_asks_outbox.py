@@ -39,6 +39,22 @@ class AsksOutboxTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(bash(cmd), of_guard.ASKS_OUTBOX_DENY)
 
+    def test_a_glob_into_it_and_the_folder_under_of_state(self):
+        """of_review on organic-framework PR 395: `rm <outbox>/2*.json` removed queued answers, a `[2]*` pattern wrote
+        there, and with OF_STATE set the sender's own folder ($OF_STATE/asks-outbox) was open."""
+        for cmd in (f"rm {BOX}/2*.json", f"echo x > {BOX}/[2]*.json", "rm -r ~/.local/state/of/asks-out*"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(bash(cmd), of_guard.ASKS_OUTBOX_DENY)
+        self.assertIsNone(bash("rm ~/.local/state/of/notes-2*.txt"))
+        import tempfile
+        from unittest import mock
+        state = tempfile.mkdtemp(prefix="of-state-")
+        with mock.patch.dict(os.environ, {"OF_STATE": state}):
+            hit = of_guard.critical_deny("Write", {"file_path": f"{state}/asks-outbox/a.json"})
+            self.assertEqual(hit and hit[0], of_guard.ASKS_OUTBOX_DENY)
+            self.assertEqual(bash(f"echo x > {state}/asks-outbox/a.json"), of_guard.ASKS_OUTBOX_DENY)
+            self.assertIsNone(bash(f"echo x > {state}/notes.txt"))
+
     def test_reading_it_and_writing_beside_it_stay_open(self):
         for cmd in (f"ls {BOX}", f"cat {BOX}/a.json", "echo x > ~/.local/state/of/notes.txt",
                     "cp a.json /private/tmp/x/asks-outbox-copy.json"):

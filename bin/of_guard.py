@@ -3408,24 +3408,46 @@ ASKS_OUTBOX_DENY = ("the asks outbox, which only the owner's popup writes: its s
 ASKS_OUTBOX_MODE = "deny"
 
 
+def _outboxes():
+    """The asks outbox's real paths, without case: the default, and the one under OF_STATE when the hook's environment
+    sets it (the sender reads of_events.STATE_DIR; of_review on organic-framework PR 395)."""
+    out = {os.path.realpath(_expanduser(ASKS_OUTBOX_DIR)).casefold()}
+    if os.environ.get("OF_STATE"):
+        out.add(os.path.realpath(os.path.join(_expanduser(os.environ["OF_STATE"]), "asks-outbox")).casefold())
+    return out
+
+
 def _in_outbox(path, cwd=None, removal=False):
-    """Does PATH lie in the asks outbox (G35)? By real path, compared without case (the Mac's volume ignores it), and
-    by pattern for a glob; with REMOVAL (or a recursive copy's destination), a folder above it counts too."""
+    """Does PATH lie in the asks outbox (G35)? By real path, compared without case (the Mac's volume ignores it). A glob
+    counts when its folder is the outbox or lies in it, or when it names the outbox (with REMOVAL, or a recursive copy's
+    destination, a folder above it too): `rm <outbox>/2*.json` removes queued answers (of_review on PR 395)."""
+    import fnmatch
     p = str(path or "").strip("'\"")
     if not p:
         return False
     if not p.startswith(("/", "~", "$")) and cwd:
         p = os.path.join(cwd, p)
     p = _expanduser(p)
-    box = os.path.realpath(_expanduser(os.environ.get("OF_ASKS_OUTBOX") or ASKS_OUTBOX_DIR)).casefold()
+    boxes = _outboxes()
     if any(ch in p for ch in "*?["):
-        import fnmatch
-        rp = _real_pattern(p).casefold()
-        return fnmatch.fnmatchcase(box + "/x.json", rp) or fnmatch.fnmatchcase(box, rp)
+        rp = _real_pattern(p).casefold().rstrip("/")
+        d = os.path.dirname(rp)
+        for box in boxes:
+            chain = [box]
+            while removal and os.path.dirname(chain[-1]) != chain[-1]:
+                chain.append(os.path.dirname(chain[-1]))
+            if any(fnmatch.fnmatchcase(c, rp) for c in chain):
+                return True        # the pattern names the outbox, or a folder above it that is removed
+            if fnmatch.fnmatchcase(box, d) or d == box or d.startswith(box + "/"):
+                return True        # a file in it
+        return False
     real = os.path.realpath(p).casefold()
-    if real == box or real.startswith(box + "/"):
-        return True
-    return bool(removal) and box.startswith(real.rstrip("/") + "/")
+    for box in boxes:
+        if real == box or real.startswith(box + "/"):
+            return True
+        if removal and box.startswith(real.rstrip("/") + "/"):
+            return True
+    return False
 
 
 def _asks_outbox_write(head, args, cwd, files, removal):
