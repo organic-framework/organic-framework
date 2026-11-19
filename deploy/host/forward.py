@@ -79,10 +79,13 @@ def sshd_block(user=HOST_USER, port=PORT):
     else: no TCP forwarding (-L, -D, -W, -R to a port), no session; the socket at mode 0660 in its setgid folder, a
     stale one replaced. sshd limits no socket path, so the user's writable folders are the limit. A closing
     `Match all` ends it: a file under sshd_config.d is included near the top of sshd_config, and without it the main
-    file's lines after the Include would apply to this user alone."""
+    file's lines after the Include would apply to this user alone. OpenSSH 10.6 refuses a remote socket forward while
+    AllowTcpForwarding is no (of_agent-server's test sshd, msg 01a1f58d-4954), so it is `remote`, with `PermitListen
+    none` keeping every remote TCP listen out and `PermitOpen none` every local one."""
     return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8)\n"
             f"Match User {user}\n"
-            f"    AllowTcpForwarding no\n"
+            f"    AllowTcpForwarding remote\n"
+            f"    PermitListen none\n"
             f"    AllowStreamLocalForwarding remote\n"
             f"    StreamLocalBindUnlink yes\n"
             f"    StreamLocalBindMask 0117\n"

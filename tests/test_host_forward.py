@@ -59,11 +59,13 @@ class ForwardTest(unittest.TestCase):
         self.assertEqual(F.authorized_line("ssh-ed25519 AAAAexample of-forward\n"),
                          'restrict,port-forwarding,command="/usr/bin/false" ssh-ed25519 AAAAexample of-forward')
         block = F.sshd_block("of-forward")
-        for line in ("Match User of-forward", "AllowTcpForwarding no", "AllowStreamLocalForwarding remote",
+        for line in ("Match User of-forward", "AllowTcpForwarding remote", "PermitListen none",
+                     "AllowStreamLocalForwarding remote",
                      "StreamLocalBindUnlink yes", "StreamLocalBindMask 0117", "PermitOpen none", "GatewayPorts no",
                      "PermitTTY no", "MaxSessions 0", "ForceCommand /usr/bin/false"):
             self.assertIn(line, block)
         self.assertTrue(block.rstrip().endswith("Match all"))  # the main config after the Include stays global
+        self.assertNotIn("AllowTcpForwarding no", block)  # OpenSSH 10.6 then refuses the socket forward too
 
     def test_dry_run_writes_nothing_and_install_loads_the_unit(self):
         run, shown = Run(), []
