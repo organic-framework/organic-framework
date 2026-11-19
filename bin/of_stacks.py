@@ -133,7 +133,11 @@ def _release(rfd, wfd):
             signal.set_wakeup_fd(cur)  # someone else's: back in place
     except (ValueError, OSError):
         pass
-    for fd in (rfd, wfd):
+    _close(rfd, wfd)
+
+
+def _close(*fds):
+    for fd in fds:
         try:
             os.close(fd)
         except OSError:
@@ -142,29 +146,38 @@ def _release(rfd, wfd):
 
 def _install_thread(sig, file):
     """The dumper thread and its wakeup fd: "thread", or None when another wakeup fd is in place (kept). On an error
-    the pipe is closed and no longer the wakeup fd, and the error goes on to install()."""
+    the pipe is closed and no longer the wakeup fd, and the error goes on to install(). One try with what is known of
+    the wakeup fd (of_review on organic-framework PR 376): `registered` is False until set_wakeup_fd is called, so a
+    failure before it closes the pipe and never touches another owner's fd; None while the call runs (an interrupt
+    may come after it took effect: then _release checks, at the cost of cycling theirs); True once it returned."""
     rfd, wfd = os.pipe()  # not inherited by child processes (PEP 446)
+    registered = False
     try:
         os.set_blocking(wfd, False)  # set_wakeup_fd requires it
         signal.signal(sig, _handler(file, wfd))  # Python's C handler is the one that writes the wakeup byte
-        prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
-        if prev != -1:  # someone else's wakeup fd (an event loop's): keep theirs, dump from the main thread
+        registered = None
+        try:
+            prev = signal.set_wakeup_fd(wfd, warn_on_full_buffer=False)
+        except (ValueError, OSError):  # refused by set_wakeup_fd itself: the earlier one is still in place
+            registered = False
+            raise
+        registered = True
+        if prev not in (-1, wfd):  # someone else's (an event loop's): keep theirs, dump from the main thread. One
+            # equal to ours is a stale registration of a closed fd whose number our pipe reused: no earlier owner.
             signal.set_wakeup_fd(prev)  # refused when theirs was closed or made blocking: the except unregisters ours
-    except BaseException:
-        _release(rfd, wfd)
-        raise
-    if prev != -1:  # theirs is back and ours was never left registered: close the pipe, never touch theirs again
-        os.close(rfd)  # (_release would set -1 and put theirs back: a signal in between would miss it; of_review, PR 373)
-        os.close(wfd)
-        return None
-    try:
+            registered = False  # theirs is back: close the pipe, never touch theirs again (of_review, PR 373)
+            _close(rfd, wfd)
+            return None
         if hasattr(signal, "siginterrupt"):
             signal.siginterrupt(sig, False)  # SA_RESTART again: a native call in any thread goes on after the signal
         threading.Thread(target=_dumper, args=(rfd, sig, file), name="of-stacks", daemon=True).start()
+        return "thread"
     except BaseException:
-        _release(rfd, wfd)
+        if registered is False:
+            _close(rfd, wfd)
+        else:
+            _release(rfd, wfd)
         raise
-    return "thread"
 
 
 def install(sig=signal.SIGUSR1, file=None):
