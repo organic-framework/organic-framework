@@ -2657,7 +2657,14 @@ def cmd_org(args):
         value, shown_value = (True if args.value == "on" else None), args.value
     else:
         # the folder of the organization's repository, as the registry loader reads it (an entry the enrollment wrote
-        # with server: alone has none until it is set: of_agent-server on the agent host, msg 01a1f5f7-1dee)
+        # with server: alone has none until it is set: of_agent-server on the agent host, msg 01a1f5f7-1dee). The
+        # owner's alone, by the same positive test as his answers: the registry it names decides what the guard
+        # protects, so an agent could point an organization at a registry it wrote and lift its protected code
+        # (of_review on organic-framework PR 427, probed: G21 denied a write before, allowed it after)
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():
+            raise OfError("an organization's path is the owner's to set: the registry it names decides what the guard "
+                          "protects. The owner runs `of org set <org> path <folder>` in a plain terminal")
         folder = os.path.realpath(os.path.expanduser(args.value))
         if not os.path.isfile(os.path.join(folder, "registry", "positions.yaml")):
             raise OfError(f"{args.value}: no registry/positions.yaml there; give the organization's repository")

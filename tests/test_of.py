@@ -646,10 +646,19 @@ class OrgCommandTest(unittest.TestCase):
             self.assertNotEqual(run("set", "two", "hold", "maybe").returncode, 0)
             self.assertNotEqual(run("set", "two", "path", "on").returncode, 0)  # only hold: has a command
 
-    def test_path_is_set_for_an_entry_joined_through_a_server(self):
+    def test_path_is_the_owners_and_set_for_an_entry_joined_through_a_server(self):
         """of_agent-server on the agent host (msg 01a1f5f7-1dee): the enrollment wrote an entry with server: alone, and
-        the registry, carried there later, had no command to name it."""
+        the registry, carried there later, had no command to name it. The path is the owner's (of_review on PR 427: an
+        agent could point an organization at a registry it wrote and lift its protected code)."""
+        import argparse
+        import importlib.machinery
+        import importlib.util
         import yaml
+        from unittest import mock
+        loader = importlib.machinery.SourceFileLoader("of_cli_orgpath", os.path.join(HERE, "..", "bin", "of"))
+        spec = importlib.util.spec_from_loader("of_cli_orgpath", loader)
+        of = importlib.util.module_from_spec(spec)
+        loader.exec_module(of)
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "orgs.yaml")
             with open(p, "w") as fh:
@@ -657,16 +666,30 @@ class OrgCommandTest(unittest.TestCase):
             repo = os.path.join(d, "repo")
             os.makedirs(os.path.join(repo, "registry"))
             open(os.path.join(repo, "registry", "positions.yaml"), "w").write("positions: {}\n")
-            env = dict(os.environ, OF_CONFIG_DIR=d, OF_ORGS=p)
-            of = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "org"]
-            run = lambda *a: subprocess.run(of + list(a), capture_output=True, text=True, env=env)  # noqa: E731
-            r = run("set", "ofb", "path", repo)
-            self.assertEqual(r.returncode, 0, r.stderr)
+            clean = {k: v for k, v in os.environ.items()
+                     if k not in ("CLAUDE_CODE_SESSION_ID", "OF_POSITION", "CLAUDECODE")}
+
+            def set_path(folder, env, tty):
+                stdin = mock.Mock()
+                stdin.isatty.return_value = tty
+                with mock.patch.dict(os.environ, dict(clean, **env), clear=True), \
+                        mock.patch.object(of, "ORGS_FILE", p), mock.patch("sys.stdin", stdin):
+                    return of.cmd_org(argparse.Namespace(action="set", org="ofb", key="path", value=folder))
+            for env, tty in (({"CLAUDECODE": "1"}, True), ({"OF_POSITION": "x"}, True), ({}, False)):
+                with self.assertRaises(of.OfError):                              # an agent, or no terminal
+                    set_path(repo, env, tty)
+            self.assertNotIn("path", yaml.safe_load(open(p))["orgs"][0])
+            self.assertEqual(set_path(repo, {}, True), 0)                         # the owner, in his terminal
             entry = yaml.safe_load(open(p))["orgs"][0]
             self.assertEqual((entry["path"], entry["server"]), (os.path.realpath(repo), "https://127.0.0.1:18200"))
-            self.assertIn(f"path {os.path.realpath(repo)}", run("show", "ofb").stdout)
-            self.assertNotEqual(run("set", "ofb", "path", d).returncode, 0)        # no registry there: refused
+            with self.assertRaises(of.OfError):
+                set_path(d, {}, True)                                             # no registry there: refused
             self.assertEqual(yaml.safe_load(open(p))["orgs"][0]["path"], os.path.realpath(repo))
+            env = dict(os.environ, OF_CONFIG_DIR=d, OF_ORGS=p)
+            of_bin = [__import__("sys").executable, os.path.join(HERE, "..", "bin", "of"), "org"]
+            run = lambda *a: subprocess.run(of_bin + list(a), capture_output=True, text=True, env=env)  # noqa: E731
+            self.assertIn(f"path {os.path.realpath(repo)}", run("show", "ofb").stdout)
+            self.assertNotEqual(run("set", "ofb", "path", repo).returncode, 0)    # a subprocess with no terminal
             self.assertNotEqual(run("set", "ofb", "hold", "maybe").returncode, 0)
 
     def test_a_flow_style_entry_is_refused_unwritten(self):
