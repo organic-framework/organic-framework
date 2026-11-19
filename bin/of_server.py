@@ -1539,6 +1539,11 @@ def make_handler(app):
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/take"):
                     msg_id = u.path[len("/v1/messages/"):-len("/take")]
                     return self._relay(lambda: app.relay.take(m, msg_id, json.loads(raw or b"{}")))
+                if u.path == "/v1/messages/move":  # a structure keeper or a unit owner (docs/server.md, "Relay and presence")
+                    return self._relay(lambda: app.relay.move(m, json.loads(raw or b"{}")))
+                if u.path.startswith("/v1/messages/") and u.path.endswith("/drop"):
+                    msg_id = u.path[len("/v1/messages/"):-len("/drop")]
+                    return self._relay(lambda: app.relay.drop_by(m, msg_id, json.loads(raw or b"{}")))
                 if u.path == "/v1/redactions":
                     try:
                         body = json.loads(raw or b"{}")

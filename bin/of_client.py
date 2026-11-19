@@ -468,6 +468,20 @@ class Client:
         from urllib.parse import quote
         return self._authed("POST", f"/v1/messages/{quote(msg_id)}/take", body={"to": to, "session": session})[1]
 
+    def move_messages(self, src, dst, by, session, msg_ids=None, dry_run=False):
+        """Move SRC's queued messages (all, or MSG_IDS) to DST, as BY (its organization's structure keeper or SRC's
+        unit owner, held by SESSION): {moved, leased, not_queued}; DRY_RUN lists them, without their text."""
+        body = {"from": src, "to": dst, "by": by, "session": session, "dry_run": bool(dry_run)}
+        if msg_ids is not None:
+            body["msg_ids"] = list(msg_ids)
+        return self._authed("POST", "/v1/messages/move", body=body)[1]
+
+    def drop_message(self, msg_id, by, session, reason):
+        """Expire one queued message, as BY (the receiver's structure keeper or unit owner, held by SESSION)."""
+        from urllib.parse import quote
+        return self._authed("POST", f"/v1/messages/{quote(msg_id)}/drop",
+                            body={"by": by, "session": session, "reason": reason})[1]
+
     def redact(self, body):
         """POST /v1/redactions (docs/server.md, Redaction): replace shipped rows with masked copies."""
         return self._authed("POST", "/v1/redactions", body=body)[1]

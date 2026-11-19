@@ -1,6 +1,9 @@
 """`of send` to a position parked on purpose and still held (docs/guard.md R11; a user organization's structure keeper, msg
 01a1f0a9-ad31: messages piled up unread on parked positions that kept their sessions): the message goes, and the
-sender is told who covers the work now, with the command that sends there instead."""
+sender is told who covers the work now, with the command that sends there instead. When its successor is active the
+message is refused, except from that successor, its unit's owner and its structure keeper, or with --to-parked (the
+same keeper, msg 01a1f3a8-b16b: the note on stderr moved no sender). `of inbox move|drop` are for the structure keeper
+and the unit owner only."""
 
 import importlib.machinery
 import importlib.util
@@ -39,6 +42,50 @@ class ParkedNoteTest(unittest.TestCase):
         self.assertIsNone(of_cli._parked_note("acme:acme_ops", [pos("acme_org", role="org"), pos("acme_ops")]))
         self.assertIsNone(of_cli._parked_note("acme:nobody", [pos("acme_org", role="org")]))
 
+
+class ParkedRefusalTest(unittest.TestCase):
+    BASE = [pos("acme_org", role="org"), pos("acme_ops"), pos("acme_lead"), pos("acme_dev")]
+    WATCH = pos("acme_watch", status="parked", successor="acme_ops", _unit="ops", _unit_owner="acme_lead")
+
+    def test_a_parked_position_whose_successor_is_active_is_refused_with_the_successor_named(self):
+        got = of_cli._parked_refusal("acme:acme_watch", self.BASE + [self.WATCH], "acme:acme_dev")
+        self.assertIn("not sent", got)
+        self.assertIn('`of send acme:acme_ops "…"`', got)
+        self.assertIn("--to-parked", got)
+
+    def test_its_successor_unit_owner_and_structure_keeper_still_reach_it(self):
+        for sender in ("acme:acme_ops", "acme:acme_lead", "acme:acme_org"):
+            with self.subTest(sender=sender):
+                self.assertIsNone(of_cli._parked_refusal("acme:acme_watch", self.BASE + [self.WATCH], sender))
+        note = of_cli._parked_note("acme:acme_watch", self.BASE + [self.WATCH], "acme:acme_ops")
+        self.assertIn("parked on purpose", note)
+        self.assertNotIn("send it there instead", note)    # never "send it to yourself"
+
+    def test_no_refusal_without_an_active_successor_or_for_an_active_receiver(self):
+        gone = dict(self.WATCH, successor="acme_gone")
+        self.assertIsNone(of_cli._parked_refusal("acme:acme_watch", self.BASE + [gone], "acme:acme_dev"))
+        self.assertIsNotNone(of_cli._parked_note("acme:acme_watch", self.BASE + [gone], "acme:acme_dev"))
+        self.assertIsNone(of_cli._parked_refusal("acme:acme_ops", self.BASE + [self.WATCH], "acme:acme_dev"))
+
+    def test_send_refuses_before_any_server_unless_to_parked(self):
+        import argparse
+        args = argparse.Namespace(to="acme:acme_watch", text="x", sender="acme:acme_dev", reply_to=None, grant=None,
+                                  fyi=False, urgent=False, to_parked=False)
+        saved = of_cli._load_quiet
+        of_cli._load_quiet = lambda: self.BASE + [self.WATCH]
+        try:
+            with self.assertRaises(of_cli.OfError) as cm:
+                of_cli.cmd_send(args)
+            self.assertIn("its successor", str(cm.exception))
+        finally:
+            of_cli._load_quiet = saved
+
+    def test_only_the_structure_keeper_or_the_unit_owner_manages_a_queue(self):
+        ps = self.BASE + [self.WATCH, dict(pos("zeta_org", role="org"), _org="zeta")]
+        self.assertIsNone(of_cli._queue_manager(ps[0], self.WATCH, ps))           # the structure keeper
+        self.assertIsNone(of_cli._queue_manager(ps[2], self.WATCH, ps))           # its unit's owner
+        self.assertIn("may move or drop", of_cli._queue_manager(ps[3], self.WATCH, ps))
+        self.assertIn("not a position of acme", of_cli._queue_manager(ps[-1], self.WATCH, ps))
 
 if __name__ == "__main__":
     unittest.main()
