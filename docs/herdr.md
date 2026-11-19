@@ -166,6 +166,21 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   `PaneSurfaceFrame.popup`), so the laptop's popup, from its key or a panel's button, shows only while one of the
   laptop's own workspaces is on screen. herdr 0.9.5 has no way to bind a key to the laptop's server whatever is
   focused; that would be a request upstream.
+- **Copying text out of another machine's herdr** (herdr 0.9.5's source; the OSC 52 switch checked in an isolated
+  lab herdr, 2026-11-20). A copy, a mouse selection or a program's own OSC 52 in a pane, is written by the herdr
+  *client*, on the machine the client runs on (`src/selection.rs`, `write_osc52_bytes`).
+  - **A saved machine** (`herdr machine add`) runs the client on the laptop: the selection is read from the other
+    machine and written on the laptop, and so is a program's OSC 52 from the machine on screen
+    (`src/client/shell/actions.rs`, `SelectionCopy`; `src/client/endpoint/message_policy.rs`). The copy lands on
+    the laptop's clipboard. This is the way to attach to the agent host.
+  - **`ssh host`, then `herdr` there** runs the client on the host. It sends the copy to the terminal as OSC 52 only
+    when `SSH_CONNECTION` or `SSH_TTY` is set, or when the host's own clipboard tools fail; otherwise it writes the
+    host's clipboard (`wl-copy` with `WAYLAND_DISPLAY`, `xclip` or `xsel` with `DISPLAY`; `src/platform/linux.rs`).
+    `sudo -i` removes `SSH_CONNECTION` and `SSH_TTY` (sudoers(5): it keeps only `DISPLAY`, `PATH` and `TERM`), so
+    after `sudo -iu of herdr` the client takes itself for local, and a copy reaches the laptop only when the host has
+    no display to write to. Pass the variable through: `sudo -iu of env SSH_TTY="$SSH_TTY" herdr`. In the lab, a
+    client with `SSH_TTY` set sent the copy as OSC 52 and one without it called the clipboard tool.
+  - Either way, OSC 52 reaches the laptop's clipboard only when the laptop's terminal accepts OSC 52 writes.
 - **Checked on 2026-11-11 in an isolated lab herdr** (its own `XDG_CONFIG_HOME`, so its own plugin registry,
   sessions and socket; its own OF config and state, with a lab organization of one position):
   - a Claude Code session started as `claude -n storefront_operator` was named within a second of detection, with
