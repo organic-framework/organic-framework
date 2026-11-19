@@ -235,6 +235,15 @@ class ExportTest(unittest.TestCase):
         with self.assertRaises(ex.ExportError):
             self.export(out=self.out + "-x", recipient="age1short")
 
+    def test_an_export_from_a_file_that_is_no_server_store_is_refused(self):
+        """of_review on organic-framework PR 425 at 9e0f7d4: an empty bundle with a valid index, made from a file that
+        was no server's store, wiped the organization's rows when imported."""
+        bare = sqlite3.connect(os.path.join(tempfile.mkdtemp(prefix="ofx-"), "x.db"), isolation_level=None)
+        with self.assertRaises(ex.ExportError) as e:
+            ex.export_store(bare, "acme", self.out)
+        self.assertIn("no server's store", str(e.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "index.json")))
+
     def test_an_export_refuses_a_folder_that_is_not_empty(self):
         os.makedirs(self.out)
         open(os.path.join(self.out, "x"), "w").close()

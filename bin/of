@@ -3283,7 +3283,11 @@ def cmd_server(args):
             raise OfError(f"usage: of server {args.action} --org ORG <bundle folder>"
                           + (" --index-sha <the export's>" if args.action == "import" else ""))
         cfg = of_server.load_config()
-        conn = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=10, isolation_level=None)
+        db = os.path.join(cfg["state_dir"], "server.db")
+        if not os.path.isfile(db):  # never made here: no store to read or write (of_review on organic-framework PR 425)
+            raise OfError(f"of server {args.action}: no server store at {db}")
+        mode = "ro" if args.action == "export" else "rw"  # neither command ever creates a store
+        conn = sqlite3.connect(f"file:{db}?mode={mode}", uri=True, timeout=10, isolation_level=None)
         conn.execute("PRAGMA busy_timeout = 10000")
         try:
             if args.check:
