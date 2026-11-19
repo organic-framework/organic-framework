@@ -233,11 +233,14 @@ class CredentialDenyTest(unittest.TestCase):
         with open(shlex.split(bare.split("--settings ", 1)[1])[0]) as fh:
             self.assertEqual(json.load(fh), {"feedbackDrafts": "off", "env": of_spawn.agent_env()})
         self.assertEqual(json.loads(of_spawn.session_settings(None, ["Read(//a)"])),
-                         {"feedbackDrafts": "off", "env": {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~")},
+                         {"feedbackDrafts": "off", "env": of_spawn.agent_env(),
                           "permissions": {"deny": ["Read(//a)"]}})
+        # the window from the environment, so Claude Code's compaction offer never holds an agent's input (of_architect,
+        # msg 01a1f605-7981), at the 1m every account's settings hold, never the offer's 400k
+        self.assertEqual(of_spawn.agent_env()["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "1000000")
         # a tool profile's env joins the agents' own (2026-11-15: git never climbs into the home folder)
         self.assertEqual(json.loads(of_spawn.session_settings(None, None, {"env": {"X": "1"}}))["env"],
-                         {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~"), "X": "1"})
+                         dict(of_spawn.agent_env(), X="1"))
 
 
 class OwnerStepsTest(unittest.TestCase):

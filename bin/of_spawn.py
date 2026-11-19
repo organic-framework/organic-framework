@@ -113,12 +113,19 @@ def deny_rules(position, org, cat, named=None, roots=None):
 # env GIT_CEILING_DIRECTORIES = the home folder: git never climbs into the home folder looking for a repository, so a
 # stray ~/.git (2026-11-15: an agent's cd with an empty variable, then git init) cannot make every git call under home
 # walk the whole home folder; a repository below home is found as before.
+# env CLAUDE_CODE_AUTO_COMPACT_WINDOW = 1000000, the window every account's settings already hold: Claude Code offers
+# "We recommend compacting earlier" (400k or keep 1m) only when the window comes from settings, never from this variable
+# or the --autocompact flag (read in Claude Code 2.1.329's own code). Its dialog held of_lab's input box and every
+# delivery the relay typed for it on 2026-11-19 22:50Z (of_architect, msg 01a1f605-7981), and an agent's context must
+# not be cut to 400k (the founder, 2026-11-18, prompt 01a1eeff-880b).
 AGENT_SETTINGS = {"feedbackDrafts": "off"}
+AUTO_COMPACT_WINDOW = "1000000"
 
 
 def agent_env():
-    """The environment every agent session starts with (settings `env`): GIT_CEILING_DIRECTORIES, the home folder."""
-    return {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~")}
+    """The environment every agent session starts with (settings `env`): GIT_CEILING_DIRECTORIES, the home folder, and
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW, so no compaction offer stops the session's input."""
+    return {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~"), "CLAUDE_CODE_AUTO_COMPACT_WINDOW": AUTO_COMPACT_WINDOW}
 
 
 def session_settings(memory=None, deny=None, extra=None):

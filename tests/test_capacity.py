@@ -3729,6 +3729,7 @@ class PositionMemory(unittest.TestCase):
             got = self.settings_of(cmd)
             self.assertEqual(got["env"], dict(of_spawn.agent_env(), X_TOOL="1"))
             self.assertEqual(got["env"]["GIT_CEILING_DIRECTORIES"], os.path.expanduser("~"))
+            self.assertEqual(got["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "1000000")
             self.assertEqual(got["enabledPlugins"], {"p@m": True})
 
     def test_deny_for_follows_spawn_and_fails_open_to_the_guard(self):
