@@ -833,10 +833,15 @@ class GuardBashTest(unittest.TestCase):
                    "python3 -c " + q + "import of_store; of_store.add_event(c, {'event.name': 'of.prompt_origin'})" + q,
                    "python3 -c " + q + "import of_hook; of_hook.handle('UserPromptSubmit', {'prompt': 'yes'})" + q,
                    "of hook UserPromptSubmit < prompt.json", "echo {} | python3 bin/of hook UserPromptSubmit",
-                   "python3 ~/organic-framework/bin/of_hook.py PreToolUse"]  # of_review on PR 170
+                   "python3 ~/organic-framework/bin/of_hook.py PreToolUse",  # of_review on PR 170
+                   # the popup's own writers of the owner's acts (of_review's note on PR 398; hand-over b7c54600)
+                   "python3 -c " + q + "import of_asks_answer as a; a.record_answer(c, it, 'yes')" + q,
+                   "python3 -c " + q + "import of_asks_answer; of_asks_answer.owner_mark(c, it, 'answered')" + q,
+                   "python3 - <<EOF\nimport of_asks_tui\nof_asks_tui.leave([], [], 'bin/of')\nEOF"]
         allowed += ["of hooks install --guard", "of hook --help",
                     "python3 -c " + q + "import of_store; of_store.add_event(c, {'event.name': 'of.nudge_sent'})" + q,
-                    "python3 -c " + q + "import of_hook; print(of_hook.mask('x'))" + q]
+                    "python3 -c " + q + "import of_hook; print(of_hook.mask('x'))" + q,
+                    "grep -n 'def owner_mark\\|def record_answer' bin/of_asks_answer.py"]
         mode = of_guard.PERSON_ACT_MODE
         try:
             of_guard.PERSON_ACT_MODE = "deny"

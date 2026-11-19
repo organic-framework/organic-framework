@@ -3021,7 +3021,8 @@ _TOOL_TOKEN_CODE = re.compile(r"\bof_tools\b[\s\S]*?\b(?:shared_token\s*\(|heade
 # person answered, typed, or approved (of_server's trust review of organic-framework PR 168)
 _PERSON_ACT_NAMES = r"['\"](?:of\.)?(?:agent_question_answered|human_prompt|prompt_origin|diff_approved)['\"]"
 _PERSON_ACT_CODE = re.compile(
-    r"\bof_asks_answer\b[\s\S]*?\b(?:record|not_a_question|answer_blocked|deliver)\s*\("
+    r"\bof_asks_answer\b[\s\S]*?\b(?:record|record_answer|owner_mark|not_a_question|answer_blocked|deliver)\s*\("
+    r"|\bof_asks_tui\b[\s\S]*?\bleave\s*\("   # the popup records its own answers and marks (of_review on PR 398)
     r"|\bof_asks_chat\b[\s\S]*?\b(?:record|answer)\s*\("
     r"|\bherdr_deliver\s*\("
     r"|\bof_hook\b[\s\S]*?\b(?:main|handle)\s*\("  # the collector's entry, fed a prompt (of_review on PR 170)
