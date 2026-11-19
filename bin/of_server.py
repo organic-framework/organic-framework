@@ -2175,6 +2175,8 @@ def _alive(pid):
 
 def _health(cfg, timeout=1.0):
     import urllib.request
+    if cfg.get("socket"):  # the plain listener on a unix socket (cfg `socket`): no port to ask
+        return _unix_get(cfg["socket"], "/v1/health", timeout)
     host = cfg["host"] if cfg["host"] not in ("0.0.0.0", "::", "") else "127.0.0.1"
     try:
         with urllib.request.urlopen(f"http://{host}:{cfg['port']}/v1/health", timeout=timeout) as r:
@@ -2183,7 +2185,56 @@ def _health(cfg, timeout=1.0):
         return None
 
 
+def _unix_get(path, url_path, timeout=1.0):
+    """GET url_path from a plain listener on the unix socket PATH: its JSON, or None."""
+    import http.client
+
+    class Conn(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
+            self.sock.connect(path)
+    c = Conn("localhost", timeout=timeout)
+    try:
+        c.request("GET", url_path)
+        r = c.getresponse()
+        return json.loads(r.read() or b"{}") if r.status == 200 else None
+    except Exception:
+        return None
+    finally:
+        c.close()
+
+
 LAUNCHD_LABEL = "dev.organic-framework.server"
+SYSTEMD_UNIT = "of-server.service"
+
+
+def systemd_units(cfg=None, python=None, of_bin=None):
+    """of-server under the user's systemd on Linux, with its watchdog timer: the same `of server run` and `of server
+    watchdog` as launchd runs on a Mac (the OF team's server on the agent host, 2026-11-19)."""
+    import of_systemd
+    # of_systemd orders its services after of-server; the server itself comes up after the network
+    unit = of_systemd.service("server", python, of_bin).replace("After=of-server.service", "After=network.target")
+    return {SYSTEMD_UNIT: unit,
+            "of-server-watchdog.service": of_systemd.service("server", python, of_bin, watchdog=True),
+            "of-server-watchdog.timer": (
+                "[Unit]\nDescription=Check the Organic Framework server\n\n[Timer]\n"
+                f"OnBootSec=60\nOnUnitActiveSec={WATCHDOG['every']}\n\n[Install]\nWantedBy=timers.target\n")}
+
+
+def install_systemd(cfg=None, uninstall=False, run=None, units=None, units_dir=None):
+    """`of server install|uninstall` on Linux: the server and its watchdog timer, enabled together. An active server
+    whose unit changed is restarted on the new one; one already as it should be is left running."""
+    import of_systemd
+    cfg = cfg or load_config()
+    os.makedirs(cfg["state_dir"], mode=0o700, exist_ok=True)
+    return of_systemd.install(systemd_units(cfg) if units is None else units,
+                              (SYSTEMD_UNIT, "of-server-watchdog.timer"), uninstall, run, units_dir)
+
+
+def _systemd_installed(units_dir=None):
+    import pathlib
+    return (pathlib.Path(units_dir or "~/.config/systemd/user").expanduser() / SYSTEMD_UNIT).exists() or None
 
 
 def launchd_job():
@@ -2344,11 +2395,17 @@ def watchdog(cfg=None, now=None, probe=None, restart=None, dump=None, state_path
     /v1/health within `probe_timeout` (of_conductor, msg 01a1d63f-d434: a hang after a wake needed a person)."""
     cfg = cfg or load_config()
     s = dict(WATCHDOG, **(settings or {}))
+    installed = None if restart else launchd_job
+    if sys.platform.startswith("linux") and restart is None:  # under the user's systemd (install_systemd)
+        def restart():
+            return subprocess.run(["systemctl", "--user", "restart", SYSTEMD_UNIT], capture_output=True, timeout=30,
+                                  check=True)
+        installed = _systemd_installed
     return watch("of-server", LAUNCHD_LABEL,
                  probe or (lambda: _health(cfg, timeout=s["probe_timeout"]) is not None),
                  lambda: _read_pid(os.path.join(cfg["state_dir"], "server.pid")),
                  state_path or os.path.join(cfg["state_dir"], "watchdog.json"), now=now, restart=restart, dump=dump,
-                 log=log, settings=settings, installed=None if restart else launchd_job, event="server_watchdog",
+                 log=log, settings=settings, installed=installed, event="server_watchdog",
                  silent="has not answered /v1/health")
 
 
