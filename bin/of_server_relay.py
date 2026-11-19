@@ -77,7 +77,20 @@ LIVE_STATUS_OFF = ("finished", "parked")
 
 
 def _live(positions):
-    return [p for p in positions if isinstance(p, dict) and (p.get("status") or "active") not in LIVE_STATUS_OFF]
+    """The registry's active positions: status `active` or none; an unknown one (a typo such as `parkd`) is not."""
+    return [p for p in positions if isinstance(p, dict) and (p.get("status") or "active") == "active"]
+
+
+def registry_entry(positions, name):
+    """The registry's entry NAME names (its name, or an alias it lists), or None."""
+    return next((p for p in positions if isinstance(p, dict)
+                 and (p.get("name") == name or name in [str(a) for a in p.get("aliases") or []])), None)
+
+
+def held_by_person(entry):
+    """A registry entry whose holder is a person (holder.person, or runtime human): its mail is that person's."""
+    h = (entry or {}).get("holder") or {}
+    return bool(isinstance(h, dict) and (h.get("person") or h.get("runtime") == "human"))
 
 
 def queue_managers(positions, units, receiver):
@@ -119,7 +132,7 @@ def registry_file(cfg, org, orgs_file=None):
     import yaml
     files = cfg.get("positions_files") or {}
     if org in files:
-        return os.path.expanduser(files[org])
+        return os.path.expanduser(files[org]) if isinstance(files[org], str) else None
     orgs_file = orgs_file or os.environ.get("OF_ORGS") or os.path.expanduser("~/.config/of/orgs.yaml")
     try:
         with open(orgs_file) as fh:
@@ -127,10 +140,10 @@ def registry_file(cfg, org, orgs_file=None):
     except (OSError, yaml.YAMLError):
         return None
     base = os.path.dirname(os.path.abspath(orgs_file))
-    for o in doc.get("orgs") or []:
-        if isinstance(o, dict) and o.get("name") == org and o.get("path"):
-            return os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "positions.yaml")
-    return None
+    hits = [o for o in doc.get("orgs") or [] if isinstance(o, dict) and o.get("name") == org and o.get("path")]
+    if not hits:
+        return None  # the last entry wins, as when the server loads grants (of_grants.load)
+    return os.path.join(base, os.path.expanduser(str(hits[-1]["path"])), "registry", "positions.yaml")
 
 
 _TAKE_COLS = ("msg_id, to_org, to_position, from_org, from_position, text, reply_to, authority, authority_reason,"
@@ -715,23 +728,39 @@ class Relay:
         return doc["positions"], doc.get("units")
 
     def _manager(self, m, org, by, session, receiver):
-        """`by` may act on RECEIVER's queue in ORG: this machine presents it with SESSION, it is a position of ORG,
-        and ORG's registry, which the server must be able to read, names it ORG's structure keeper or RECEIVER's
-        unit owner (queue_managers). Returns (org, by's position, the registry's positions)."""
+        """`by` may act on RECEIVER's queue in ORG: ORG's registry, which the server must be able to read, names `by`
+        (or an alias of it) ORG's structure keeper or RECEIVER's unit owner (queue_managers); this machine presents
+        `by` with SESSION; and no person holds RECEIVER, whose mail is that person's (of_review on organic-framework
+        PR 375: a keeper could move a person's queued texts into an agent's pane). The registry is read before the
+        holder check, so a broken file answers 403 no_registry, never 500. Returns (org, by's canonical position,
+        RECEIVER's canonical position, the registry's positions)."""
         b_org, b_pos = parse_address(by)
         if b_org != org:
             raise RelayError(403, "forbidden", f"{by} is not a position of {org}: only its own organization moves or "
                                                "drops its messages")
         if not session:
             raise RelayError(400, "bad_request", "session is required")
+        positions, units = self._registry(org)
+        b_pos = (registry_entry(positions, b_pos) or {}).get("name") or b_pos
+        entry = registry_entry(positions, receiver)
+        receiver = (entry or {}).get("name") or receiver
         ok, why = self._holds(m, b_org, b_pos, session)
         if not ok:
             raise RelayError(403, "not_holder", why)
-        positions, units = self._registry(org)
+        registered = ((registry_entry(positions, b_pos) or {}).get("holder") or {})
+        registered = registered.get("session") if isinstance(registered, dict) else None
+        if registered and registered != session:  # the same registry as the role check (of_secrets-review, PR 375)
+            raise RelayError(403, "not_holder", f"{b_org}:{b_pos}'s registry names another holder session")
         if b_pos not in queue_managers(positions, units, receiver):
             raise RelayError(403, "forbidden", f"{by} is neither {org}'s structure keeper nor the owner of "
                                                f"{receiver}'s unit")
-        return b_org, b_pos, positions
+        with self.app.store.conn() as c:
+            human = c.execute("SELECT 1 FROM presence WHERE org = ? AND position = ? AND kind = 'human' AND updated > ?",
+                              (org, receiver, time.time() - PRESENCE_TTL)).fetchone()
+        if human or held_by_person(entry):
+            raise RelayError(403, "person_held", f"a person holds {org}:{receiver}: its messages are theirs, kept in "
+                                                 "their own of inbox; nobody else moves or drops them")
+        return b_org, b_pos, receiver, positions
 
     def move(self, m, body):
         """Move a position's queued messages (all, or `msg_ids`) to another position of its organization, for its
@@ -746,12 +775,10 @@ class Relay:
             raise RelayError(400, "bad_request", "messages move only within their organization")
         if not POSITION_NAME.match(d_pos):
             raise RelayError(400, "bad_position", f"position {d_pos[:80]!r} breaks the name rule")
-        s_pos, d_pos = self._canonical(s_org, s_pos), self._canonical(d_org, d_pos)
-        if s_pos == d_pos:
-            raise RelayError(400, "bad_request", "the messages are already that position's")
-        b_org, b_pos, positions = self._manager(m, s_org, body.get("by"), body.get("session"), s_pos)
+        s_pos = self._canonical(s_org, s_pos)
+        b_org, b_pos, s_pos, positions = self._manager(m, s_org, body.get("by"), body.get("session"), s_pos)
         by = f"{b_org}:{b_pos}"
-        live = live_position(positions, d_pos)
+        live = live_position(positions, d_pos)  # the registry alone names the destination
         if live is None:
             raise RelayError(400, "bad_destination", f"{d_org}:{d_pos} is not an active position of {d_org}'s registry"
                                                      " (parked, finished or unknown): nobody would read the messages")
@@ -803,7 +830,7 @@ class Relay:
     def drop_by(self, m, msg_id, body):
         """Expire one message queued for `to`, for the receiver's organization's structure keeper or its unit's owner:
         its reason, masked like a message's text, becomes `dropped by <by>: <reason>`; the server host's
-        `of server relay-requeue --state expired` undoes it. The check and the update hold the same address, and the
+        `bin/of_server.py relay-requeue --state expired --msg-id <id>` on the server host undoes it. The check and the update hold the same address, and the
         event is written only when the update took a row (of_secrets-review on organic-framework PR 375)."""
         body = body or {}
         to_org, to_pos = parse_address(body.get("to"))
@@ -811,28 +838,29 @@ class Relay:
         reason = str(body.get("reason") or "").strip()
         if not reason:
             raise RelayError(400, "bad_request", "a reason is required")
-        b_org, b_pos, _ = self._manager(m, to_org, body.get("by"), body.get("session"), to_pos)
+        if body.get("dry_run"):
+            raise RelayError(400, "bad_request", "dry_run is for move; a drop has no preview")
+        b_org, b_pos, to_pos, _ = self._manager(m, to_org, body.get("by"), body.get("session"), to_pos)
         with self.app.store.conn() as c:
             r = c.execute("SELECT 1 FROM messages WHERE msg_id = ? AND to_org = ? AND to_position = ?",
                           (msg_id, to_org, to_pos)).fetchone()
         if not r:
             raise RelayError(404, "not_found", f"no message {msg_id} for {to_org}:{to_pos} (give its full id)")
-        masked = self.app.masker.text(reason[:300])
+        masked = self.app.masker.text(reason)[:300]  # the whole reason first: a cut could split what a rule needs
         found = self.app.masker.take()
         why, now = f"dropped by {b_org}:{b_pos}: {masked}", time.time()
         with self.app.store.tx() as c:
             hit = c.execute("UPDATE messages SET state = 'expired', done_at = ?, leased_to = NULL, lease_until = NULL,"
-                            " reason = ? WHERE msg_id = ? AND to_org = ? AND to_position = ? AND (state = 'queued'"
-                            " OR (state = 'leased' AND coalesce(lease_until, 0) <= ?))",
-                            (of_events.now_iso(), why, msg_id, to_org, to_pos, now)).rowcount
+                            " reason = ? WHERE msg_id = ? AND to_org = ? AND to_position = ? AND state = 'queued'",
+                            (of_events.now_iso(), why, msg_id, to_org, to_pos)).rowcount
             st = c.execute("SELECT state, lease_until, to_org, to_position FROM messages WHERE msg_id = ?",
                            (msg_id,)).fetchone()
         if hit != 1:
             if (st[2], st[3]) != (to_org, to_pos):
                 raise RelayError(409, "moved", "the message was moved to another position meanwhile")
-            if st[0] == "leased":
-                raise RelayError(409, "leased", "the relay is delivering this message into the pane now",
-                                 {"retry_after": max(1, int((st[1] or now) - now + 0.999))})
+            if st[0] == "leased":  # also past its lease: the relay types before it acks, so it may be in the pane
+                raise RelayError(409, "leased", "the relay may be typing this message into the pane now; it stays",
+                                 {"retry_after": max(5, int((st[1] or now) - now + 0.999))})
             return {"msg_id": msg_id, "state": st[0], "already": True}
         ts = of_events.now_iso()
         self._queue([self._event(to_org, "of.message_expired", {"msg_id": msg_id, "to": f"{to_org}:{to_pos}",

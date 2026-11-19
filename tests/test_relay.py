@@ -204,6 +204,22 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(of_relay.seen("L1"))  # and the relay skips it on its next offer
         self.assertEqual(of_relay.pull(Server(), "ofb:of_a", "S", take="all", pane_busy=True), [])  # never listed twice
 
+    def test_a_message_moved_meanwhile_is_neither_taken_nor_seen(self):
+        """of_secrets-review on organic-framework PR 375: take's 409 moved was read as 409 leased, so a busy pane kept
+        the moved message as taken and marked it seen, and a successor on this machine never got it."""
+        import of_client
+
+        class Server:
+            def queued_messages(self, to, session):
+                return {"messages": [{"msg_id": "M1", "to": to, "from": "ofb:x", "text": "hi", "state": "queued"}]}
+
+            def take_message(self, msg_id, to, session):
+                raise of_client.ServerError(409, '{"type": "moved", "title": "moved", "status": 409}')
+        of_relay.pull(Server(), "ofb:of_a", "S")
+        self.assertEqual(of_relay.pull(Server(), "ofb:of_a", "S", take="all", pane_busy=True), [])
+        self.assertFalse(of_relay.seen("M1"))
+        self.assertEqual(of_relay.taken_messages("ofb:of_a"), [])
+
     def test_take_all_takes_only_what_a_listing_showed_and_keeps_the_text(self):
         """From a user organization, 2026-11-08: `of inbox --take all >/dev/null` took a reply that arrived after the
         agent's listing, and its text was kept nowhere."""
