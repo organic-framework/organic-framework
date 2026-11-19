@@ -3220,27 +3220,63 @@ def _substitutions(stext):
         return [stext]
 
 
-# GNU sed runs a command with its `e` command, after any address (`1e`, `$e`, `1,$e`, `0~2e`, `/re/e`), or the s
-# command's `e` flag; BSD sed has neither. Read wide (of_server on 9b5de527, msg 01a1f62a-30ea): any `e` that is not
-# part of a word keeps the sed for the line reading; a lone e in prose is the cheap side.
-_SED_RUNS = re.compile(r"(?<![A-Za-z])e(?![A-Za-z])")
+# GNU sed runs a command with its `e` command, after any address and with its command glued to it (`1e`, `$eCMD`,
+# `0~2e`, `/re/e`), or the s command's `e` flag among others (`ge`, `pe`, `Ie`); BSD sed has neither. A sed is text
+# only when its program is parsed whole as s commands whose delimiter is no letter and whose flags hold no e: any other
+# command, the e command among them, keeps it for the line reading (of_review on organic-framework PR 427 at b0c116f,
+# after the lone-e reading missed an e touching a letter; of_server on 9b5de527).
+_SED_ADDR = re.compile(r"(?:\d+(?:~\d+)?|\$|/(?:[^/\\\n]|\\.)*/[IM]*)"
+                       r"(?:\s*,\s*(?:\d+|\$|/(?:[^/\\\n]|\\.)*/[IM]*|[+~]\d+))?\s*(?:!\s*)?")
+
+
+def _sed_s_only(prog):
+    """Is PROG nothing but s commands with a non-letter delimiter and flags without e?"""
+    i, n, seen = 0, len(prog), False
+    while i < n:
+        while i < n and prog[i] in " \t\n;":
+            i += 1
+        if i >= n:
+            break
+        m = _SED_ADDR.match(prog, i)
+        if m:
+            i = m.end()
+        if i + 1 >= n or prog[i] != "s":
+            return False
+        d = prog[i + 1]
+        if d.isalnum() or d in "\\\n \t":
+            return False
+        j, parts = i + 2, 0
+        while j < n and parts < 2:
+            if prog[j] == "\\":
+                j += 2
+                continue
+            if prog[j] == d:
+                parts += 1
+            j += 1
+        if parts < 2:
+            return False
+        while j < n and prog[j] in "gpIiMm0123456789":
+            j += 1
+        if j < n and prog[j] == "w":   # w FILE runs to the line's end: a write, no command
+            nl = prog.find("\n", j)
+            j = n if nl < 0 else nl
+        if j < n and prog[j] not in " \t\n;":
+            return False   # an e flag, or anything else after the flags
+        i, seen = j, True
+    return seen
 
 
 def _sed_text(args):
     """Is this sed's program on the line and unable to run a command? `-f FILE`/`--file` puts it elsewhere."""
     if any(re.match(r"^-[A-Za-z]*f", a) or a.startswith("--file") for a in args):
         return False
-    if any(_SED_RUNS.search(a) for a in args):
-        return False
-    # an s command whose delimiter is a letter hides its flags among letters (`sxaxbxe`: of_server on 9b5de527)
-    return not any(_SED_LETTER_S.search(prog) for prog in _sed_programs(args))
-
-
-_SED_LETTER_S = re.compile(r"(?:^|[;{}\n])\s*(?:[\d$~,]+|/[^/\n]*/)?\s*!?\s*s[A-Za-z]")
+    progs = _sed_programs(args)
+    return bool(progs) and all(_sed_s_only(prog) for prog in progs)
 
 
 def _sed_programs(args):
-    """The program words of a sed call: each -e/--expression value, else its first operand."""
+    """The program words of a sed call: each -e/--expression value, else its first operand (BSD's `-i ''` suffix is
+    no operand)."""
     progs, expr, i = [], False, 0
     while i < len(args):
         a = args[i]
@@ -3254,6 +3290,9 @@ def _sed_programs(args):
         elif re.match(r"^-[A-Za-z]*e.", a) and not a.startswith("--"):
             progs.append(a[a.index("e") + 1:])
             expr = True
+        elif a == "-i" and i + 1 < len(args) and args[i + 1] == "":
+            i += 2
+            continue
         elif not a.startswith("-") and not expr and not progs:
             progs.append(a)
         i += 1
