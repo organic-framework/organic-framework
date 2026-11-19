@@ -74,9 +74,10 @@ NOT_IN_IMAGE = {
     "of_relay_client": {"of_server.host_watchdog": "the agent host's watchdog, run from its checkout, not the image"},
 }
 # Studio's pages (of_studio's decision which of them the image serves: of_server's message 01a1f369-887d).
-STUDIO_FAILS = ("imported outside a try, so a page that reaches it answers 500 in the image; every page built on Data "
-                "reaches of_loops (Data.loop_rows), so only /studio/health answers there (of_review's probe on "
-                "organic-framework PR 370; the image before it failed the same way)")
+STUDIO_FAILS = ("imported outside a try, so a page that reaches it answers 500 in the image whenever it is built: every "
+                "page built on Data reaches of_loops (Data.loop_rows), so a Data page answers 500 on a cache miss, "
+                "while a cached page and the static files answer 200 (of_review's probes on organic-framework PR 370 "
+                "and PR 373; the image before PR 370 failed the same way)")
 STUDIO_DEGRADES = "imported inside a guard that goes on without it: cached usage, no spend, no fold view, a page that says so"
 for _m, _by, _why in (("of_loop", "of_model", STUDIO_FAILS), ("of_loops", "of_model of_studio", STUDIO_FAILS),
                       ("of_router", "of_model", STUDIO_FAILS), ("of_works", "of_studio", STUDIO_FAILS),
