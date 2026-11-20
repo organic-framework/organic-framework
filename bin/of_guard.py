@@ -1035,9 +1035,13 @@ def _code_deny(code, lang=None):
         # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched. A dump
         # command named in code that can start no process is text: a test that hands command strings to the guard
         # printed nothing (of_architect, msg 01a1f867-970c, on of_review's session of 2026-11-20 about 09:50Z)
-        if (os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit)) and \
-                _launches(lang or "", code):
-            return _prints(first)
+        if _launches(lang or "", code):
+            # the literal itself, and the strings quoted inside it: code handed to eval or exec runs them
+            # (`eval("__import__('os').system('printenv')")`: of_server on ddd8bb79)
+            for cand in [lit] + re.findall(r"""['"]([^'"]+)['"]""", lit):
+                w = cand.split()[0] if cand.split() else ""
+                if os.path.basename(w) == "printenv" or cand == "export -p" or re.match(r"env\s*\|", cand):
+                    return _prints(w)
     return None
 
 
@@ -3324,10 +3328,19 @@ _LAUNCH_CODE = re.compile(r"subprocess|os\.(?:system|exec|spawn|posix_spawn|pope
 _LAUNCH_BACKTICK = re.compile(r"`|\bqx\b")   # a command in ruby, perl and php; in python or a document, text
 
 
+# a call whose callee the code computes can be anything, a process start among them (of_server on ddd8bb79, msg
+# 01a1f877-07d1: `getattr(os, 'sys'+'tem')('printenv')` passed): eval, exec, compile, getattr, setattr, globals, vars,
+# __import__, import_module, attrgetter, methodcaller, and a call through a subscript or another call's result
+_DYN_CALL = re.compile(r"\b(?:eval|exec|compile|getattr|setattr|globals|vars|__import__|import_module|attrgetter|"
+                       r"methodcaller)\s*\(|\]\s*\(|\)\s*\(")
+
+
 def _launches(head, code):
     """Can interpreter HEAD's CODE start a process?"""
-    return bool(_LAUNCH_CODE.search(code)) or (not str(head).startswith(("python", "pypy", "node")) and
-                                               bool(_LAUNCH_BACKTICK.search(code)))
+    # dynamic calls are read outside string literals: `(a)(b)` in a regex pattern calls nothing
+    unquoted = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", "''", code, flags=re.S)
+    return bool(_LAUNCH_CODE.search(code)) or bool(_DYN_CALL.search(unquoted)) or \
+        (not str(head).startswith(("python", "pypy", "node")) and bool(_LAUNCH_BACKTICK.search(code)))
 
 
 def _without_code_text(cmd):
