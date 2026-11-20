@@ -160,7 +160,11 @@ class GuardBashTest(unittest.TestCase):
                   f"perl -e 'open(my $f, \"-|\", \"{PE}\"); print <$f>'", f"perl -e 'print `{EG}`'",
                   f"perl -E 'say `{PE}`'", f"ruby -e 'puts `{PE}`'", f"ruby -e 'puts %x({PE})'",
                   f"ruby -e 'system(\"{PE}\")'", f"php -r 'echo shell_exec(\"{PE}\");'", f"php -r 'echo `{PE}`;'",
-                  f"php -r 'system(\"{PE}\");'", f"perl - <<'EOF'\nprint `{PE}`;\nEOF"):
+                  f"php -r 'system(\"{PE}\");'", f"perl - <<'EOF'\nprint `{PE}`;\nEOF",
+                  # the code flag in a bundle (of_secrets-review on PR 461)
+                  f"perl -le 'print `{PE}`'", f"perl -we 'print `{PE}`'", f"perl -ne 'print `{PE}`' f",
+                  f"perl -lE 'say `{PE}`'", f"ruby -we 'puts `{PE}`'", f"perl -le'print `{PE}`'",
+                  f"perl -e'print `{PE}`'", f"perl -lne 'print `{PE}`' f", f"perl -pe 'print `{PE}`' f"):
             self.assertTrue(deny(c), c)
         for c in ("perl -e 'print `date`'",   # a printenv literal alone is main's accepted false deny in any code "ruby -e 'puts %x(ls)'",
                   f"node -e 'console.log(`{PE}`)'", "perl -e 'print qx{uname -a}'",

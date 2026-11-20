@@ -980,6 +980,30 @@ _PIPE_OPEN = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])((?:\\.|(?!\1).)*?)\s*
 _PIPE_OPEN3 = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])-\|\1\s*,\s*(['\"])((?:\\.|(?!\2).)*)\2", re.S)
 
 
+def _code_args(head, args):
+    """The code strings an interpreter call carries on its line: the word after -c or -e (and php's -r, perl's -E), and
+    for perl and ruby a short-flag cluster ending in e or E (`-le`, `-we`, `-ne`, `-pE`) with its code the next word, or
+    the rest of the word glued after the e (`-e'…'`, `-le'…'`), as their own option parsers read them
+    (of_secrets-review and of_review on organic-framework PR 461)."""
+    out = []
+    base = os.path.basename(str(head or ""))
+    flags = ("-c", "-e") + (("-r",) if base == "php" else ()) + (("-E",) if base == "perl" else ())
+    for flag in flags:
+        if flag in args[:-1]:
+            out.append(args[args.index(flag) + 1])
+    if base in ("perl", "ruby"):
+        for k, a in enumerate(args):
+            if a in ("-e", "-E") or a.startswith("--") or not a.startswith("-"):
+                continue
+            m = re.fullmatch(r"-[A-Za-z]*?([eE])(.*)", a, re.S)
+            if not m:
+                continue
+            code = m.group(2) or (args[k + 1] if k + 1 < len(args) else "")
+            if code:
+                out.append(code)
+    return out
+
+
 def _quote_like(code, marker):
     """Bodies of perl's qx / ruby's %x: MARKER, then any delimiter, paired brackets matched."""
     out, i = [], 0
@@ -5602,12 +5626,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if hit:
                     return hit
             if head in _INTERPRETERS:
-                # php -r and perl -E carry code too (hand-over 7646c671)
-                for flag in ("-c", "-e") + (("-r",) if head == "php" else ()) + (("-E",) if head == "perl" else ()):
-                    if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1], _lang(head), head)
-                        if hit:
-                            return hit
+                for code in _code_args(head, args):   # -c, -e, php's -r, perl's -E, perl and ruby clusters
+                    hit = _code_deny(code, _lang(head), head)
+                    if hit:
+                        return hit
                 kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
                 if kind == "code":  # `-Ic "…"`, `-c"…"`: python's own reading (of_secrets-review on PR 136)
                     hit = _code_deny(code, "python")
@@ -7520,9 +7542,8 @@ def command_findings(cmd, depth=0):
             if s[4] is not None and head in _INTERPRETERS:
                 out.append(("code", s[4], _lang(head) or head))
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out.append(("code", args[args.index(flag) + 1], _lang(head) or head))
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out.append(("code", code, _lang(head) or head))
                 if head.startswith("python"):
                     kind_, code, _ = _py_walk(args)
                     if kind_ == "code":
@@ -8169,9 +8190,8 @@ def _cred_bash(cmd, cwd, env, keep, depth):
                 for body in _nested(head, args):
                     out += _cred_bash(body, cwd, local, keep, depth + 1)
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out += _cred_code(args[args.index(flag) + 1], cwd, local, keep)
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out += _cred_code(code, cwd, local, keep)
             if herestr is not None and head in _INTERPRETERS:
                 out += _cred_code(herestr, cwd, local, keep)
             recursive = head in _RECURSE_ALWAYS or bool(_RECURSIVE & set(args)) or (
@@ -8572,9 +8592,8 @@ def _authority_bash(cmd, depth=0):
             for body in _nested(head, args):  # sh -c, eval, and ssh's or an exec's remote command too
                 out += _authority_bash(body, depth + 1)
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out += _authority_code(args[args.index(flag) + 1], head)
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out += _authority_code(code, head)
                 if s[4] is not None:
                     out += _authority_code(s[4], head)
             if head in _HTTP_HEADS and _http_writes(head, args):
