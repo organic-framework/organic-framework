@@ -105,5 +105,37 @@ class PatchFormsTest(unittest.TestCase):
         self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class CodexSessionToHerdr(unittest.TestCase):
+    """W8 gap 3 (of_herdr's report; of_server's decision eb72245): the managed SessionStart hook reports a Codex pane's
+    session to herdr, from herdr's official source, with a growing seq and no resume arguments."""
+    ROLLOUT = "/home/alex/.codex/sessions/2026/11/20/rollout-2026-11-20T10-00-00-0190a1b2-c3d4.jsonl"
+    ENV = {"HERDR_ENV": "1", "HERDR_PANE_ID": "w1:p2", "HERDR_SOCKET_PATH": "/run/herdr.sock", "PATH": "/nonexistent"}
+
+    def report(self, env, **hook):
+        ran = []
+        got = of_hook.report_codex_session(dict({"session_id": "T1", "transcript_path": self.ROLLOUT,
+                                                 "source": "startup"}, **hook), env=env,
+                                           run=lambda argv, **k: ran.append(argv))
+        return got, ran
+
+    def test_the_report_and_when_it_is_skipped(self):
+        got, ran = self.report(self.ENV)
+        self.assertEqual(ran, [got])
+        self.assertEqual(got[1:8], ["pane", "report-agent-session", "w1:p2", "--source", "herdr:codex", "--agent", "codex"])
+        self.assertEqual(got[got.index("--agent-session-id") + 1], "T1")
+        self.assertEqual(got[got.index("--session-start-source") + 1], "startup")
+        self.assertTrue(int(got[got.index("--seq") + 1]) > 0)
+        self.assertNotIn("--", got)                                            # no resume arguments
+        for env, hook in ((dict(self.ENV, HERDR_ENV="0"), {}), ({k: v for k, v in self.ENV.items() if k != "HERDR_PANE_ID"}, {}),
+                          (dict(self.ENV, CODEX_THREAD_ID="OTHER"), {}), (self.ENV, {"transcript_path": None})):
+            self.assertEqual(self.report(env, **hook), (None, []), (env, hook))
+        self.assertEqual(self.report(dict(self.ENV, CODEX_THREAD_ID="T1"))[1][0][4], "--source")
+
+    def test_a_codex_payload_is_told_from_a_claude_one(self):
+        self.assertTrue(of_hook.is_codex({"transcript_path": self.ROLLOUT}))
+        self.assertTrue(of_hook.is_codex({"turn_id": "t1"}))
+        self.assertFalse(of_hook.is_codex({"transcript_path": "/home/alex/.claude/projects/-w/abc.jsonl"}))
+
+
 if __name__ == "__main__":
     unittest.main()
