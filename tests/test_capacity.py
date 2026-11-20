@@ -3924,6 +3924,63 @@ class HoldAfterMove(unittest.TestCase):
 class Reboot(unittest.TestCase):
     """2026-11-10: the founder's OS update restarts the Mac; every session stops and /private/tmp is cleared."""
 
+    def test_pause_expires_unless_the_machine_restarted(self):
+        prepared = 1795121580  # 2026-11-19 at 20:53 UTC
+        plan = {"prepared_at": of_capacity._iso(prepared)}
+        limit = of_capacity.REBOOT_PAUSE_MAX_H * 3600
+        cases = ((limit - 1, prepared - 60, True), (limit, prepared - 60, False), (limit * 3, prepared - 60, False),
+                 (limit * 3, None, False), (limit * 3, prepared + 60, True))
+        for age, boot, paused in cases:
+            with self.subTest(age=age, boot=boot), mock.patch.object(of_capacity, "load_reboot_plan", return_value=plan), \
+                    mock.patch.object(of_capacity, "_last_boot_epoch", return_value=boot):
+                messages = []
+                self.assertEqual(of_capacity._reboot_pauses_balance(prepared + age, messages.append), paused)
+                self.assertEqual(len(messages), 1)
+                self.assertIn("paused" if paused else "balancing resumes", messages[0])
+
+    def test_last_boot_epoch(self):
+        with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(subprocess, "check_output") as sysctl:
+            sysctl.return_value = "{ sec = 1795121600, usec = 53903 } Thu Nov 19 20:53:20 2026"
+            self.assertEqual(of_capacity._last_boot_epoch(), 1795121600)
+            sysctl.side_effect = OSError()
+            self.assertIsNone(of_capacity._last_boot_epoch())
+        with mock.patch.object(sys, "platform", "linux"), \
+                mock.patch("builtins.open", mock.mock_open(read_data="intr 123\nbtime 1795121600\n")):
+            self.assertEqual(of_capacity._last_boot_epoch(), 1795121600)
+
+    def test_cancel_retires_the_plan_with_its_tmp_keep(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                mock.patch.object(of_capacity.of_events, "emit") as emit:
+            current = of_capacity._reboot_current()
+            tmp_root, keep = os.path.join(d, "live-tmp"), os.path.join(current, "tmp")
+            os.makedirs(tmp_root)
+            os.makedirs(keep)
+            plan = {"prepared_at": "2026-11-19T20:53:00Z", "entries": [{"session": "s1"}], "tmp_root": tmp_root}
+            with open(os.path.join(current, "plan.json"), "w") as fh:
+                json.dump(plan, fh)
+            with open(os.path.join(keep, "deleted-since-prepare"), "w") as fh:
+                fh.write("kept")
+            messages = []
+            of_capacity.reboot_cancel(log=messages.append)
+            retired, = glob.glob(os.path.join(d, "cancelled-*"))
+            self.assertIn(retired, messages[0])
+            self.assertFalse(os.path.exists(current))
+            self.assertEqual(of_capacity.load_reboot_plan(os.path.join(retired, "plan.json")), plan)
+            with open(os.path.join(retired, "tmp", "deleted-since-prepare")) as fh:
+                self.assertEqual(fh.read(), "kept")
+            self.assertEqual(os.listdir(tmp_root), [])
+            emit.assert_called_once_with("capacity_reboot_cancelled", {"prepared_at": plan["prepared_at"], "sessions": 1},
+                                         position=mock.ANY)
+
+    def test_cancel_without_a_plan(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                mock.patch.object(of_capacity.of_events, "emit") as emit:
+            messages = []
+            of_capacity.reboot_cancel(log=messages.append)
+            self.assertEqual(messages, ["no restart prepared"])
+            self.assertEqual(os.listdir(d), [])
+            emit.assert_not_called()
+
     def test_flags_from_args(self):
         args = ('claude --resume 1234 -n k8s_keeper --settings {"autoMemoryDirectory": "/Users/alex/.local/state/of/'
                 'memory/acme/k8s_keeper"} --model claude-opus-5-5 --effort xhigh --dangerously-skip-permissions hi')

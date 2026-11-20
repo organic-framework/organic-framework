@@ -13,6 +13,7 @@ Pure functions take their inputs; the CLI (`bin/of`) wires them to the registrie
 """
 
 import calendar
+from datetime import datetime, timezone
 import glob
 import json
 import os
@@ -2980,6 +2981,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
 # herdr brought the pane back and in a new pane of the same workspace and tab otherwise, production first.
 
 REBOOT_DIR = os.path.join(STATE_DIR, "capacity", "reboot")
+REBOOT_PAUSE_MAX_H = 2
 _ARG_MODEL = _re.compile(r"(?:^|\s)--model[ =](\S+)")
 _ARG_EFFORT = _re.compile(r"(?:^|\s)--effort[ =](\S+)")
 _ARG_MEMORY = _re.compile(r'"autoMemoryDirectory"\s*:\s*"([^"]+)"')
@@ -3205,6 +3207,74 @@ def load_reboot_plan(path=None):
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def _last_boot_epoch():
+    """Read the last boot time in seconds since the epoch, if the OS reports it."""
+    try:
+        if sys.platform == "darwin":
+            output = subprocess.check_output(["/usr/sbin/sysctl", "-n", "kern.boottime"], text=True,
+                                             stderr=subprocess.DEVNULL, timeout=5)
+            match = _re.search(r"\bsec\s*=\s*(\d+)", output)
+            return int(match[1]) if match else None
+        if sys.platform.startswith("linux"):
+            with open("/proc/stat") as fh:
+                for line in fh:
+                    key, _, value = line.partition(" ")
+                    if key == "btime":
+                        return int(value)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _reboot_pauses_balance(now, log):
+    """True while a prepared restart should hold balancing: a move would resume from a stale transcript copy. Only for
+    REBOOT_PAUSE_MAX_H after `reboot prepare`, unless the machine has booted since (then until restore): on 2026-11-19
+    a precautionary prepare at 20:53Z, with the Mac on battery, held every rescue for six hours after power came back,
+    and 18 sessions stood on a spent account while another had room. An unknown boot time never makes it endless."""
+    plan = load_reboot_plan()
+    if not plan:
+        return False
+    prepared_at = plan.get("prepared_at")
+    try:
+        prepared = calendar.timegm(time.strptime(prepared_at, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        log(f"balance: cannot read the restart preparation time {prepared_at!r}, balancing resumes")
+        return False
+    # On 2026-11-19 power returned before the Mac restarted. The plan blocked rescue for six hours.
+    if now - prepared >= REBOOT_PAUSE_MAX_H * 3600:
+        boot = _last_boot_epoch()
+        if boot is None or boot <= prepared:
+            log(f"balance: a restart prepared at {prepared_at} is stale (no restart after {REBOOT_PAUSE_MAX_H} h); "
+                "balancing resumes; `of capacity reboot cancel` retires it, `reboot restore` still restores "
+                "after a real restart")
+            return False
+    log(f"balance: paused, a restart of the Mac was prepared at {prepared_at} (`of capacity reboot restore` ends it)")
+    return True
+
+
+def reboot_cancel(dry_run=False, log=print):
+    """`of capacity reboot cancel`: retire a prepared restart that will not happen, to reboot/cancelled-<time>/, with
+    nothing restored: `reboot restore` would put back the /private/tmp files sessions deleted since the prepare."""
+    plan = load_reboot_plan()
+    if not plan:
+        log("no restart prepared")
+        return
+    prepared_at, sessions = plan.get("prepared_at"), len(plan.get("entries") or [])
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    retired = os.path.join(REBOOT_DIR, f"cancelled-{stamp}")
+    description = f"restart plan prepared at {prepared_at} ({sessions} session(s))"
+    if dry_run:
+        log(f"would retire {description} to {short(retired)}")
+        return
+    try:
+        os.rename(_reboot_current(), retired)
+    except FileNotFoundError:
+        log("no restart prepared")
+        return
+    log(f"retired {description} to {short(retired)}")
+    of_events.emit("capacity_reboot_cancelled", {"prepared_at": prepared_at, "sessions": sessions}, position=actor())
 
 
 def live_entries(positions, hold=(), log=print):
@@ -5959,10 +6029,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     last 30 minutes, plan, and move (between turns, in the same herdr pane). Returns the plan."""
     policy = policy or load_policy()
     now = now or time.time()
-    plan = load_reboot_plan()
-    if plan and not dry_run:  # a restart is prepared: a move now would resume from a stale transcript copy
-        log(f"balance: paused, a restart of the Mac was prepared at {plan.get('prepared_at')} "
-            "(`of capacity reboot restore` ends it)")
+    if not dry_run and _reboot_pauses_balance(now, log):
         return []
     import fcntl
     lockf = os.path.join(STATE_DIR, "capacity", "balance.lock")
