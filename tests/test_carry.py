@@ -277,10 +277,30 @@ class CopyCommands(unittest.TestCase):
         self.assertIn("-i '" + spaced + "'", c[c.index("-e") + 1])  # a path with a space stays one word
         self.assertIn("--bwlimit=1000", push[1])
         self.assertEqual(push[1][-3:], ["--files-from=/b/files.txt", "/", "of@host:/c/b/files/"])
-        pull = of_carry.copy_commands("/b", self.key, frm="of@host:/c/b")
-        self.assertEqual(pull[-1][-3:], ["--files-from=/b/files.txt", "of@host:/", "/b/files/"])
+        pull = of_carry.copy_commands("/b", self.key, frm="of@host:/c/b", wrapper=[])
+        base = ["rsync", "-a", "--chmod=go-rwx", "--partial", "--bwlimit=25000", "-e", ssh]
+        self.assertEqual(pull, [base + ["of@host:/c/b/plan.json", "/b/"],
+                                base + ["of@host:/c/b/files.txt", "/b/"],
+                                base + ["-R", "--files-from=/b/files.txt", "of@host:/", "/b/files/"]])
         with self.assertRaises(of_carry.CarryError):
             of_carry.copy_commands("/b", self.key, to="a:/x", frm="b:/y")
+
+    def test_first_push_creates_the_remote_directory_and_its_parents(self):
+        for dest, folder in (("of@host:/carry/x", "/carry/x"), ("of@host:~/x", "~/x"), ("of@host:~", "~"),
+                             ("of@host:", "~"), ("of@[::1]:/carry/a:b", "/carry/a:b")):
+            with self.subTest(dest=dest):
+                first, second = of_carry.copy_commands("/b", self.key, to=dest)
+                self.assertIn(f"--rsync-path=umask 077 && mkdir -p -- {folder} && rsync", first)
+                self.assertFalse(any(arg.startswith("--rsync-path") for arg in second))
+
+    def test_a_push_folder_a_shell_would_read_stops_copy_before_rsync(self):
+        # openrsync drops the quotes of --rsync-path, so such a folder would reach the remote shell as words
+        run = mock.Mock()
+        for folder in ("/carry/x\ny", "/carry/x\0y", "/carry/$x", "/carry/`x`", "/carry/x y", "/carry/'x'",
+                       "/carry/x;y", "/carry/x*", "~of/x"):
+            with self.subTest(folder=folder), self.assertRaisesRegex(of_carry.CarryError, "--to directory"):
+                of_carry.copy(os.path.join(self.d, "b"), self.key, to=f"of@host:{folder}", run=run)
+        run.assert_not_called()
 
     def test_copy_checks_the_host_against_the_named_file(self):
         known_hosts = Path(self.d, "agent host keys")

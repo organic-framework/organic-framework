@@ -597,6 +597,22 @@ def background(which=shutil.which):
     return ["nice", "-n", "19"]
 
 
+# A push's folder, as rsync's remote command names it: macOS's openrsync splits --rsync-path into words itself and drops
+# their quotes, so a quoted folder reaches the remote shell unquoted (2026-11-20: "a b/c" made "a" and ~/b/c on the
+# agent host). Only characters no shell reads are taken, after an optional ~ or ~/ that the remote shell expands.
+_PUSH_DIR = re.compile(r"(?:~\Z|~/)?[A-Za-z0-9._/@+=,:-]*\Z")
+
+
+def _push_rsync_path(to):
+    """The --rsync-path that makes a push's destination folder and its parents, mode 700, before rsync starts there."""
+    # Strip the host prefix, allowing a bracketed IPv6 address to contain colons.
+    directory = re.sub(r"^(?:[^@:/]+@)?(?:\[[^]]+\]|[^:/]+):", "", to, count=1) or "~"
+    if not _PUSH_DIR.match(directory):
+        raise CarryError(f"--to directory {directory!r} may hold only letters, digits and . _ / @ + = , : - after an "
+                         "optional ~/ (rsync's remote command keeps no quotes)")
+    return f"--rsync-path=umask 077 && mkdir -p -- {directory} && rsync"
+
+
 def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=None, known_hosts=None):
     """Pure: the rsync commands of a copy, push (`to`, user@host:DIR) or pull (`frm`, user@host:DIR prepared there),
     each at background priority (`wrapper`, else this machine's `background()`) with the bandwidth limit, over ssh
@@ -615,7 +631,7 @@ def copy_commands(bundle, key, to=None, frm=None, bwlimit=BWLIMIT_KBPS, wrapper=
     b = bundle.rstrip("/")
     if to:
         dest = to.rstrip("/")
-        return [base + [f"{b}/plan.json", f"{b}/files.txt", f"{dest}/"],
+        return [base + [_push_rsync_path(to), f"{b}/plan.json", f"{b}/files.txt", f"{dest}/"],
                 base + ["-R", f"--files-from={b}/files.txt", "/", f"{dest}/files/"]]
     src = frm.rstrip("/")
     return [base + [f"{src}/plan.json", f"{b}/"], base + [f"{src}/files.txt", f"{b}/"],
