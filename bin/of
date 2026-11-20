@@ -3195,7 +3195,10 @@ def cmd_asks(args):
             for a in sorted(of_asks.current_asks(conn)["asks"], key=lambda x: x["ts"]):
                 if a.get("ref") or a.get("state") not in ("open", "escalated"):
                     continue
-                ref = of_events.next_ref(of_events.ask_org(a["event_id"]))
+                ref = of_events.card_ref(of_events.ask_org(a["event_id"]), a["event_id"])
+                if not ref:
+                    print(f"no card id for {a['event_id'][-8:]}: its server did not answer", file=sys.stderr)
+                    continue
                 of_events.emit("ask_ref", {"ask_id": a["event_id"], "ref": ref},
                                event_id=of_events.stable_id("ask_ref", a["event_id"]),
                                org=of_events.ask_org(a["event_id"]), position=a.get("position"))
@@ -4655,9 +4658,10 @@ def cmd_ask(args):
     if src and to != "founder":
         raise OfError(f"--escalates: your asks go to {to}, not to the founder; answer {src['position']} yourself "
                       f"(of send {src['position']} --reply-to {src['event_id'][-8:]} …)")
-    try:  # its card id, here so the asker can name it (of_events stamps every other writer's)
-        ref = of_events.next_ref(me.get("_org"))
-    except Exception:  # noqa: BLE001
+    ask_id = getattr(args, "event_id", None) or of_events._uuid7()
+    try:  # its card id from the organization's server, here so the asker can name it (of_events stamps the others')
+        ref = of_events.card_ref(me.get("_org"), ask_id)
+    except Exception:  # noqa: BLE001 - filed without an id: the pulse gets it (of_events.backfill_refs)
         ref = None
     eid = of_events.emit("agent_question", {
         **({"ref": ref} if ref else {}),
@@ -4674,7 +4678,7 @@ def cmd_ask(args):
         **({"yes_option": yes} if yes is not None else {}),
         **({"escalated_from": src["event_id"]} if src else {})},
         position=me["name"], org=me.get("_orgid"), session=_asker_session(me, args.sender),
-        event_id=getattr(args, "event_id", None))
+        event_id=ask_id)
     if src:  # the unit owner's rewrite: OF's copy is superseded (of_asks), or there is none yet and none will come
         if src["state"] == "open":
             import of_asks_answer
@@ -6275,6 +6279,11 @@ def cmd_pulse(args):
     observed = _t0.time()  # what the projection saw: a nudge re-checks declarations after this (of_pulse.still_waits)
     rows = of_pulse.load_rows(conn)  # PULSE_DAYS (3) and each position's latest declaration, never the whole log
     asks = of_pulse.current_asks(conn)
+    try:  # the asks this machine filed while its server could not give their card ids (of_architect, msg 01a1faa1-1fa0)
+        import of_events
+        of_events.backfill_refs([a for a in asks if isinstance(a, dict)], log=(lambda m: None) if args.quiet else print)
+    except Exception as e:  # noqa: BLE001 - the pulse runs on without them
+        print(f"card ids: {e}")
     # herdr's agents and those in tmux or screen (of_herdr, 2026-11-11): every pulse path types through
     # of_relay_client.herdr_deliver, which takes tmux: and screen: panes; without herdr the pulse still runs
     agents = live_agents_or_none(warn=False)
