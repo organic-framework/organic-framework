@@ -235,7 +235,11 @@ def _hold(conn, org, config, since, since_sha, snap=None):
     is seen, not only the state at the end. The final delta also waits until the flag is older than the server's
     cache, a long poll and a margin, so no request that read it unset is still writing (sec_keeper, round 4, msg
     01a1f6ea-b786)."""
-    queued = _queued_batches(conn, org)
+    # The bulk is a seed for a live organization, whose sessions ship every few minutes: what it misses, or a day a
+    # batch changes while it runs, the final delta carries, since it takes every day whose fingerprint changed and
+    # keeps every check here. So batches, queued ones and new ones, are the final delta's to hold (2026-11-20,
+    # of_server: the first bulk of a live organization ran 27 minutes and was refused for a batch that arrived).
+    queued = _queued_batches(conn, org) if since is not None else 0
     if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
         raise ExportError(f"{queued} of {org}'s batches are still queued or dead: wait for the writer, or replay or "
                           "drop the dead ones, with the organization marked moving (of server moving)")
@@ -260,7 +264,7 @@ def _hold(conn, org, config, since, since_sha, snap=None):
     now = {"batch": _max(conn, "batches", "seq"), "redaction": _max(conn, "redactions", "rowid"),
            "flag": (_flag_token(flag), st.st_ino, st.st_mtime_ns) if st else None}
     if snap is not None:
-        if any(_names(by, org) for (by,) in conn.execute(
+        if since is not None and any(_names(by, org) for (by,) in conn.execute(
                 "SELECT by_org FROM batches WHERE seq > ?", (snap["batch"],))) if "batches" in _tables(conn) else False:
             raise ExportError(f"a batch of {org} arrived while the export ran: export again")
         if now["redaction"] > snap["redaction"]:
@@ -858,15 +862,16 @@ def _ch_columns(ch, source):
     return cols
 
 
-def _ch_days(ch, table, cols):
+def _ch_days(ch, table, cols, day=None):
     """Per UTC day, with FINAL: [count, first key, last key, content hash], the hash ClickHouse's XOR of each row's
     cityHash64 over COLS. A late row, a redaction or a row replaced in place changes the day's entry (the user
     organization's sec_keeper, msg 01a1f638-5862: a delta by event day missed them)."""
     sql = (f"SELECT {table.date} AS day, count(), toString(min(tuple({table.keys}))), "
            f"toString(max(tuple({table.keys}))), toString(groupBitXor(cityHash64({', '.join(cols)}))) "
-           f"FROM {table.source} FINAL{table.where()} GROUP BY day ORDER BY day FORMAT JSONCompactEachRow")
+           f"FROM {table.source} FINAL{table.where(f'{table.date} = {{d:Date}}') if day else table.where()} "
+           "GROUP BY day ORDER BY day FORMAT JSONCompactEachRow")
     try:
-        rows = map(json.loads, b"".join(ch.query(sql, dict(table.params))).splitlines())
+        rows = map(json.loads, b"".join(ch.query(sql, dict(table.params, **({"d": day} if day else {})))).splitlines())
         return {_ch_day(d): [int(n), first, last, str(h)] for d, n, first, last, h in rows}
     except Exception:
         raise ExportError(f"{table.name}: cannot read daily totals") from None
@@ -961,7 +966,7 @@ def _export_clickhouse(ch, databases, out, m, recipient, base=None):
         if any(v[0] for v in carry.values()):
             _private_dir(os.path.join(root, table.name))
         sql = f"SELECT * FROM {table.source} FINAL{table.where(f'{table.date} = {{d:Date}}')} FORMAT Native"
-        for d, v in carry.items():
+        for d, v in list(carry.items()):
             if not v[0]:
                 continue
             rel = _ch_file(table.name, d, m["encrypted"])
@@ -970,6 +975,15 @@ def _export_clickhouse(ch, databases, out, m, recipient, base=None):
                 m["files"][rel] = _write_file(os.path.join(out, rel), blocks, recipient)
             except Exception:
                 raise ExportError(f"{table.name} {d}: export failed") from None
+            # The day's totals were read before its rows: read them again, so a write between the two never leaves
+            # a file that disagrees with its manifest (2026-11-20, of_server)
+            if _ch_days(ch, table, cols, day=d).get(d, list(EMPTY_DAY)) != v:
+                if base is not None:   # the final delta is made with nothing writing
+                    raise ExportError(f"{table.name} {d} changed while it was read: export again")
+                os.unlink(os.path.join(out, rel))   # the bulk leaves it, and its fingerprint, to the final delta
+                del m["files"][rel], carry[d], prints[d]
+                m.setdefault("clickhouse_deferred", {}).setdefault(table.name, []).append(d)
+        summaries[table.name]["rows"] = sum(x[0] for x in carry.values())
     return current_all
 
 
