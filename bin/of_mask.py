@@ -182,6 +182,9 @@ _NOT_KEY = re.compile(r"(?i)sha|hash|digest|checksum|code|request|tx|block|commi
 
 _PUBLIC_BEFORE = re.compile(r"(?i)\b(?:public|pub|verifying|verification)[\s_-]*$")
 _HEX64_ONLY = re.compile(r"(?:0[xX])?[0-9a-fA-F]{64}")
+# An OpenSSH fingerprint, `SHA256:` and the 43 unpadded base64 characters of a public key's hash: public, and needed
+# to check a host (2026-11-20, of_server: a host key's fingerprint in a relay message was masked as a generic key)
+_SSH_FINGERPRINT = re.compile(r"[A-Za-z0-9+/]{43}")
 
 
 def _evm_keys(text):
@@ -300,6 +303,9 @@ class Detector:
                         continue
                 if r.id == "generic-api-key" and _HEX64_ONLY.fullmatch(secret):
                     continue  # a bare 64-hex value is judged by its context in _evm_keys, like a tx hash
+                if r.id == "generic-api-key" and text[max(0, s - 7):s] == "SHA256:" and \
+                        _SSH_FINGERPRINT.fullmatch(secret) and not text[e:e + 1].isalnum():
+                    continue  # an OpenSSH fingerprint, a public key's hash
                 hits.append((s, e, r.id))
         if _HEX64.search(text):
             hits += _evm_keys(text)
