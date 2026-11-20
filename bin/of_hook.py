@@ -449,7 +449,47 @@ def herdr_call(method, params):
         return None
 
 
+# A Codex session's hook (W4 of hand-over 9ee1db9f): its transcript is a rollout file, and its payloads carry a
+# turn_id, which Claude Code's do not
+_ROLLOUT = re.compile(r"/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]*\.jsonl(?:\.zst)?$")
+CODEX = [False]
+
+
+def is_codex(hook):
+    return bool(_ROLLOUT.search(str((hook or {}).get("transcript_path") or ""))) or "turn_id" in (hook or {})
+
+
+def report_codex_session(hook, env=None, run=None):
+    """Tell herdr which Codex session runs in this pane, as herdr's own SessionStart hook does, which Codex never runs
+    under W3's allow_managed_hooks_only (of_herdr's report organic-framework-build reports/codex-pane-states-w8-
+    2026-11-20.md, gap 3; of_server's decision eb72245). herdr keeps it only from its official source for the agent
+    and only with a growing seq; no resume arguments (OF resumes with of resume-command). Only in a herdr pane, with a
+    transcript, and not from a nested Codex (CODEX_THREAD_ID set and another session). Never stops Codex's start:
+    a short timeout, every failure ignored. Returns the argv it ran, or None."""
+    env = os.environ if env is None else env
+    sid, pane = hook.get("session_id"), env.get("HERDR_PANE_ID")
+    if env.get("HERDR_ENV") != "1" or not pane or not env.get("HERDR_SOCKET_PATH") or not sid:
+        return None
+    if not hook.get("transcript_path"):
+        return None
+    if env.get("CODEX_THREAD_ID") and env.get("CODEX_THREAD_ID") != sid:
+        return None
+    import shutil
+    herdr = shutil.which("herdr", path=env.get("PATH")) or os.path.expanduser("~/.local/bin/herdr")
+    argv = [herdr, "pane", "report-agent-session", pane, "--source", "herdr:codex", "--agent", "codex",
+            "--seq", str(time.time_ns()), "--agent-session-id", str(sid)]
+    if hook.get("source"):
+        argv += ["--session-start-source", str(hook["source"])]
+    try:
+        (run or subprocess.run)(argv, timeout=1, capture_output=True, env=dict(env))
+    except Exception:  # noqa: BLE001 - herdr's own script ignores every failure here too
+        pass
+    return argv
+
+
 def herdr_state(state, message=None):
+    if CODEX[0]:
+        return   # herdr reads a Codex pane's states itself (W8); this reporter speaks for Claude Code only
     pane = os.environ.get("HERDR_PANE_ID")
     if not pane:
         tmux_state(state, message)
@@ -693,6 +733,7 @@ ASK_DIALOG_DENY = ("Organic Framework: a position never asks its owner in a dial
 def handle(event, hook):
     global OUTPUT, _PRE_TOOL, _SESSION
     sid = hook.get("session_id")
+    CODEX[0] = is_codex(hook)   # a Codex session's hook: no Claude state reports to herdr
     _SESSION = None if hook.get("agent_id") else sid  # a subagent's call never reports its parent's pane state
     sess = load_session(sid)
     subagent = bool(hook.get("agent_id"))
@@ -723,6 +764,8 @@ def handle(event, hook):
     changed = False
 
     if event == "SessionStart":
+        if CODEX[0]:
+            report_codex_session(hook)
         sess.update(model=hook.get("model") or sess.get("model"), started=time.time())
         changed = True
         write("session_start", {"source": hook.get("source"), "title": hook.get("session_title")}, hook, sess, index)
