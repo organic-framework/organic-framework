@@ -4,10 +4,22 @@ Status: **Accepted v1**, 2026-11-05 (`of_architect`); the central store runs on 
 
 ## Two tiers
 
-1. **Raw tier: every byte.** Everything the harnesses and the runtime produce, kept as produced and compressed. Nothing is dropped and nothing is masked.
+1. **Raw tier: every byte.** Everything the harnesses and the runtime produce, kept as produced and compressed. Nothing is dropped and nothing is masked, except what a content redaction's register names (below).
 2. **Typed layer: events.** The event kinds of [`events.md`](events.md), as rows that reference raw records. Metrics, `of asks`, `of who` states and the desk read this layer.
 
 The typed layer can be rebuilt from the raw tier at any time, for example after a classifier improves. The raw tier cannot be rebuilt from anything.
+
+**A content redaction reaches the raw tier through a register** (2026-11-20, `of_server`; the founder's yes on card OF-170, hand-over 7da5d129). The owner may have records' content replaced by a mark everywhere OF holds it except the harness's own transcript file. That file still holds the content. `of archive` copies the file again whole when it changes other than by an append, or when the session's file appears in another account's folder after a move, and the content would come back. `~/.local/state/of/redaction/archive-register.jsonl` names those records, by session and record ids only (a uuid, or a line's sha256), with their mark:
+- every raw copy stores them as the mark: `of archive` passes what it stores through `of_redact.archive_filter`, in a whole copy and in an appended frame (`of_platform`, 2026-11-20);
+- a session is named by its file name's stem, by the uuid that ends a Codex rollout's name, or by a folder (a subagent's transcript);
+- each entry carries the owner's card that approved it (`ask`). The reader refuses an entry without one, and keeps an entry only when the event log holds the owner's yes on that card: the option the card marks as its yes, else its first, at the version he answered. A line written by any other hand names some card and counts for nothing;
+- its one writer is the owner's, in a terminal: `of redact --archive-register --session S --keys-file F --mark "…" --ask CARD --reason "…"` (`of_redact.archive_register_add`). It refuses an agent's session, and a card without the owner's yes, and records `of.redacted` with the session, the number of keys and the card, never a record;
+- a register that does not read makes the archive skip the file rather than copy it unmarked;
+- the register decides what the raw tier keeps, so no agent session writes it by any form (the guard's rule for it: `of_platform`, 2026-11-20, to come; `of_secrets-review` and `of_release` on organic-framework PR 488).
+
+The register marks only the records it names. A later record that quotes the matter is copied whole: a summary, a compaction record, a tool result, or the session's own next turn. Whoever builds an entry looks for those by the matter's distinct fragments, in the session's later records, and names them too.
+
+This is the one place where the raw tier holds other bytes than were produced.
 
 ## What is captured
 
