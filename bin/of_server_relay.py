@@ -894,6 +894,31 @@ class Relay:
             self.cond.notify_all()
         return ids
 
+    def redact_text(self, msg_ids, mark):
+        """The server host replaces relay messages' text with MARK, a content redaction the owner approved
+        (of_server.relay_redact). Each row keeps its addresses, state and times; its text and body_sha become the
+        mark's. The freed bytes are zeroed (secure_delete) and the WAL truncated, so no page or frame keeps the old
+        text. Returns ([(msg_id, to_org, from_org)] of the rows changed, whether the WAL was truncated): a reader on an
+        older snapshot can hold it, and a later run, with nothing left to change, truncates it."""
+        mark = str(mark or "").strip()
+        if not mark:
+            raise ValueError("a mark is required")
+        sha = hashlib.sha256(mark.encode()).hexdigest()
+        with self.app.store.conn() as c:
+            was = c.execute("PRAGMA secure_delete").fetchone()[0]
+            c.execute("PRAGMA secure_delete = ON")
+        try:
+            with self.app.store.tx() as c:
+                rows = [r for i in dict.fromkeys(msg_ids) for r in c.execute(
+                    "SELECT msg_id, to_org, from_org FROM messages WHERE msg_id = ? AND text IS NOT ?", (i, mark))]
+                for msg_id, _, _ in rows:
+                    c.execute("UPDATE messages SET text = ?, body_sha = ? WHERE msg_id = ?", (mark, sha, msg_id))
+        finally:
+            with self.app.store.conn() as c:
+                c.execute(f"PRAGMA secure_delete = {int(was)}")
+                busy = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        return [tuple(r) for r in rows], not busy
+
     def drop(self, msg_ids, reason):
         """The server host drops queued messages nobody can ever take (a target typed wrong): they become
         `expired` with reason `dropped: <reason>`; `requeue(ids, state="expired")` undoes it."""
