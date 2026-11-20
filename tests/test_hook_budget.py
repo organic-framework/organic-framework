@@ -25,7 +25,8 @@ MEASURE = """
 import json, resource, subprocess, sys
 r = subprocess.run(sys.argv[1:], input=sys.stdin.read(), capture_output=True, text=True, timeout=60)
 u = resource.getrusage(resource.RUSAGE_CHILDREN)
-print(json.dumps({"cpu": u.ru_utime + u.ru_stime, "rss": u.ru_maxrss, "stderr": r.stderr[-2000:]}))
+print(json.dumps({"cpu": u.ru_utime + u.ru_stime, "rss": u.ru_maxrss, "traceback": "Traceback" in r.stderr,
+                  "stderr": r.stderr[-2000:]}))
 """
 
 
@@ -45,7 +46,7 @@ class HookBudgetTest(unittest.TestCase):
                     r = subprocess.run([sys.executable, "-c", MEASURE, sys.executable, ENTRY, ev],
                                        input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=90)
                     got = json.loads(r.stdout.strip().splitlines()[-1])
-                    self.assertNotIn("Traceback", got["stderr"], ev)
+                    self.assertFalse(got["traceback"], f"{ev}: {got['stderr']}")   # decided in the child, whole
                     best = got["cpu"] if best is None else min(best, got["cpu"])
                     peak = max(peak, got["rss"])
                 self.assertLess(best, CPU_S, f"{ev}: {best:.3f} s of CPU")
