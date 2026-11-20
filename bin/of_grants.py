@@ -296,6 +296,12 @@ def decide(grants, action):
 
 # ------------------------------------------------------------ store, chain
 
+def _entry_name(o):
+    """An orgs.yaml entry's name: its name:, else its path's folder. The same line as of_init.org_entry_name, kept here
+    since the server's image carries of_grants and not of_init (of_review on organic-framework PR 446)."""
+    return o.get("name") or (os.path.basename(os.path.expanduser(str(o["path"])).rstrip("/")) if o.get("path") else None)
+
+
 def load(orgs_file=None):
     """All grants of the organizations listed in orgs.yaml: {org: [grant]}."""
     import yaml
@@ -303,12 +309,11 @@ def load(orgs_file=None):
     with open(orgs_file) as fh:
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(orgs_file))
-    import of_init
     out = {}
     for o in doc.get("orgs") or []:
         if not o.get("path"):
             continue  # joined through a server only (an enrollment writes server: and no path:): no checkout here
-        name = of_init.org_entry_name(o)   # its name:, else its folder's, as bin/of names it (of_review, PR 446)
+        name = _entry_name(o)   # its name:, else its folder's, as bin/of names it (of_review, PR 446)
         path = os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "grants.yaml")
         if os.path.exists(path):
             with open(path) as fh:
@@ -325,8 +330,7 @@ def grants_path(org, orgs_file=None):
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(orgs_file))
     for o in doc.get("orgs") or []:
-        import of_init
-        if of_init.org_entry_name(o) == org or o.get("name") == org:
+        if _entry_name(o) == org:
             if not o.get("path"):
                 raise KeyError(f"organization {org!r} has no checkout in orgs.yaml (joined through a server only)")
             return os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "grants.yaml")

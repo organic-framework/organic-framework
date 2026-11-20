@@ -213,6 +213,12 @@ class OrgsFileTest(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "no checkout"):
             G.grants_path("joined", orgs)
 
+    def test_the_entry_name_is_of_inits(self):
+        """of_grants keeps its own copy of the line (the server's image has no of_init): the two must agree."""
+        import of_init
+        for o in ({"name": "a", "path": "x"}, {"path": "~/w/beta/"}, {"path": "gamma"}, {"server": "https://h"}, {}):
+            self.assertEqual(G._entry_name(o), of_init.org_entry_name(o), o)
+
 if __name__ == "__main__":
     unittest.main()
 
