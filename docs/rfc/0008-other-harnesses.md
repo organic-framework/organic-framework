@@ -93,7 +93,7 @@ A Codex session in a herdr pane holds a position like a Claude Code session, whe
 
 Until then, no position is held by Codex, and no Codex session runs with the account's own config in an organization's checkout. RFC 0003's browser executor (§4.1 there) waits for the same four conditions; it is not an exception. Muse holds no position: whether it has hooks OF can use is unknown (it serves `mxp` and `acp` protocols); `of_lab` finds out when a position needs it.
 
-The founder said yes to building rung 2 on 2026-11-20 (prompt `01a1f8ba-17a0`: Claude could not be bought for another week, and Codex could) and to its plan (prompt `01a1f8d2-c94e`; organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The sections below make the four conditions concrete. They read Codex 0.170 from its source and documentation (organic-framework-build `reports/research/codex-0.170-as-a-holder-2026-11-20.md`, every fact with its link; the hook events, the `hooks` feature and the options named below were checked in the 0.169.1 binary).
+The founder said yes to building rung 2 on 2026-11-20 (prompt `01a1f8ba-17a0`). His reason, prompt `01a1f87e-ee28` the same day: "Realistically we cannot buy more Claude for another week, but we can buy Codex." He also said yes to its plan (prompt `01a1f8d2-c94e`; organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The sections below make the four conditions concrete. They read Codex 0.170 from its source and documentation (organic-framework-build `reports/research/codex-0.170-as-a-holder-2026-11-20.md`, every fact with its link; the hook events, the `hooks` feature and the options named below were checked in the 0.169.1 binary).
 
 ### 4.1 What any harness that holds a position gives
 
