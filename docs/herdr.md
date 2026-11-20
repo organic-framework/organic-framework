@@ -206,6 +206,52 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   A session with no message yet cannot be resumed after a restart ("No conversation found"). A position bound only
   by its name loses that name at a restart until the keeper writes `holder.session`.
 
+## herdr's server on Linux: a user unit
+
+- **Why.** On Linux, herdr 0.9.5 keeps its server in the session that started it. `prepare_server_process` does
+  nothing outside macOS (`src/platform/mod.rs`), and an attach that finds no server spawns one detached from the
+  client but in the same session (`src/server/autodetect.rs`, `spawn_server_daemon`). A server started from an ssh
+  login ends with that login's session scope, and every pane and agent ends with it. On the agent host, `of`'s
+  server ran in an sshd session scope, and so did a user organization's (`of_agent-server`, msgs `01a1faa3-4174` and
+  `01a1fa98-86c9`; hand-over `763bfda4`).
+- **`of herdr service install`**, run as the contour's user, before anything starts herdr there (INSTALL.md, §2):
+  - It writes `~/.config/systemd/user/of-herdr.service` and enables it. When no server runs, it starts it.
+  - It never stops a running server, because every pane would end. A server already running outside the unit keeps
+    running until it stops or the machine restarts. To move it under the unit now: `herdr server stop`, then
+    `systemctl --user start of-herdr.service`. Every pane ends either way, as at a reboot, and OF's sessions come
+    back as below.
+  - `of herdr service status` exits 0 only when the default server runs under the unit. It finds the server by the
+    process that holds the socket `herdr status server` names, so a lab server with its own XDG folders does not
+    count. `uninstall` disables and removes the unit, and never stops it.
+  - **Linger**, once per user, by the host's admin: `sudo loginctl enable-linger <user>`. Without it the unit starts
+    only with a login and ends with the last one. The install and the status say which.
+- **What the unit sets, and why:**
+  - **`ExecStart=env -u OF_AUTOMATION herdr server`.** The unit sets `OF_AUTOMATION=1`, like every unit OF writes,
+    but herdr's panes inherit the server's environment (`src/pane.rs`), and a pane is a person's or an agent's
+    terminal. Under `OF_AUTOMATION=1`, the owner's own commands in a pane (`of diff approve`, `of access`) would
+    refuse him. `ExecStop=herdr server stop`.
+  - **`SSH_AUTH_SOCK=` empty.** herdr still gives a pane the agent of a client that attached with one
+    (`src/platform/ssh_agent.rs`).
+  - **`PATH` as `of init`'s services have it.** Linux panes start a non-login shell (`src/pane.rs`,
+    `shell_mode_uses_login_shell`): they read the shell's rc file and never its profile.
+  - **`Restart=on-failure`, except on exit status 1.** herdr exits with 1 when another server holds its socket, and
+    a restart could only fail again.
+- **Upgrades restart it.** A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the
+  new server as a child and ends the old one (`src/server/handoff.rs`). systemd takes that exit for the end of the
+  service and stops what is left in its cgroup. After herdr's package is upgraded, `systemctl --user restart
+  of-herdr.service`.
+- **A desktop is another case.** The user manager's environment may lack a desktop session's variables (`DISPLAY`,
+  `WAYLAND_DISPLAY`), and a unit's panes inherit it. The unit is for a machine's contour users, who have no desktop.
+- **Checked on 2026-11-21 on the agent host, as `of`,** with the same unit text under another name and with its own
+  XDG folders, so the live server was not touched:
+  - the server started in `user@1001.service/app.slice/<unit>`, and neither it nor a pane had `OF_AUTOMATION`;
+  - the pane had `SSH_AUTH_SOCK` empty, no `SSH_CONNECTION`, `LANG`, and `PATH` with `~/.local/bin`, where it found
+    `of` and `claude`;
+  - `systemctl --user stop` ended it through `ExecStop`.
+
+  `of herdr service status` on the same host found the live server in `session-161.scope`, outside any unit. Not
+  run yet: a reboot under linger and a restart after a crash (a Lab VM run).
+
 ## Resuming OF's sessions after a herdr restart
 
 herdr resumes an agent after its server restarts by typing a command into the pane's new shell. For Claude Code its
