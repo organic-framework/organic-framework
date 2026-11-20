@@ -214,6 +214,9 @@ class ExportTest(unittest.TestCase):
         insert_row(self.src, "batches", batch_id="dead", machine_id="m", state="dead", by_org=json.dumps({"acme": 1}))
         with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
             self.export(out=self.out + "-1")
+        self.src.execute("UPDATE batches SET by_org = NULL")                    # an org-less queued or dead batch
+        with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
+            self.export(out=self.out + "-1b")
         self.src.execute("DELETE FROM batches")
         insert_row(self.src, "batches", batch_id="del", machine_id="m", state="committed", by_org="{}")
         insert_row(self.src, "redactions", redaction_id="r", batch_id="del", state="queued")
@@ -247,6 +250,10 @@ class ExportTest(unittest.TestCase):
         insert_row(self.src, "batches", batch_id="theirs", machine_id="m", state="committed",
                    by_org=json.dumps({"other": 1}))
         ex._hold(self.src, "acme", cfg, None, None, snap)                       # another organization's: no change
+        insert_row(self.src, "batches", batch_id="nobody", machine_id="m", state="committed", by_org="{}")
+        with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):   # an org-less batch: every org's
+            ex._hold(self.src, "acme", cfg, None, None, snap)                    # (sec_keeper, round 5)
+        self.src.execute("DELETE FROM batches WHERE batch_id = 'nobody'")
         insert_row(self.src, "redactions", redaction_id="r9", batch_id="theirs", state="done")
         with self.assertRaisesRegex(ex.ExportError, "redaction arrived"):
             ex._hold(self.src, "acme", cfg, None, None, snap)
