@@ -11,6 +11,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
+import of_asks_answer  # noqa: E402
 import of_redact  # noqa: E402
 
 S = "0b4c8a1e-1111-4a2b-9c3d-5e6f7a8b9c0d"
@@ -42,7 +43,7 @@ class ArchiveRegisterTest(unittest.TestCase):
     def entries(self, keys, session=S):
         p = register({"session": session, "keys": keys, "mark": MARK, "reason": "test", "ask": "OF-170"})
         self.addCleanup(os.unlink, p)
-        return of_redact.archive_register(p)
+        return of_redact._register_lines(p)   # the filter's tests: entries as read; the cards are checked below
 
     def test_a_named_record_is_marked_and_keeps_its_shape(self):
         data = TARGET + b"\n" + KEEP + b"\n"
@@ -118,21 +119,29 @@ class ArchiveRegisterWriterTest(unittest.TestCase):
         import sqlite3
         self.dir = tempfile.mkdtemp()
         self.conn = sqlite3.connect(os.path.join(self.dir, "of.db"))
-        self.conn.execute("CREATE TABLE event (event_id TEXT PRIMARY KEY, ts TEXT, name TEXT, payload TEXT)")
+        self.conn.execute("CREATE TABLE event (event_id TEXT PRIMARY KEY, ts TEXT, name TEXT, payload TEXT, "
+                          "position TEXT, host_id TEXT)")
         self.ask = "01a1f8a0-1111-7000-8000-000000000001"
-        self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T10:00:00Z', 'of.agent_question', ?)",
-                          (self.ask, json.dumps({"ref": "OF-170", "text": "replace it?"})))
+        self.card("OF-170", self.ask)
         self.path = os.path.join(self.dir, "redaction", "archive-register.jsonl")
         self.emitted = []
-        patch = mock.patch.object(of_redact.of_events, "emit", lambda name, payload, **k: self.emitted.append(
-            (name, payload)))
-        patch.start()
-        self.addCleanup(patch.stop)
+        for patch in (mock.patch.object(of_redact.of_events, "emit", lambda name, payload, **k: self.emitted.append(
+                (name, payload))), mock.patch.object(of_asks_answer, "not_the_owner", lambda: None)):
+            patch.start()
+            self.addCleanup(patch.stop)
 
-    def answer(self, grouped=False):
-        payload = {"ask_ids": ["x", self.ask]} if grouped else {"ask_id": self.ask}
-        self.conn.execute("INSERT INTO event VALUES ('01a1f8a0-2222-7000-8000-000000000002', '2026-11-20T10:01:00Z', "
-                          "'of.agent_question_answered', ?)", (json.dumps(payload),))
+    def card(self, ref, eid, text="Replace the matter's records with a mark?"):
+        self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T10:00:00Z', 'of.agent_question', ?, 'of_server', 'm')",
+                          (eid, json.dumps({"ref": ref, "questions": [{"question": text,
+                                                                       "options": ["yes, replace them", "no"]}]})))
+
+    def answer(self, grouped=False, answer="yes, replace them", by="owner", ask=None, n=[0]):
+        ask = ask or self.ask
+        n[0] += 1
+        payload = {"ask_ids": ["x", ask]} if grouped else {"ask_id": ask}
+        payload.update(answer=answer, by=by, via="asks-ui")
+        self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T10:01:00Z', 'of.agent_question_answered', ?, "
+                          "'founder', 'm')", (f"01a1f8a0-2222-7000-8000-{n[0]:012d}", json.dumps(payload)))
 
     def add(self, ask, **kw):
         return of_redact.archive_register_add(self.conn, kw.get("session", S), kw.get("keys", [U1]), MARK, "test", ask,
@@ -142,7 +151,7 @@ class ArchiveRegisterWriterTest(unittest.TestCase):
         self.answer()
         e = self.add("OF-170")
         self.assertEqual((e["ask"], e["ask_id"], e["keys"]), ("OF-170", self.ask, [U1]))
-        self.assertEqual(of_redact.archive_register(self.path)[0]["session"], S)
+        self.assertEqual(of_redact.archive_register(self.path, conn=self.conn)[0]["session"], S)
         self.assertEqual(oct(os.stat(self.path).st_mode & 0o777), "0o600")
         name, payload = self.emitted[0]
         self.assertEqual((name, payload["table"], payload["count"], payload["ask"]), ("redacted", "archive_register",
@@ -159,6 +168,44 @@ class ArchiveRegisterWriterTest(unittest.TestCase):
                 self.add(ask)
         self.assertFalse(os.path.exists(self.path))
         self.assertEqual(self.emitted, [])
+
+    def test_a_no_or_someone_elses_answer_is_no_yes(self):
+        # of_review and of_release on organic-framework PR 488 (probe archive_register_writers.py): an unrelated card
+        # answered no had added an entry
+        self.answer(answer="no")
+        self.answer(answer="yes, replace them", by="of_conductor")
+        with self.assertRaises(ValueError):
+            self.add("OF-170")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_only_the_owner_in_a_terminal_writes(self):
+        self.answer()
+        with mock.patch.object(of_asks_answer, "not_the_owner", lambda: "this runs in an agent's session"):
+            with self.assertRaises(PermissionError):
+                self.add("OF-170")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_the_reader_keeps_an_approved_entry_and_drops_one_written_by_hand(self):
+        self.answer()
+        self.add("OF-170")
+        self.card("OF-171", "01a1f8a0-3333-7000-8000-000000000003")   # asked, never answered yes
+        with open(self.path, "a") as fh:                                 # what G38 keeps agents from: a line by hand
+            fh.write(json.dumps({"session": OTHER, "keys": [U2], "mark": MARK, "reason": "x", "ask": "OF-171"}) + "\n")
+            fh.write(json.dumps({"session": OTHER, "keys": [U3], "mark": MARK, "reason": "x", "ask": "OF-1"}) + "\n")
+        kept = of_redact.archive_register(self.path, conn=self.conn)
+        self.assertEqual([e["session"] for e in kept], [S])
+        data = KEEP + b"\n"
+        self.assertIs(of_redact.archive_filter(f"p/{OTHER}.jsonl", data, kept), data)
+
+    def test_a_store_that_cannot_be_read_refuses_the_register(self):
+        self.answer()
+        self.add("OF-170")
+        bad = os.path.join(self.dir, "not-a-store.db")
+        with open(bad, "w") as fh:
+            fh.write("this is no database")
+        with mock.patch.object(of_redact.of_store, "db_path", lambda: bad):
+            with self.assertRaises(of_redact.RegisterError):
+                of_redact.archive_register(self.path)
 
     def test_a_register_that_does_not_read_is_never_appended_to(self):
         self.answer()

@@ -3823,6 +3823,23 @@ def cmd_redact(args):
     every stored copy, here and on the servers that hold it (bin/of_redact.py)."""
     import of_redact
     import of_store
+    if getattr(args, "archive_register", False):
+        if not (args.session and args.keys_file and args.mark and args.ask and args.reason):
+            raise OfError("usage: of redact --archive-register --session S --keys-file F --mark M --ask CARD --reason R")
+        with open(args.keys_file) as fh:
+            keys = [k.strip() for k in fh if k.strip()]
+        conn = of_store.connect()
+        try:
+            e = of_redact.archive_register_add(conn, args.session, keys, args.mark, args.reason, args.ask)
+        except PermissionError as ex:
+            raise OfError(str(ex))
+        except (ValueError, OSError) as ex:
+            raise OfError(f"of redact --archive-register: {ex}")
+        finally:
+            conn.close()
+        print(f"the raw archive keeps {len(e['keys'])} records of session {e['session']} only as their mark "
+              f"(card {e['ask']}); copies made before keep them until they are passed through it again")
+        return 0
     if not args.reason and not getattr(args, "transcripts", False):
         raise OfError("of redact needs --reason (it is recorded in of.redacted; never the content)")
     conn = of_store.connect()
@@ -8296,6 +8313,13 @@ def main(argv=None):
                     help="the founder's option A: mask secrets in Claude Code's own transcript files (dry run)")
     rd.add_argument("--apply", action="store_true", help="with --transcripts: rewrite the files (only on the founder's yes)")
     rd.add_argument("--json", action="store_true", help="with --transcripts: counts as JSON (names and counts, never values)")
+    rd.add_argument("--archive-register", action="store_true",
+                    help="the owner, in a terminal: have the raw archive keep a session's records only as a mark "
+                         "(docs/storage.md; --session, --keys-file, --mark, --ask, --reason)")
+    rd.add_argument("--session", help="with --archive-register: the session whose records the archive marks")
+    rd.add_argument("--keys-file", help="with --archive-register: the records' uuids or line hashes, one a line")
+    rd.add_argument("--mark", help="with --archive-register: the text each record's content becomes")
+    rd.add_argument("--ask", help="with --archive-register: the owner's card that approved it, answered yes")
     rd.set_defaults(fn=cmd_redact)
     db = sub.add_parser("db", help="the local store: of db stats | forks | index | prompt-origins [--since] [--apply]")
     db.add_argument("action", choices=["stats", "forks", "index", "prompt-origins"])

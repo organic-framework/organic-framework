@@ -495,12 +495,76 @@ def archive_register_path():
     return os.path.join(of_events.STATE_DIR, "redaction", ARCHIVE_REGISTER)
 
 
-def archive_register(path=None):
-    """The register's entries, one JSON object a line: {"session", "keys", "mark", "reason", "ask", "ask_id", "at"}.
-    KEYS name records of SESSION: a record's uuid (or its top-level id), or, for a line with neither, the sha256 of its
-    bytes as the store took them (of_store.redact_keys first). ASK is the owner's card that approved the entry. A
-    missing register is empty; anything else that does not read, or a line that is no entry or names no ask, raises
-    RegisterError."""
+def archive_register(path=None, conn=None):
+    """The register's entries the owner approved, one JSON object a line: {"session", "keys", "mark", "reason", "ask",
+    "ask_id", "at"}. KEYS name records of SESSION: a record's uuid (or its top-level id), or, for a line with neither,
+    the sha256 of its bytes as the store took them (of_store.redact_keys first). ASK is the owner's card. An entry
+    counts only when the event log (CONN, else the store read-only) holds the owner's yes on that card (owner_yes):
+    a line written by hand names some card, and no other answer makes it one (`of_review` and `of_release` on
+    organic-framework PR 488). A missing register is empty. A register that does not read, a line that is no entry or
+    names no ask, or a store that cannot be read raises RegisterError."""
+    entries = _register_lines(path)
+    if not entries:
+        return entries
+    import sqlite3
+    own = conn is None
+    try:
+        if own:
+            conn = sqlite3.connect(f"file:{of_store.db_path()}?mode=ro", uri=True, timeout=10)
+        return [e for e in entries if owner_yes(conn, _ask_id(conn, e))]
+    except sqlite3.Error as e:
+        raise RegisterError(f"the raw archive's redaction register: the store cannot be read to check its cards "
+                            f"({type(e).__name__})") from None
+    finally:
+        if own and conn is not None:
+            conn.close()
+
+
+def _ask_id(conn, entry):
+    """The event id of the entry's card: its ask_id when that is the ask its card id names, else its card id's."""
+    import of_asks
+    ref = ask_ref(entry.get("ask"))
+    if of_events.REF_RE.match(ref):
+        return of_asks.ref_id(conn, ref)
+    rows = conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND event_id >= ? AND "
+                        "event_id < ? ORDER BY event_id LIMIT 2", (ref, ref + "\uffff")).fetchall()
+    return rows[0][0] if len(rows) == 1 else None
+
+
+def owner_yes(conn, ask_id):
+    """Whether the owner answered the ask ASK_ID with its yes: the option its card marks (yes_option), else its first,
+    chosen by number or by its text, at the version the answer names. An answer by anyone else, or another option, is
+    no yes."""
+    import of_asks
+    row = conn.execute("SELECT payload, ts, position, host_id FROM event WHERE event_id = ? AND "
+                       "name = 'of.agent_question'", (ask_id,)).fetchone() if ask_id else None
+    if not row:
+        return False
+    try:
+        payload = json.loads(row[0] or "{}")
+    except ValueError:
+        return False
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND "
+                              "(json_extract(payload, '$.ask_id') = ? OR EXISTS (SELECT 1 FROM "
+                              "json_each(payload, '$.ask_ids') WHERE value = ?))", (ask_id, ask_id)):
+        try:
+            a = json.loads(pl or "{}")
+        except ValueError:
+            continue
+        if a.get("by") != "owner":
+            continue
+        card = of_asks.at_version(conn, ask_id, payload, row[1], row[2], row[3], version=a.get("version"))
+        qs = card.get("questions") if isinstance(card.get("questions"), list) else []
+        opts = (qs[0].get("options") if qs and isinstance(qs[0], dict) else None) or []
+        yes = card.get("yes_option") or 1
+        label = str(opts[yes - 1]).strip() if isinstance(yes, int) and 0 < yes <= len(opts) else None
+        if label and (a.get("option") == yes or str(a.get("answer") or "").strip() == label):
+            return True
+    return False
+
+
+def _register_lines(path=None):
+    """The register's lines as entries, each checked for its shape and its card's id; RegisterError otherwise."""
     p = path or archive_register_path()
     try:
         with open(p, "rb") as fh:
@@ -531,6 +595,10 @@ def archive_register_add(conn, session, keys, mark, reason, ask, path=None):
     or its ask's event id): an ask in the store CONN that has an answer. The register must read before it grows. Writes
     of.redacted with the session, the number of keys, the ask and the reason, never a record. Returns the entry."""
     import of_asks
+    import of_asks_answer
+    why = of_asks_answer.not_the_owner()
+    if why:   # docs/guard.md G38: the owner's act, in a terminal; the guard refuses an agent's call of it as well
+        raise PermissionError(f"of redact --archive-register is the owner's: {why}")
     ref = ask_ref(ask)
     if not ref:
         raise ValueError("an entry's basis is the owner's card: give its card id (OF-170) or its ask's event id")
@@ -540,10 +608,9 @@ def archive_register_add(conn, session, keys, mark, reason, ask, path=None):
     if len(row) != 1:
         raise ValueError(f"no ask {ref} in the store" if not row else f"{ref} names more than one ask")
     eid = row[0][0]
-    if not conn.execute("SELECT 1 FROM event WHERE name = 'of.agent_question_answered' AND (json_extract(payload, "
-                        "'$.ask_id') = ? OR EXISTS (SELECT 1 FROM json_each(payload, '$.ask_ids') WHERE value = ?)) "
-                        "LIMIT 1", (eid, eid)).fetchone():
-        raise ValueError(f"{ref} has no answer yet: an entry waits for the owner's")
+    if not owner_yes(conn, eid):
+        raise ValueError(f"{ref} has no yes of the owner's: an entry waits for it (an answer by anyone else, or "
+                         "another option, is none)")
     session = str(session or "").strip()
     keys = sorted({str(k).strip() for k in keys or () if str(k).strip()})
     if not session or "/" in session or not keys or any(len(k) > 80 or "/" in k for k in keys):
@@ -552,7 +619,7 @@ def archive_register_add(conn, session, keys, mark, reason, ask, path=None):
         raise ValueError("an entry needs its mark and its reason")
     p = path or archive_register_path()
     os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
-    archive_register(p)   # a register that does not read is mended first, never appended to
+    _register_lines(p)   # a register that does not read is mended first, never appended to
     entry = {"session": session, "keys": keys, "mark": str(mark), "reason": str(reason), "ask": ref, "ask_id": eid,
              "at": of_events.now_iso()}
     with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
