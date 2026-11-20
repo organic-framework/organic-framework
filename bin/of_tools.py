@@ -47,7 +47,7 @@ CODEX_AS_PERSON = ("browser_use", "computer_use")
 CODEX_FEATURES_OFF = ("browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser",
                       "computer_use", "in_app_local_automation", "image_generation", "remote_plugin", "tool_suggest",
                       "recommended_plugins", "skill_mcp_dependency_install")
-LAUNCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+LAUNCH_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")   # fullmatch: $ would pass a final newline
 SCOPES = ("read", "write", "act-as-person")
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -164,7 +164,7 @@ def check(docs):
                 out.append(f"{org}: tools_excluded[{i}] needs plugin or url, and basis (the owner's ask id or a source)")
         banned = excluded_plugins(doc)
         for tid, e in cat.items():
-            if isinstance(e, dict) and e.get("kind") == "plugin" and e.get("plugin") in banned:
+            if isinstance(e, dict) and e.get("kind") in ("plugin", "codex-plugin") and e.get("plugin") in banned:
                 out.append(f"{org}: tools.{tid}: plugin {e['plugin']} is in tools_excluded")
         for tid, e in cat.items():
             where = f"{org}: tools.{tid}"
@@ -207,6 +207,9 @@ def check(docs):
                 out.append(f"{where}: a {kind} tool needs plugin: <name>@<marketplace>")
             if kind == "codex-app" and not (isinstance(e.get("app"), str) and e["app"]):
                 out.append(f"{where}: a codex-app tool needs app: <connector id>")
+            if kind in ("codex-app", "codex-plugin") and (e.get("app") if kind == "codex-app" else e.get("plugin")) \
+                    == "_default":
+                out.append(f"{where}: _default is Codex's setting for every app or plugin, not one to grant")
             if kind == "codex-feature":
                 if e.get("feature") not in CODEX_FEATURES:
                     out.append(f"{where}: a codex-feature's feature is one of {', '.join(CODEX_FEATURES)}")
@@ -520,7 +523,7 @@ def _codex_launch(argv):
             name = a[len("--profile="):]
         else:
             continue
-        if name.startswith("of-") and LAUNCH_ID_RE.match(name[3:]):
+        if name.startswith("of-") and LAUNCH_ID_RE.fullmatch(name[3:]):
             return name[3:]
     return None
 
@@ -822,14 +825,18 @@ def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None,
 # ---------- a position held by Codex (docs/tools.md §4b) ----------
 
 def seat_config(codex_home):
-    """The seat's own config.toml as a dict ({} when there is none or it cannot be read)."""
+    """The seat's own config.toml as a dict ({} when there is none). A file that does not parse raises ToolsError:
+    Codex may still load what it defines, and a layer over it could not turn that off (of_review, PR 470)."""
+    import tomllib
+    path = os.path.join(codex_home, "config.toml")
     try:
-        import tomllib
-        with open(os.path.join(codex_home, "config.toml"), "rb") as fh:
+        with open(path, "rb") as fh:
             c = tomllib.load(fh)
-        return c if isinstance(c, dict) else {}
-    except Exception:  # noqa: BLE001 - no file, no tomllib, or a broken file: nothing of the seat's is kept
+    except FileNotFoundError:
         return {}
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ToolsError(f"the seat's {path} cannot be read ({type(e).__name__}); no layer over it") from None
+    return c if isinstance(c, dict) else {}
 
 
 def codex_config(position, doc, seat=None, ofb=None, org=None, up=None):
@@ -865,29 +872,37 @@ def codex_config(position, doc, seat=None, ofb=None, org=None, up=None):
             continue
         servers[tid] = t
     apps, plugins, features, bound = [], [], set(), []
+    banned = excluded_plugins(doc)
     for tid in claude["tools"]:
         e = cat.get(tid)
         if not isinstance(e, dict):
             continue
         kind = e.get("kind")
-        if kind == "codex-app" and e.get("app"):
+        if kind == "codex-app" and e.get("app") and e["app"] != "_default":
             apps.append(str(e["app"]))
             bound.append(tid)
-        elif kind == "codex-plugin" and e.get("plugin"):
+        elif kind == "codex-plugin" and e.get("plugin") and e["plugin"] != "_default":
+            if e["plugin"] in banned:
+                notes.append(f"{tid}: plugin {e['plugin']} is in tools_excluded; skipped")
+                continue
             plugins.append(str(e["plugin"]))
         elif kind == "codex-feature" and e.get("feature") in CODEX_FEATURES:
             features.add(e["feature"])
         elif kind in ("plugin", "connector") or (kind == "mcp-remote" and e.get("account_bound")):
             notes.append(f"{tid}: a Claude Code {kind}; a Codex session has none of it (its portable form or a "
                          f"Codex entry, docs/tools.md §4b)")
-    feat = {f: False for f in CODEX_FEATURES_OFF if f not in features}
+    feat = {f: f in features for f in CODEX_FEATURES_OFF}   # a named one is set true, over a seat that turns it off
     feat["apps"] = bool(apps)
     feat["plugins"] = bool(plugins)
     tables = {"features": feat, "web_search": "live" if "web_search" in features else "disabled"}
-    if apps:
-        tables["apps"] = dict({"_default": {"enabled": False}}, **{a: {"enabled": True} for a in sorted(apps)})
-    if plugins:
-        tables["plugins"] = dict({"_default": {"enabled": False}}, **{p: {"enabled": True} for p in sorted(plugins)})
+    # every app and plugin the seat's own file names, and every excluded plugin, is off by name: an entry of the seat's
+    # with enabled = true wins over the layer's _default (of_review, PR 470)
+    for key, named, extra in (("apps", apps, ()), ("plugins", plugins, banned)):
+        own = seat.get(key) if isinstance(seat.get(key), dict) else {}
+        off = (set(own) | set(extra)) - set(named) - {"_default"}
+        if named or off:
+            tables[key] = dict({"_default": {"enabled": False}}, **{x: {"enabled": False} for x in sorted(off)},
+                               **{x: {"enabled": True} for x in sorted(named)})
     own = seat.get("mcp_servers") if isinstance(seat.get("mcp_servers"), dict) else {}
     denied = excluded_urls(doc)
     for name, s in own.items():
@@ -909,17 +924,21 @@ def codex_config(position, doc, seat=None, ofb=None, org=None, up=None):
             "account_bound": bound, "mode": mode, "notes": notes}
 
 
-def codex_layer(position_name, launch_id, codex_home, orgs_file=None, state_dir=None):
+def codex_layer(position_name, launch_id, codex_home, orgs_file=None, state_dir=None, notes=None):
     """For of spawn and of resume-command on Codex: the tool tables of the session's layer
     ($CODEX_HOME/of-<launch_id>.config.toml, started with `codex -p of-<launch_id>`; of_platform merges them with its
     own and writes the file). `launch_id` is OF's id for this start, picked before it (of_platform, message
-    01a1f971-8999). It also writes <state>/tools/<launch_id>.mcp.json, the file the shared-server helper checks."""
-    if not LAUNCH_ID_RE.match(str(launch_id)):
+    01a1f971-8999). It also writes <state>/tools/<launch_id>.mcp.json, the file the shared-server helper checks.
+    `notes`, a list, gets what the launcher should show (a tool skipped, a seat file that defines tools). A seat
+    config.toml that does not parse raises ToolsError."""
+    if not LAUNCH_ID_RE.fullmatch(str(launch_id)):
         raise ToolsError(f"a launch id is letters, digits and -, at most 64: {launch_id!r}")
     docs = registries(orgs_file)
     org, p, doc = find_position(position_name, docs)
     cfg = codex_config(p, doc, seat_config(codex_home), org=org)
     write_mcp_config(cfg, launch_id, state_dir)
+    if notes is not None:   # what the launcher shows at the start (of_review, PR 470: they were dropped)
+        notes.extend(cfg["notes"])
     return cfg["tables"]
 
 

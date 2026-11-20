@@ -137,12 +137,12 @@ Status: the rule from 2026-11-20, by `of_tools` (hand-over `68dfbcca`, item W7 o
 A position whose holder runs on Codex gets its tools from the same profile as on Claude Code: the same catalogue, the same `tools:` on its unit and on itself, the same review (§2). Only the form differs. Codex reads its tools from its configuration, and it has tools of its own that Claude Code does not.
 
 **Where the configuration goes.** A Codex seat is one `CODEX_HOME` with one sign-in (W9), shared by every position on it, as a Claude account's folder is. So nothing of one position goes into the seat's `config.toml`.
-- At each start, `of spawn` writes a layer for the session, `$CODEX_HOME/of-<launch id>.config.toml` (mode 600), and starts `codex -p of-<launch id>`.
+- Once `of spawn` takes a Codex position (W4; until then it refuses one), it writes a layer for each start, `$CODEX_HOME/of-<launch id>.config.toml` (mode 600), and starts `codex -p of-<launch id>`.
   - The launch id is OF's own UUID, picked before the start. Codex's own session id (its thread id) exists only once the session runs, and the SessionStart hook binds it to the position then.
   - `of resume-command` writes a fresh layer under a new launch id from the profile as it stands, so a resumed session gets today's tools. Spawn and resume remove that position's older layers in the seat.
   - The interactive `codex` has no `--ignore-user-config`; only `codex exec` has it. So the seat's own file still loads under the layer.
 - `of_tools.codex_layer(position, launch_id, codex_home)` returns the layer's tool tables: `features`, `web_search`, `mcp_servers`, `apps` and `plugins`. It also writes `<state>/tools/<launch id>.mcp.json`, as for Claude Code, for the shared-server helper. `of spawn` merges these tables with its own (the model, W3's permission profile, W5's instructions) into the one layer file. `of tools plan <position> --codex` prints them.
-- OF writes the seat's own `config.toml` and keeps tools out of it. `of tools plan --codex` and `codex_layer` note a seat whose file defines `mcp_servers`, `plugins` or `apps`.
+- OF writes the seat's own `config.toml` and keeps tools out of it. `of tools plan --codex` and `codex_layer` note a seat whose file defines `mcp_servers`, `plugins` or `apps`. A seat file that does not parse gets no layer: `codex_layer` refuses, since Codex may still load what that file defines.
 
 What this rests on (Codex CLI 0.169.1, probed 2026-11-20 in a fresh `CODEX_HOME`; the source read at the tags `rust-v0.169.0` and `rust-v0.170.0` of github.com/openai/codex, Codex run `01a1f8d6-69a0`):
 
@@ -170,8 +170,8 @@ What this rests on (Codex CLI 0.169.1, probed 2026-11-20 in a fresh `CODEX_HOME`
 | `codex-feature` | One of Codex's own tools that reaches outside the session's files (`feature: <name>`): `image_generation` (`features.image_generation = true`), `web_search` (`web_search = "live"`), or, once a CLI session can use them, `browser_use` or `computer_use` (`features.<name> = true`). |
 
 **Off unless the profile names it**, in both modes (`add` and `enforce`), so a Codex position does not start with whatever the seat's sign-in carries:
-- the account's apps: `features.apps = false`. When the profile names a `codex-app`, `apps` stays on, with `apps._default.enabled = false` and the named apps `true`;
-- plugins: `features.plugins = false` and `remote_plugin = false`. When the profile names a `codex-plugin`, `plugins` stays on, with `plugins._default.enabled = false` and the named plugins `true`;
+- the account's apps: `features.apps = false`. When the profile names a `codex-app`, `apps` stays on, with `apps._default.enabled = false` and the named apps `true`. Every app that the seat's own file names, and the profile does not, is `false` by name, since a seat entry with `enabled = true` wins over `_default` (`of_review`, PR 470);
+- plugins: `features.plugins = false` and `remote_plugin = false`. When the profile names a `codex-plugin`, `plugins` stays on, with `plugins._default.enabled = false` and the named plugins `true`. The seat's own entries are turned off by name, as for apps. A plugin in `tools_excluded` is off by name in every layer, and `of tools check` reports a `codex-plugin` entry for it. Neither `app: _default` nor `plugin: _default` can be granted;
 - browser and computer use: the six desktop controls above are `false`;
 - image generation: `features.image_generation = false`;
 - web search: `web_search = "disabled"`. On Codex no hook sees a hosted search, so W3 cannot guard it (RFC 0008 §4.2; `of_server`, W3); a position searches the web only when its profile names `web_search`;
