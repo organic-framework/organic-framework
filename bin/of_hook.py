@@ -1149,44 +1149,96 @@ def _guard(hook, sess):
 # reports/codex-guard-w2-w3-2026-11-20.md, of_server's decision). Codex names its shell `Bash` with
 # tool_input.command, as Claude Code does, and its MCP calls mcp__<server>__<tool>; its file edits come as one
 # apply_patch call whose patch text names each file, and view_image reads a path.
-_PATCH_FILE = re.compile(r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+?)\s*$")
+# Codex's own parser trims each line and allows any spacing around the colon (codex-rs/apply-patch, as of_review read
+# it on organic-framework PR 469), so its headers are read on the stripped line; any other `***` line, or a header with
+# no path, makes the patch unreadable, and an unreadable patch is denied (of_secrets-review and of_review on PR 469)
+_PATCH_FILE = re.compile(r"^\*\*\*\s*(Add File|Update File|Delete File|Move to)\s*:\s*(.*?)\s*$")
+_PATCH_MARKS = re.compile(r"^\*\*\*\s*(Begin Patch|End Patch|End of File)\s*$")
+_PATCH_BODY = re.compile(r"\*\*\*\s*Begin Patch.*?(?:\*\*\*\s*End Patch|\Z)", re.S)
+PATCH_UNREADABLE = ("a patch whose file headers cannot be read (an apply_patch the guard cannot judge file by file)")
+
+
+class PatchUnreadable(ValueError):
+    pass
 
 
 def patch_calls(patch, cwd=None):
     """The Write and Edit calls an apply_patch patch makes: Add File and Move to write a file (Write, with the added
-    lines as its content), Update File and Delete File change one (Edit). Paths are made absolute from CWD."""
+    lines as its content), Update File and Delete File change one (Edit). Paths are made absolute from CWD. Raises
+    PatchUnreadable on a `***` line that is no header Codex knows, or a header with no path."""
     out, cur = [], None
-    for line in str(patch or "").splitlines():
-        m = _PATCH_FILE.match(line)
-        if m:
-            kind, path = m.group(1), m.group(2).strip()
+    for raw in str(patch or "").splitlines():
+        line = raw.strip()
+        if line.startswith("***"):
+            if _PATCH_MARKS.match(line):
+                if "End Patch" in line:
+                    cur = None
+                continue
+            m = _PATCH_FILE.match(line)
+            if not m or not m.group(2):
+                raise PatchUnreadable(line[:120])
+            kind, path = m.group(1), m.group(2)
             if cwd and not os.path.isabs(path):
                 path = os.path.normpath(os.path.join(cwd, path))
             tool = "Write" if kind in ("Add File", "Move to") else "Edit"
             cur = {"tool_name": tool, "tool_input": {"file_path": path, "content" if tool == "Write" else "new_string": ""}}
             out.append(cur)
             continue
-        if cur is not None and line.startswith("+") and not line.startswith("+++"):
+        if cur is not None and raw.startswith("+") and not raw.startswith("+++"):
             key = "content" if cur["tool_name"] == "Write" else "new_string"
-            cur["tool_input"][key] += line[1:] + "\n"
-        elif line.startswith("*** End Patch"):
-            cur = None
+            cur["tool_input"][key] += raw[1:] + "\n"
     return out
 
 
+def _patch_text(ti):
+    """The patch text a tool input carries: apply_patch's command (a string or an argv list), or any string in it."""
+    if isinstance(ti, dict):
+        vals = [ti.get("command")] + [v for k, v in ti.items() if k != "command"]
+    else:
+        vals = [ti]
+    parts = []
+    for v in vals:
+        if isinstance(v, list):
+            v = "\n".join(str(x) for x in v)
+        if isinstance(v, str):
+            parts.append(v)
+    return "\n".join(parts)
+
+
 def codex_calls(hook):
-    """The calls of_guard judges for one Codex PreToolUse payload: apply_patch as its Write and Edit calls, view_image as
-    a Read of its path; anything else as it came. None when the payload is no Codex tool call to expand."""
+    """The calls of_guard judges for one Codex PreToolUse payload, or None to judge it as it came: an apply_patch as its
+    Write and Edit calls; any other call that holds a patch (`apply_patch <<'EOF'` through the shell, which Codex runs
+    as a patch) as itself plus those calls; view_image as a Read of its path. An unreadable patch is one deny."""
     tool, ti = hook.get("tool_name"), hook.get("tool_input")
-    if tool == "apply_patch":
-        patch = ti.get("command") if isinstance(ti, dict) else ti
-        if isinstance(patch, list):
-            patch = "\n".join(str(x) for x in patch)
-        return patch_calls(patch, hook.get("cwd")) or [{"tool_name": "Edit", "tool_input": {"file_path": "",
-                                                                                           "new_string": str(patch)}}]
+    text = _patch_text(ti)
+    calls = []
+    if tool == "apply_patch" or "Begin Patch" in text:
+        bodies = _PATCH_BODY.findall(text) if tool != "apply_patch" else [text]
+        try:
+            for body in bodies:
+                calls += patch_calls(body, hook.get("cwd"))
+        except PatchUnreadable as e:
+            return [{"deny": PATCH_UNREADABLE, "subject": str(e)}]
+        if tool == "apply_patch":
+            return calls or [{"deny": PATCH_UNREADABLE, "subject": "no file header"}]
+        return [{"tool_name": tool, "tool_input": ti}] + calls
     if tool == "view_image" and isinstance(ti, dict):
         return [{"tool_name": "Read", "tool_input": {"file_path": ti.get("path") or ""}}]
     return None
+
+
+def _deny_now(hook, sess, why, subject):
+    """Answer one deny of the hook's own (an unreadable patch), recorded as a critical deny."""
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": f"Organic Framework critical deny: {why}." + NO_WAY_ROUND}}, ensure_ascii=False))
+    sys.stdout.flush()
+    try:
+        write("mandate_check", {"verdict": "critical", "decision": "deny", "mode": "enforce",
+                                "router_version": __import__("of_router").VERSION, "tool_name": hook.get("tool_name"),
+                                "reason": why, "subject": mask(str(subject))[:300]}, hook, sess, _guard_index())
+    except (SystemExit, Exception):
+        pass
 
 
 def _guard_checked(hook, sess):
@@ -1197,6 +1249,8 @@ def _guard_checked(hook, sess):
         return _guard_one(hook, sess)
     # every guard writes its deny to stdout at once; after the first, no file is judged again, so Codex never gets two
     # answers (two would not parse, and a hook whose output fails lets the call through: of_server's W2)
+    if calls and "deny" in calls[0]:
+        return _deny_now(hook, sess, calls[0]["deny"], calls[0].get("subject"))
     real, seen = sys.stdout, _Seen(sys.stdout)
     sys.stdout = seen
     try:
