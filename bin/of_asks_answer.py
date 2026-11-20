@@ -294,7 +294,7 @@ def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amen
         import of_hook
         summary = json.dumps(of_hook.mask(text), ensure_ascii=False)  # keep command text and control characters quoted
         return (f"{header}: {asker}'s Claude Code asks to run {summary}\n"
-                f"[of asks deny {card} presses No and the command does not run. "
+                f"[of asks deny {card} cancels the prompt with Esc and the command does not run. "
                 f'To request the founder\'s approval, use of ask --escalates {card} "…".]')
     return (f"{header}: {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")

@@ -3135,14 +3135,21 @@ def _asks_deny(args):
     no = next((o for o in dialog["options"] if re.match(r"^No\b", o["label"], re.I)), None)
     if not no:
         raise OfError("the permission prompt has no No option")
-    keys = of_blocked.keys_for(no)
+    # Esc, never the No row's digit: a prompt that resolves between the read and the key leaves the digit for the next
+    # dialog, where `2` can be "Yes, and don't ask again", an approval that writes an allow rule; Esc cancels a
+    # permission prompt in every layout and approves nothing (a user organization's security keeper, through its
+    # structure keeper, msg 01a1f849-2fd9). The screen is read again just before the key, and must be the same prompt.
+    keys = ["esc"]
     card = ask.get("ref") or ask["event_id"][-8:]
     if args.dry_run:
-        print(f"would press {' '.join(keys)} (No) in {pane} for {card}")
+        print(f"would press Esc (No) in {pane} for {card}")
         return 0
+    again = _permission_screen(pane)
+    if not again or again.get("fingerprint") != dialog.get("fingerprint"):
+        raise OfError(f"the prompt in {pane} changed before the key: nothing pressed")
     sent = subprocess.run([HERDR, "pane", "send-keys", pane, *keys], capture_output=True, text=True, timeout=10)
     if sent.returncode:
-        raise OfError(f"could not press No in {pane} (herdr exit {sent.returncode})")
+        raise OfError(f"could not press Esc in {pane} (herdr exit {sent.returncode})")
     time.sleep(0.4)  # allow Claude Code to redraw before checking what the key did
     after = _permission_screen(pane)
     if after and after["type"] == "permission":
@@ -5741,7 +5748,7 @@ def _asks_to_me(args):
         print(f"  {card}  {of_asks.age(a['ts']):>5}  {a['state']:<9} from {a.get('position') or '?':<24} "
               f"{text[:150] + ('…' if len(text) > 150 else '')}")
         if a.get("kind") == "permission":
-            print(f'    of asks deny {card} presses No. To ask the founder to allow it, use of ask --escalates {card} "…".')
+            print(f'    of asks deny {card} cancels it with Esc. To ask the founder to allow it, use of ask --escalates {card} "…".')
     if any(a.get("kind") != "permission" for a in mine):
         print("answer a question with of send <its asker> --reply-to <id> \"…\", or rewrite it for the founder with "
               "of ask --escalates <id>")
@@ -7843,7 +7850,7 @@ def main(argv=None):
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
     ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "deny", "judge", "deliver", "refs"],
                     default="list", help="refs: give the open asks filed before card ids existed their ids (once); "
-                    "deny <id>: press No in the asking session's permission prompt; "
+                    "deny <id>: cancel the asking session's permission prompt with Esc; "
                     "deliver [<position>]: type the founder's answers not yet in the pane; "
                     "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
                     "their conductor's chat, recorded only when that prompt is their own and names the card or "
