@@ -332,7 +332,8 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
         self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob: its present matches only
-        self.assertEqual(box["filesystem"]["denyWrite"], box["filesystem"]["denyRead"])   # never written either
+        self.assertEqual(box["filesystem"]["denyWrite"][:-1], box["filesystem"]["denyRead"])   # never written either
+        self.assertEqual(box["filesystem"]["denyWrite"][-1], os.path.expanduser("~/.local/state/of/index.json"))  # G36
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))

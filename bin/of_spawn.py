@@ -238,10 +238,13 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
                 paths.add(q)
     denied = sorted(paths)
     # Bash may not write what it may not read: OF's state folder is writable and holds its server folder (the same
-    # review); every denied path is denied for writes too
+    # review); every denied path is denied for writes too, and so is the guard's session index, which only the hook
+    # writes, outside the sandbox (docs/guard.md G36; hand-over a18341af)
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
-            "filesystem": {"denyRead": denied, "denyWrite": denied, "allowRead": allow,
+            "filesystem": {"denyRead": denied,
+                           "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")],
+                           "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")]},
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
                         "allowedDomains": list(SANDBOX_DOMAINS)}}
