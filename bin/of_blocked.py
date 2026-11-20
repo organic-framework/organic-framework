@@ -216,7 +216,9 @@ def answer_keep(read, press, sleep=time.sleep, moves=3):
         return False, "the dialog stayed after Enter"
     if _COMPACT.search("\n".join(after)):
         return False, "the offer's text is still on the screen"
-    if not any(_INPUT_BOX.match(ln) for ln in after):
+    if not any(_INPUT_BOX.match(ln) for ln in after if not (_KEEP_ROW.match(ln) or _LOWER_ROW.match(ln))):
+        # the offer's own rows are no prompt: `❯ Keep 1m tokens` alone, a partial redraw, matched the input box
+        # (of_review on organic-framework PR 441)
         # an empty or partial read proves nothing: Keep is recorded only with the session's prompt seen back
         # (of_review's note on organic-framework PR 431)
         return False, "the session's prompt was not seen after Enter"
