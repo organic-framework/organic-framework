@@ -71,8 +71,19 @@ def unit_text(herdr, path=None, log=None):
             "\n[Install]\nWantedBy=default.target\n")
 
 
+def _user_env(environ=None, uid=None, runtime_root="/run/user"):
+    """The environment for `systemctl --user`. With no login session (a cron, `runuser`, a script), XDG_RUNTIME_DIR is
+    unset and systemctl cannot find the user manager that linger keeps. This user's /run/user/<uid> then stands in
+    (of_lab's Lab VM run, hand-over 6759dc6d)."""
+    env = dict(os.environ if environ is None else environ)
+    runtime = os.path.join(runtime_root, str(os.getuid() if uid is None else uid))
+    if not env.get("XDG_RUNTIME_DIR") and os.path.isdir(runtime):
+        env["XDG_RUNTIME_DIR"] = runtime
+    return env
+
+
 def _ctl(run, *args, check=False):
-    return run(["systemctl", "--user", *args], capture_output=True, text=True, check=check)
+    return run(["systemctl", "--user", *args], capture_output=True, text=True, check=check, env=_user_env())
 
 
 def server_status(herdr, run):
