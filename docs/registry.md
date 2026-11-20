@@ -533,12 +533,14 @@ tools_excluded:               # plugins no position starts with, in either mode
   - {plugin: <plugin>, basis: <the owner's ask id or a source>}
 tools:
   <id>:                       # [a-z][a-z0-9_-]{0,47}
-    kind: mcp-stdio           # mcp-stdio | mcp-remote | plugin | connector
+    kind: mcp-stdio           # mcp-stdio | mcp-remote | plugin | connector | codex-app | codex-plugin | codex-feature
     command: [program, args…] # mcp-stdio
     env: {NAME: value}        # mcp-stdio; names and plain settings only, never a secret value
     url: https://…            # mcp-remote and connector; a plugin's own server, to allow it by URL
     headers: {NAME: value}    # mcp-remote; names and plain settings only, never a secret value
-    plugin: name@marketplace  # plugin
+    plugin: name@marketplace  # plugin, codex-plugin
+    app: <connector id>       # codex-app: one app of the Codex seat's ChatGPT sign-in
+    feature: <name>           # codex-feature: image_generation, web_search, browser_use, computer_use
     credential: {id: <credential id>, env: NAME | file: NAME}   # from the credentials catalogue below
     account_bound: true       # its sign-in lives in one Claude account (always true for a connector)
     default: true             # every position of the organization has it
@@ -560,6 +562,11 @@ positions:
 - **A tool names its credential by id** from the Credentials catalogue (below), with how the server takes it: `env:` the value, `file:` the path of a temporary file. A credential with a `ref` reaches only the server's own process through `of secret run`; one still kept in a file is read by the server itself, and the command or an `env` value names its path (`~`, `${HOME}` and `$HOME` count as the home; a leading `~`, `${HOME}` or `$HOME` in `env` is expanded at launch). A tool never carries a vault reference or a value. The position must list the credential too.
 - **`scope: write`** names the mandate line that needs it, in a comment. **`act-as-person`** (a tool that sends, posts, pays or signs as a person) needs the owner's yes, cited by its ask id in a comment.
 - **`account_bound: true`**: the tool works only on the Claude accounts where it is signed in. A move goes only to such an account (`of capacity`).
+- **The Codex kinds** (2026-11-20, `of_tools`, docs/tools.md §4b; RFC 0008 §4). They give a Codex position what `plugin` and `connector` give a Claude Code one, which on Codex give nothing.
+  - `codex-app` is one app of the seat's ChatGPT sign-in, account-bound to the seat as a connector is to a Claude account.
+  - `codex-plugin` is a plugin installed on the seat.
+  - `codex-feature` is one of Codex's own tools that reaches past the session's files. Browser use and computer use carry `scope: act-as-person`.
+  - Each is off unless the position's profile names it. That includes web search, which no hook sees on Codex (RFC 0008 §4.2).
 - `of tools check` (inside `of registry check`) validates: ids, `kind` and the fields it needs, `scope` values, `acts_as`, `keeper` (a position of the organization), each `credential.id` (in the Credentials catalogue), a file credential's path in the command or an `env` value, no secret-shaped value in `env` or `headers`, no `vault` key, an OAuth `mcp-remote` marked `account_bound`, and every tool a position or unit names.
 
 ## Plugins (2026-11-11, `of_architect`; docs/plugins.md)
