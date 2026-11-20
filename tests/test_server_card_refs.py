@@ -3,6 +3,7 @@ gives each number out once, the same number again for the same event, raised to 
 an organization the machine has joined (of_architect's choice (a), msg 01a1faa1-1fa0; of_platform's contract, msg
 01a1faa6-8b66). The client side is tests/test_card_refs.py."""
 
+import json
 import os
 import sys
 import tempfile
@@ -58,7 +59,10 @@ class CardRefServerTest(unittest.TestCase):
             # its own timeout: one try, as of_events.card_ref calls it (a 503 is not waited out)
             return c._authed("POST", "/v1/card-refs", body=body, timeout=10)
         except of_client.ServerError as e:
-            return e.status, e.body
+            try:
+                return e.status, json.loads(e.body) if isinstance(e.body, (str, bytes)) else e.body
+            except ValueError:
+                return e.status, {"text": e.body}
 
     def test_each_number_once_and_the_same_one_again_for_the_same_event(self):
         self.assertEqual(self.a.card_ref("zeta", "ZT", "e1", 0), "ZT-1")   # the client reads the server's answer
@@ -115,6 +119,40 @@ class CardRefServerTest(unittest.TestCase):
         self.assertEqual(self.app.store.conn().c.execute("SELECT count(*) FROM card_refs").fetchone()[0], 0)
         self.assertEqual(self.post(self.a, **dict(good, floor=of_server.CARD_FLOOR_MAX))[1]["ref"],
                          f"ZT-{of_server.CARD_FLOOR_MAX + 1}")
+
+    def count(self):
+        return self.app.store.conn().c.execute("SELECT count(*) FROM card_refs").fetchone()[0]
+
+    def test_a_new_organization_is_seeded_at_0_when_its_first_machine_enrols(self):
+        seeds = self.app.store.conn().c.execute("SELECT org, prefix, highest FROM card_seeds ORDER BY org").fetchall()
+        self.assertEqual(seeds, [("ofb", "*", 0), ("zeta", "*", 0)])   # setUp's two machines, one seed each
+
+    def test_an_organization_with_a_history_here_gives_no_number_until_its_keeper_seeds_it(self):
+        """This code's first start on an organization this server already served: no seed, and a request at floor 0
+        must not give out numbers the machines already hold (of_architect, msg 01a1faa9-f9da)."""
+        self.machine("x", ["old"])
+        self.app.store.conn().c.execute("DELETE FROM card_seeds WHERE org = 'old'")   # a store from before card seeds
+        c = self.machine("c", ["old"])   # another machine of it: it has a history here, so no seed at 0
+        status, body = self.post(c, org="old", prefix="OD", event_id="e1", floor=0)
+        self.assertEqual((status, body.get("type")), (409, "not_seeded"))
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(of_server.card_seed(self.app.store, "old", "OD", 240, by="test"), 240)
+        self.assertEqual(c.card_ref("old", "OD", "e1", 0, timeout=10), "OD-241")
+        self.assertEqual(of_server.card_seed(self.app.store, "old", "OD", 100, by="test"), 240)   # a seed never falls
+        self.assertEqual(c.card_ref("old", "OD", "e2", 0, timeout=10), "OD-242")
+        self.assertEqual(self.post(c, org="old", prefix="OX", event_id="e3", floor=0)[0], 409)   # each prefix its own
+        with self.assertRaises(ValueError):
+            of_server.card_seed(self.app.store, "old", "od", 1, by="test")
+
+    def test_a_moved_organization_is_unseeded_though_an_enrolment_seeded_it_first(self):
+        m = self.machine("m", ["moved"])   # enrolled on the new server before the import: seeded at 0
+        with self.app.store.tx() as conn:
+            of_server.mark_unseeded(conn, "moved")   # what the import does in its transaction
+        self.assertEqual(self.post(m, org="moved", prefix="MV", event_id="e1", floor=0)[1].get("type"), "not_seeded")
+        n = self.machine("n", ["moved"])
+        self.assertEqual(self.post(n, org="moved", prefix="MV", event_id="e1", floor=0)[1].get("type"), "not_seeded")
+        of_server.card_seed(self.app.store, "moved", "MV", 57, by="test")
+        self.assertEqual(n.card_ref("moved", "MV", "e1", 3, timeout=10), "MV-58")
 
     def test_a_moving_organization_waits(self):
         with mock.patch.object(self.app, "moving", lambda: {"zeta"}):

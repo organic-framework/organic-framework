@@ -137,6 +137,8 @@ CREATE TABLE IF NOT EXISTS secret_sightings (batch_id TEXT, kind TEXT, hmac TEXT
   first_ts TEXT, last_ts TEXT, location TEXT, detected_at TEXT, PRIMARY KEY (batch_id, kind, hmac, org, tbl));
 CREATE TABLE IF NOT EXISTS card_refs (event_id TEXT PRIMARY KEY, org TEXT NOT NULL, prefix TEXT NOT NULL,
   number INTEGER NOT NULL, machine_id TEXT, at TEXT NOT NULL, UNIQUE (org, prefix, number));
+CREATE TABLE IF NOT EXISTS card_seeds (org TEXT NOT NULL, prefix TEXT NOT NULL, highest INTEGER, at TEXT, by TEXT,
+  PRIMARY KEY (org, prefix));
 """
 
 
@@ -320,6 +322,7 @@ def enroll(store, machine_id, pubkey, orgs, raw_orgs=(), tenant=False, person=No
     consent = consent or {o: {"tiers": ["typed", "raw"] if o in raw_orgs else ["typed"], "terms": None,
                               "at": of_events.now_iso()} for o in orgs}
     with store.conn() as c:
+        _seed_new_orgs(c, machine_id, orgs)   # card ids of an organization new to this server start at 1 (Card ids)
         c.execute("INSERT OR REPLACE INTO machines (machine_id, pubkey, orgs, raw_orgs, tenant, enrolled_at, revoked_at,"
                   " person, allowed_raw, consent) VALUES (?,?,?,?,?,?,NULL,?,?,?)",
                   (machine_id, pubkey.strip(), json.dumps(sorted(orgs)), json.dumps(sorted(raw_orgs)),
@@ -661,7 +664,9 @@ def card_ref(store, m, body):
     msg 01a1faa1-1fa0; of_platform's contract, msg 01a1faa6-8b66). The same event id gets the same id again, never a
     second number. Before a number is given out the counter is raised to the request's floor, the calling machine's
     highest number, so it starts above every machine's store as they call. The counter is the highest number given
-    for the org and prefix; the new row is written in the same write transaction that read it. Returns (status, body)."""
+    for the org and prefix; the new row is written in the same write transaction that read it. Numbers are given only
+    once the server knows the highest given before (its seed, card_seed); until then the answer is 409 not_seeded and
+    the machine files without an id (of_architect, msg 01a1faa9-f9da). Returns (status, body)."""
     if not isinstance(body, dict):
         return 400, {"type": "bad_request", "status": 400, "title": "body must be a JSON object"}
     org, prefix, eid, floor = body.get("org"), body.get("prefix"), body.get("event_id"), body.get("floor", 0)
@@ -682,11 +687,63 @@ def card_ref(store, m, body):
                          "title": "this event id already has a card id under another organization or prefix"}
         if had:
             return 200, {"ref": f"{prefix}-{had[2]}", "already": True}
+        known = [h for (h,) in c.execute("SELECT highest FROM card_seeds WHERE org = ? AND prefix IN (?, '*') AND "
+                                         "highest IS NOT NULL", (org, prefix))]
+        if not known:   # the highest number given before is not known here: give none (of_architect, msg 01a1faa9-f9da)
+            return 409, {"type": "not_seeded", "status": 409,
+                         "title": f"card ids for {org} {prefix} are not seeded on this server: its keeper seeds them "
+                                  "once with the highest number given before (docs/server.md, Card ids)"}
         top = c.execute("SELECT max(number) FROM card_refs WHERE org = ? AND prefix = ?", (org, prefix)).fetchone()[0]
-        number = max(top or 0, floor) + 1
+        number = max(top or 0, floor, max(known)) + 1
         c.execute("INSERT INTO card_refs (event_id, org, prefix, number, machine_id, at) VALUES (?,?,?,?,?,?)",
                   (eid, org, prefix, number, m["machine_id"], of_events.now_iso()))
     return 200, {"ref": f"{prefix}-{number}"}
+
+
+def card_seed(store, org, prefix, highest, by):
+    """Seed ORG's card ids for PREFIX with HIGHEST, the highest number given before across its machines: the step an
+    organization's move and this code's first start on an existing organization take (docs/server.md, Card ids). A
+    seed only ever rises: a lower one keeps the seed there. Returns the seed now held."""
+    if not (isinstance(org, str) and CARD_ORG.fullmatch(org)) or not (isinstance(prefix, str) and CARD_PREFIX.fullmatch(prefix)):
+        raise ValueError("an organization's name and a prefix of 2 to 5 capital letters")
+    if not (isinstance(highest, int) and not isinstance(highest, bool) and 0 <= highest <= CARD_FLOOR_MAX):
+        raise ValueError(f"the highest number must be an integer from 0 to {CARD_FLOOR_MAX}")
+    with store.tx() as c:
+        c.execute("INSERT INTO card_seeds (org, prefix, highest, at, by) VALUES (?,?,?,?,?) ON CONFLICT (org, prefix) "
+                  "DO UPDATE SET highest = max(coalesce(highest, -1), excluded.highest), at = excluded.at, by = excluded.by",
+                  (org, prefix, highest, of_events.now_iso(), str(by)[:200]))
+        return c.execute("SELECT highest FROM card_seeds WHERE org = ? AND prefix = ?", (org, prefix)).fetchone()[0]
+
+
+def mark_unseeded(conn, org):
+    """An organization moved here (of_server_export.import_store, in its transaction) is no new one: a seed at 0 that
+    an enrolment before the import gave it is dropped, and none is given again; its keeper seeds each prefix."""
+    conn.execute("DELETE FROM card_seeds WHERE org = ? AND prefix = '*'", (org,))
+    conn.execute("INSERT INTO card_seeds (org, prefix, highest, at, by) VALUES (?, '*', NULL, ?, 'import')",
+                 (org, of_events.now_iso()))
+
+
+def _seed_new_orgs(c, machine_id, orgs):
+    """A seed at 0, for every prefix, for each of ORGS this server has never served: no other machine joined to it, no
+    seed, no card id, no relay message and no feed row of it here. Any of those means it has a history here or came
+    from another server, and then its keeper seeds it."""
+    have = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    joined = set()
+    for (orgs_json,) in c.execute("SELECT orgs FROM machines WHERE machine_id != ?", (machine_id,)):
+        try:
+            joined |= set(json.loads(orgs_json or "[]"))
+        except ValueError:
+            pass
+    for org in sorted(set(orgs) - joined):
+        if not CARD_ORG.fullmatch(str(org)):
+            continue
+        seen = [("card_seeds", "org = ?"), ("card_refs", "org = ?"), ("coord", "org = ?"),
+                ("messages", "to_org = ? OR from_org = ?")]
+        if any(c.execute(f"SELECT 1 FROM {t} WHERE {w} LIMIT 1", (org,) * w.count("?")).fetchone()
+               for t, w in seen if t in have):
+            continue
+        c.execute("INSERT INTO card_seeds (org, prefix, highest, at, by) VALUES (?, '*', 0, ?, ?)",
+                  (org, of_events.now_iso(), f"enrolment of {machine_id}"[:200]))
 
 
 def create_redaction(app, m, body, body_sha):
@@ -3093,6 +3150,12 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     rd = sub.add_parser("relay-drop", help="drop queued relay messages nobody can take (expired, reason dropped)")
     rd.add_argument("--msg-id", action="append", required=True)
     rd.add_argument("--reason", required=True)
+    cs = sub.add_parser("card-seed", help="seed an organization's card ids with the highest number given before "
+                                          "(docs/server.md, Card ids)")
+    cs.add_argument("--org", required=True)
+    cs.add_argument("--prefix", required=True, help="its card prefix, such as OF")
+    cs.add_argument("--highest", required=True, type=int, action="append",
+                    help="the highest number of the prefix on one of its machines (repeat: the highest counts)")
     hw = sub.add_parser("host-watchdog", help="one check of the agent host's server and relays (root, every minute)")
     hw.add_argument("--domain", default="system")
     hw.add_argument("--relay", action="append", default=[], help="USER:LABEL:STATE_DIR (repeat)")
@@ -3151,6 +3214,10 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
             class _A:  # the relay needs only the store here
                 store = st
             print(f"queued again: {of_server_relay.Relay(_A).requeue(a.msg_id, a.state) or 'nothing'}")
+        elif a.cmd == "card-seed":
+            held = card_seed(st, a.org, a.prefix, max(a.highest), by="card-seed")
+            print(f"card ids of {a.org}, prefix {a.prefix}: seeded at {held}; the next is {a.prefix}-{held + 1}, or above "
+                  "a higher number already given")
         elif a.cmd == "relay-drop":
             # the full app (not started): the drop's events go to the disk queue the running server drains
             dropped = App(c, config_path=a.config).relay.drop(a.msg_id, a.reason)
