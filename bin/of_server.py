@@ -135,12 +135,14 @@ CREATE TABLE IF NOT EXISTS studio_tokens (token_sha TEXT PRIMARY KEY, viewer TEX
 CREATE TABLE IF NOT EXISTS studio_sessions (session_sha TEXT PRIMARY KEY, viewer TEXT, expires REAL);
 CREATE TABLE IF NOT EXISTS secret_sightings (batch_id TEXT, kind TEXT, hmac TEXT, org TEXT, tbl TEXT, count INTEGER,
   first_ts TEXT, last_ts TEXT, location TEXT, detected_at TEXT, PRIMARY KEY (batch_id, kind, hmac, org, tbl));
+CREATE TABLE IF NOT EXISTS card_refs (event_id TEXT PRIMARY KEY, org TEXT NOT NULL, prefix TEXT NOT NULL,
+  number INTEGER NOT NULL, machine_id TEXT, at TEXT NOT NULL, UNIQUE (org, prefix, number));
 """
 
 
 # What this server offers beyond the v1 core, in GET /v1/terms, so a client can refuse to send to a server
 # that lacks it (of_platform's `of event finance_fact`, 2026-11-10).
-CAPABILITIES = ("coord", "finance_facts", "secrets")
+CAPABILITIES = ("coord", "finance_facts", "secrets", "card_refs")
 
 
 MIGRATIONS = (
@@ -645,6 +647,46 @@ def _row_key(table, d):
         return tuple(int(d.get(c)) if c == "local_id" else str(d.get(c, "")) for c in cols)
     except (TypeError, ValueError):
         return None
+
+
+CARD_PREFIX = re.compile(r"[A-Z]{2,5}")
+CARD_ORG = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+CARD_EVENT = re.compile(r"[0-9A-Za-z][0-9A-Za-z_.:-]{0,127}")
+CARD_FLOOR_MAX = 1_000_000
+
+
+def card_ref(store, m, body):
+    """POST /v1/card-refs (docs/server.md, Card ids): the card id of an ask, from one counter per (org, prefix) that
+    this server keeps, so two machines of an organization never give two asks one number (of_architect's choice (a),
+    msg 01a1faa1-1fa0; of_platform's contract, msg 01a1faa6-8b66). The same event id gets the same id again, never a
+    second number. Before a number is given out the counter is raised to the request's floor, the calling machine's
+    highest number, so it starts above every machine's store as they call. The counter is the highest number given
+    for the org and prefix; the new row is written in the same write transaction that read it. Returns (status, body)."""
+    if not isinstance(body, dict):
+        return 400, {"type": "bad_request", "status": 400, "title": "body must be a JSON object"}
+    org, prefix, eid, floor = body.get("org"), body.get("prefix"), body.get("event_id"), body.get("floor", 0)
+    bad = [why for ok, why in (
+        (isinstance(org, str) and CARD_ORG.fullmatch(org), "org must be an organization's name"),
+        (isinstance(prefix, str) and CARD_PREFIX.fullmatch(prefix), "prefix must be 2 to 5 capital letters"),
+        (isinstance(eid, str) and CARD_EVENT.fullmatch(eid), "event_id must be an event id"),
+        (isinstance(floor, int) and not isinstance(floor, bool) and 0 <= floor <= CARD_FLOOR_MAX,
+         f"floor must be an integer from 0 to {CARD_FLOOR_MAX}")) if not ok]
+    if bad:
+        return 400, {"type": "bad_request", "status": 400, "title": "; ".join(bad)}
+    if not m["tenant"] and org not in json.loads(m["orgs"]):
+        return 403, {"type": "forbidden", "status": 403, "title": "organization not joined by this machine"}
+    with store.tx() as c:
+        had = c.execute("SELECT org, prefix, number FROM card_refs WHERE event_id = ?", (eid,)).fetchone()
+        if had and (had[0], had[1]) != (org, prefix):
+            return 409, {"type": "conflict", "status": 409,
+                         "title": "this event id already has a card id under another organization or prefix"}
+        if had:
+            return 200, {"ref": f"{prefix}-{had[2]}", "already": True}
+        top = c.execute("SELECT max(number) FROM card_refs WHERE org = ? AND prefix = ?", (org, prefix)).fetchone()[0]
+        number = max(top or 0, floor) + 1
+        c.execute("INSERT INTO card_refs (event_id, org, prefix, number, machine_id, at) VALUES (?,?,?,?,?,?)",
+                  (eid, org, prefix, number, m["machine_id"], of_events.now_iso()))
+    return 200, {"ref": f"{prefix}-{number}"}
 
 
 def create_redaction(app, m, body, body_sha):
@@ -1632,6 +1674,15 @@ def make_handler(app):
                         return self._problem(400, "bad_request", "body is not JSON")
                     status, out = create_redaction(app, m, body if isinstance(body, dict) else {},
                                                    hashlib.sha256(raw).hexdigest())
+                    return self._send(status, out)
+                if u.path == "/v1/card-refs":  # docs/server.md, Card ids
+                    try:
+                        body = json.loads(raw or b"{}")
+                    except ValueError:
+                        return self._problem(400, "bad_request", "body is not JSON")
+                    if isinstance(body, dict) and isinstance(body.get("org"), str) and self._moving([body["org"]]):
+                        return None
+                    status, out = card_ref(app.store, m, body)
                     return self._send(status, out)
                 if u.path == "/v1/grants/verify":
                     body = json.loads(raw or b"{}")
