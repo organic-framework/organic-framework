@@ -154,14 +154,14 @@ PROFILE = "of_position"
 
 
 def seat_homes():
-    """Every Codex seat's CODEX_HOME on this machine (of_accounts.codex_seats), else the one under ~/.codex."""
+    """Every Codex seat's CODEX_HOME on this machine (of_accounts.codex_seats), ~/.codex, and $CODEX_HOME when set."""
     try:
         import of_accounts
         homes = [os.path.expanduser(str(s.get("home") or s.get("codex_home") or "")) for s in of_accounts.codex_seats()]
-        homes = [h for h in homes if h]
     except Exception:  # noqa: BLE001
         homes = []
-    return sorted(set(homes or [os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")]))
+    homes += [os.path.expanduser("~/.codex"), os.environ.get("CODEX_HOME") or ""]
+    return sorted({os.path.abspath(h) for h in homes if h})
 
 
 def _real(p):
@@ -215,23 +215,50 @@ def _outermost(paths):
     return out
 
 
-def filesystem(cwd, deny_rules=None, checkout_bin=None):
+# under every folder a session writes: a project layer and project skills a later session that trusts the folder would
+# load (W3 as of_server took of_secrets-review's change, organic-framework-build b0040a5 and f78bfbb)
+PROTECTED = (".codex", ".agents")
+# the guard's inputs in OF's state folder, written by the hook outside the session's sandbox, read only for its
+# commands: index.json maps a session to its position, and with it the position's credential rules (of_secrets-review
+# on organic-framework PR 475)
+GUARD_INPUTS = ("index.json",)
+
+
+def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
     """The position's permission profile's filesystem map (W3 point 4, of_server's decision): the platform's minimal
     files read, its working folder and OF's state folder written, the live checkout's bin/ read only (so no command or
     patch of the session can break its hook: of_server, msg 01a1f989-0322), and denied (read and write) every path the
     Claude Code sandbox denies (of_spawn.sandbox_settings: the catalogue's credential paths, sign-ins, keys,
     transcripts, OF's server and ClickHouse files, Muse's home), every Codex seat's CODEX_HOME, its own included,
-    and the Claude temp root, where Claude Code sessions keep their scratch."""
+    and the Claude temp root, where Claude Code sessions keep their scratch; CODEX_HOME, the session's own seat home,
+    is denied whether or not it is a listed seat. Under each folder it writes, .codex and .agents are made and read
+    only, and the guard's index is read only. Without of_spawn's deny list it raises: never a map without it."""
     import of_scratch
     import of_spawn
     box = of_spawn.sandbox_settings(deny_rules or [], platform="linux") or {}
     denied = set((box.get("filesystem") or {}).get("denyRead") or [])
     denied |= set(seat_homes())
+    if codex_home:
+        denied.add(os.path.abspath(os.path.expanduser(codex_home)))
     denied.add(of_scratch.base_dir())
     fs = {":minimal": "read"}
     fs.update({p: "deny" for p in _outermost(denied)})
-    fs[_real(cwd)] = "write"
-    fs[os.path.expanduser("~/.local/state/of")] = "write"   # its server folder, more specific, stays denied
+    state = os.path.expanduser("~/.local/state/of")
+    writes = [_real(cwd), state]   # the state folder's server folder, more specific, stays denied
+    for w in writes:
+        fs[w] = "write"
+        for name in PROTECTED:   # made, so the sandbox can bind it read only (bwrap binds only what exists)
+            p = os.path.join(w, name)
+            if os.path.isdir(w) and not os.path.lexists(p):
+                os.mkdir(p, 0o755)
+            if os.path.islink(p) or os.path.isfile(p):
+                fs[p] = "deny"   # a link or a file there: hidden, never followed
+            else:
+                fs[p] = "read"
+    for name in GUARD_INPUTS:
+        p = os.path.join(state, name)
+        if os.path.isfile(p) and not os.path.islink(p):
+            fs[p] = "read"
     bin_dir = checkout_bin or os.path.dirname(default_of_bin())
     fs[_real(bin_dir)] = "read"
     # what of, herdr and git need to read: OF's configuration (its keys inside stay denied, the more specific path
@@ -254,7 +281,7 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None):
 
 
 def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_rules=None, domains=DEFAULT_DOMAINS,
-          checkout_bin=None):
+          checkout_bin=None, codex_home=None):
     """The session layer's tables: the model, approvals never, workspace-write under the position's permission
     profile, its network through the proxy with the allowed domains and every Unix socket, interactive exec off, the
     command environment filtered to ENV_INCLUDE, the start context whole as developer_instructions (W5), and of_tools'
@@ -275,7 +302,7 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     doc["features"] = feats
     doc["shell_environment_policy"] = {"inherit": "all", "include_only": list(ENV_INCLUDE)}
     doc["permissions"] = {PROFILE: {
-        "filesystem": filesystem(cwd, deny_rules, checkout_bin),
+        "filesystem": filesystem(cwd, deny_rules, checkout_bin, codex_home or os.environ.get("CODEX_HOME")),
         "network": {"enabled": True, "dangerously_allow_all_unix_sockets": True,
                     "domains": {d: "allow" for d in domains}}}}
     doc.update(tables)
@@ -323,10 +350,19 @@ def layer_path(codex_home, launch_id):
 
 
 def write_layer(codex_home, launch_id, doc):
-    """Write the layer, mode 600, whole or not at all."""
+    """Write the layer, mode 600, whole or not at all, through a new file of its own in the same folder (mkstemp: never a
+    link someone left at a guessable name; of_secrets-review on organic-framework PR 475)."""
+    import tempfile
     path = layer_path(codex_home, launch_id)
-    tmp = f"{path}.{os.getpid()}"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        fh.write(to_toml(doc) + "\n")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".of-layer-", dir=codex_home)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(to_toml(doc) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path

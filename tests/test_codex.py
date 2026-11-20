@@ -161,6 +161,40 @@ class LayerTest(unittest.TestCase):
         self.assertIs(prof["network"]["dangerously_allow_all_unix_sockets"], True)
         self.assertEqual(prof["network"]["domains"]["github.com"], "allow")
 
+    def test_project_layers_under_write_roots_are_read_only(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as cwd, \
+                mock.patch.object(of_codex, "seat_homes", return_value=[]):
+            os.symlink("/etc", os.path.join(cwd, ".agents"))
+            fs = of_codex.filesystem(cwd, checkout_bin=cwd)
+            real = os.path.realpath(cwd)
+            self.assertEqual(fs[os.path.join(real, ".codex")], "read")
+            self.assertTrue(os.path.isdir(os.path.join(real, ".codex")))       # made, so bwrap can bind it
+            self.assertEqual(fs[os.path.join(real, ".agents")], "deny")        # a link there is never followed
+            state = os.path.expanduser("~/.local/state/of")
+            self.assertEqual(fs[os.path.join(state, ".codex")], "read")
+
+    def test_the_sessions_own_home_and_the_guard_index_are_never_written(self):
+        import tempfile
+        from unittest import mock
+        state = os.path.expanduser("~/.local/state/of")
+        os.makedirs(state, exist_ok=True)
+        with open(os.path.join(state, "index.json"), "w") as fh:
+            fh.write("{}")
+        with tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryDirectory() as home, \
+                mock.patch.object(of_codex, "seat_homes", return_value=["/home/alex/.codex"]):
+            fs = of_codex.filesystem(cwd, checkout_bin=cwd, codex_home=home)
+            self.assertEqual(fs[os.path.abspath(home)], "deny")                # not a listed seat, denied all the same
+            self.assertEqual(fs[os.path.join(state, "index.json")], "read")
+
+    def test_no_deny_list_no_profile(self):
+        from unittest import mock
+        import of_spawn
+        with mock.patch.object(of_spawn, "sandbox_settings", side_effect=AttributeError("no sandbox_settings")):
+            with self.assertRaises(AttributeError):
+                of_codex.filesystem("/home/alex/wt")
+
     def test_only_existing_outermost_paths_are_denied(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -180,7 +214,9 @@ class LayerTest(unittest.TestCase):
     def test_the_layer_file_is_private(self):
         import tempfile
         with tempfile.TemporaryDirectory() as h:
+            os.symlink(os.path.join(h, "elsewhere"), os.path.join(h, f"of-L-1.config.toml.{os.getpid()}"))
             p = of_codex.write_layer(h, "L-1", self.doc())
+            self.assertFalse(os.path.exists(os.path.join(h, "elsewhere")))       # the left link was not followed
             self.assertEqual(os.path.basename(p), "of-L-1.config.toml")
             self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
             with open(p, "rb") as fh:
