@@ -258,7 +258,7 @@ def _hold(conn, org, config, since, since_sha, snap=None):
         raise ExportError(f"{org} was marked moving {time.time() - st.st_mtime:.0f} s ago: wait until "
                           f"{MOVING_SETTLE_S} s have passed, so no request that read it unset is still writing")
     now = {"batch": _max(conn, "batches", "seq"), "redaction": _max(conn, "redactions", "rowid"),
-           "flag": (st.st_ino, st.st_mtime_ns) if st else None}
+           "flag": (_flag_token(flag), st.st_ino, st.st_mtime_ns) if st else None}
     if snap is not None:
         if any(_names(by, org) for (by,) in conn.execute(
                 "SELECT by_org FROM batches WHERE seq > ?", (snap["batch"],))) if "batches" in _tables(conn) else False:
@@ -268,6 +268,16 @@ def _hold(conn, org, config, since, since_sha, snap=None):
         if now["flag"] != snap["flag"]:
             raise ExportError(f"{org}'s moving flag changed while the export ran: export again")
     return now
+
+
+def _flag_token(path):
+    """The token `of server moving --org X on` writes: each setting has its own, where an inode and an mtime may come
+    out the same after the flag is removed and made again (of_review on organic-framework PR 437, on Linux)."""
+    try:
+        with open(path) as fh:
+            return fh.read(64).strip()
+    except OSError:
+        return None
 
 
 def _moving_dir(config):

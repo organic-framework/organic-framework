@@ -257,17 +257,18 @@ class ExportTest(unittest.TestCase):
         insert_row(self.src, "redactions", redaction_id="r9", batch_id="theirs", state="done")
         with self.assertRaisesRegex(ex.ExportError, "redaction arrived"):
             ex._hold(self.src, "acme", cfg, None, None, snap)
+        import of_server
         flag = os.path.join(state, "moving", "acme")
-        os.makedirs(os.path.dirname(flag))
-        open(flag, "w").close()
+        of_server.set_moving(cfg, "acme", True)
         with self.assertRaisesRegex(ex.ExportError, "marked moving .* ago: wait"):
             ex._hold(self.src, "acme", cfg, "bulk", "0" * 64)                   # a final delta on a fresh flag
         old = time.time() - ex.MOVING_SETTLE_S - 5
         os.utime(flag, (old, old))
         snap = ex._hold(self.src, "acme", cfg, "bulk", "0" * 64)
-        os.unlink(flag)
-        open(flag, "w").close()
-        os.utime(flag, (old, old))                                              # off and on again
+        st = os.stat(flag)
+        of_server.set_moving(cfg, "acme", False)
+        of_server.set_moving(cfg, "acme", True)                                 # off and on again, and on Linux
+        os.utime(flag, ns=(st.st_atime_ns, st.st_mtime_ns))                     # the same mtime: the token tells
         with self.assertRaisesRegex(ex.ExportError, "moving flag changed"):
             ex._hold(self.src, "acme", cfg, "bulk", "0" * 64, snap)
 
