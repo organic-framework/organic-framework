@@ -662,6 +662,47 @@ class HandleTest(unittest.TestCase):
             self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
         self.assertNotIn("permissionDecision", out.getvalue())
 
+    def test_a_system_exit_or_a_failure_before_the_guard_answers_denies(self):
+        """of_secrets-review on organic-framework PR 469: SystemExit escaped except Exception, and an error before the
+        guard ran fell into main's catch-all, both letting the call run."""
+        import contextlib
+        import io
+        from unittest import mock
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out = io.StringIO()
+        with mock.patch.object(of_hook, "critical_deny", side_effect=SystemExit(0)), contextlib.redirect_stdout(out):
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        decision = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertIn("guard failed (SystemExit)", decision["permissionDecisionReason"])
+        payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "S1", "cwd": "/x", "tool_name": "Bash",
+                              "tool_input": {"command": "ls"}})
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out = io.StringIO()
+        with mock.patch.object(of_hook, "_store_raw", side_effect=RuntimeError("early")), \
+                mock.patch("sys.stdin", io.StringIO(payload)), contextlib.redirect_stdout(out):
+            self.assertEqual(of_hook.main(["PreToolUse"]), 0)          # main itself never fails the agent
+        decision = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(decision["permissionDecision"], "deny")       # but before the guard answered, it denies
+        self.assertIn("guard failed (RuntimeError)", decision["permissionDecisionReason"])
+
+    def test_bin_of_denies_a_pre_tool_use_whose_hook_cannot_load(self):
+        """of_secrets-review on PR 469: a failed import of of_hook exited 1, and Claude Code and Codex ran the call."""
+        import shutil
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp(prefix="ofhk-")
+        shutil.copy(os.path.join(os.path.dirname(of_hook.__file__), "of"), os.path.join(d, "of"))
+        with open(os.path.join(d, "of_hook.py"), "w") as fh:
+            fh.write("raise ImportError('a module the hook needs is broken')\n")
+        r = subprocess.run([sys.executable, os.path.join(d, "of"), "hook", "PreToolUse"], input="{}",
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("guard failed (ImportError)", r.stderr)
+        r = subprocess.run([sys.executable, os.path.join(d, "of"), "hook", "Stop"], input="{}",
+                           capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(r.returncode, 2)   # another event keeps its old way
+
     def test_a_guard_reason_is_recorded_masked(self):
         """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""
         token = "ghp_" + "Ab3" * 12

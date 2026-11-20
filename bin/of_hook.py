@@ -1121,20 +1121,28 @@ GUARD_FAILED = ("Organic Framework guard failed ({kind}), so the call is denied 
                 "retry it another way; tell of_server, which keeps the guard")
 
 
+GUARD_DECIDED = False  # set once _guard has answered, allow or deny: main's catch-all denies before that point
+
+
+def _deny_failed(kind):
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": GUARD_FAILED.format(kind=kind)}}, ensure_ascii=False))
+    sys.stdout.flush()
+
+
 def _guard(hook, sess):
     """The guard fails closed: an error of its own denies the call. Claude Code and Codex both run a call whose
     PreToolUse hook raised (2026-11-11: a NameError in _scratch_guard let every call through unguarded;
-    of_secrets-review's W3 review of Codex positions, msg 01a1f8e4-d06c)."""
-    global OUTPUT
+    of_secrets-review's W3 review of Codex positions, msg 01a1f8e4-d06c). SystemExit included (its review of PR 469)."""
+    global OUTPUT, GUARD_DECIDED
     try:
         _guard_checked(hook, sess)
-    except Exception as e:  # noqa: BLE001 - every error of the guard's own is a deny
+    except (SystemExit, Exception) as e:  # noqa: BLE001 - every error of the guard's own is a deny
         OUTPUT = None
-        sys.stdout.write(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": GUARD_FAILED.format(kind=type(e).__name__)}}, ensure_ascii=False))
-        sys.stdout.flush()
+        _deny_failed(type(e).__name__)
         _log_error("PreToolUse guard", e)
+    GUARD_DECIDED = True
 
 
 # A Codex session's tool calls, as of_guard's rules read them (W3 of organic-framework-build's
@@ -2001,6 +2009,8 @@ def main(argv):
                 fh.write(f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
         except Exception:
             pass
+        if event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
+            _deny_failed(type(e).__name__)   # (of_secrets-review on organic-framework PR 469)
     if event in ("PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
         _timing(event, hook, started)
     return 0
