@@ -3335,11 +3335,18 @@ _DYN_CALL = re.compile(r"\b(?:eval|exec|compile|getattr|setattr|globals|vars|__i
                        r"methodcaller)\s*\(|\]\s*\(|\)\s*\(")
 
 
+# perl's and ruby's ordinary launches, as words outside strings (`system "…"`, `exec "…"`, ruby's %x(…)) and a pipe
+# open (`open(my $f, "-|", "…")`, `open(F, "… |")`): of_review on organic-framework PR 454 at e595205
+_WORD_LAUNCH = re.compile(r"\b(?:system|exec|spawn|popen|fork)\b|%x\s*[^\w\s]")
+_PIPE_OPEN_CODE = re.compile(r"""\bopen\s*\(?[^;\n]*?['"]\s*(?:-\||\|-)\s*['"]|\bopen\s*\(?[^;\n]*?\|\s*['"]""")
+
+
 def _launches(head, code):
     """Can interpreter HEAD's CODE start a process?"""
     # dynamic calls are read outside string literals: `(a)(b)` in a regex pattern calls nothing
     unquoted = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", "''", code, flags=re.S)
     return bool(_LAUNCH_CODE.search(code)) or bool(_DYN_CALL.search(unquoted)) or \
+        bool(_WORD_LAUNCH.search(unquoted)) or bool(_PIPE_OPEN_CODE.search(code)) or \
         (not str(head).startswith(("python", "pypy", "node")) and bool(_LAUNCH_BACKTICK.search(code)))
 
 
