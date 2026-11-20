@@ -612,9 +612,13 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _open(req):
-    """No proxy from the environment and no redirect (the user organization's sec_keeper, msg 01a1f638-5862)."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(req, timeout=600)
+def _open(req, context=None):
+    """No proxy from the environment and no redirect (the user organization's sec_keeper, msg 01a1f638-5862); with a
+    pinned certificate's CONTEXT, that certificate alone is trusted (`clickhouse: ca`)."""
+    handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    return urllib.request.build_opener(*handlers).open(req, timeout=600)
 
 
 class ClickHouseHTTP:
@@ -630,7 +634,8 @@ class ClickHouseHTTP:
             raise ExportError("ClickHouse over plain http only on this machine's loopback")
         try:
             self.url = cfg["url"].rstrip("/") + "/?"
-            self.auth = of_route.ClickHouse(cfg).auth
+            client = of_route.ClickHouse(cfg)
+            self.auth, self.context = client.auth, client.context
         except Exception:
             raise ExportError("cannot read the ClickHouse connection settings") from None
 
@@ -638,7 +643,7 @@ class ClickHouseHTTP:
         try:
             req = urllib.request.Request(self.url + urllib.parse.urlencode(params), data=body,
                                          headers={"Authorization": self.auth, "Content-Type": "application/octet-stream"})
-            with _open(req) as response:
+            with _open(req, self.context) as response:
                 yield from iter(lambda: response.read(1 << 16), b"")
         except Exception:
             raise ExportError("ClickHouse request failed") from None

@@ -10,6 +10,21 @@ import os
 import urllib.error
 import urllib.request
 
+def tls_context(cfg):
+    """A TLS context that trusts only the certificate `ca` names (the agent host's ClickHouse serves https only, with
+    a certificate made there, 2026-11-20, of_agent-server), or None: the system's authorities, as before. A ca with
+    a plain http url refuses, since the pin would protect nothing."""
+    ca = (cfg or {}).get("ca")
+    if not ca:
+        return None
+    import ssl
+    if not str(cfg.get("url", "")).lower().startswith("https://"):
+        raise ValueError("clickhouse: ca goes with an https url")
+    ctx = ssl.create_default_context(cafile=os.path.expanduser(ca))  # that certificate alone is the trust anchor
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 class ClickHouse:
     """Inserts go in as `<database>_ingest` (insert-only) when its credential exists;
     the tenant's user `of` is the fallback (RFC 0001 §5.2, roles)."""
@@ -17,6 +32,11 @@ class ClickHouse:
     def __init__(self, cfg):
         self.cfg = cfg
         self.auth = self._auth(cfg["user"], os.path.expanduser(cfg["password_file"]))
+        self.context = tls_context(cfg)
+
+    def _urlopen(self, req, timeout):
+        return urllib.request.urlopen(req, timeout=timeout, context=self.context) if self.context else \
+            urllib.request.urlopen(req, timeout=timeout)
 
     @staticmethod
     def _auth(user, path):
@@ -62,7 +82,7 @@ class ClickHouse:
         req = urllib.request.Request(f"{self.cfg['url']}/?{urlencode(params)}", data=body, method="POST",
                                      headers={"Authorization": auth or self.auth})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with self._urlopen(req, timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"ClickHouse {e.code}: {e.read()[:500].decode(errors='replace')}")
