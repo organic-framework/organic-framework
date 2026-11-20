@@ -974,7 +974,7 @@ def _owner_config_in_code(code, lits):
 # Node is left out: its backticks are template strings, not commands.
 _SHELL_CODE_HEADS = ("perl", "ruby", "php")
 _PAIRS = {"(": ")", "{": "}", "[": "]", "<": ">"}
-_RUN_CALL = re.compile(r"\b(?:system|exec|shell_exec|passthru|popen|spawn|proc_open)\s*\(?\s*(['\"])((?:\\.|(?!\1).)*)\1",
+_RUN_CALL = re.compile(r"\b(?:system|exec|shell_exec|passthru|popen|spawn|proc_open|readpipe)\s*\(?\s*(['\"])((?:\\.|(?!\1).)*)\1",
                        re.S)
 _PIPE_OPEN = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])((?:\\.|(?!\1).)*?)\s*\|\s*\1", re.S)
 _PIPE_OPEN3 = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])-\|\1\s*,\s*(['\"])((?:\\.|(?!\2).)*)\2", re.S)
@@ -988,14 +988,16 @@ def _code_args(head, args):
     out = []
     base = os.path.basename(str(head or ""))
     flags = ("-c", "-e") + (("-r",) if base == "php" else ()) + (("-E",) if base == "perl" else ())
-    for flag in flags:
-        if flag in args[:-1]:
-            out.append(args[args.index(flag) + 1])
+    # every place of each flag: perl and ruby take several -e (`perl -e 'print 1' -e '<dump>'`: of_review on
+    # organic-framework PR 461 at 00aac97)
+    out += [args[k + 1] for k, a in enumerate(args[:-1]) if a in flags]
     if base in ("perl", "ruby"):
         for k, a in enumerate(args):
             if a in ("-e", "-E") or a.startswith("--") or not a.startswith("-"):
                 continue
-            m = re.fullmatch(r"-[A-Za-z]*?([eE])(.*)", a, re.S)
+            # digits too: perl's -0777 and -l012, ruby's -W0 sit inside a cluster (of_secrets-review on PR 461);
+            # a -Mfoo=e… read as code is the safe side
+            m = re.fullmatch(r"-[A-Za-z0-9]*?([eE])(.*)", a, re.S)
             if not m:
                 continue
             code = m.group(2) or (args[k + 1] if k + 1 < len(args) else "")
@@ -1040,6 +1042,9 @@ def _shell_in_code(code, head):
     out = re.findall(r"`([^`]*)`", code)
     out += _quote_like(code, "qx") + (_quote_like(code, "%x") if os.path.basename(head) == "ruby" else [])
     out += [m.group(2) for m in _RUN_CALL.finditer(code)]
+    # perl's q{…} and qq{…} handed to a launch, with any delimiter (of_secrets-review's note on PR 461)
+    for m in re.finditer(r"\b(?:system|exec|readpipe|popen|spawn)\s*\(?\s*(qq?)\s*(?=[^\w\s])", code):
+        out += _quote_like(code[m.start(1):], m.group(1))[:1]
     out += [m.group(2) for m in _PIPE_OPEN.finditer(code)] + [m.group(3) for m in _PIPE_OPEN3.finditer(code)]
     return [x for x in out if x.strip()]
 
