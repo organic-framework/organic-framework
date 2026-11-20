@@ -73,5 +73,37 @@ class CodexPreToolUse(unittest.TestCase):
         self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class PatchFormsTest(unittest.TestCase):
+    """of_review and of_secrets-review on PR 469: Codex trims header lines, runs apply_patch through the shell, and an
+    unreadable patch is denied, never judged as an Edit of no file."""
+
+    def answers(self, printed):
+        return CodexPreToolUse.answers(self, printed)
+
+    def test_headers_as_codex_reads_them(self):
+        home = os.path.expanduser("~")
+        key = f"{home}/{KEY}"
+        owner = f"{home}/.config/of/orgs.yaml"
+        for p in (patch(f"   *** Add File: {key}", "+x"), patch("*** Add File: notes.md", "+ok", f"  *** Add File: {key}", "+x"),
+                  patch(f"\t*** Delete File: {owner}"), patch(f"***Add File:{key}", "+x"),
+                  patch("*** Add Fiel: x", "+x"), patch("*** Add File:", "+x"), "no patch markers at all"):
+            got = self.answers(fire("apply_patch", {"command": p}))
+            self.assertEqual(len(got), 1, p)
+            self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny", p)
+
+    def test_a_patch_through_the_shell_is_judged_by_its_files(self):
+        home = os.path.expanduser("~")
+        for target in (f"{home}/{KEY}", f"{home}/.config/of/orgs.yaml"):
+            cmd = "apply_patch <<'EOF'\n" + patch(f"*** Add File: {target}", "+x") + "\nEOF"
+            got = self.answers(fire("Bash", {"command": cmd}))
+            self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny", target)
+        ok = "apply_patch <<'EOF'\n" + patch("*** Add File: notes.md", "+ok") + "\nEOF"
+        self.assertEqual(self.answers(fire("Bash", {"command": ok})), [])
+
+    def test_an_argv_command_is_read_as_its_words(self):
+        got = self.answers(fire("apply_patch", {"command": ["apply_patch", patch(f"*** Add File: {ENV}", "+A=1")]}))
+        self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
 if __name__ == "__main__":
     unittest.main()
