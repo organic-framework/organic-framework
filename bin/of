@@ -7433,6 +7433,8 @@ def cmd_capacity(args):
             if step == "prepare":
                 of_capacity.reboot_prepare(positions, hold=of_capacity.load_policy().get("hold") or (),
                                            dry_run=args.dry_run)
+            elif step == "cancel":
+                of_capacity.reboot_cancel(dry_run=args.dry_run)
             elif step == "restore":
                 only = {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
                 import of_spawn
@@ -7453,7 +7455,7 @@ def cmd_capacity(args):
                     if e["session"] not in live:
                         print(f"  down: {e['name']} ({of_capacity.short(e['config_dir'])})")
             else:
-                raise OfError("usage: of capacity reboot prepare|restore|status [--only a,b] [--dry-run]")
+                raise OfError("usage: of capacity reboot prepare|restore|cancel|status [--only a,b] [--dry-run]")
         except of_capacity.MoveError as e:
             raise OfError(f"capacity reboot: {e}")
         return 0
@@ -8227,7 +8229,8 @@ def main(argv=None):
     cp.add_argument("--restart", action="store_true",
                     help="move: restart the session on its own account and model, so it starts with what a start "
                          "gives it now (its tool profile, deny rules, memory directory)")
-    cp.add_argument("position", nargs="?", help="move: the position (canonical name or alias)")
+    cp.add_argument("position", nargs="?", help="move: the position (canonical name or alias); "
+                                                "reboot: prepare, restore, cancel or status")
     cp.add_argument("--to", help="move: the target config dir, e.g. ~/.claude-e; resume: the config dir that holds the session")
     cp.add_argument("--dry-run", "-n", action="store_true", help="move: checks and the plan only")
     cp.add_argument("--allow-shells", action="store_true", help="move: stop the session's background shells")
