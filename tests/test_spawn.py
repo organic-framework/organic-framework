@@ -343,10 +343,24 @@ class SandboxBlock(unittest.TestCase):
         self.assertNotIn("sandbox", json.loads(of_spawn.session_settings(None, deny, platform="darwin")))
 
     def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
+        """Tried on the agent host (2026-11-20): the temp root must stay writable (the sandbox's sockets, $TMPDIR),
+        so the other sessions' folders are denied by name and the root never is."""
+        import tempfile
         import of_scratch
-        box = of_spawn.sandbox_settings([], platform="linux", scratch=("/home/alex/repo", "SID-1"))
-        self.assertIn(of_scratch.base_dir(), box["filesystem"]["denyRead"])
-        self.assertIn(os.path.join(of_scratch.base_dir(), "-home-alex-repo", "SID-1"), box["filesystem"]["allowRead"])
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as base:
+            for d in ("-home-alex-repo/SID-1", "-home-alex-repo/SID-2", "-home-alex-other/SID-3", "bundled-skills/x"):
+                os.makedirs(os.path.join(base, d))
+            with mock.patch.object(of_scratch, "base_dir", return_value=base):
+                box = of_spawn.sandbox_settings([], platform="linux", scratch=("/home/alex/repo", "SID-1"))
+            f = box["filesystem"]
+            own = os.path.join(base, "-home-alex-repo", "SID-1")
+            self.assertIn(os.path.join(base, "-home-alex-repo", "SID-2"), f["denyRead"])
+            self.assertIn(os.path.join(base, "-home-alex-other", "SID-3"), f["denyRead"])
+            self.assertNotIn(own, f["denyRead"])
+            self.assertNotIn(base, f["denyRead"] + f["denyWrite"])
+            self.assertFalse([x for x in f["denyRead"] if "bundled-skills" in x])
+            self.assertFalse([x for x in f["denyWrite"] if own == x or own.startswith(x.rstrip("/") + "/")])
 
     def test_a_glob_is_its_matches_when_the_session_starts(self):
         import tempfile

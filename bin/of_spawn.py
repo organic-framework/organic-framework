@@ -188,14 +188,21 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
         paths |= {os.path.join(d, ".credentials.json"), os.path.join(d, "projects")}
     if _muse_dir():
         paths.add(_muse_dir())   # Muse's own home and its keychain (of_server's list)
+    # the other sessions' scratch folders, each by name as they stand when this session starts: the temp root itself
+    # must stay writable, since the sandbox writes its bridge sockets there and $TMPDIR points into it, and a writable
+    # folder stays readable whatever denyRead says (tried on the agent host under of, 2026-11-20, in bypass mode:
+    # the root denied for writes, the sandbox did not start; the root denied for reads, another session's file read).
+    # A session that starts later is not in the list (docs/guard.md, Gaps)
     base = of_scratch.base_dir()
-    paths.add(base)   # the other sessions' scratch folders; this session's own is allowed back below
-    allow = [os.path.join(base, "bundled-skills")]
+    own = set()
     if scratch:
         cwd, sid = scratch
         if cwd and sid:
-            allow.append(os.path.join(base, of_scratch._encode(cwd), sid))   # the folder as Claude Code names it
-        allow += of_scratch.folders(sid) if sid else []
+            own.add(os.path.join(base, of_scratch._encode(cwd), sid))   # the folder as Claude Code names it
+        own |= set(of_scratch.folders(sid)) if sid else set()
+    paths |= {d for d in glob.glob(os.path.join(base, "*", "*")) if os.path.isdir(d) and d not in own
+              and not d.startswith(os.path.join(base, "bundled-skills"))}
+    allow = sorted(own)
     for r in deny or []:
         if r.startswith("Read(") and r.endswith(")"):
             q = r[5:-1]
@@ -214,7 +221,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
     # review); every denied path is denied for writes too
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
-            "filesystem": {"denyRead": denied, "denyWrite": denied, "allowRead": sorted(set(allow)),
+            "filesystem": {"denyRead": denied, "denyWrite": denied, "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")]},
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
                         "allowedDomains": list(SANDBOX_DOMAINS)}}

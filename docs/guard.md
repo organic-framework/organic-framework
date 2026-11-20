@@ -232,6 +232,7 @@ From RFC 0002 §4.1. They are written up, not closed:
 
 ## Gaps
 
+- **Claude Code's sandbox on Linux denies the other sessions' scratch folders by name, as they stand when a session starts** (of_review and of_secrets-review on organic-framework PR 457, tried on the agent host on 2026-11-20). The temp root must stay writable, since the sandbox writes its sockets there and `$TMPDIR` points into it, and a writable folder stays readable, so a session started later than this one keeps its scratch folder readable to it.
 - **Claude Code's sandbox on Linux opens every Unix socket or none** (`of_secrets-review` on organic-framework PR 457). `of spawn` writes `allowAllUnixSockets` for every Linux session, since `of`, herdr and the relay need their sockets and `allowUnixSockets` is macOS-only; so a sandboxed command can reach the systemd user bus (`systemd-run --user`), herdr or of-server and read through them past `denyRead`. Closing it needs a socket broker, or one OS user per position (the isolation plan's next layer).
 
 Rules that need a test, or an owner's fix, before the review on 2026-11-14:
