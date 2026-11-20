@@ -32,6 +32,7 @@ PROBE_EVERY_MIN = 30
 PASSIVE_MAX_AGE_S = 1800
 PASSIVE_FILE_LIMIT = 5
 PASSIVE_MAX_BYTES = 64 * 1024
+PASSIVE_TAIL_BYTES = 256 * 1024  # a transcript tail read for its last real response
 PROBE_MODEL = "haiku"
 PROBE_PROMPT = "Reply with the single word: ok"
 PROBE_TIMEOUT_S = 120
@@ -319,7 +320,41 @@ def _passive_candidates(now, max_age_s):
     return {account: sorted(files, reverse=True)[:PASSIVE_FILE_LIMIT] for account, files in by_account.items()}
 
 
-def _newest_passive(files, now):
+def _reading_time(data, mtime):
+    """When a status line file's rate_limits were current: its session's last transcript write, never later than the
+    file's own time. The status line redraws an idle session too, with the rate_limits of its last API response, which
+    can be days old (2026-11-20: an idle session on a spent account read its week at 0% while a probe read 100%), and
+    a session's transcript is written at each response. None when the transcript cannot be read."""
+    tp = data.get("transcript_path") if isinstance(data, dict) else None
+    if not isinstance(tp, str) or not tp:
+        return None
+    try:
+        size = os.path.getsize(tp)
+        with open(tp, "rb") as fh:
+            fh.seek(max(0, size - PASSIVE_TAIL_BYTES))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except (OSError, ValueError):
+        return None
+    # the last response the API gave: a main-thread assistant record that is not the harness's synthetic error (a
+    # session on a spent account gets typed-in prompts, writes records and gets only refusals, while its status line
+    # keeps the rate_limits of its last real response; 2026-11-20, a week read at 4% on an account the probe read 100%)
+    for ln in reversed(lines):
+        if '"assistant"' not in ln:
+            continue
+        try:
+            j = json.loads(ln)
+        except ValueError:
+            continue
+        if j.get("type") != "assistant" or j.get("isSidechain") or j.get("isApiErrorMessage") \
+                or (j.get("message") or {}).get("model") == "<synthetic>":
+            continue
+        t = _ts(j.get("timestamp") or "")
+        return min(mtime, t) if t else None
+    return None
+
+
+def _newest_passive(files, now, max_age_s=PASSIVE_MAX_AGE_S):
+    best = None
     for mtime_ns, session, path in files:
         try:
             with open(path, "rb") as fh:
@@ -345,8 +380,13 @@ def _newest_passive(files, now):
                     windows[name] = {"utilization": used, "resets_at": _iso(reset)}
             except (OverflowError, OSError, ValueError):
                 continue
-        if windows:
-            return {"windows": windows, "observed_at": _reading_iso(mtime_ns / 1e9), "session": session}
+        if not windows:
+            continue
+        seen = _reading_time(data, mtime_ns / 1e9)  # read only for a file with a usable window
+        if seen is None or seen < now - max_age_s or (best and seen <= _ts(best["observed_at"])):
+            continue
+        best = {"windows": windows, "observed_at": _reading_iso(seen), "session": session}
+    return best
 
 
 def passive_readings(dirs, now=None, max_age_s=PASSIVE_MAX_AGE_S):
@@ -355,7 +395,7 @@ def passive_readings(dirs, now=None, max_age_s=PASSIVE_MAX_AGE_S):
     files = _passive_candidates(now, max_age_s)
     readings = {}
     for d in dirs:
-        reading = _newest_passive(files.get(os.path.basename(os.path.normpath(d)), ()), now)
+        reading = _newest_passive(files.get(os.path.basename(os.path.normpath(d)), ()), now, max_age_s)
         if reading:
             readings[d] = reading
     return readings

@@ -170,14 +170,38 @@ class PassiveCapacity(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
-    def write(self, d, session, age=0, **limits):
+    def write(self, d, session, age=0, answered=True, **limits):
+        """A status line file and its session's transcript, whose last real response is at the file's time (or
+        only a synthetic refusal there, when not `answered`)."""
+        transcript = os.path.join(self.files, "..", f"{session}.jsonl")
+        record = {"type": "assistant", "timestamp": of_capacity._reading_iso(self.now - age),
+                  "message": {"model": "claude-opus-5-5"}}
+        if not answered:
+            record = dict(record, isApiErrorMessage=True, message={"model": "<synthetic>"})
+        with open(transcript, "w") as fh:
+            fh.write(json.dumps(record) + "\n")
         path = os.path.join(self.files, f"{os.path.basename(d)}--{session}.json")
         with open(path, "w") as fh:
-            json.dump({"session_id": session, "rate_limits": {
+            json.dump({"session_id": session, "transcript_path": transcript, "rate_limits": {
                 w: {"used_percentage": used, "resets_at": self.now + reset_in}
                 for w, (used, reset_in) in limits.items()}}, fh)
         os.utime(path, (self.now - age, self.now - age))
         return path
+
+    def test_an_idle_sessions_old_limits_are_no_reading(self):
+        # 2026-11-20: idle sessions on spent accounts redrew their status line with their last real response's
+        # rate_limits (a week at 0% and 4% where a probe read 100%); a reading is timed by that response
+        self.write(self.default, "refused", answered=False, seven_day=(4, 900))
+        self.assertEqual(of_capacity.passive_readings([self.default], self.now), {})
+        path = self.write(self.named, "old-answer", seven_day=(0, 900))
+        transcript = os.path.join(self.files, "..", "old-answer.jsonl")
+        with open(transcript, "w") as fh:
+            fh.write(json.dumps({"type": "assistant", "timestamp": of_capacity._reading_iso(self.now - 7200),
+                                 "message": {"model": "claude-opus-5-5"}}) + "\n")
+            fh.write(json.dumps({"type": "assistant", "timestamp": of_capacity._reading_iso(self.now - 5),
+                                 "isApiErrorMessage": True, "message": {"model": "<synthetic>"}}) + "\n")
+        os.utime(path, (self.now, self.now))
+        self.assertEqual(of_capacity.passive_readings([self.named], self.now), {})  # its last answer is 2 h old
 
     def test_newest_usable_per_account_and_expired_windows(self):
         self.write(self.default, "newer", age=1, five_hour=(34, 900), seven_day=(99, 0))
