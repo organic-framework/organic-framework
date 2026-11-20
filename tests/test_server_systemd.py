@@ -108,6 +108,18 @@ class SystemdTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(chdir, "2026-11-01")))           # past seven days
             self.assertFalse(os.path.exists(os.path.join(state, "backups", "2026-11-02")))
             self.assertTrue(any("removed 2026-11-01" in x for x in out))
+            real = sqlite3.connect
+            calls = []
+
+            def failing(*a, **k):  # the copy fails half-way: its .partial must not stay behind (round 3)
+                calls.append(a)
+                if len(calls) == 2:
+                    raise sqlite3.OperationalError("disk full")
+                return real(*a, **k)
+            with mock.patch("of_ship.config", return_value={}), mock.patch.object(sqlite3, "connect", failing), \
+                    self.assertRaises(sqlite3.OperationalError):
+                of_server.backup(dict(cfg, backup={"dir": os.path.join(d, "b2")}), ch_post=sent.append, today="2026-11-21")
+            self.assertEqual(os.listdir(os.path.join(d, "b2", "2026-11-21")), [])
             cfg["backup"]["clickhouse_disk"] = "x'); DROP"
             with mock.patch("of_ship.config", return_value={}), self.assertRaises(ValueError):
                 of_server.backup(cfg, ch_post=sent.append, today="2026-11-20")

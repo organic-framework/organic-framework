@@ -222,19 +222,36 @@ def _file_sha(path):
     return h.hexdigest()
 
 
+def _hold(conn, org, config, since, since_sha):
+    """What must hold for the export to be whole: no batch of ORG queued or dead, no redaction not done, and for the
+    final delta the organization marked moving. Checked at the start and again just before index.json is written, so
+    a flag cleared mid-export, or a write that slipped in before the flag, is noticed (sec_keeper, round 3)."""
+    queued = _queued_batches(conn, org)
+    if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
+        raise ExportError(f"{queued} of {org}'s batches are still queued or dead: wait for the writer, or replay or "
+                          "drop the dead ones, with the organization marked moving (of server moving)")
+    pending = _pending_redactions(conn, org)
+    if pending:  # it would apply on this server only, and the new one would keep the rows it removes (sec_keeper)
+        raise ExportError(f"{pending} redactions on this server are not done: finish them before the export")
+    if since is not None:
+        import of_server
+        if not since_sha:
+            raise ExportError("--since needs --since-sha, the bulk's index sha256")
+        if not (config and os.path.exists(os.path.join(of_server.moving_dir(config), org))):
+            raise ExportError(f"the final delta is made with {org} marked moving (of server moving --org {org} on), "
+                              "so nothing reaches this server after it")
+
+
 def _pending_redactions(conn, org):
     """Redactions not done (queued, running or failed) of batches that hold rows of ORG (the user organization's
     sec_keeper, msg 01a1f645-eae4: a redaction at the cut applied on the laptop only)."""
     if "redactions" not in _tables(conn) or "batches" not in _tables(conn):
         return 0
     n = 0
-    for (by_org,) in conn.execute("SELECT b.by_org FROM redactions r LEFT JOIN batches b ON b.batch_id = r.batch_id "
-                                  "WHERE coalesce(r.state, '') != 'done'"):
-        try:
-            n += by_org is None or org in (json.loads(by_org or "{}") or {})
-        except ValueError:
-            n += 1
-    return n
+    # every one, whatever its batch names: a tenant's delete-only redaction has by_org {} and deletes in every
+    # database (the user organization's sec_keeper, round 3, msg 01a1f657-aeaa); a cancelled one is no work
+    return conn.execute("SELECT count(*) FROM redactions WHERE coalesce(state, '') NOT IN ('done', 'cancelled')"
+                        ).fetchone()[0]
 
 
 def _queued_batches(conn, org):
@@ -242,7 +259,8 @@ def _queued_batches(conn, org):
     if "batches" not in _tables(conn):
         return 0
     n = 0
-    for (by_org,) in conn.execute("SELECT by_org FROM batches WHERE state = 'queued'"):
+    for (by_org,) in conn.execute("SELECT by_org FROM batches WHERE state IN ('queued', 'dead')"):  # a dead one
+        # may be replayed later, on this server only (sec_keeper, round 3)
         try:
             n += org in (json.loads(by_org or "{}") or {})
         except ValueError:
@@ -279,20 +297,7 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
     if since is not None and not (config and _uses_clickhouse(config)):
         raise ExportError("--since needs a ClickHouse export")
-    queued = _queued_batches(conn, org)
-    if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
-        raise ExportError(f"{queued} of {org}'s batches are still queued: wait for the writer, with the organization "
-                          "marked moving (of server moving)")
-    pending = _pending_redactions(conn, org)
-    if pending:  # it would apply on this server only, and the new one would keep the rows it removes (sec_keeper)
-        raise ExportError(f"{pending} redactions of {org}'s rows are not done: finish them before the export")
-    if since is not None:
-        import of_server
-        if not since_sha:
-            raise ExportError("--since needs --since-sha, the bulk's index sha256")
-        if not (config and os.path.exists(os.path.join(of_server.moving_dir(config), org))):
-            raise ExportError(f"the final delta is made with {org} marked moving (of server moving --org {org} on), "
-                              "so nothing reaches this server after it")
+    _hold(conn, org, config, since, since_sha)
     blobs = _blob_count(config)
     if blobs:  # the laptop's blob store held none on 2026-11-19; carrying them comes when a server keeps some
         raise ExportError(f"this server's blob store holds {blobs} files, which this release does not carry yet")
@@ -329,6 +334,7 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         all_days = None
     # The manifest names rows (message ids, alias and position names, sightings' hmacs), so it is encrypted with the
     # rest; index.json, the one plain file, holds only the organization and each file's sha256 (PR 425, point 3).
+    _hold(conn, org, config, since, since_sha)  # again, before anything marks the bundle ready
     mrel = f"manifest.json.gz{ext}"
     written = _write_file(os.path.join(out, mrel), [json.dumps(manifest, sort_keys=True).encode()], recipient)
     index = {"format": FORMAT, "org": org, "encrypted": bool(recipient), "code": _code(), "version": version,
@@ -993,29 +999,39 @@ def _import_clickhouse(ch, databases, bundle, identity, m):
             if got != want:
                 raise ExportError(f"{table.name}: the staged rows differ from the bundle; the target is unchanged")
         carried = [(t, sorted(m["clickhouse"][t.name]["days"].items())) for t in tables]
-        for table, days in reversed(carried):  # hook rows go before the transcript rows their scope reads
-            for d, _ in days:
-                delete = (f"ALTER TABLE {table.source} DELETE{table.where(f'{table.date} = {{d:Date}}')} "
-                          "SETTINGS mutations_sync = 2")
-                for _ in ch.query(delete, dict(table.params, d=d)):
-                    pass
-        for table, days in carried:  # transcripts before the hooks their scope reads; each row by its table's rule
-            stage = table.source + "__import"
-            for d, (count, _, _, _) in days:
-                if not count:
-                    continue
-                insert = (f"INSERT INTO {table.source} SELECT * FROM {stage}"
-                          f"{_CHTable(table.name, stage, table.date, table.keys, table.scope, table.params).where(f'{table.date} = {{d:Date}}')}")
-                for attempt in (1, 2):  # once more from the kept staging table before the day is named
-                    try:
-                        for _ in ch.query(insert, dict(table.params, d=d)):
-                            pass
-                        break
-                    except Exception:
-                        if attempt == 2:
-                            keep_stage[0] = True
-                            raise ExportError(f"{table.name} {d}: the swap's insert failed twice; the day is empty "
-                                              f"there and {stage} is kept: run the import again") from None
+        # From the first delete until the last insert, a failure, a timeout or a Ctrl-C leaves days empty in the
+        # target: the staging tables stay, and every day not yet inserted is named (sec_keeper, round 3). A retry
+        # replaces each day again, so it is safe to run as often as needed.
+        remaining = [(t.name, d) for t, days in carried for d, v in days if v[0]]
+        keep_stage[0] = True
+        try:
+            for table, days in reversed(carried):  # hook rows go before the transcript rows their scope reads
+                for d, _ in days:
+                    delete = (f"ALTER TABLE {table.source} DELETE{table.where(f'{table.date} = {{d:Date}}')} "
+                              "SETTINGS mutations_sync = 2")
+                    for _ in ch.query(delete, dict(table.params, d=d)):
+                        pass
+            for table, days in carried:  # transcripts before the hooks their scope reads; each row by its table's rule
+                stage = table.source + "__import"
+                scoped = _CHTable(table.name, stage, table.date, table.keys, table.scope, table.params)
+                for d, (count, _, _, _) in days:
+                    if not count:
+                        continue
+                    insert = f"INSERT INTO {table.source} SELECT * FROM {stage}{scoped.where(f'{table.date} = {{d:Date}}')}"
+                    for attempt in (1, 2):  # once more from the kept staging table before giving up
+                        try:
+                            for _ in ch.query(insert, dict(table.params, d=d)):
+                                pass
+                            break
+                        except Exception:
+                            if attempt == 2:
+                                raise
+                    remaining.remove((table.name, d))
+        except BaseException:
+            shown = ", ".join(f"{n} {d}" for n, d in remaining[:8]) + (" …" if len(remaining) > 8 else "")
+            raise ExportError(f"the swap stopped: {len(remaining)} days are not inserted yet ({shown or 'none'}); "
+                              "the staging tables are kept: run the import again") from None
+        keep_stage[0] = False
     except ExportError:
         raise
     except Exception:

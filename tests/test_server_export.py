@@ -206,6 +206,32 @@ class ExportTest(unittest.TestCase):
         with self.assertRaisesRegex(ex.ExportError, "another organization's records"):
             import_store(dst, self.out, "acme", sha)
 
+    def test_round_three_hold_dead_batches_every_redaction_and_a_recheck_before_the_index(self):
+        """The user organization's sec_keeper, round 3 (through of_architect, msg 01a1f657-aeaa), and of_review on
+        PR 433: a dead batch passed, a delete-only redaction (by_org {}) passed, a cancelled one blocked forever, and
+        the hold was read only at the start."""
+        insert_row(self.src, "batches", batch_id="dead", machine_id="m", state="dead", by_org=json.dumps({"acme": 1}))
+        with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
+            self.export(out=self.out + "-1")
+        self.src.execute("DELETE FROM batches")
+        insert_row(self.src, "batches", batch_id="del", machine_id="m", state="committed", by_org="{}")
+        insert_row(self.src, "redactions", redaction_id="r", batch_id="del", state="queued")
+        with self.assertRaisesRegex(ex.ExportError, "redactions on this server are not done"):
+            self.export(out=self.out + "-2")
+        self.src.execute("UPDATE redactions SET state = 'cancelled'")
+        self.export(out=self.out + "-3")                                     # a cancelled one is no work
+        from unittest import mock
+        calls = []
+
+        def second_fails(*a, **k):  # what holds at the start may not hold when the export ends
+            calls.append(a)
+            if len(calls) == 2:
+                raise ex.ExportError("1 of acme's batches are still queued or dead")
+        with mock.patch.object(ex, "_hold", second_fails), self.assertRaisesRegex(ex.ExportError, "queued"):
+            self.export(out=self.out + "-4")
+        self.assertEqual(len(calls), 2)                                     # read at the start and before the index
+        self.assertFalse(os.path.exists(os.path.join(self.out + "-4", "index.json")))   # never marked ready
+
     def test_records_travel_encrypted_unless_plaintext_is_said(self):
         with self.assertRaises(ex.ExportError) as e:
             ex.export_store(self.src, "acme", self.out)
@@ -822,7 +848,7 @@ class ClickHouseExportTest(unittest.TestCase):
                 raise RuntimeError("private row")
             yield from original(sql, params)
         with mock.patch.object(self.dst, "query", failing), self.assertRaisesRegex(
-                ex.ExportError, "vault/event .* failed twice.*kept"):
+                ex.ExportError, "swap stopped: .* not inserted yet .*vault/event .*staging tables are kept"):
             self.restore(sha)
         self.assertTrue(self.dst.rows("dst_vault.event__import"))
         # 4: a link inside the bundle refuses --delete before any file goes
