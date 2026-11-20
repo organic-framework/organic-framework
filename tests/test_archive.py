@@ -113,17 +113,25 @@ class ArchiveTest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(root, "files", ".claude-x", "projects", "p", "b.jsonl.1.zst")))
 
     def register(self, *entries):
+        """The register as the reader gives it, the owner's cards taken as checked: archive() only stores through it
+        (the cards' checks are of_redact's, tests/test_redact_archive.py)."""
+        from unittest import mock
+        import of_redact
         d = os.path.join(self.state, "redaction")
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "archive-register.jsonl"), "w") as fh:
+        path = os.path.join(d, "archive-register.jsonl")
+        with open(path, "w") as fh:
             for e in entries:
                 fh.write(json.dumps(e) + "\n")
+        patch = mock.patch.object(of_redact, "archive_register", lambda *a, **k: of_redact._register_lines(path))
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def test_a_registered_record_is_stored_with_its_mark_whole_and_appended(self):
         """of_server on redaction 7da5d129 (the founder's yes on card OF-170): a session moved to another account gives
         the archive a new file, copied whole with the matter; and an append is one more frame."""
         mark = "[redacted: test]"
-        self.register({"session": "s1", "keys": ["u1", "u3"], "mark": mark, "reason": "test", "basis": "test"})
+        self.register({"session": "s1", "keys": ["u1", "u3"], "mark": mark, "reason": "test", "ask": "OF-170"})
         self.put("s1.jsonl", b'{"uuid": "u1", "type": "user", "message": {"role": "user", "content": "the matter"}}\n'
                              b'{"uuid": "u2", "type": "user", "message": {"role": "user", "content": "kept"}}\n')
         self.run_()
@@ -141,12 +149,12 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(got.count(mark.encode()), 2 * once)          # the appended record marked as the first
 
     def test_a_register_that_does_not_read_skips_the_file(self):
-        d = os.path.join(self.state, "redaction")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "archive-register.jsonl"), "w") as fh:
-            fh.write("not an entry\n")
+        from unittest import mock
+        import of_redact
         self.put("s2.jsonl", b'{"uuid": "u9"}\n')
-        out = self.run_()
+        with mock.patch.object(of_redact, "archive_register",
+                               side_effect=of_redact.RegisterError("the register cannot be read")):
+            out = self.run_()
         self.assertTrue(any(o.startswith("skip ") for o in out), out)
         self.assertFalse(os.path.exists(os.path.join(self.state, "raw", "files", ".claude-x", "projects", "p",
                                                      "s2.jsonl.zst")))
