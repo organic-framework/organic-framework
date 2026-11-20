@@ -3542,7 +3542,7 @@ def _actor_line_deny(cmd):
 
 # the acts `of` records with its caller (bin/of _asks_actor: an ask answered or withdrawn; `answer` is a person's
 # answer given in a chat); `of status --done-task` needs the caller's position and fails without one
-ACTOR_ACTS = ("answered", "withdraw", "answer")
+ACTOR_ACTS = ("answered", "withdraw", "answer", "deny")   # deny: of asks deny <card> (of_review on PR 443)
 
 
 def _actor_act(words):

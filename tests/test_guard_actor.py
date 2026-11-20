@@ -93,6 +93,9 @@ class ActorLineTest(unittest.TestCase):
                     "false && unset OF_POSITION; of asks withdraw --help",
                     # an option before the action, and an act in a substitution given to text (after PR 399)
                     f"export -n {V} {P}; script -q /dev/null of asks --json withdraw OF-1",
+                    # a permission card's No (of_review on PR 443)
+                    f"export -n {V} {P}; script -q /dev/null of asks deny MT-1",
+                    f"env -u {V} -u {P} script -q /dev/null python3 bin/of asks --dry-run deny MT-1",
                     # an organization's path is the owner's (of_review on PR 427)
                     f"export -n {V} {P}; script -q /dev/null of org set ofb path /tmp/r",
                     f"env -u {V} -u {P} script -q /dev/null python3 bin/of org set ofb path /tmp/r",
