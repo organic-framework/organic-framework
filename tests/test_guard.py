@@ -150,6 +150,35 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("printenv AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(deny("kubectl -n x exec pod-0 -- bash -c 'env | grep -o \"^R2_[A-Z_]*\"; printenv'"))
 
+    def test_grep_o_one_named_value(self):
+        """Hand-over e280da4f (of_server; a user organization's structure keeper, msg 01a1f823-65a0): a bundled -o and
+        one pattern that cannot cross a space pass; a pattern that can, or several, print values never named."""
+        ok = ("ps e -ww -p $p | grep -oE 'CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
+              "ps e -ww -p $p | grep -Eo 'VERSION=[^ ]*'",
+              "ps e -ww -p 1 | grep -ohE 'VERSION=[^[:space:]]+'",
+              "ps e -ww -p 1 | grep --only-matching 'VERSION=\\S*'",
+              "ps e -ww -p 1 | grep -o -e '^VERSION=[0-9_]\\{1,8\\}'",
+              "ssh h 'ps e -ww -p 1 | grep -oE \"CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}\"'",
+              # names only, grouped: no part can match = (the 21-day replay)
+              "env | grep -o '^[A-Z_]*\\(R2\\|CF\\)[A-Z_]*'", "env | grep -oE '^[A-Z_]*(R2|CF)[A-Z_]*'")
+        for c in ok:
+            self.assertIsNone(deny(c), c)
+        for c in ("env | grep -o 'HOME=.*'",
+                  "env | grep -o 'HOME=[^ ]*\\|AWS_SECRET_ACCESS_KEY=[^ ]*'",
+                  "env | grep -oE 'HOME=[^ ]*|AWS_SECRET_ACCESS_KEY=[^ ]*'",
+                  "env | grep -o -e 'HOME=[^ ]*' -e 'AWS_SECRET_ACCESS_KEY=[^ ]*'",
+                  "env | grep -o -f pats.txt",
+                  "env | grep -o 'HOME=[^=]*'",
+                  "env | grep -o 'HOME=[a-z ]*'",
+                  "env | grep -o 'HOME=[[:print:]]*'",
+                  "env | grep -o 'HOME=[^ ]*=[^ ]*'",
+                  "env | grep -o 'VERSION=[0-9.]*'",
+                  # a pattern with no = that runs on into values
+                  "env | grep -o '[^ ]*'", "env | grep -o '.*'", "env | grep -oE '\\S+'",
+                  "printenv | grep -o '[A-Z_].*'",   # a dot in the class: the hand-over's shape leaves it out
+                  "env | grep -oE 'AWS_SECRET_ACCESS_KEY=[^ ]*'"):
+            self.assertTrue(deny(c), c)
+
     def test_credential_files_allowed_uploads_and_traces_denied(self):
         # of_architect decision 3 + of_platform 1: a credential file is read by the program (allowed);
         # uploading or tracing a secret file leaks it (denied)
