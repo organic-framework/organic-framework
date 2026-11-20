@@ -968,12 +968,68 @@ def _owner_config_in_code(code, lits):
     return None
 
 
-def _code_deny(code, lang=None):
+# The shell commands perl, ruby and php code runs (hand-over 7646c671, of_server: `perl -e 'print `printenv`'` passed):
+# backticks, perl's qx and ruby's %x with any delimiter, the string given to system, exec, shell_exec, passthru, popen
+# or spawn, and perl's open with a pipe ("cmd |", "-|", "cmd"). Each is read by _bash_deny as a line of its own.
+# Node is left out: its backticks are template strings, not commands.
+_SHELL_CODE_HEADS = ("perl", "ruby", "php")
+_PAIRS = {"(": ")", "{": "}", "[": "]", "<": ">"}
+_RUN_CALL = re.compile(r"\b(?:system|exec|shell_exec|passthru|popen|spawn|proc_open)\s*\(?\s*(['\"])((?:\\.|(?!\1).)*)\1",
+                       re.S)
+_PIPE_OPEN = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])((?:\\.|(?!\1).)*?)\s*\|\s*\1", re.S)
+_PIPE_OPEN3 = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])-\|\1\s*,\s*(['\"])((?:\\.|(?!\2).)*)\2", re.S)
+
+
+def _quote_like(code, marker):
+    """Bodies of perl's qx / ruby's %x: MARKER, then any delimiter, paired brackets matched."""
+    out, i = [], 0
+    while True:
+        i = code.find(marker, i)
+        if i < 0:
+            return out
+        j = i + len(marker)
+        while j < len(code) and code[j] in " \t" and marker == "qx":
+            j += 1
+        if j >= len(code) or code[j].isalnum() or code[j] in "_ \t\n" or (i and (code[i - 1].isalnum() or code[i - 1] == "_")):
+            i = j
+            continue
+        op = code[j]
+        cl = _PAIRS.get(op, op)
+        depth, k = 1, j + 1
+        while k < len(code) and depth:
+            if code[k] == "\\":
+                k += 2
+                continue
+            if code[k] == cl:
+                depth -= 1
+            elif code[k] == op and op != cl:
+                depth += 1
+            k += 1
+        out.append(code[j + 1:k - 1])
+        i = k
+
+
+def _shell_in_code(code, head):
+    """The shell command lines HEAD's CODE runs, for perl, ruby and php; else []."""
+    if os.path.basename(str(head or "")) not in _SHELL_CODE_HEADS:
+        return []
+    out = re.findall(r"`([^`]*)`", code)
+    out += _quote_like(code, "qx") + (_quote_like(code, "%x") if os.path.basename(head) == "ruby" else [])
+    out += [m.group(2) for m in _RUN_CALL.finditer(code)]
+    out += [m.group(2) for m in _PIPE_OPEN.finditer(code)] + [m.group(3) for m in _PIPE_OPEN3.finditer(code)]
+    return [x for x in out if x.strip()]
+
+
+def _code_deny(code, lang=None, head=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
     the whole environment (print(os.environ)). A false positive is accepted over a miss here: the agent
     writes such code to a file with the Edit tool. Comments do not count. LANG "python" reads the code with
     python's tokenizer; python code that does not tokenize is read with no carve-out at all."""
+    for line in _shell_in_code(code, head):   # what perl, ruby or php runs through the shell (hand-over 7646c671)
+        hit = _bash_deny(line, 1)
+        if hit:
+            return hit
     py = _py_strings(code) if lang == "python" else None
     if py is not None:
         lits, bare = py
@@ -5387,7 +5443,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body, lang)
+            hit = _code_deny(body, lang, head)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout
@@ -5531,7 +5587,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if head in _SHELLS:
                     hit = _in_folder(here21, _bash_deny, herestr, depth + 1)
                 elif head in _INTERPRETERS:
-                    hit = _code_deny(herestr, _lang(head))
+                    hit = _code_deny(herestr, _lang(head), head)
                 else:
                     hit = None
                 if hit:
@@ -5546,9 +5602,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if hit:
                     return hit
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
+                # php -r and perl -E carry code too (hand-over 7646c671)
+                for flag in ("-c", "-e") + (("-r",) if head == "php" else ()) + (("-E",) if head == "perl" else ()):
                     if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1], _lang(head))
+                        hit = _code_deny(args[args.index(flag) + 1], _lang(head), head)
                         if hit:
                             return hit
                 kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
