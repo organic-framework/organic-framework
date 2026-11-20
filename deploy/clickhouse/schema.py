@@ -90,8 +90,10 @@ def users(org_dbs, vault, unassigned):
         [f"{db}_read" for db in org_dbs]
 
 
-# Each table's time column for an optional retention (`--ttl table=days`; 2026-11-20, of_server: a user
-# organization's store grew 1.3 to 1.7 GiB a day with none). Days are each deployment's own decision; none by default.
+# Each table's time column for an optional retention (`--ttl <database>.<table>=<days>`; 2026-11-20, of_server: a
+# user organization's store grew 1.3 to 1.7 GiB a day with none). None by default. A retention names one
+# organization's own database: the vault mixes organizations and the unassigned database belongs to none, so a TTL
+# there would delete other organizations' rows (of_secrets-review on organic-framework PR 438).
 TTL_COLUMNS = {"event": "ts", "transcript_record": "ts", "hook_record": "received_at", "runtime_record": "received_at"}
 
 
@@ -99,11 +101,19 @@ def ttl_clause(table, days):
     return f"TTL toDateTime({TTL_COLUMNS[table]}) + INTERVAL {int(days)} DAY"
 
 
-def check_ttl(ttl):
-    """{table: days} with every table one of TTL_COLUMNS and every value a whole number of days, 0 for none."""
-    for t, n in (ttl or {}).items():
+def check_ttl(ttl, org_dbs, vault=None, unassigned=None):
+    """{(database, table): days}: every database one of ORG_DBS, never the vault or the unassigned database, every
+    table one of TTL_COLUMNS, every value a whole number of days, 0 for none."""
+    for key, n in (ttl or {}).items():
+        db, t = key if isinstance(key, tuple) and len(key) == 2 else (None, key)
+        if db in (vault, unassigned) and db is not None:
+            raise SystemExit(f"schema.py: no retention on {db}: it holds other organizations' rows, or no one's")
+        if db not in org_dbs:
+            raise SystemExit(f"schema.py: a retention names one organization's database ({', '.join(org_dbs)}), "
+                             f"as <database>.<table>=<days>; got {key!r}")
         if t not in TTL_COLUMNS or not isinstance(n, int) or isinstance(n, bool) or n < 0:
-            raise SystemExit(f"schema.py: a retention is <table>=<days> for {', '.join(TTL_COLUMNS)}, got {t}={n!r}")
+            raise SystemExit(f"schema.py: a retention is <database>.<table>=<days> for {', '.join(TTL_COLUMNS)}, "
+                             f"got {db}.{t}={n!r}")
     return dict(ttl or {})
 
 
@@ -116,12 +126,12 @@ def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=Non
             raise SystemExit(f"schema.py: no password {'file in ' + password_dir if password_dir else 'read'} for: "
                              f"{', '.join(missing)}")
     on = f" ON CLUSTER {cluster}" if cluster else ""
-    ttl = check_ttl(ttl)
+    ttl = check_ttl(ttl, list(org_dbs), vault, unassigned)
     out = []
     for db in [*org_dbs, vault, unassigned]:
         out.append(f"CREATE DATABASE IF NOT EXISTS {db}{on};")
         for t, body in TABLES.items():
-            days = ttl.get(t)
+            days = ttl.get((db, t))
             out.append(f"CREATE TABLE IF NOT EXISTS {db}.{t}{on}\n{body}{' ' + ttl_clause(t, days) if days else ''};")
             if days is not None:  # a table made before: its retention set, or with 0 removed
                 out.append(f"ALTER TABLE {db}.{t}{on} MODIFY {ttl_clause(t, days)};" if days else
@@ -159,17 +169,19 @@ def main():
     ap.add_argument("--unassigned", required=True)
     ap.add_argument("--password-dir")
     ap.add_argument("--cluster")
-    ap.add_argument("--ttl", action="append", default=[], metavar="TABLE=DAYS",
-                    help=f"a table's retention in days, 0 to remove it ({', '.join(TTL_COLUMNS)}; repeatable). "
+    ap.add_argument("--ttl", action="append", default=[], metavar="DATABASE.TABLE=DAYS",
+                    help=f"a table's retention in days in one organization's database (never the vault or the "
+                         f"unassigned one), 0 to remove it ({', '.join(TTL_COLUMNS)}; repeatable). "
                          "Permanent deletion: only on the organization's owner's card; raw tables first, event's "
                          "days covering its longest replay; never while its records move (deploy/RUNBOOK.md §1)")
     a = ap.parse_args()
     ttl = {}
     for item in a.ttl:
-        t, _, n = item.partition("=")
-        if not n.isdigit():
-            raise SystemExit(f"schema.py: --ttl {item!r}: TABLE=DAYS")
-        ttl[t] = int(n)
+        key, _, n = item.partition("=")
+        db, dot, t = key.partition(".")
+        if not (n.isdigit() and dot and db and t):
+            raise SystemExit(f"schema.py: --ttl {item!r}: DATABASE.TABLE=DAYS")
+        ttl[(db, t)] = int(n)
     print(schema(a.org, a.vault, a.unassigned, a.password_dir, a.cluster, ttl=ttl), end="")
     if not a.password_dir:
         print("schema.py: without --password-dir the CREATE USER lines are comments; create these users "
