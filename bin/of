@@ -7950,7 +7950,51 @@ SHOWN_EVENTS = ("of.agent_question", "of.agent_question_answered", "of.ask_amend
                 "of.ask_escalated", "of.ask_ref", "of.human_prompt")
 
 
-def event_show(conn, ref, org=None, positions=None, own_session=None):
+_CITED_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{4}(?:-[0-9a-f]{4}(?:-[0-9a-f]{12})?)?)?")
+
+
+def prompt_cited(conn, pid, me):
+    """Whether a record addressed to position ME or written by it cites the person's prompt PID (of_architect, msg
+    01a1fa13-59a5: "a prompt is shown to a position when a record addressed to it or written by it cites the prompt's
+    id"): a hand-over it sends or receives, its own asks, their answers and amendments. (True, None), or (False, why).
+    A citation is an id or a prefix of at least its first two groups; one that names more than one prompt shows none."""
+    head = pid[:13]
+    texts = []
+    for (payload,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question' AND position = ? AND "
+                                   "payload LIKE ?", (me, f"%{head}%")):
+        texts.append(payload)
+    mine = {r[0] for r in conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND position = ?",
+                                       (me,))}
+    for name, position, payload in conn.execute(
+            "SELECT name, position, payload FROM event WHERE name IN ('of.agent_question_answered', 'of.ask_amended') "
+            "AND payload LIKE ?", (f"%{head}%",)):
+        try:
+            body = json.loads(payload or "{}")
+        except ValueError:
+            continue
+        asks = {body.get("ask_id")} | set(body.get("ask_ids") or [])
+        if asks & mine or (name == "of.ask_amended" and position == me):
+            texts.append(payload)
+    try:
+        import of_handover
+        for h in of_handover.project(of_handover.load(conn)).values():
+            if me in (h.get("from"), h.get("to")):
+                texts.append(json.dumps({k: h.get(k) for k in ("title", "done_when", "basis", "context", "notes",
+                                                               "result")}, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - no hand-overs to read: none cites it
+        pass
+    cites = {t for text in texts for t in _CITED_ID.findall(text or "") if len(t) >= 13 and pid.startswith(t)}
+    if not cites:
+        return False, "no hand-over, ask or answer of yours cites it"
+    for t in sorted(cites, key=len, reverse=True):
+        n = conn.execute("SELECT COUNT(*) FROM event WHERE name = 'of.human_prompt' AND event_id >= ? AND "
+                         "event_id < ?", (t, t + "\uffff")).fetchone()[0]
+        if n == 1:
+            return True, None
+    return False, f"the id cited ({min(cites, key=len)}) names more than one prompt; none is shown"
+
+
+def event_show(conn, ref, org=None, positions=None, own_session=None, own_position=None):
     """One event a position may check, as {event_id, ts, name, position, org, payload}, or an OfError."""
     ref = str(ref or "").strip()
     if len(ref) < 13 or not re.fullmatch(r"[0-9a-f-]+", ref):
@@ -7966,9 +8010,12 @@ def event_show(conn, ref, org=None, positions=None, own_session=None):
         raise OfError(f"{eid}: an event of kind {name}, which of event show does not show (asks, their answers and "
                       "amendments, hand-overs and a person's prompt only)")
     if name == "of.human_prompt" and own_session is not None and session != own_session:
-        # through a door, a person's prompt only from the caller's own session (of_server on the door, msg
-        # 01a1fa0e-dd4a: any prompt of the organization was shown by its id)
-        raise OfError(f"{eid}: a person's prompt in another session, which of event show does not show here")
+        # through a door, a person's prompt from the caller's own session, or one a record addressed to it or written
+        # by it cites (of_architect, msg 01a1fa13-59a5; of_server on the door, msg 01a1fa0e-dd4a: never any prompt of
+        # the organization, since prompts hold matters the founder told nobody else about)
+        ok, why = prompt_cited(conn, eid, own_position) if own_position else (False, "no position")
+        if not ok:
+            raise OfError(f"{eid}: a person's prompt in another session, not shown: {why}")
     if org:
         mine = {p["name"] for p in positions or [] if org in (p.get("_org"), p.get("_orgid"))}
         if eorg not in (org, None) or (eorg is None and position not in mine):
@@ -7990,8 +8037,10 @@ def cmd_event(args):
         conn = of_store.connect()
         try:
             positions = _load_quiet() if args.org else None
-            own = os.environ.get("CLAUDE_CODE_SESSION_ID") if os.environ.get("OF_DOOR_CALLER") else None
-            print(json.dumps(event_show(conn, args.id, args.org, positions, own), ensure_ascii=False, indent=1))
+            door = os.environ.get("OF_DOOR_CALLER")
+            own = os.environ.get("CLAUDE_CODE_SESSION_ID") if door else None
+            me = os.environ.get("OF_POSITION") if door else None
+            print(json.dumps(event_show(conn, args.id, args.org, positions, own, me), ensure_ascii=False, indent=1))
         finally:
             conn.close()
         return 0

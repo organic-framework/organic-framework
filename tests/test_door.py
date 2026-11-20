@@ -239,10 +239,35 @@ class EventShowTest(unittest.TestCase):
             self.of.event_show(self.conn, "01a1aaaa", "orgA", self.positions)          # too short to name one
         with self.assertRaises(self.of.OfError):
             self.of.event_show(self.conn, "01a1aaaa-000", "orgA", self.positions)      # more than one
-        ev = self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-1")
+        ev = self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-1",
+                                own_position="of_docs")
         self.assertEqual(ev["name"], "of.human_prompt")                               # its own session's prompt
         with self.assertRaises(self.of.OfError):
-            self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-2")
+            self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-2",
+                               own_position="of_docs")
+
+    def test_a_prompt_its_own_ask_or_hand_over_cites_is_shown_none_else(self):
+        """of_architect, msg 01a1fa13-59a5: shown when a record addressed to the position or written by it cites the
+        prompt's id; a two-group prefix naming more than one prompt shows none."""
+        def add(eid, name, pos, payload, session="thread-9"):
+            self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T00:00:00Z', ?, ?, 'orgA', ?, ?)",
+                              (eid, name, pos, json.dumps(payload), session))
+        add("01a1bbbb-0001-7000-8000-000000000001", "of.human_prompt", None, {"text": "yes, do it"}, "conductor")
+        add("01a1cccc-0001-7000-8000-000000000001", "of.human_prompt", None, {"text": "a"}, "conductor")
+        add("01a1cccc-0001-7000-8000-000000000002", "of.human_prompt", None, {"text": "b"}, "conductor")
+        show = lambda ref, me: self.of.event_show(self.conn, ref, "orgA", self.positions, own_session="thread-1",
+                                                  own_position=me)
+        with self.assertRaises(self.of.OfError):
+            show("01a1bbbb-0001", "of_docs")                                  # nothing of its own cites it
+        add("01a1dddd-0001-7000-8000-000000000001", "of.agent_question", "of_docs",
+            {"text": "Proceed? The founder said yes (prompt 01a1bbbb-0001)."})
+        self.assertEqual(show("01a1bbbb-0001", "of_docs")["payload"], {"text": "yes, do it"})
+        with self.assertRaises(self.of.OfError):
+            show("01a1bbbb-0001", "b_x")                                      # another position's ask
+        add("01a1dddd-0002-7000-8000-000000000002", "of.agent_question", "of_docs", {"text": "see 01a1cccc-0001"})
+        with self.assertRaises(self.of.OfError) as cm:
+            show("01a1cccc-0001-7000-8000-000000000001", "of_docs")          # a prefix of two prompts
+        self.assertIn("more than one", str(cm.exception))
 
 
 if __name__ == "__main__":
