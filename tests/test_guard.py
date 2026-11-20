@@ -175,6 +175,10 @@ class GuardBashTest(unittest.TestCase):
                   "env | grep -o 'HOME=[[:print:]]*'",
                   "env | grep -o 'HOME=[^ ]*=[^ ]*'",
                   "env | grep -o 'VERSION=[0-9.]*'",
+                  # anchored, and secret: every anchor (of_secrets-review on PR 448 at f36f48e)
+                  "env | grep -oE '^GITHUB_TOKEN=[^ ]*'", "env | grep -oE '\\bDB_PASSWORD=[^ ]*'",
+                  "env | grep -oE '\\<AWS_SECRET_ACCESS_KEY=[^ ]*'", "ps e -ww -p 1 | grep -oE ' API_TOKEN=[^ ]*'",
+                  "env | grep -owE 'GITHUB_TOKEN=[^ ]*'",
                   # unanchored: a short name matches a secret one's tail (of_secrets-review on PR 448)
                   "env | grep -oE 'KEN=[^ ]*'", "env | grep -oE 'WORD=[^ ]*'", "env | grep -oE 'N=[^ ]*'",
                   "ps e -ww -p 1 | grep -oE 'CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
