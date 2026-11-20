@@ -1914,7 +1914,8 @@ _G3_QUANT = r"(?:\*|\+|\?|\\\+|\\\?|\{\d+(?:,\d*)?\}|\\\{\d+(?:,\d*)?\\\})"
 # a name pattern may group and alternate name parts (`^[A-Z_]*\(R2\|CF\)[A-Z_]*`): none of them can match `=`
 _NAME_PATTERN = re.compile(r"\^?(?:[A-Za-z0-9_]|\[(?!\^)" + _G3_CLASS_INNER.replace("%,~#!", "") + r"+\]|" + _G3_QUANT
                            + r"|\\\(|\\\)|\\\||[()|])+")
-_ONE_NAMED_VALUE = re.compile(r"\^?([A-Za-z_][A-Za-z0-9_]*)=(?:" + _G3_CLASS + _G3_QUANT + r"?)?\$?")
+_ONE_NAMED_VALUE = re.compile(r"(?P<anchor>\^|\\b|\\<| )?([A-Za-z_][A-Za-z0-9_]*)=(?:" + _G3_CLASS + _G3_QUANT
+                              + r"?)?\$?")
 
 
 def _grep_only_matching(args):
@@ -1928,6 +1929,22 @@ def _grep_only_matching(args):
         if re.fullmatch(r"-[A-Za-z]+", a):
             for c in a[1:]:
                 if c == "o":
+                    return True
+                if c in "efmABCdD":
+                    break
+    return False
+
+
+def _grep_flag(args, chars, longs=()):
+    """Does this grep take one of the short flags CHARS (alone or in a bundle, up to an option with a value) or LONGS?"""
+    for a in args:
+        if a == "--":
+            return False
+        if a in longs:
+            return True
+        if re.fullmatch(r"-[A-Za-z]+", a):
+            for c in a[1:]:
+                if c in chars:
                     return True
                 if c in "efmABCdD":
                     break
@@ -1999,7 +2016,10 @@ def _names_only(head, args):
                 # on into a value (`[^ ]*`, `.*`, `\S+` printed whole lines; of_platform on hand-over e280da4f)
                 return bool(_NAME_PATTERN.fullmatch(pat))
             m = _ONE_NAMED_VALUE.fullmatch(pat)   # `NAME=[^ ]*`: one named value, allowed iff NAME is not secret
-            return bool(m) and not _secret_name(m.group(1))
+            # and only at a variable's start: unanchored, a short name matches a secret one's tail (`KEN=[^ ]*` printed
+            # GITHUB_TOKEN's value: of_secrets-review on organic-framework PR 448), so ^, \b, \< or -w/-x
+            anchored = bool(m) and (m.group("anchor") or _grep_flag(args, "wx", ("--word-regexp", "--line-regexp")))
+            return bool(m) and bool(anchored) and not _secret_name(m.group(1))
         # -c (a count), -q (nothing), -l/-L (filenames): the matched line's value never reaches the output
         return any(re.fullmatch(r"-[A-Za-z]*[cqlL][A-Za-z]*", a) for a in args)
     if head == "wc":
