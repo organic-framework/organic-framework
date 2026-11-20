@@ -968,87 +968,6 @@ def _owner_config_in_code(code, lits):
     return None
 
 
-# what lets code put another object under of_guard's name, or reach one by a name it computes: no call is trusted then
-_GUARD_UNTRUSTED_NAMES = {"importlib", "__import__", "globals", "locals", "vars", "exec", "eval", "builtins",
-                          "__builtins__", "setattr", "delattr"}
-
-
-def _guard_call_args(code):
-    """The string constants written directly in the arguments of a call to of_guard's own functions
-    (`of_guard.critical_deny("Bash", {"command": "…"})`, or a name imported from of_guard). Trusted only when the code
-    binds `of_guard` solely by a plain `import of_guard`, or the names solely by `from of_guard import`, and never
-    rebinds them: no other import of or as that name, no assignment, augmented or annotated assignment, walrus, for,
-    with, except, def, class, lambda or function argument, global, nonlocal or del of it, no attribute assignment on
-    it, and no sys.modules, sys.path, importlib, __import__, globals, vars, exec or eval anywhere (of_server on
-    organic-framework PR 454, msg 01a1f883-7046: `import os as of_guard; of_guard.system(…)` would have passed).
-    Empty when the code does not parse or any of these is there. Known limit: an of_guard module written first
-    elsewhere on the path, the class of any script written first."""
-    import ast
-    try:
-        tree = ast.parse(code)
-    except (SyntaxError, ValueError):
-        return set()
-    module_ok = False
-    names = set()
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Import):
-            for al in n.names:
-                if al.name == "of_guard" and al.asname is None:
-                    module_ok = True
-                elif "of_guard" in (al.name, al.asname) or al.name.split(".")[0] in ("importlib", "builtins"):
-                    return set()
-        elif isinstance(n, ast.ImportFrom):
-            for al in n.names:
-                if n.module == "of_guard":
-                    if al.name == "*":
-                        return set()
-                    names.add(al.asname or al.name)
-                elif (al.asname or al.name) == "of_guard" or (n.module or "").split(".")[0] in ("importlib", "builtins"):
-                    return set()
-    watched = names | {"of_guard"}
-    # every name an import from of_guard binds, counted: one binding each, and no other
-    bound = [al.asname or al.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "of_guard"
-             for al in n.names]
-    if len(bound) != len(set(bound)):
-        return set()
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)) and n.id in watched:
-            return set()
-        if isinstance(n, ast.Name) and n.id in _GUARD_UNTRUSTED_NAMES:
-            return set()
-        if isinstance(n, ast.Attribute) and n.attr in ("modules", "path") and isinstance(n.value, ast.Name) and \
-                n.value.id == "sys":
-            return set()
-        if isinstance(n, ast.Attribute) and isinstance(n.ctx, (ast.Store, ast.Del)) and \
-                isinstance(n.value, ast.Name) and n.value.id in watched:
-            return set()
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name in watched:
-            return set()
-        if isinstance(n, ast.ExceptHandler) and n.name in watched:
-            return set()
-        if isinstance(n, (ast.Global, ast.Nonlocal)) and watched & set(n.names):
-            return set()
-        if isinstance(n, ast.arg) and n.arg in watched:
-            return set()
-        if isinstance(n, ast.alias) and (n.asname or n.name) in watched and not (
-                (n.name == "of_guard" and n.asname is None) or (n.asname or n.name) in names):
-            return set()
-        if hasattr(ast, "MatchAs") and isinstance(n, getattr(ast, "MatchAs")) and n.name in watched:
-            return set()
-    if not module_ok and not names:
-        return set()
-    out = set()
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        f = n.func
-        if (module_ok and isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "of_guard") \
-                or (isinstance(f, ast.Name) and f.id in names):
-            for arg in list(n.args) + [k.value for k in n.keywords]:
-                out |= {c.value for c in ast.walk(arg) if isinstance(c, ast.Constant) and isinstance(c.value, str)}
-    return out
-
-
 def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
@@ -1101,7 +1020,6 @@ def _code_deny(code, lang=None):
             return OWNER_CONFIG_DENY, owner_cfg
         _WARNINGS.append((OWNER_CONFIG_DENY, owner_cfg, "a warning now, a deny once the flows that write it have moved"))
     filters = None
-    guard_args = _guard_call_args(code) if lang == "python" and "of_guard" in code else set()
     for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
@@ -1114,12 +1032,8 @@ def _code_deny(code, lang=None):
         if " " not in lit and _MEMORY_CODE.match(lit):
             return f"code that reads memory or a core dump ({lit})", lit
         first = lit.split()[0] if lit else ""
-        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched. A literal
-        # that is itself an argument of an of_guard call is text the guard judges, never a command the code runs (a
-        # test of the guard: of_architect, msg 01a1f867-970c; the narrow form, of_secrets-review on organic-framework
-        # PR 454: a list of what can launch a process always missed one)
-        if (os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit)) and \
-                lit not in guard_args:
+        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched
+        if os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit):
             return _prints(first)
     return None
 
