@@ -1010,6 +1010,15 @@ def _code_deny(code, lang=None):
         if _CODE_WRITE.search(code) else None   # G34 in code: a write into the forward's folder (of_review on PR 397)
     if fwd:
         return FORWARD_DENY, fwd
+    idx = next((l for l in lits if not re.search(r"\s", l.strip())
+                and l.strip().lstrip("<>+|& ").startswith(("/", "~", "$"))
+                and (_in_session_index(l.strip().lstrip("<>+|& "))
+                     or re.search(r"(?:^|/)\.local/state/of/index\.json(?:\.\d+\.\d+\.tmp)?$", l.strip().casefold()))),
+               None) if _CODE_WRITE.search(code) else None   # G36 in code: a write to the session index
+    if idx:
+        if SESSION_INDEX_MODE == "deny":
+            return SESSION_INDEX_DENY, idx
+        _WARNINGS.append((SESSION_INDEX_DENY, idx, "a warning now, a deny once the replay shows no agent writes it"))
     if box:
         if ASKS_OUTBOX_MODE == "deny":
             return ASKS_OUTBOX_DENY, box
@@ -4258,6 +4267,62 @@ def _forward_write(head, args, cwd, files, removal):
     return (FORWARD_DENY, hit) if hit else None
 
 
+# G36: the guard's session index is the collector's (hand-over a18341af, of_server; of_secrets-review, msg
+# 01a1f9a7-b29c): _guard_index reads ~/.local/state/of/index.json for a session's position, and with it that
+# position's credential rules, so a session that rewrites its entry takes another position's rules. Only the hook
+# writes it, through a temporary sibling (bin/of_hook.py _registry_index: index.json.<pid>.<ns>.tmp), outside the guard.
+SESSION_INDEX = "index.json"
+_SESSION_INDEX_TMP = re.compile(r"/index\.json\.\d+\.\d+\.tmp$")
+SESSION_INDEX_DENY = ("the guard's session index, which only OF's collector writes: it maps each session to its "
+                      "position, and with it the position's credential rules (docs/guard.md G36). Read it as you like; "
+                      "the hook rebuilds it from the registries on its own")
+SESSION_INDEX_MODE = "deny"
+
+
+def _session_indexes():
+    """The index's real path, case-folded, under the default state folder and under OF_STATE when the hook's
+    environment sets it."""
+    bases = [_expanduser("~/.local/state/of")]
+    if os.environ.get("OF_STATE"):
+        bases.append(_expanduser(os.environ["OF_STATE"]))
+    return {os.path.realpath(os.path.join(b, SESSION_INDEX)).casefold() for b in bases}
+
+
+def _in_session_index(path, cwd=None, removal=False):
+    """Does PATH name the session index or one of its temporary siblings (G36)? As G35 reads a path: by real path
+    without case, a glob as the shell expands it, a relative path by CWD, and with REMOVAL a folder above it."""
+    boxes = _session_indexes()
+    if _in_folders(path, boxes, cwd, removal):
+        return True
+    p = str(path or "").strip("'\"")
+    if not p:
+        return False
+    if not p.startswith(("/", "~", "$")) and cwd:
+        p = os.path.join(cwd, p)
+    p = _expanduser(p)
+    folders = {os.path.dirname(b) for b in boxes}
+    if any(ch in p for ch in "*?["):
+        rp = _real_pattern(p).casefold()
+        return os.path.dirname(rp) in folders and _glob_match(SESSION_INDEX + ".1.1.tmp", os.path.basename(rp))
+    real = os.path.realpath(p).casefold()
+    return os.path.dirname(real) in folders and bool(_SESSION_INDEX_TMP.search(real))
+
+
+def _session_index_write(head, args, cwd, files, removal):
+    """G36 on one simple command: a write, removal, move or link over the session index or a temporary sibling, or a
+    recursive copy or an extraction into its folder."""
+    if _REMOTE_BODY[0]:
+        return None
+    hit = next((t for t in _tree_targets(head, args, cwd) if _in_session_index(t, cwd, removal=True)), None) or \
+        next((f for f in files if _in_session_index(f, cwd, removal)), None)
+    if not hit:
+        return None
+    if SESSION_INDEX_MODE == "deny":
+        return SESSION_INDEX_DENY, hit
+    _WARNINGS.append((SESSION_INDEX_DENY, hit, "a warning now, a deny once the replay shows no agent writes it"))
+    return None
+
+
 def _asks_outbox_write(head, args, cwd, files, removal):
     """G35 on one simple command: a write, removal, move or link into the asks outbox, or a recursive copy or an
     extraction into a folder that holds it."""
@@ -5071,6 +5136,7 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
         launch = _launch_write(head, args, cwd, files, removal)
         return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                      _asks_outbox_write(head, args, cwd, files, removal) or
+                                                     _session_index_write(head, args, cwd, files, removal) or
                                                      _forward_write(head, args, cwd, files, removal))
     hit = _git_protected(args, cwd, env or {}, shvars) if head == "git" else None
     if hit:
@@ -5090,6 +5156,7 @@ def _protected_code_deny(head, args, stext, cwd, env=None, shvars=None, fed=None
     launch = _launch_write(head, args, cwd, files, removal)  # G29 after G21: where both hold, G21 names it
     return (LAUNCH_DENY, launch) if launch else (_owner_config_write(head, args, cwd, files, removal) or
                                                  _asks_outbox_write(head, args, cwd, files, removal) or
+                                                 _session_index_write(head, args, cwd, files, removal) or
                                                  _forward_write(head, args, cwd, files, removal))
 
 
@@ -6206,6 +6273,10 @@ def critical_deny(tool, tool_input, cwd=None):
         return FORWARD_DENY, str(ti["pattern"])
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and _launch_file(path, cwd):
         return LAUNCH_DENY, path
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_session_index(path, cwd):  # G36
+        if SESSION_INDEX_MODE == "deny":
+            return SESSION_INDEX_DENY, path
+        _WARNINGS.append((SESSION_INDEX_DENY, path, "a warning now, a deny once the replay shows no agent writes it"))
     if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") and path and _in_outbox(path, cwd):  # G35
         if ASKS_OUTBOX_MODE == "deny":
             return ASKS_OUTBOX_DENY, path
