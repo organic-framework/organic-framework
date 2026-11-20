@@ -183,6 +183,18 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     `sudo -iu of env SSH_TTY="$SSH_TTY" herdr`. In the lab, a client with `SSH_TTY` set sent the copy as OSC 52 and
     one without it called the clipboard tool.
   - Either way, OSC 52 reaches the laptop's clipboard only when the laptop's terminal accepts OSC 52 writes.
+  - **A long line copied with the outer terminal's own selection breaks at every screen row** (herdr 0.9.5's
+    source, 2026-11-20, after a user organization's sign-in URL failed this way).
+    - herdr's own copy joins a pane's soft-wrapped rows: it reads the selection with unwrap on
+      (`src/pane/terminal.rs`, `ghostty_extract_selection`).
+    - The outer terminal sees only herdr's frame. herdr draws it run by run with cursor moves
+      (`src/protocol/render_ansi.rs`, `write_cursor_position`), so the terminal's own selection ends every row
+      with a line break. A browser then reads each break as a space, and the URL fails.
+    - Copy with herdr's selection from a client that writes the laptop's clipboard (above), or with the program's
+      own copy key. In Claude Code's sign-in screen that key is c: the line above the URL ends "(c to copy)", and
+      the copy goes out as OSC 52 or through the host's clipboard tool.
+    - herdr passes a program's OSC 8 links on to the outer terminal (`render_ansi.rs`), and Claude Code marks its
+      sign-in URL as one. So a terminal that opens OSC 8 links can open the whole URL. Not tried.
 - **Checked on 2026-11-11 in an isolated lab herdr** (its own `XDG_CONFIG_HOME`, so its own plugin registry,
   sessions and socket; its own OF config and state, with a lab organization of one position):
   - a Claude Code session started as `claude -n storefront_operator` was named within a second of detection, with
