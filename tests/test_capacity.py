@@ -3935,7 +3935,7 @@ class Reboot(unittest.TestCase):
         plan = {"prepared_at": of_capacity._iso(prepared), "herdr_resume_before": True}
         limit = of_capacity.REBOOT_PAUSE_MAX_H * 3600
         cases = ((limit - 1, prepared - 60, True), (limit, prepared - 60, False), (limit * 3, prepared - 60, False),
-                 (limit * 3, None, False), (limit * 3, prepared + 60, True))
+                 (limit * 3, None, False), (limit * 3, prepared, True), (limit * 3, prepared + 60, True))
         for age, boot, paused in cases:
             with self.subTest(age=age, boot=boot), tempfile.TemporaryDirectory() as d, \
                     mock.patch.object(of_capacity, "REBOOT_DIR", d), \
@@ -3950,6 +3950,13 @@ class Reboot(unittest.TestCase):
                     self.assertEqual(of_capacity.load_reboot_plan(), plan)
                     emit.assert_not_called()
                     resume.assert_not_called()
+                elif boot is None:
+                    self.assertEqual(of_capacity.load_reboot_plan(), plan)
+                    self.assertIn("boot time is unknown", messages[-1])
+                    self.assertIn("for restore", messages[-1])
+                    self.assertIn("of capacity reboot cancel", messages[-1])
+                    emit.assert_not_called()
+                    resume.assert_not_called()
                 else:
                     self.assertIn("stale", messages[-1])
                     self.assertIn("balancing resumes", messages[-1])
@@ -3960,6 +3967,37 @@ class Reboot(unittest.TestCase):
                     emit.assert_called_once_with("capacity_reboot_cancelled", {"prepared_at": plan["prepared_at"],
                                                                                "sessions": 0}, position=mock.ANY)
                     resume.assert_called_once_with(True, log=messages.append)
+
+    def test_pause_expires_when_herdr_config_is_unwritable(self):
+        prepared = 1795121580
+        plan = {"prepared_at": of_capacity._iso(prepared), "herdr_resume_before": True}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                mock.patch.object(of_capacity, "_last_boot_epoch", return_value=prepared - 60), \
+                mock.patch.object(of_capacity, "set_herdr_resume", side_effect=PermissionError("read-only")) as resume, \
+                mock.patch.object(of_capacity.of_events, "emit"):
+            self.write_plan(plan)
+            messages = []
+            self.assertFalse(of_capacity._reboot_pauses_balance(prepared + of_capacity.REBOOT_PAUSE_MAX_H * 3600,
+                                                               messages.append))
+            resume.assert_called_once_with(True, log=messages.append)
+            self.assertIn("[session] resume_agents_on_restore = true", messages[0])
+            self.assertIn("~/.config/herdr/config.toml", messages[0])
+            self.assertFalse(os.path.exists(of_capacity._reboot_current()))
+            retired, = glob.glob(os.path.join(d, "cancelled-*"))
+            self.assertEqual(of_capacity.load_reboot_plan(os.path.join(retired, "plan.json")), plan)
+
+    def test_cancel_keeps_a_plan_with_a_different_prepared_at(self):
+        plan = {"prepared_at": "2026-11-19T21:53:00Z", "herdr_resume_before": True}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                mock.patch.object(of_capacity, "set_herdr_resume") as resume, \
+                mock.patch.object(of_capacity.of_events, "emit") as emit:
+            self.write_plan(plan)
+            messages = []
+            of_capacity.reboot_cancel(expect_prepared_at="2026-11-19T20:53:00Z", log=messages.append)
+            self.assertEqual(of_capacity.load_reboot_plan(), plan)
+            self.assertIn(plan["prepared_at"], messages[-1])
+            resume.assert_not_called()
+            emit.assert_not_called()
 
     def test_last_boot_epoch(self):
         with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(subprocess, "check_output") as sysctl:
