@@ -260,7 +260,7 @@ def _hold(conn, org, config, since, since_sha, snap=None):
     now = {"batch": _max(conn, "batches", "seq"), "redaction": _max(conn, "redactions", "rowid"),
            "flag": (st.st_ino, st.st_mtime_ns) if st else None}
     if snap is not None:
-        if any(_orgs(by) is None or org in _orgs(by) for (by,) in conn.execute(
+        if any(_names(by, org) for (by,) in conn.execute(
                 "SELECT by_org FROM batches WHERE seq > ?", (snap["batch"],))) if "batches" in _tables(conn) else False:
             raise ExportError(f"a batch of {org} arrived while the export ran: export again")
         if now["redaction"] > snap["redaction"]:
@@ -279,6 +279,14 @@ def _max(conn, table, col):
     if table not in _tables(conn):
         return 0
     return conn.execute(f"SELECT coalesce(max({col}), 0) FROM {table}").fetchone()[0]
+
+
+def _names(by_org, org):
+    """Whether a batch's by_org may hold ORG's rows: it names ORG, or names no organization at all (NULL or {}, as a
+    tenant's delete-only redaction's batch does, which deletes in every database), or cannot be read. An org-less
+    batch counts for every organization (the user organization's sec_keeper, round 5, msg 01a1f6fc-399c)."""
+    o = _orgs(by_org)
+    return o is None or not o or org in o
 
 
 def _orgs(by_org):
@@ -307,10 +315,7 @@ def _queued_batches(conn, org):
     n = 0
     for (by_org,) in conn.execute("SELECT by_org FROM batches WHERE state IN ('queued', 'dead')"):  # a dead one
         # may be replayed later, on this server only (sec_keeper, round 3)
-        try:
-            n += org in (json.loads(by_org or "{}") or {})
-        except ValueError:
-            n += 1  # unreadable: counted, so the export waits rather than guesses
+        n += _names(by_org, org)
     return n
 
 
