@@ -8,13 +8,17 @@ pane and agent in it (of_architect's hand-over 763bfda4; of_agent-server, msgs 0
 unit runs it under the user's own service manager, which linger keeps up with no login session and starts at boot.
 
 What the unit does, and why:
-- `herdr server` with OF_AUTOMATION removed: the unit sets OF_AUTOMATION=1, like every unit OF writes (AGENTS.md).
-  But herdr's panes inherit the server's environment (src/pane.rs), and a pane is a person's or an agent's terminal.
-  Under OF_AUTOMATION=1, the owner's own commands in a pane (`of diff approve`, `of access`) would refuse him.
+- OF_AUTOMATION=1, like every unit OF writes (AGENTS.md), and herdr's panes inherit it from the server
+  (src/pane.rs). That is wanted: any agent of a herdr can type into any of its panes (`herdr pane send-text`), so an
+  owner-only command (`of diff approve`, `of access`) must refuse in a herdr pane on a host. The owner runs them
+  over plain SSH as the host's admin user (of_architect, msg 01a1fab3-ecf5; of_server, msg 01a1fab2-f750).
 - No SSH agent (`SSH_AUTH_SOCK=`). herdr still gives a pane the agent of a client that attached with one
   (src/platform/ssh_agent.rs).
-- PATH as `of init`'s services have it (of_init.service_path): Linux panes start a non-login shell (src/pane.rs,
-  `shell_mode_uses_login_shell`), so they read the shell's rc file and never its profile.
+- A fixed PATH: herdr's folder, ~/.local/bin (where INSTALL.md puts `of` and Claude Code's installer puts
+  `claude`), then the system's folders. Linux panes start a non-login shell (src/pane.rs,
+  `shell_mode_uses_login_shell`), so they read the shell's rc file and never its profile. The PATH does not depend
+  on the shell the install runs from, so a setup script that writes this text and a later install write the same
+  file (one writer of one unit text: of_architect, msg 01a1fab3-ecf5).
 - Restart=on-failure, but not on exit status 1. That is how herdr exits when another server holds its socket, and a
   restart could only fail again.
 - A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the new server as a child and
@@ -35,7 +39,6 @@ import tempfile
 import time
 
 import of_events
-import of_init
 import of_systemd
 
 UNIT = "of-herdr.service"
@@ -43,15 +46,21 @@ UNITS_DIR = "~/.config/systemd/user"
 RESTART = f"systemctl --user restart {UNIT}"
 
 
-def unit_text(herdr, env="/usr/bin/env", path=None, log=None):
-    """The unit for `herdr` (an absolute path) and the PATH its panes get."""
+def unit_path(herdr, home=None):
+    """The panes' PATH: herdr's folder, ~/.local/bin, then the system's, whatever the calling shell's PATH is."""
+    home = home or os.path.expanduser("~")
+    dirs = [os.path.dirname(herdr), os.path.join(home, ".local", "bin"), "/usr/local/bin", "/usr/bin", "/bin"]
+    return ":".join(dict.fromkeys(dirs))
+
+
+def unit_text(herdr, path=None, log=None):
+    """The unit for `herdr` (an absolute path). `path` and `log` default to this user's."""
     w = of_systemd._word
-    path = path or of_init.service_path()
+    path = path or unit_path(herdr)
     log = (log or os.path.join(of_events.STATE_DIR, "herdr-server.log")).replace("%", "%%")
     return ("[Unit]\nDescription=Organic Framework: this user's herdr server\n\n[Service]\n"
             "WorkingDirectory=%h\n"
-            # OF_AUTOMATION is the unit's, not the panes' (module docstring)
-            f"ExecStart={w(env)} -u OF_AUTOMATION {w(herdr)} server\n"
+            f"ExecStart={w(herdr)} server\n"
             f"ExecStop={w(herdr)} server stop\n"
             "Restart=on-failure\nRestartSec=10\n"
             # exit status 1: another server holds the socket, so a restart could only fail again
@@ -160,7 +169,7 @@ def install(run=subprocess.run, units_dir=None, herdr=None, proc="/proc", wait_s
     herdr = herdr or _herdr()
     directory = Path(units_dir or UNITS_DIR).expanduser()
     target = directory / UNIT
-    text = unit_text(herdr, env=shutil.which("env") or "/usr/bin/env")
+    text = unit_text(herdr)
     changed = not target.exists() or target.read_bytes() != text.encode()
     os.makedirs(of_events.STATE_DIR, mode=0o700, exist_ok=True)  # systemd opens the log before ExecStart
     lines = []

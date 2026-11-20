@@ -75,10 +75,11 @@ class HerdrServiceTest(unittest.TestCase):
         return hs.install(run=host, units_dir=self.units, herdr="/usr/bin/herdr", proc=self.proc, wait_s=2,
                           sleep=lambda s: None)
 
-    def test_the_unit_runs_herdr_server_without_of_automation_in_its_panes(self):
-        unit = hs.unit_text("/usr/bin/herdr", env="/usr/bin/env", path="/home/alex/.local/bin:/usr/bin",
+    def test_the_unit_runs_herdr_server_and_its_panes_keep_of_automation(self):
+        unit = hs.unit_text("/usr/bin/herdr", path="/home/alex/.local/bin:/usr/bin",
                             log="/home/alex/.local/state/of/herdr-server.log")
-        self.assertIn("ExecStart=/usr/bin/env -u OF_AUTOMATION /usr/bin/herdr server\n", unit)
+        self.assertIn("ExecStart=/usr/bin/herdr server\n", unit)  # nothing removed: the panes inherit OF_AUTOMATION
+        self.assertNotIn("-u OF_AUTOMATION", unit)
         self.assertIn("ExecStop=/usr/bin/herdr server stop\n", unit)
         self.assertIn("Restart=on-failure\n", unit)
         self.assertIn("RestartPreventExitStatus=1\n", unit)  # another server holds the socket
@@ -87,6 +88,17 @@ class HerdrServiceTest(unittest.TestCase):
         self.assertIn("Environment=PATH=/home/alex/.local/bin:/usr/bin\n", unit)
         self.assertIn("WorkingDirectory=%h\n", unit)
         self.assertTrue(unit.endswith("[Install]\nWantedBy=default.target\n"))
+
+    def test_the_path_does_not_depend_on_the_callers_path(self):
+        """A setup script writes this text before the install runs; both must write the same file."""
+        texts = set()
+        for caller in ("/home/alex/.local/share/mise/shims:/usr/bin:/home/alex/.local/bin", "/usr/bin:/bin"):
+            with mock.patch.dict(os.environ, {"PATH": caller, "HOME": "/home/alex"}):
+                texts.add(hs.unit_text("/usr/bin/herdr", log="/home/alex/.local/state/of/herdr-server.log"))
+        self.assertEqual(len(texts), 1)
+        self.assertIn("Environment=PATH=/usr/bin:/home/alex/.local/bin:/usr/local/bin:/bin\n", texts.pop())
+        self.assertEqual(hs.unit_path("/home/alex/.local/bin/herdr", home="/home/alex"),
+                         "/home/alex/.local/bin:/usr/local/bin:/usr/bin:/bin")
 
     def test_no_server_running_writes_enables_and_starts_the_unit(self):
         fake_proc(self.proc, UNDER)
