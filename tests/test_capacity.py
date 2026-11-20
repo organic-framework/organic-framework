@@ -752,6 +752,26 @@ class OpenQuestion(unittest.TestCase):
             self.assertIsNone(of_capacity.pending_question(t))
 
 
+class SourceCopyAside(unittest.TestCase):
+    def test_the_old_accounts_copy_goes_into_the_moves_backup(self):
+        """2026-11-20: moves had left 36.1 GiB of older transcript copies in the accounts they left."""
+        with tempfile.TemporaryDirectory() as h:
+            src, work = os.path.join(h, ".claude-a"), os.path.join(h, "move", "backup", "source")
+            proj = os.path.join(src, "projects", "-x")
+            os.makedirs(os.path.join(proj, "s1", "subagents"))
+            with open(os.path.join(proj, "s1.jsonl"), "w") as fh:
+                fh.write("{}\n")
+            with open(os.path.join(proj, "other.jsonl"), "w") as fh:
+                fh.write("{}\n")
+            gone = of_capacity.set_source_aside(src, "s1", work)
+            self.assertEqual(gone, ["projects/-x/s1.jsonl", "projects/-x/s1"])
+            self.assertFalse(os.path.exists(os.path.join(proj, "s1.jsonl")))
+            self.assertTrue(os.path.isfile(os.path.join(work, "projects", "-x", "s1.jsonl")))
+            self.assertTrue(os.path.isdir(os.path.join(work, "projects", "-x", "s1", "subagents")))
+            self.assertTrue(os.path.exists(os.path.join(proj, "other.jsonl")))  # another session's copy stays
+            self.assertEqual(of_capacity.set_source_aside(src, "s1", work), [])  # nothing left: nothing done
+
+
 class StopWatch(unittest.TestCase):
     """2026-11-20: a rescue waited 3.5-7 min for the 5-minute tick to see a stop that was in the store at once."""
     def store(self):
@@ -4412,8 +4432,9 @@ class Reboot(unittest.TestCase):
             self.assertIn(retired, messages[0])
             self.assertFalse(os.path.exists(current))
             self.assertEqual(of_capacity.load_reboot_plan(os.path.join(retired, "plan.json")), plan)
-            with open(os.path.join(retired, "tmp", "deleted-since-prepare")) as fh:
-                self.assertEqual(fh.read(), "kept")
+            # its kept tmp links go (2026-11-20: a cancelled plan held 5.8 GiB of files deleted since), the live tmp stays
+            self.assertFalse(os.path.exists(os.path.join(retired, "tmp")))
+            self.assertTrue(any("kept" in m for m in messages))
             self.assertEqual(os.listdir(tmp_root), [])
             resume.assert_not_called()
             emit.assert_called_once_with("capacity_reboot_cancelled", {"prepared_at": plan["prepared_at"], "sessions": 1},
