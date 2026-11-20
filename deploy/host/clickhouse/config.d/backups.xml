@@ -1,0 +1,15 @@
+<!-- The local disk for of-server's nightly BACKUP DATABASE (of server backup). No secrets. -->
+<clickhouse>
+  <storage_configuration>
+    <disks>
+      <backups>
+        <type>local</type>
+        <path>{HOME}/.local/share/of/clickhouse-backups/</path>
+      </backups>
+    </disks>
+  </storage_configuration>
+  <backups>
+    <allowed_disk>backups</allowed_disk>
+    <allowed_path>{HOME}/.local/share/of/clickhouse-backups/</allowed_path>
+  </backups>
+</clickhouse>

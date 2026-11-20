@@ -1,0 +1,6 @@
+<!-- No users: of server clickhouse-init adds users.d/admin.xml. Profiles and quotas only. -->
+<clickhouse>
+  <profiles><default/></profiles>
+  <quotas><default/></quotas>
+  <users/>
+</clickhouse>
