@@ -217,6 +217,11 @@ def urlopen_no_redirect(req, timeout=None, context=None):
 
 RETRIES = 4
 RETRY_BASE_S = 0.5
+# A refused connection reached no server, so it is tried again for longer: a server restarting on a code change
+# (CodeWatch) refuses for seconds, twice in a row on 2026-11-20 at 16:23Z, past the four tries (a user organization's
+# platform_owner, through its structure keeper, msg 01a1f9ca-387d)
+REFUSED_WINDOW_S = 30
+REFUSED_MAX_WAIT_S = 8.0
 RETRY_STATUS = (429, 502, 503, 504)
 
 
@@ -389,7 +394,9 @@ class Client:
         # (a single-use code: 410 on a retry after a lost response means it probably went through)
         # and the minting endpoints (a retry mints another code; only the last one is shown).
         lost = None
-        for i in range(RETRIES):
+        deadline = time.monotonic() + REFUSED_WINDOW_S
+        i = 0
+        while True:
             try:
                 with self.opener(req, timeout=120, context=ctx) as r:
                     return r.status, json.loads(r.read() or b"{}")
@@ -404,16 +411,21 @@ class Client:
                                            "response was lost: check `of shipped` and the receipts before re-enrolling")
                 if e.code in RETRY_STATUS and i < RETRIES - 1:
                     time.sleep(_backoff(i, retry_after))
+                    i += 1
                     continue
                 raise ServerError(e.code, body)
             except Exception as e:
                 if not _transient(e):
                     raise
                 lost = e
-                if i < RETRIES - 1:
-                    time.sleep(_backoff(i))
+                refused = isinstance(getattr(e, "reason", e), ConnectionRefusedError)
+                if i < RETRIES - 1 or (refused and time.monotonic() < deadline):
+                    time.sleep(min(REFUSED_MAX_WAIT_S, _backoff(i)))
+                    i += 1
+                    continue
+                break
         raise TransportError(self.url, f"{type(getattr(lost, 'reason', lost)).__name__}: {getattr(lost, 'reason', lost)}",
-                             RETRIES)
+                             i + 1)
 
     def token(self, refresh=False):
         try:

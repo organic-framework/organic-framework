@@ -261,6 +261,21 @@ class RetryTest(unittest.TestCase):
             c._request("GET", "/v1/x")
         self.assertIn("unreachable after 4 tries", str(cm.exception))
 
+    def test_a_refused_connection_is_tried_for_longer_than_four_times(self):
+        """A server restarting on a code change refuses for seconds (msg 01a1f9ca-387d): refused tries go on within
+        REFUSED_WINDOW_S, while another transport error still stops after RETRIES."""
+        import urllib.error
+        import of_client
+        c, calls = self.client([urllib.error.URLError(ConnectionRefusedError())] * 6 + ["ok"])
+        self.assertEqual(c._request("GET", "/v1/x"), (200, {"ok": 1}))
+        self.assertEqual(len(calls), 7)
+        self.addCleanup(setattr, of_client, "REFUSED_WINDOW_S", of_client.REFUSED_WINDOW_S)
+        of_client.REFUSED_WINDOW_S = 0
+        c, calls = self.client([urllib.error.URLError(ConnectionRefusedError())] * 6 + ["ok"])
+        with self.assertRaises(of_client.TransportError):
+            c._request("GET", "/v1/x")
+        self.assertEqual(len(calls), 4)
+
     def test_enroll_410_after_lost_response(self):
         import of_client
         c, _ = self.client([ConnectionResetError(), 410])
