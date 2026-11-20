@@ -731,7 +731,8 @@ class BlockedProcessor(Processor):
             # 01a1f0a9-d642: such stops of a user organization's parked positions reached the founder as a card)
             if d and d["type"] in ("limit", "login") and position in self.resting_names():
                 d = None
-            if d and d["type"] == "compact" and self.keep_context(pane, sid, position, d, scr.stdout):
+            if d and d["type"] == "compact" and a.get("agent") == "claude" and \
+                    self.keep_context(pane, sid, position, d, scr.stdout):   # Claude Code's offer only (PR 431 note)
                 changed = True
                 continue  # answered by the owner's standing rule; an older card for it closes below (dialog gone)
             have = opened.get(key) or opened.get(pane)
