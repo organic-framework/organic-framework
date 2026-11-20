@@ -153,12 +153,14 @@ class GuardBashTest(unittest.TestCase):
     def test_grep_o_one_named_value(self):
         """Hand-over e280da4f (of_server; a user organization's structure keeper, msg 01a1f823-65a0): a bundled -o and
         one pattern that cannot cross a space pass; a pattern that can, or several, print values never named."""
-        ok = ("ps e -ww -p $p | grep -oE 'CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
-              "ps e -ww -p $p | grep -Eo 'VERSION=[^ ]*'",
-              "ps e -ww -p 1 | grep -ohE 'VERSION=[^[:space:]]+'",
-              "ps e -ww -p 1 | grep --only-matching 'VERSION=\\S*'",
+        ok = ("ps e -ww -p $p | grep -owE 'CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
+              "ps e -ww -p $p | grep -oE '\\bCLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
+              "ps e -ww -p $p | grep -Eow 'VERSION=[^ ]*'",
+              "ps e -ww -p $p | grep -oE ' CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
+              "ps e -ww -p 1 | grep -ohE '\\<VERSION=[^[:space:]]+'",
+              "ps e -ww -p 1 | grep --only-matching --word-regexp 'VERSION=\\S*'",
               "ps e -ww -p 1 | grep -o -e '^VERSION=[0-9_]\\{1,8\\}'",
-              "ssh h 'ps e -ww -p 1 | grep -oE \"CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}\"'",
+              "ssh h 'ps e -ww -p 1 | grep -owE \"CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}\"'",
               # names only, grouped: no part can match = (the 21-day replay)
               "env | grep -o '^[A-Z_]*\\(R2\\|CF\\)[A-Z_]*'", "env | grep -oE '^[A-Z_]*(R2|CF)[A-Z_]*'")
         for c in ok:
@@ -173,6 +175,9 @@ class GuardBashTest(unittest.TestCase):
                   "env | grep -o 'HOME=[[:print:]]*'",
                   "env | grep -o 'HOME=[^ ]*=[^ ]*'",
                   "env | grep -o 'VERSION=[0-9.]*'",
+                  # unanchored: a short name matches a secret one's tail (of_secrets-review on PR 448)
+                  "env | grep -oE 'KEN=[^ ]*'", "env | grep -oE 'WORD=[^ ]*'", "env | grep -oE 'N=[^ ]*'",
+                  "ps e -ww -p 1 | grep -oE 'CLICKHOUSE_JOURNAL__USER=[A-Za-z0-9_]{1,32}'",
                   # a pattern with no = that runs on into values
                   "env | grep -o '[^ ]*'", "env | grep -o '.*'", "env | grep -oE '\\S+'",
                   "printenv | grep -o '[A-Z_].*'",   # a dot in the class: the hand-over's shape leaves it out
@@ -511,7 +516,9 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("ps e | grep TOKEN"))
         self.assertTrue(deny("ps eww -o command= -p 123"))  # prints the process's whole environment
         # of_architect decision 1: the one narrow allow — a non-secret-shaped NAME=value extracted by grep -o
-        self.assertIsNone(deny("ps eww -p 123 | grep -o 'CLAUDE_CONFIG_DIR=[^ ]*'"))
+        self.assertIsNone(deny("ps eww -p 123 | grep -ow 'CLAUDE_CONFIG_DIR=[^ ]*'"))
+        # unanchored, the name could be a secret one's tail (of_secrets-review on organic-framework PR 448)
+        self.assertTrue(deny("ps eww -p 123 | grep -o 'CLAUDE_CONFIG_DIR=[^ ]*'"))
         self.assertTrue(deny("ps eww -p 123 | grep -o 'AWS_SECRET_ACCESS_KEY=[^ ]*'"))  # a secret-shaped name
         self.assertTrue(deny("docker inspect storefront"))
         self.assertTrue(deny("docker inspect -f '{{.Config.Env}}' storefront"))
