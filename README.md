@@ -32,7 +32,7 @@ OF is early: it runs the team that builds it and one user organization today. Ea
 
 Target: from nothing to your organization's structure in a repository, your conductor as the first agent you start, and every session recorded.
 
-**You need:** Python 3.11+ with PyYAML, the Claude Code CLI, OpenSSH (`ssh-keygen`), and [herdr](https://herdr.dev), the agent runtime OF sits on (`brew install herdr` on macOS; other systems: herdr.dev). Without herdr, `of init` still finds agents running in tmux or plain terminals (through `claude agents`) and records them, and `of who` lists the registry, but agents get their names, live states, `of go` and the desk only in herdr panes. To move an agent into herdr without losing its session: open a herdr pane in the same directory and run `claude --resume <session id>` there (the id is in `registry/positions.yaml` after `of init`), then close the old terminal.
+**You need:** Python 3.11+ with PyYAML, the Claude Code CLI, OpenSSH (`ssh-keygen`), on Linux `bubblewrap` and `socat` for Claude Code's sandbox, and [herdr](https://herdr.dev), the agent runtime OF sits on (`brew install herdr` on macOS; other systems: herdr.dev). Without herdr, `of init` still finds agents running in tmux or plain terminals (through `claude agents`) and records them, and `of who` lists the registry, but agents get their names, live states, `of go` and the desk only in herdr panes. To move an agent into herdr without losing its session: open a herdr pane in the same directory and run `claude --resume <session id>` there (the id is in `registry/positions.yaml` after `of init`), then close the old terminal.
 
 ```bash
 git clone <this repository> ~/organic-framework

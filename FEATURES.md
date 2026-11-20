@@ -130,16 +130,20 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Who may use each credential: requests, approvals with the owner's passkey, revocations and a weekly review | `of access map/request/grant/revoke`; [`docs/access.md`](docs/access.md) | Early | `test_access`, `test_keeper` |
 | Signed deny rules for Kubernetes, SSH routes and single CLI calls, with a replay of a proposed rule | `scope.kubectl`, `scope.ssh`, `scope.cli` in deny grants | Early | `test_guard_grants`, `test_guard_commands`, `test_guard_replay` |
 | Protected code: OF's own installed code kept from agents' writes, and a checked fast-forward of a protected worktree | `protected_code`, `of protected ff` | Early | `test_guard_protection`, `test_protected` |
+| The guard failing closed when its hook cannot decide, and judging a Codex session's tool calls as Claude Code's | `bin/of-hook` | Early | `test_hook`, `test_hook_codex` |
+| Agents' shell on Linux in Claude Code's sandbox: listed hosts only; keys, sign-ins, transcripts and other sessions' scratch folders denied | `of spawn`, `of resume-command`, `of capacity move` | Early | `test_spawn`, `test_resume`, `test_capacity` |
 
 ## Capacity: Claude accounts and limits
 
 | Feature | How | State | Evidence |
 |---|---|---|---|
 | Limits per account and which positions run on each | `of capacity status` | Works | `test_capacity`; 1,263 snapshots on 6 days |
+| Limits read from what the sessions already receive, through a silent status line; a probe only where no session reads | `bin/of-statusline`, `of capacity status --fresh` | Early | `test_capacity` |
 | Moving a session to another account between turns, with its context | `of capacity move`, `of capacity balance` | Works | `test_capacity`, `capacity-move-v1`; 205 balancing runs on 6 days |
 | Before and after a restart of the machine: every session back on its account | `of capacity reboot prepare/restore/cancel` | Early: used in one restart (2026-11-10) | `test_capacity` |
 | A position's own memory, kept across moves | `of capacity memory`; [`docs/rfc/0006-position-memory.md`](docs/rfc/0006-position-memory.md) | Early | `test_memory` |
 | The machine's Claude accounts as OF's own list, with no shell aliases; the capacity package, one keeper per person | `of account`, `of claude`; [`bench/capacity/`](bench/capacity/); [`docs/accounts.md`](docs/accounts.md) | Early | `test_accounts`, `test_capacity` |
+| Codex seats: each ChatGPT sign-in as an account, with its limits and its training setting | `of account add <name> --codex`, `codex_seats:` in `accounts.yaml` | Early | `test_accounts`, `test_capacity` |
 | Restarting a session on its own account to pick up its tools and rules; positions kept on their account; sessions returned to their launch folder | `of capacity move --restart`; `stay`, `start_in`, `restore_moves` in `capacity.yaml` | Early | `test_capacity`, `capacity-stall-v0` |
 | Carrying an organization's sessions to another machine, macOS or Linux, with their history and memory | `of capacity carry prepare/copy/restore` | Early | `test_carry`, `lab-agent-host-v0` |
 | The month's spend per work, goal and condition | `of capacity spend`, `of status working --work` | Early | `test_spend` |
@@ -176,6 +180,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 - **Claude Code** is the only agent CLI whose sessions are recorded.
 - **macOS or Linux.** Windows is not tested.
 - **Python 3.11+** with PyYAML, and OpenSSH.
+- **On Linux, `bubblewrap` and `socat`**, for Claude Code's sandbox, in which the agents OF starts there run their shell.
 
 ## How the states were checked
 
