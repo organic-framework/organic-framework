@@ -93,6 +93,50 @@ A Codex session in a herdr pane holds a position like a Claude Code session, whe
 
 Until then, no position is held by Codex, and no Codex session runs with the account's own config in an organization's checkout. RFC 0003's browser executor (§4.1 there) waits for the same four conditions; it is not an exception. Muse holds no position: whether it has hooks OF can use is unknown (it serves `mxp` and `acp` protocols); `of_lab` finds out when a position needs it.
 
+The founder said yes to building rung 2 on 2026-11-20 (prompt `01a1f8ba-17a0`: Claude could not be bought for another week, and Codex could) and to its plan (prompt `01a1f8d2-c94e`; organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The sections below make the four conditions concrete. They read Codex 0.170 from its source and documentation (organic-framework-build `reports/research/codex-0.170-as-a-holder-2026-11-20.md`, every fact with its link; the hook events, the `hooks` feature and the options named below were checked in the 0.169.1 binary).
+
+### 4.1 What any harness that holds a position gives
+
+The same list holds for Claude Code, Codex and any later harness. It is the `harness` family's contract (docs/plugins.md).
+
+| | Part | What OF needs |
+|---|---|---|
+| 1 | **Start** | A session in a herdr pane, in the position's folder, on an account of its organization (a seat), with its model, its tool profile and its guard. Its start context arrives whole (brief, binding rules, team), and no dialog stays on its screen. |
+| 2 | **Guard** | Every call that runs a command, edits a file or calls a tool server is checked by `bin/of_guard.py` before it runs, and an error in the check refuses the call. The operating system's sandbox refuses the session every credential root and secret path, so a call the check misses still reads none. The session cannot change its own guard, rules or config. |
+| 3 | **Record** | Each prompt, marked when a person typed it, each tool call and its result, and each turn's end go into the event store, masked, as they happen. |
+| 4 | **Messages** | herdr tells the pane's state (idle, working, waiting on an approval), so the relay types in only when it is idle. |
+| 5 | **State and asks** | `of status`, `of ask`, `of send` and the rest are commands any harness runs. The caller is the session its harness names (G31). |
+| 6 | **Resume and move** | A session resumes by its id on its account. It moves between accounts between turns, with its context. |
+| 7 | **Capacity** | Each account's windows are read, and a session starts on the account with headroom. |
+
+### 4.2 How Codex gives it
+
+| | Codex 0.170 | Built by |
+|---|---|---|
+| 1 | `codex -C <folder> --profile <name> -m <model>`, with `CODEX_HOME` one folder per seat and `-c` overrides. The folder is trusted by `projects."<path>".trust_level = "trusted"` in the seat's `config.toml`. The start context goes in as `developer_instructions`, a developer message with no size cap found, so it is not cut to 10,000 characters as Claude Code's start hook is. `AGENTS.md` files share 32 KiB (`project_doc_max_bytes`). `model_instructions_file` is not used: it replaces the model's own instructions. | `of_platform` |
+| 2 | **Three layers:**<br>- **A `PreToolUse` hook** that runs `bin/of_guard.py`. Codex 0.170's synchronous hook can refuse a shell call, an `apply_patch` and an MCP call, by exit 2 with a reason or by a JSON deny. Codex runs the call when a hook times out, crashes or answers malformed, so the hook's wrapper answers deny on any error of its own.<br>- **A permission profile per position**, enforced by bubblewrap and seccomp on Linux and kept whatever the command's spelling: the minimal platform files read; the position's folders written; every credential root and secret path of the catalogue `deny`; the seat's own config, hooks and rules not writable.<br>- **Exec-policy `forbidden` rules** for the guard's denied commands where a command prefix expresses them; they refuse before the sandbox, under `approval_policy = "never"` too.<br>**Not covered by the hook:** input sent into a running command session (`write_stdin`), and hosted tools such as web search, which stay off unless the position's tool profile names them.<br>**Hook trust:** an unmanaged hook is reviewed by its hash at start, so the hook is managed (a system file, root's) or started with Codex's bypass for a hook OF itself vetted. | `of_server` decides, `of_platform` builds, `of_secrets-review` reviews |
+| 3 | Hooks `SessionStart`, `UserPromptSubmit` (the prompt), `PreToolUse`, `PostToolUse` (the result), `Stop` (the turn's end) and `SessionEnd`, with Claude Code's shape. Codex's session files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`, or `.jsonl.zst`) are ingested after the fact; OpenAI calls their format no stable interface. | `of_platform` |
+| 4 | herdr's Codex pane states, checked on the agent host. `notify` on `agent-turn-complete` is a second turn-end signal. | `of_herdr` |
+| 5 | Unchanged commands; the session id comes from the hook's input. | `of_platform` |
+| 6 | `codex resume <id> -C <folder>` on the seat's `CODEX_HOME`. A move takes the session's file to the other seat's home. | `of_platform`, `of_capacity` |
+| 7 | Each session file's `token_count` event carries the account's windows (`used_percent` consumed, `window_minutes`, `resets_at`). The app-server's `account/rateLimits/read` gives them now. | `of_capacity` |
+
+### 4.3 The guard's rules on Codex
+
+`of_server` marks each rule of docs/guard.md as holding on Codex or not (its hand-over `aaa87244`). By mechanism:
+- The path rules (G1 and its parts, G2, G5, G14) hold twice, by the profile and by the hook.
+- The command rules hold by the hook, and by a `forbidden` rule where a prefix expresses them.
+- A rule that reads one of Claude Code's own surfaces is recast for Codex or does not apply there: its permission dialogs (G28), the program OF starts (G29), its plugins (G22) and its tool server's token (G23).
+
+Until `of_secrets-review` has reviewed the marks, a Codex position holds no grant and no credential.
+
+### 4.4 Where, and who first
+
+- **Where:** on the agent host, in the organization's own contour (docs/contours.md).
+- **The registry:** `holder.runtime: codex` (docs/registry.md, Positions).
+- **First positions:** those that read and write public framework code and hold no grant or credential. They move to Codex by a structural diff (`swap_holder`), once the guard is reviewed and start and recording work.
+- **When it is done:** a position that did not build this sets one up on a clean OS user from the documents alone (`of_lab`, docs/lab.md), as AGENTS.md asks of every feature a person uses.
+
 ## 5. Each organization chooses
 
 What leaves for another provider is the organization's choice, as with every product OF talks to (docs/plugins.md §1: "Nothing falls back silently to a product the owner did not choose"). Its structure keeper writes it in the registry:
