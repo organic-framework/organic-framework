@@ -1117,7 +1117,27 @@ def _guard_index(sid=None):
     return _registry_index()
 
 
+GUARD_FAILED = ("Organic Framework guard failed ({kind}), so the call is denied until the guard is fixed. Do not "
+                "retry it another way; tell of_server, which keeps the guard")
+
+
 def _guard(hook, sess):
+    """The guard fails closed: an error of its own denies the call. Claude Code and Codex both run a call whose
+    PreToolUse hook raised (2026-11-11: a NameError in _scratch_guard let every call through unguarded;
+    of_secrets-review's W3 review of Codex positions, msg 01a1f8e4-d06c)."""
+    global OUTPUT
+    try:
+        _guard_checked(hook, sess)
+    except Exception as e:  # noqa: BLE001 - every error of the guard's own is a deny
+        OUTPUT = None
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": GUARD_FAILED.format(kind=type(e).__name__)}}, ensure_ascii=False))
+        sys.stdout.flush()
+        _log_error("PreToolUse guard", e)
+
+
+def _guard_checked(hook, sess):
     """Enforced before the tool runs: a critical deny answers `deny` to Claude Code and is recorded as
     of.mandate_check {decision: deny, verdict: critical, mode: enforce}; then the organization's rules
     (_org_guard), then the guard's warnings."""

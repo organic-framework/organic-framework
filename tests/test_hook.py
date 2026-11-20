@@ -641,6 +641,27 @@ class HandleTest(unittest.TestCase):
             self.assertIn("report the command to your structure keeper", why, extra)
             self.assertNotIn("  ", why, extra)  # one space between the reason's sentences
 
+    def test_the_guard_fails_closed_on_an_error_of_its_own(self):
+        """2026-11-11: a NameError in _scratch_guard let every call through unguarded; of_secrets-review's W3 review
+        (msg 01a1f8e4-d06c): a hook that raises lets Claude Code and Codex run the call, so the guard denies it."""
+        import contextlib
+        import io
+        from unittest import mock
+        for target in ("critical_deny", "_scratch_guard"):
+            of_hook.OUTPUT = None
+            out = io.StringIO()
+            with mock.patch.object(of_hook, target, side_effect=RuntimeError("boom")), contextlib.redirect_stdout(out):
+                self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+            decision = json.loads(out.getvalue())["hookSpecificOutput"]
+            self.assertEqual(decision["permissionDecision"], "deny", target)
+            self.assertIn("guard failed (RuntimeError)", decision["permissionDecisionReason"], target)
+            self.assertNotIn("boom", decision["permissionDecisionReason"], target)   # only the error's kind
+        of_hook.OUTPUT = None
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):                                         # and a plain call still runs
+            self.fire("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
+        self.assertNotIn("permissionDecision", out.getvalue())
+
     def test_a_guard_reason_is_recorded_masked(self):
         """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""
         token = "ghp_" + "Ab3" * 12
