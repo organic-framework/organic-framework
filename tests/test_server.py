@@ -939,6 +939,28 @@ class RedactionTest(unittest.TestCase):
         self.app.writer.drain()
         self.assertEqual(len([r for r in self.rows("db_vault", "event").values() if r["name"] == "of.redacted"]), 2)
 
+    def test_a_redacted_shared_event_leaves_the_coordination_feed(self):
+        """of_secrets-review on organic-framework PR 453: a redacted shared event kept its old record in coord for up
+        to its 30-day retention, and every export of the organization carried it."""
+        def shared(note):
+            rec = {"of.schema": 1, "of.event.id": "e1", "timestamp": "2026-11-05T10:00:00.000Z",
+                   "event.name": "of.state_declared", "of.org": "ofb", "note": note}
+            return event("e1", "ofb", name="of.state_declared", host_id="m-tenant", record=json.dumps(rec))
+        self.tenant.send_batch([shared("OLD-VALUE")], batch_id="b1")
+        self.app.writer.drain()
+
+        def feed():
+            with self.app.store.conn() as c:
+                return [json.loads(r)["note"] for (r,) in c.execute("SELECT record FROM coord WHERE event_id = 'e1'")]
+        self.assertEqual(feed(), ["OLD-VALUE"])
+        body = {"redaction_id": "c1", "table": "event", "ids": ["e1"], "reason": "a key in a note",
+                "records": [shared("[secret:x:1234abcd]")]}
+        self.assertEqual(self.post(self.tenant, body)[0], 200)
+        self.app.writer.drain()
+        got = self.tenant._authed("GET", "/v1/redactions/c1")[1]
+        self.assertEqual((got["state"], got["counts"]["coord"]), ("done", 1))
+        self.assertEqual(feed(), ["[secret:x:1234abcd]"])                        # the replacement alone
+
     def test_a_replacement_goes_where_its_row_was_and_queued_redactions_keep_theirs(self):
         self.tenant.send_batch([self.rec("u1", '{"t": "OLD one"}', "m-tenant")], batch_id="b1")
         self.app.writer.drain()
