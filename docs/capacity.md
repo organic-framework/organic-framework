@@ -108,6 +108,7 @@ A restart of the Mac (an OS update, founder, 2026-11-10) stops every agent sessi
 - Events: `of.capacity_reboot_prepared`, `of.capacity_reboot_cancelled`, `of.capacity_reboot_restored`, and `of.holder_changed` per session (`evidence: of capacity reboot restore`).
 
 Balancing resumes two hours after preparation unless the machine has booted since, in which case it waits for restore. If the restart is called off, as on 2026-11-19/20 when power returned and 18 sessions waited six hours for rescue, `of capacity reboot cancel` archives the plan and its kept files without restoring files or touching sessions.
+The balancer cancels the stale plan when the pause expires, and either form of cancellation turns herdr's agent resume back on if prepare recorded it as enabled or unset.
 
 Checked on 2026-11-10: a dry run over all 48 sessions, and a live restore of a throwaway session into a new pane (resumed with its context, read its note).
 
