@@ -228,7 +228,7 @@ class KeepContextTest(unittest.TestCase):
 
     def test_an_empty_read_after_enter_is_no_keep(self):
         """of_review's note on PR 431: an empty or partial read after Enter had counted as Keep."""
-        for after in ([], ["  partial"]):
+        for after in ([], ["  partial"], ["  ❯ Keep 1m tokens", "    Autocompact at ‹ 400k › tokens"]):
             ok, why, pressed = self.run_answer([_offer(False, True), after])
             self.assertEqual((ok, pressed), (False, ["Enter"]))
             self.assertIn("prompt was not seen", why)
