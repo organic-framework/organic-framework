@@ -1271,7 +1271,10 @@ def codex_calls(hook):
             return calls or [{"deny": PATCH_UNREADABLE, "subject": "no file header"}]
         return [{"tool_name": tool, "tool_input": ti}] + calls
     if tool == "view_image" and isinstance(ti, dict):
-        return [{"tool_name": "Read", "tool_input": {"file_path": ti.get("path") or ""}}]
+        path = str(ti.get("path") or "")
+        if path and hook.get("cwd") and not os.path.isabs(path):   # as a patch's paths (of_release's note on PR 469)
+            path = os.path.normpath(os.path.join(hook["cwd"], path))
+        return [{"tool_name": "Read", "tool_input": {"file_path": path}}]
     return None
 
 

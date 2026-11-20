@@ -68,6 +68,11 @@ class CodexPreToolUse(unittest.TestCase):
         got = self.answers(fire("Bash", {"command": f"cat {ENV}"}))
         self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_view_image_of_a_relative_path_is_read_from_cwd(self):
+        self.assertEqual(of_hook.codex_calls({"tool_name": "view_image", "cwd": "/w", "turn_id": "t",
+                                              "tool_input": {"path": "img/a.png"}})[0]["tool_input"]["file_path"],
+                         "/w/img/a.png")
+
     def test_view_image_of_a_secret_path_is_a_read(self):
         got = self.answers(fire("view_image", {"path": f"{os.path.expanduser('~')}/{KEY}"}))
         self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -122,6 +127,7 @@ class ClaudeCallsQuotingAPatch(unittest.TestCase):
         doc = f"How Codex patches look:\n\n{M} Begin Patch\n{M} Add Fiel: x\n{M} End Patch\n"
         self.assertEqual(self.claude("Write", {"file_path": "/w/notes.md", "content": doc}), "")
         self.assertEqual(self.claude("Bash", {"command": f"gh pr comment 1 --body '{M} Begin Patch inline'"}), "")
+        self.assertEqual(self.claude("Bash", {"command": f"echo '{M} Begin Patch'"}), "")
 
 
 class CodexSessionToHerdr(unittest.TestCase):
