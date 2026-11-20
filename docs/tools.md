@@ -130,6 +130,62 @@ tools:
 - **Limits.** Every session runs as the same operating-system user, so a determined agent could still reach the token: read its file, or start a nested Claude Code with another session's config file. Both are visible commands for the guard (its trust review, `of_server`); the binding stops a position from using the tool by accident or by naming another position. The server acts for one identity, the tool's credential, for every session that uses it; Grafana's audit shows the service account, not the position. One session's heavy query slows the others. A server that restarts drops its sessions' MCP sessions; whether Claude Code reconnects at the next call is checked in the rollout (§4a is being rolled out with Grafana first). `--session-idle-timeout-minutes 0` keeps an idle session's MCP session from being reaped.
 - **The account's own copy.** A user-scope server of the same tool in an account's `.claude.json` still starts in every session on that account. Remove it from each account when the shared server runs (`claude mcp remove <name> -s user` with the account's config folder), or nothing is saved.
 
+### 4b. A position held by Codex
+
+Status: proposed 2026-11-20 by `of_tools` (hand-over `68dfbcca`, item W7 of organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The kinds are in [`registry.md`](registry.md) (`of_architect`); the layer's form is to be agreed with `of_platform`, who builds `of spawn` for Codex (W4).
+
+A position whose holder runs on Codex gets its tools from the same profile as on Claude Code: the same catalogue, the same `tools:` on its unit and on itself, the same review (§2). Only the form differs. Codex reads its tools from its configuration, and it has tools of its own that Claude Code does not.
+
+**Where the configuration goes.** A Codex seat is one `CODEX_HOME` with one sign-in (W9), shared by every position on it, as a Claude account's folder is. So nothing of one position goes into the seat's `config.toml`.
+- At each start, `of spawn` writes a layer for the session, `$CODEX_HOME/of-<session>.config.toml` (mode 600), and starts `codex -p of-<session>`. The interactive `codex` has no `--ignore-user-config`; only `codex exec` has it. So the seat's own file still loads under the layer.
+- `of_tools.codex_layer(position, session, codex_home)` returns the layer's tool tables: `features`, `mcp_servers`, `apps` and `plugins`. It also writes `<state>/tools/<session>.mcp.json`, as for Claude Code, for the shared-server helper. `of spawn` merges these tables with its own (the model, W3's permission profile, W5's instructions) into the one layer file. `of tools plan <position> --codex` prints them.
+- OF writes the seat's own `config.toml` and keeps tools out of it. `of tools check` reports a seat whose file defines `mcp_servers`, `plugins` or `apps`.
+
+What this rests on (Codex CLI 0.169.1, probed 2026-11-20 in a fresh `CODEX_HOME`; the source read at the tags `rust-v0.169.0` and `rust-v0.170.0` of github.com/openai/codex, Codex run `01a1f8d6-69a0`):
+
+| Fact | Source | Probe |
+|---|---|---|
+| `-p NAME` layers `$CODEX_HOME/NAME.config.toml` over `config.toml`. It takes the ordinary top-level keys, `mcp_servers`, `features`, `apps` and `plugins` among them. The old `[profiles.NAME]` tables are refused. | CLI help: "Layer $CODEX_HOME/<name>.config.toml on top of the base user config"; developers.openai.com/codex/config-advanced, "Profiles" | `codex -p of-s1 mcp list`: the layer's `enabled = false` turned off a server of the seat's file, and its own server was listed |
+| `-c mcp_servers.<id>.…` adds or overrides one server for one run | developers.openai.com/codex/config-advanced, "One-off overrides from the CLI" (`mcp_servers.context7.enabled=false`) | `codex mcp list -c mcp_servers.t1.command=…` listed a server defined nowhere else |
+| A server is `command`/`args`/`env`/`cwd` (stdio) or `url` with `http_headers`, `env_http_headers`, `bearer_token_env_var` or `http_headers_helper` (HTTP). It also takes `enabled`, `required`, `enabled_tools`, `disabled_tools` and the timeouts. An inline `bearer_token` is refused. | `codex-rs/config/src/mcp_types.rs`; `--strict-config` refuses an unknown field of a server | yes |
+| Stdio servers and header helpers run outside the sandbox of the model's commands | CLI trust help: "MCP commands outside the sandbox"; `codex-rs/codex-mcp/src/runtime.rs`: "HTTP headers helpers can only run in the local environment" | not probed |
+| `http_headers_helper` is one string, run as `sh -c <string>`. It runs with a cleared environment: `HOME`, `PATH`, `USER`, `SHELL`, `LANG`, `TMPDIR` and a few more. It is run once per connection and once more on a rejected request. It must answer within **10 s** with a JSON object of headers. | `codex-rs/rmcp-client/src/http_headers.rs`; binary strings "headers helper timed out after 10 seconds", "headers helper output exceeds 64 KiB" | an array or a table is refused: "expected a string" |
+| The account's apps are one built-in server, `codex_apps`. It is on when `features.apps` is on and the seat signed in with ChatGPT. `apps._default.enabled = false` turns every app off, and `apps."<id>".enabled` turns one back on. | `codex-rs/features/src/lib.rs`, `codex-rs/connectors/src/app_tool_policy.rs`; config reference | `--strict-config` accepts `apps._default.enabled`; a fresh seat has `apps` on |
+| A plugin can bring skills, MCP servers, apps and hooks. It is installed under `$CODEX_HOME/plugins/cache/`. `plugins._default.enabled = false` turns every plugin off, and `plugins."<name>@<marketplace>".enabled = true` turns one back on. | `codex-rs/config/src/types.rs`; `codex-rs/core-plugin-common/src/installed.rs` | a fresh seat has `plugins` and `remote_plugin` on |
+| `browser_use`, `browser_use_external`, `browser_use_full_cdp_access`, `in_app_browser`, `computer_use` and `in_app_local_automation` are the desktop app's controls ("Requirements-only gate"). No documented CLI tool comes from them. | `codex-rs/features/src/lib.rs`; developers.openai.com/codex/enterprise/managed-configuration | a fresh seat has them on |
+
+**What each catalogue kind becomes on Codex.**
+
+| Kind | In the layer |
+|---|---|
+| `mcp-stdio` | `[mcp_servers.<id>]` with `command`, `args` and `env`. `of secret run` comes in front when the entry names a credential, as in §4; the layer holds paths and names, never a value. |
+| `mcp-stdio` with `shared:` (§4a) | `url = "http://127.0.0.1:<port>/mcp"` and `http_headers_helper = "python3 <of bin>/of_tools.py header <org>/<id>"`. Codex starts the helper through `sh`, so `sh` is its parent and the session's `codex -p of-<session>` above it. The helper accepts the nearest ancestor that names `-p`/`--profile of-<session>` when `<state>/tools/<session>.mcp.json` names this tool's URL, as it accepts a Claude Code session by its `--mcp-config` file. Codex waits 10 s on it, against about 11 s on Claude Code, so the cache of §4a matters as much here. |
+| `mcp-remote`, portable | `url`, with its headers as `http_headers`. A header that needs a credential goes through the bridge (§6), never into the layer. |
+| `plugin`, `connector` | Nothing: they are Claude Code's, and their sign-ins live in a Claude account. `of tools plan` names each one it skips. A position that needs the same service on Codex gets its portable form (the bridge, §6) or a Codex entry below. |
+| `codex-app` | One app of the seat's ChatGPT sign-in, by its connector id (`app: <id>`): `apps."<id>".enabled = true`. It is account-bound to the seat, as a connector is to a Claude account (§5): the seat's sign-in must have it connected, and placement reads it. |
+| `codex-plugin` | `plugin: <name>@<marketplace>`, in the layer `plugins."<name>@<marketplace>".enabled = true`. It is installed on the seat, and its MCP servers, apps and skills come with it. |
+| `codex-feature` | One of Codex's own tools that reaches outside the session's files (`feature: <name>`): `image_generation` (`features.image_generation = true`), `web_search` (`web_search = "live"`), or, once a CLI session can use them, `browser_use` or `computer_use` (`features.<name> = true`). |
+
+**Off unless the profile names it**, in both modes (`add` and `enforce`), so a Codex position does not start with whatever the seat's sign-in carries:
+- the account's apps: `features.apps = false`. When the profile names a `codex-app`, `apps` stays on, with `apps._default.enabled = false` and the named apps `true`;
+- plugins: `features.plugins = false` and `remote_plugin = false`. When the profile names a `codex-plugin`, `plugins` stays on, with `plugins._default.enabled = false` and the named plugins `true`;
+- browser and computer use: the six desktop controls above are `false`;
+- image generation: `features.image_generation = false`;
+- web search: `web_search = "disabled"`. On Codex no hook sees a hosted search, so W3 cannot guard it (RFC 0008 §4.2; `of_server`, W3); a position searches the web only when its profile names `web_search`;
+- what installs or suggests tools during a session: `features.tool_suggest = false`, `recommended_plugins = false` and `skill_mcp_dependency_install = false`.
+
+Computer use and the browser act as the person whose desktop and signed-in browser they drive. So their `codex-feature` entries carry `scope: act-as-person` and need the owner's yes on a card (§2, step 3).
+
+**Under `enforce`**, every server in the seat's own file that the profile does not name gets `enabled = false`, as `allowedMcpServers` hides an account's own servers on Claude Code. Under `add` they stay, as an account's do.
+
+**Not the profile's.** `of spawn` sets these from the other work items, not from the tool profile:
+- Codex's sandbox and rules (W3, `of_server`) and its hooks (W2, W3);
+- its subagents (`agents.enabled`, `features.multi_agent_v2`), off for now: `of_architect`'s call for W1 (message `01a1f8ea-b0ce`), until W3's canary selftest shows the managed hook refusing a subagent's call;
+- its memories (`features.memories`, off by default; W5);
+- its skills (W5): Codex finds them in `.agents/skills` of the working folder, `$HOME/.agents/skills` and the seat's plugins.
+
+**Who checks.** `of tools plan --codex` prints the layer's tool tables; it and `codex_layer` are built by `of_tools` once this form is agreed. For W3's canary selftest of a Codex position, `of_tools` proposes one more check to `of_server`: list the session's tools and fail on one that the profile does not name.
+
 ## 5. Account-bound tools and moves
 
 An OAuth tool's sign-in, and a claude.ai connector, exist only on the accounts where someone signed in.
@@ -155,7 +211,7 @@ One account may hold a sign-in with more rights than the tool's plain entry: a p
 4. **The guard** (`of_server`): an MCP call to a server outside the position's profile is denied; a credential in an MCP config file (a value in `env` or `headers`, or a key in a URL) is a finding for the tool's keeper.
 5. **The lab proof** (`of_lab`): two accounts; a position with a local tool and an account-bound tool moves from one to the other; both work on both sides where signed in; a second position on the same account does not see them.
 6. **The catalogues**: the OF team's, then each user organization's, through its structure keeper. Then the user-scope servers in each account's `.claude.json` are removed, first their credentials, then the servers.
-7. **Codex**: the same profile as `-c mcp_servers.<id>.…` overrides, or a generated `CODEX_HOME`, when `of_herdr` starts Codex through the launcher. Codex's documentation does not say yet whether its `-c` overrides reach `mcp_servers`; this is checked before it is built.
+7. **Codex**: the same profile, as a layer file that `of spawn` passes with `-p` (§4b).
 
 **A remote server with its own sign-in, made portable** (`bin/of_mcp_bridge.py`, 2026-11-11). Many services serve MCP over HTTP with OAuth (Slack, Notion, Linear, Cloudflare, a user organization's accounting service), or put a key in the URL. In Claude Code such a sign-in stays with one account (§4). The bridge makes it the tool's own instead:
 - `of_mcp_bridge.py login --url-file F --oauth-store D`: one sign-in, in a plain terminal, by the person or the identity the tool acts as. It discovers the authorization server (RFC 9728, RFC 8414), registers its own client (RFC 7591), signs in with PKCE (RFC 7636) on a 127.0.0.1 callback, and writes the client and refresh token to `D/oauth.json`, mode 600. The folder is a credential in the organization's catalogue, kept by the tool's keeper.
