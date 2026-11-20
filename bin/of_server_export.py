@@ -239,7 +239,10 @@ def _hold(conn, org, config, since, since_sha, snap=None):
     # batch changes while it runs, the final delta carries, since it takes every day whose fingerprint changed and
     # keeps every check here. So batches, queued ones and new ones, are the final delta's to hold (2026-11-20,
     # of_server: the first bulk of a live organization ran 27 minutes and was refused for a batch that arrived).
-    queued = _queued_batches(conn, org) if since is not None else 0
+    # A server with no ClickHouse has no delta, so its one bundle holds them (of_secrets-review on PR 453: a batch
+    # still writes coord rows, a store table, after the snapshot).
+    hold_batches = since is not None or not (config and _uses_clickhouse(config))
+    queued = _queued_batches(conn, org) if hold_batches else 0
     if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
         raise ExportError(f"{queued} of {org}'s batches are still queued or dead: wait for the writer, or replay or "
                           "drop the dead ones, with the organization marked moving (of server moving)")
@@ -264,7 +267,7 @@ def _hold(conn, org, config, since, since_sha, snap=None):
     now = {"batch": _max(conn, "batches", "seq"), "redaction": _max(conn, "redactions", "rowid"),
            "flag": (_flag_token(flag), st.st_ino, st.st_mtime_ns) if st else None}
     if snap is not None:
-        if since is not None and any(_names(by, org) for (by,) in conn.execute(
+        if hold_batches and any(_names(by, org) for (by,) in conn.execute(
                 "SELECT by_org FROM batches WHERE seq > ?", (snap["batch"],))) if "batches" in _tables(conn) else False:
             raise ExportError(f"a batch of {org} arrived while the export ran: export again")
         if now["redaction"] > snap["redaction"]:
