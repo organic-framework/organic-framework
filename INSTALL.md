@@ -28,6 +28,12 @@ You are a coding agent (Claude Code, for example), and a person asked you to ins
 Agents keep working while the laptop sleeps or travels, and the person reaches them from the laptop or a phone. Recommend this setup, and let the person decide:
 - **Install OF and herdr on that machine,** not on the laptop: run sections 3 to 7 there. The agents, the registry and of-server live there, and so does the Claude Code login the agents use.
 - **Reach it over Tailscale,** a private network of the person's own devices. Install Tailscale on that machine, the laptop and the phone, signed in to the same account. Open no port to the internet.
+- **On a Linux machine, keep herdr's server as a service.** Right after section 4, and before anything starts herdr
+  there, run `of herdr service install` as the user the agents run under. On Linux, herdr's server otherwise lives in
+  the login that started it, and the agents end with that SSH session or at a restart. The machine's admin turns on
+  linger once, with `sudo loginctl enable-linger <user>`: that is the person's step, with their password. **Check:**
+  `of herdr service status` exits 0 and prints `under the unit` and `linger is on`. The details are in
+  [`docs/herdr.md`](docs/herdr.md), "herdr's server on Linux: a user unit".
 - **SSH with keys only,** no passwords. From the laptop: `ssh <user>@<machine's Tailscale name>`, then `herdr`. herdr attaches to the session already running there, with every agent in it. `Ctrl+b, q` detaches, and the agents keep running.
 - **Or the chat alone.** If the person will talk only to their conductor, from the Claude app, install with `--surface remote` (step 1.8): the conductor starts with Remote Control on, and every agent runs in tmux on that machine.
 - **Keep the machine awake on power.** On macOS: System Settings, Energy, prevent sleep when the display is off.

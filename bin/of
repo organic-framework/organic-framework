@@ -4462,6 +4462,13 @@ def _install_user_service(command, action):
     return 0
 
 
+def cmd_herdr(args):
+    """`of herdr service install|uninstall|status`: this user's herdr server as a systemd user unit on Linux
+    (bin/of_herdr_service.py; of_herdr)."""
+    import of_herdr_service
+    return of_herdr_service.main(args.action)
+
+
 def cmd_relay(args):
     if args.action in ("install", "uninstall"):
         return _install_user_service("relay", args.action)
@@ -8097,6 +8104,11 @@ def main(argv=None):
                                       "uninstall | watchdog")
     rl.add_argument("action", choices=["run", "on", "off", "install", "uninstall", "watchdog"])
     rl.set_defaults(fn=cmd_relay)
+    hd = sub.add_parser("herdr", help="this user's herdr server as a systemd user unit, on Linux: "
+                                      "of herdr service install | uninstall | status")
+    hd.add_argument("what", choices=["service"])
+    hd.add_argument("action", choices=["install", "uninstall", "status"])
+    hd.set_defaults(fn=cmd_herdr)
     ak2 = sub.add_parser("ask", help="ask the founder (or a peer) a question, visibly: of ask \"…\" [--options \"a|b\"] [--blocking]")
     ak2.add_argument("question", nargs="?", help="the question (with --task: a one-line title; default: the first step)")
     ak2.add_argument("--options", help="choices separated by |")
