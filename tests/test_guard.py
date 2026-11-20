@@ -158,6 +158,27 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny(f"python3 - <<'EOF'\nimport subprocess\nsubprocess.run('{E}', shell=True)\nEOF"))
         self.assertTrue(deny(f"python3 -c \"import os; os.system('{P}')\""))
         self.assertTrue(deny(f"node -e \"require('child_process').execSync('{P}')\""))
+        # a callee the code computes is a launch (of_server on ddd8bb79, msg 01a1f877-07d1)
+        for c in ("import os; getattr(os, 'sys'+'tem')('" + P + "')",
+                  "import os; vars(os)['sys'+'tem']('" + P + "')",
+                  "import os; os.__dict__['sys'+'tem']('" + P + "')",
+                  "__import__('o'+'s').system('" + P + "')",
+                  "import importlib; importlib.import_module('o'+'s').system('" + P + "')",
+                  "from operator import methodcaller; import os; methodcaller('sys'+'tem', '" + P + "')(os)",
+                  "from operator import attrgetter; import os; attrgetter('sys'+'tem')(os)('" + P + "')",
+                  "eval(\\\"__import__('os').system('" + P + "')\\\")",
+                  "exec(\\\"import os; os.system('" + P + "')\\\")",
+                  "globals()['__builtins__'].__import__('os').system('" + P + "')",
+                  "import os; setattr(os, 'x', os.system); os.x('" + P + "')",
+                  "import os; [os.system][0]('" + P + "')",
+                  "import os; (lambda: os.system)()('" + P + "')",
+                  "import os; compile('os.system(1)', 'f', 'exec'); print('" + P + "')"):
+            self.assertTrue(deny(f'python3 -c "{c}"'), c)
+        # a `)(` or `](` inside a string calls nothing: the code still runs no process
+        self.assertIsNone(deny("python3 - <<'EOF'\nimport re\nprint(re.findall(r'(a)(b)', 'ab'), '" + E + "')\nEOF"))
+        for c in ("import subprocess; subprocess.run(['" + P + "'])", "import os; os.popen('" + P + "')",
+                  "import pty; pty.spawn('" + P + "')"):   # unchanged: denied before and after
+            self.assertTrue(deny(f'python3 -c "{c}"'), c)
 
     def test_grep_o_one_named_value(self):
         """Hand-over e280da4f (of_server; a user organization's structure keeper, msg 01a1f823-65a0): a bundled -o and
