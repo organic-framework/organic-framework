@@ -14,6 +14,7 @@ import of_server  # noqa: E402
 class Client:
     seen = []
     users = set()          # the users this fake ClickHouse already has
+    passwords = {}         # their passwords, as ClickHouse knows them
     default_answers = False
 
     def __init__(self, cfg):
@@ -24,6 +25,11 @@ class Client:
             if Client.default_answers:
                 return b"1\n"
             raise RuntimeError("401")
+        u = self.cfg.get("user")
+        if u in Client.users and u != "admin":  # a login as an existing user, with its file
+            if open(self.cfg["password_file"], "rb").read().strip() != Client.passwords.get(u):
+                raise RuntimeError("401")
+            return b"1\n"
         if "system.users" in query:
             return b"1\n" if kw["params"]["param_u"] in Client.users else b"0\n"
         Client.seen.append(query)
@@ -81,11 +87,20 @@ class ClickHouseInitTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "role of its own"):
             self.init()
         self.cfg["clickhouse"]["user"] = "of_server"
-        Client.users = {"of_server"}                               # ClickHouse has it, its password file is new
+        Client.users, Client.passwords = {"of_server"}, {"of_server": b"its own"}   # ClickHouse has it already
         os.unlink(self.pw) if os.path.exists(self.pw) else None
-        with self.assertRaisesRegex(SystemExit, "already has the user of_server"):
+        for _ in range(2):                                          # and a rerun meets the same refusal
+            with self.assertRaisesRegex(SystemExit, "of_server"):
+                self.init()
+            self.assertFalse(os.path.exists(self.pw))              # the refused run's file is gone
+        with open(self.pw, "w") as fh:                              # a file that does not log it in
+            fh.write("another\n")
+        os.chmod(self.pw, 0o600)
+        with self.assertRaisesRegex(SystemExit, "does not log in"):
             self.init()
-        Client.users = set()
+        Client.users, Client.passwords = set(), {}
+        os.unlink(self.pw)
+        self.init()                                                 # a clean run, then
         os.chmod(self.pw, 0o644)                                   # an existing file anyone can read
         with self.assertRaisesRegex(SystemExit, "not this user's own 0600 file"):
             self.init()

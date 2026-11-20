@@ -2546,15 +2546,27 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
         _secret_file(os.path.join(pwdir, f"{u}.password"), made)
     text = schema.schema(org_dbs, vault, unassigned, password_dir=pwdir)
     own = _secret_file(os.path.expanduser(pwfile), made)
-    # a user ClickHouse already has, with a password file made only now, is not one this command made: it would keep
-    # its old password (IF NOT EXISTS) or, for the server's user, be granted every database (of_review on PR 435)
+    # A user ClickHouse already has must log in with its file here, on every run: else it is not one this command made,
+    # and it would keep its old password (IF NOT EXISTS) or, for the server's user, be granted every database. A
+    # refused run removes the files it made, so a rerun meets the same check (of_review on organic-framework PR 435).
+    def refuse(why):
+        for path in made:
+            if os.path.exists(path):
+                os.unlink(path)
+        raise SystemExit(f"of server clickhouse-init: {why}; nothing provisioned")
     for u, path in [(r, os.path.join(pwdir, f"{r}.password")) for r in roles] + [(user, os.path.expanduser(pwfile))]:
+        got = admin.post("SELECT count() FROM system.users WHERE name = {u:String} FORMAT TabSeparated",
+                         query_in_body=True, timeout=30, params={"param_u": u})
+        if (got or b"0").strip() in (b"", b"0"):
+            continue
         if path in made:
-            got = admin.post("SELECT count() FROM system.users WHERE name = {u:String} FORMAT TabSeparated",
-                             query_in_body=True, timeout=30, params={"param_u": u})
-            if (got or b"0").strip() not in (b"", b"0"):
-                raise SystemExit(f"of server clickhouse-init: ClickHouse already has the user {u}, but its password "
-                                 "file is new: restore the file or drop the user; nothing provisioned")
+            refuse(f"ClickHouse already has the user {u}, but its password file is new: restore the file or drop "
+                   "the user")
+        try:
+            (client or of_route.ClickHouse)({"url": url, "ca": ca, "user": u, "password_file": path}).post(
+                "SELECT 1", query_in_body=True, timeout=10)
+        except Exception:
+            refuse(f"ClickHouse's user {u} does not log in with its password file: restore the file or drop the user")
     salt = secrets.token_hex(16)
     text += (f"\nCREATE USER IF NOT EXISTS {user} IDENTIFIED WITH sha256_hash BY "
              f"'{hashlib.sha256(own + salt.encode()).hexdigest()}' SALT '{salt}';\n")
