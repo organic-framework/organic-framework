@@ -1051,6 +1051,54 @@ class StopWatch(unittest.TestCase):
                 of_capacity.STATE_DIR = saved
 
 
+class BackupRedaction(unittest.TestCase):
+    """2026-11-20, of_server (redaction 7da5d129, card OF-170): a move's backup held a whole copy of a session the raw
+    archive's redaction register names."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.main = os.path.join(self.root, "source", "projects", "-w", "S1.jsonl")
+        self.sub = os.path.join(self.root, "projects", "-w", "S1", "subagents", "agent-a.jsonl")
+        self.other = os.path.join(self.root, "projects", "-w", "S2.jsonl")
+        for f, rows in ((self.main, [("u1", "kept"), ("u2", "the matter"), ("u3", "kept too")]),
+                        (self.sub, [("u4", "the matter again")]), (self.other, [("u2", "same id, other session")])):
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            with open(f, "w") as fh:
+                for uid, text in rows:
+                    fh.write(json.dumps({"type": "user", "uuid": uid, "sessionId": "S", "message": {
+                        "role": "user", "content": text}}) + "\n")
+        self.reg = [{"session": "S1", "keys": ["u2", "u4"], "mark": "[withheld]", "ask": "OF-170"}]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_marks_the_named_records_of_the_named_session_only(self):
+        with open(self.other, "rb") as fh:
+            other = fh.read()
+        marked, dropped = of_capacity.redact_backup(self.root, register=self.reg)
+        self.assertEqual(sorted(marked), sorted(os.path.relpath(f, self.root) for f in (self.main, self.sub)))
+        self.assertEqual(dropped, [])
+        with open(self.main) as fh:
+            text = fh.read()
+        self.assertNotIn("the matter", text)
+        self.assertIn("[withheld]", text)
+        self.assertIn("kept too", text)
+        with open(self.sub) as fh:
+            self.assertNotIn("the matter again", fh.read())
+        with open(self.other, "rb") as fh:
+            self.assertEqual(fh.read(), other)  # another session's record with the same id
+        self.assertEqual(of_capacity.redact_backup(self.root, register=self.reg), ([], []))  # once is enough
+
+    def test_a_register_that_does_not_read_keeps_no_transcript(self):
+        import of_redact
+        with mock.patch.object(of_redact, "archive_register", side_effect=of_redact.RegisterError("unreadable")):
+            marked, dropped = of_capacity.redact_backup(self.root)
+        self.assertEqual(marked, [])
+        self.assertEqual(len(dropped), 3)
+        self.assertFalse([f for f in (self.main, self.sub, self.other) if os.path.exists(f)])
+
+
 class StoppedTasks(unittest.TestCase):
     def test_matches_each_exit_notice_to_the_latest_preceding_creation_or_the_carry(self):
         since = "2026-11-20T10:13:14.123Z"
