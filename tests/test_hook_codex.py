@@ -16,6 +16,17 @@ ENV = "." + "env"
 KEY = "." + "ssh/id_" + "ed25519"
 
 
+def tearDownModule():
+    """CODEX[0] is set per hook call; one process per call keeps it from production, but a test module that runs
+    after this one in the same process must not inherit a Codex session (of_review on PR 469: test_tmux's herdr
+    reports went silent)."""
+    of_hook.CODEX[0] = False
+
+
+def setUpModule():
+    of_hook.CODEX[0] = False
+
+
 def fire(tool, tool_input, cwd="/w"):
     of_hook.OUTPUT = None
     out = io.StringIO()
