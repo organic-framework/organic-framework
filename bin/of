@@ -2330,12 +2330,22 @@ def _merge_presence(rows, positions, timeout_s=2, remote=None):
             r.update(machine=machine, person=h.get("person"), age_s=h.get("age_s"))
 
 
+def _org_positions(positions, org):
+    """The names of the positions of ORG (by its name or id), for a command limited to one organization (--org; the
+    door forces it to the caller's, RFC 0008 §4.5)."""
+    return {p["name"] for p in positions if org in (p.get("_org"), p.get("_orgid"))}
+
+
 def cmd_who(args):
     positions, problems = load_positions()
+    if getattr(args, "org", None):
+        positions = [p for p in positions if p["name"] in _org_positions(positions, args.org)]
     for pr in problems:
         print(f"registry: {pr}", file=sys.stderr)
     agents = live_agents_or_none()
     rows = who_rows(positions, agents)
+    if getattr(args, "org", None):
+        rows = [r for r in rows if r.get("position")]
     _merge_presence(rows, positions)
     import of_pulse
     cached = of_pulse.load_attention()  # the last pulse's projection: a file read, not the whole log
@@ -3821,6 +3831,9 @@ def cmd_asks(args):
     import of_store
     conn = of_store.connect()
     asks = _asks_now(conn)
+    if getattr(args, "org", None):
+        mine = _org_positions(_load_quiet(), args.org)
+        asks = [a for a in asks if a.get("position") in mine or a.get("org") == args.org]
     if args.action == "answer":  # the person's answer given in their conductor's chat (bin/of_asks_chat.py)
         import of_asks_chat
         positions = _load_quiet()
@@ -6390,6 +6403,9 @@ def cmd_handover(args):
     hos = of_handover.project(of_handover.load(conn))
     if args.action in ("list", None):
         rows = [h for h in hos.values() if args.all or h["state"] in of_handover.OPEN]
+        if getattr(args, "org", None):
+            mine = _org_positions(positions, args.org)
+            rows = [h for h in rows if h.get("from") in mine or h.get("to") in mine]
         if args.json:
             print(json.dumps(rows, ensure_ascii=False, indent=1))
             return 0
@@ -7901,11 +7917,53 @@ def cmd_hook(args):
     return of_hook.main([args.hook_event] if args.hook_event else [])
 
 
+# What `of event show` returns: the kinds a position needs to check an owner's answer or a hand-over (of_architect,
+# msg 01a1f9ee-5080, condition 3 of RFC 0008 §4.5): asks, their answers, amendments and closures, hand-over events and
+# a person's prompt. Never a transcript, a hook record or a raw row.
+SHOWN_EVENTS = ("of.agent_question", "of.agent_question_answered", "of.ask_amended", "of.ask_withdrawn",
+                "of.ask_escalated", "of.ask_ref", "of.human_prompt")
+
+
+def event_show(conn, ref, org=None, positions=None):
+    """One event a position may check, as {event_id, ts, name, position, org, payload}, or an OfError."""
+    ref = str(ref or "").strip()
+    if len(ref) < 13 or not re.fullmatch(r"[0-9a-f-]+", ref):
+        raise OfError("of event show <id>: the event's id, at least its first two groups (docs/events.md)")
+    rows = conn.execute("SELECT event_id, ts, name, position, org, payload FROM event WHERE event_id >= ? AND "
+                        "event_id < ? ORDER BY event_id LIMIT 2", (ref, ref + "\uffff")).fetchall()
+    if not rows:
+        raise OfError(f"no event {ref}")
+    if len(rows) > 1:
+        raise OfError(f"{ref} names more than one event; give more of its id")
+    eid, ts, name, position, eorg, payload = rows[0]
+    if not (name in SHOWN_EVENTS or name.startswith("of.handover_")):
+        raise OfError(f"{eid}: an event of kind {name}, which of event show does not show (asks, their answers and "
+                      "amendments, hand-overs and a person's prompt only)")
+    if org:
+        mine = {p["name"] for p in positions or [] if org in (p.get("_org"), p.get("_orgid"))}
+        if eorg not in (org, None) or (eorg is None and position not in mine):
+            raise OfError(f"no event {ref} in organization {org}")
+    try:
+        body = json.loads(payload) if payload else None
+    except ValueError:
+        body = None
+    return {"event_id": eid, "ts": ts, "name": name, "position": position, "org": eorg, "payload": body}
+
+
 def cmd_event(args):
-    """Write an event declared by a tool or a supervisor (docs/events.md)."""
+    """Write an event declared by a tool or a supervisor (docs/events.md), or show one a position may check."""
     import hashlib
     import time
     import of_events
+    if args.kind == "show":
+        import of_store
+        conn = of_store.connect()
+        try:
+            positions = _load_quiet() if args.org else None
+            print(json.dumps(event_show(conn, args.id, args.org, positions), ensure_ascii=False, indent=1))
+        finally:
+            conn.close()
+        return 0
     if args.kind == "injected_prompt":
         if args.text is None:
             raise OfError("usage: of event injected_prompt --injector NAME [--session ID] [--pane ID] --text TEXT")
@@ -8652,29 +8710,9 @@ def cmd_capacity(args):
     return 0
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] in ("model", "studio"):  # of_studio's commands: dispatched as is, no logic here
-        import of_studio_cli
-        return of_studio_cli.main(argv)
-    if argv and argv[0] == "bench":  # Bench's own parser takes the rest (cmd_bench), its options included
-        try:
-            return cmd_bench(argparse.Namespace(rest=argv[1:]))
-        except OfError as e:
-            print(f"of: {e}", file=sys.stderr)
-            return 1
-    if argv and argv[0] == "works":  # the works map and its state (docs/works.md): of_studio_cli's own `works` parser (= of model works)
-        import of_studio_cli
-        return of_studio_cli.main(argv)
-    if argv and argv[0] == "secret":  # the agents' secrets broker (docs/agent-secrets.md): of_server's module, as is
-        import of_secret
-        return of_secret.main(argv[1:])
-    if argv and argv[0] == "tools":  # a position's tools, bound to the position (docs/tools.md): of_tools's module
-        import of_tools
-        return of_tools.main(argv[1:])
-    if argv and argv[0] in ("account", "claude"):  # the machine's harness accounts (docs/accounts.md): of_capacity's
-        import of_accounts
-        return of_accounts.main(argv[1:]) if argv[0] == "account" else of_accounts.claude(argv[1:])
+def build_parser():
+    """of's whole argument parser: main parses with it, and the listener's door (bin/of_door.py) checks a sandboxed
+    session's request against the arguments as this parser reads them (RFC 0008 §4.5)."""
     ap = argparse.ArgumentParser(prog="of", description="Organic Framework CLI v0 (over herdr)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     # dispatched above, before this parser: listed here so that `of --help` names them (of_docs, 2026-11-11)
@@ -8690,6 +8728,7 @@ def main(argv=None):
     a.add_argument("--dry-run", "-n", action="store_true", help="print the herdr commands only")
     a.set_defaults(fn=cmd_apply)
     w = sub.add_parser("who", help="one table of positions and live agents")
+    w.add_argument("--org", help="only this organization's positions (the door forces the caller's)")
     w.add_argument("--json", action="store_true")
     w.add_argument("--long", "-l", action="store_true", help="add the mandate (brief) and note columns")
     w.set_defaults(fn=cmd_who)
@@ -8843,6 +8882,7 @@ def main(argv=None):
     imp.add_argument("--since", help="github: merged on or after this date (default: the day before the last import)")
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
+    ak.add_argument("--org", help="only this organization's positions (the door forces the caller's)")
     ak.add_argument("action", nargs="?", choices=["list", "show", "withdraw", "answered", "answer", "deny", "judge",
                                                   "deliver", "refs"],
                     default="list", help="show <id>: one card and its answer, read-only; answered <id>: closes it, and "
@@ -9160,6 +9200,7 @@ def main(argv=None):
     iss.set_defaults(fn=cmd_issues)
     ho = sub.add_parser("handover", help="hand-overs between positions: of handover propose <to> \"title\" --done-when …; "
                                          "accept|decline|block|deliver|verify|reject|close|return|withdraw <id>; list")
+    ho.add_argument("--org", help="list: only hand-overs from or to this organization's positions")
     ho.add_argument("action", nargs="?", default="list",
                     choices=["list", "propose", "accept", "decline", "block", "deliver", "verify", "reject", "close",
                              "return", "withdraw", "note"])
@@ -9291,7 +9332,9 @@ def main(argv=None):
     h.add_argument("hook_event", nargs="?")
     h.set_defaults(fn=cmd_hook)
     e = sub.add_parser("event", help="declare an event: injected_prompt, state_declared, published or finance_fact")
-    e.add_argument("kind", choices=["injected_prompt", "state_declared", "published", "finance_fact"])
+    e.add_argument("kind", choices=["injected_prompt", "state_declared", "published", "finance_fact", "show"])
+    e.add_argument("id", nargs="?", help="show: the event id (at least its first two groups)")
+    e.add_argument("--org", help="show: only an event of this organization (the door forces the caller's)")
     e.add_argument("--from-org")
     e.add_argument("--to-org")
     e.add_argument("--artifact")
@@ -9424,6 +9467,38 @@ def main(argv=None):
     cp.add_argument("--no-probe", dest="no_probe", action="store_true", help="the last reading only")
     cp.add_argument("--json", action="store_true")
     cp.set_defaults(fn=cmd_capacity)
+    return ap
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if os.environ.get("OF_DOOR") and not os.environ.get("OF_DOOR_CALLER"):
+        # inside an operating-system sandbox: every command goes through the session's door to the listener, which
+        # checks it, runs it as this session and answers; nothing here reads OF's state (RFC 0008 §4.5)
+        import of_door
+        return of_door.forward(os.environ["OF_DOOR"], argv)
+    if argv and argv[0] in ("model", "studio"):  # of_studio's commands: dispatched as is, no logic here
+        import of_studio_cli
+        return of_studio_cli.main(argv)
+    if argv and argv[0] == "bench":  # Bench's own parser takes the rest (cmd_bench), its options included
+        try:
+            return cmd_bench(argparse.Namespace(rest=argv[1:]))
+        except OfError as e:
+            print(f"of: {e}", file=sys.stderr)
+            return 1
+    if argv and argv[0] == "works":  # the works map and its state (docs/works.md): of_studio_cli's own `works` parser (= of model works)
+        import of_studio_cli
+        return of_studio_cli.main(argv)
+    if argv and argv[0] == "secret":  # the agents' secrets broker (docs/agent-secrets.md): of_server's module, as is
+        import of_secret
+        return of_secret.main(argv[1:])
+    if argv and argv[0] == "tools":  # a position's tools, bound to the position (docs/tools.md): of_tools's module
+        import of_tools
+        return of_tools.main(argv[1:])
+    if argv and argv[0] in ("account", "claude"):  # the machine's harness accounts (docs/accounts.md): of_capacity's
+        import of_accounts
+        return of_accounts.main(argv[1:]) if argv[0] == "account" else of_accounts.claude(argv[1:])
+    ap = build_parser()
     args = ap.parse_args(argv)
     try:
         return args.fn(args)

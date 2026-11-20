@@ -492,6 +492,31 @@ def report_codex_session(hook, env=None, run=None):
     return argv
 
 
+def record_codex_door(hook, env=None, pid=None):
+    """A Codex session OF launched (OF_LAUNCH in its environment, its folder holding door.json from the launch) gets
+    its session id and its Codex process recorded beside that file, so the listener opens the session's door (bin/of_door.py,
+    RFC 0008 §4.5). Not from a nested Codex. Returns the path written, or None."""
+    env = os.environ if env is None else env
+    launch, sid = str(env.get("OF_LAUNCH") or ""), hook.get("session_id")
+    if not sid or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", launch):
+        return None
+    if env.get("CODEX_THREAD_ID") and env.get("CODEX_THREAD_ID") != sid:
+        return None
+    import of_door
+    d = os.path.join(of_door.sessions_dir(), launch)
+    if not os.path.isfile(os.path.join(d, of_door.DOOR_FILE)):
+        return None
+    codex = of_door.codex_pid(launch, pid or os.getpid())
+    if not codex:
+        return None
+    path = os.path.join(d, of_door.CODEX_FILE)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as fh:
+        json.dump({"session": sid, "pid": codex}, fh)
+    os.replace(tmp, path)
+    return path
+
+
 def herdr_state(state, message=None):
     if CODEX[0]:
         return   # herdr reads a Codex pane's states itself (W8); this reporter speaks for Claude Code only
@@ -769,6 +794,10 @@ def handle(event, hook):
     if event == "SessionStart":
         if CODEX[0]:
             report_codex_session(hook)
+            try:
+                record_codex_door(hook)
+            except Exception:  # noqa: BLE001 - never stops the session's start
+                pass
         sess.update(model=hook.get("model") or sess.get("model"), started=time.time())
         changed = True
         write("session_start", {"source": hook.get("source"), "title": hook.get("session_title")}, hook, sess, index)

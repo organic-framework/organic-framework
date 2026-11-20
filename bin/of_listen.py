@@ -1727,6 +1727,31 @@ SERVES_READERS = ("asks",)  # fresh() vouches for these views: no heartbeat whil
 LAG_OK_S = {"asks": 120}    # a view's acceptable lag: docs/health.md's view.age.<view> degrades past it, fails past 5x
 
 
+DOORS_S = 2
+
+
+def doors_thread(stop=None, log=print, every=DOORS_S):
+    """The doors of sandboxed sessions (bin/of_door.py, RFC 0008 §4.5), in a thread of their own: a socket per running
+    Codex session, opened when its folder names it and closed when its Codex process ends."""
+    import threading
+    import of_door
+    doors = of_door.Doors(log=lambda m: log(f"of listen: {m}"))
+
+    def loop():
+        while not (stop and stop.is_set()):
+            try:
+                doors.tick()
+            except Exception as e:  # noqa: BLE001 - a door's error never stops the listener
+                log(f"of listen: doors: {type(e).__name__}: {e}")
+            time.sleep(every)
+        for launch in list(doors.open):
+            doors.close(launch)
+    t = threading.Thread(target=loop, daemon=True, name="of-doors")
+    t.start()
+    return t
+
+
+
 def hookdoor_thread(stop=None, log=print):
     """The hooks door (bin/of_hookdoor.py): a Claude Code session's request for its organization's hook decision,
     evaluated here, through Bench in its operating-system sandbox (of_server's ruling, message 01a20566-e23c)."""
@@ -2005,6 +2030,7 @@ def run(stop=None, log=print, rebuild=False):
     ticked = threading.Event()
     tick_thread(processors, ticks, locks, ticked, stop=stop, log=log)
     hookdoor_thread(stop=stop, log=log)
+    doors_thread(stop=stop, log=log)
     while not (stop and stop.is_set()):
         now = time.time()
         try:
