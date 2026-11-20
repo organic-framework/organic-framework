@@ -294,7 +294,7 @@ def pin_host(to, fingerprint, known=KNOWN, run=subprocess.run, out=print):
 
 
 def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run, out=print, local_port=LOCAL_PORT,
-            mode="reverse"):
+            mode="reverse", sleep=None):
     key = os.path.expanduser(key)
     if not os.path.isfile(key):
         raise SystemExit(f"forward: no key file at {key}")
@@ -317,7 +317,14 @@ def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run
     os.chmod(path, 0o644)
     uid = os.getuid()
     run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"], capture_output=True)
-    r = run(["launchctl", "bootstrap", f"gui/{uid}", path], capture_output=True, text=True)
+    # launchd tears the old job down after bootout returns, and a bootstrap that comes too soon fails with error 5
+    # (2026-11-20, the founder's bridge install at the server's cut, through of_conductor): try again a few times
+    import time
+    for attempt in range(5):
+        r = run(["launchctl", "bootstrap", f"gui/{uid}", path], capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        (sleep or time.sleep)(1)
     if r.returncode != 0:
         raise SystemExit(f"forward: launchctl bootstrap failed: {(r.stderr or '').strip()[:200]}")
     out(f"forward installed: {LABEL} keeps "
