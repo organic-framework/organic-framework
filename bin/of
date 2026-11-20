@@ -2726,6 +2726,24 @@ def cmd_org(args):
     return 0
 
 
+def cmd_codex(args):
+    """`of codex requirements [--of-bin PATH]`: the text of Codex's managed requirements file, which the machine's owner
+    installs once with sudo (bin/of_codex.py; W3 of the Codex positions plan), and on stderr what it leaves to each
+    position's own layer and why."""
+    import of_codex
+    if args.action != "requirements":
+        raise OfError("of codex requirements [--of-bin PATH]")
+    try:
+        text = of_codex.requirements_toml(args.of_bin)
+    except ValueError as e:
+        raise OfError(str(e))
+    print(text, end="")
+    print(f"# install it as {of_codex.REQUIREMENTS_PATH} (owner root, mode 644). Not pinned there:", file=sys.stderr)
+    for what, why in of_codex.NOT_PINNED:
+        print(f"#   {what}: {why}", file=sys.stderr)
+    return 0
+
+
 def cmd_subagent(args):
     """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
     import of_store
@@ -7810,6 +7828,12 @@ def main(argv=None):
     lp.add_argument("--org")
     lp.add_argument("--from", dest="sender")
     lp.set_defaults(fn=cmd_loop)
+    cx = sub.add_parser("codex", help="Codex as a position's harness: requirements prints the managed requirements file "
+                                      "the machine's owner installs once with sudo (/etc/codex/requirements.toml)")
+    cx.add_argument("action", choices=["requirements"])
+    cx.add_argument("--of-bin", help="one program for every user's hooks, for a machine with one OF install (default: each "
+                         "user's own ~/.local/bin/of)")
+    cx.set_defaults(fn=cmd_codex)
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
     sa.add_argument("action", choices=["run", "selftest", "muse-login"])
