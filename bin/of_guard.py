@@ -2407,6 +2407,42 @@ def _kubectl_secret_deny(args, line_vars=None):
     return _kube_pod_spec_read(sub, nonopt, args, out, line_vars)
 
 
+# helm's global flags that take a value (helm --help, v4): before the subcommand they hold its place otherwise
+_HELM_VALUE = {"--kube-context", "--kubeconfig", "--registry-config", "--repository-config", "--repository-cache",
+               "--content-cache", "--burst-limit", "--qps", "--kube-apiserver", "--kube-as-user", "--kube-as-group",
+               "--kube-ca-file", "--kube-token", "--kube-tls-server-name"}
+
+
+def _helm_all_namespaces(args):
+    """-A in any spelling helm takes: --all-namespaces[=true], -A[=true], or A among a short-flag cluster's letters
+    (-qA, -Aa: helm parses them as -q -A; of_secrets-review and of_review on organic-framework PR 434). A namespace
+    is lower case, so an upper-case A in a cluster is never one."""
+    for a in args:
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name == "--all-namespaces" and not (eq and val.lower() in ("false", "0")):
+                return True
+        elif re.fullmatch(r"-[A-Za-z]+(=.*)?", a):
+            letters, eq, val = a[1:].partition("=")
+            if "A" in letters and not (eq and val.lower() in ("false", "0")):
+                return True
+    return False
+
+
+def _helm_release_read(args, line_vars=None):
+    """Helm keeps each release as a Secret and decodes the whole record to list or show it: `helm list -A` reads
+    every namespace's, and a read with no namespace takes the context's, which is not on the line (a user
+    organization's structure keeper, msgs 01a1f649-9018 and 01a1f652-2f62: a cluster-wide Secret list alerted four
+    times from one subagent)."""
+    pos = _positional(args, _KUBECTL_VALUE | _HELM_VALUE)
+    if pos[:1] in (["list"], ["ls"]) and _helm_all_namespaces(args):
+        return _helm_releases(f"helm {pos[0]} -A")
+    if pos[:1] in (["get"], ["status"], ["history"], ["hist"], ["list"], ["ls"]) and \
+            not _helm_namespace(args, line_vars):
+        return _helm_releases(f"helm {pos[0]} without -n")
+    return None
+
+
 def _helm_releases(token):
     return (f"a command that would bring Helm's release records, which it keeps as Secrets, onto this machine "
             f"({token}): name one namespace with -n <namespace> (docs/guard.md G6)", token)
@@ -2433,6 +2469,10 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         if args[:1] == ["show"] and any(a in ("private-key", "preshared-key", "preshared-keys") for a in args):
             return _prints(f"{head} show private-key")
         return None
+    if head == "helm":  # before the file exemption: written to a file, helm still fetches the Secrets (PR 434)
+        hit = _helm_release_read(args, line_vars)
+        if hit:
+            return hit
     if to_file:  # kubectl still fetches the whole Secret onto this machine to write it (SECRET_FETCH_DENY)
         return _kubectl_secret_fetch(args) if head == "kubectl" else None
     if head == "kubectl":
@@ -2441,16 +2481,7 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         pos = _positional(args, _KUBECTL_VALUE | {"--kube-context"})
         if pos[:1] == ["get"] and len(pos) > 1 and pos[1] in ("values", "all", "manifest"):
             return _prints("helm get " + pos[1])
-        # Helm keeps each release as a Secret and decodes the whole record to list or show it: `helm list -A` reads
-        # every namespace's, and a read with no namespace takes the context's (a user organization's structure
-        # keeper, msg 01a1f649-9018: a cluster-wide Secret list alerted four times from one subagent)
-        if pos[:1] in (["list"], ["ls"]) and any(a in ("-A", "--all-namespaces") or a.startswith("--all-namespaces=")
-                                                 for a in args):
-            return _helm_releases(f"helm {pos[0]} -A")
-        # the context's default namespace is not named on the line (the keeper, msg 01a1f652-2f62: list too)
-        if pos[:1] in (["get"], ["status"], ["history"], ["hist"], ["list"], ["ls"]) and \
-                not _helm_namespace(args, line_vars):
-            return _helm_releases(f"helm {pos[0]} without -n")
+
     if head == "sops" and any(a in ("-d", "--decrypt", "decrypt") for a in args) and \
             not any(a in ("-i", "--in-place") or a.startswith(("-o", "--output")) for a in args):
         return _prints("sops --decrypt")

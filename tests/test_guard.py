@@ -281,10 +281,15 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("helm -n ci get values arc"))
         for cmd in ("helm list -A", "helm --kube-context prod list --all-namespaces", "helm ls -A -o json",
                     "helm status arc", "helm get notes arc", "helm history arc", "helm --kube-context prod get hooks arc",
-                    "helm list", "helm ls --deployed"):
+                    "helm list", "helm ls --deployed",
+                    "helm list -n x -qA", "helm list -n x -aA", "helm ls -n x -Aa", "helm list -n x -A=true",
+                    "helm list -n x --all-namespaces=true", "helm list -A > /tmp/r.txt", "helm list -A 2>/dev/null",
+                    "helm --registry-config /tmp/r.yaml list -A", "helm --burst-limit 100 status arc",
+                    "helm --repository-config /tmp/r.yaml get notes arc > /tmp/n"):   # PR 434's reviews
             self.assertTrue(deny(cmd), cmd)        # Helm's release records, kept as Secrets (msg 01a1f649-9018)
         for cmd in ("helm list -n ci", "helm status arc -n ci", "helm --namespace=ci get notes arc",
-                    "HELM_NAMESPACE=ci helm status arc", "helm -nci history arc", "helm repo list", "helm version"):
+                    "HELM_NAMESPACE=ci helm status arc", "helm -nci history arc", "helm repo list", "helm version",
+                    "helm list -n ci -A=false", "helm --registry-config /tmp/r.yaml list -n ci"):
             self.assertIsNone(deny(cmd), cmd)
         self.assertTrue(deny("sops -d secrets.enc.yaml"))
         self.assertTrue(deny("vault kv get secret/app"))
