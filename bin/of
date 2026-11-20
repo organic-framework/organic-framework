@@ -7420,12 +7420,23 @@ def cmd_capacity(args):
                  "; of spawn starts on it; moves and resumes too once capacity.yaml has position_memory: true"))
         return 0
     if args.action == "training":  # RFC 0008 §3.1: may the provider train on a harness account's runs
+        import of_accounts
         if args.set:
             if not args.position or not args.source:
                 raise OfError("usage: of capacity training codex|muse --set off|on --source '<basis: an ask id, a "
-                              "reading>' [--account A]")
+                              "reading>' [--account A] [--seat NAME]")
+            seat_account = None
+            if args.position == "codex":
+                seat = of_accounts.codex_seat(args.seat)
+                if not seat:
+                    raise OfError(f"no Codex seat {args.seat or 'configured'} (of account list)")
+                seat_account = of_capacity.codex_seat_account(seat["home"])
+                if not seat_account:
+                    raise OfError(f"Codex seat {seat['name']} has no account identity in its latest rollout")
+            elif args.seat:
+                raise OfError("--seat applies to Codex training readings")
             try:
-                of_capacity.record_training(args.position, args.set, args.account, args.source)
+                of_capacity.record_training(args.position, args.set, args.account, args.source, seat_account=seat_account)
             except ValueError as e:
                 raise OfError(str(e))
         got = of_capacity.training_readings()
@@ -7670,12 +7681,13 @@ def cmd_capacity(args):
         print(json.dumps(rows, indent=1, ensure_ascii=False))
         return 0
     print(of_capacity.format_table(rows))
+    seats = of_capacity.codex_seat_rows(fresh=args.fresh, probe=not args.no_probe)
     try:
         training = of_capacity.training_readings()
+        training.update(of_capacity.training_readings_by_seat())
     except Exception:  # noqa: BLE001 - a store that cannot be read: the lines say "not read"
         training = {}
-    other = of_capacity.format_other(of_capacity.codex_status(fresh=args.fresh, probe=not args.no_probe),
-                                     of_capacity.muse_status(), training)
+    other = of_capacity.format_other(seats, of_capacity.muse_status(), training)
     if other:
         print(other)
     for r in rows:
@@ -7713,7 +7725,7 @@ def main(argv=None):
                        ("works", "the works map and each work's state (= of model works)"),
                        ("secret", "a position's credential through the agents' secrets broker (of secret --help)"),
                        ("tools", "a position's MCP servers, plugins and connectors (of tools inventory|check|plan)"),
-                       ("account", "the Claude Code accounts on this machine (of account list|add|remove|adopt)"),
+                       ("account", "the Claude Code accounts and Codex seats on this machine (of account list|add|remove|adopt)"),
                        ("claude", "open Claude Code on an account: of claude [--account NAME] [claude arguments]")):
         sub.add_parser(name, help=text, add_help=False)
     a = sub.add_parser("apply", help="name live holders in herdr and set their tokens")
@@ -8344,6 +8356,7 @@ def main(argv=None):
     cp.add_argument("--set", choices=["off", "on"], help="training <harness>: record whether the provider may train "
                     "on that account's runs (RFC 0008 §3.1)")
     cp.add_argument("--source", help="training --set: the reading's basis, e.g. the owner's ask id")
+    cp.add_argument("--seat", help="training codex --set: the seat name (default: main, or the first seat listed)")
     cp.add_argument("--consents", help="carry restore: the owner's card that said yes to carrying folder trust and the "
                     "Bypass Permissions acceptance to this machine (its first option)")
     cp.add_argument("--org", help="spend: this organization only; carry restore: the organization the bundle carries")

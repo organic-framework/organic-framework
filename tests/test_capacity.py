@@ -2,6 +2,7 @@
 the 30-minute probe cache, headroom and the target of a move."""
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -2720,17 +2721,154 @@ class OtherHarnesses(unittest.TestCase):
     accounts keep running out. `of capacity status` shows them beside the Claude accounts (RFC 0003 §4.7)."""
     T0 = 1_800_000_000
 
-    def rollout(self, home, used=12.5, minutes=10080, at=None, extra=None):
+    def rollout(self, home, used=12.5, minutes=10080, at=None, extra=None, account=None, filename="rollout-1.jsonl"):
         d = os.path.join(home, "sessions", "2026", "11", "18")
         os.makedirs(d, exist_ok=True)
         rl = {"limit_id": "codex", "primary": {"used_percent": used, "window_minutes": minutes,
                                                "resets_at": self.T0 + 3 * 86400},
               "secondary": extra, "credits": {"has_credits": True, "unlimited": False, "balance": "1"},
               "plan_type": "pro", "rate_limit_reached_type": None}
-        with open(os.path.join(d, "rollout-1.jsonl"), "w") as fh:
-            fh.write(json.dumps({"timestamp": "x", "type": "session_meta", "payload": {}}) + "\n")
+        path = os.path.join(d, filename)
+        with open(path, "w") as fh:
+            fh.write(json.dumps({"timestamp": "x", "type": "session_meta", "payload": {"creator_account_id": account,
+                                "creator_user_id": "another-id"}}) + "\n")
             fh.write(json.dumps({"timestamp": of_capacity._iso(at or self.T0), "type": "event_msg",
                                  "payload": {"type": "token_count", "rate_limits": rl}}) + "\n")
+        return path
+
+    def test_the_codex_bucket_wins_over_a_later_reading_of_another_bucket(self):
+        with tempfile.TemporaryDirectory() as home:
+            path = self.rollout(home, used=30)
+            other = {"limit_id": "other-model", "primary": {"used_percent": 95, "window_minutes": 10080,
+                                                            "resets_at": self.T0 + 86400}, "plan_type": "pro"}
+            with open(path, "a") as fh:
+                fh.write(json.dumps({"timestamp": of_capacity._iso(self.T0 + 60), "type": "event_msg",
+                                     "payload": {"type": "token_count", "rate_limits": other}}) + "\n")
+            r = of_capacity.codex_reading(home)
+        self.assertEqual(r["windows"]["seven_day"]["utilization"], 30)
+
+    def test_seat_identity_reads_only_the_first_line_of_the_newest_rollout(self):
+        with tempfile.TemporaryDirectory() as home:
+            self.assertIsNone(of_capacity.codex_seat_account(home))
+            old = self.rollout(home, account="old", filename="z.jsonl")
+            newest = self.rollout(home, account="current", filename="a.jsonl")
+            os.utime(old, (1, 1))
+            os.utime(newest, (2, 2))
+            with open(newest, "rb") as fh:
+                first_line = fh.readline()
+            opened = mock.mock_open(read_data=first_line)
+
+            def guarded(path, *args, **kwargs):
+                self.assertFalse(os.fspath(path).endswith("auth.json"))
+                self.assertEqual(path, newest)
+                return opened(path, *args, **kwargs)
+
+            with mock.patch("builtins.open", guarded):
+                self.assertEqual(of_capacity.codex_seat_account(home), hashlib.sha256(b"current").hexdigest()[:12])
+            opened.return_value.readline.assert_called_once_with()
+            opened.return_value.read.assert_not_called()
+            for bad in (b"[]", b"not json", b'{"type":"session_meta","payload":{}}'):
+                with open(newest, "wb") as fh:
+                    fh.write(bad + b"\n" + first_line)
+                self.assertIsNone(of_capacity.codex_seat_account(home))
+
+    def test_seat_rows_probe_their_own_home_and_display_shared_limits_and_training(self):
+        with tempfile.TemporaryDirectory() as home, \
+                mock.patch.multiple(of_capacity, STATE_DIR=home, codex_bin=lambda: "codex"):
+            seats = [{"name": n, "home": os.path.join(home, n)} for n in ("work", "alias", "other", "absent")]
+            for seat in seats[:3]:
+                self.rollout(seat["home"], account="separate" if seat["name"] == "other" else "shared")
+                with tempfile.NamedTemporaryFile(dir=seat["home"], delete=False) as marker:
+                    pass
+                os.rename(marker.name, os.path.join(seat["home"], "auth.json"))
+            runner = mock.Mock()
+            rows = of_capacity.codex_seat_rows(seats, now=self.T0, fresh=True, runner=runner)
+        self.assertEqual([r["seat"] for r in rows], ["work", "alias", "other"])
+        self.assertEqual([call.kwargs["env"]["CODEX_HOME"] for call in runner.call_args_list], [r["home"] for r in rows])
+        self.assertEqual(rows[0]["account"], rows[1]["account"])
+        training = {rows[0]["account"]: {"training": "on"}, rows[2]["account"]: {"training": "off"}}
+        lines = of_capacity.format_other(rows, None, training).splitlines()
+        self.assertTrue(lines[1].startswith("codex:work"))
+        self.assertIn("ChatGPT pro", lines[1])
+        self.assertNotIn("same account", lines[1])
+        self.assertIn("same account as work: one seat's limits", lines[2])
+        self.assertIn("training on", lines[2])
+        self.assertIn("training off", lines[3])
+
+    def test_codex_placement_uses_the_tightest_window_and_checks_the_seats_card(self):
+        def row(account, short, week, **kwargs):
+            return dict(account=account, windows={"five_hour": {"utilization": short},
+                                                  "seven_day": {"utilization": week}}, **kwargs)
+
+        busy = row("one", 90, 10)
+        private = row("two", 50, 30)
+        public = row("three", 0, 40)
+        rows = [busy, row("one", 0, 0), private, public, row("four", 0, 0, error="failed"),
+                row("five", 0, 0, limit_reached="week"), {"account": "six"}]
+        self.assertEqual(of_capacity.codex_headroom(busy), 10)
+        self.assertIsNone(of_capacity.codex_headroom(rows[-1]))
+        self.assertIs(of_capacity.codex_seat_for(rows), public)
+        card = {"ref": "OF-27", "event_id": "ev", "task": True, "claimed_at": "t", "state": "done", "org": "team"}
+        docs = {"team": {"training_cards": {"codex": "OF-27"}}}
+        readings = {"two": {"training": "off", "card_event": "ev"}, "three": {"training": "on"}}
+        with mock.patch.object(of_capacity, "_asks", return_value=[card]), \
+                mock.patch.object(of_capacity, "tool_docs_all", return_value=docs):
+            self.assertIs(of_capacity.codex_seat_for(rows, public=False, training=readings), private)
+            card["state"] = "open"
+            self.assertIsNone(of_capacity.codex_seat_for(rows, public=False, training=readings))
+        self.assertIsNone(of_capacity.codex_seat_for(rows[-3:]))
+
+    def test_training_by_seat_and_legacy_readings_from_the_recording_machine(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, CODEX_HOME=home), \
+                mock.patch.object(of_capacity.of_events, "machine_id", return_value="local"):
+            self.rollout(home, account="legacy")
+            default = of_capacity.codex_seat_account(home)
+            conn = sqlite3.connect(":memory:")
+            self.addCleanup(conn.close)
+            conn.execute("CREATE TABLE event (name TEXT, ts TEXT, payload TEXT, host_id TEXT)")
+
+            def emit(kind, payload, host="local"):
+                conn.execute("INSERT INTO event VALUES (?, ?, ?, ?)",
+                             ("of." + kind, of_capacity._iso(self.T0 + conn.total_changes), json.dumps(payload), host))
+
+            for account in ("aaaa11112222", "bbbb11112222"):
+                of_capacity.record_training("codex", "on", "plan", account, emit=emit, seat_account=account)
+            of_capacity.record_training("codex", "on", "plan", "updated", emit=emit, seat_account="aaaa11112222")
+            legacy = {"harness": "codex", "training": "off", "account": "plan"}
+            emit("harness_training", dict(legacy, source="local"))
+            emit("harness_training", dict(legacy, source="remote"), host="remote")
+            emit("harness_training", dict(legacy, source="unidentified", seat_account=None))
+            emit("harness_training", {"harness": "muse", "training": "on"})
+            by_seat = of_capacity.training_readings_by_seat(conn)
+            self.assertEqual({k: r["source"] for k, r in by_seat.items()},
+                             {default: "local", "aaaa11112222": "updated", "bbbb11112222": "bbbb11112222"})
+            self.assertEqual(by_seat["aaaa11112222"]["account"], "plan")
+            self.assertEqual(of_capacity.training_readings(conn)["codex"]["source"], "unidentified")
+
+    def test_training_cli_records_the_selected_seat_and_defaults_to_main(self):
+        import of_accounts
+        import runpy
+        main = runpy.run_path(os.path.join(HERE, "..", "bin", "of"))["main"]
+        with tempfile.TemporaryDirectory() as home:
+            seats = [{"name": n, "home": os.path.join(home, n)} for n in ("work", "main")]
+            for seat in seats:
+                self.rollout(seat["home"], account=seat["name"])
+            args = ["capacity", "training", "codex", "--set", "off", "--source", "OF-27", "--account", "plan"]
+            card = {"ref": "OF-27", "event_id": "ev", "task": True, "claimed_at": "t", "state": "done", "org": "team"}
+            with mock.patch.dict(main.__globals__, _load_quiet=lambda: []), \
+                    mock.patch.object(of_accounts, "codex_seats", return_value=seats), \
+                    mock.patch.object(of_capacity, "training_readings", return_value={}), \
+                    mock.patch.object(of_capacity, "_asks", return_value=[card]), \
+                    mock.patch.object(of_capacity, "tool_docs_all", return_value={"team": {"training_cards": {"codex": "OF-27"}}}), \
+                    mock.patch.object(of_capacity.of_events, "emit") as emit, mock.patch("builtins.print"):
+                for seat, flags in zip(seats, (["--seat", "work"], [])):
+                    self.assertEqual(main(args + flags), 0)
+                    kind, payload = emit.call_args.args
+                    self.assertEqual(kind, "harness_training")
+                    self.assertEqual(payload["account"], "plan")
+                    self.assertEqual(payload["card_event"], "ev")
+                    self.assertEqual(payload["seat_account"], of_capacity.codex_seat_account(seat["home"]))
 
     def test_the_newest_rollout_reading_names_its_windows_by_length(self):
         with tempfile.TemporaryDirectory() as h:
@@ -2778,7 +2916,7 @@ class OtherHarnesses(unittest.TestCase):
                                                                         cards=cs, docs=p)
         rec("of-27")
         self.assertEqual(out[0], ("harness_training", {"harness": "codex", "training": "off", "account": "ChatGPT pro",
-                                                       "source": "of-27", "card": "OF-27",
+                                                       "source": "of-27", "card": "OF-27", "seat_account": None,
                                                        "card_event": "01a1ee41-3cdd-74bc", "closed_by": "e9"}))
         # of_review and of_secrets-review, PR 334: only the card named for the setting, closed by the owner's own claim
         for src in ("OF-99999", "the founder said so in my session", "x", "OF-30", "OF-26", "OF-31"):

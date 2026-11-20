@@ -5,6 +5,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -42,6 +43,60 @@ class Accounts(unittest.TestCase):
                                               {"name": "a", "config_dir": "~/.claude-a"}])
         os.makedirs(self.h(".claude-z"))  # a folder made by hand is not used once the file exists
         self.assertEqual(of_capacity.config_dirs(self.home), [self.h(".claude"), self.h(".claude-a")])
+
+    def test_codex_defaults_to_the_current_login_until_seats_are_listed(self):
+        with mock.patch.dict(os.environ, CODEX_HOME=""):
+            self.assertEqual(of_accounts.codex_seats(self.home), [{"name": "main", "home": self.h(".codex")}])
+        of_accounts.save([{"name": "default", "config_dir": "~/.claude"}])
+        with mock.patch.dict(os.environ, CODEX_HOME=self.h("custom")):
+            self.assertEqual(of_accounts.codex_seats(self.home), [{"name": "main", "home": self.h("custom")}])
+        of_accounts.save(seats=[{"name": "a", "home": "~/a"}, {"name": "b", "home": "~/b"}])
+        self.assertEqual(of_accounts.codex_seats(self.home), [{"name": n, "home": self.h(n)} for n in ("a", "b")])
+        of_accounts.add("claude-work", home=self.home, logged_in=True, log=lambda m: None)
+        self.assertEqual([s["name"] for s in of_accounts.codex_seats(self.home)], ["a", "b"])
+
+    def test_codex_cli_add_list_remove_preserve_claude_and_file_the_login_task(self):
+        os.makedirs(of_events.CONFIG_DIR)
+        claude = of_accounts.HEADER + "accounts: # keep this comment\n  - {name: a, config_dir: ~/.claude-a}\n"
+        with open(of_accounts.path(), "w") as fh:
+            fh.write(claude)
+        with mock.patch.dict(os.environ, HOME=self.home, CODEX_HOME=""), \
+                mock.patch.object(of_accounts, "_file_task", return_value=(True, "filed")) as task, \
+                mock.patch("builtins.print") as output:
+            self.assertEqual(of_accounts.main(["add", "x", "--codex"]), 0)
+            self.assertEqual(stat.S_IMODE(os.stat(self.h(".codex-x")).st_mode), 0o700)
+            title, steps = task.call_args.args
+            self.assertIn("Codex", title)
+            self.assertIn("plain terminal tab", steps)
+            self.assertIn("CODEX_HOME=~/.codex-x codex login --device-auth", steps)
+            with open(of_accounts.path()) as fh:
+                saved = fh.read()
+            self.assertTrue(saved.startswith(claude))
+            self.assertIn("home: ~/.codex-x", saved)
+            self.assertEqual([s["name"] for s in of_accounts.codex_seats()], ["main", "x"])
+            self.assertEqual(of_accounts.main(["list"]), 0)
+            self.assertIn(mock.call("codex:x  ~/.codex-x"), output.call_args_list)
+            self.assertEqual(of_accounts.main(["remove", "x"]), 0)
+            self.assertTrue(os.path.isdir(self.h(".codex-x")))
+            self.assertEqual(of_accounts.main(["remove", "main"]), 0)
+            self.assertEqual(of_accounts.codex_seats(), [])
+            with open(of_accounts.path()) as fh:
+                self.assertTrue(fh.read().startswith(claude))
+
+    def test_codex_only_file_keeps_claude_discovery_and_uses_the_owners_language(self):
+        os.makedirs(of_events.CONFIG_DIR)
+        with open(of_events.config_path("owner.yaml"), "w") as fh:
+            fh.write("language: ru\n")
+        with mock.patch.dict(os.environ, HOME=self.home, CODEX_HOME=""), \
+                mock.patch.object(of_accounts, "_file_task", return_value=(True, "filed")) as task, \
+                mock.patch("builtins.print"):
+            self.assertEqual(of_accounts.main(["add", "x", "--codex", "--home", "~/two words"]), 0)
+            title, steps = task.call_args.args
+            self.assertRegex(title, r"[\u0400-\u04ff]")
+            self.assertRegex(steps, r"[\u0400-\u04ff]")
+            self.assertIn("CODEX_HOME=~/'two words' codex login --device-auth", steps)
+            self.assertEqual(of_accounts.dirs(), [self.h(".claude"), self.h(".claude-a")])
+            self.assertIsNone(of_accounts.load())
 
     def test_add_makes_the_folder_keeps_the_others_and_files_one_login_task(self):
         tasks = []
