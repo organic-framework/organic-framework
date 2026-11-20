@@ -31,6 +31,10 @@ class RequirementsTest(unittest.TestCase):
     def test_the_command_prints_it_and_names_what_is_not_pinned(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "..", "bin", "of"), "codex", "requirements",
                             "--of-bin", "/x/of"], capture_output=True, text=True, timeout=60)
+        bad = subprocess.run([sys.executable, os.path.join(HERE, "..", "bin", "of"), "codex", "requirements",
+                              "--of-bin", "bin/of"], capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("absolute", bad.stderr)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("/x/of", tomllib.loads(r.stdout)["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
         self.assertIn("the owner's own Codex", r.stderr)
@@ -71,6 +75,51 @@ class HookCommandTest(unittest.TestCase):
         r = self.run_line("PreToolUse", 'cat; echo " $1 $2"')
         self.assertEqual((r.returncode, r.stdout), (0, '{"tool_name": "Bash"} hook PreToolUse\n'))
         self.assertEqual(self.run_line("PreToolUse", "echo denied >&2; exit 2").returncode, 2)
+
+    def test_the_prompt_hook_carries_the_mention_guard_and_fails_closed(self):
+        r = self.run_line("UserPromptSubmit", 'echo "$@"')
+        self.assertEqual(r.stdout, "hook UserPromptSubmit --deny-secrets\n")
+        self.assertEqual(self.run_line("UserPromptSubmit").returncode, 2)
+
+    def test_one_named_program_is_absolute_and_quoted(self):
+        with self.assertRaises(ValueError):
+            of_codex.hook_command("PreToolUse", "bin/of")
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "Organic Framework $x \"q\" {}", "of")
+            os.makedirs(os.path.dirname(exe))
+            with open(exe, "w") as fh:
+                fh.write("#!/bin/sh\necho ran \"$1\"\n")
+            os.chmod(exe, 0o755)
+            r = subprocess.run(["/bin/sh", "-lc", of_codex.hook_command("PreToolUse", exe)], input="{}",
+                               capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": d})
+            self.assertEqual((r.returncode, r.stdout), (0, "ran hook\n"))
+            with open(exe, "w") as fh:
+                fh.write("#!/bin/sh\nexit 3\n")
+            r = subprocess.run(["/bin/sh", "-lc", of_codex.hook_command("PreToolUse", exe)], input="{}",
+                               capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin", "HOME": d})
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('status 3), so this is refused', r.stderr)
+            self.assertIn('Organic Framework $x "q" {}', r.stderr)
+            with open(exe, "w") as fh:
+                fh.write("#!/bin/sh\necho ran \"$1\"\n")
+            req = os.path.join(d, "requirements.toml")
+            with open(req, "w") as fh:
+                fh.write(of_codex.requirements_toml(exe))
+            self.assertEqual(of_codex.installed_of_bin(req), exe)
+            with open(req, "w") as fh:
+                fh.write(of_codex.requirements_toml())
+            self.assertIsNone(of_codex.installed_of_bin(req))
+
+    def test_a_plain_file_in_the_users_bin_is_not_its_hook_folder(self):
+        os.makedirs(os.path.expanduser("~/.local/bin"), exist_ok=True)
+        plain = os.path.expanduser("~/.local/bin/of")
+        with open(plain, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        try:
+            self.assertNotEqual(os.path.dirname(of_codex.default_of_bin()), os.path.dirname(plain))
+        finally:
+            os.unlink(plain)
 
     def test_a_recording_event_passes_without_of(self):
         self.assertEqual(self.run_line("Stop").returncode, 0)

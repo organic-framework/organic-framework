@@ -2733,7 +2733,11 @@ def cmd_codex(args):
     import of_codex
     if args.action != "requirements":
         raise OfError("of codex requirements [--of-bin PATH]")
-    print(of_codex.requirements_toml(args.of_bin), end="")
+    try:
+        text = of_codex.requirements_toml(args.of_bin)
+    except ValueError as e:
+        raise OfError(str(e))
+    print(text, end="")
     print(f"# install it as {of_codex.REQUIREMENTS_PATH} (owner root, mode 644). Not pinned there:", file=sys.stderr)
     for what, why in of_codex.NOT_PINNED:
         print(f"#   {what}: {why}", file=sys.stderr)

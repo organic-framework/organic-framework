@@ -857,10 +857,13 @@ def hook_dirs():
     and run the call (of_server, msg 01a1f982-178c). The checkout's bin folder, where of_codex.default_of_bin points."""
     try:
         import of_codex
-        d = os.path.dirname(of_codex.default_of_bin())
+        dirs = [os.path.dirname(of_codex.default_of_bin())]
+        named = of_codex.installed_of_bin()   # a file written with --of-bin names its own (of_review on PR 475)
+        if named:
+            dirs.append(os.path.dirname(os.path.realpath(named)))
     except Exception:  # noqa: BLE001
         return []
-    return [d] if os.path.isdir(d) else []
+    return sorted({d for d in dirs if os.path.isdir(d)})
 
 
 def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):

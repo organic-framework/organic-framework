@@ -79,9 +79,12 @@ def requirements_toml(of_bin=None, domains=DEFAULT_DOMAINS):
     return "\n".join(lines) + "\n"
 
 
-# The events whose hook decides a call: a failure there refuses the call (exit 2 is Codex's deny for both), where
-# Codex itself would let it through (of_server's W2). The other events only record, and a failure there passes.
-GUARD_EVENTS = ("PreToolUse", "PermissionRequest")
+# The events whose hook decides: a failure there refuses the call or the prompt (exit 2 is Codex's deny or block for
+# each), where Codex itself would let it through (of_server's W2). The other events only record, and a failure passes.
+GUARD_EVENTS = ("PreToolUse", "PermissionRequest", "UserPromptSubmit")
+# the prompt hook carries the mention guard, as of init installs Claude Code's (bin/of_init.py hook_command; of_review
+# on organic-framework PR 475: allow_managed_hooks_only lets no position add it)
+EVENT_FLAGS = {"UserPromptSubmit": " --deny-secrets"}
 USER_OF = "$HOME/.local/bin/of"
 
 
@@ -92,14 +95,21 @@ def hook_command(event, of_bin=None):
     would be a hook other contours cannot start, so their calls would run unguarded). of_bin names one program instead,
     for a test or a machine with one OF install. On a guard event, an of that is missing, cannot start, or ends other than allowing (0) or denying (2)
     refuses the call, with the reason on stderr."""
-    exe = of_bin or USER_OF
+    import shlex
+    if of_bin is not None and not os.path.isabs(of_bin):
+        raise ValueError(f"the hooks' program must be an absolute path, not {of_bin!r}: a relative one resolves "
+                         "against each session's folder, and a hook that cannot start lets the call through")
+    exe = shlex.quote(of_bin) if of_bin else f'"{USER_OF}"'
+    shown = of_bin or "~/.local/bin/of"
+    run = f'"$o" hook {event}{EVENT_FLAGS.get(event, "")}'
     if event not in GUARD_EVENTS:
-        return f'o="{exe}"; [ -x "$o" ] || exit 0; exec "$o" hook {event}'
-    why = ("OF: the guard did not run for this call ({}), so the call is refused. This user's of is "
-           + exe.replace("$HOME", "~") + " (organic-framework docs/guard.md, Codex).")
-    return (f'o="{exe}"; if [ ! -x "$o" ]; then echo "{why.format("no of there")}" >&2; exit 2; fi; '
-            f'"$o" hook {event}; r=$?; if [ "$r" -ne 0 ] && [ "$r" -ne 2 ]; then '
-            f'echo "{why.format("it ended with status $r")}" >&2; exit 2; fi; exit "$r"')
+        return f'o={exe}; [ -x "$o" ] || exit 0; exec {run}'
+    why = ("OF: the guard did not run here ({}), so this is refused. This user's of is "
+           + shown.replace("{", "{{").replace("}", "}}") + " (organic-framework docs/guard.md, Codex).")
+    return (f'o={exe}; if [ ! -x "$o" ]; then echo {shlex.quote(why.format("no of there"))} >&2; exit 2; fi; '
+            f'{run}; r=$?; if [ "$r" -ne 0 ] && [ "$r" -ne 2 ]; then '
+            f'echo {shlex.quote(why.format("it ended with status STATUS")).replace("STATUS", "'\"$r\"'")} >&2; '
+            f'exit 2; fi; exit "$r"')
 
 
 def default_of_bin():
@@ -107,8 +117,29 @@ def default_of_bin():
     link itself: inside an of subagent run's bwrap, where /home is empty, the checkout's bin folder is bound in read-only
     (of_subagent.hook_dirs), and a bound link would find no modules beside it (of_server, msg 01a1f982-178c)."""
     link = os.path.expanduser("~/.local/bin/of")
-    return os.path.realpath(link) if os.path.exists(link) else os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                                                                            "of")
+    real = os.path.realpath(link)
+    if os.path.islink(link) and os.path.isfile(os.path.join(os.path.dirname(real), "of_hook.py")):
+        return real
+    # a plain file there is no checkout: its folder holds the user's other programs, which a run must not get bound
+    # in (of_review on organic-framework PR 475); this checkout's of instead
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+
+
+def installed_of_bin(path=REQUIREMENTS_PATH):
+    """The one program the installed requirements file names for the guard, or None when it runs each user's own
+    (hook_command) or no file is installed."""
+    import shlex
+    import tomllib
+    try:
+        with open(path, "rb") as fh:
+            cmd = tomllib.load(fh)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        first = cmd.split(";", 1)[0]
+        if first.startswith("o="):
+            prog = shlex.split(first[2:])[0]
+            return None if "$HOME" in prog else prog
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 # ---------- a Codex session's layer: $CODEX_HOME/of-<launch id>.config.toml (W4 of hand-over 9ee1db9f) ----------
