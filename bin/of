@@ -31,8 +31,18 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
     # the collector and the guard, never blocked by a missing PyYAML; only when run as the program:
     # of_hook loads this file as a module (of_cli) to read the registries, which must not re-enter here
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-    import of_hook  # noqa: E402
-    sys.exit(of_hook.main(sys.argv[2:]))  # event, plus any flags (e.g. --deny-secrets for the @mention block)
+    try:
+        import of_hook  # noqa: E402
+        _code = of_hook.main(sys.argv[2:])  # event, plus any flags (e.g. --deny-secrets for the @mention block)
+    except BaseException as _e:  # noqa: BLE001 - the guard fails closed: a PreToolUse hook that cannot load or run
+        # exits 2 with its reason on stderr, which Claude Code and Codex both take as a block (of_secrets-review on
+        # organic-framework PR 469: a failed import exited 1, and the call ran)
+        if sys.argv[2:3] == ["PreToolUse"]:
+            sys.stderr.write(f"Organic Framework guard failed ({type(_e).__name__}), so the call is denied until the "
+                             "guard is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
+            sys.exit(2)
+        raise
+    sys.exit(_code)
 
 try:
     import yaml
