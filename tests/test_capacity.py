@@ -752,6 +752,47 @@ class OpenQuestion(unittest.TestCase):
             self.assertIsNone(of_capacity.pending_question(t))
 
 
+class StopWatch(unittest.TestCase):
+    """2026-11-20: a rescue waited 3.5-7 min for the 5-minute tick to see a stop that was in the store at once."""
+    def store(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE transcript_record (id INTEGER PRIMARY KEY, session_id TEXT, source_path TEXT, "
+                     "type TEXT, model TEXT)")
+        conn.execute("CREATE TABLE listener_meta (key TEXT PRIMARY KEY, value TEXT)")
+        return conn
+
+    def test_a_new_synthetic_record_confirmed_as_a_stop_is_reported_once(self):
+        conn = self.store()
+        conn.execute("INSERT INTO transcript_record VALUES (1, 'old', '/t/old', 'assistant', '<synthetic>')")
+        stopped = lambda path: path in ("/t/a", "/t/old")  # noqa: E731
+        self.assertEqual(of_capacity.new_limit_stops(conn, stopped), [])  # the first read never replays history
+        conn.executemany("INSERT INTO transcript_record VALUES (?, ?, ?, ?, ?)", [
+            (2, "a", "/t/a", "assistant", "<synthetic>"), (3, "a", "/t/a", "assistant", "<synthetic>"),
+            (4, "b", "/t/b", "assistant", "<synthetic>"),  # an API error that is no limit stop
+            (5, "c", "/t/c", "assistant", "claude-opus-5-5"), (6, "d", "/t/d", "user", "<synthetic>")])
+        self.assertEqual(of_capacity.new_limit_stops(conn, stopped), ["a"])
+        self.assertEqual(of_capacity.new_limit_stops(conn, stopped), [])  # the cursor moved past them
+
+    def test_a_stop_starts_the_balancer_at_once_or_as_soon_as_its_lock_is_free(self):
+        p = of_capacity.ListenerProcessor()
+        stops = iter([["a"], [], [], []])
+        busy = iter([True, False, False])
+        with mock.patch.multiple(of_capacity, spawn_tick=mock.Mock(), spawn_balance=mock.Mock(),
+                                 load_policy=lambda: {"auto": True}, new_limit_stops=lambda conn: next(stops),
+                                 _balance_busy=lambda: next(busy)):
+            p.tick(None, 1000.0)  # a stop while a balance runs: kept
+            of_capacity.spawn_balance.assert_not_called()
+            p.tick(None, 1015.0)  # the lock is free: the run starts
+            self.assertEqual(of_capacity.spawn_balance.call_count, 1)
+            p.tick(None, 1030.0)  # nothing new: no run
+            self.assertEqual(of_capacity.spawn_balance.call_count, 1)
+            self.assertEqual(of_capacity.spawn_tick.call_count, 1)  # the full tick only every TICK_EVERY_S
+            p.tick(None, 1000.0 + of_capacity.TICK_EVERY_S)
+            self.assertEqual(of_capacity.spawn_tick.call_count, 2)
+
+
 class StoppedTasks(unittest.TestCase):
     def test_matches_each_exit_notice_to_the_latest_preceding_creation_or_the_carry(self):
         since = "2026-11-20T10:13:14.123Z"

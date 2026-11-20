@@ -5795,6 +5795,10 @@ def recent_remote_moves(now, conn=None):
         "GROUP BY account", (since[:19], since, of_events.now_iso(now), of_events.machine_id())))
 
 
+RESCUE_MOVES = 40  # a stopped session waits for nothing: one run moves them all (each move about 0.3-1.6 min; 2026-11-20:
+                   # with 6 a run, 12 stops at once left the second half a whole 5-minute run more)
+
+
 def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib=None, tools=None, remote_moves=None,
                 woken=None, models=None):
     """Pure. The invariant (founder, 2026-11-10): no session stands on a usage limit while another account accepts
@@ -5860,7 +5864,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
                           stopped.get(s["session"], until), p["name"], s["session"], d))
     moves = []
     for later, _, _, since, name, sid, d in sorted(cands):
-        if len(moves) >= policy.get("rescue_moves", 6):
+        if len(moves) >= policy.get("rescue_moves", RESCUE_MOVES):
             break
         t = min((r for r in targets if r["config_dir"] != d and model_fits(models.get(sid), r.get("tier"))),
                 key=lambda r: key(r, sid), default=None)
@@ -6695,11 +6699,58 @@ def spawn_tick():
     return True
 
 
+STOP_WATCH_S = 15   # the stop watch: a usage-limit stop starts the balancer within this, not at the next tick
+TICK_EVERY_S = 300  # the capacity tick: the spend view, loop costs, spend per goal, then a balance
+
+
+def _balance_busy():
+    """True while a balance run holds its lock (taken and released at once when free)."""
+    import fcntl
+    lockf = os.path.join(STATE_DIR, "capacity", "balance.lock")
+    try:
+        fh = open(lockf, "a")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return False
+    except OSError:
+        return True
+    finally:
+        fh.close()
+
+
+def new_limit_stops(conn, stopped=None):
+    """The sessions whose usage-limit stop reached the store since the stop watch's cursor: the harness's synthetic
+    assistant record (model <synthetic>) that each stop writes, confirmed in that session's transcript (limit_stop).
+    A record reaches the store at its session's Stop hook, the second the stop happens. The cursor is the store's
+    newest transcript record; its first read sets it there and reports none, so a start never replays history.
+
+    2026-11-20, the founder asked why a move takes 10-15 minutes: of a rescue's time, the move and its first reply
+    took 0.3-1.6 min, and the wait for the 5-minute tick to see the stop took 3.5-7 min (organic-framework-build,
+    of_capacity's measurements; his yes to reading limits from what the sessions receive, prompt 01a1f8ec-7494)."""
+    stopped = stopped or limit_stop
+    top = conn.execute("SELECT max(id) FROM transcript_record").fetchone()[0] or 0
+    cur = _meta(conn, "capacity_stop_cursor")
+    _meta(conn, "capacity_stop_cursor", top)
+    if cur is None or int(cur) >= top:
+        return []
+    rows = conn.execute("SELECT session_id, source_path FROM transcript_record WHERE id > ? AND id <= ? "
+                        "AND type = 'assistant' AND model = '<synthetic>'", (int(cur), top)).fetchall()
+    return [sid for sid, path in dict(rows).items() if sid and path and stopped(path)]
+
+
 class ListenerProcessor:
-    """of_listen processor (duck-typed: name, version, tick_s, reset, handle, tick)."""
+    """of_listen processor (duck-typed: name, version, tick_s, reset, handle, tick). It wakes every STOP_WATCH_S:
+    a usage-limit stop starts the balancer at once (new_limit_stops), and every TICK_EVERY_S the capacity tick runs
+    as before. A stop seen while a balance runs waits for its lock and starts the next run as soon as it is free."""
     name = "capacity"
     version = "2"  # 2: reads transcript_own, so a fork never takes its parent's responses (rebuilds the view)
-    tick_s = 300
+    tick_s = STOP_WATCH_S
+
+    def __init__(self):
+        self._full_at = None  # the first tick runs the full one
+        self._pending = False
 
     def reset(self, conn):
         conn.executescript(SPEND_DDL)
@@ -6710,5 +6761,15 @@ class ListenerProcessor:
         return False  # its input is transcript_record, read in tick by its own cursor
 
     def tick(self, conn, now):
-        spawn_tick()  # the work runs in its own process (run_tick): the listener's loop never waits on it
+        if self._full_at is None or now - self._full_at >= TICK_EVERY_S:
+            self._full_at = now
+            spawn_tick()  # the work runs in its own process (run_tick): the listener's loop never waits on it
+        try:
+            if new_limit_stops(conn):
+                self._pending = True
+        except Exception:  # noqa: BLE001 - a store that cannot be read: the 5-minute tick still balances
+            pass
+        if self._pending and load_policy().get("auto") and not _balance_busy():
+            self._pending = False
+            spawn_balance()
         return False
