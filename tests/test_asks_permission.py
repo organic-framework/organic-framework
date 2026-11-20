@@ -76,7 +76,7 @@ class PermissionTest(unittest.TestCase):
                 data = next(reads)
                 if data is None:
                     return subprocess.CompletedProcess(cmd, 1, SCREEN, "read failed")
-            elif cmd[1:] == ["pane", "send-keys", "asking", "3"]:
+            elif cmd[1:] == ["pane", "send-keys", "asking", "esc"]:
                 return subprocess.CompletedProcess(cmd, send_status, "", "")
             else:
                 self.fail(f"unexpected command {cmd}")
@@ -143,10 +143,10 @@ class PermissionTest(unittest.TestCase):
 
     def test_receiver_denies_by_card_and_records_only_after_the_screen_clears(self):
         cleared = json.dumps({"result": {"read": {"text": "Command declined"}}})
-        with self.fake_herdr([SCREEN, cleared]) as herdr, mock.patch("time.sleep"):
+        with self.fake_herdr([SCREEN, SCREEN, cleared]) as herdr, mock.patch("time.sleep"):
             status, msg = self.cli("deny", "AC-1")
         self.assertEqual(status, 0, msg)
-        self.assertEqual([c.args[0][2] for c in herdr.call_args_list], ["list", "read", "send-keys", "read"])
+        self.assertEqual([c.args[0][2] for c in herdr.call_args_list], ["list", "read", "read", "send-keys", "read"])
         pl, session, pos = self.conn.execute("SELECT payload, session_id, position FROM event "
                                              "WHERE name = 'of.permission_resolved'").fetchone()
         self.assertEqual(json.loads(pl), {"reply_to": self.aid, "outcome": "denied", "by": "lead", "via": "asks-deny"})
@@ -154,7 +154,7 @@ class PermissionTest(unittest.TestCase):
 
     def test_owner_can_deny_by_event_id_after_escalation(self):
         of_pulse.run_escalations(self.positions, self.asks(), self.now + 7200, self.conn)
-        with self.fake_herdr([SCREEN, "Command declined"]), mock.patch("time.sleep"):
+        with self.fake_herdr([SCREEN, SCREEN, "Command declined"]), mock.patch("time.sleep"):
             status, msg = self.cli("deny", self.aid, caller="")
         self.assertEqual(status, 0, msg)
         self.assertEqual(self.conn.execute("SELECT json_extract(payload, '$.by') FROM event WHERE "
@@ -171,15 +171,17 @@ class PermissionTest(unittest.TestCase):
 
     def test_dry_run_and_unconfirmed_denials_leave_the_card_open(self):
         for screens, dry_run, reason, presses in (
-                ([SCREEN], True, "would press 3 (No)", 0),
+                ([SCREEN], True, "would press Esc (No)", 0),
                 ([None], False, "read", 0),
                 (["Exit and stop tasks?\n❯ 1. Yes\n  2. No"], False, "no permission prompt", 0),
                 ([SCREEN + "\n❯ "], False, "no permission prompt", 0),
                 ([SCREEN.replace("3. No,", "3. Notify,")], False, "no No option", 0),
                 ([SCREEN.replace("3. No,", "1. No,")], False, "no No option", 0),
-                ([SCREEN, SCREEN], False, "still visible", 1),
-                ([SCREEN, None], False, "read", 1),
-                ([SCREEN, ""], False, "could not read", 1)):
+                ([SCREEN, SCREEN, SCREEN], False, "still visible", 1),
+                # the prompt changed between the read and the key (a user organization's security keeper)
+                ([SCREEN, SCREEN.replace("check-service", "other-command")], False, "changed before the key", 0),
+                ([SCREEN, SCREEN, None], False, "read", 1),
+                ([SCREEN, SCREEN, ""], False, "could not read", 1)):
             with self.subTest(reason=reason, presses=presses), self.fake_herdr(screens) as herdr, mock.patch("time.sleep"):
                 status, msg = self.cli("deny", self.aid, *(["--dry-run"] if dry_run else []))
                 self.assertEqual(status, 0 if dry_run else 1, msg)
@@ -188,10 +190,10 @@ class PermissionTest(unittest.TestCase):
                 self.assertEqual(self.asks()[0]["state"], "open")
 
     def test_failed_send_does_not_record_a_denial(self):
-        with self.fake_herdr([SCREEN], send_status=1):
+        with self.fake_herdr([SCREEN, SCREEN], send_status=1):
             status, msg = self.cli("deny", self.aid)
         self.assertEqual(status, 1)
-        self.assertIn("could not press No", msg)
+        self.assertIn("could not press Esc", msg)
         self.assertEqual(self.asks()[0]["state"], "open")
 
     def test_late_resolution_does_not_close_the_next_prompt(self):
