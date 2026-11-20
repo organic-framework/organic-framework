@@ -536,6 +536,18 @@ class ListenTest(unittest.TestCase):
         self.assertIn("and every snapshot: every row projected again", out.getvalue())
         same()
 
+    def test_another_versions_snapshots_are_deleted(self):
+        """of_server on redaction 7da5d129 (msg 01a1fa0b-b0b3): the folders of versions 28 and 29 stayed, cut from
+        events since rewritten, and no version deleted them."""
+        p = of_listen.AsksProcessor()
+        base = os.path.dirname(p.snap_dir())
+        for v in ("28", "29", p.version):
+            os.makedirs(os.path.join(base, v), exist_ok=True)
+            with open(os.path.join(base, v, "2026-11-20T00:00:00.000Z.json"), "w") as fh:
+                fh.write("{}")
+        p._load_snaps("")
+        self.assertEqual(sorted(os.listdir(base)), [p.version])
+
     def test_the_snapshots_outlive_a_restart_and_never_the_history_they_were_cut_from(self):
         """of_review on PR 316: in memory, the snapshots died with a restart, and the first spool drain after it (2026-
         11-17's pattern: a restart, then rows an hour old) read the whole log. They are files now, taken up by a start
