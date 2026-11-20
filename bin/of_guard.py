@@ -1032,8 +1032,11 @@ def _code_deny(code, lang=None):
         if " " not in lit and _MEMORY_CODE.match(lit):
             return f"code that reads memory or a core dump ({lit})", lit
         first = lit.split()[0] if lit else ""
-        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched
-        if os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit):
+        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched. A dump
+        # command named in code that can start no process is text: a test that hands command strings to the guard
+        # printed nothing (of_architect, msg 01a1f867-970c, on of_review's session of 2026-11-20 about 09:50Z)
+        if (os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit)) and \
+                _launches(lang or "", code):
             return _prints(first)
     return None
 
