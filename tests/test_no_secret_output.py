@@ -30,6 +30,8 @@ REVIEWED = {
     ("of_server.py", 'fh.write(secrets.token_hex(32) + "\\n")'): "a new tenant key into a mode-600 file",
     ("of_server.py", 'fh.write(secrets.token_urlsafe(32) + "\\n")'):
         "clickhouse-init: a new password into a new mode-600 file, never printed",
+    ("of_server.py", 'fh.write(secrets.token_hex(16) + "\\n")  # not a secret: it tells one setting from the next'):
+        "of server moving: a random token into the moving flag, which tells one setting from the next; no secret",
 }
 
 
