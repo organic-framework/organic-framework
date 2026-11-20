@@ -3924,19 +3924,42 @@ class HoldAfterMove(unittest.TestCase):
 class Reboot(unittest.TestCase):
     """2026-11-10: the founder's OS update restarts the Mac; every session stops and /private/tmp is cleared."""
 
+    def write_plan(self, plan):
+        current = of_capacity._reboot_current()
+        os.makedirs(current)
+        with open(os.path.join(current, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+
     def test_pause_expires_unless_the_machine_restarted(self):
         prepared = 1795121580  # 2026-11-19 at 20:53 UTC
-        plan = {"prepared_at": of_capacity._iso(prepared)}
+        plan = {"prepared_at": of_capacity._iso(prepared), "herdr_resume_before": True}
         limit = of_capacity.REBOOT_PAUSE_MAX_H * 3600
         cases = ((limit - 1, prepared - 60, True), (limit, prepared - 60, False), (limit * 3, prepared - 60, False),
                  (limit * 3, None, False), (limit * 3, prepared + 60, True))
         for age, boot, paused in cases:
-            with self.subTest(age=age, boot=boot), mock.patch.object(of_capacity, "load_reboot_plan", return_value=plan), \
-                    mock.patch.object(of_capacity, "_last_boot_epoch", return_value=boot):
+            with self.subTest(age=age, boot=boot), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                    mock.patch.object(of_capacity, "_last_boot_epoch", return_value=boot), \
+                    mock.patch.object(of_capacity, "set_herdr_resume") as resume, \
+                    mock.patch.object(of_capacity.of_events, "emit") as emit:
+                self.write_plan(plan)
                 messages = []
                 self.assertEqual(of_capacity._reboot_pauses_balance(prepared + age, messages.append), paused)
-                self.assertEqual(len(messages), 1)
-                self.assertIn("paused" if paused else "balancing resumes", messages[0])
+                if paused:
+                    self.assertIn("paused", messages[-1])
+                    self.assertEqual(of_capacity.load_reboot_plan(), plan)
+                    emit.assert_not_called()
+                    resume.assert_not_called()
+                else:
+                    self.assertIn("stale", messages[-1])
+                    self.assertIn("balancing resumes", messages[-1])
+                    self.assertFalse(os.path.exists(of_capacity._reboot_current()))
+                    retired, = glob.glob(os.path.join(d, "cancelled-*"))
+                    self.assertEqual(of_capacity.load_reboot_plan(os.path.join(retired, "plan.json")), plan)
+                    self.assertFalse(of_capacity._reboot_pauses_balance(prepared + age + 1, messages.append))
+                    emit.assert_called_once_with("capacity_reboot_cancelled", {"prepared_at": plan["prepared_at"],
+                                                                               "sessions": 0}, position=mock.ANY)
+                    resume.assert_called_once_with(True, log=messages.append)
 
     def test_last_boot_epoch(self):
         with mock.patch.object(sys, "platform", "darwin"), mock.patch.object(subprocess, "check_output") as sysctl:
@@ -3950,6 +3973,7 @@ class Reboot(unittest.TestCase):
 
     def test_cancel_retires_the_plan_with_its_tmp_keep(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                mock.patch.object(of_capacity, "set_herdr_resume") as resume, \
                 mock.patch.object(of_capacity.of_events, "emit") as emit:
             current = of_capacity._reboot_current()
             tmp_root, keep = os.path.join(d, "live-tmp"), os.path.join(current, "tmp")
@@ -3969,8 +3993,31 @@ class Reboot(unittest.TestCase):
             with open(os.path.join(retired, "tmp", "deleted-since-prepare")) as fh:
                 self.assertEqual(fh.read(), "kept")
             self.assertEqual(os.listdir(tmp_root), [])
+            resume.assert_not_called()
             emit.assert_called_once_with("capacity_reboot_cancelled", {"prepared_at": plan["prepared_at"], "sessions": 1},
                                          position=mock.ANY)
+
+    def test_cancel_restores_the_recorded_herdr_setting(self):
+        for before in (None, True, False):
+            with self.subTest(before=before), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(of_capacity, "REBOOT_DIR", d), \
+                    mock.patch.object(of_capacity, "set_herdr_resume") as resume, \
+                    mock.patch.object(of_capacity.of_events, "emit") as emit:
+                plan = {"herdr_resume_before": before}
+                self.write_plan(plan)
+                messages = []
+                of_capacity.reboot_cancel(dry_run=True, log=messages.append)
+                self.assertEqual(of_capacity.load_reboot_plan(), plan)
+                self.assertEqual("herdr: would turn resume_agents_on_restore back on" in messages, before is not False)
+                resume.assert_not_called()
+                emit.assert_not_called()
+
+                of_capacity.reboot_cancel(log=messages.append)
+                if before is False:
+                    resume.assert_not_called()
+                else:
+                    resume.assert_called_once_with(True, log=messages.append)
+                    self.assertIn("herdr: resume_agents_on_restore back on", messages)
 
     def test_cancel_without_a_plan(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(of_capacity, "REBOOT_DIR", d), \

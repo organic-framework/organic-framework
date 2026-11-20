@@ -3246,9 +3246,9 @@ def _reboot_pauses_balance(now, log):
     if now - prepared >= REBOOT_PAUSE_MAX_H * 3600:
         boot = _last_boot_epoch()
         if boot is None or boot <= prepared:
-            log(f"balance: a restart prepared at {prepared_at} is stale (no restart after {REBOOT_PAUSE_MAX_H} h); "
-                "balancing resumes; `of capacity reboot cancel` retires it, `reboot restore` still restores "
-                "after a real restart")
+            reboot_cancel(log=log)
+            log(f"balance: retired stale restart plan prepared at {prepared_at} after {REBOOT_PAUSE_MAX_H} h, "
+                "balancing resumes")
             return False
     log(f"balance: paused, a restart of the Mac was prepared at {prepared_at} (`of capacity reboot restore` ends it)")
     return True
@@ -3265,6 +3265,12 @@ def reboot_cancel(dry_run=False, log=print):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     retired = os.path.join(REBOOT_DIR, f"cancelled-{stamp}")
     description = f"restart plan prepared at {prepared_at} ({sessions} session(s))"
+    if plan.get("herdr_resume_before") is not False and "herdr_resume_before" in plan:
+        if dry_run:
+            log("herdr: would turn resume_agents_on_restore back on")
+        else:
+            set_herdr_resume(True, log=log)
+            log("herdr: resume_agents_on_restore back on")
     if dry_run:
         log(f"would retire {description} to {short(retired)}")
         return
