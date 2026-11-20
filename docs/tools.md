@@ -132,14 +132,17 @@ tools:
 
 ### 4b. A position held by Codex
 
-Status: proposed 2026-11-20 by `of_tools` (hand-over `68dfbcca`, item W7 of organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The kinds are in [`registry.md`](registry.md) (`of_architect`); the layer's form is to be agreed with `of_platform`, who builds `of spawn` for Codex (W4).
+Status: the rule from 2026-11-20, by `of_tools` (hand-over `68dfbcca`, item W7 of organic-framework-build `reports/codex-main-harness-plan-2026-11-20.md`). The kinds are in [`registry.md`](registry.md) (`of_architect`). The layer's form was agreed with `of_platform`, who builds `of spawn` for Codex (W4; message `01a1f971-8999`).
 
 A position whose holder runs on Codex gets its tools from the same profile as on Claude Code: the same catalogue, the same `tools:` on its unit and on itself, the same review (§2). Only the form differs. Codex reads its tools from its configuration, and it has tools of its own that Claude Code does not.
 
 **Where the configuration goes.** A Codex seat is one `CODEX_HOME` with one sign-in (W9), shared by every position on it, as a Claude account's folder is. So nothing of one position goes into the seat's `config.toml`.
-- At each start, `of spawn` writes a layer for the session, `$CODEX_HOME/of-<session>.config.toml` (mode 600), and starts `codex -p of-<session>`. The interactive `codex` has no `--ignore-user-config`; only `codex exec` has it. So the seat's own file still loads under the layer.
-- `of_tools.codex_layer(position, session, codex_home)` returns the layer's tool tables: `features`, `mcp_servers`, `apps` and `plugins`. It also writes `<state>/tools/<session>.mcp.json`, as for Claude Code, for the shared-server helper. `of spawn` merges these tables with its own (the model, W3's permission profile, W5's instructions) into the one layer file. `of tools plan <position> --codex` prints them.
-- OF writes the seat's own `config.toml` and keeps tools out of it. `of tools check` reports a seat whose file defines `mcp_servers`, `plugins` or `apps`.
+- At each start, `of spawn` writes a layer for the session, `$CODEX_HOME/of-<launch id>.config.toml` (mode 600), and starts `codex -p of-<launch id>`.
+  - The launch id is OF's own UUID, picked before the start. Codex's own session id (its thread id) exists only once the session runs, and the SessionStart hook binds it to the position then.
+  - `of resume-command` writes a fresh layer under a new launch id from the profile as it stands, so a resumed session gets today's tools. Spawn and resume remove that position's older layers in the seat.
+  - The interactive `codex` has no `--ignore-user-config`; only `codex exec` has it. So the seat's own file still loads under the layer.
+- `of_tools.codex_layer(position, launch_id, codex_home)` returns the layer's tool tables: `features`, `web_search`, `mcp_servers`, `apps` and `plugins`. It also writes `<state>/tools/<launch id>.mcp.json`, as for Claude Code, for the shared-server helper. `of spawn` merges these tables with its own (the model, W3's permission profile, W5's instructions) into the one layer file. `of tools plan <position> --codex` prints them.
+- OF writes the seat's own `config.toml` and keeps tools out of it. `of tools plan --codex` and `codex_layer` note a seat whose file defines `mcp_servers`, `plugins` or `apps`.
 
 What this rests on (Codex CLI 0.169.1, probed 2026-11-20 in a fresh `CODEX_HOME`; the source read at the tags `rust-v0.169.0` and `rust-v0.170.0` of github.com/openai/codex, Codex run `01a1f8d6-69a0`):
 
@@ -159,7 +162,7 @@ What this rests on (Codex CLI 0.169.1, probed 2026-11-20 in a fresh `CODEX_HOME`
 | Kind | In the layer |
 |---|---|
 | `mcp-stdio` | `[mcp_servers.<id>]` with `command`, `args` and `env`. `of secret run` comes in front when the entry names a credential, as in §4; the layer holds paths and names, never a value. |
-| `mcp-stdio` with `shared:` (§4a) | `url = "http://127.0.0.1:<port>/mcp"` and `http_headers_helper = "python3 <of bin>/of_tools.py header <org>/<id>"`. Codex starts the helper through `sh`, so `sh` is its parent and the session's `codex -p of-<session>` above it. The helper accepts the nearest ancestor that names `-p`/`--profile of-<session>` when `<state>/tools/<session>.mcp.json` names this tool's URL, as it accepts a Claude Code session by its `--mcp-config` file. Codex waits 10 s on it, against about 11 s on Claude Code, so the cache of §4a matters as much here. |
+| `mcp-stdio` with `shared:` (§4a) | `url = "http://127.0.0.1:<port>/mcp"` and `http_headers_helper = "python3 <of bin>/of_tools.py header <org>/<id>"`. Codex starts the helper through `sh`, so `sh` is its parent and the session's `codex -p of-<launch id>` above it. The helper looks for the nearest ancestor that is Codex's own process. It accepts that process when it names `-p`/`--profile of-<launch id>` and `<state>/tools/<launch id>.mcp.json` names this tool's URL. Any other Codex process is refused. It is the same check as for a Claude Code session and its `--mcp-config` file. Codex waits 10 s on it, against about 11 s on Claude Code, so the cache of §4a matters as much here. |
 | `mcp-remote`, portable | `url`, with its headers as `http_headers`. A header that needs a credential goes through the bridge (§6), never into the layer. |
 | `plugin`, `connector` | Nothing: they are Claude Code's, and their sign-ins live in a Claude account. `of tools plan` names each one it skips. A position that needs the same service on Codex gets its portable form (the bridge, §6) or a Codex entry below. |
 | `codex-app` | One app of the seat's ChatGPT sign-in, by its connector id (`app: <id>`): `apps."<id>".enabled = true`. It is account-bound to the seat, as a connector is to a Claude account (§5): the seat's sign-in must have it connected, and placement reads it. |
@@ -184,7 +187,7 @@ Computer use and the browser act as the person whose desktop and signed-in brows
 - its memories (`features.memories`, off by default; W5);
 - its skills (W5): Codex finds them in `.agents/skills` of the working folder, `$HOME/.agents/skills` and the seat's plugins.
 
-**Who checks.** `of tools plan --codex` prints the layer's tool tables; it and `codex_layer` are built by `of_tools` once this form is agreed. For W3's canary selftest of a Codex position, `of_tools` proposes one more check to `of_server`: list the session's tools and fail on one that the profile does not name.
+**Who checks.** `of tools plan <position> --codex [--codex-home D]` prints the layer's tool tables and notes (probed 2026-11-20 with Codex 0.169.1: tables written as a layer loaded with `codex -p`, turning off a server of the seat's file and listing the shared server with its helper). For W3's canary selftest of a Codex position, `of_tools` proposes one more check to `of_server`: list the session's tools and fail on one that the profile does not name.
 
 ## 5. Account-bound tools and moves
 
