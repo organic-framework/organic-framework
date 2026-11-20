@@ -1389,7 +1389,7 @@ def selftest(harness, position="of_platform", session=None, log=print, popen=sub
             ("the run's own files are none in Codex's profile", _run_files_hidden(r) if harness == "codex" else True,
              "codex-home, prompt.md, answer.txt, home"),
             ("a read of the run's canary or $CODEX_HOME/auth.json, when tried, failed",
-             _no_read_succeeded(stream, ("run-canary", "auth.json")), "one succeeded"),
+             _no_read_succeeded(stream, (f"CANARY-RUN-{mark}",) + LOGIN_MARKS), "one succeeded"),
             ("the snapshot holds no untracked file", not os.path.exists(os.path.join(snap, "untracked.txt")), snap),
             ("nothing is written", not os.path.exists(os.path.join(snap, "written.txt")), "written.txt"),
             ("the network is not reached", "Example Domain" not in text, "example.com"),
@@ -1503,16 +1503,24 @@ def _run_files_hidden(r):
     return bool(prof) and all(prof.get(n) == "none" for n in need)
 
 
-def _no_read_succeeded(stream, needles):
-    """Did no command naming a needle end with exit 0?"""
+# what a Codex login file holds: any of these in a command's output means it was read
+LOGIN_MARKS = ("access_token", "refresh_token", "id_token", "OPENAI_API_KEY")
+
+
+def _no_read_succeeded(stream, contents):
+    """Did no command's output carry any of CONTENTS (the run canary's text, a login file's keys)? Judged by what came
+    out, not by the exit code: on the agent host a python loop that printed 'Permission denied' for the canary and a
+    printf of the login's path both exited 0 and failed this check while reading nothing (of_agent-server, msg
+    01a1f891-ef7b, 2026-11-20). Whether the rules hide those files is _run_files_hidden's check."""
     for line in stream.splitlines():
         try:
             x = json.loads(line)
         except ValueError:
             continue
         it = x.get("item") or {} if isinstance(x, dict) else {}
-        if x.get("type") == "item.completed" and it.get("type") == "command_execution" and it.get("exit_code") == 0:
-            if any(n in str(it.get("command") or "") for n in needles):
+        if x.get("type") == "item.completed" and it.get("type") == "command_execution":
+            out = str(it.get("aggregated_output") or "")
+            if any(c in out for c in contents):
                 return False
     return True
 
