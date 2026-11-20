@@ -279,7 +279,7 @@ def answer_mark(ask_id):
     return f"Answer from the founder to your question {ask_id[-8:]}"
 
 
-def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amended=None):
+def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amended=None, permission=False):
     """A question `of ask` routed to a delegated unit's owner, as typed into the owner's pane. `escalated`: the
     escalate_when rule that already sent it to the founder; the owner then rewrites it instead of filing it again.
     `amended`: (version, [fields]) for a new version of a question it has (of ask --amend)."""
@@ -287,12 +287,19 @@ def routed_frame(asker, unit, ask_id, text, opts, blocking, escalated=None, amen
     # source know a tool's text by it, never as the person's words
     note = f"; amended to version {amended[0]} ({', '.join(amended[1])} changed)" if amended else ""
     card = card_id(ask_id)   # after the marks, which stay on the hex id
-    return (f"Question from {asker} (unit {unit}, delegated to you; ask {ask_id[-8:]}{note}"
-            f"{'; escalated to the founder' if escalated else ''}{', blocking' if blocking else ''}"
-            f"{f'; card {card}' if card != ask_id[-8:] else ''}): {text}"
+    header = (f"Question from {asker} (unit {unit}, {routed_mark(ask_id)}{note}"
+              f"{'; escalated to the founder' if escalated else ''}{', blocking' if blocking else ''}"
+              f"{f'; card {card}' if card != ask_id[-8:] else ''})")
+    if permission:
+        import of_hook
+        summary = json.dumps(of_hook.mask(text), ensure_ascii=False)  # keep command text and control characters quoted
+        return (f"{header}: {asker}'s Claude Code asks to run {summary}\n"
+                f"[of asks deny {card} presses No and the command does not run. "
+                f'To request the founder\'s approval, use of ask --escalates {card} "…".]')
+    return (f"{header}: {text}"
             + (f"\nOptions: {' | '.join(opts)}" if opts else "")
             + (escalated_note(asker, ask_id, escalated) if escalated else
-               f"\n[answer: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then of asks answered {card_id(ask_id)}; "
+               f"\n[answer: of send {asker} --reply-to {ask_id[-8:]} \"…\"; then of asks answered {card}; "
                "outside your envelope: of ask the founder]"))
 
 
@@ -776,6 +783,7 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
                             + _late(ts, now, "the founder answered", busy=busy_since(conn, position, ts, now)),
                             "sender": "owner", "channel": "asks-ui"})
     open_ids = {a["event_id"] for a in asks if a.get("state") == "open"}
+    permissions = {a["event_id"]: a["text"] for a in asks if a.get("kind") == "permission"}
     for eid, ts, payload in conn.execute(  # cards the owner handed to a position in his window (of_asks_inbox, d)
             "SELECT event_id, ts, payload FROM event WHERE name = 'of.ask_handed' AND ts >= ? ORDER BY ts",
             (since,)).fetchall():
@@ -797,7 +805,8 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
     for x in positions:
         by_org.setdefault(x.get("_org"), {})[x["name"]] = x
     for eid, ts, asker, payload, host, org in conn.execute(
-            "SELECT event_id, ts, position, payload, host_id, org FROM event WHERE name = 'of.agent_question' AND ts >= ? "
+            "SELECT event_id, ts, position, payload, host_id, org FROM event "
+            "WHERE name IN ('of.agent_question', 'of.permission_request') AND ts >= ? "
             "AND json_extract(payload, '$.to') IS NOT NULL AND json_extract(payload, '$.to') != 'founder' "
             "ORDER BY ts", (since,)).fetchall():
         if eid not in open_ids or (of_asks.seconds_since(ts, now) or 0) < min_age:
@@ -827,8 +836,12 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
             continue  # no registry read: another organization's position is never typed in from here
         if (only and to != only) or delivered(conn, to, [routed_mark(eid)], ts):
             continue
-        p = of_asks.at_version(conn, eid, p, ts, asker, host)  # typed late: its newest version (of ask --amend)
-        text = routed_frame(asker, units.get(asker), eid, full_question(p, ""), options(p), bool(p.get("blocking")))
+        if eid in permissions:
+            text = routed_frame(asker, units.get(asker), eid, permissions[eid], [], bool(p.get("blocking")),
+                                permission=True)
+        else:
+            p = of_asks.at_version(conn, eid, p, ts, asker, host)  # typed late: its newest version (of ask --amend)
+            text = routed_frame(asker, units.get(asker), eid, full_question(p, ""), options(p), bool(p.get("blocking")))
         out.append({"key": f"routed:{eid}:{to}", "position": to, "marks": [routed_mark(eid)], "since": ts,
                     "text": text + _late(ts, now, f"{asker} asked"), "sender": asker, "channel": None})
     # a routed ask OF escalated: its unit owner is told once, so it rewrites the founder's copy instead of refiling
@@ -856,10 +869,14 @@ def pending(conn, asks, positions, now=None, min_age=REDELIVER_MIN_AGE_S, only=N
         if not asker:
             continue
         unit = units.get(asker)
-        text = (f"Question from {asker} (unit {unit}, delegated to you; ask {src[-8:]}; escalated to the founder): "
-                "the one typed in before." + escalated_note(asker, src, rule)
-                if delivered(conn, owner, [routed_mark(src)], qts or ts) else
-                routed_frame(asker, unit, src, full_question(q, ""), options(q), bool(q.get("blocking")), escalated=rule))
+        if src in permissions:
+            text = routed_frame(asker, unit, src, permissions[src], [], bool(q.get("blocking")), escalated=rule,
+                                permission=True)
+        elif delivered(conn, owner, [routed_mark(src)], qts or ts):
+            text = (f"Question from {asker} (unit {unit}, delegated to you; ask {src[-8:]}; escalated to the founder): "
+                    "the one typed in before." + escalated_note(asker, src, rule))
+        else:
+            text = routed_frame(asker, unit, src, full_question(q, ""), options(q), bool(q.get("blocking")), escalated=rule)
         out.append({"key": f"escalated:{eid}:{owner}", "position": owner, "marks": [escalated_mark(src)], "since": ts,
                     "text": text, "sender": asker, "channel": None})
     return out

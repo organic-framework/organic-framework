@@ -102,7 +102,7 @@ New sessions are recorded from the next turn on. To bring in history, run `of im
 |---|---|
 | `of init`, `of spawn`, `of resume-command` | create an organization; start a position's agent; resume a session on its own account |
 | `of who`, `of go`, `of apply`, `of desk`, `of view` | see and arrange your agents |
-| `of asks [withdraw\|answered]` | the questions waiting on you |
+| `of asks [withdraw\|answered\|deny]` | list the questions waiting on you. For a permission card, its receiver or the owner can press No with `of asks deny <id>`. |
 | `of ask`, `of status` | run by agents: a question to its owner on a card; where it is at the end of a turn |
 | `of send`, `of inbox`, `of handover`, `of diff`, `of delegate` | messages, hand-overs and structure changes between positions; who should do a task |
 | `of registry check`, `of grant issue/revoke` | the organization model and signed grants |

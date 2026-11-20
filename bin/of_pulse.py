@@ -60,7 +60,7 @@ def project(positions, agents, rows, asks, idle_since, now=None, bind=None, hand
         for p, a in bind(positions, agents)[0]:
             live[p["name"]] = a
     import of_blocked
-    open_asks, routed = {}, {}
+    open_asks, routed, permissions = {}, {}, {}
     for a in asks:
         if a["state"] == "open" and a.get("position"):
             if str(a.get("kind") or "").partition("blocked:")[2] in of_blocked.FYI:
@@ -69,6 +69,8 @@ def project(positions, agents, rows, asks, idle_since, now=None, bind=None, hand
                 open_asks.setdefault(a["position"], []).append(a)
             else:  # routed to a delegated unit's owner position: a wait on that peer
                 routed.setdefault(a["position"], a)
+                if a.get("kind") == "permission" and a.get("session_id"):
+                    permissions[a["session_id"]] = a
     handover_waits = {}
     if handovers:
         import of_handover
@@ -85,7 +87,11 @@ def project(positions, agents, rows, asks, idle_since, now=None, bind=None, hand
             kind, on, since, text, ids = "waiting_owner", "founder", mine[0]["ts"], mine[0]["text"], [x["event_id"] for x in mine]
         if a and a.get("agent_status") == "blocked":
             ev.append("herdr: blocked")
-            kind, on = "waiting_owner", "founder"
+            permission = permissions.get((a.get("agent_session") or {}).get("value"))
+            if permission and permission["position"] == name:
+                routed[name] = permission  # the permission card identifies who can unblock this pane
+            else:
+                kind, on = "waiting_owner", "founder"
         if st.get("state") == "waiting" and st.get("waiting_on") in ("founder", "owner"):
             ev.append(f"declared waiting on founder: {st.get('note') or ''}".strip())
             kind, on, since, text = "waiting_owner", "founder", since or st["ts"], text or st.get("note")
@@ -844,6 +850,11 @@ def due_soon(rule, due, now):
     return at is not None and at - now < int(m.group(1)) * (86400 if m.group(2) == "d" else 3600)
 
 
+def ask_blocking(ask):
+    """A permission dialog stops its pane, but only a declared block triggers the delegation's rule."""
+    return bool(ask.get("blocking") or "blocking" in (ask.get("kind") or ""))
+
+
 def escalations(positions, asks, now, already=()):
     """Asks routed to a delegated unit's owner that go up to the founder now, per the delegation's
     reporting.escalate_when: `ask.blocking` (at once), `ask_unanswered > 2h` (after that long), `ask_due < 7d` (its own
@@ -860,7 +871,7 @@ def escalations(positions, asks, now, already=()):
         age = now - (_ts(a["ts"]) or now)
         for rule in rules:
             m = re.match(r"^ask_unanswered\s*>\s*(\d+)\s*([mh])$", rule)
-            if (rule == "ask.blocking" and "blocking" in (a.get("kind") or "")) or \
+            if (rule == "ask.blocking" and ask_blocking(a)) or \
                     (m and age >= int(m.group(1)) * (3600 if m.group(2) == "h" else 60)) or \
                     due_soon(rule, a.get("due"), now) or tag_match(rule, effective_tags(a)):
                 out.append((a, rule, d.get("id")))
@@ -903,7 +914,7 @@ def escalate(a, rule, did):
                    position=a.get("position"), event_id=of_events.stable_id(a["event_id"], "escalated"))
     return of_events.emit("agent_question", {
         "detected_by": "declared", "source": "escalated", "from_position": a.get("position"), "to": "founder",
-        "escalated_from": a["event_id"], "delegation": did, "blocking": "blocking" in (a.get("kind") or ""),
+        "escalated_from": a["event_id"], "delegation": did, "blocking": ask_blocking(a),
         "tag_guessed": guessed,
         "questions": [{"question": f"[escalated from {a.get('to')}: {why}] {a['text']}", "options": []}],
         "classifications": {"q-v0": True, "q-v1": True}}, position=a.get("position"),
