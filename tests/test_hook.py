@@ -128,6 +128,45 @@ class HandleTest(unittest.TestCase):
             open(kw["transcript_path"], "a").close()
         of_hook.handle(name, dict(hook_event_name=name, session_id="S1", cwd="/x", **kw))
 
+    def test_only_unanswered_delegated_permissions_have_a_receiver(self):
+        from unittest import mock
+        index = {"sessions": {"S1": ["worker", "acme"], "S2": ["lead", "acme"]},
+                 "ask_targets": {"worker": "lead", "lead": "founder"}}
+        with mock.patch.object(of_hook, "_registry_index", return_value=index), \
+                mock.patch.object(of_hook, "herdr_state"), mock.patch.object(of_hook, "write") as write:
+            for sid, answer, to in (("S1", None, "lead"), ("S2", None, None), ("unknown", None, None),
+                                    ("S1", {"behavior": "allow"}, None)):
+                with self.subTest(session=sid, answer=answer), \
+                        mock.patch.object(of_hook, "_permission_answer", return_value=answer):
+                    write.reset_mock()
+                    write.return_value = "request"
+                    of_hook.handle("PermissionRequest", {"session_id": sid, "tool_name": "Bash",
+                                                         "tool_input": {"command": "check token=example-secret"}})
+                    kind, payload = write.call_args_list[0].args[:2]
+                    self.assertEqual(kind, "permission_request")
+                    self.assertEqual(payload["summary"], "check token=[masked:assignment]")
+                    if to:
+                        self.assertEqual(payload["to"], to)
+                    else:
+                        self.assertNotIn("to", payload)
+
+    def test_registry_cache_without_ask_targets_is_rebuilt(self):
+        import of_router
+        orgs = os.environ["OF_ORGS"]
+        registry = os.path.join(self.tmp.name, "org", "registry", "positions.yaml")
+        with open(orgs, "w") as fh:
+            json.dump({"orgs": [{"name": "acme", "path": "org"}]}, fh)
+        with open(registry, "w") as fh:
+            json.dump({"units": {"ops": {"owner": "lead"}},
+                       "delegations": [{"unit": "ops", "to_owner": "lead"}],
+                       "positions": [{"name": "worker", "unit": "ops"}, {"name": "lead", "unit": "ops"},
+                                     {"name": "other"}]}, fh)
+        os.makedirs(of_hook.STATE, exist_ok=True)
+        with open(os.path.join(of_hook.STATE, "index.json"), "w") as fh:
+            json.dump({"router": of_router.VERSION, "sessions": {}, "paths": [], "systems": [], "memory": {},
+                       "card_prefix": {}, "mtimes": {f: os.path.getmtime(f) for f in (orgs, registry)}}, fh)
+        self.assertEqual(of_hook._registry_index()["ask_targets"], {"worker": "lead", "lead": "founder", "other": "founder"})
+
     def test_a_turn_end_starts_the_delivery_only_while_no_listener_keeps_the_views(self):
         """The founder, 2026-11-17 (prompt 01a1eae5-4583, via of_conductor): an answer he gave a busy agent waited for
         the listener's start. With no fresh listener heartbeat, the agent's own turn end starts `of asks deliver`."""

@@ -8,7 +8,7 @@ opens it when the agent waits on its owner, or closes it as not_a_question (foun
               answer typed as `of.human_prompt`, or `of.turn_end` / a tool-driven event after a permission
               request (the tool ran, so it was approved). The owner's free text answers a heuristic question
               in its session, but marks declared asks seen and closes none (from 2026-11-07);
-- denied:     `of.permission_denied`;
+- denied:     `of.permission_denied` or a verified denial recorded by `of asks deny`;
 - superseded: a newer ask in the same session before an answer; OF's escalated copy of a routed ask once the unit
               owner files its rewrite (`of ask --escalates <id>`, `escalated_from` on both);
 - escalated:  `of.ask_escalated`: a routed ask sent on to the founder (by `of pulse` on its delegation's escalate_when,
@@ -105,6 +105,9 @@ def relevant(name, source, payload=None):
         # its permission requests stay: they block on the owner like any other (of_studio, 2026-11-06)
     if source in ("hook", "import") or name in ANY_SOURCE:
         return True
+    if name == "of.permission_resolved":
+        p = payload or {}
+        return source == "of" and p.get("via") == "asks-deny" and p.get("outcome") == "denied" and bool(p.get("reply_to"))
     return name == "of.agent_message_in" and (payload or {}).get("delivery") == "pulled"
 
 
@@ -318,6 +321,23 @@ def project(rows, state=None):
                         open_by_session.pop(ask["session_id"], None)
             continue
         cur = open_by_session.get(sid)
+        if name in ("of.permission_resolved", "of.permission_denied") and (r["payload"] or {}).get("reply_to"):
+            # The hook can report the next prompt before asks-deny finishes checking the screen.
+            ask = by_id.get(r["payload"]["reply_to"])
+            if ask and ask["kind"] == "permission" and ask["session_id"] == sid:
+                denied = name == "of.permission_denied" or r["payload"].get("outcome") == "denied"
+                if denied or ask["state"] in ("open", "escalated"):
+                    state = "denied" if denied else "answered"
+                    if ask["state"] == "escalated" or (denied and ask.get("to") not in OWNER_ADDRESSES):
+                        for copy in asks:
+                            if copy.get("escalated_from") == ask["event_id"] and copy["state"] == "open":
+                                copy.update(state=state, closed_by=r["event_id"], closed_at=r["ts"])
+                    ask.update(state=state, closed_by=r["event_id"], closed_at=r["ts"])
+                if cur is ask:
+                    open_by_session.pop(sid, None)
+                continue
+            if cur is not ask or r["payload"].get("via") == "asks-deny":
+                continue  # only a hook event naming the current question can still close that question below
         if name == "of.agent_question" and (r["payload"] or {}).get("detected_by") == "blocked":
             # a blocking screen (bin/of_blocked.py): one ask per dialog, closed by an answer or when it goes
             pl_ = r["payload"] or {}
@@ -378,6 +398,10 @@ def project(rows, state=None):
                    "kind": _kind(r), "text": _text(r), "state": "candidate" if heuristic else "open", "closed_by": None,
                    "closed_at": None, "n_options": 2 if name == "of.permission_request" else _n_options(r),
                    "org": r.get("org")}
+            if name == "of.permission_request":
+                p = r["payload"] or {}
+                ask["to"] = bare_to(p.get("to"), r.get("org"))
+                ask.update({k: p[k] for k in ("blocking", "due", "tags", "tags_declared") if k in p})
             asks.append(ask)
             by_position.setdefault(ask["position"], []).append(ask)
             by_id[ask["event_id"]] = ask

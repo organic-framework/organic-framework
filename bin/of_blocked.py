@@ -134,6 +134,16 @@ def detect(screen):
         kind = "press_enter"
         opts = opts or [{"key": "Enter", "label": "Continue (Enter)"}]
     elif _PERM.search(text) and opts:
+        # The displayed command may itself contain numbered lines. Only the choices below the
+        # question belong to Claude Code, and a prompt below those choices makes them history.
+        question_line = next((i for i in reversed(range(len(lines))) if _PERM.search(lines[i])
+                              and not _OPTION.match(lines[i].strip("│ "))), None)
+        rows = lines[question_line + 1:] if question_line is not None else []
+        opts = options(rows)
+        if not opts or any(_INPUT_BOX.match(ln) for ln in rows):
+            return None
+        if len(opts) != sum(bool(_OPTION.match(ln.strip("│ "))) for ln in rows):
+            opts = []  # conflicting rows for a digit: the dialog is visible but no key is safe to send
         kind = "permission"
     elif len(opts) >= 2 and any(_CURSOR_OPTION.match(ln) for ln in lines) and not any(_INPUT_BOX.match(ln) for ln in lines):
         kind = "menu"  # a numbered list in the agent's text has no cursor, and the prompt below it is open

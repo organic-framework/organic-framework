@@ -297,9 +297,13 @@ def _registry_index():
     except Exception:  # noqa: BLE001  no router: the index is built without its systems, as before
         router = None
 
+    def usable(c):
+        return isinstance(c, dict) and c.get("router") == router and all(
+            k in c for k in ("sessions", "paths", "systems", "memory", "card_prefix", "ask_targets"))
+
     def fresh(c):
-        return isinstance(c, dict) and c.get("router") == router == router and "paths" in c and "systems" in c and "memory" in c and "card_prefix" in c and \
-            c["mtimes"] and all(os.path.exists(f) and os.path.getmtime(f) == m for f, m in c["mtimes"].items())
+        return usable(c) and c.get("mtimes") and all(
+            os.path.exists(f) and os.path.getmtime(f) == m for f, m in c["mtimes"].items())
 
     def read():
         try:
@@ -319,8 +323,7 @@ def _registry_index():
         lk = open(os.open(os.path.join(STATE, "index.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
         fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        if isinstance(cache, dict) and cache.get("router") == router and all(k in cache for k in ("sessions", "paths", "systems", "memory",
-                                                                                    "card_prefix")):
+        if usable(cache):
             return cache
         fcntl.flock(lk, fcntl.LOCK_EX)  # no index, or one compiled by another router version: wait for the new one
         cache = read()
@@ -348,7 +351,7 @@ def _registry_index():
                 "pos_system": {}}
     files = [orgs] + [r for _, r, _ in of.org_registries(orgs)]
     cache = {"mtimes": {f: os.path.getmtime(f) for f in files if os.path.exists(f)}, "router": router,
-             "sessions": {}, "names": {}, "labels": {}, "paths": []}
+             "sessions": {}, "names": {}, "labels": {}, "paths": [], "ask_targets": {}}
     try:  # working-directory routing, as the shipper does: [realpath prefix, organization]
         import yaml
         with open(orgs) as fh:
@@ -360,6 +363,7 @@ def _registry_index():
         pass
     for p in positions:
         s = ((p.get("holder") or {}).get("session") or "").strip()
+        cache["ask_targets"][p["name"]] = of.ask_target(p)
         if s:
             cache["sessions"][s] = [p["name"], p.get("_orgid"), p.get("serves")]
         for k in [p["name"]] + [str(x) for x in p.get("aliases") or []]:
@@ -848,6 +852,11 @@ def handle(event, hook):
             answered = None
         if answered:
             payload["answered"] = answered
+        else:
+            position = (index.get("sessions", {}).get(sid) or [None])[0]
+            to = index.get("ask_targets", {}).get(position)
+            if to and to not in ("founder", "owner"):
+                payload["to"] = to
         eid = write("permission_request", payload, hook, sess, index)
         if answered:  # settled at once: it opens no ask in the queue or the pulse
             write("permission_resolved", {"reply_to": eid, "tool_name": tool,

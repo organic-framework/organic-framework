@@ -104,7 +104,8 @@ class AsksProcessor(Processor):
     """The asks view: every ask with its state (of_asks.project), and the owner's queue grouped as
     the popup shows it. Tables view_asks and view_ask_groups."""
     name = "asks"
-    version = "29"  # 29: each ask keeps its organization, org, and groups never cross organizations (of_asks.group; of_review on PR 359); 28: each ask keeps its card id, ref (AS-412; of_events, of.ask_ref; the founder, prompt 01a1ea59-aeb7); 27: an escalated routed ask is answered_upstream by the owner, settled_in_unit by its unit owner or asker, with settled_by (of_asks.settle; of_server on PR 222); 26: an escalated routed ask is answered_upstream once a founder copy of it is answered or done; 25: an ask's to is a bare name (of_asks.bare_to: `--to <org>:<position>` was stored verbatim and never delivered); 24: a declared ask keeps the host_id of the machine that filed it, the one whose amends apply (of ask --amend; of_server on PR 181); 23: each row keeps its whole ask (column ask) and the fold its readers carry on (of_asks.FOLD_KEY): of_asks.current_asks; 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
+    version = "30"  # Permission cards keep their receiver and close on a verified denial.
+    # 29: each ask keeps its organization, org, and groups never cross organizations (of_asks.group; of_review on PR 359); 28: each ask keeps its card id, ref (AS-412; of_events, of.ask_ref; the founder, prompt 01a1ea59-aeb7); 27: an escalated routed ask is answered_upstream by the owner, settled_in_unit by its unit owner or asker, with settled_by (of_asks.settle; of_server on PR 222); 26: an escalated routed ask is answered_upstream once a founder copy of it is answered or done; 25: an ask's to is a bare name (of_asks.bare_to: `--to <org>:<position>` was stored verbatim and never delivered); 24: a declared ask keeps the host_id of the machine that filed it, the one whose amends apply (of ask --amend; of_server on PR 181); 23: each row keeps its whole ask (column ask) and the fold its readers carry on (of_asks.FOLD_KEY): of_asks.current_asks; 22: a pane question the judge confirms is an ask OF files (source pane), kept until answered; 21: a heuristic question is a candidate until the judge opens or closes it (of.agent_question_judged); 20: declared_wait on a heuristic ask (never folded); 19: a heuristic ask's text is its last paragraph, its options from the stored text; 18: q-v4 heuristic asks; a declared wait on the founder keeps a heuristic question open; 17: the founder's free text marks declared asks seen and closes none (from 2026-11-07); 16: heuristic asks by q-v3 (a report with a declared task's steps is no question); 15: free text never closes a diff approval; 14: groups never cross recipients or tasks; a task is claimed only by the founder's own answer; 13: a turn_error is neutral (it closed asks as answered); 12: scheduler prompts close nothing (origin scheduled from the transcript; of.prompt_origin corrections); 11: a popup answer to one ask never closes the others (nor the open question); 10: a subagent's agent_question is not an ask; 9: tasks for the owner (claimed, done by the asker); 8: due, n_options; shadow rebuild; 7: of_asks.relevant (READS; pulled messages); 6: a position's reply answers an ask to it; 5: annotations neutral; 4: a popup answer closes only its ask; 3: status never closes
     DDL = """
     CREATE TABLE IF NOT EXISTS view_asks (event_id TEXT PRIMARY KEY, ts TEXT, org TEXT, session_id TEXT,
       position TEXT, kind TEXT, text TEXT, state TEXT, closed_by TEXT, closed_at TEXT, closed_by_kind TEXT,
@@ -1061,11 +1062,13 @@ class DeliverProcessor(Processor):
         since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - self.KEEP_S))
         self.due = {}
         rows = []
-        for e, ts, n, pos, pl in conn.execute(
-                "SELECT event_id, ts, name, position, payload FROM event WHERE ts >= ? AND name IN "
-                "('of.agent_question_answered', 'of.agent_question', 'of.ask_escalated') ORDER BY ts", (since,)):
+        for e, ts, n, pos, pl, org in conn.execute(
+                "SELECT event_id, ts, name, position, payload, org FROM event WHERE ts >= ? AND name IN "
+                "('of.agent_question_answered', 'of.agent_question', 'of.permission_request', 'of.ask_escalated') "
+                "ORDER BY ts", (since,)):
             try:
-                rows.append({"event_id": e, "ts": ts, "name": n, "position": pos, "payload": json.loads(pl or "{}")})
+                rows.append({"event_id": e, "ts": ts, "name": n, "position": pos, "payload": json.loads(pl or "{}"),
+                             "org": org})
             except ValueError:
                 continue
         for r in rows:
@@ -1081,9 +1084,10 @@ class DeliverProcessor(Processor):
             if p.get("via") in aa.TYPED_VIAS and p.get("answer") and not p.get("keys") and not p.get("verdict"):
                 for pos, _, ids in aa.recipients(conn, p.get("ask_ids") or [p.get("ask_id")]):
                     due(pos, [aa.answer_mark(a) for a in ids])
-        elif n == "of.agent_question":
-            to = p.get("to")
-            if to and to != "founder" and to != r.get("position") and not aa.inbox_only(p):
+        elif n in ("of.agent_question", "of.permission_request"):
+            import of_asks
+            to = of_asks.bare_to(p.get("to"), r.get("org"))
+            if to != "founder" and to != r.get("position") and not aa.inbox_only(p):
                 due(to, [aa.routed_mark(r["event_id"])], r["event_id"], "open")
         elif n == "of.ask_escalated":
             if p.get("ask_id") and p.get("from_owner") and p.get("rule") != "by_owner":

@@ -2963,7 +2963,7 @@ def cmd_registry(args):
 
 # ------------------------------------------------------------------- asks
 
-def _asks_actor():
+def _asks_actor(require_position=False):
     """Who closes or withdraws an ask: an agent (an asker withdrawing its own stale ask, a unit owner answering a routed
     one) is recorded by its position, never as the owner (task bd12d0); the owner only by a positive test, as `of
     access` reads one (of_review on organic-framework PR 357): no CLAUDECODE and a terminal on stdin. The questions
@@ -2976,6 +2976,8 @@ def _asks_actor():
         try:
             return _me(_load_quiet())["name"]
         except OfError:
+            if require_position:
+                raise OfError("cannot identify the calling position")
             return "agent"
     if os.environ.get("CLAUDECODE") or not sys.stdin.isatty():
         raise OfError("only the owner closes or withdraws an ask with no position: in a plain terminal or the popup. "
@@ -3040,7 +3042,88 @@ def _ask_refs(args, *fields):
             conn.close()
 
 
+def _permission_screen(pane):
+    """Read the visible dialog. An unreadable pane cannot confirm a denial."""
+    import of_blocked
+    r = subprocess.run([HERDR, "pane", "read", pane, "--source", "visible", "--lines", "40"],
+                       capture_output=True, text=True, timeout=10)
+    if r.returncode:
+        raise OfError(f"could not read the visible screen in {pane} (herdr exit {r.returncode})")
+    screen = r.stdout
+    if screen.lstrip().startswith("{"):  # herdr can return its read as JSON
+        result = json.loads(screen)["result"]
+        screen = result.get("read", result) if isinstance(result, dict) else result
+        screen = screen.get("text") if isinstance(screen, dict) else screen
+    if not isinstance(screen, str) or not screen.strip():
+        raise OfError(f"could not read the visible screen in {pane}")
+    return of_blocked.detect(screen)
+
+
+def _asks_deny(args):
+    """Deny in the asking session's live dialog. A message to that session waits behind the prompt."""
+    from contextlib import closing
+    import time
+    import of_blocked
+    import of_events
+    import of_store
+    _ask_refs(args, "id")
+    if not args.id:
+        raise OfError("usage: of asks deny <card or event id>")
+    matches = [a for a in _asks_now() if a["event_id"].startswith(args.id) or a["event_id"].endswith(args.id)]
+    if len(matches) != 1:
+        raise OfError(f"{len(matches)} asks match {args.id!r}")
+    ask = matches[0]
+    if ask["kind"] != "permission" or ask["state"] not in ("open", "escalated"):
+        raise OfError("the card must be an open or escalated permission request")
+    by = _asks_actor(require_position=True)
+    if by != "owner" and (by != ask.get("to") or by == "founder"):
+        raise OfError("only the receiver or the owner can deny this permission request")
+    sid = ask.get("session_id")
+    if not sid:
+        raise OfError("the permission request has no asking session")
+    # A late asks view can still show the card open after this session has reached a different permission prompt.
+    with closing(of_store.connect()) as conn:
+        latest = conn.execute("SELECT event_id FROM event WHERE session_id = ? AND name = 'of.permission_request' "
+                              "ORDER BY ts DESC, rowid DESC LIMIT 1", (sid,)).fetchone()
+    if not latest or latest[0] != ask["event_id"]:
+        raise OfError("the card does not match the asking session's latest permission request")
+    panes = [a["pane_id"] for a in live_agents() if agent_session(a) == sid and a.get("pane_id")]
+    if len(panes) != 1:
+        raise OfError(f"expected one live pane for session {sid}, found {len(panes)}")
+    pane = panes[0]
+    dialog = _permission_screen(pane)
+    if not dialog or dialog["type"] != "permission":
+        raise OfError(f"no permission prompt in {pane}")
+    no = next((o for o in dialog["options"] if re.match(r"^No\b", o["label"], re.I)), None)
+    if not no:
+        raise OfError("the permission prompt has no No option")
+    keys = of_blocked.keys_for(no)
+    card = ask.get("ref") or ask["event_id"][-8:]
+    if args.dry_run:
+        print(f"would press {' '.join(keys)} (No) in {pane} for {card}")
+        return 0
+    sent = subprocess.run([HERDR, "pane", "send-keys", pane, *keys], capture_output=True, text=True, timeout=10)
+    if sent.returncode:
+        raise OfError(f"could not press No in {pane} (herdr exit {sent.returncode})")
+    time.sleep(0.4)  # allow Claude Code to redraw before checking what the key did
+    after = _permission_screen(pane)
+    if after and after["type"] == "permission":
+        raise OfError(f"the permission prompt is still visible in {pane}")
+    if not of_events.emit("permission_resolved", {"reply_to": ask["event_id"], "outcome": "denied", "by": by,
+                                                  "via": "asks-deny"},
+                          position=ask.get("position"), org=ask.get("org"), session=sid):
+        raise OfError(f"pressed No in {pane}, but could not record the denial for {card}")
+    print(f"denied {card} in {pane}")
+    return 0
+
+
 def cmd_asks(args):
+    if args.action == "deny":
+        try:
+            return _asks_deny(args)
+        except (OfError, OSError, subprocess.SubprocessError, KeyError, ValueError) as e:
+            print(f"of asks deny: {e}", file=sys.stderr)
+            return 1
     _ask_refs(args, "id")
     if args.action == "judge":  # bin/of_judge.py: does a question left in a pane wait on the owner?
         import of_judge
@@ -3200,7 +3283,7 @@ def cmd_asks(args):
     except OfError:
         pass
     if not args.all:  # one decision asked by several agents = one item, with everyone waiting on it
-        groups = of_asks.group(asks)
+        groups = of_asks.group(shown)
         print(f"{len(groups)} open item(s) waiting on you ({sum(len(g['ask_ids']) for g in groups)} asks)")
         for g in groups:
             mark = of_asks.label(g["since"], cfg)
@@ -5616,10 +5699,14 @@ def _asks_to_me(args):
     print(f"{len(mine)} open ask(s) routed to {me['name']}, oldest first:")
     for a in sorted(mine, key=lambda x: x["ts"]):
         text = " ".join(str(a.get("text") or "").split())
-        print(f"  {a['event_id'][-8:]}  {of_asks.age(a['ts']):>5}  {a['state']:<9} from {a.get('position') or '?':<24} "
+        card = a.get("ref") or a["event_id"][-8:]
+        print(f"  {card}  {of_asks.age(a['ts']):>5}  {a['state']:<9} from {a.get('position') or '?':<24} "
               f"{text[:150] + ('…' if len(text) > 150 else '')}")
-    print("answer one with of send <its asker> --reply-to <id> \"…\", or rewrite it for the founder with "
-          "of ask --escalates <id>")
+        if a.get("kind") == "permission":
+            print(f'    of asks deny {card} presses No. To ask the founder to allow it, use of ask --escalates {card} "…".')
+    if any(a.get("kind") != "permission" for a in mine):
+        print("answer a question with of send <its asker> --reply-to <id> \"…\", or rewrite it for the founder with "
+              "of ask --escalates <id>")
     return 0
 
 
@@ -7716,8 +7803,9 @@ def main(argv=None):
     imp.add_argument("--since", help="github: merged on or after this date (default: the day before the last import)")
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
-    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "judge", "deliver", "refs"],
+    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "deny", "judge", "deliver", "refs"],
                     default="list", help="refs: give the open asks filed before card ids existed their ids (once); "
+                    "deny <id>: press No in the asking session's permission prompt; "
                     "deliver [<position>]: type the founder's answers not yet in the pane; "
                     "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
                     "their conductor's chat, recorded only when that prompt is their own and names the card or "
@@ -7744,7 +7832,7 @@ def main(argv=None):
                     "(of prompts --mine prints it)")
     ak.add_argument("--pending", action="store_true", help="judge: the candidates the Stop hook queued")
     ak.add_argument("--pane", help="judge: the asking agent's pane, for the correction")
-    ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts, write nothing")
+    ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts; deny: show the key without pressing it")
     ak.set_defaults(fn=cmd_asks)
     pk = sub.add_parser("passkey", help="enroll or revoke a person's passkey for approving diffs from a phone "
                                         "(docs/remote.md §6; the owner's terminal only)")
