@@ -3759,6 +3759,59 @@ def _sed_w_files(args):
     return out
 
 
+# Editors that write the files they are given (of_server, msg 01a1f9c3-11bd, on G36: sponge passed as tee does not):
+# sponge writes its file argument from stdin; ed, ex and the vi family write theirs with a script's w (ed -s f <<< w,
+# ex -sc wq f, vim -es); an option's value is no file. A read-only use of an editor on a protected file is refused
+# too, the cheaper side.
+_EDITORS = {"ed", "red", "ex", "vi", "vim", "nvim", "view", "gvim", "evim"}
+_EDITOR_VALUE_OPTS = {"-c", "-S", "-u", "-U", "-i", "-T", "-w", "-W", "-s", "--cmd", "-p", "-o", "-O", "-t", "-q",
+                      "--listen", "--server", "--remote"}
+
+
+def _editor_files(head, args):
+    """The files an editor is given: every operand, past the values of options that take one."""
+    out, k = [], 0
+    takes = {"-p"} if head in ("ed", "red") else _EDITOR_VALUE_OPTS - {"-s", "-p", "-o", "-O"}
+    while k < len(args):
+        a = args[k]
+        if a == "--":
+            out += args[k + 1:]
+            break
+        if a.startswith("+"):
+            k += 1
+            continue
+        if a.startswith("-"):
+            k += 2 if a in takes else 1
+            continue
+        out.append(a)
+        k += 1
+    return out
+
+
+def _awk_inplace_files(args):
+    """The files `awk -i inplace` (gawk's in-place extension) rewrites: the operands after the program, or all of them
+    with -f."""
+    inplace, ops, prog_file, k = False, [], False, 0
+    while k < len(args):
+        a = args[k]
+        if a in ("-i", "--include") and k + 1 < len(args):
+            inplace |= args[k + 1].startswith("inplace")
+            k += 2
+            continue
+        if a.startswith(("-iinplace", "--include=inplace")):
+            inplace = True
+        elif a in ("-f", "--file", "-v", "--assign", "-F", "--field-separator", "-l", "--load", "-E", "--exec"):
+            prog_file |= a in ("-f", "--file", "-E", "--exec")
+            k += 2
+            continue
+        elif not a.startswith("-") or a == "-":
+            ops.append(a)
+        k += 1
+    if not inplace:
+        return []
+    return [a for a in (ops if prog_file else ops[1:]) if "=" not in a.split("/")[0]]
+
+
 def _awk_out_files(args):
     """The files an awk program prints to (`print > "f"`, `printf … >> "f"`)."""
     import re as _re
@@ -3787,8 +3840,11 @@ def _find_exec_writes(args):
 def _changed_files(head, args, stext):
     """The files one simple command writes, removes, moves over or changes in place (G13, G17)."""
     files = list(_write_targets(stext))
-    if head == "tee" or head in _REMOVERS or (head in _IN_PLACE and any(a.startswith("-i") or a == "-pi" for a in args)):
+    if head in ("tee", "sponge") or head in _REMOVERS or \
+            (head in _IN_PLACE and any(a.startswith("-i") or a == "-pi" for a in args)):
         files += [a for a in args if not a.startswith("-")]
+    elif head in _EDITORS:
+        files += _editor_files(head, args)
     elif head in _COPIERS and _target_dir(args) is not None:
         # `cp -t DIR src…`, `--target-directory=DIR`: each source lands under its name there (of_review on PR 395)
         d = _target_dir(args)
@@ -3817,7 +3873,7 @@ def _changed_files(head, args, stext):
     elif head in ("sed", "gsed"):
         files += _sed_w_files(args)
     elif head in ("awk", "gawk", "mawk", "nawk"):
-        files += _awk_out_files(args)
+        files += _awk_out_files(args) + _awk_inplace_files(args)
     elif head in ("chmod", "chflags", "xattr"):
         files += [a for a in args[1:] if not a.startswith("-")]
     elif head == "git" and args[:1] and args[0] in ("checkout", "restore", "rm", "mv"):

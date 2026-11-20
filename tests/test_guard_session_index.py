@@ -46,6 +46,23 @@ class SessionIndexTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(bash(cmd), of_guard.SESSION_INDEX_DENY)
 
+    def test_editors_and_in_place_writers(self):
+        """of_server on hand-over a18341af (msg 01a1f9c3-11bd): sponge passed as tee does not, and ed, ex, the vi family
+        in batch and gawk's -i inplace with it; G33 and G35 read the same writes."""
+        for target, deny in ((IDX, of_guard.SESSION_INDEX_DENY),
+                             ("~/.local/state/of/asks-outbox/a.json", of_guard.ASKS_OUTBOX_DENY),
+                             ("~/.config/of/orgs.yaml", of_guard.OWNER_CONFIG_DENY)):
+            for cmd in (f"echo x | sponge {target}", f"echo x | sponge -a {target}", f"printf 'a\\nw\\n' | ed -s {target}",
+                        f"ex -sc 'wq' {target}", f"vim -u NONE -es -c '%s/a/b/' -c wq {target}",
+                        f"nvim --headless +wq {target}", f"awk -i inplace '1' {target}",
+                        f"gawk -iinplace -f /tmp/p.awk {target}"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(bash(cmd), deny)
+        for cmd in ("echo x | sponge /tmp/out.txt", "vim -es -c wq /tmp/notes.txt", f"awk '{{print}}' {IDX}",
+                    "gawk -v x=1 '{print}' ~/.config/of/orgs.yaml", "awk -i inplace 1 /tmp/a.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(bash(cmd))
+
     def test_interpreter_code_naming_it_beside_a_write(self):
         for cmd in (f"python3 -c \"open('{os.path.expanduser(IDX)}', 'w').write('{{}}')\"",
                     "python3 - <<'EOF'\nimport json, os\np = os.path.expanduser('~/.local/state/of/index.json')\n"
