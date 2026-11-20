@@ -442,7 +442,10 @@ class MovePieces(unittest.TestCase):
                                               "command": "run.sh 0"}]}, "2026-11-06T10:00:00Z")
         self.assertIn("background shell: lab run", note)
         self.assertIn("Re-create", note)
-        self.assertIn("run CronList first", note)  # scheduled tasks come back with a resume (2026-11-14)
+        for advice in ("run CronList first", "Re-create the tasks listed below as stopped by the exit",
+                       "only on Claude Code versions before 2.1.329", "Re-create only what CronList lacks",
+                       "run twice (2026-11-14)"):
+            self.assertIn(advice, note)
         self.assertTrue(note.startswith("# Account move: of_lab, now on b@x\n"))  # the account in the first line
         self.assertIn("near its model limits", note)  # no reason given: the default
         # a move with its own reason says that reason, never the default one (2026-11-17)
@@ -744,6 +747,53 @@ class OpenQuestion(unittest.TestCase):
                 fh.write(json.dumps({"type": "user", "message": {"content": [
                     {"type": "tool_result", "tool_use_id": "a2"}]}}) + "\n")
             self.assertIsNone(of_capacity.pending_question(t))
+
+
+class StoppedTasks(unittest.TestCase):
+    def test_matches_each_exit_notice_to_the_latest_preceding_creation_or_the_carry(self):
+        since = "2026-11-20T10:13:14.123Z"
+        hourly = "Review the hourly report and send a summary to the team. " + "Include every open item."
+        wake = "Check the overnight run\nand report its outcome."
+
+        def create(prompt, cron, **fields):
+            return {"type": "tool_use", "name": "CronCreate",
+                    "input": dict(prompt=prompt, cron=cron, **fields)}
+
+        def stop(prefix, timestamp=since):
+            return {"type": "system", "subtype": "informational", "timestamp": timestamp,
+                    "content": "Stopped scheduled task: " + prefix}
+
+        rows = [
+            {"type": "assistant", "message": {"content": [
+                create(hourly, "0 * * * *"), create(hourly, "23 * * * *"),
+                create(wake, "52 11 21 11 *", recurring=False)]}},
+            stop("earlier exit", "2026-11-20T10:13:14.122Z"),
+            {"type": "attachment", "attachment": {"type": "session_cron_carry", "tasks": [
+                {"id": "965eed44", "cron": "23 * * * *", "prompt": hourly},
+                {"id": "aabb0011", "cron": "25 * * * *", "prompt": hourly[:60] + "another report"},
+                {"id": "aabbccdd", "cron": "0 0 * * *", "prompt": "Only in the carry"}]}},
+            stop(hourly[:60] + " different suffix… "), stop(hourly[:60] + " different suffix… "),
+            stop("Check the overnight run …"), stop("Only in the carry"), stop("Missing prompt …"),
+            {"type": "assistant", "message": {"content": [create("Missing prompt appears later", "0 8 * * *")]}},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            transcript = os.path.join(d, "s.jsonl")
+            with open(transcript, "w") as fh:
+                fh.write("partial JSON\n")
+                fh.writelines(json.dumps(row) + "\n" for row in rows)
+            tasks = of_capacity.stopped_tasks(transcript, since)
+            self.assertEqual(tasks, [
+                {"cron": "23 * * * *", "recurring": True, "prompt": hourly, "id": "965eed44"},
+                {"cron": "52 11 21 11 *", "recurring": False, "prompt": wake, "id": None},
+                {"cron": "0 0 * * *", "recurring": True, "prompt": "Only in the carry", "id": "aabbccdd"},
+                {"prompt": "Missing prompt", "unmatched": True}])
+            note = os.path.join(d, "note.md")
+            of_capacity._write_handover_note(note, "Earlier note\n", tasks, log=lambda _: None)
+            with open(note) as fh:
+                text = fh.read()
+            self.assertIn("Earlier note\n\nThe exit stopped these scheduled tasks", text)
+            self.assertIn("`23 * * * *` (recurring, old ID `965eed44`)", text)
+            self.assertIn("The full prompt was not found in the transcript. Recorded prefix:\n\n  ```\n  Missing prompt", text)
 
 
 class Balance(unittest.TestCase):
@@ -1537,6 +1587,88 @@ class Resume(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(r["work"], "note.md")))
         held = next(c for c in self.calls if c[0] == "emit")
         self.assertEqual((held[1], held[2]["evidence"]), ("holder_changed", "of capacity resume"))
+
+    def test_move_updates_the_private_note_after_exit_and_copy_before_resume(self):
+        target = os.path.join(self.home.name, ".claude-b")
+        os.makedirs(target)
+        shutil.copy2(os.path.join(self.cfg, ".claude.json"), target)
+        source = of_capacity.find_transcript(self.cfg, "s1")
+        task = {"prompt": "Check the report\nincluding the ``` example", "cron": "52 11 21 11 *", "recurring": False}
+        with open(source, "a") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "call-1", "name": "CronCreate", "input": task}]}}) + "\n")
+            fh.write(json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "call-1"}]},
+                                 "toolUseResult": {"id": "deadbeef"}}) + "\n")
+        notes = os.path.join(self.home.name, "capacity", "moves", "*", "note.md")
+
+        def exit_session(*args, **kwargs):
+            path, = glob.glob(notes)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path) as fh:
+                self.assertNotIn("The exit stopped these scheduled tasks", fh.read())
+            with open(source, "a") as fh:
+                fh.write(json.dumps({"type": "system", "subtype": "informational", "timestamp":
+                                     of_capacity.datetime.now(of_capacity.timezone.utc).isoformat(timespec="milliseconds"),
+                                     "content": "Stopped scheduled task: Check the report…"}) + "\n")
+
+        def start_session(*args, **kwargs):
+            path, = glob.glob(notes)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path) as fh:
+                text = fh.read()
+            self.assertIn("# Account move:", text)
+            self.assertIn("Run CronList, then re-create with CronCreate", text)
+            self.assertIn("`52 11 21 11 *` (one-shot, old ID `deadbeef`)", text)
+            self.assertIn("  ````\n  Check the report\n  including the ``` example\n  ````", text)
+            return {"session": "s1", "pid": 10}
+
+        live = {"session": "s1", "cwd": self.cwd, "pid": 9, "status": "idle"}
+        logs = []
+        with mock.patch.multiple(of_capacity, live_sessions=lambda d: [live] if d == self.cfg else [],
+                                 _agent_by_session=lambda _: {"pane_id": "w6:p18", "agent_status": "idle"},
+                                 _continuation=lambda _: {}, load_policy=lambda: {}, proc_env=lambda _: {},
+                                 proc_args=lambda _: "claude", background_processes=lambda _: [], missing_signins=lambda *_: [],
+                                 connectors_seen=lambda _: set(), plugins_ready=lambda _: set(), granted_labels=lambda _: {},
+                                 with_labels=lambda have, _: have, tools_for=lambda *_: None, deny_for=lambda *_: None,
+                                 exit_session=exit_session, start_session=start_session), \
+                mock.patch.object(of_capacity, "stopped_tasks", wraps=of_capacity.stopped_tasks) as scan:
+            of_capacity.move({"name": "runners_keeper", "holder": {"session": "s1"}}, target,
+                             assume_empty_input=True, log=logs.append)
+        self.assertEqual(scan.call_args.args[0], of_capacity.find_transcript(target, "s1"))
+        self.assertTrue(any("1 stopped scheduled task" in msg for msg in logs))
+
+    def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
+        import of_carry
+        sid = "5e551011-0000-4000-8000-000000000001"
+        entry = {"name": "keeper", "position": "keeper", "org": "team", "session": sid,
+                 "config_dir": "/source/.claude-e", "cwd": "/source/acme", "model": "m"}
+        bundle = os.path.join(self.home.name, "bundle")
+        project = os.path.join(bundle, "files/source/.claude-e/projects/-acme")
+        os.makedirs(project)
+        with open(os.path.join(bundle, "plan.json"), "w") as fh:
+            json.dump({"kind": "carry", "org": "team", "home": "/source", "uid": os.getuid(),
+                       "prepared_at": "2026-11-20T10:13:14Z", "entries": [entry]}, fh)
+        prompt = "Read /source/acme/report and send the full summary."
+        with open(os.path.join(project, sid + ".jsonl"), "w") as fh:
+            for row in ({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "CronCreate",
+                         "input": {"prompt": prompt, "cron": "52 11 21 11 *", "recurring": False}}]}},
+                        {"type": "system", "subtype": "informational", "timestamp": "2026-11-20T10:13:13.999Z",
+                         "content": "Stopped scheduled task: Earlier exit"},
+                        {"type": "system", "subtype": "informational", "timestamp": "2026-11-20T10:13:14.001Z",
+                         "content": "Stopped scheduled task: Read /source/acme/report…"}):
+                fh.write(json.dumps(row) + "\n")
+        with mock.patch.multiple(of_capacity, _herdr=mock.Mock(return_value={"panes": [], "workspaces": [], "tabs": [],
+                                                                             "pane_id": "w6:p18"}),
+                                 load_policy=lambda: {}, deny_for=lambda *_: None, tools_for=lambda *_: None,
+                                 rename_agent=mock.Mock(), start_session=mock.Mock(return_value={"pid": 9, "session": sid})):
+            result, = of_carry.restore(bundle, [{"name": "keeper", "_org": "team"}], "team",
+                                       home=self.home.name, log=lambda _: None)
+        self.assertEqual(result[:2], ("keeper", "resumed"))
+        with open(os.path.join(result[2]["work"], "note.md")) as fh:
+            note = fh.read()
+        self.assertIn(prompt, note)
+        self.assertIn("`52 11 21 11 *` (one-shot, old ID unavailable)", note)
+        self.assertNotIn("Earlier exit", note)
 
     def test_the_shell_input_line_is_emptied_right_before_the_command(self):
         """2026-11-12: a recalled history line left at the prompt took the resume as its tail, and another position's
