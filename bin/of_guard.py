@@ -2407,6 +2407,23 @@ def _kubectl_secret_deny(args, line_vars=None):
     return _kube_pod_spec_read(sub, nonopt, args, out, line_vars)
 
 
+def _helm_releases(token):
+    return (f"a command that would bring Helm's release records, which it keeps as Secrets, onto this machine "
+            f"({token}): name one namespace with -n <namespace> (docs/guard.md G6)", token)
+
+
+def _helm_namespace(args, line_vars=None):
+    """Whether a helm call names its namespace: -n, --namespace (with its value or after =), or HELM_NAMESPACE set on
+    the line."""
+    for i, a in enumerate(args):
+        if a in ("-n", "--namespace") and i + 1 < len(args) and args[i + 1]:
+            return True
+        if a.startswith("--namespace=") and len(a) > len("--namespace=") or (a.startswith("-n") and len(a) > 2
+                                                                             and not a.startswith("--")):
+            return True
+    return bool((line_vars or {}).get("HELM_NAMESPACE"))
+
+
 def _cluster_secret_deny(head, args, to_file, line_vars=None):
     """A command that prints a stored secret value from a cluster or a secret manager. Writing it to a file is
     the owner's to allow, so a `>` redirect is exempt (of_architect, 2026-11-06)."""
@@ -2424,6 +2441,16 @@ def _cluster_secret_deny(head, args, to_file, line_vars=None):
         pos = _positional(args, _KUBECTL_VALUE | {"--kube-context"})
         if pos[:1] == ["get"] and len(pos) > 1 and pos[1] in ("values", "all", "manifest"):
             return _prints("helm get " + pos[1])
+        # Helm keeps each release as a Secret and decodes the whole record to list or show it: `helm list -A` reads
+        # every namespace's, and a read with no namespace takes the context's (a user organization's structure
+        # keeper, msg 01a1f649-9018: a cluster-wide Secret list alerted four times from one subagent)
+        if pos[:1] in (["list"], ["ls"]) and any(a in ("-A", "--all-namespaces") or a.startswith("--all-namespaces=")
+                                                 for a in args):
+            return _helm_releases(f"helm {pos[0]} -A")
+        # the context's default namespace is not named on the line (the keeper, msg 01a1f652-2f62: list too)
+        if pos[:1] in (["get"], ["status"], ["history"], ["hist"], ["list"], ["ls"]) and \
+                not _helm_namespace(args, line_vars):
+            return _helm_releases(f"helm {pos[0]} without -n")
     if head == "sops" and any(a in ("-d", "--decrypt", "decrypt") for a in args) and \
             not any(a in ("-i", "--in-place") or a.startswith(("-o", "--output")) for a in args):
         return _prints("sops --decrypt")

@@ -279,6 +279,13 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("kubectl create secret generic x --from-literal=a=b --dry-run=client -o yaml"))
         self.assertTrue(deny("helm get manifest arc -n ci"))
         self.assertTrue(deny("helm -n ci get values arc"))
+        for cmd in ("helm list -A", "helm --kube-context prod list --all-namespaces", "helm ls -A -o json",
+                    "helm status arc", "helm get notes arc", "helm history arc", "helm --kube-context prod get hooks arc",
+                    "helm list", "helm ls --deployed"):
+            self.assertTrue(deny(cmd), cmd)        # Helm's release records, kept as Secrets (msg 01a1f649-9018)
+        for cmd in ("helm list -n ci", "helm status arc -n ci", "helm --namespace=ci get notes arc",
+                    "HELM_NAMESPACE=ci helm status arc", "helm -nci history arc", "helm repo list", "helm version"):
+            self.assertIsNone(deny(cmd), cmd)
         self.assertTrue(deny("sops -d secrets.enc.yaml"))
         self.assertTrue(deny("vault kv get secret/app"))
         self.assertTrue(deny("aws secretsmanager get-secret-value --secret-id prod/db"))
