@@ -54,6 +54,17 @@ class PolicyTest(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(check(argv)[0], "refused")
 
+    def test_of_servers_review_forms(self):
+        """of_server on 926562f5 (msg 01a1fa0e-dd4a): a help flag after `--`, an abbreviated --org, a prefix of
+        --help."""
+        self.assertEqual(check(["asks", "answered", "AS-1", "--", "-h"]), ["asks", "--help"])
+        self.assertEqual(check(["event", "injected_prompt", "--", "-h"]), ["event", "--help"])
+        for argv in (["who", "--or", "other-org"], ["asks", "--to-m"], ["loop", "show", "w", "--o", "x"],
+                     ["handover", "list", "--or=x"], ["event", "show", "01a1aaaa-0001", "--or", "x"],
+                     ["status", "--he"], ["who", "--he"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(check(argv)[0], "refused")
+
     def test_no_allowed_option_is_read_as_a_path(self):
         """Condition 2, for the review: each allowed option's value is text of stores or matches, never opens."""
         for cmd, rule in of_door.ALLOW.items():
@@ -92,6 +103,36 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(out["code"], 2)
         self.assertIn("its own Codex session", out["stderr"])
         self.assertEqual(got, {})
+
+    def test_a_request_that_is_not_strings_is_answered(self):
+        a, b = socket.socketpair()
+        door = {"position": "of_docs", "org": "orgA", "session": "thread-1", "pid": os.getpid(), "cwd": "/"}
+        t = threading.Thread(target=of_door.serve_one, args=(b, door, None, lambda *x: {"code": 0}))
+        t.start()
+        of_door._send(a, {"argv": ["who"], "stdin": 5})
+        out = of_door._recv(a, 1 << 20)
+        t.join(10)
+        self.assertEqual(out["code"], 2)
+
+    def test_a_silent_connection_times_out_and_a_busy_door_refuses(self):
+        from unittest import mock
+        a, b = socket.socketpair()
+        door = {"position": "of_docs", "org": "orgA", "session": "thread-1", "pid": os.getpid(), "cwd": "/"}
+        with mock.patch.object(of_door, "READ_S", 0.3):
+            out = of_door.serve_one(b, door, None, lambda *x: {"code": 0})
+        self.assertEqual(out["code"], 2)                                   # nothing sent: answered, closed
+        a.close()
+        slots = threading.BoundedSemaphore(1)
+        slots.acquire()
+        a, b = socket.socketpair()
+        t = threading.Thread(target=lambda: self.__setattr__("busy", of_door.serve_one(
+            b, door, None, lambda *x: {"code": 0}, slots=slots)))
+        t.start()
+        of_door._send(a, {"argv": ["who"], "stdin": ""})
+        out = of_door._recv(a, 1 << 20)
+        t.join(10)
+        self.assertEqual(out["code"], 2)
+        self.assertIn("at once", out["stderr"])
 
     def test_a_refused_request_never_runs(self):
         out, got = self.serve(["db", "stats"], os.getpid())
@@ -183,6 +224,9 @@ class EventShowTest(unittest.TestCase):
             self.conn.execute("INSERT INTO event VALUES (?, '2026-11-20T00:00:00Z', ?, ?, ?, '{\"text\": \"t\"}')",
                               (eid, name, pos, org))
         self.positions = [{"name": "of_docs", "_org": "orgA"}, {"name": "b_x", "_org": "orgB"}]
+        self.conn.execute("ALTER TABLE event ADD COLUMN session_id TEXT")
+        self.conn.execute("INSERT INTO event VALUES ('01a1aaaa-0004-7000-8000-000000000004', '2026-11-20T00:00:00Z', "
+                          "'of.human_prompt', 'of_docs', 'orgA', '{\"text\": \"p\"}', 'thread-1')")
 
     def test_an_ask_is_shown_and_other_kinds_or_organizations_are_not(self):
         ev = self.of.event_show(self.conn, "01a1aaaa-0001", "orgA", self.positions)
@@ -195,6 +239,10 @@ class EventShowTest(unittest.TestCase):
             self.of.event_show(self.conn, "01a1aaaa", "orgA", self.positions)          # too short to name one
         with self.assertRaises(self.of.OfError):
             self.of.event_show(self.conn, "01a1aaaa-000", "orgA", self.positions)      # more than one
+        ev = self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-1")
+        self.assertEqual(ev["name"], "of.human_prompt")                               # its own session's prompt
+        with self.assertRaises(self.of.OfError):
+            self.of.event_show(self.conn, "01a1aaaa-0004", "orgA", self.positions, own_session="thread-2")
 
 
 if __name__ == "__main__":
