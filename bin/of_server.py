@@ -2387,6 +2387,96 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
     return out
 
 
+def _secret_file(path):
+    """The password in PATH (0600, made with a random value when absent): bytes, never printed."""
+    if not os.path.exists(path):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(secrets.token_urlsafe(32) + "\n")
+    with open(path, "rb") as fh:
+        return fh.read().strip()
+
+
+def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_path=None):
+    """`of server clickhouse-init`, once, as the server's user on its host, before ClickHouse's first start: an admin
+    whose password only this command reads (users.d/admin.xml holds its sha256 alone), the unit enabled and started,
+    then deploy/clickhouse/schema.py's databases, tables, views and users, and the server's own user with its
+    databases' grants. Every password is a 0600 file made here; a second run keeps them. Prints nothing secret
+    (2026-11-20, of_server, with of_agent-server: the agent host's ClickHouse has no default user)."""
+    import importlib.util
+    import of_route
+    cfg = cfg or load_config()
+    ch = cfg.get("clickhouse") or {}
+    url, ca, user, pwfile = ch.get("url"), ch.get("ca"), ch.get("user"), ch.get("password_file")
+    if not (url and ca and user and pwfile) or not str(url).lower().startswith("https://"):
+        raise SystemExit("of server clickhouse-init: the config's clickhouse needs an https url, ca, user and "
+                         "password_file")
+    if not _DB.fullmatch(user):
+        raise SystemExit("of server clickhouse-init: the server's ClickHouse user is not a plain name")
+    pwdir = os.path.dirname(os.path.expanduser(pwfile))
+    os.makedirs(pwdir, mode=0o700, exist_ok=True)
+    os.chmod(pwdir, 0o700)
+    usersd = os.path.join(os.path.expanduser(cfg.get("clickhouse_config_dir") or "~/.config/of/clickhouse"), "users.d")
+    if not os.path.isdir(usersd):
+        raise SystemExit(f"of server clickhouse-init: no {usersd}: ClickHouse's config comes first")
+    admin_file = os.path.join(pwdir, "admin.password")
+    admin_pw = _secret_file(admin_file)
+    admin_xml = os.path.join(usersd, "admin.xml")
+    out = []
+    if not os.path.exists(admin_xml):
+        digest = hashlib.sha256(admin_pw).hexdigest()
+        fd = os.open(admin_xml, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("<clickhouse><users><admin>"
+                     f"<password_sha256_hex>{digest}</password_sha256_hex>"
+                     "<networks><ip>127.0.0.1</ip><ip>::1</ip></networks>"
+                     "<profile>default</profile><quota>default</quota>"
+                     "<access_management>1</access_management>"
+                     "</admin></users></clickhouse>\n")
+        out.append(f"wrote {admin_xml} (the admin's sha256 only)")
+    run = run or subprocess.run
+    run(["systemctl", "--user", "enable", "--now", "of-clickhouse.service"], capture_output=True, text=True,
+        check=True)
+    admin = (client or of_route.ClickHouse)({"url": url, "ca": ca, "user": "admin", "password_file": admin_file})
+    for _ in range(60):
+        try:
+            admin.post("SELECT 1", query_in_body=True, timeout=10)
+            break
+        except Exception:
+            sleep(1)
+    else:
+        raise SystemExit("of server clickhouse-init: ClickHouse did not answer at its https url in 60 s")
+    spec = importlib.util.spec_from_file_location(
+        "ch_schema", schema_path or os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "deploy",
+                                                 "clickhouse", "schema.py"))
+    schema = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schema)
+    orgs = cfg.get("orgs") or {}
+    org_dbs = sorted(set(orgs.values()))
+    vault = cfg.get("vault_database") or ROUTE_DEFAULTS["vault_database"]
+    unassigned = cfg.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]
+    if not org_dbs or not all(_DB.fullmatch(d) for d in [*org_dbs, vault, unassigned]):
+        raise SystemExit("of server clickhouse-init: the config's orgs name no plain database")
+    for u in schema.users(org_dbs, vault, unassigned):
+        _secret_file(os.path.join(pwdir, f"{u}.password"))
+    text = schema.schema(org_dbs, vault, unassigned, password_dir=pwdir)
+    own = _secret_file(os.path.expanduser(pwfile))
+    salt = secrets.token_hex(16)
+    text += (f"\nCREATE USER IF NOT EXISTS {user} IDENTIFIED WITH sha256_hash BY "
+             f"'{hashlib.sha256(own + salt.encode()).hexdigest()}' SALT '{salt}';\n")
+    text += "".join(f"GRANT ALL ON {db}.* TO {user};\n" for db in [*org_dbs, vault, unassigned])
+    statements = [x.strip() for x in re.split(r";\s*\n", text) if x.strip() and not x.strip().startswith("--")]
+    for i, stmt in enumerate(statements, 1):
+        try:
+            admin.post(stmt, query_in_body=True, timeout=120)
+        except Exception:
+            raise SystemExit(f"of server clickhouse-init: statement {i} of {len(statements)} failed "
+                             f"({stmt.split(None, 3)[:3]}); nothing secret is shown") from None
+    out.append(f"applied {len(statements)} statements: databases {', '.join([*org_dbs, vault, unassigned])}, "
+               f"users {len(schema.users(org_dbs, vault, unassigned)) + 1} (passwords in {pwdir}, 0600)")
+    return out
+
+
 def install_systemd(cfg=None, uninstall=False, run=None, units=None, units_dir=None):
     """`of server install|uninstall` on Linux: the server and its watchdog timer, enabled together. An active server
     whose unit changed is restarted on the new one; one already as it should be is left running."""
