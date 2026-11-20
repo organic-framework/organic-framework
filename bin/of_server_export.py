@@ -646,6 +646,9 @@ def import_store(conn, bundle, org, index_sha, identity=None, *, config=None, pl
                     raise ExportError(f"{table}: a row's key is held by another organization's row here "
                                       f"({type(e).__name__}); nothing imported") from None
             counts[table] = len(rows[table])
+        if "card_seeds" in _tables(conn):   # a moved organization is no new one: its keeper seeds its card ids
+            import of_server
+            of_server.mark_unseeded(conn, org)
         problems = check_store(conn, bundle, manifest=m)
         if problems:
             raise ExportError("the store would not match the bundle: " + "; ".join(problems) + "; nothing imported")
