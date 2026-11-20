@@ -887,12 +887,29 @@ class Writer(threading.Thread):
         for db in self._databases(router):
             counts[db] = self.ch.delete(db, table, keys, host)
         counts["disk"] = self._redact_files(table, set(keys), host, bid)
+        if table == "event":
+            counts["coord"] = self._redact_coord(keys, host)
         with self.store.conn() as c:
             old = json.loads((c.execute("SELECT counts FROM redactions WHERE redaction_id = ?",
                                         (spec["redaction_id"],)).fetchone() or ["{}"])[0] or "{}")
             merged = {k: max(v, old.get(k, 0)) for k, v in counts.items()}  # a retry finds less
             c.execute("UPDATE redactions SET counts = ? WHERE redaction_id = ?", (json.dumps(merged), spec["redaction_id"]))
         return merged
+
+    def _redact_coord(self, keys, host):
+        """An event's copy in its organization's coordination feed, which only its 30-day retention removed: a
+        redacted shared event kept its old record there, and every export carried it (of_secrets-review on
+        organic-framework PR 453). The replacement, inserted after this, is copied into the feed again."""
+        ids = [str(k[0]) for k in keys]
+        with self.store.conn() as c:
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coord'").fetchone():
+                return 0
+            n = 0
+            for i in range(0, len(ids), 500):
+                part = ids[i:i + 500]
+                sql = f"DELETE FROM coord WHERE event_id IN ({', '.join('?' * len(part))})"
+                n += c.execute(sql + (" AND host_id = ?" if host else ""), [*part, *([host] if host else [])]).rowcount
+        return n
 
     def _redact_files(self, table, keys, host, own_bid):
         """Dead batches only. Every queued batch received before this redaction is committed by now
