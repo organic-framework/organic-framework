@@ -1160,8 +1160,8 @@ def _guard_index(sid=None):
     return _registry_index()
 
 
-GUARD_FAILED = ("Organic Framework guard failed ({kind}), so the call is denied until the guard is fixed. Do not "
-                "retry it another way; tell of_server, which keeps the guard")
+GUARD_FAILED = ("Organic Framework guard failed ({kind}), so the call is denied until the guard is fixed; of_server "
+                "keeps the guard.")
 
 
 GUARD_DECIDED = False  # set once _guard has answered, allow or deny: main's catch-all denies before that point
@@ -1170,7 +1170,7 @@ GUARD_DECIDED = False  # set once _guard has answered, allow or deny: main's cat
 def _deny_failed(kind):
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
-        "permissionDecisionReason": GUARD_FAILED.format(kind=kind)}}, ensure_ascii=False))
+        "permissionDecisionReason": GUARD_FAILED.format(kind=kind) + NO_WAY_ROUND}}, ensure_ascii=False))
     sys.stdout.flush()
 
 
