@@ -378,7 +378,7 @@ class Client:
         self.token_path = os.path.join(state_dir or of_events.STATE_DIR, f"server-token-{tag}.json")
         self.machine_id = of_events.machine_id()
 
-    def _request(self, method, path, body=None, token=None, raw=None, encoding=None):
+    def _request(self, method, path, body=None, token=None, raw=None, encoding=None, timeout=None):
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
         headers = {"Content-Type": "application/json"}
         if encoding:
@@ -398,7 +398,7 @@ class Client:
         i = 0
         while True:
             try:
-                with self.opener(req, timeout=120, context=ctx) as r:
+                with self.opener(req, timeout=timeout or 120, context=ctx) as r:
                     return r.status, json.loads(r.read() or b"{}")
             except urllib.error.HTTPError as e:
                 try:
@@ -409,7 +409,7 @@ class Client:
                 if e.code == 410 and lost is not None and path.startswith("/v1/enroll"):
                     raise ServerError(410, "the code was used, most likely by this machine's first try whose "
                                            "response was lost: check `of shipped` and the receipts before re-enrolling")
-                if e.code in RETRY_STATUS and i < RETRIES - 1:
+                if e.code in RETRY_STATUS and i < RETRIES - 1 and timeout is None:
                     time.sleep(_backoff(i, retry_after))
                     i += 1
                     continue
@@ -419,7 +419,8 @@ class Client:
                     raise
                 lost = e
                 refused = isinstance(getattr(e, "reason", e), ConnectionRefusedError)
-                if i < RETRIES - 1 or (refused and time.monotonic() < deadline):
+                if timeout is None and (i < RETRIES - 1 or (refused and time.monotonic() < deadline)):
+                    # a call with its own timeout tries once: its caller has a fallback (of_events.card_ref)
                     time.sleep(min(REFUSED_MAX_WAIT_S, _backoff(i)))
                     i += 1
                     continue
@@ -505,6 +506,14 @@ class Client:
         """merge: add or update only these rows (docs/server.md, PUT /v1/presence); else replace the machine's set."""
         body = {"holders": holders, **({"merge": True} if merge else {})}
         return self._authed("PUT", "/v1/presence", body=body)[1]
+
+    def card_ref(self, org, prefix, event_id, floor, timeout=None):
+        """A card id for the ask EVENT_ID from the server's counter for PREFIX, which gives each number out once and the
+        same number again for the same event; FLOOR, this machine's highest number, keeps the counter above it
+        (of_architect, msg 01a1faa1-1fa0; of_server's side). Raises on no answer."""
+        out = self._authed("POST", "/v1/card-refs", body={"org": org, "prefix": prefix, "event_id": event_id,
+                                                          "floor": int(floor or 0)}, timeout=timeout)
+        return (out or {}).get("ref")
 
     def presence(self, org):
         from urllib.parse import quote

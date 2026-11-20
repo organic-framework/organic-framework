@@ -160,9 +160,12 @@ def record(kind, payload, *, position=None, org=None, session=None, source="of",
         # asks show, so ref_id, card_name and the projection's suffixes count the same set (of_review on PR 300)
         # a heuristic candidate is no card until the judge files it as one, which is stamped then (of_asks on PR 300:
         # candidates took five numbers in six)
-        try:  # the card's short id, stamped once when the ask is filed (every writer comes through here)
-            rec["of.payload"]["ref"] = next_ref(rec.get("of.org"))
-        except Exception:  # noqa: BLE001 - an ask is never lost for its id
+        try:  # the card's short id, from the organization's server when it is filed (every writer comes through here);
+            # a hook never waits on the network (Claude Code's hook timeout): its asks get theirs from the pulse
+            ref = card_ref(rec.get("of.org"), rec["of.event.id"]) if HOOK_TIMEOUT is None else None
+            if ref:
+                rec["of.payload"]["ref"] = ref
+        except Exception:  # noqa: BLE001 - an ask is never lost for its id: the pulse gets it later (backfill_refs)
             pass
     return rec
 
@@ -225,6 +228,71 @@ def next_ref(org):
         c[prefix] = int(c.get(prefix) or 0) + 1
         return f"{prefix}-{c[prefix]}"
     return _with_refs(take)
+
+
+CARD_REF_TIMEOUT_S = 3   # a filing waits this long for its server; past it the ask is filed without its id
+
+
+def _local_highest(prefix):
+    return _with_refs(lambda c: int(c.get(prefix) or 0))
+
+
+def card_ref(org, event_id, timeout=CARD_REF_TIMEOUT_S, client=None):
+    """The card id of the ask EVENT_ID of ORG, from its organization's server, which gives each number out once and
+    the same number again for the same event (of_architect, msg 01a1faa1-1fa0: card ids collided when two machines
+    numbered on their own counters with the coordination feed cut). The request carries this machine's highest
+    number, so the server's counter starts above every store's. None when the server cannot be reached: the card
+    shows its short event id until the pulse gets the number (backfill_refs). A lab run numbers on its machine."""
+    prefix = card_prefix(org)
+    url = None if client is not None else _org_server_url(org)
+    if os.environ.get("OF_LAB_RUN_ID") or not event_id or (client is None and not url):
+        return next_ref(org)   # no server of its own in orgs.yaml: its one machine numbers its asks
+    try:
+        if client is None:
+            import of_client
+            client = of_client.Client(url)
+        ref = client.card_ref(org, prefix, event_id, _local_highest(prefix), timeout=timeout)
+    except Exception as e:  # noqa: BLE001 - no server answer: no id now, the pulse asks again
+        if getattr(e, "status", None) in (404, 405):
+            return next_ref(org)   # a server without the counter yet: this machine numbers, as before
+        return None
+    if not (isinstance(ref, str) and REF_RE.match(ref) and ref.upper().startswith(prefix + "-")):
+        return None
+    seen_ref(ref)
+    return ref
+
+
+def _org_server_url(org, orgs_file=None):
+    """The server ORG's orgs.yaml entry names (`server:`), else None."""
+    try:
+        import yaml
+        with open(orgs_file or os.environ.get("OF_ORGS") or config_path("orgs.yaml")) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except Exception:  # noqa: BLE001
+        return None
+    for o in doc.get("orgs") or []:
+        if isinstance(o, dict) and org in (o.get("name"), o.get("id")) and o.get("server"):
+            return str(o["server"]).rstrip("/")
+    return None
+
+
+def backfill_refs(asks, here=None, log=print, ask=None):
+    """The open asks this machine filed without a card id get one from their server, recorded as of.ask_ref (its fixed
+    id, so a second pass or another machine records it once). Returns how many got one."""
+    here = here or machine_id()
+    n = 0
+    for a in sorted(asks, key=lambda x: x.get("ts") or ""):
+        if a.get("ref") or a.get("state") not in ("open", "escalated") or (a.get("host_id") or here) != here:
+            continue
+        org = a.get("org") or ask_org(a["event_id"])
+        ref = (ask or card_ref)(org, a["event_id"])
+        if not ref:
+            continue
+        emit("ask_ref", {"ask_id": a["event_id"], "ref": ref}, event_id=stable_id("ask_ref", a["event_id"]), org=org,
+             position=a.get("position"))
+        log(f"of pulse: {ref} for the ask {a['event_id'][-8:]} filed without its id")
+        n += 1
+    return n
 
 
 def seen_ref(ref):
