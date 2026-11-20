@@ -24,6 +24,7 @@ How a session is bound (Claude Code, checked on 2.1.322, 2026-11-11; docs/tools.
     `--strict-mcp-config` is not used: it would hide them.
 """
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -36,7 +37,17 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-KINDS = ("mcp-stdio", "mcp-remote", "plugin", "connector")
+CODEX_KINDS = ("codex-app", "codex-plugin", "codex-feature")
+KINDS = ("mcp-stdio", "mcp-remote", "plugin", "connector") + CODEX_KINDS
+# a codex-feature's values (docs/tools.md §4b); the two that drive a person's desktop or browser act as that person
+CODEX_FEATURES = ("image_generation", "web_search", "browser_use", "computer_use")
+CODEX_AS_PERSON = ("browser_use", "computer_use")
+# Codex features off for every session OF starts unless its profile names them (§4b): the desktop's browser and
+# computer controls, image generation, and what installs or suggests tools mid-session; apps and plugins separately
+CODEX_FEATURES_OFF = ("browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser",
+                      "computer_use", "in_app_local_automation", "image_generation", "remote_plugin", "tool_suggest",
+                      "recommended_plugins", "skill_mcp_dependency_install")
+LAUNCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 SCOPES = ("read", "write", "act-as-person")
 ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,47}$")
 ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -192,8 +203,16 @@ def check(docs):
                         out.append(f"{where}: shared.args is a list; {{port}} in it is replaced by the port")
             if kind in ("mcp-remote", "connector") and not e.get("url"):
                 out.append(f"{where}: a {kind} tool needs url")
-            if kind == "plugin" and not e.get("plugin"):
-                out.append(f"{where}: a plugin tool needs plugin: <name>@<marketplace>")
+            if kind in ("plugin", "codex-plugin") and not e.get("plugin"):
+                out.append(f"{where}: a {kind} tool needs plugin: <name>@<marketplace>")
+            if kind == "codex-app" and not (isinstance(e.get("app"), str) and e["app"]):
+                out.append(f"{where}: a codex-app tool needs app: <connector id>")
+            if kind == "codex-feature":
+                if e.get("feature") not in CODEX_FEATURES:
+                    out.append(f"{where}: a codex-feature's feature is one of {', '.join(CODEX_FEATURES)}")
+                elif e["feature"] in CODEX_AS_PERSON and "act-as-person" not in _as_list(e.get("scope")):
+                    out.append(f"{where}: {e['feature']} drives a person's desktop or browser: scope act-as-person, "
+                               f"with the owner's yes (docs/tools.md §2)")
             if "signin" in e and (not isinstance(e["signin"], str) or not e["signin"]
                                   or not (kind == "connector" or e.get("account_bound"))):
                 out.append(f"{where}: signin: <label> names a labelled sign-in, on an account_bound tool only")
@@ -482,8 +501,34 @@ def shared_url(org, tid, orgs_file=None, state_dir=None):
     return url
 
 
+def _is_codex(argv):
+    """Whether this command line is Codex's own process (its native binary, or its npm script under node)."""
+    if not argv:
+        return False
+    if os.path.basename(argv[0]) == "codex":
+        return True
+    return (os.path.basename(argv[0]).startswith("node") and len(argv) > 1
+            and os.path.basename(argv[1]) in ("codex", "codex.js"))
+
+
+def _codex_launch(argv):
+    """The launch id of `codex … -p of-<id>` (or `--profile of-<id>`, `--profile=of-<id>`), else None."""
+    for i, a in enumerate(argv):
+        if a in ("-p", "--profile"):
+            name = argv[i + 1] if i + 1 < len(argv) else ""
+        elif a.startswith("--profile="):
+            name = a[len("--profile="):]
+        else:
+            continue
+        if name.startswith("of-") and LAUNCH_ID_RE.match(name[3:]):
+            return name[3:]
+    return None
+
+
 def header(org, tid, docs=None, ancestors=None, state_dir=None, orgs_file=None):
-    """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper).
+    """The headers a session's MCP client sends to the shared server (Claude Code's headersHelper, Codex's
+    http_headers_helper). A Codex session passes as `codex … -p of-<launch id>` with <state>/tools/<launch id>.mcp.json
+    naming the tool's URL, the file codex_layer wrote at its start.
 
     The token goes only to a Claude Code process that OF launched with this tool: the nearest parent started with
     `--mcp-config <state>/tools/<session>.mcp.json` and `--session-id <session>` (or `--resume <session>`), whose file names this tool's shared
@@ -499,15 +544,23 @@ def header(org, tid, docs=None, ancestors=None, state_dir=None, orgs_file=None):
     tools_dir = os.path.realpath(os.path.join(state_dir or STATE_DIR, "tools"))
     for _pid, args in (ancestors if ancestors is not None else _ancestors()):
         argv = args.split()
-        if "--mcp-config" not in argv:
+        if _is_codex(argv):
+            # A Codex session OF started runs `codex … -p of-<launch id>`, and OF wrote <launch id>.mcp.json beside
+            # its layer (docs/tools.md §4b). Codex runs the helper through `sh -c`, so the session is its grandparent.
+            launch = _codex_launch(argv)
+            if not launch:
+                raise ToolsError("the calling Codex session was not launched by OF with its tool profile")
+            path = os.path.join(tools_dir, f"{launch}.mcp.json")
+        elif "--mcp-config" in argv:
+            path = argv[argv.index("--mcp-config") + 1] if argv.index("--mcp-config") + 1 < len(argv) else ""
+            # A move, a restart or `of resume-command` relaunches the session with `--resume <session>` (2026-11-14, a
+            # user organization: moved sessions got no token and Claude Code fell back to OAuth); the check is the same.
+            flag = next((f for f in ("--session-id", "--resume") if f in argv[:-1]), None)
+            sid = argv[argv.index(flag) + 1] if flag else None
+            if not sid or os.path.realpath(path) != os.path.join(tools_dir, f"{sid}.mcp.json"):
+                raise ToolsError("the calling Claude Code session was not launched by OF with its tool profile")
+        else:
             continue
-        path = argv[argv.index("--mcp-config") + 1] if argv.index("--mcp-config") + 1 < len(argv) else ""
-        # A move, a restart or `of resume-command` relaunches the session with `--resume <session>` (2026-11-14, a user
-        # organization: moved sessions got no token and Claude Code fell back to OAuth); the file check is the same.
-        flag = next((f for f in ("--session-id", "--resume") if f in argv[:-1]), None)
-        sid = argv[argv.index(flag) + 1] if flag else None
-        if not sid or os.path.realpath(path) != os.path.join(tools_dir, f"{sid}.mcp.json"):
-            raise ToolsError("the calling Claude Code session was not launched by OF with its tool profile")
         try:
             with open(path) as fh:
                 entry = (json.load(fh).get("mcpServers") or {}).get(tid) or {}
@@ -516,7 +569,7 @@ def header(org, tid, docs=None, ancestors=None, state_dir=None, orgs_file=None):
         if entry.get("url") != want:
             raise ToolsError(f"{tid} is not in the calling session's tool profile")
         return {"Authorization": f"Bearer {shared_token(org, tid, state_dir=state_dir)}"}
-    raise ToolsError("no calling Claude Code session launched by OF")
+    raise ToolsError("no calling Claude Code or Codex session launched by OF")
 
 
 def shared_units(docs, python=None, ofb=None, state_dir=None):
@@ -696,6 +749,8 @@ def session_config(position, doc, config_dir=None, ofb=None, installed=None, org
         elif kind in ("mcp-remote", "connector"):  # account-bound: the account's own definition and sign-in
             allowed.append({"serverUrl": e["url"]})
             bound.append(tid)
+        elif kind in CODEX_KINDS:
+            notes.append(f"{tid}: a Codex tool ({kind}); a Claude Code session has none of it")
         elif kind == "plugin":
             if e["plugin"] in banned:
                 notes.append(f"{tid}: plugin {e['plugin']} is in tools_excluded; skipped")
@@ -762,6 +817,107 @@ def launch_parts(position_name, sid, config_dir, orgs_file=None, state_dir=None,
     cfg = session_config(p, doc, config_dir, org=org, guard=guard)
     path = write_mcp_config(cfg, sid, state_dir)
     return (["--mcp-config", path] if path else []), cfg["settings"]
+
+
+# ---------- a position held by Codex (docs/tools.md §4b) ----------
+
+def seat_config(codex_home):
+    """The seat's own config.toml as a dict ({} when there is none or it cannot be read)."""
+    try:
+        import tomllib
+        with open(os.path.join(codex_home, "config.toml"), "rb") as fh:
+            c = tomllib.load(fh)
+        return c if isinstance(c, dict) else {}
+    except Exception:  # noqa: BLE001 - no file, no tomllib, or a broken file: nothing of the seat's is kept
+        return {}
+
+
+def codex_config(position, doc, seat=None, ofb=None, org=None, up=port_up):
+    """{"tables": the layer's tool tables (features, web_search, mcp_servers, apps, plugins), "mcp": the --mcp-config
+    shape of its servers (for the shared-server helper's file), "account_bound": [ids], "mode", "notes"} for this
+    position on a Codex seat whose config.toml is `seat`.
+
+    Unlike a Claude Code session's, the off-by-default part holds with no catalogue too: the seat's apps, plugins,
+    the desktop's browser and computer controls, image generation and web search are off unless the profile names
+    them (hand-over 68dfbcca; web search because no hook sees a hosted search on Codex, of_architect's message
+    01a1f8ea-b0ce)."""
+    seat = seat or {}
+    cat = doc.get("tools") or {}
+    claude = session_config(position, doc, None, ofb=ofb, installed=[], org=org, up=up)
+    mode, notes = claude["mode"], []
+    servers = {}
+    for tid, s in ((claude["mcp"] or {}).get("mcpServers") or {}).items():
+        if s.get("type") == "stdio":
+            t = {"command": s["command"], "args": list(s.get("args") or [])}
+            if s.get("env"):
+                t["env"] = dict(s["env"])
+        elif s.get("type") == "http":
+            t = {"url": s["url"]}
+            if s.get("headersHelper"):
+                t["http_headers_helper"] = s["headersHelper"]
+            if s.get("headers"):
+                t["http_headers"] = dict(s["headers"])
+        else:  # Codex speaks stdio and streamable HTTP only
+            notes.append(f"{tid}: a {s.get('type')} server; Codex has no such transport, skipped")
+            continue
+        servers[tid] = t
+    apps, plugins, features, bound = [], [], set(), []
+    for tid in claude["tools"]:
+        e = cat.get(tid)
+        if not isinstance(e, dict):
+            continue
+        kind = e.get("kind")
+        if kind == "codex-app" and e.get("app"):
+            apps.append(str(e["app"]))
+            bound.append(tid)
+        elif kind == "codex-plugin" and e.get("plugin"):
+            plugins.append(str(e["plugin"]))
+        elif kind == "codex-feature" and e.get("feature") in CODEX_FEATURES:
+            features.add(e["feature"])
+        elif kind in ("plugin", "connector") or (kind == "mcp-remote" and e.get("account_bound")):
+            notes.append(f"{tid}: a Claude Code {kind}; a Codex session has none of it (its portable form or a "
+                         f"Codex entry, docs/tools.md §4b)")
+    feat = {f: False for f in CODEX_FEATURES_OFF if f not in features}
+    feat["apps"] = bool(apps)
+    feat["plugins"] = bool(plugins)
+    tables = {"features": feat, "web_search": "live" if "web_search" in features else "disabled"}
+    if apps:
+        tables["apps"] = dict({"_default": {"enabled": False}}, **{a: {"enabled": True} for a in sorted(apps)})
+    if plugins:
+        tables["plugins"] = dict({"_default": {"enabled": False}}, **{p: {"enabled": True} for p in sorted(plugins)})
+    own = seat.get("mcp_servers") if isinstance(seat.get("mcp_servers"), dict) else {}
+    denied = excluded_urls(doc)
+    for name, s in own.items():
+        url = str((s or {}).get("url") or "") if isinstance(s, dict) else ""
+        if name in servers:
+            continue
+        if mode == "enforce" or (url and any(fnmatch.fnmatchcase(url, u) for u in denied)):
+            servers[name] = {"enabled": False}
+    for key in ("mcp_servers", "apps", "plugins"):
+        if seat.get(key):
+            notes.append(f"the seat's own config.toml defines {key}; OF keeps a seat's file free of tools "
+                         f"(docs/tools.md §4b)")
+    if servers:
+        tables["mcp_servers"] = servers
+    if mode == "add":
+        notes.append("tools_mode add: the seat's own servers stay; its apps, plugins and Codex's own outward tools "
+                     "are off unless the profile names them, in both modes")
+    return {"position": position.get("name"), "tools": claude["tools"], "tables": tables, "mcp": claude["mcp"],
+            "account_bound": bound, "mode": mode, "notes": notes}
+
+
+def codex_layer(position_name, launch_id, codex_home, orgs_file=None, state_dir=None):
+    """For of spawn and of resume-command on Codex: the tool tables of the session's layer
+    ($CODEX_HOME/of-<launch_id>.config.toml, started with `codex -p of-<launch_id>`; of_platform merges them with its
+    own and writes the file). `launch_id` is OF's id for this start, picked before it (of_platform, message
+    01a1f971-8999). It also writes <state>/tools/<launch_id>.mcp.json, the file the shared-server helper checks."""
+    if not LAUNCH_ID_RE.match(str(launch_id)):
+        raise ToolsError(f"a launch id is letters, digits and -, at most 64: {launch_id!r}")
+    docs = registries(orgs_file)
+    org, p, doc = find_position(position_name, docs)
+    cfg = codex_config(p, doc, seat_config(codex_home), org=org)
+    write_mcp_config(cfg, launch_id, state_dir)
+    return cfg["tables"]
 
 
 # ---------- the inventory ----------
@@ -972,6 +1128,8 @@ def main(argv=None):
     pl = sub.add_parser("plan", help="the session config the launcher generates for a position on an account")
     pl.add_argument("position")
     pl.add_argument("--config-dir")
+    pl.add_argument("--codex", action="store_true", help="the tool tables of a Codex session's layer (docs/tools.md §4b)")
+    pl.add_argument("--codex-home", help="the Codex seat's CODEX_HOME (default: $CODEX_HOME or ~/.codex)")
     pl.add_argument("--json", action="store_true")
     ad = sub.add_parser("adopt-url", help="write a Codex MCP server's URL (with its key) into a mode-600 file, unprinted")
     ad.add_argument("server")
@@ -1028,6 +1186,19 @@ def main(argv=None):
         if a.cmd == "plan":
             docs = registries()
             org, p, doc = find_position(a.position, docs)
+            if a.codex:
+                home = a.codex_home or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+                cx = codex_config(p, doc, seat_config(home), org=org)
+                if a.json:
+                    print(json.dumps(cx, indent=1))
+                    return 0
+                print(f"{org}:{cx['position']} tools: {', '.join(cx['tools']) or 'none'} (Codex, seat {home})")
+                if cx["account_bound"]:
+                    print(f"bound to the seat's sign-in: {', '.join(cx['account_bound'])}")
+                print("layer tables (of-<launch id>.config.toml):", json.dumps(cx["tables"], indent=1))
+                for n in cx["notes"]:
+                    print("note:", n)
+                return 0
             cfg = session_config(p, doc, a.config_dir, org=org,
                                  guard=signin_guard(p, doc, signin_labels(a.config_dir), docs))
             if a.json:

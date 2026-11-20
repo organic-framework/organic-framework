@@ -492,5 +492,149 @@ class ShapeTest(unittest.TestCase):
         self.assertNotIn("url_key", s)
 
 
+class CodexTest(unittest.TestCase):
+    """A position held by Codex (docs/tools.md §4b)."""
+
+    def doc(self, mode="enforce"):
+        d = dict(DOC, tools_mode=mode, tools=dict(DOC["tools"]), positions=list(DOC["positions"]))
+        d["tools"]["grafana-read"] = dict(DOC["tools"]["grafana-read"], shared={
+            "port": 18310, "args": [], "token_env": "MCP_GRAFANA_SERVER_TOKEN"})
+        d["tools"].update({
+            "cx-drive": {"kind": "codex-app", "app": "connector_drive", "acts_as": "the seat's ChatGPT user",
+                         "scope": "read", "keeper": "acme_org"},
+            "cx-review": {"kind": "codex-plugin", "plugin": "review@openai-curated", "acts_as": "nobody (skills)",
+                          "scope": "read", "keeper": "acme_org"},
+            "cx-search": {"kind": "codex-feature", "feature": "web_search", "acts_as": "OpenAI's hosted search",
+                          "scope": "read", "keeper": "acme_org"},
+        })
+        d["positions"].append({"name": "codex_keeper", "unit": "obs",
+                               "tools": ["cx-drive", "cx-review", "cx-search", "slack"]})
+        return d
+
+    def pos(self, d, name):
+        return next(x for x in d["positions"] if x["name"] == name)
+
+    def test_off_unless_the_profile_names_it(self):
+        d = self.doc()
+        cx = of_tools.codex_config(self.pos(d, "acme_org"), d, ofb="/of/bin/of", org="acme", up=lambda p: False)
+        t = cx["tables"]
+        self.assertFalse(t["features"]["apps"])
+        self.assertFalse(t["features"]["plugins"])
+        for f in ("computer_use", "browser_use", "image_generation", "tool_suggest", "remote_plugin"):
+            self.assertFalse(t["features"][f], f)
+        self.assertEqual(t["web_search"], "disabled")
+        self.assertNotIn("apps", t)
+        self.assertNotIn("plugins", t)
+        # no catalogue at all: still off
+        bare = {"positions": [{"name": "x"}]}
+        t = of_tools.codex_config(bare["positions"][0], bare, org="acme")["tables"]
+        self.assertFalse(t["features"]["apps"])
+        self.assertEqual(t["web_search"], "disabled")
+
+    def test_the_profile_turns_on_its_apps_plugins_and_features_alone(self):
+        d = self.doc()
+        cx = of_tools.codex_config(self.pos(d, "codex_keeper"), d, ofb="/of/bin/of", org="acme", up=lambda p: True)
+        t = cx["tables"]
+        self.assertTrue(t["features"]["apps"])
+        self.assertEqual(t["apps"], {"_default": {"enabled": False}, "connector_drive": {"enabled": True}})
+        self.assertTrue(t["features"]["plugins"])
+        self.assertEqual(t["plugins"], {"_default": {"enabled": False}, "review@openai-curated": {"enabled": True}})
+        self.assertFalse(t["features"]["remote_plugin"])
+        self.assertEqual(t["web_search"], "live")
+        self.assertFalse(t["features"]["computer_use"])
+        self.assertEqual(cx["account_bound"], ["cx-drive"])
+        # the shared server through Codex's helper; a Claude plugin gives nothing and is named
+        self.assertEqual(t["mcp_servers"]["grafana-read"], {
+            "url": "http://127.0.0.1:18310/mcp",
+            "http_headers_helper": "python3 /of/bin/of_tools.py header acme/grafana-read"})
+        self.assertTrue(any(n.startswith("slack: a Claude Code plugin") for n in cx["notes"]))
+        self.assertNotIn("slack", t["mcp_servers"])
+
+    def test_a_stdio_server_keeps_the_broker_in_front(self):
+        d = self.doc()
+        s = of_tools.codex_config(self.pos(d, "obs_keeper"), d, ofb="/of/bin/of", org="acme",
+                                  up=lambda p: False)["tables"]["mcp_servers"]["grafana-read"]
+        self.assertEqual(s["command"], "/of/bin/of")
+        self.assertEqual(s["args"][:2], ["secret", "run"])
+        self.assertEqual(s["env"], {"GRAFANA_URL": "https://grafana.example"})
+
+    def test_the_seats_own_servers_are_off_under_enforce_and_an_excluded_url_in_both(self):
+        seat = {"mcp_servers": {"seat-own": {"command": "/bin/x"}, "slackish": {"url": "https://mcp.slack.com/mcp"}}}
+        d = self.doc()
+        d["tools_excluded"] = [{"url": "https://mcp.slack.com/*", "basis": "ask 1"}]
+        cx = of_tools.codex_config(self.pos(d, "acme_org"), d, seat=seat, org="acme", up=lambda p: False)
+        self.assertEqual(cx["tables"]["mcp_servers"], {"seat-own": {"enabled": False}, "slackish": {"enabled": False}})
+        self.assertTrue(any("defines mcp_servers" in n for n in cx["notes"]))
+        d = self.doc("add")
+        d["tools_excluded"] = [{"url": "https://mcp.slack.com/*", "basis": "ask 1"}]
+        cx = of_tools.codex_config(self.pos(d, "acme_org"), d, seat=seat, org="acme", up=lambda p: False)
+        self.assertEqual(cx["tables"]["mcp_servers"], {"slackish": {"enabled": False}})
+
+    def test_a_claude_session_skips_the_codex_kinds(self):
+        d = self.doc()
+        c = of_tools.session_config(self.pos(d, "codex_keeper"), d, ofb="/of/bin/of", installed=[], org="acme",
+                                    up=lambda p: False)
+        self.assertTrue(any("cx-drive: a Codex tool" in n for n in c["notes"]))
+        self.assertNotIn("review@openai-curated", c["settings"].get("enabledPlugins") or {})
+
+    def test_check_the_codex_kinds(self):
+        d = self.doc()
+        self.assertEqual([p for p in of_tools.check({"acme": d}) if "cx-" in p], [])
+        d["tools"]["cx-bad"] = {"kind": "codex-feature", "feature": "computer_use", "acts_as": "the owner",
+                                "scope": "write", "keeper": "acme_org"}
+        d["tools"]["cx-noapp"] = {"kind": "codex-app", "acts_as": "x", "scope": "read", "keeper": "acme_org"}
+        d["tools"]["cx-odd"] = {"kind": "codex-feature", "feature": "teleport", "acts_as": "x", "scope": "read",
+                                "keeper": "acme_org"}
+        probs = of_tools.check({"acme": d})
+        self.assertTrue(any("cx-bad" in p and "act-as-person" in p for p in probs))
+        self.assertTrue(any("cx-noapp" in p and "app:" in p for p in probs))
+        self.assertTrue(any("cx-odd" in p and "one of" in p for p in probs))
+
+    def test_the_layer_writes_the_helpers_file_and_refuses_an_odd_launch_id(self):
+        import tempfile
+        import unittest.mock as mock
+        d = self.doc()
+        with tempfile.TemporaryDirectory() as st, \
+                mock.patch.object(of_tools, "registries", return_value={"acme": d}), \
+                mock.patch.object(of_tools, "port_up", return_value=True):
+            t = of_tools.codex_layer("obs_keeper", "0b9e-launch-1", os.path.join(st, "seat"), state_dir=st)
+            self.assertIn("grafana-read", t["mcp_servers"])
+            with open(os.path.join(st, "tools", "0b9e-launch-1.mcp.json")) as fh:
+                self.assertEqual(json.load(fh)["mcpServers"]["grafana-read"]["url"], "http://127.0.0.1:18310/mcp")
+            for bad in ("../x", "a/b", "", "-x"):
+                with self.assertRaises(of_tools.ToolsError):
+                    of_tools.codex_layer("obs_keeper", bad, st, state_dir=st)
+
+    def test_the_helper_accepts_a_codex_session_by_its_layer(self):
+        import tempfile
+        d = self.doc()
+        with tempfile.TemporaryDirectory() as st:
+            tok = of_tools.serve_command("acme", "grafana-read", d, ofb="/of/bin/of", state_dir=st)[1][
+                "MCP_GRAFANA_SERVER_TOKEN"]
+            with open(os.path.join(st, "tools", "L1.mcp.json"), "w") as fh:
+                json.dump({"mcpServers": {"grafana-read": {"type": "http", "url": "http://127.0.0.1:18310/mcp"}}}, fh)
+            with open(os.path.join(st, "tools", "L2.mcp.json"), "w") as fh:
+                json.dump({"mcpServers": {}}, fh)
+            helper = (12, "python3 /of/bin/of_tools.py header acme/grafana-read")
+
+            def chain(cmd):
+                return [(11, "sh -c python3 /of/bin/of_tools.py header acme/grafana-read"), (10, cmd)]
+            for ok in ("/opt/codex/bin/codex -p of-L1", "codex --profile of-L1 resume abc",
+                       "node /usr/lib/node_modules/@openai/codex/bin/codex.js --profile=of-L1"):
+                self.assertEqual(of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=chain(ok), state_dir=st),
+                                 {"Authorization": f"Bearer {tok}"}, ok)
+            for bad in ("codex -p of-L2",            # its profile lacks the tool
+                        "codex -p of-L9",            # no file OF wrote
+                        "codex -p mine",             # not OF's layer
+                        "codex",                     # no layer at all
+                        "codex -p of-../L1"):        # a path in the id
+                with self.assertRaises(of_tools.ToolsError, msg=bad):
+                    of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=chain(bad), state_dir=st)
+            # an agent's shell under the Codex session cannot borrow another layer's id: the nearest Codex decides
+            anc = [helper, (11, "bash -c true -p of-L1"), (10, "codex -p of-L2")]
+            with self.assertRaises(of_tools.ToolsError):
+                of_tools.header("acme", "grafana-read", {"acme": d}, ancestors=anc, state_dir=st)
+
+
 if __name__ == "__main__":
     unittest.main()
