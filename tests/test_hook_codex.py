@@ -37,8 +37,59 @@ def fire(tool, tool_input, cwd="/w"):
     return out.getvalue()
 
 
+def run_main(event, payload):
+    """of_hook.main as Codex runs it: (exit code, stdout, stderr)."""
+    of_hook.OUTPUT = None
+    out, err = io.StringIO(), io.StringIO()
+    stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps(payload))
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = of_hook.main([event])
+    finally:
+        sys.stdin = stdin
+        of_hook.CODEX[0] = False
+    return code, out.getvalue(), err.getvalue()
+
+
 def patch(*entries):
     return "\n".join(["*** Begin Patch", *entries, "*** End Patch"])
+
+
+class CodexAnswerTest(unittest.TestCase):
+    """A Codex session's refusals leave as exit 2 with the reason on stderr (of_review on organic-framework PR 475:
+    a line printed by the user's shell start files makes a JSON deny unparsable, and Codex runs the call)."""
+
+    BASE = {"session_id": "codex-thread-1", "cwd": "/w", "turn_id": "t1", "model": "gpt",
+            "permission_mode": "bypassPermissions", "tool_use_id": "u1"}
+
+    def test_a_deny_is_exit_2_with_its_reason_and_nothing_on_stdout(self):
+        code, out, err = run_main("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+                                                     tool_input={"command": "cat ~/" + KEY}))
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Organic Framework", err)
+
+    def test_an_allowed_call_is_exit_0(self):
+        code, out, err = run_main("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+                                                     tool_input={"command": "ls"}))
+        self.assertEqual(code, 0)
+        self.assertIsNone(of_hook.codex_refusal(out or "{}"))
+
+    def test_each_refusal_shape_is_read(self):
+        self.assertEqual(of_hook.codex_refusal(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest", "decision": {"behavior": "deny", "message": "no"}}})), "no")
+        self.assertEqual(of_hook.codex_refusal(json.dumps({"decision": "block", "reason": "mention"})), "mention")
+        self.assertIsNone(of_hook.codex_refusal(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}})))
+        self.assertIsNone(of_hook.codex_refusal("not json"))
+
+    def test_a_claude_session_still_answers_json(self):
+        p = {"session_id": "claude-1", "cwd": "/w", "transcript_path": "/home/alex/.claude/projects/w/claude-1.jsonl",
+             "permission_mode": "bypassPermissions", "tool_use_id": "u1", "hook_event_name": "PreToolUse",
+             "tool_name": "Bash", "tool_input": {"command": "cat ~/" + KEY}}
+        code, out, _ = run_main("PreToolUse", p)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 class PatchCalls(unittest.TestCase):

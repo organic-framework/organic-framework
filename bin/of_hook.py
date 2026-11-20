@@ -2118,6 +2118,56 @@ def _timing(event, hook, started):
         pass
 
 
+def codex_refusal(text):
+    """The reason when TEXT, a hook answer, refuses: a PreToolUse deny, a PermissionRequest deny or a UserPromptSubmit
+    block; else None."""
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    spec = d.get("hookSpecificOutput") if isinstance(d.get("hookSpecificOutput"), dict) else {}
+    if spec.get("permissionDecision") == "deny":
+        return str(spec.get("permissionDecisionReason") or "Organic Framework denied this call.")
+    dec = spec.get("decision") if isinstance(spec.get("decision"), dict) else {}
+    if dec.get("behavior") == "deny":
+        return str(dec.get("message") or "Organic Framework denied this request.")
+    if d.get("decision") == "block":
+        return str(d.get("reason") or "Organic Framework blocked this prompt.")
+    return None
+
+
+class _CodexAnswer:
+    """stdout for a Codex session's hook: an answer that refuses goes out as its reason on stderr and the process
+    exits 2, Codex's deny or block for PreToolUse, PermissionRequest and UserPromptSubmit alike (codex-rs
+    hooks/src/events at rust-v0.170.0). Codex parses stdout strictly, whole, as one JSON object, and runs the hook
+    under the session's shell, whose start files (~/.zshenv, $BASH_ENV, a login profile) are the user's and may print:
+    one printed line would make a JSON deny unparsable, and Codex then runs the call (of_review on organic-framework
+    PR 475, probed). Every other answer passes through as written. Each write is judged when it is flushed or the
+    hook ends, so a decision still leaves before the recording that follows it."""
+
+    def __init__(self, real):
+        self.real, self.buf, self.code = real, "", 0
+
+    def write(self, s):
+        self.buf += s
+        return len(s)
+
+    def flush(self):
+        text, self.buf = self.buf, ""
+        if not text:
+            return
+        why = codex_refusal(text)
+        if why is None:
+            self.real.write(text)
+            self.real.flush()
+            return
+        sys.stderr.write(why.rstrip() + "\n")
+        sys.stderr.flush()
+        self.code = 2
+
+
 def main(argv):
     global DENY_SECRETS_FLAG
     of_events.HOOK_TIMEOUT = HOOK_DB_TIMEOUT
@@ -2125,14 +2175,18 @@ def main(argv):
     DENY_SECRETS_FLAG = "--deny-secrets" in argv  # gates the @mention prompt block (of_architect, 2026-11-06)
     started = _T0
     hook = {}
+    answer = None
     try:
         raw = sys.stdin.read(4 * 1024 * 1024)
         hook = json.loads(raw) if raw.strip() else {}
         event = hook.get("hook_event_name") or event
+        if is_codex(hook):
+            answer = sys.stdout = _CodexAnswer(sys.stdout)
         _store_raw(event, hook, raw)
         handle(event, hook)
         if OUTPUT:
             sys.stdout.write(json.dumps(OUTPUT, ensure_ascii=False))
+            sys.stdout.flush()
         if event in ("Stop", "SessionEnd", "PreCompact") and hook.get("transcript_path"):
             _ingest_detached(hook["transcript_path"])
         if event == "SessionEnd" and hook.get("transcript_path"):  # the raw tier keeps the session's file as it ended
@@ -2145,6 +2199,9 @@ def main(argv):
             pass
         if event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
             _deny_failed(type(e).__name__)   # (of_secrets-review on organic-framework PR 469)
+    if answer is not None:
+        answer.flush()
+        sys.stdout = answer.real
     if event in ("PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
         _timing(event, hook, started)
-    return 0
+    return answer.code if answer is not None else 0
