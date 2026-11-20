@@ -832,7 +832,7 @@ def seat_config(codex_home):
         return {}
 
 
-def codex_config(position, doc, seat=None, ofb=None, org=None, up=port_up):
+def codex_config(position, doc, seat=None, ofb=None, org=None, up=None):
     """{"tables": the layer's tool tables (features, web_search, mcp_servers, apps, plugins), "mcp": the --mcp-config
     shape of its servers (for the shared-server helper's file), "account_bound": [ids], "mode", "notes"} for this
     position on a Codex seat whose config.toml is `seat`.
@@ -843,6 +843,9 @@ def codex_config(position, doc, seat=None, ofb=None, org=None, up=port_up):
     01a1f8ea-b0ce)."""
     seat = seat or {}
     cat = doc.get("tools") or {}
+    # read at the call, not bound as a default when the module loads, so a test's patch reaches it (of_review, PR 470:
+    # CI failed where nothing listens on the port, and this Mac passed only because its shared server answers)
+    up = up or port_up
     claude = session_config(position, doc, None, ofb=ofb, installed=[], org=org, up=up)
     mode, notes = claude["mode"], []
     servers = {}
