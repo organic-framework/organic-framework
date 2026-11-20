@@ -88,7 +88,8 @@ Built 2026-11-05 by `of_server` (`bin/of_server_relay.py`), accepted by `of_arch
 - the relay store's row keeps its addresses, state and times, and its text and `body_sha` become the mark's, with the freed bytes zeroed and the WAL truncated;
 - the relay's own `of.message_sent` event, which carried the text into storage, is replaced through a redaction batch the server queues as its own tenant (Redaction, below);
 - the card is named in the reason the server's `of.redacted` carries, and in the host's own `of.redacted`;
-- the result names the message and event ids, never text.
+- the result names the message and event ids, never text;
+- it reaches only the server. The text also lies in the sending and receiving sessions' transcripts, their raw copies and the receiver's own records. So a relay redaction pairs with a register entry for each of those sessions (docs/storage.md), on a card that names them (`of_review` and `of_secrets-review` on organic-framework PR 491).
 
 Delivery is at least once; receivers deduplicate by `msg_id`.
 
