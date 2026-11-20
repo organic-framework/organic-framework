@@ -30,9 +30,10 @@ class Storage:
     def describe(self):
         return type(self).__name__
 
-    def message_events(self, database, msg_ids):
+    def message_events(self, database, msg_ids, since):
         """Whole rows of the relay's own events about MSG_IDS that carry a message's text (of.message_sent from
-        of-server), for a redaction's replacement (of_server.relay_redact). A storage that cannot read rows says so."""
+        of-server), from SINCE on (the messages' own time: tests/test_log_reads, no read of a whole event table), for a
+        redaction's replacement (of_server.relay_redact). A storage that cannot read rows says so."""
         raise NotImplementedError(f"{type(self).__name__} cannot read rows back")
 
 
@@ -59,11 +60,12 @@ class ClickHouseStorage(Storage):
                     out.add(tuple(int(v) if c == "local_id" else str(v) for c, v in zip(cols, json.loads(line))))
         return out
 
-    def message_events(self, database, msg_ids):
+    def message_events(self, database, msg_ids, since):
         ids = ", ".join(_sql_str(i) for i in msg_ids)
         if not ids:
             return []
-        body = self.ch.post(f"SELECT * FROM {database}.event WHERE host_id = 'of-server' AND name = 'of.message_sent'"
+        body = self.ch.post(f"SELECT * FROM {database}.event WHERE ts >= parseDateTime64BestEffort({_sql_str(since)}, 3)"
+                            " AND host_id = 'of-server' AND name = 'of.message_sent'"
                             f" AND JSONExtractString(payload, 'msg_id') IN ({ids}) AND JSONHas(payload, 'text')"
                             " FORMAT JSONEachRow", auth=self.ch.redact_auth(database), query_in_body=True)
         return [json.loads(line) for line in body.decode().splitlines() if line.strip()]
@@ -185,12 +187,12 @@ class SQLiteStorage(Storage):
                 n += c.execute(q, args).rowcount
         return n
 
-    def message_events(self, database, msg_ids):
+    def message_events(self, database, msg_ids, since):
         want, out = set(msg_ids), []
         with self.lock:
             c = self._conn(database)
-            for (row,) in c.execute("SELECT row FROM event WHERE json_extract(row, '$.name') = 'of.message_sent' AND "
-                                    "json_extract(row, '$.host_id') = 'of-server'"):
+            for (row,) in c.execute("SELECT row FROM event WHERE ts >= ? AND json_extract(row, '$.name') = "
+                                    "'of.message_sent' AND json_extract(row, '$.host_id') = 'of-server'", (since,)):
                 d = json.loads(row)
                 try:
                     p = json.loads(d.get("payload") or "{}")
