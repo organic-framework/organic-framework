@@ -18,7 +18,7 @@ Two contours share nothing on the machine but the kernel, the keepers' root-owne
 - by the origin itself where it can refuse them, as a bare repository does with `receive.denyNonFastForwards` and `receive.denyDeletes`;
 - where the code host cannot, two more things are needed. GitHub's free plan has no rules for a private repository.
   - **A guard rule.** It refuses a forced push (`--force`, `-f`, a `+` refspec, `--mirror`), a deletion (`--delete`, a `:<branch>` refspec), and a branch other than `main` or a tag, to that origin, in every agent's session. No rule does this yet: `of_server` adds it.
-  - **A mirror on the machine that stays.** It fetches the origin's `main` without force, `git fetch origin main:main` in a bare repository with `receive.denyNonFastForwards`, on a timer. A rewritten history then fails the fetch and is reported, and the mirror keeps every commit it had. `of_agent-server` sets it up.
+  - **A mirror on the machine that stays.** It fetches the origin's `main` into a bare repository on a timer, with a refspec that has no `+` (`git fetch origin main:main`), so git refuses to move it when the new history does not contain the old. A rewritten history then fails the fetch and is reported, and the mirror keeps every commit it had. `of_agent-server` sets it up.
 
 Until both exist, no position other than the one that already pushes to that host pushes there.
 
