@@ -166,6 +166,18 @@ class GuardBashTest(unittest.TestCase):
                   "python3 -c \"import os; getattr(os, 'sys'+'tem')('" + P + "')\"",
                   "python3 -c \"import os as o; o.execvp('" + P + "', ['" + P + "'])\"",
                   "python3 -c \"from os import *; execvp('" + P + "', ['" + P + "'])\"",
+                  # of_server's siblings (msg 01a1f880-df45)
+                  "python3 -c \"import os; vars(os)['system']('" + P + "')\"",
+                  "python3 -c \"import os; os.__dict__['system']('" + P + "')\"",
+                  "python3 -c \"import importlib; importlib.import_module('os').system('" + P + "')\"",
+                  "python3 -c \"import operator, os; operator.methodcaller('system', '" + P + "')(os)\"",
+                  "python3 -c \"import os; [os.system][0]('" + P + "')\"",
+                  "python3 -c \"import os; (lambda f: f('" + P + "'))(os.system)\"",
+                  "python3 -c \"import os; f = os.system; f('" + P + "')\"",
+                  "python3 -c \"from os import system as s; s('" + P + "')\"",
+                  "python3 -c \"import subprocess as sp; sp.run('" + P + "', shell=True)\"",
+                  "python3 -c \"import os; os.execvp('" + P + "', ['" + P + "'])\"",
+                  "python3 -c \"import os; os.spawnlp(os.P_WAIT, '" + P + "', '" + P + "')\"",
                   "perl -e 'system \"" + P + "\"'", "perl -e 'print readpipe(\"" + P + "\")'",
                   "perl -e 'open(my $f, \"-|\", \"" + P + "\"); print <$f>'"):
             self.assertTrue(deny(c), c)
