@@ -187,6 +187,8 @@ CAT = {  # of_credentials.load()'s shape: two organizations, absolute paths
                "credentials": {"x": {"paths": ["/h/.config/globex/x.cfg"], "keeper": "k"}}, "positions": {}}}
 
 
+# CI runs on Linux, where the settings carry the sandbox block (SandboxBlock tests it)
+@__import__("unittest.mock", fromlist=["patch"]).patch.object(__import__("of_spawn"), "PLATFORM", "darwin")
 class CredentialDenyTest(unittest.TestCase):
     def test_rules_deny_what_the_position_may_not_use(self):
         self.assertEqual(of_spawn.deny_rules("app_dev", "acme", CAT, named=False, roots=False), [])  # both layers off: nothing
@@ -323,7 +325,9 @@ class SandboxBlock(unittest.TestCase):
 
     def test_linux_sessions_get_the_sandbox_and_macos_none(self):
         deny = ["Read(//home/alex/.config/other/**)", "Edit(//home/alex/.config/other/**)", "Read(//home/alex/x/*.key)"]
-        s = json.loads(of_spawn.session_settings(None, deny, platform="linux"))
+        from unittest import mock
+        with mock.patch.object(of_spawn, "_accounts_dirs", return_value=["/home/alex/.claude"]):
+            s = json.loads(of_spawn.session_settings(None, deny, platform="linux"))
         box = s["sandbox"]
         self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
@@ -331,9 +335,18 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual(box["filesystem"]["denyWrite"], box["filesystem"]["denyRead"])   # never written either
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
-        self.assertEqual(box["network"], {"allowAllUnixSockets": True, "allowedDomains": []})
+        self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
+        self.assertIn("github.com", box["network"]["allowedDomains"])                # bypass mode: the list binds
+        self.assertIn("/home/alex/.claude/projects", box["filesystem"]["denyRead"])   # transcripts
+        self.assertIn("/home/alex/.claude/.credentials.json", box["filesystem"]["denyRead"])   # the account's sign-in
         self.assertEqual(s["permissions"]["deny"], deny)                            # the file tools' rules unchanged
         self.assertNotIn("sandbox", json.loads(of_spawn.session_settings(None, deny, platform="darwin")))
+
+    def test_other_sessions_scratch_is_denied_and_its_own_allowed(self):
+        import of_scratch
+        box = of_spawn.sandbox_settings([], platform="linux", scratch=("/home/alex/repo", "SID-1"))
+        self.assertIn(of_scratch.base_dir(), box["filesystem"]["denyRead"])
+        self.assertIn(os.path.join(of_scratch.base_dir(), "-home-alex-repo", "SID-1"), box["filesystem"]["allowRead"])
 
     def test_a_glob_is_its_matches_when_the_session_starts(self):
         import tempfile

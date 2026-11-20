@@ -31,6 +31,8 @@ def p(name="storefront_checkout", unit="shop", org_memory=None, **kw):
     return d
 
 
+# CI runs on Linux, where the settings carry the sandbox block (SandboxBlock tests it)
+@__import__("unittest.mock", fromlist=["patch"]).patch.object(__import__("of_spawn"), "PLATFORM", "darwin")
 class ScopeTest(unittest.TestCase):
     def test_the_nearest_setting_wins_and_the_default_is_the_position(self):
         self.assertEqual(of_memory.scope_id(p()), "storefront_checkout")

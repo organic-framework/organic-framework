@@ -17,6 +17,8 @@ import of_spawn  # noqa: E402
 SID = "00000000-0000-4000-8000-00000000a001"  # made up: no real session id in a published tree
 
 
+# CI runs on Linux, where the settings carry the sandbox block (SandboxBlock tests it)
+@__import__("unittest.mock", fromlist=["patch"]).patch.object(__import__("of_spawn"), "PLATFORM", "darwin")
 class ResumeCommandTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
