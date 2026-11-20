@@ -164,6 +164,20 @@ Accepted by `of_architect` 2026-11-06 for `of redact <sha|session> --reason` (`o
 - **`GET /v1/redactions/{redaction_id}`** → `{"state": "queued" | "done" | "failed" | "cancelled", "counts", "error"}`; a failed one is retried like a batch and becomes `failed` after 8 attempts, with a `server_alert`. The tenant's keeper may cancel a queued redaction by hand (batch and redaction state `cancelled`, its file kept in `dead/`); health, `replay-dead` and the writer leave it alone.
 - **ClickHouse**: `<db>_ingest` stays insert-only, so a stolen machine credential, or the ingest path itself, can never delete history: the store stays an audit trail. A separate role `<db>_redact` has `ALTER DELETE` on the four tables only (`deploy/clickhouse/schema.py`, its password in the server's Secret); only the server's redaction worker uses it, after the authorization check above. A server without it fails the redaction with that reason. ClickHouse backups and replicas outside this server keep the old rows: the keeper redacts those. Profile 1 with SQLite storage deletes by key.
 
+### Card ids
+
+2026-11-21, `of_server`, on `of_architect`'s choice (a) (msg `01a1faa1-1fa0`) and `of_platform`'s client (msg `01a1faa6-8b66`): two machines of one organization had each numbered asks on their own counter, so two cards could get one id ([`registry.md`](registry.md), Card ids).
+
+**`POST /v1/card-refs`** `{"org": "<organization>", "prefix": "OF", "event_id": "<the ask's event id>", "floor": <this machine's highest number for the prefix>}` (machine bearer) → `200 {"ref": "OF-224"}`.
+- **One counter per organization and prefix**, kept in `server.db` (`card_refs`: the event id, the organization, the prefix, the number, the machine and the time). The next number is the highest already given for that organization and prefix, raised to the request's floor, plus one. The read and the new row happen in one write transaction (`BEGIN IMMEDIATE`), so two machines asking at once never get one number.
+- **The same event id gets the same id again**, with `"already": true`, whichever machine asks: a retry never takes a second number. The same event id under another organization or prefix → `409`.
+- **The floor** raises the counter above every machine's store as each calls, so a counter that starts empty (a new server, or one an organization moved to) gives no number a machine already holds. A lower floor never lowers it.
+- **Who**: a machine joined to the organization (`403` otherwise); the tenant's machine for any.
+- **Refused with `400`**: an organization that is not a name, a prefix other than 2 to 5 capital letters, an event id that is not one, a floor that is not an integer from 0 to 1,000,000. Nothing is given out.
+- **`503` while the organization is moving** to another server (`of server moving`). The client calls with a timeout of its own, so it tries once and files without an id; the pulse asks again.
+- `GET /v1/terms` lists the capability `card_refs`. A server without it answers `404`, and the client numbers on its machine as before.
+- **Known limit**: an organization's move (`of server export`) does not carry `card_refs` yet: a new table in the bundle would fail an import on a server that runs older code. On the new server the floor raises the counter as machines call; an ask the old server numbered keeps its id in its own event.
+
 ### Grants
 
 **`POST /v1/grants/verify`**: `{"grant_id": "…", "subject": "<org>:<position>", "action": {…optional…}}` returns `{"valid": true, "tier": "propose", "reason": "ok", "decision": "admit"}`. The server reads the organizations' `registry/grants.yaml` and verifies signatures, expiry, revocation, counters and delegation chains ([`registry.md`](registry.md), Grants). The tenant-only master key never leaves the server.

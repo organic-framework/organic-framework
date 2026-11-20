@@ -511,9 +511,9 @@ class Client:
         """A card id for the ask EVENT_ID from the server's counter for PREFIX, which gives each number out once and the
         same number again for the same event; FLOOR, this machine's highest number, keeps the counter above it
         (of_architect, msg 01a1faa1-1fa0; of_server's side). Raises on no answer."""
-        out = self._authed("POST", "/v1/card-refs", body={"org": org, "prefix": prefix, "event_id": event_id,
-                                                          "floor": int(floor or 0)}, timeout=timeout)
-        return (out or {}).get("ref")
+        _, out = self._authed("POST", "/v1/card-refs", body={"org": org, "prefix": prefix, "event_id": event_id,
+                                                             "floor": int(floor or 0)}, timeout=timeout)
+        return (out or {}).get("ref")   # _authed answers (status, body)
 
     def presence(self, org):
         from urllib.parse import quote
