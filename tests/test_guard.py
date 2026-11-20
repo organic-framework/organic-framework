@@ -150,16 +150,16 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("printenv AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(deny("kubectl -n x exec pod-0 -- bash -c 'env | grep -o \"^R2_[A-Z_]*\"; printenv'"))
 
-    def test_a_dump_handed_to_the_guard_is_text(self):
-        """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused. Only a
-        literal written straight into an of_guard call is text (of_secrets-review on PR 454: a list of what can start
-        a process always missed one, so the carve-out is this narrow)."""
-        E = "en" + "v | grep -o ^R2_"   # no inner quotes: the code must parse for the carve-out
+    def test_a_dump_named_in_code_is_denied_even_in_a_test_of_the_guard(self):
+        """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused. Every
+        carve-out tried on organic-framework PR 454 (code that cannot launch; a literal inside an of_guard call) had a
+        way round it (by value, by the name's spelling, through the module's dict), so main's rule stands: such a
+        probe is written to a file with the Write tool and run from there (of_review's proposal, msg 01a1f889-7c78)."""
+        E = "en" + "v | grep -o ^R2_"
         P = "print" + "env"
-        self.assertIsNone(deny(f"python3 - <<'EOF'\nimport of_guard\n"
-                               f"print(of_guard.critical_deny('Bash', {{'command': '{E}'}}))\nEOF"))
-        self.assertIsNone(deny(f"python3 - <<'EOF'\nfrom of_guard import critical_deny as cd\n"
-                               f"print(cd('Bash', {{'command': '{P}'}}))\nEOF"))
+        for c in (f"python3 - <<'EOF'\nimport of_guard\nprint(of_guard.critical_deny('Bash', {{'command': '{E}'}}))\nEOF",
+                  f"python3 - <<'EOF'\nfrom of_guard import critical_deny as cd\nprint(cd('Bash', {{'command': '{P}'}}))\nEOF"):
+            self.assertTrue(deny(c), c)
         # anywhere else a dump literal counts, as on main: in a loop's tuple, beside the call, or in code that runs
         for c in (f"python3 - <<'EOF'\nimport of_guard\nfor c in ('{E}',):\n    of_guard.critical_deny('Bash', {{'command': c}})\nEOF",
                   f"python3 - <<'EOF'\nimport of_guard, os\nof_guard.critical_deny('Bash', {{'command': 'ls'}})\nos.system('{P}')\nEOF",
