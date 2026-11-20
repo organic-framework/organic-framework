@@ -1137,7 +1137,87 @@ def _guard(hook, sess):
         _log_error("PreToolUse guard", e)
 
 
+# A Codex session's tool calls, as of_guard's rules read them (W3 of organic-framework-build's
+# reports/codex-guard-w2-w3-2026-11-20.md, of_server's decision). Codex names its shell `Bash` with
+# tool_input.command, as Claude Code does, and its MCP calls mcp__<server>__<tool>; its file edits come as one
+# apply_patch call whose patch text names each file, and view_image reads a path.
+_PATCH_FILE = re.compile(r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+?)\s*$")
+
+
+def patch_calls(patch, cwd=None):
+    """The Write and Edit calls an apply_patch patch makes: Add File and Move to write a file (Write, with the added
+    lines as its content), Update File and Delete File change one (Edit). Paths are made absolute from CWD."""
+    out, cur = [], None
+    for line in str(patch or "").splitlines():
+        m = _PATCH_FILE.match(line)
+        if m:
+            kind, path = m.group(1), m.group(2).strip()
+            if cwd and not os.path.isabs(path):
+                path = os.path.normpath(os.path.join(cwd, path))
+            tool = "Write" if kind in ("Add File", "Move to") else "Edit"
+            cur = {"tool_name": tool, "tool_input": {"file_path": path, "content" if tool == "Write" else "new_string": ""}}
+            out.append(cur)
+            continue
+        if cur is not None and line.startswith("+") and not line.startswith("+++"):
+            key = "content" if cur["tool_name"] == "Write" else "new_string"
+            cur["tool_input"][key] += line[1:] + "\n"
+        elif line.startswith("*** End Patch"):
+            cur = None
+    return out
+
+
+def codex_calls(hook):
+    """The calls of_guard judges for one Codex PreToolUse payload: apply_patch as its Write and Edit calls, view_image as
+    a Read of its path; anything else as it came. None when the payload is no Codex tool call to expand."""
+    tool, ti = hook.get("tool_name"), hook.get("tool_input")
+    if tool == "apply_patch":
+        patch = ti.get("command") if isinstance(ti, dict) else ti
+        if isinstance(patch, list):
+            patch = "\n".join(str(x) for x in patch)
+        return patch_calls(patch, hook.get("cwd")) or [{"tool_name": "Edit", "tool_input": {"file_path": "",
+                                                                                           "new_string": str(patch)}}]
+    if tool == "view_image" and isinstance(ti, dict):
+        return [{"tool_name": "Read", "tool_input": {"file_path": ti.get("path") or ""}}]
+    return None
+
+
 def _guard_checked(hook, sess):
+    """Every call the tool call makes, judged by _guard_one: a Codex apply_patch is one Write or Edit per file it touches
+    (the first deny answers), a view_image a Read; everything else as it came."""
+    calls = codex_calls(hook)
+    if calls is None:
+        return _guard_one(hook, sess)
+    # every guard writes its deny to stdout at once; after the first, no file is judged again, so Codex never gets two
+    # answers (two would not parse, and a hook whose output fails lets the call through: of_server's W2)
+    real, seen = sys.stdout, _Seen(sys.stdout)
+    sys.stdout = seen
+    try:
+        for c in calls:
+            _guard_one(dict(hook, tool_name=c["tool_name"], tool_input=c["tool_input"]), sess)
+            if seen.wrote:
+                return
+    finally:
+        sys.stdout = real
+
+
+class _Seen:
+    """stdout, noting that something was written."""
+
+    def __init__(self, inner):
+        self.inner, self.wrote = inner, False
+
+    def write(self, text):
+        self.wrote = self.wrote or bool(text)
+        return self.inner.write(text)
+
+    def flush(self):
+        return self.inner.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def _guard_one(hook, sess):
     """Enforced before the tool runs: a critical deny answers `deny` to Claude Code and is recorded as
     of.mandate_check {decision: deny, verdict: critical, mode: enforce}; then the organization's rules
     (_org_guard), then the guard's warnings."""
