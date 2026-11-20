@@ -98,7 +98,11 @@ TTL_COLUMNS = {"event": "ts", "transcript_record": "ts", "hook_record": "receive
 
 
 def ttl_clause(table, days):
-    return f"TTL toDateTime({TTL_COLUMNS[table]}) + INTERVAL {int(days)} DAY"
+    """A row with no time of its own ships as 1970-01-01 (bin/of_ship.py; about 16 percent of a transcript's tool_use
+    lines have none) and never ages: a retention counted from 1970 would delete it the day it lands (of_review on
+    organic-framework PR 438)."""
+    col = TTL_COLUMNS[table]
+    return f"TTL toDateTime({col}) + INTERVAL {int(days)} DAY DELETE WHERE toUnixTimestamp({col}) >= 86400"
 
 
 def check_ttl(ttl, org_dbs, vault=None, unassigned=None):
