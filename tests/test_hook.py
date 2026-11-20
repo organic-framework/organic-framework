@@ -692,16 +692,19 @@ class HandleTest(unittest.TestCase):
         import subprocess
         import tempfile
         d = tempfile.mkdtemp(prefix="ofhk-")
-        shutil.copy(os.path.join(os.path.dirname(of_hook.__file__), "of"), os.path.join(d, "of"))
+        for name in ("of", "of-hook"):   # of-hook is what the hooks run (of_architect on PR 469)
+            shutil.copy(os.path.join(os.path.dirname(of_hook.__file__), name), os.path.join(d, name))
         with open(os.path.join(d, "of_hook.py"), "w") as fh:
             fh.write("raise ImportError('a module the hook needs is broken')\n")
-        r = subprocess.run([sys.executable, os.path.join(d, "of"), "hook", "PreToolUse"], input="{}",
-                           capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("guard failed (ImportError)", r.stderr)
-        r = subprocess.run([sys.executable, os.path.join(d, "of"), "hook", "Stop"], input="{}",
-                           capture_output=True, text=True, timeout=30)
-        self.assertNotEqual(r.returncode, 2)   # another event keeps its old way
+        for argv in (["of", "hook", "PreToolUse"], ["of-hook", "PreToolUse"]):
+            r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
+                               capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 2, argv)
+            self.assertIn("guard failed (ImportError)", r.stderr, argv)
+        for argv in (["of", "hook", "Stop"], ["of-hook", "Stop"]):
+            r = subprocess.run([sys.executable, os.path.join(d, argv[0]), *argv[1:]], input="{}",
+                               capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(r.returncode, 2, argv)   # another event keeps its old way
 
     def test_a_guard_reason_is_recorded_masked(self):
         """of_review on organic-framework PR 323: the recorded reason was stored as it was, beside a masked subject."""

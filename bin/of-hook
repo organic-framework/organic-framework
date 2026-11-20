@@ -9,6 +9,15 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-import of_hook  # noqa: E402
-
-sys.exit(of_hook.main(sys.argv[1:]))
+try:
+    import of_hook  # noqa: E402
+    code = of_hook.main(sys.argv[1:])
+except BaseException as e:  # noqa: BLE001 - the guard fails closed: a PreToolUse hook that cannot load or run exits 2
+    # with its reason on stderr, which Claude Code and Codex both take as a block; this file is what the hooks run
+    # (of_architect and of_secrets-review on organic-framework PR 469: a failed import here exited 1, and the call ran)
+    if sys.argv[1:2] == ["PreToolUse"]:
+        sys.stderr.write(f"Organic Framework guard failed ({type(e).__name__}), so the call is denied until the guard "
+                         "is fixed. Do not retry it another way; tell of_server, which keeps the guard\n")
+        sys.exit(2)
+    raise
+sys.exit(code)
