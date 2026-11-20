@@ -2174,8 +2174,11 @@ def set_moving(cfg, org, on):
     os.makedirs(d, mode=0o700, exist_ok=True)
     path = os.path.join(d, org)
     if on:
-        if not os.path.exists(path):  # a new token for each setting; setting it again keeps the one there
+        try:  # a new token for each setting; setting it again, or two settings at once, keep the one there
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            fd = None
+        if fd is not None:
             with os.fdopen(fd, "w") as fh:
                 fh.write(secrets.token_hex(16) + "\n")  # not a secret: it tells one setting from the next
     elif os.path.exists(path):
@@ -2494,8 +2497,17 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
     usersd = os.path.join(os.path.expanduser(cfg.get("clickhouse_config_dir") or "~/.config/of/clickhouse"), "users.d")
     if not os.path.isdir(usersd):
         raise SystemExit(f"of server clickhouse-init: no {usersd}: ClickHouse's config comes first")
+    # A refused run removes every file it made, the admin's included, so a rerun starts from the same state and meets
+    # the same checks (of_review on organic-framework PR 435). Once a statement ran, nothing is removed.
+    made = set()
+
+    def refuse(why):
+        for path in made:
+            if os.path.lexists(path):
+                os.unlink(path)
+        raise SystemExit(f"of server clickhouse-init: {why}; nothing provisioned")
     admin_file = os.path.join(pwdir, "admin.password")
-    admin_pw = _secret_file(admin_file)
+    admin_pw = _secret_file(admin_file, made)
     admin_xml = os.path.join(usersd, "admin.xml")
     out = []
     if os.path.lexists(admin_xml):
@@ -2503,6 +2515,7 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
     else:
         digest = hashlib.sha256(admin_pw).hexdigest()
         fd = os.open(admin_xml, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        made.add(admin_xml)
         with os.fdopen(fd, "w") as fh:
             fh.write("<clickhouse><users><admin>"
                      f"<password_sha256_hex>{digest}</password_sha256_hex>"
@@ -2522,12 +2535,11 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
         except Exception:
             sleep(1)
     else:
-        raise SystemExit("of server clickhouse-init: ClickHouse did not answer at its https url in 60 s")
+        refuse("ClickHouse did not answer the admin at its https url in 60 s")
     import base64
     try:  # the base config has no default user: one that answers would outlive every user made here (PR 435)
         admin.post("SELECT 1", query_in_body=True, timeout=10, auth="Basic " + base64.b64encode(b"default:").decode())
-        raise SystemExit("of server clickhouse-init: ClickHouse's default user answers: its base config must have "
-                         "none; nothing provisioned")
+        refuse("ClickHouse's default user answers: its base config must have none")
     except SystemExit:
         raise
     except Exception:
@@ -2542,35 +2554,36 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
     vault = cfg.get("vault_database") or ROUTE_DEFAULTS["vault_database"]
     unassigned = cfg.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]
     if not org_dbs or not all(_DB.fullmatch(d) for d in [*org_dbs, vault, unassigned]):
-        raise SystemExit("of server clickhouse-init: the config's orgs name no plain database")
+        refuse("the config's orgs name no plain database")
     roles = schema.users(org_dbs, vault, unassigned)
     if user in roles or user in ("admin", "default"):  # a schema role or an admin is never promoted (PR 435)
-        raise SystemExit(f"of server clickhouse-init: {user} is a role of its own; name another server user")
-    made = set()
+        refuse(f"{user} is a role of its own; name another server user")
     for u in roles:
         _secret_file(os.path.join(pwdir, f"{u}.password"), made)
     text = schema.schema(org_dbs, vault, unassigned, password_dir=pwdir)
     own = _secret_file(os.path.expanduser(pwfile), made)
-    # A user ClickHouse already has must log in with its file here, on every run: else it is not one this command made,
-    # and it would keep its old password (IF NOT EXISTS) or, for the server's user, be granted every database. A
-    # refused run removes the files it made, so a rerun meets the same check (of_review on organic-framework PR 435).
-    def refuse(why):
-        for path in made:
-            if os.path.exists(path):
-                os.unlink(path)
-        raise SystemExit(f"of server clickhouse-init: {why}; nothing provisioned")
+    # A user ClickHouse already has must log in as itself with its file here, on every run: else it is not one this
+    # command made, and it would keep its old password (IF NOT EXISTS) or, for the server's user, be granted every
+    # database. Only an explicit 0 counts as no such user (of_review on organic-framework PR 435).
     for u, path in [(r, os.path.join(pwdir, f"{r}.password")) for r in roles] + [(user, os.path.expanduser(pwfile))]:
-        got = admin.post("SELECT count() FROM system.users WHERE name = {u:String} FORMAT TabSeparated",
-                         query_in_body=True, timeout=30, params={"param_u": u})
-        if (got or b"0").strip() in (b"", b"0"):
+        try:
+            got = (admin.post("SELECT count() FROM system.users WHERE name = {u:String} FORMAT TabSeparated",
+                              query_in_body=True, timeout=30, params={"param_u": u}) or b"").strip()
+        except Exception:
+            got = b""
+        if got == b"0":
             continue
+        if not got.isdigit():
+            refuse(f"could not tell whether ClickHouse has the user {u}")
         if path in made:
             refuse(f"ClickHouse already has the user {u}, but its password file is new: restore the file or drop "
                    "the user")
         try:
-            (client or of_route.ClickHouse)({"url": url, "ca": ca, "user": u, "password_file": path}).post(
-                "SELECT 1", query_in_body=True, timeout=10)
+            who = (client or of_route.ClickHouse)({"url": url, "ca": ca, "user": u, "password_file": path}).post(
+                "SELECT currentUser() FORMAT TabSeparated", query_in_body=True, timeout=10)
         except Exception:
+            who = None
+        if (who or b"").strip() != u.encode():
             refuse(f"ClickHouse's user {u} does not log in with its password file: restore the file or drop the user")
     salt = secrets.token_hex(16)
     text += (f"\nCREATE USER IF NOT EXISTS {user} IDENTIFIED WITH sha256_hash BY "
