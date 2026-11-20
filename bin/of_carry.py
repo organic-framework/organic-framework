@@ -856,6 +856,11 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
                   old_tmp=plan.get("tmp_root"), new_tmp=tmp_root)
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
+    if not of_capacity.load_policy().get("auto"):
+        # 2026-11-20: the agent host had no capacity.yaml, so its balancer was off, and the first session carried there
+        # ran for hours with no rescue off a spent account; nothing said so
+        log("WARNING: this machine's balancer is off (capacity.yaml has no `auto: true`): a session restored here is "
+            "not moved off a spent account. Write ~/.config/of/capacity.yaml (docs/capacity.md, Balancing) first.")
     transcript_sources = {}
     install(bundle, rw, dry_run=dry_run, log=log, transcript_sources=transcript_sources,
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))

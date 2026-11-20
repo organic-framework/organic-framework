@@ -703,6 +703,19 @@ class Carry(unittest.TestCase):
                          account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [])
         self.assertFalse(os.path.exists(os.path.join(self.b, ".claude-x", "projects")))
 
+    def test_restore_says_when_this_machines_balancer_is_off(self):
+        with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
+            self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
+        there = os.path.join(self.root, "on-b")
+        self.ship(os.path.join(self.root, "out"), there)
+        for auto, warned in ((False, True), (True, False)):
+            with self.subTest(auto=auto), mock.patch.object(of_capacity, "load_policy", lambda: {"auto": auto}):
+                logs = []
+                of_carry.restore(there, POSITIONS, "acme", only={"someone_else"}, log=logs.append, home=self.b,
+                                 uid=os.getuid(), account_of=lambda d: "acct@x", restore_fn=lambda *a, **k: [],
+                                 dry_run=True)
+                self.assertEqual(any("balancer is off" in x for x in logs), warned)
+
     def test_another_account_is_not_resumed_and_nothing_lands_outside_the_home(self):
         with mock.patch.object(of_capacity, "account_of", lambda d, home=None: "acct@x"):
             self.prepare(self.a, [self.entry], os.path.join(self.root, "out"))
