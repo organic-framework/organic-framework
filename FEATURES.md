@@ -68,6 +68,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Resuming a session on its own account, model and permission mode after herdr restarts | `of resume-command`; `bin/of-shell.zsh` | Works | `test_resume` |
 | OF's herdr plugin: agents named by their positions when herdr sees them and after a restart; the Agents view with questions first; herdr resumes OF's sessions on their own account | `herdr-plugin/`; `of init` links it | Early | `test_herdr_plugin`; on one machine since 2026-11-11 |
 | Holding an organization's panes where they are, against `of apply` | `of org set <org> hold on\|off`, `of org show` | Early | `test_of` |
+| An organization's repository folder on this machine, set by the owner alone | `of org set <org> path <folder>` | Early | `test_of`, `test_guard_actor` |
 
 ## Questions, messages and hand-overs
 
@@ -83,7 +84,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | The questions screen: the queue and the card side by side, in streams, with a search, a reply under the card, snooze and undo; `prefix+a` opens it | `of asks --watch` | Early | `test_asks_inbox`; `asks-screen-v0` in a lab herdr |
 | The questions panel, always in sight, with a button that opens the screen; the more room, the more it shows; pinned by `of init` beside the conductor, or by `of view add` on a machine set up before | `of asks --panel`, `of view add <name> --workspace <w> --tab <t> --panel questions` | Early | `test_asks_inbox`, `test_owner_panel`; set up from the documents alone on a clean lab VM (2026-11-18) |
 | Card IDs to cite in chat and commands; an open card corrected in place, an answer kept to the version shown | `of asks refs`, `card_prefix`, `of ask --amend` | Early | `test_card_ids`, `test_ask_amend` |
-| A position's own queue of questions routed to it; a copy to the owner when a due date comes near | `of asks --to-me`, `of ask --to`, `reporting.escalate_when` | Early | `test_asks_answer`, `test_pulse` |
+| A position's own queue of questions routed to it; a copy to the owner when a due date comes near; a delegated unit's permission prompts, which its owner can cancel | `of asks --to-me`, `of ask --to`, `reporting.escalate_when`, `of asks deny` | Early | `test_asks_answer`, `test_pulse`, `test_asks_permission` |
 | Moving a parked position's queued messages to another position, or expiring one | `of inbox move`, `of inbox drop`, `of send --to-parked` | Early | `test_server_relay`, `test_send_parked` |
 | Moving and renaming positions by diff, with their references, brief and memory | `move_position`, `rename_position`; `of apply` | Early | `test_diff` |
 | Approving a diff on a phone, at any tier, with a passkey enrolled and revoked by the owner | `of diff link`, `of passkey enroll/revoke` | Early | `test_passkey`, `test_server_passkey` |
@@ -106,9 +107,12 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | Positions held on several machines, one server between them | [`docs/server-several-machines.md`](docs/server-several-machines.md) | Early (lab only) | `test_several_machines`, `test_server_coord`, `lab-routing-v0` |
 | A self-hosted server on a VM (profile 2) | `deploy/` | Early (lab only) | `lab-profile2-v0` |
 | Scalable deployment (profile 3) and Organic Framework Cloud (profile 4) | [`docs/server.md`](docs/server.md), Profiles | Designed | — |
-| The relay and the listener as systemd user services on Linux, and watchdogs for the macOS services | `of listen install`, `of relay install`, `of server install` | Early | `test_listen`, `test_relay_watchdog`, `test_server_resilience` |
+| The relay, the listener and the server as systemd user services on Linux, with the server's nightly backup, and watchdogs for the macOS services | `of listen install`, `of relay install`, `of server install`, `of server backup` | Early | `test_listen`, `test_relay_watchdog`, `test_server_resilience`, `test_server_systemd` |
 | Each organization in its own OS user on an agent host, with a checked release and the owner's admin access kept | `deploy/host/setup.py`, `deploy/host/plane.py`, `deploy/host/contours.py` | Early | `test_host_setup`, `test_host_plane`, `test_host_contours` |
 | A second organization's server on its own port; enrollment over TLS with the certificate pinned, through a forwarded socket; a token per machine for a server behind an access gateway | `of init --server-port`, `of server tls-init`, `of enroll --pin`, `server_access` in `orgs.yaml` | Early | `test_server_tls`, `test_host_forward`, `test_enroll`, `test_client_access` |
+| The server on Unix sockets in place of ports, on a host other users share; a laptop bridged to it over SSH | `socket:` and `tls: socket:` in `server.yaml`; `deploy/host/forward.py install --mode bridge` | Early | `test_server_unix`, `test_host_forward` |
+| Moving an organization's records to another server: an encrypted export, a checked import, a hold for the cut and the changes since | `of server export`, `of server import`, `of server moving` | Early | `test_server_export`, `test_route_org_id` |
+| ClickHouse on the host over HTTPS with its certificate pinned, provisioned with private password files; a retention per table | `of server clickhouse-setup`, `of server clickhouse-init`, `clickhouse: ca:` in `server.yaml`; `deploy/clickhouse/schema.py --ttl` | Early | `test_clickhouse_setup`, `test_clickhouse_init`, `test_clickhouse_tls`, `test_schema_ttl` |
 | The cluster's network policies and a check that the cluster enforces them | `networkPolicy` in the chart; `deploy/netcheck.py` | Early | `test_deploy_netcheck` |
 | Health: the server's and the relay's checks with their readings and limits, the positions that answer for them, and a page for the machine's owner | `of health`, `GET /v1/health/checks`, `of studio --view health` | Early | `test_health`, `test_server_health` |
 
@@ -133,7 +137,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 |---|---|---|---|
 | Limits per account and which positions run on each | `of capacity status` | Works | `test_capacity`; 1,263 snapshots on 6 days |
 | Moving a session to another account between turns, with its context | `of capacity move`, `of capacity balance` | Works | `test_capacity`, `capacity-move-v1`; 205 balancing runs on 6 days |
-| Before and after a restart of the machine: every session back on its account | `of capacity reboot prepare/restore` | Early: used in one restart (2026-11-10) | `test_capacity` |
+| Before and after a restart of the machine: every session back on its account | `of capacity reboot prepare/restore/cancel` | Early: used in one restart (2026-11-10) | `test_capacity` |
 | A position's own memory, kept across moves | `of capacity memory`; [`docs/rfc/0006-position-memory.md`](docs/rfc/0006-position-memory.md) | Early | `test_memory` |
 | The machine's Claude accounts as OF's own list, with no shell aliases; the capacity package, one keeper per person | `of account`, `of claude`; [`bench/capacity/`](bench/capacity/); [`docs/accounts.md`](docs/accounts.md) | Early | `test_accounts`, `test_capacity` |
 | Restarting a session on its own account to pick up its tools and rules; positions kept on their account; sessions returned to their launch folder | `of capacity move --restart`; `stay`, `start_in`, `restore_moves` in `capacity.yaml` | Early | `test_capacity`, `capacity-stall-v0` |
