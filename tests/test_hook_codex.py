@@ -52,6 +52,15 @@ def run_main(event, payload):
     return code, out.getvalue(), err.getvalue()
 
 
+def run_main_in_process(event, payload):
+    of_hook._CodexAnswer.exit_now = False
+    of_hook.GUARD_DECIDED = False
+    try:
+        return run_main(event, payload)
+    finally:
+        of_hook._CodexAnswer.exit_now = True
+
+
 def patch(*entries):
     return "\n".join(["*** Begin Patch", *entries, "*** End Patch"])
 
@@ -64,13 +73,13 @@ class CodexAnswerTest(unittest.TestCase):
             "permission_mode": "bypassPermissions", "tool_use_id": "u1"}
 
     def test_a_deny_is_exit_2_with_its_reason_and_nothing_on_stdout(self):
-        code, out, err = run_main("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+        code, out, err = run_main_in_process("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
                                                      tool_input={"command": "cat ~/" + KEY}))
         self.assertEqual((code, out), (2, ""))
         self.assertIn("Organic Framework", err)
 
     def test_an_allowed_call_is_exit_0(self):
-        code, out, err = run_main("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
+        code, out, err = run_main_in_process("PreToolUse", dict(self.BASE, hook_event_name="PreToolUse", tool_name="Bash",
                                                      tool_input={"command": "ls"}))
         self.assertEqual(code, 0)
         self.assertIsNone(of_hook.codex_refusal(out or "{}"))
@@ -100,9 +109,29 @@ class CodexAnswerTest(unittest.TestCase):
         p = {"session_id": "claude-1", "cwd": "/w", "transcript_path": "/home/alex/.claude/projects/w/claude-1.jsonl",
              "permission_mode": "bypassPermissions", "tool_use_id": "u1", "hook_event_name": "PreToolUse",
              "tool_name": "Bash", "tool_input": {"command": "cat ~/" + KEY}}
-        code, out, _ = run_main("PreToolUse", p)
+        code, out, _ = run_main_in_process("PreToolUse", p)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class ReviewForms(unittest.TestCase):
+    """of_server's verdict on PR 475 (comment 7045021722)."""
+
+    def test_an_end_patch_inside_a_line_does_not_end_the_body(self):
+        text = patch("*** Add File: a.txt", "+say *** End Patch in prose", "*** Update File: " + ENV, "@@", "-a", "+b")
+        bodies = of_hook._PATCH_BODY.findall("apply_patch <<'EOF'\n" + text + "\nEOF")
+        self.assertEqual(len(bodies), 1)
+        self.assertIn("Update File", bodies[0])
+
+    def test_an_argv_list_is_read_as_one_command(self):
+        out = fire("Bash", {"command": ["cat", "~/" + KEY]})
+        self.assertIn("deny", out)
+        self.assertEqual(fire("Bash", {"command": ["ls", "-la"]}), "")
+
+    def test_a_call_that_names_no_tool_is_refused(self):
+        code, out, err = run_main_in_process("PreToolUse", {"session_id": "codex-thread-1", "turn_id": "t1",
+                                                            "hook_event_name": "PreToolUse", "cwd": "/w"})
+        self.assertEqual(code, 2)
 
 
 class PatchCalls(unittest.TestCase):

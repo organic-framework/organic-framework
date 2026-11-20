@@ -99,6 +99,8 @@ def hook_command(event, of_bin=None):
     if of_bin is not None and not os.path.isabs(of_bin):
         raise ValueError(f"the hooks' program must be an absolute path, not {of_bin!r}: a relative one resolves "
                          "against each session's folder, and a hook that cannot start lets the call through")
+    if of_bin:
+        of_bin = os.path.realpath(of_bin)   # a link: the command calls the file a run's bwrap binds (of_server on PR 475)
     exe = shlex.quote(of_bin) if of_bin else f'"{USER_OF}"'
     shown = of_bin or "~/.local/bin/of"
     run = f'"$o" hook {event}{EVENT_FLAGS.get(event, "")}'
@@ -106,9 +108,12 @@ def hook_command(event, of_bin=None):
         return f'o={exe}; [ -x "$o" ] || exit 0; exec {run}'
     why = ("OF: the guard did not run here ({}), so this is refused. This user's of is "
            + shown.replace("{", "{{").replace("}", "}}") + " (organic-framework docs/guard.md, Codex).")
-    return (f'o={exe}; if [ ! -x "$o" ]; then echo {shlex.quote(why.format("no of there"))} >&2; exit 2; fi; '
+    missing = shlex.quote(why.format("no of there"))
+    status = "'\"$r\"'"     # the shell's $r, between two quoted halves (no PEP 701 f-string: Python 3.11 reads this)
+    ended = shlex.quote(why.format("it ended with status STATUS")).replace("STATUS", status)
+    return (f'o={exe}; if [ ! -x "$o" ]; then echo {missing} >&2; exit 2; fi; '
             f'{run}; r=$?; if [ "$r" -ne 0 ] && [ "$r" -ne 2 ]; then '
-            f'echo {shlex.quote(why.format("it ended with status STATUS")).replace("STATUS", "'\"$r\"'")} >&2; '
+            f'echo {ended} >&2; '
             f'exit 2; fi; exit "$r"')
 
 
@@ -147,10 +152,14 @@ def installed_of_bin(path=REQUIREMENTS_PATH):
 # The environment a Codex position's commands get: Codex's inherit "all" then include_only filters it, so only these
 # names reach them (W3, of_secrets-review's review via of_server, msg 01a1f8e9-aa9c). No SSH agent, no token, no
 # account variable: a command gets nothing it does not need to run of, git and herdr.
-ENV_INCLUDE = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_*", "TERM", "TZ", "TMPDIR",
+ENV_INCLUDE = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE",
+               "LC_NUMERIC", "LC_TIME", "LC_MONETARY", "TERM", "TZ", "TMPDIR",
                "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "OF_POSITION", "OF_ORGS", "OF_STATE",
                "GIT_CEILING_DIRECTORIES")
 PROFILE = "of_position"
+# what the layer sets for the position, which no tool table (of_tools.codex_layer) may set
+PROTECTED_KEYS = frozenset({"permissions", "shell_environment_policy", "default_permissions", "approval_policy",
+                            "sandbox_mode", "developer_instructions", "project_doc_max_bytes", "model", "hooks"})
 
 
 def seat_homes():
@@ -226,7 +235,8 @@ PROTECTED = (".codex", ".agents")
 # binds it from the start and a session cannot plant its own first. A Codex position's commands therefore cannot
 # declare an injected prompt (of event injected_prompt, of spawn): no position that types into another's pane runs on
 # Codex.
-GUARD_INPUTS = ("index.json", "guard-credentials.json", "injections.jsonl")
+GUARD_INPUTS = ("index.json", "guard-credentials.json", "guard-grants.json", "passkey-revoked.json",
+                "injections.jsonl")   # guard-grants.json and passkey-revoked.json: of_grants trusts them (of_server, PR 475)
 GUARD_DIRS = ("sessions",)
 
 
@@ -300,6 +310,9 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     tool tables (features, web_search, mcp_servers, apps, plugins; W7) merged in, W3's features last so no tool table
     turns them back on."""
     tables = dict(tool_tables or {})
+    named = sorted(set(tables) & PROTECTED_KEYS)
+    if named:   # of_server on PR 475: doc.update(tables) after them let a tool profile replace the position's protection
+        raise ValueError("a tool table may not set " + ", ".join(named) + ": the layer sets them for the position")
     feats = dict(tables.pop("features", None) or {})
     feats.update({"hooks": True, "unified_exec": False, "unified_exec_tty": False, "network_proxy": True,
                   "multi_agent_v2": False, "memories": False})
@@ -313,11 +326,11 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     doc["web_search"] = tables.pop("web_search", "disabled")
     doc["features"] = feats
     doc["shell_environment_policy"] = {"inherit": "all", "include_only": list(ENV_INCLUDE)}
+    doc.update(tables)   # the tool tables, none of PROTECTED_KEYS; the position's protection is set after them
     doc["permissions"] = {PROFILE: {
         "filesystem": filesystem(cwd, deny_rules, checkout_bin, codex_home or os.environ.get("CODEX_HOME")),
         "network": {"enabled": True, "dangerously_allow_all_unix_sockets": True,
                     "domains": {d: "allow" for d in domains}}}}
-    doc.update(tables)
     return doc
 
 

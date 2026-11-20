@@ -106,12 +106,18 @@ class HookCommandTest(unittest.TestCase):
             req = os.path.join(d, "requirements.toml")
             with open(req, "w") as fh:
                 fh.write(of_codex.requirements_toml(exe))
-            self.assertEqual(of_codex.installed_of_bin(req), exe)
+            self.assertEqual(of_codex.installed_of_bin(req), os.path.realpath(exe))
             with open(req, "w") as fh:
                 fh.write(of_codex.requirements_toml())
             self.assertIsNone(of_codex.installed_of_bin(req))
 
     def test_a_plain_file_in_the_users_bin_is_not_its_hook_folder(self):
+        import tempfile
+        from unittest import mock
+        home = tempfile.mkdtemp(prefix="of-home-")     # never the real launcher, however the test is run (of_server)
+        patch = mock.patch.dict(os.environ, {"HOME": home})
+        patch.start()
+        self.addCleanup(patch.stop)
         os.makedirs(os.path.expanduser("~/.local/bin"), exist_ok=True)
         plain = os.path.expanduser("~/.local/bin/of")
         with open(plain, "w") as fh:
@@ -178,6 +184,9 @@ class LayerTest(unittest.TestCase):
     def test_the_sessions_own_home_and_the_guard_index_are_never_written(self):
         import tempfile
         from unittest import mock
+        patch = mock.patch.dict(os.environ, {"HOME": tempfile.mkdtemp(prefix="of-home-")})
+        patch.start()
+        self.addCleanup(patch.stop)
         state = os.path.expanduser("~/.local/state/of")
         os.makedirs(state, exist_ok=True)
         with open(os.path.join(state, "index.json"), "w") as fh:
@@ -213,6 +222,20 @@ class LayerTest(unittest.TestCase):
             with open(os.path.join(d, "127.0.0.1_18200.socket"), "w") as fh:
                 fh.write("/srv/of-server/server.sock\n")
             self.assertEqual(of_codex.server_socket_dirs(d), ["/srv/of-server"])
+
+    def test_a_tool_table_never_sets_the_positions_protection(self):
+        from unittest import mock
+        with mock.patch.object(of_codex, "seat_homes", return_value=[]):
+            for key in ("permissions", "shell_environment_policy", "sandbox_mode", "approval_policy"):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    of_codex.layer({"name": "of_docs"}, "/home/alex/wt", tool_tables={key: {}},
+                                   checkout_bin="/home/alex/organic-framework/bin")
+
+    def test_the_locale_is_named_and_the_module_reads_on_python_3_11(self):
+        self.assertNotIn("LC_*", of_codex.ENV_INCLUDE)
+        import ast
+        with open(of_codex.__file__) as fh:
+            ast.parse(fh.read(), feature_version=(3, 11))
 
     def test_the_layer_file_is_private(self):
         import tempfile

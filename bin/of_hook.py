@@ -1206,7 +1206,7 @@ def _guard(hook, sess):
 # no path, makes the patch unreadable, and an unreadable patch is denied (of_secrets-review and of_review on PR 469)
 _PATCH_FILE = re.compile(r"^\*\*\*\s*(Add File|Update File|Delete File|Move to)\s*:\s*(.*?)\s*$")
 _PATCH_MARKS = re.compile(r"^\*\*\*\s*(Begin Patch|End Patch|End of File)\s*$")
-_PATCH_BODY = re.compile(r"\*\*\*\s*Begin Patch.*?(?:\*\*\*\s*End Patch|\Z)", re.S)
+_PATCH_BODY = re.compile(r"(?m)^\s*\*\*\*\s*Begin Patch\s*$.*?(?:^\s*\*\*\*\s*End Patch\s*$|\Z)", re.S)
 PATCH_UNREADABLE = ("a patch whose file headers cannot be read (an apply_patch the guard cannot judge file by file)")
 
 
@@ -1262,6 +1262,10 @@ def codex_calls(hook):
     Write and Edit calls; any other call that holds a patch (`apply_patch <<'EOF'` through the shell, which Codex runs
     as a patch) as itself plus those calls; view_image as a Read of its path. An unreadable patch is one deny."""
     tool, ti = hook.get("tool_name"), hook.get("tool_input")
+    if tool == "Bash" and isinstance(ti, dict) and isinstance(ti.get("command"), list):
+        import shlex   # an argv list (of_server on PR 475): one string as the shell would run it, never a TypeError
+        ti = dict(ti, command=shlex.join(str(a) for a in ti["command"]))
+        hook["tool_input"] = ti
     calls = []
     # only a Codex session's patch: Codex's apply_patch, or its shell running apply_patch with the begin marker alone on
     # its line; a Claude Code call that quotes the markers (a document, a comment) is no patch (of_secrets-review on PR
@@ -2147,6 +2151,8 @@ class _CodexAnswer:
     PR 475, probed). Every other answer passes through as written. Each write is judged when it is flushed or the
     hook ends, so a decision still leaves before the recording that follows it."""
 
+    exit_now = True   # tests run it in process: False
+
     def __init__(self, real):
         self.real, self.buf, self.code = real, "", 0
 
@@ -2166,6 +2172,21 @@ class _CodexAnswer:
         sys.stderr.write(why.rstrip() + "\n")
         sys.stderr.flush()
         self.code = 2
+        if self.exit_now:
+            # Codex waits for the hook, and a recording that stalls past its timeout would make the deny a failure,
+            # which Codex runs (of_server on PR 475): this process exits 2 now, and a child with no pipe of Codex's
+            # open records what follows
+            try:
+                pid = os.fork()
+            except OSError:
+                return
+            if pid:
+                os._exit(2)
+            os.setsid()
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            self.real = sys.stderr = open(os.devnull, "w")
 
 
 def main(argv):
@@ -2180,7 +2201,12 @@ def main(argv):
     refused = 0
     try:
         raw = sys.stdin.read(4 * 1024 * 1024)
-        hook = json.loads(raw) if raw.strip() else {}
+        cut = bool(raw) and len(raw) >= 4 * 1024 * 1024 and bool(sys.stdin.read(1))
+        hook = json.loads(raw) if raw.strip() and not cut else {}
+        if cut or (event == "PreToolUse" and not hook.get("tool_name")):
+            # an input past the read, or a call that names no tool, names nothing the guard can judge: refused as an
+            # unreadable one is (of_server on PR 475: a prompt cut at 4 MiB skipped the mention guard)
+            raise ValueError("an input the hook cannot read whole")
         parsed = True
         event = hook.get("hook_event_name") or event
         if is_codex(hook):
@@ -2200,7 +2226,8 @@ def main(argv):
                 fh.write(f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
         except Exception:
             pass
-        if event == "PreToolUse" and not GUARD_DECIDED and not parsed and answer is None:
+        if event in ("PreToolUse", "UserPromptSubmit", "PermissionRequest") and not GUARD_DECIDED and not parsed \
+                and answer is None:
             # an input that does not parse names no harness: exit 2 with the reason on stderr, the deny Claude Code and
             # Codex both take whatever else is on stdout (of_secrets-review on organic-framework PR 475)
             sys.stderr.write(GUARD_FAILED.format(kind=type(e).__name__) + NO_WAY_ROUND + "\n")
