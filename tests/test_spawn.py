@@ -316,5 +316,23 @@ class AgentDefaultsTest(unittest.TestCase):
         self.assertNotIn("--effort", plan(cwd="/w")["command"])
 
 
+
+class SandboxBlock(unittest.TestCase):
+    """Layer 3 of the agent host's isolation plan (the founder's yes, of_conductor msg 01a1efaf-43fd): every agent
+    session on Linux starts with Claude Code's sandbox on, as of_agent-server tried it on the host (msg 01a1f88b-5471)."""
+
+    def test_linux_sessions_get_the_sandbox_and_macos_none(self):
+        deny = ["Read(//home/alex/.config/other/**)", "Edit(//home/alex/.config/other/**)", "Read(//home/alex/x/*.key)"]
+        s = json.loads(of_spawn.session_settings(None, deny, platform="linux"))
+        box = s["sandbox"]
+        self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
+        self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
+        self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob stays with the deny rules
+        self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
+        self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
+        self.assertEqual(box["network"], {"allowAllUnixSockets": True, "allowedDomains": []})
+        self.assertEqual(s["permissions"]["deny"], deny)                            # the file tools' rules unchanged
+        self.assertNotIn("sandbox", json.loads(of_spawn.session_settings(None, deny, platform="darwin")))
+
 if __name__ == "__main__":
     unittest.main()

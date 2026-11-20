@@ -128,14 +128,53 @@ def agent_env():
     return {"GIT_CEILING_DIRECTORIES": os.path.expanduser("~"), "CLAUDE_CODE_AUTO_COMPACT_WINDOW": AUTO_COMPACT_WINDOW}
 
 
-def session_settings(memory=None, deny=None, extra=None):
+# Claude Code's sandbox for every agent session on Linux, the agent host (layer 3 of organic-framework-build's
+# reports/agent-host-isolation-2026-11-18.md; the founder accepted the plan, of_conductor msg 01a1efaf-43fd). Its keys
+# are Claude Code's own (code.claude.com/docs/en/sandboxing): on, failing at start rather than running unsandboxed,
+# with no per-command escape. Bash's reads are denied for the session's credential deny paths (the same catalogue as
+# its Read deny rules, which bind the file tools only) and for what of_server listed (its message 01a1efa4-fddf:
+# sign-ins, keys, OF's own server and ClickHouse files); writes are allowed into OF's state folder, which of status,
+# of send and the recorder write; every Unix socket is reachable (of, herdr, the relay through the forward); no
+# network domain. of_agent-server tried exactly this block on the agent host on 2026-11-20 under of (its msg
+# 01a1f88b-5471): the denied reads and writes failed, herdr, of who and of asks worked. macOS keeps running without it
+# until it is tried there.
+SANDBOX_DENY_READ = ("~/.ssh", "~/.codex", "~/.config/of/service-accounts", "~/.config/of/grant_ed25519",
+                     "~/.config/of/clickhouse", "~/.config/of/clickhouse-passwords", "~/.config/of/move",
+                     "~/.local/state/of/server")
+
+
+def sandbox_settings(deny=None, platform=None):
+    """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`)."""
+    if not (platform or sys.platform).startswith("linux"):
+        return None
+    import glob
+    paths = {os.path.expanduser(x) for x in SANDBOX_DENY_READ}
+    # each Claude account's sign-in: Claude Code itself reads it outside the sandbox, a Bash command never needs it
+    paths |= set(glob.glob(os.path.expanduser("~/.claude*/.credentials.json")))
+    for r in deny or []:
+        if r.startswith("Read(") and r.endswith(")"):
+            q = r[5:-1]
+            q = q[1:] if q.startswith("//") else q          # //abs is absolute in a permission rule
+            q = re.sub(r"/\*\*$", "", q)                  # a root's whole tree: the sandbox takes the folder
+            if q.startswith("/") and not re.search(r"[*?[]", q):
+                paths.add(q)
+    return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
+            "autoAllowBashIfSandboxed": True,
+            "filesystem": {"denyRead": sorted(paths), "allowWrite": [os.path.expanduser("~/.local/state/of")]},
+            "network": {"allowAllUnixSockets": True, "allowedDomains": []}}
+
+
+def session_settings(memory=None, deny=None, extra=None, platform=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
-    deny rules, and extra keys such as the tool profile's allowedMcpServers and enabledPlugins (of_tools.launch_parts,
-    docs/tools.md §4)."""
+    deny rules, on Linux the sandbox block (sandbox_settings), and extra keys such as the tool profile's
+    allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md §4)."""
     s = dict(AGENT_SETTINGS, env=agent_env())
     s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
+    box = sandbox_settings(deny, platform)
+    if box:
+        s["sandbox"] = box
     for k, v in (extra or {}).items():
         if k == "env" and isinstance(v, dict):
             s["env"] = dict(s.get("env") or {}, **v)  # a tool profile's env joins the agents' own
