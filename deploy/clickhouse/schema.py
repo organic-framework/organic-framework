@@ -160,7 +160,9 @@ def main():
     ap.add_argument("--password-dir")
     ap.add_argument("--cluster")
     ap.add_argument("--ttl", action="append", default=[], metavar="TABLE=DAYS",
-                    help=f"a table's retention in days, 0 to remove it ({', '.join(TTL_COLUMNS)}; repeatable)")
+                    help=f"a table's retention in days, 0 to remove it ({', '.join(TTL_COLUMNS)}; repeatable). "
+                         "Permanent deletion: only on the organization's owner's card; raw tables first, event's "
+                         "days covering its longest replay; never while its records move (deploy/RUNBOOK.md §1)")
     a = ap.parse_args()
     ttl = {}
     for item in a.ttl:
