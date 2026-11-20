@@ -137,7 +137,9 @@ def agent_env():
 # of send and the recorder write; every Unix socket is reachable (of, herdr, the relay through the forward); no
 # network domain. of_agent-server tried exactly this block on the agent host on 2026-11-20 under of (its msg
 # 01a1f88b-5471): the denied reads and writes failed, herdr, of who and of asks worked. macOS keeps running without it
-# until it is tried there.
+# until it is tried there. Known gap (docs/guard.md, Gaps): on Linux the sandbox opens every Unix socket or none
+# (allowUnixSockets is macOS-only), and of, herdr and the relay need theirs, so a command can reach the systemd user
+# bus, herdr or of-server and read through them past denyRead.
 SANDBOX_DENY_READ = ("~/.ssh", "~/.codex", "~/.config/of/service-accounts", "~/.config/of/grant_ed25519",
                      "~/.config/of/clickhouse", "~/.config/of/clickhouse-passwords", "~/.config/of/move",
                      "~/.local/state/of/server")
@@ -156,11 +158,21 @@ def sandbox_settings(deny=None, platform=None):
             q = r[5:-1]
             q = q[1:] if q.startswith("//") else q          # //abs is absolute in a permission rule
             q = re.sub(r"/\*\*$", "", q)                  # a root's whole tree: the sandbox takes the folder
-            if q.startswith("/") and not re.search(r"[*?[]", q):
+            if not q.startswith("/"):
+                continue
+            if re.search(r"[*?[]", q):
+                # any other glob: the files it matches when the session starts (a sandbox path is no glob; one made
+                # later is the deny rule's and the guard's; of_secrets-review on organic-framework PR 457)
+                paths |= set(glob.glob(q, recursive=True))
+            else:
                 paths.add(q)
+    denied = sorted(paths)
+    # Bash may not write what it may not read: OF's state folder is writable and holds its server folder (the same
+    # review); every denied path is denied for writes too
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
-            "filesystem": {"denyRead": sorted(paths), "allowWrite": [os.path.expanduser("~/.local/state/of")]},
+            "filesystem": {"denyRead": denied, "denyWrite": denied,
+                           "allowWrite": [os.path.expanduser("~/.local/state/of")]},
             "network": {"allowAllUnixSockets": True, "allowedDomains": []}}
 
 

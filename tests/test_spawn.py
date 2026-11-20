@@ -327,12 +327,23 @@ class SandboxBlock(unittest.TestCase):
         box = s["sandbox"]
         self.assertEqual((box["enabled"], box["failIfUnavailable"], box["allowUnsandboxedCommands"]), (True, True, False))
         self.assertIn("/home/alex/.config/other", box["filesystem"]["denyRead"])      # the catalogue's root, as a folder
-        self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob stays with the deny rules
+        self.assertNotIn("/home/alex/x/*.key", box["filesystem"]["denyRead"])         # a glob: its present matches only
+        self.assertEqual(box["filesystem"]["denyWrite"], box["filesystem"]["denyRead"])   # never written either
         self.assertIn(os.path.expanduser("~/.ssh"), box["filesystem"]["denyRead"])
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual(box["network"], {"allowAllUnixSockets": True, "allowedDomains": []})
         self.assertEqual(s["permissions"]["deny"], deny)                            # the file tools' rules unchanged
         self.assertNotIn("sandbox", json.loads(of_spawn.session_settings(None, deny, platform="darwin")))
+
+    def test_a_glob_is_its_matches_when_the_session_starts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("a.key", "b.key", "c.txt"):
+                open(os.path.join(d, n), "w").close()
+            box = of_spawn.sandbox_settings([f"Read(/{d}/*.key)"], platform="linux")
+        self.assertIn(os.path.join(d, "a.key"), box["filesystem"]["denyRead"])
+        self.assertIn(os.path.join(d, "b.key"), box["filesystem"]["denyRead"])
+        self.assertNotIn(os.path.join(d, "c.txt"), box["filesystem"]["denyRead"])
 
 if __name__ == "__main__":
     unittest.main()
