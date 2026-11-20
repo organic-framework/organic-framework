@@ -3245,23 +3245,31 @@ def _reboot_pauses_balance(now, log):
     # On 2026-11-19 power returned before the Mac restarted. The plan blocked rescue for six hours.
     if now - prepared >= REBOOT_PAUSE_MAX_H * 3600:
         boot = _last_boot_epoch()
-        if boot is None or boot <= prepared:
-            reboot_cancel(log=log)
-            log(f"balance: retired stale restart plan prepared at {prepared_at} after {REBOOT_PAUSE_MAX_H} h, "
+        if boot is None:
+            log(f"balance: boot time is unknown, keeping restart plan prepared at {prepared_at} for restore "
+                "(`of capacity reboot cancel` retires it), balancing resumes")
+            return False
+        if boot < prepared:
+            reboot_cancel(log=log, expect_prepared_at=prepared_at)
+            log(f"balance: pause for stale restart plan prepared at {prepared_at} expired after {REBOOT_PAUSE_MAX_H} h, "
                 "balancing resumes")
             return False
     log(f"balance: paused, a restart of the Mac was prepared at {prepared_at} (`of capacity reboot restore` ends it)")
     return True
 
 
-def reboot_cancel(dry_run=False, log=print):
+def reboot_cancel(dry_run=False, log=print, expect_prepared_at=None):
     """`of capacity reboot cancel`: retire a prepared restart that will not happen, to reboot/cancelled-<time>/, with
     nothing restored: `reboot restore` would put back the /private/tmp files sessions deleted since the prepare."""
     plan = load_reboot_plan()
     if not plan:
         log("no restart prepared")
         return
-    prepared_at, sessions = plan.get("prepared_at"), len(plan.get("entries") or [])
+    prepared_at = plan.get("prepared_at")
+    if expect_prepared_at is not None and prepared_at != expect_prepared_at:
+        log(f"restart plan changed (expected {expect_prepared_at}, found {prepared_at}), keeping it")
+        return
+    sessions = len(plan.get("entries") or [])
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     retired = os.path.join(REBOOT_DIR, f"cancelled-{stamp}")
     description = f"restart plan prepared at {prepared_at} ({sessions} session(s))"
@@ -3269,8 +3277,13 @@ def reboot_cancel(dry_run=False, log=print):
         if dry_run:
             log("herdr: would turn resume_agents_on_restore back on")
         else:
-            set_herdr_resume(True, log=log)
-            log("herdr: resume_agents_on_restore back on")
+            try:
+                set_herdr_resume(True, log=log)
+            except OSError as err:
+                log(f"herdr: could not restore the resume setting ({err}). "
+                    "Set `[session] resume_agents_on_restore = true` in ~/.config/herdr/config.toml by hand.")
+            else:
+                log("herdr: resume_agents_on_restore back on")
     if dry_run:
         log(f"would retire {description} to {short(retired)}")
         return
