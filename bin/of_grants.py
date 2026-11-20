@@ -303,16 +303,18 @@ def load(orgs_file=None):
     with open(orgs_file) as fh:
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(orgs_file))
+    import of_init
     out = {}
     for o in doc.get("orgs") or []:
-        if not (o.get("name") and o.get("path")):
+        if not o.get("path"):
             continue  # joined through a server only (an enrollment writes server: and no path:): no checkout here
+        name = of_init.org_entry_name(o)   # its name:, else its folder's, as bin/of names it (of_review, PR 446)
         path = os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "grants.yaml")
         if os.path.exists(path):
             with open(path) as fh:
-                out[o["name"]] = (yaml.safe_load(fh) or {}).get("grants") or []
+                out[name] = (yaml.safe_load(fh) or {}).get("grants") or []
         else:
-            out[o["name"]] = []
+            out[name] = []
     return out
 
 
@@ -323,7 +325,8 @@ def grants_path(org, orgs_file=None):
         doc = yaml.safe_load(fh) or {}
     base = os.path.dirname(os.path.abspath(orgs_file))
     for o in doc.get("orgs") or []:
-        if o.get("name") == org:
+        import of_init
+        if of_init.org_entry_name(o) == org or o.get("name") == org:
             if not o.get("path"):
                 raise KeyError(f"organization {org!r} has no checkout in orgs.yaml (joined through a server only)")
             return os.path.join(base, os.path.expanduser(str(o["path"])), "registry", "grants.yaml")

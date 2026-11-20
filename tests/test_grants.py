@@ -206,8 +206,10 @@ class OrgsFileTest(unittest.TestCase):
             fh.write("grants:\n  - id: g1\n")
         orgs = os.path.join(d, "orgs.yaml")
         with open(orgs, "w") as fh:
-            fh.write("orgs:\n  - name: acme\n    path: acme\n  - name: joined\n    server: https://127.0.0.1:18210\n")
-        self.assertEqual(G.load(orgs), {"acme": [{"id": "g1"}]})
+            fh.write("orgs:\n  - name: acme\n    path: acme\n  - name: joined\n    server: https://127.0.0.1:18210\n"
+                     "  - path: ~/nothere/beta\n")
+        # a path with no name is named by its folder, as bin/of names it (of_review on PR 446)
+        self.assertEqual(G.load(orgs), {"acme": [{"id": "g1"}], "beta": []})
         with self.assertRaisesRegex(KeyError, "no checkout"):
             G.grants_path("joined", orgs)
 
