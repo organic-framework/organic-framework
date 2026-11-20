@@ -570,6 +570,49 @@ class CodexTest(unittest.TestCase):
         cx = of_tools.codex_config(self.pos(d, "acme_org"), d, seat=seat, org="acme", up=lambda p: False)
         self.assertEqual(cx["tables"]["mcp_servers"], {"slackish": {"enabled": False}})
 
+    def test_an_excluded_plugin_and_the_seats_own_apps_and_plugins_are_off_by_name(self):
+        # of_review, PR 470: an excluded codex-plugin was enabled, and a seat's own enabled = true won over _default
+        d = self.doc()
+        d["tools_excluded"] = [{"plugin": "review@openai-curated", "basis": "owner card X-1"}]
+        self.assertTrue(any("review@openai-curated" in p and "tools_excluded" in p for p in of_tools.check({"acme": d})))
+        seat = {"apps": {"connector_mail": {"enabled": True}, "connector_drive": {"enabled": False}},
+                "plugins": {"other@m": {"enabled": True}}}
+        cx = of_tools.codex_config(self.pos(d, "codex_keeper"), d, seat=seat, org="acme", up=lambda p: False)
+        t = cx["tables"]
+        self.assertEqual(t["plugins"], {"_default": {"enabled": False}, "other@m": {"enabled": False},
+                                        "review@openai-curated": {"enabled": False}})
+        self.assertFalse(t["features"]["plugins"])
+        self.assertEqual(t["apps"], {"_default": {"enabled": False}, "connector_mail": {"enabled": False},
+                                     "connector_drive": {"enabled": True}})
+        self.assertTrue(any("tools_excluded" in n for n in cx["notes"]))
+        # a position that names no app still gets the seat's apps off by name
+        cx = of_tools.codex_config(self.pos(d, "acme_org"), d, seat=seat, org="acme", up=lambda p: False)
+        self.assertEqual(cx["tables"]["apps"]["connector_mail"], {"enabled": False})
+        self.assertFalse(cx["tables"]["features"]["apps"])
+
+    def test_a_named_feature_is_set_true_and_default_cannot_be_granted(self):
+        d = self.doc()
+        d["tools"]["cx-img"] = {"kind": "codex-feature", "feature": "image_generation", "acts_as": "OpenAI's model",
+                                "scope": "read", "keeper": "acme_org"}
+        d["tools"]["cx-all"] = {"kind": "codex-app", "app": "_default", "acts_as": "x", "scope": "read",
+                                "keeper": "acme_org"}
+        p = {"name": "imgr", "tools": ["cx-img", "cx-all"]}
+        d["positions"].append(p)
+        t = of_tools.codex_config(p, d, org="acme", up=lambda x: False)["tables"]
+        self.assertIs(t["features"]["image_generation"], True)
+        self.assertFalse(t["features"]["apps"])
+        self.assertNotIn("apps", t)
+        self.assertTrue(any("cx-all" in x and "_default" in x for x in of_tools.check({"acme": d})))
+
+    def test_a_seat_file_that_does_not_parse_gets_no_layer(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as h:
+            self.assertEqual(of_tools.seat_config(h), {})
+            with open(os.path.join(h, "config.toml"), "w") as fh:
+                fh.write("[mcp_servers.x\ncommand = 1\n")
+            with self.assertRaises(of_tools.ToolsError):
+                of_tools.seat_config(h)
+
     def test_a_claude_session_skips_the_codex_kinds(self):
         d = self.doc()
         c = of_tools.session_config(self.pos(d, "codex_keeper"), d, ofb="/of/bin/of", installed=[], org="acme",
@@ -601,7 +644,7 @@ class CodexTest(unittest.TestCase):
             self.assertIn("grafana-read", t["mcp_servers"])
             with open(os.path.join(st, "tools", "0b9e-launch-1.mcp.json")) as fh:
                 self.assertEqual(json.load(fh)["mcpServers"]["grafana-read"]["url"], "http://127.0.0.1:18310/mcp")
-            for bad in ("../x", "a/b", "", "-x"):
+            for bad in ("../x", "a/b", "", "-x", "L1\n"):
                 with self.assertRaises(of_tools.ToolsError):
                     of_tools.codex_layer("obs_keeper", bad, st, state_dir=st)
 
