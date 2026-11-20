@@ -1723,6 +1723,116 @@ def pending_question(transcript):
     return None
 
 
+def stopped_tasks(transcript_path, since_iso):
+    """The scheduled tasks an exit stopped: each "Stopped scheduled task: <prefix>…" notice at or after `since_iso`,
+    resolved to the latest CronCreate before it whose prompt starts with the prefix (its first 60 characters), else to a
+    session_cron_carry task (recurring ones only are listed there), else {"prompt": prefix, "unmatched": True}.
+    2026-11-20: Claude Code 2.1.329 stops a session's scheduled tasks when it exits through "Exit and stop tasks", and
+    --resume no longer brings them back; 20 tasks in 9 sessions were stopped by moves that morning."""
+    since = datetime.fromisoformat(since_iso.replace("Z", "+00:00"))
+    marker = "Stopped scheduled task: "
+    created, carried, stopped = [], [], {}
+    by_tool_use = {}
+
+    def latest_match(tasks, prefix):
+        return next((t for t in reversed(tasks) if prefix and t["prompt"].startswith(prefix[:60])), None)
+
+    with open(transcript_path, "rb") as fh:
+        for line in fh:
+            # a transcript runs to hundreds of MB: parse only the lines that can matter (a CronCreate call, its result,
+            # a carry, a stop notice)
+            if b"CronCreate" not in line and b"session_cron_carry" not in line and marker.encode() not in line \
+                    and not (b"toolUseResult" in line and any(k.encode() in line for k in by_tool_use)):
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, RecursionError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            kind = record.get("type")
+            if kind in ("assistant", "user"):
+                message = record.get("message")
+                blocks = message.get("content") if isinstance(message, dict) else None
+                if not isinstance(blocks, list):
+                    continue
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if kind == "assistant" and block.get("type") == "tool_use" and block.get("name") == "CronCreate":
+                        task = block.get("input")
+                        if not (isinstance(task, dict) and isinstance(task.get("prompt"), str)
+                                and isinstance(task.get("cron"), str)):
+                            continue
+                        created.append(task)
+                        if isinstance(block.get("id"), str):
+                            by_tool_use[block["id"]] = task
+                    elif kind == "user" and block.get("type") == "tool_result" and len(blocks) == 1:
+                        use_id, result = block.get("tool_use_id"), record.get("toolUseResult")
+                        if (isinstance(use_id, str) and use_id in by_tool_use and isinstance(result, dict)
+                                and isinstance(result.get("id"), str)):
+                            by_tool_use[use_id]["id"] = result["id"]
+            elif kind == "attachment":
+                attachment = record.get("attachment")
+                if isinstance(attachment, dict) and attachment.get("type") == "session_cron_carry":
+                    tasks = attachment.get("tasks")
+                    if isinstance(tasks, list):
+                        carried = [t for t in tasks if isinstance(t, dict) and isinstance(t.get("prompt"), str)
+                                   and isinstance(t.get("cron"), str)]
+            elif kind == "system":
+                content, timestamp = record.get("content"), record.get("timestamp")
+                if not isinstance(content, str) or not content.startswith(marker) or not isinstance(timestamp, str):
+                    continue
+                try:
+                    if datetime.fromisoformat(timestamp.replace("Z", "+00:00")) < since:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                prefix = content[len(marker):].rstrip().rstrip("…").rstrip()
+                if prefix in stopped:
+                    continue
+                task = latest_match(created, prefix)
+                if task:
+                    old_id = task.get("id")
+                    if not old_id and task.get("recurring", True):
+                        old_id = next((t.get("id") for t in reversed(carried)
+                                       if t["prompt"] == task["prompt"] and t["cron"] == task["cron"]), None)
+                    stopped[prefix] = {"cron": task["cron"], "recurring": task.get("recurring", True),
+                                       "prompt": task["prompt"], "id": old_id}
+                elif carry := latest_match(carried, prefix):
+                    stopped[prefix] = {"cron": carry["cron"], "recurring": True, "prompt": carry["prompt"],
+                                       "id": carry.get("id")}
+                else:
+                    stopped[prefix] = {"prompt": prefix, "unmatched": True}
+    return list(stopped.values())
+
+
+def _write_handover_note(path, note, stopped=(), log=print):
+    if stopped:
+        lines = ["", "The exit stopped these scheduled tasks, and they do not come back with --resume "
+                 "(Claude Code 2.1.329 and later). Run CronList, then re-create with CronCreate each one "
+                 "that is not there, with the same schedule and prompt:", ""]
+        for task in stopped:
+            if task.get("unmatched"):
+                lines.append("- The full prompt was not found in the transcript. Recorded prefix:")
+            else:
+                kind = "recurring" if task["recurring"] else "one-shot"
+                old_id = f"`{task['id']}`" if task["id"] else "unavailable"
+                lines.append(f"- `{task['cron']}` ({kind}, old ID {old_id})")
+            prompt = task["prompt"]
+            fence = "```"
+            while fence in prompt:
+                fence += "`"
+            lines.extend(["", "  " + fence, "  " + prompt.replace("\n", "\n  "), "  " + fence, ""])
+        note += "\n".join(lines)
+    with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w",
+              encoding="utf-8", errors="backslashreplace") as fh:
+        os.fchmod(fh.fileno(), 0o600)
+        fh.write(note)
+    if stopped:
+        log(f"  recorded {len(stopped)} stopped scheduled task(s) in the hand-over note")
+
+
 def background_processes(pid):
     """What runs under the harness process besides MCP servers: the commands its background shells run."""
     out = []
@@ -1762,6 +1872,11 @@ def effort_of(d, model):
 HOLDER_LAG_NOTE = ("If `of inbox --mine` or `of send` answers `403 not_holder` right after this, the relay server has "
                    "not seen your new process yet; it should within about 10 seconds (of_server, 2026-11-07), so retry in "
                    "10 to 20 seconds, do not investigate.")
+
+SCHEDULED_TASKS_NOTE = ("For scheduled tasks (crons, wake-ups), run CronList first. Re-create the tasks listed "
+                        "below as stopped by the exit. Other listed tasks come back only on Claude Code versions "
+                        "before 2.1.329. Re-create only what CronList lacks. Re-creating a task that came back "
+                        "makes it run twice (2026-11-14).")
 
 
 def balance_why(reason):
@@ -1809,9 +1924,8 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
     crons = (continuation or {}).get("session_crons") or []
     tasks = [t for t in (continuation or {}).get("background_tasks") or [] if t.get("status") == "running"]
     if crons or tasks:
-        lines.append("Scheduled tasks (crons, wake-ups) come back with the session: run CronList first and "
-                     "re-create only the ones missing, or each one that came back runs twice (2026-11-14). "
-                     "Monitors and background shells died with the old process. Your last record of them:")
+        lines.append(SCHEDULED_TASKS_NOTE + " Monitors and background shells died with the old process. "
+                     "Your last record of them:")
         for c in crons:
             lines.append(f"- cron/wake-up: {json.dumps(c, ensure_ascii=False)[:2000]}")
         for t in tasks:
@@ -1819,7 +1933,7 @@ def handover_note(name, sid, src, dst, account, continuation, ts, extra=None, mo
                          f"({(t.get('command') or '')[:160]!r})")
         lines += ["Re-create the ones you still need that are not there.", ""]
     else:
-        lines += ["Your last record shows no crons, monitors or background tasks.", ""]
+        lines += ["The pre-exit record lists no crons, monitors or background tasks.", ""]
     lines += ["Check that the move kept your context: reply in at most three lines with",
               "1. what you were working on before this message, and",
               "2. your next step.",
@@ -2749,10 +2863,10 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
             carried_settings.append("herdr integration")
             log(f"  herdr's Claude integration installed in {short(target)}")
     os.makedirs(work, mode=0o700, exist_ok=True)
-    with open(note_path, "w") as fh:
-        fh.write(handover_note(name, sid, src, target, account_of(target), cont, _iso(time.time()),
-                               (extra_note or "").replace("<name>", name) or None,
-                               model=(ctx_model, model) if switch else None, why=why, restarted=restarted))
+    note = handover_note(name, sid, src, target, account_of(target), cont, _iso(time.time()),
+                         (extra_note or "").replace("<name>", name) or None,
+                         model=(ctx_model, model) if switch else None, why=why, restarted=restarted)
+    _write_handover_note(note_path, note)
     held = False  # a Zellij pane whose command is claude itself is "held" after exit; Esc drops it to a shell
     if runtime == "zellij":
         try:
@@ -2777,6 +2891,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         read_old = lambda: _zellij(zs, "dump-screen", "--pane-id", zp, "--ansi").splitlines()[-60:]  # noqa: E731
         key_old = lambda k: _zellij(zs, "send-keys", "--pane-id", zp, k)  # noqa: E731
     try:
+        exit_started = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         exit_session(int(s["pid"]), type_exit, read_old, key_old, allow_shells=allow_shells, log=log)
     except MoveError as e:
         raise MoveError(f"{name}: {e} ({pane}); the hand-over note was not used", stuck=e.stuck)
@@ -2820,6 +2935,14 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     rekeyed = rekey_session(target, sid, folder_key(run_cwd) if run_cwd != s["cwd"] else key,
                             os.path.join(work, "backup")) if key else []
     mark_copied(rekeyed)
+    try:  # the old process has exited: a failed reading costs the note's list, never the move
+        final = find_transcript(target, sid)
+        stopped = stopped_tasks(final, exit_started) if final else []
+    except (OSError, ValueError) as e:
+        stopped = []
+        log(f"  scheduled tasks the exit stopped: not read ({e})")
+    if stopped:
+        _write_handover_note(note_path, note, stopped, log)
     if run_cwd != s["cwd"]:
         log(f"  start folder: {s['cwd']} -> {run_cwd}")
     if mem_dir:  # what the session wrote to its folder before it ran on its own directory
@@ -3160,9 +3283,8 @@ def reboot_note(e, account, ts, prepared_at, tmp_kept):
                   "off. Check what it left half done before you go on.", ""]
     crons, tasks, running = e.get("crons") or [], e.get("tasks") or [], e.get("running") or []
     if crons or tasks or running:
-        lines.append("Scheduled tasks (crons, wake-ups) come back with the session: run CronList first and "
-                     "re-create only the ones missing, or each one that came back runs twice (2026-11-14). "
-                     "Monitors and background shells died with the old process. Your last record of them:")
+        lines.append(SCHEDULED_TASKS_NOTE + " Monitors and background shells died with the old process. "
+                     "Your last record of them:")
         lines += [f"- cron/wake-up: {json.dumps(c, ensure_ascii=False)[:2000]}" for c in crons]
         lines += [f"- background {t.get('type')}: {t.get('description') or ''} ({(t.get('command') or '')[:160]!r})"
                   for t in tasks]
@@ -3170,7 +3292,7 @@ def reboot_note(e, account, ts, prepared_at, tmp_kept):
         lines += ["Re-create the ones you still need that are not there. A time that has passed meanwhile needs a "
                   "fresh look, not a blind re-arm.", ""]
     else:
-        lines += ["Your last record shows no crons, monitors or background tasks.", ""]
+        lines += ["The restart plan lists no crons, monitors or background tasks.", ""]
     if tmp_kept:
         lines += [f"The files under {agent_tmp_root()} (your scratchpad, your background tasks' output) were kept "
                   f"and put back; whatever was written there after {prepared_at} as a new file is lost.", ""]
@@ -3198,8 +3320,8 @@ def carry_note(e, account, ts, plan):
         lines += [f"- background {t.get('type')}: {t.get('description') or ''} ({(t.get('command') or '')[:160]!r})"
                   for t in tasks]
         lines += [f"- process (from `ps` before the carry): `{c}`" for c in running]
-        lines += ["Re-create the ones you still need, on this machine. A time that has passed meanwhile needs a fresh "
-                  "look, not a blind re-arm.", ""]
+        lines += ["Run CronList first. Re-create the ones you still need that are missing on this machine. "
+                  "A time that has passed meanwhile needs a fresh look, not a blind re-arm.", ""]
     lines += ["Check that the carry kept your context: reply in at most three lines with",
               "1. what you were working on before this message, and", "2. your next step.",
               "Then declare your state with `of status` as usual and carry on (or stay idle if you were waiting). "
@@ -3389,7 +3511,7 @@ def free_pane(panes, workspaces, tabs, ws_label, tab_label, cwd, claimed=(), own
                  and tbl.get(x.get("tab_id")) == tab_label), None)
 
 
-def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=None):
+def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=None, transcript_sources=None):
     name, sid, target = e["name"], e["session"], e["config_dir"]
     transcript = find_transcript(target, sid)
     if not transcript:
@@ -3454,9 +3576,15 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     if mem and p and load_policy().get("position_memory"):
         seed_memory([p], only=(p.get("_org"), p["name"]), extra_sessions={sid: (p.get("_org"), p["name"])}, log=log)
     os.makedirs(work, mode=0o700, exist_ok=True)
-    with open(note_path, "w") as fh:
-        fh.write(carry_note(e, account_of(target), ts, plan) if carried else
-                 reboot_note(e, account_of(target), ts, plan.get("prepared_at"), bool(plan.get("tmp_kept"))))
+    note = (carry_note(e, account_of(target), ts, plan) if carried else
+            reboot_note(e, account_of(target), ts, plan.get("prepared_at"), bool(plan.get("tmp_kept"))))
+    source = (transcript_sources or {}).get(transcript, transcript)
+    try:
+        stopped = stopped_tasks(source, plan["prepared_at"]) if plan.get("prepared_at") else []
+    except (OSError, ValueError) as err:
+        stopped = []
+        log(f"  {name}: scheduled tasks stopped since the plan: not read ({err})")
+    _write_handover_note(note_path, note, stopped, log)
     new = start_session(sid, name, cwd, target, prompt, lambda: _run_in_pane(pane, cmd),
                         lambda: _pane_lines(pane), lambda k: _herdr("pane", "send-keys", pane, k.lower()),
                         "carry: resume note" if carried else "reboot: resume note", log=log)
@@ -3493,7 +3621,8 @@ def stray_holder(e, live_dir, args, started_ms, prepared):
     return f"since {_iso(started_ms / 1000) if started_ms else 'the restart'} ({why})"
 
 
-def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, plan_path=None, place_of=None):
+def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, plan_path=None, place_of=None,
+                   transcript_sources=None):
     """Put /private/tmp back and resume every recorded session that is not live, one after another, production
     first. A session that fails is reported and the rest go on; run it again to retry the failed ones.
     place_of(position) -> (workspace label, tab label): where a position's new pane goes when herdr did not bring
@@ -3542,7 +3671,7 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
         try:
             p = by_name.get(e.get("position") or "")
             r = _restore_one(e, p, plan, ts, log=log, dry_run=dry_run, home=place_of(p) if p and place_of else None,
-                             claimed=claimed)
+                             claimed=claimed, transcript_sources=transcript_sources)
             done.append((e["name"], "dry run" if dry_run else "resumed", r))
         except MoveError as err:
             log(f"{e['name']}: NOT resumed: {err}")

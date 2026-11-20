@@ -764,7 +764,7 @@ def _state_text(path):
     return bool(_STATE_TEXT.search(path))
 
 
-def install(bundle, rw, dry_run=False, log=print, allowed=None):
+def install(bundle, rw, dry_run=False, log=print, allowed=None, transcript_sources=None):
     """Put the bundle's files that `allowed` accounts for at their rewritten paths; refuse and name the rest. A file
     already there with other contents is kept aside under the bundle's `kept/` first. Transcripts (.jsonl under
     projects/) are rewritten record by record, and the session's state text (_STATE_TEXT) as text. A link in a bundle
@@ -785,6 +785,10 @@ def install(bundle, rw, dry_run=False, log=print, allowed=None):
             with open(src, "rb") as fh:
                 data = fh.read()
             if new.endswith(".jsonl") and "/projects/" in new:
+                # Resolve stop notices in the original: install rewrites paths there, but keeps CronCreate messages
+                # byte-for-byte, so a prompt beginning with an old path can no longer match on the new machine.
+                if transcript_sources is not None:
+                    transcript_sources[new] = src
                 data = rw.transcript(data)
             elif _state_text(new) and rw.touches(data):
                 try:
@@ -852,7 +856,8 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
                   old_tmp=plan.get("tmp_root"), new_tmp=tmp_root)
     log(f"from {plan.get('machine')} ({plan['home']}, uid {plan['uid']}) to {rw.new_home} (uid "
         f"{os.getuid() if uid is None else uid}); prepared {plan.get('prepared_at')}")
-    install(bundle, rw, dry_run=dry_run, log=log,
+    transcript_sources = {}
+    install(bundle, rw, dry_run=dry_run, log=log, transcript_sources=transcript_sources,
             allowed=planned(plan, os.path.join(bundle, "files"), org, positions, only))
     card = None
     if consents_card:  # the folders' trust and the bypass, on the owner's yes only; applied below, before any resume
@@ -896,5 +901,6 @@ def restore(bundle, positions, org, only=None, dry_run=False, log=print, of_bin=
     if not ok:
         return [(n, "failed", "another account") for n in wrong]
     done = (restore_fn or of_capacity.reboot_restore)(positions, only=ok, dry_run=dry_run, log=log, of_bin=of_bin,
-                                                       plan_path=path, place_of=place_of)
+                                                       plan_path=path, place_of=place_of,
+                                                       transcript_sources=transcript_sources)
     return list(done) + [(n, "failed", "another account") for n in wrong]
