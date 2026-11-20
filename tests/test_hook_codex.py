@@ -83,6 +83,19 @@ class CodexAnswerTest(unittest.TestCase):
             "hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}})))
         self.assertIsNone(of_hook.codex_refusal("not json"))
 
+    def test_an_input_that_does_not_parse_is_exit_2(self):
+        of_hook.OUTPUT, of_hook.GUARD_DECIDED = None, False
+        out, err = io.StringIO(), io.StringIO()
+        stdin = sys.stdin
+        sys.stdin = io.StringIO('{"tool_name": "Bash", "tool_input": ')
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = of_hook.main(["PreToolUse"])
+        finally:
+            sys.stdin = stdin
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("guard failed (JSONDecodeError)", err.getvalue())
+
     def test_a_claude_session_still_answers_json(self):
         p = {"session_id": "claude-1", "cwd": "/w", "transcript_path": "/home/alex/.claude/projects/w/claude-1.jsonl",
              "permission_mode": "bypassPermissions", "tool_use_id": "u1", "hook_event_name": "PreToolUse",

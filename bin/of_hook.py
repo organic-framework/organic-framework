@@ -2176,9 +2176,12 @@ def main(argv):
     started = _T0
     hook = {}
     answer = None
+    parsed = False
+    refused = 0
     try:
         raw = sys.stdin.read(4 * 1024 * 1024)
         hook = json.loads(raw) if raw.strip() else {}
+        parsed = True
         event = hook.get("hook_event_name") or event
         if is_codex(hook):
             answer = sys.stdout = _CodexAnswer(sys.stdout)
@@ -2197,11 +2200,16 @@ def main(argv):
                 fh.write(f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
         except Exception:
             pass
-        if event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
+        if event == "PreToolUse" and not GUARD_DECIDED and not parsed and answer is None:
+            # an input that does not parse names no harness: exit 2 with the reason on stderr, the deny Claude Code and
+            # Codex both take whatever else is on stdout (of_secrets-review on organic-framework PR 475)
+            sys.stderr.write(GUARD_FAILED.format(kind=type(e).__name__) + NO_WAY_ROUND + "\n")
+            refused = 2
+        elif event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
             _deny_failed(type(e).__name__)   # (of_secrets-review on organic-framework PR 469)
     if answer is not None:
         answer.flush()
         sys.stdout = answer.real
     if event in ("PostToolUse", "SessionStart", "Stop", "UserPromptSubmit"):
         _timing(event, hook, started)
-    return answer.code if answer is not None else 0
+    return answer.code if answer is not None else refused
