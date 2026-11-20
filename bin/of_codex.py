@@ -75,6 +75,9 @@ def requirements_toml(of_bin, domains=DEFAULT_DOMAINS):
 
 
 def default_of_bin():
-    """The `of` the hooks run: the user's link, else this checkout's."""
+    """The `of` the hooks run, by its real path in the checkout: the user's link resolved, else this checkout's. Not the
+    link itself: inside an of subagent run's bwrap, where /home is empty, the checkout's bin folder is bound in read-only
+    (of_subagent.hook_dirs), and a bound link would find no modules beside it (of_server, msg 01a1f982-178c)."""
     link = os.path.expanduser("~/.local/bin/of")
-    return link if os.path.exists(link) else os.path.join(os.path.dirname(os.path.realpath(__file__)), "of")
+    return os.path.realpath(link) if os.path.exists(link) else os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                                                                            "of")

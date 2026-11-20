@@ -563,6 +563,13 @@ class SubagentTest(unittest.TestCase):
                 self.assertIn("only; on " + platform, str(e.exception))
                 self.assertEqual(fake.calls, [])
 
+    def test_the_hooks_folder_is_the_checkouts_bin(self):
+        import of_codex
+        d = of_subagent.hook_dirs()
+        self.assertEqual(d, [os.path.dirname(of_codex.default_of_bin())])
+        self.assertTrue(os.path.isfile(os.path.join(d[0], "of_hook.py")))
+        self.assertEqual(os.path.realpath(of_codex.default_of_bin()), of_codex.default_of_bin())   # never a link
+
     def test_codex_on_linux_runs_inside_bwrap(self):
         """The agent host move (of_agent-server, message 01a1efa2-919d): on Linux, Codex inside bwrap, with /home, /tmp
         and /run empty, the material read-only (a patch's snapshot writable) and its login bound in alone."""
@@ -597,6 +604,11 @@ class SubagentTest(unittest.TestCase):
                     exe = os.path.realpath(prog)
                     self.assertEqual(a[a.index("--") + 1], exe)
                     self.assertIn(("--ro-bind", exe, exe), pairs)             # the program files alone
+                    # OF's managed hooks run inside the run too: the checkout's bin folder, read-only (of_server,
+                    # msg 01a1f982-178c), never a writable bind
+                    for d in of_subagent.hook_dirs():
+                        self.assertIn(("--ro-bind", d, d), pairs)
+                        self.assertNotIn(("--bind", d, d), pairs)
                     side = os.path.join(os.path.dirname(exe), "codex-exec-server")
                     self.assertIn(("--ro-bind", side, side), pairs)
                     bound = [x[1] for x in pairs if x[0] == "--ro-bind"]

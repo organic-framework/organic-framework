@@ -837,6 +837,19 @@ def codex_parts(exe):
     return parts
 
 
+def hook_dirs():
+    """The folders OF's managed Codex hooks run from, bound read-only into a run's bwrap: the machine's requirements file
+    forces its hooks on every Codex run, this one's included (bin/of_codex.py), so the guard must resolve and judge
+    the run's commands as any session's; with /home empty, the hook would not be found, Codex would take it as failed
+    and run the call (of_server, msg 01a1f982-178c). The checkout's bin folder, where of_codex.default_of_bin points."""
+    try:
+        import of_codex
+        d = os.path.dirname(of_codex.default_of_bin())
+    except Exception:  # noqa: BLE001
+        return []
+    return [d] if os.path.isdir(d) else []
+
+
 def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):
     """ARGV inside bwrap, on Linux: /usr and /etc read-only, /home, /tmp and /run empty tmpfs, the run's folder bound
     in with its material read-only (WRITE_DIR, a patch's snapshot, writable), the Codex program file alone read-only
@@ -855,6 +868,8 @@ def bwrap_argv(argv, run_dir, work_dir, write_dir, exe, login, login_at):
     if write_dir:
         a += ["--bind", write_dir, write_dir]
     for p in codex_parts(exe):
+        a += ["--ro-bind", p, p]
+    for p in hook_dirs():
         a += ["--ro-bind", p, p]
     a += ["--bind", login, login_at, "--chdir", work_dir, "--"]
     return a + list(argv)
