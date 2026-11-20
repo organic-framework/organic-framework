@@ -968,12 +968,97 @@ def _owner_config_in_code(code, lits):
     return None
 
 
-def _code_deny(code, lang=None):
+# The shell commands perl, ruby and php code runs (hand-over 7646c671, of_server: `perl -e 'print `printenv`'` passed):
+# backticks, perl's qx and ruby's %x with any delimiter, the string given to system, exec, shell_exec, passthru, popen
+# or spawn, and perl's open with a pipe ("cmd |", "-|", "cmd"). Each is read by _bash_deny as a line of its own.
+# Node is left out: its backticks are template strings, not commands.
+_SHELL_CODE_HEADS = ("perl", "ruby", "php")
+_PAIRS = {"(": ")", "{": "}", "[": "]", "<": ">"}
+_RUN_CALL = re.compile(r"\b(?:system|exec|shell_exec|passthru|popen|spawn|proc_open|readpipe)\s*\(?\s*(['\"])((?:\\.|(?!\1).)*)\1",
+                       re.S)
+_PIPE_OPEN = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])((?:\\.|(?!\1).)*?)\s*\|\s*\1", re.S)
+_PIPE_OPEN3 = re.compile(r"\bopen\s*\(?\s*[^,;]*,\s*(['\"])-\|\1\s*,\s*(['\"])((?:\\.|(?!\2).)*)\2", re.S)
+
+
+def _code_args(head, args):
+    """The code strings an interpreter call carries on its line: the word after -c or -e (and php's -r, perl's -E), and
+    for perl and ruby a short-flag cluster ending in e or E (`-le`, `-we`, `-ne`, `-pE`) with its code the next word, or
+    the rest of the word glued after the e (`-e'…'`, `-le'…'`), as their own option parsers read them
+    (of_secrets-review and of_review on organic-framework PR 461)."""
+    out = []
+    base = os.path.basename(str(head or ""))
+    flags = ("-c", "-e") + (("-r",) if base == "php" else ()) + (("-E",) if base == "perl" else ())
+    # every place of each flag: perl and ruby take several -e (`perl -e 'print 1' -e '<dump>'`: of_review on
+    # organic-framework PR 461 at 00aac97)
+    out += [args[k + 1] for k, a in enumerate(args[:-1]) if a in flags]
+    if base in ("perl", "ruby"):
+        for k, a in enumerate(args):
+            if a in ("-e", "-E") or a.startswith("--") or not a.startswith("-"):
+                continue
+            # digits too: perl's -0777 and -l012, ruby's -W0 sit inside a cluster (of_secrets-review on PR 461);
+            # a -Mfoo=e… read as code is the safe side
+            m = re.fullmatch(r"-[A-Za-z0-9]*?([eE])(.*)", a, re.S)
+            if not m:
+                continue
+            code = m.group(2) or (args[k + 1] if k + 1 < len(args) else "")
+            if code:
+                out.append(code)
+    return out
+
+
+def _quote_like(code, marker):
+    """Bodies of perl's qx / ruby's %x: MARKER, then any delimiter, paired brackets matched."""
+    out, i = [], 0
+    while True:
+        i = code.find(marker, i)
+        if i < 0:
+            return out
+        j = i + len(marker)
+        while j < len(code) and code[j] in " \t" and marker == "qx":
+            j += 1
+        if j >= len(code) or code[j].isalnum() or code[j] in "_ \t\n" or (i and (code[i - 1].isalnum() or code[i - 1] == "_")):
+            i = j
+            continue
+        op = code[j]
+        cl = _PAIRS.get(op, op)
+        depth, k = 1, j + 1
+        while k < len(code) and depth:
+            if code[k] == "\\":
+                k += 2
+                continue
+            if code[k] == cl:
+                depth -= 1
+            elif code[k] == op and op != cl:
+                depth += 1
+            k += 1
+        out.append(code[j + 1:k - 1])
+        i = k
+
+
+def _shell_in_code(code, head):
+    """The shell command lines HEAD's CODE runs, for perl, ruby and php; else []."""
+    if os.path.basename(str(head or "")) not in _SHELL_CODE_HEADS:
+        return []
+    out = re.findall(r"`([^`]*)`", code)
+    out += _quote_like(code, "qx") + (_quote_like(code, "%x") if os.path.basename(head) == "ruby" else [])
+    out += [m.group(2) for m in _RUN_CALL.finditer(code)]
+    # perl's q{…} and qq{…} handed to a launch, with any delimiter (of_secrets-review's note on PR 461)
+    for m in re.finditer(r"\b(?:system|exec|readpipe|popen|spawn)\s*\(?\s*(qq?)\s*(?=[^\w\s])", code):
+        out += _quote_like(code[m.start(1):], m.group(1))[:1]
+    out += [m.group(2) for m in _PIPE_OPEN.finditer(code)] + [m.group(3) for m in _PIPE_OPEN3.finditer(code)]
+    return [x for x in out if x.strip()]
+
+
+def _code_deny(code, lang=None, head=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
     the whole environment (print(os.environ)). A false positive is accepted over a miss here: the agent
     writes such code to a file with the Edit tool. Comments do not count. LANG "python" reads the code with
     python's tokenizer; python code that does not tokenize is read with no carve-out at all."""
+    for line in _shell_in_code(code, head):   # what perl, ruby or php runs through the shell (hand-over 7646c671)
+        hit = _bash_deny(line, 1)
+        if hit:
+            return hit
     py = _py_strings(code) if lang == "python" else None
     if py is not None:
         lits, bare = py
@@ -5387,7 +5472,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
             named = _code_runs_protected(body, _DENY_CWD[0]) if not hit and _ORG_PROTECTION["code"] else None
             hit = hit or ((PROTECTED_RUN_DENY, named) if named else None)
         elif head in _INTERPRETERS or remote == "code":
-            hit = _code_deny(body, lang)
+            hit = _code_deny(body, lang, head)
         elif not quoted:  # an unquoted delimiter runs $( ) in the body, whatever reads it
             hit = next(filter(None, (_bash_deny(s, depth + 1) for s in _scan(body)[1])), None)
             if not hit and (head == "tee" or (head == "cat" and ">" not in opener)):  # printed to stdout
@@ -5531,7 +5616,7 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if head in _SHELLS:
                     hit = _in_folder(here21, _bash_deny, herestr, depth + 1)
                 elif head in _INTERPRETERS:
-                    hit = _code_deny(herestr, _lang(head))
+                    hit = _code_deny(herestr, _lang(head), head)
                 else:
                     hit = None
                 if hit:
@@ -5546,11 +5631,10 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                 if hit:
                     return hit
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        hit = _code_deny(args[args.index(flag) + 1], _lang(head))
-                        if hit:
-                            return hit
+                for code in _code_args(head, args):   # -c, -e, php's -r, perl's -E, perl and ruby clusters
+                    hit = _code_deny(code, _lang(head), head)
+                    if hit:
+                        return hit
                 kind, code, _ = _py_walk(args) if head.startswith("python") else (None, None, None)
                 if kind == "code":  # `-Ic "…"`, `-c"…"`: python's own reading (of_secrets-review on PR 136)
                     hit = _code_deny(code, "python")
@@ -7463,9 +7547,8 @@ def command_findings(cmd, depth=0):
             if s[4] is not None and head in _INTERPRETERS:
                 out.append(("code", s[4], _lang(head) or head))
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out.append(("code", args[args.index(flag) + 1], _lang(head) or head))
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out.append(("code", code, _lang(head) or head))
                 if head.startswith("python"):
                     kind_, code, _ = _py_walk(args)
                     if kind_ == "code":
@@ -8112,9 +8195,8 @@ def _cred_bash(cmd, cwd, env, keep, depth):
                 for body in _nested(head, args):
                     out += _cred_bash(body, cwd, local, keep, depth + 1)
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out += _cred_code(args[args.index(flag) + 1], cwd, local, keep)
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out += _cred_code(code, cwd, local, keep)
             if herestr is not None and head in _INTERPRETERS:
                 out += _cred_code(herestr, cwd, local, keep)
             recursive = head in _RECURSE_ALWAYS or bool(_RECURSIVE & set(args)) or (
@@ -8515,9 +8597,8 @@ def _authority_bash(cmd, depth=0):
             for body in _nested(head, args):  # sh -c, eval, and ssh's or an exec's remote command too
                 out += _authority_bash(body, depth + 1)
             if head in _INTERPRETERS:
-                for flag in ("-c", "-e"):
-                    if flag in args[:-1]:
-                        out += _authority_code(args[args.index(flag) + 1], head)
+                for code in _code_args(head, args):   # as _bash_deny reads it (PR 461)
+                    out += _authority_code(code, head)
                 if s[4] is not None:
                     out += _authority_code(s[4], head)
             if head in _HTTP_HEADS and _http_writes(head, args):

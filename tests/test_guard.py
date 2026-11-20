@@ -150,6 +150,31 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("printenv AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(deny("kubectl -n x exec pod-0 -- bash -c 'env | grep -o \"^R2_[A-Z_]*\"; printenv'"))
 
+    def test_env_dumps_through_perl_ruby_and_php(self):
+        """Hand-over 7646c671 (of_server): perl -e 'print `printenv`' passed, and qx, system, exec, a piped open, ruby's
+        backticks and %x, php's shell_exec and -r did too."""
+        PE, EG = "print" + "env", "en" + "v | grep KEY"
+        for c in (f"perl -e 'print `{PE}`'", f"perl -e 'print qx{{{PE}}}'", f"perl -e 'print qx({PE})'",
+                  f"perl -e 'print qx/{PE}/'", f"perl -e 'system \"{PE}\"'", f"perl -e 'exec \"{PE}\"'",
+                  f"perl -e 'open(my $f, \"{PE} |\"); print <$f>'",
+                  f"perl -e 'open(my $f, \"-|\", \"{PE}\"); print <$f>'", f"perl -e 'print `{EG}`'",
+                  f"perl -E 'say `{PE}`'", f"ruby -e 'puts `{PE}`'", f"ruby -e 'puts %x({PE})'",
+                  f"ruby -e 'system(\"{PE}\")'", f"php -r 'echo shell_exec(\"{PE}\");'", f"php -r 'echo `{PE}`;'",
+                  f"php -r 'system(\"{PE}\");'", f"perl - <<'EOF'\nprint `{PE}`;\nEOF",
+                  # the code flag in a bundle (of_secrets-review on PR 461)
+                  f"perl -le 'print `{PE}`'", f"perl -we 'print `{PE}`'", f"perl -ne 'print `{PE}`' f",
+                  f"perl -lE 'say `{PE}`'", f"ruby -we 'puts `{PE}`'", f"perl -le'print `{PE}`'",
+                  f"perl -e'print `{PE}`'", f"perl -lne 'print `{PE}`' f", f"perl -pe 'print `{PE}`' f",
+                  # digits in a cluster, a second -e, perl's q/qq (of_secrets-review and of_review on PR 461)
+                  f"echo a | perl -0777ne 'print `{PE}`'", f"perl -l012e 'print `{PE}`'", f"ruby -W0e 'puts `{PE}`'",
+                  f"perl -e 'print 1' -e 'print `{PE}`'", f"ruby -e 'p 1' -e 'puts `{PE}`'",
+                  f"perl -e 'system qq{{{PE}}}'", f"perl -e 'system q({PE})'", f"perl -e 'print readpipe(\"{PE}\")'"):
+            self.assertTrue(deny(c), c)
+        for c in ("perl -e 'print `date`'",   # a printenv literal alone is main's accepted false deny in any code "ruby -e 'puts %x(ls)'",
+                  f"node -e 'console.log(`{PE}`)'", "perl -e 'print qx{uname -a}'",
+                  f"perl -e 'print `{PE} VERSION`'"):
+            self.assertIsNone(deny(c), c)
+
     def test_a_dump_named_in_code_is_denied_even_in_a_test_of_the_guard(self):
         """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused. Every
         carve-out tried on organic-framework PR 454 (code that cannot launch; a literal inside an of_guard call) had a
