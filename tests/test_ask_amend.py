@@ -399,6 +399,18 @@ class CliTest(unittest.TestCase):
         finally:
             db.close()
 
+    def test_a_due_is_dropped_with_none(self):
+        """A user organization's unit owner (msg 01a1f8ea-76d5): a due with no source could not be removed."""
+        r = self.run_of("ask", "Lift the hold?", "--options", "yes|no", "--due", "+2h", "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        short = self.events("of.agent_question")[0][0][-8:]
+        r = self.run_of("ask", "Lift the hold?", "--amend", short, "--due", "none", "--from", "of_a")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        (_, p), = self.events("of.ask_amended")
+        self.assertEqual((p["changed"], p["due"]), (["due"], None))
+        r = self.run_of("ask", "Lift the hold?", "--amend", short, "--due", "none", "--from", "of_a")
+        self.assertIn("nothing differs", r.stderr)   # already none
+
     def test_amend_and_its_refusals(self):
         r = self.run_of("ask", "Lift the hold on the relay?", "--options", "yes|no", "--from", "of_a")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
