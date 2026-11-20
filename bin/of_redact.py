@@ -544,9 +544,9 @@ def owner_yes(conn, ask_id):
         payload = json.loads(row[0] or "{}")
     except ValueError:
         return False
-    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND "
+    for (pl,) in conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered' AND ts >= ? AND "
                               "(json_extract(payload, '$.ask_id') = ? OR EXISTS (SELECT 1 FROM "
-                              "json_each(payload, '$.ask_ids') WHERE value = ?))", (ask_id, ask_id)):
+                              "json_each(payload, '$.ask_ids') WHERE value = ?))", (row[1] or "", ask_id, ask_id)):
         try:
             a = json.loads(pl or "{}")
         except ValueError:
