@@ -105,7 +105,7 @@ The same list holds for Claude Code, Codex and any later harness. It is the `har
 | 2 | **Guard** | Every call that runs a command, edits a file or calls a tool server is checked by `bin/of_guard.py` before it runs, and an error in the check refuses the call. The operating system's sandbox refuses the session every credential root and secret path, so a call the check misses still reads none. The session cannot change its own guard, rules or config. |
 | 3 | **Record** | Each prompt, marked when a person typed it, each tool call and its result, and each turn's end go into the event store, masked, as they happen. |
 | 4 | **Messages** | herdr tells the pane's state (idle, working, waiting on an approval), so the relay types in only when it is idle. |
-| 5 | **State and asks** | `of status`, `of ask`, `of send` and the rest are commands any harness runs. The caller is the session its harness names (G31). |
+| 5 | **State and asks** | `of status`, `of ask`, `of send` and the rest are commands any harness runs. The caller is the session its harness names (G31). A session in an operating-system sandbox reaches OF's state through one door, its own socket to the listener (§4.5). It never reads the store or holds the machine's key. |
 | 6 | **Resume and move** | A session resumes by its id on its account. It moves between accounts between turns, with its context. |
 | 7 | **Capacity** | Each account's windows are read, and a session starts on the account with headroom. |
 
@@ -117,7 +117,7 @@ The same list holds for Claude Code, Codex and any later harness. It is the `har
 | 2 | **Three layers:**<br>- **A `PreToolUse` hook** that runs `bin/of_guard.py`. Codex 0.170's synchronous hook can refuse a shell call, an `apply_patch` and an MCP call, by exit 2 with a reason or by a JSON deny. Codex runs the call when a hook times out, crashes or answers malformed, so the hook's wrapper answers deny on any error of its own.<br>- **A permission profile per position**, enforced by bubblewrap and seccomp on Linux and kept whatever the command's spelling: the minimal platform files read; the position's folders written; every credential root and secret path of the catalogue `deny`; every seat's `CODEX_HOME` (its login, config, rules and hooks), the Claude accounts' sign-ins and transcripts, and the other sessions' scratch folders `deny`; the `.codex/` and `.agents/` folders under the position's folders not writable.<br>- **Exec-policy `forbidden` rules** for the guard's denied commands where a command prefix expresses them; they refuse before the sandbox, under `approval_policy = "never"` too.<br>**Not covered by the hook:** input sent into a running command session (`write_stdin`), and hosted tools such as web search, which stay off unless the position's tool profile names them.<br>**Hook trust:** an unmanaged hook is reviewed by its hash at start. The guard is a **managed** hook in Codex's system layer, root's file, which needs no trust and which no agent can change, with `allow_managed_hooks_only`. It is never a session flag, a user-layer hook or Codex's trust bypass, which the agent's own work can reach.<br>**Interactive exec off** (`unified_exec`, `unified_exec_tty`), so every command is a fresh call the hook sees. **Approvals never**, so a request to leave the sandbox is refused.<br>**Network:** a sandboxed command on Linux with the network off reaches no Unix socket, so `of` and herdr would fail. The profile turns the network on behind Codex's proxy, with a domain allowlist, and allows Unix sockets. That opens the same gap as Claude Code's sandbox on Linux (docs/guard.md, Gaps). | `of_server` decides, `of_platform` builds, `of_secrets-review` reviews |
 | 3 | Hooks `SessionStart`, `UserPromptSubmit` (the prompt), `PreToolUse`, `PostToolUse` (the result), `Stop` (the turn's end) and `SessionEnd`, with Claude Code's shape. Codex's session files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`, or `.jsonl.zst`) are ingested after the fact; OpenAI calls their format no stable interface. | `of_platform` |
 | 4 | herdr's Codex pane states, checked on the agent host. `notify` on `agent-turn-complete` is a second turn-end signal. | `of_herdr` |
-| 5 | Unchanged commands; the session id comes from the hook's input. | `of_platform` |
+| 5 | Unchanged commands, which inside the sandbox talk to the listener's socket in the session's own folder (§4.5); the session id comes from the hook's input. | `of_platform`; the signing `of_server` |
 | 6 | `codex resume <id> -C <folder>` on the seat's `CODEX_HOME`. A move takes the session's file to the other seat's home. | `of_platform`, `of_capacity` |
 | 7 | Each session file's `token_count` event carries the account's windows (`used_percent` consumed, `window_minutes`, `resets_at`). The app-server's `account/rateLimits/read` gives them now. | `of_capacity` |
 
@@ -142,6 +142,23 @@ Until then, a Codex position holds no grant and no credential. The managed hook 
 - **The registry:** `holder.runtime: codex` (docs/registry.md, Positions).
 - **First positions:** those that read and write public framework code and hold no grant or credential. They move to Codex by a structural diff (`swap_holder`), once the guard is reviewed and start and recording work.
 - **When it is done:** a position that did not build this sets one up on a clean OS user from the documents alone (`of_lab`, docs/lab.md), as AGENTS.md asks of every feature a person uses.
+
+### 4.5 OF's state from inside a sandbox
+
+`of_server`'s review of organic-framework PR 475 found what a sandboxed session would otherwise need to read or write. `of` writes its events to the store and reads hand-overs and asks there, so the profile had to leave OF's state folder readable: `of.db` and `raw/` hold every session's records, other positions' included. `of` also signs its server requests with the machine's key (`~/.config/of/machine_ed25519`). Inside an operating-system sandbox, a command the agent runs reads whatever `of` can read.
+
+So a sandboxed session reaches OF through one door, and the store and the key stay outside (`of_architect`, 2026-11-20, of the three ways in organic-framework-build `reports/codex-guard-w2-w3-2026-11-20.md`):
+- **One socket per session.** At start, the listener serves the session a Unix socket inside that session's own folder. The profile refuses every other session's folder, so a session reaches only its own socket. The listener takes the caller to be that socket's session, whatever a request says, and so is the caller G31 needs.
+- **Writes** go through that socket, or into an append-only spool in the same folder that the listener drains. Either way the listener stamps each event with that session and its position.
+- **Reads** are the projections `of` shows: the asks, the hand-overs, the caller's own inbox, `of who`, and one event cited by its id, as a position checks an owner's answer. They are limited to the caller's organization, and never raw tables, transcripts or hook records.
+- **Signing.** The listener signs the session's server requests with the machine's key, which no sandboxed session holds. The relay's checks are unchanged.
+- **The profile** denies `~/.local/state/of` except the session's own folder, and denies the machine's key.
+
+Not taken:
+- a signing broker alone, which leaves the store readable;
+- a machine identity per sandboxed position, which still leaves the store readable and enrolls many machines.
+
+The same door serves a Claude Code session once its sandbox is on. Until it is built, no Codex position runs where another session's records matter.
 
 ## 5. Each organization chooses
 
