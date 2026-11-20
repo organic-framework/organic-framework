@@ -37,9 +37,16 @@ def snapshot(p):
     return snap
 
 
+# Both lookups go by the event_name_ts index: `+position` keeps SQLite off event_position_ts, which walked every event of
+# the position back to its last lifecycle event, row by row (2026-11-20: up to 46,000 events a position in a 17 GB store,
+# 2.3 s a position against 0.02 s by name, so `of apply` passed two minutes and every account move waited on it; of_capacity).
+LAST_SQL = "SELECT payload FROM event WHERE name = ? AND +position = ? ORDER BY ts DESC, rowid DESC LIMIT 1"
+HOLDER_SQL = ("SELECT name, payload, host_id FROM event WHERE name IN ('of.holder_bound', 'of.holder_unbound') "
+              "AND +position = ? ORDER BY ts DESC, rowid DESC LIMIT 1")
+
+
 def _last(conn, name, position):
-    row = conn.execute("SELECT payload FROM event WHERE name = ? AND position = ? ORDER BY ts DESC, rowid DESC LIMIT 1",
-                       (name, position)).fetchone()
+    row = conn.execute(LAST_SQL, (name, position)).fetchone()
     return json.loads(row[0]) if row and row[0] else None
 
 
@@ -71,9 +78,7 @@ def record(conn, positions, agents, bind, elsewhere=None):
         if not a and name in away:
             continue
         last_session, bound_here = None, False
-        rows = conn.execute("SELECT name, payload, host_id FROM event WHERE name IN ('of.holder_bound', "
-                            "'of.holder_unbound') AND position = ? ORDER BY ts DESC, rowid DESC LIMIT 1",
-                            (name,)).fetchone()
+        rows = conn.execute(HOLDER_SQL, (name,)).fetchone()
         if rows and rows[0] == "of.holder_bound":
             last_session = json.loads(rows[1]).get("session")
             bound_here = rows[2] in (None, me)

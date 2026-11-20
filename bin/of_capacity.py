@@ -3380,9 +3380,20 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         except MoveError as e:
             log(f"  herdr name: not set ({e}); `of apply` sets it")
     if of_bin:
-        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
+        run_of_apply(of_bin, log)
     return {"position": name, "pane": new_pane, "session": new["session"], "pid": new["pid"], "work": work,
             "conflicts": conflicts, "registry_diff": diff_path}
+
+
+def run_of_apply(of_bin, log=lambda _: None, timeout=120):
+    """`of apply` after a move, a resume or a restore, so the labels and workspaces follow the new holder. By then the
+    session is already on its new account: a slow or failed apply never fails that move, and never ends the balancer's
+    run (2026-11-20: `of apply` passed 120 s seven times in one relief wave, and each timeout ended the run with the next
+    moves undone until the next tick). The next `of apply` sets what this one did not."""
+    try:
+        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"  of apply: {type(e).__name__} ({e}); the next `of apply` sets the labels")
 
 
 def resume_note(name, sid, target, account, ts, last_ts, extra=None):
@@ -3478,7 +3489,7 @@ def resume(name, sid, target, pane, extra_note=None, log=print, of_bin=None, dry
     except MoveError as e:
         log(f"  herdr name: not set ({e}); `of apply` sets it")
     if of_bin:
-        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=120)
+        run_of_apply(of_bin, log)
     return {"position": name, "pane": pane, "session": new["session"], "pid": new["pid"], "work": work}
 
 
@@ -4063,7 +4074,7 @@ def reboot_restore(positions, only=None, dry_run=False, log=print, of_bin=None, 
             log(f"{e['name']}: NOT resumed: {err}")
             done.append((e["name"], "failed", str(err)))
     if of_bin and not dry_run:
-        subprocess.run([sys.executable, of_bin, "apply"], capture_output=True, text=True, timeout=180)
+        run_of_apply(of_bin, log, timeout=180)
     failed = [n for n, s, _ in done if s == "failed"]
     if not dry_run:
         of_events.emit("capacity_carry_restored" if plan.get("kind") == "carry" else "capacity_reboot_restored",
