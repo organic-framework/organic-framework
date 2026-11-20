@@ -14,6 +14,7 @@ Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, transla
 ## 1. Today
 
 - **Accounts are found by their folder names.** OF takes `~/.claude` and every `~/.claude-<name>` folder (`of_capacity.config_dirs`). `of spawn`, the moves, `of resume-command`, the reboot restore and the balancer choose among them and run `claude` with `CLAUDE_CONFIG_DIR` set (left unset for `~/.claude`).
+- **A machine whose Claude Code runs through a wrapper** (a proxy's environment, such as `ocx claude` of OpenCodex) names it in `~/.config/of/claude-bin`: one line, the path of an executable that takes Claude Code's arguments. `of spawn`, a move's or a resume's line, `of claude` and the headless calls (probe, judges) then start that instead of `claude` (`of_capacity.claude_launch`, `claude_bin`). A missing or non-executable file means plain `claude`. A shell function cannot be named there: launchd and the pane's line run an executable, so wrap the function in a small script.
 - **Done by hand on the founder's Mac:**
   - he created each folder and logged in there;
   - one shell alias per account opens Claude Code on it;
