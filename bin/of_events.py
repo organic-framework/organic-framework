@@ -161,8 +161,11 @@ def record(kind, payload, *, position=None, org=None, session=None, source="of",
         # a heuristic candidate is no card until the judge files it as one, which is stamped then (of_asks on PR 300:
         # candidates took five numbers in six)
         try:  # the card's short id, from the organization's server when it is filed (every writer comes through here);
-            # a hook never waits on the network (Claude Code's hook timeout): its asks get theirs from the pulse
-            ref = card_ref(rec.get("of.org"), rec["of.event.id"]) if HOOK_TIMEOUT is None else None
+            # a hook never waits on the network (Claude Code's hook timeout), nor the listener, which files asks
+            # inside a write of the store (of_release on PR 496); their asks get
+            # theirs from the pulse (backfill_refs), and `of ask` takes its id before it files
+            ref = card_ref(rec.get("of.org"), rec["of.event.id"]) \
+                if HOOK_TIMEOUT is None and not CARD_REFS_LATER else None
             if ref:
                 rec["of.payload"]["ref"] = ref
         except Exception:  # noqa: BLE001 - an ask is never lost for its id: the pulse gets it later (backfill_refs)
@@ -231,6 +234,7 @@ def next_ref(org):
 
 
 CARD_REF_TIMEOUT_S = 3   # a filing waits this long for its server; past it the ask is filed without its id
+CARD_REFS_LATER = False  # set by the listener, whose processors file asks inside a write of the store
 
 
 def _local_highest(prefix):

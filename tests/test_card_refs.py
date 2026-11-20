@@ -86,6 +86,15 @@ class CardRefTest(unittest.TestCase):
                                    org="ofb")
         self.assertNotIn("ref", rec["of.payload"])
 
+    def test_the_listener_never_waits_on_the_network(self):
+        """of_release on PR 496: the listener files asks inside a write of the store."""
+        calls = []
+        with mock.patch.object(of_events, "CARD_REFS_LATER", True), \
+                mock.patch.object(of_events, "card_ref", side_effect=lambda *a, **k: calls.append(a)):
+            rec = of_events.record("agent_question", {"detected_by": "declared", "questions": [{"question": "q"}]},
+                                   org="ofb")
+        self.assertEqual((calls, rec["of.payload"].get("ref")), ([], None))
+
 
 if __name__ == "__main__":
     unittest.main()
