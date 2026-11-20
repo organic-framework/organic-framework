@@ -87,13 +87,12 @@ class GuardBashTest(unittest.TestCase):
             self.assertTrue(deny(cmd), cmd)
 
     def test_interpreter_code_prefers_a_false_positive(self):
-        # of_architect's rule: in code an interpreter runs, a string literal naming a secret file or an env dump
-        # is denied even when it is only text the code edits; the agent writes such code with the Edit tool.
-        accepted_false_positives = [
-            f"python3 - <<'EOF'\np='docs/rfc/0001.md'\ns=open(p).read().replace('{ENV_DUMP}', 'the dump')\nEOF",
-        ]
-        for cmd in accepted_false_positives:
-            self.assertTrue(deny(cmd), cmd)
+        # of_architect's rule of 2026-11-06: in code an interpreter runs, a string literal naming a secret file or an
+        # env dump is denied even when it is only text the code edits; the agent writes such code with the Edit tool.
+        # Since of_architect's msg 01a1f867-970c (2026-11-20) an env dump named in code that can start no process
+        # is text: it can print nothing. A secret file named in code stays the accepted false positive.
+        self.assertIsNone(deny(f"python3 - <<'EOF'\np='docs/rfc/0001.md'\n"
+                               f"s=open(p).read().replace('{ENV_DUMP}', 'the dump')\nEOF"))
         # since 2026-11-07 a triple-quoted block is carried text (replay: 31 old denies removed, all edits)
         self.assertIsNone(deny("python3 - <<'EOF'\nrep('''the tenant key lives in \"~/.config/of/tenant.key\"''', 'x')\nEOF"))
         self.assertTrue(deny(f"python3 -c 'import subprocess; subprocess.run([\"{ENV_DUMP}\"])'"))
@@ -149,6 +148,16 @@ class GuardBashTest(unittest.TestCase):
         self.assertIsNone(deny("env | grep -q AWS_SECRET_ACCESS_KEY"))  # nothing printed
         self.assertTrue(deny("printenv AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(deny("kubectl -n x exec pod-0 -- bash -c 'env | grep -o \"^R2_[A-Z_]*\"; printenv'"))
+
+    def test_a_dump_named_in_code_that_runs_nothing_is_text(self):
+        """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused."""
+        E = "en" + "v | grep -o '^R2_'"
+        P = "print" + "env"
+        self.assertIsNone(deny(f"python3 - <<'EOF'\nimport of_guard\nfor c in ('{E}', '{P}'):\n"
+                               "    print(of_guard.critical_deny('Bash', {'command': c}))\nEOF"))
+        self.assertTrue(deny(f"python3 - <<'EOF'\nimport subprocess\nsubprocess.run('{E}', shell=True)\nEOF"))
+        self.assertTrue(deny(f"python3 -c \"import os; os.system('{P}')\""))
+        self.assertTrue(deny(f"node -e \"require('child_process').execSync('{P}')\""))
 
     def test_grep_o_one_named_value(self):
         """Hand-over e280da4f (of_server; a user organization's structure keeper, msg 01a1f823-65a0): a bundled -o and
