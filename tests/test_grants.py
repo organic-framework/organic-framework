@@ -193,6 +193,24 @@ class MatchingTest(unittest.TestCase):
         self.assertIsNone(G.decide([grant(scope={"repos": ["~/organic-framework"]})], self.ACTION))
 
 
+
+class OrgsFileTest(unittest.TestCase):
+    """An orgs.yaml entry joined through a server only (server: and no path:, as an enrollment writes it) has no
+    checkout here: load() skips it instead of raising KeyError 'path' (of_platform, msg 01a1f817-1e86)."""
+
+    def test_a_server_only_entry_is_skipped(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="ofgr-")
+        os.makedirs(os.path.join(d, "acme", "registry"))
+        with open(os.path.join(d, "acme", "registry", "grants.yaml"), "w") as fh:
+            fh.write("grants:\n  - id: g1\n")
+        orgs = os.path.join(d, "orgs.yaml")
+        with open(orgs, "w") as fh:
+            fh.write("orgs:\n  - name: acme\n    path: acme\n  - name: joined\n    server: https://127.0.0.1:18210\n")
+        self.assertEqual(G.load(orgs), {"acme": [{"id": "g1"}]})
+        with self.assertRaisesRegex(KeyError, "no checkout"):
+            G.grants_path("joined", orgs)
+
 if __name__ == "__main__":
     unittest.main()
 
