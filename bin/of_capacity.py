@@ -5391,6 +5391,8 @@ TIER_SCALE = {"default_claude_ai": 1, "default_claude_max_5x": 5, "default_claud
 RESUME_USD_PER_MTOK = 8.0  # a moved session's first turn writes its whole context to the new account's 1-hour cache
 RESUME_SHARE_MAX = 0.10    # of the target's 5-hour window
 RESUME_WEEK_PCT = 1.0      # or, with no 5-hour measure, percent of its week (about $20-30 on Max 20x, $1.2 on Pro)
+WEEK_IN_WINDOWS = 3.7      # a week holds about 3.7 full 5-hour windows (docs/capacity.md, Balancing: 1% of a week was
+                           # about 3.7% of a 5-hour window)
 
 
 def rate_tier(d):
@@ -5829,6 +5831,12 @@ def balance_plan(rows, sessions, positions, rates, calib, policy, now, skip=(), 
         f, f_reset = win(sink, "five_hour")
         load = sum(rates.get(s["session"], 0.0) for s in sessions.get(d, [])) + added.get(d, 0.0)
         cal = calib.get(d) or prior_calib(sink)
+        if not cal and f is not None:
+            # a 5-hour reading and no 5-hour measure anywhere (no account past 3% of its window): sized from the week's
+            # $ per 1%, its own or the others' by tier. 2026-11-20: an account just upgraded to Max 20x read 0%
+            # and 0% and took nothing, while another account spent $270/h at 98% of its week
+            wk_cal = (wcalib or {}).get(d) or prior_calib(sink, wcalib or {})
+            cal = wk_cal / WEEK_IN_WINDOWS if wk_cal else None
         # a week just reset has no measure of its own yet: the others' week, scaled by tier, sizes it (2026-11-12:
         # ~/.claude-g reset to 0% looked to have no room, and fill and relief left it empty). Only with the account's
         # own week reading, use and reset, which caps the room below; without one, unknown is not infinite

@@ -3604,6 +3604,28 @@ class AfterAWeekReset(unittest.TestCase):
         self.assertEqual(of_capacity.balance_plan(rows, sess, pos, {"big": 400, "small": 8}, {"/mm": 0.94},
                                                   dict(POLICY), now, wcalib={"/mm": 7.2}), [])
 
+    def test_a_five_hour_reading_with_no_five_hour_measure_is_sized_from_the_week(self):
+        # 2026-11-20: an account just upgraded to Max 20x read 0% of its 5-hour window and 0% of its week; no account
+        # was past 3% of a 5-hour window, so none had a 5-hour measure, and relief gave it nothing while ~/.claude
+        # spent $270/h at 98% of its week
+        now = Balance.NOW
+        iso = lambda h: of_capacity._iso(now + h * 3600)  # noqa: E731
+        rows = [{"config_dir": "/cl", "logged_in": True, "status": "allowed_warning", "tier": "default_claude_max_20x",
+                 "windows": {"seven_day": {"utilization": 98, "resets_at": iso(106)}}},
+                {"config_dir": "/m1", "logged_in": True, "status": "allowed", "tier": "default_claude_max_20x",
+                 "windows": {"five_hour": {"utilization": 0, "resets_at": iso(4.5)},
+                             "seven_day": {"utilization": 0, "resets_at": iso(13.5)}}}]
+        pos = [{"name": n, "holder": {"session": n}} for n in ("c1", "c2", "c3")]
+        sess = {"/cl": [{"session": n, "status": "idle"} for n in ("c1", "c2", "c3")], "/m1": []}
+        rates = {"c1": 17, "c2": 15, "c3": 6}
+        ctx = {n: 300_000 for n in ("c1", "c2", "c3")}
+        m = of_capacity.balance_plan(rows, sess, pos, rates, {}, dict(POLICY, relief_moves=6), now, contexts=ctx,
+                                     wcalib={"/cl": 34.9})
+        self.assertEqual([(x["position"], x["to"]) for x in m], [("c1", "/m1"), ("c2", "/m1"), ("c3", "/m1")])
+        # no week measure anywhere either: unknown is still no room
+        self.assertEqual(of_capacity.balance_plan(rows, sess, pos, rates, {}, dict(POLICY, relief_moves=6), now,
+                                                  contexts=ctx, wcalib={}), [])
+
     def test_fill_takes_one_sink_a_run(self):
         now = Balance.NOW
         iso = lambda h: of_capacity._iso(now + h * 3600)  # noqa: E731
