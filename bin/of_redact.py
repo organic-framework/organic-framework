@@ -466,13 +466,24 @@ def classify(fp, host=None, size=None):
 # so the raw archive brings the content back whenever it copies the file whole: a change other than an append, or the
 # same session in a new account's folder after a move (of_archive.plan: `new`). The register names, by ids only, the
 # records whose content every raw copy replaces with their mark; of_archive passes what it stores through
-# archive_filter. Its folder is OF's state; nothing in it holds content.
+# archive_filter. Its folder is OF's state; nothing in it holds content. Each entry carries the owner's card that
+# approved it (`ask`), which the reader requires and archive_register_add checks against the store; the register
+# decides what the raw tier keeps, so no agent session writes it by any form but `archive_register_add` (docs/guard.md,
+# of_secrets-review and of_release on organic-framework PR 488).
 
 ARCHIVE_REGISTER = "archive-register.jsonl"
 KEEP_RECORD = ("uuid", "parentUuid", "logicalParentUuid", "type", "timestamp", "sessionId", "isSidechain", "userType",
                "version", "requestId", "subtype", "isMeta")
 KEEP_MESSAGE = ("role", "model", "id", "type", "usage", "stop_reason")
 _RECORD_ID = re.compile(rb'"(?:uuid|id)":\s*"([^"\\]{1,80})"')
+_ASK_EVENT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{1,12}){0,3}$")
+_TRAILING_UUID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
+
+
+def ask_ref(ask):
+    """ASK as an ask's card id (OF-170) or event id, else None: an entry's only basis is the owner's card."""
+    a = str(ask or "").strip()
+    return a if (of_events.REF_RE.match(a) or _ASK_EVENT_ID.match(a)) else None
 
 
 class RegisterError(OSError):
@@ -485,10 +496,11 @@ def archive_register_path():
 
 
 def archive_register(path=None):
-    """The register's entries, one JSON object a line: {"session", "keys", "mark", "reason", "basis", "at"}. KEYS name
-    records of SESSION: a record's uuid (or its top-level id), or, for a line with neither, the sha256 of its bytes as
-    the store took them (of_store.redact_keys first). A missing register is empty; anything else that does not read,
-    or a line that is no entry, raises RegisterError."""
+    """The register's entries, one JSON object a line: {"session", "keys", "mark", "reason", "ask", "ask_id", "at"}.
+    KEYS name records of SESSION: a record's uuid (or its top-level id), or, for a line with neither, the sha256 of its
+    bytes as the store took them (of_store.redact_keys first). ASK is the owner's card that approved the entry. A
+    missing register is empty; anything else that does not read, or a line that is no entry or names no ask, raises
+    RegisterError."""
     p = path or archive_register_path()
     try:
         with open(p, "rb") as fh:
@@ -508,8 +520,46 @@ def archive_register(path=None):
         if not (isinstance(e, dict) and isinstance(e.get("session"), str) and e["session"]
                 and isinstance(e.get("keys"), list) and e["keys"] and isinstance(e.get("mark"), str) and e["mark"]):
             raise RegisterError(f"the raw archive's redaction register: line {n} is no entry")
+        if not ask_ref(e.get("ask")):
+            raise RegisterError(f"the raw archive's redaction register: line {n} names no owner's card (ask)")
         out.append(e)
     return out
+
+
+def archive_register_add(conn, session, keys, mark, reason, ask, path=None):
+    """Add an entry to the register, its one writer. ASK is the owner's card that approved the redaction (its card id
+    or its ask's event id): an ask in the store CONN that has an answer. The register must read before it grows. Writes
+    of.redacted with the session, the number of keys, the ask and the reason, never a record. Returns the entry."""
+    import of_asks
+    ref = ask_ref(ask)
+    if not ref:
+        raise ValueError("an entry's basis is the owner's card: give its card id (OF-170) or its ask's event id")
+    eid = of_asks.ref_id(conn, ref) if of_events.REF_RE.match(ref) else ref
+    row = conn.execute("SELECT event_id FROM event WHERE name = 'of.agent_question' AND event_id >= ? AND "
+                       "event_id < ? ORDER BY event_id LIMIT 2", (eid, eid + "￿")).fetchall() if eid else []
+    if len(row) != 1:
+        raise ValueError(f"no ask {ref} in the store" if not row else f"{ref} names more than one ask")
+    eid = row[0][0]
+    if not conn.execute("SELECT 1 FROM event WHERE name = 'of.agent_question_answered' AND (json_extract(payload, "
+                        "'$.ask_id') = ? OR EXISTS (SELECT 1 FROM json_each(payload, '$.ask_ids') WHERE value = ?)) "
+                        "LIMIT 1", (eid, eid)).fetchone():
+        raise ValueError(f"{ref} has no answer yet: an entry waits for the owner's")
+    session = str(session or "").strip()
+    keys = sorted({str(k).strip() for k in keys or () if str(k).strip()})
+    if not session or "/" in session or not keys or any(len(k) > 80 or "/" in k for k in keys):
+        raise ValueError("an entry names one session and the ids or line hashes of its records")
+    if not (str(mark or "").strip() and str(reason or "").strip()):
+        raise ValueError("an entry needs its mark and its reason")
+    p = path or archive_register_path()
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    archive_register(p)   # a register that does not read is mended first, never appended to
+    entry = {"session": session, "keys": keys, "mark": str(mark), "reason": str(reason), "ask": ref, "ask_id": eid,
+             "at": of_events.now_iso()}
+    with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    of_events.emit("redacted", {"table": "archive_register", "session": session, "count": len(keys), "ask": ref,
+                                "ask_id": eid, "reason": str(reason), "scope": "raw"})
+    return entry
 
 
 def mark_record(body, mark):
@@ -532,9 +582,11 @@ def mark_record(body, mark):
     return json.dumps(out, ensure_ascii=False).encode()
 
 
-def _named(body, keys):
+def _named(body, keys, hashed=True):
     """The mark KEYS gives the line BODY, or None. A record id is looked for in the bytes first and parsed only when
-    one is named, so an unnamed line costs a search and a hash."""
+    one is named. HASHED: KEYS holds line hashes, so every line not named by its id is hashed as it is and as the store
+    took it (of_store.redact_keys), whatever ids sit inside it (`of_review` on organic-framework PR 488: a line with a
+    nested id that redact_keys changed was missed)."""
     if not body.strip():
         return None
     ids = {c.decode("utf-8", "replace") for c in _RECORD_ID.findall(body)}
@@ -547,11 +599,14 @@ def _named(body, keys):
             k = rec.get("uuid") or rec.get("id")
             if isinstance(k, str) and k in keys:
                 return keys[k]
+    if not hashed:
+        return None
     h = hashlib.sha256(body).hexdigest()
     if h in keys:
         return keys[h]
-    if not ids:   # a line with no id is named by its hash as the store took it; redact_keys is the costly part
-        h = hashlib.sha256(of_store.redact_keys(body)).hexdigest()
+    stored = of_store.redact_keys(body)
+    if stored != body:
+        h = hashlib.sha256(stored).hexdigest()
         if h in keys:
             return keys[h]
     return None
@@ -560,21 +615,27 @@ def _named(body, keys):
 def archive_filter(rel, data, register=None):
     """DATA, the bytes of the source REL (relative to the home folder) that the raw archive is about to store, with
     every line the register names for REL's session replaced by its mark. REL names its session by its file name's
-    stem or by a folder (a subagent's transcript under the session's own). Returns DATA itself when no entry names the
-    session; raises RegisterError when the register does not read."""
+    stem, by a uuid that ends the stem (a Codex rollout, rollout-<time>-<session>.jsonl: `of_review` on organic-framework
+    PR 488) or by a folder (a subagent's transcript under the session's own). Returns DATA itself when no entry names
+    the session; raises RegisterError when the register does not read."""
     entries = archive_register() if register is None else register
     parts = rel.replace(os.sep, "/").split("/")
-    names = set(parts[:-1]) | {parts[-1].split(".", 1)[0]}
+    stem = parts[-1].split(".", 1)[0]
+    names = set(parts[:-1]) | {stem}
+    m = _TRAILING_UUID.search(stem)
+    if m:
+        names.add(m.group(1))
     keys = {}
     for e in entries:
         if e["session"] in names:
             keys.update({str(k): e["mark"] for k in e["keys"]})
     if not keys:
         return data
+    hashed = any(len(k) == 64 for k in keys)
     out, changed = [], False
     for line in data.splitlines(keepends=True):
         body = line.rstrip(b"\n")
-        mark = _named(body, keys)
+        mark = _named(body, keys, hashed)
         if mark is None:
             out.append(line)
         else:

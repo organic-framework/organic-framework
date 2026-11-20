@@ -10,8 +10,13 @@ Status: **Accepted v1**, 2026-11-05 (`of_architect`); the central store runs on 
 The typed layer can be rebuilt from the raw tier at any time, for example after a classifier improves. The raw tier cannot be rebuilt from anything.
 
 **A content redaction reaches the raw tier through a register** (2026-11-20, `of_server`; the founder's yes on card OF-170, hand-over 7da5d129). The owner may have records' content replaced by a mark everywhere OF holds it except the harness's own transcript file. That file still holds the content. `of archive` copies the file again whole when it changes other than by an append, or when the session's file appears in another account's folder after a move, and the content would come back. `~/.local/state/of/redaction/archive-register.jsonl` names those records, by session and record ids only (a uuid, or a line's sha256), with their mark:
-- every raw copy stores them as the mark: `of archive` passes what it stores through `of_redact.archive_filter` (its call there: `of_platform`, 2026-11-20, to come);
-- a register that does not read makes the archive skip the file rather than copy it unmarked.
+- every raw copy stores them as the mark: `of archive` passes what it stores through `of_redact.archive_filter`, in a whole copy and in an appended frame (`of_platform`, 2026-11-20);
+- a session is named by its file name's stem, by the uuid that ends a Codex rollout's name, or by a folder (a subagent's transcript);
+- each entry carries the owner's card that approved it (`ask`). The reader refuses an entry without one. Its one writer, `of_redact.archive_register_add`, takes only an ask in the store that has an answer, and records `of.redacted` with the session, the number of keys and the card, never a record;
+- a register that does not read makes the archive skip the file rather than copy it unmarked;
+- the register decides what the raw tier keeps, so no agent session writes it by any form (the guard's rule for it: `of_platform`, 2026-11-20, to come; `of_secrets-review` and `of_release` on organic-framework PR 488).
+
+The register marks only the records it names. A later record that quotes the matter is copied whole: a summary, a compaction record, a tool result, or the session's own next turn. Whoever builds an entry looks for those by the matter's distinct fragments, in the session's later records, and names them too.
 
 This is the one place where the raw tier holds other bytes than were produced.
 
