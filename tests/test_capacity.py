@@ -1099,6 +1099,15 @@ class BackupRedaction(unittest.TestCase):
         self.assertFalse([f for f in (self.main, self.sub, self.other) if os.path.exists(f)])
 
 
+    def test_any_failure_keeps_no_transcript_and_never_raises(self):
+        import of_redact
+        said = []
+        with mock.patch.object(of_redact, "archive_register", side_effect=AttributeError("no register here")):
+            of_capacity._redact_backup_safely(self.root, said.append)
+        self.assertFalse([f for f in (self.main, self.sub, self.other) if os.path.exists(f)])
+        self.assertTrue([x for x in said if "AttributeError" in x and "3 transcript(s) not kept" in x])
+
+
 class StoppedTasks(unittest.TestCase):
     def test_matches_each_exit_notice_to_the_latest_preceding_creation_or_the_carry(self):
         since = "2026-11-20T10:13:14.123Z"

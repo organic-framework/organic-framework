@@ -1374,10 +1374,11 @@ def redact_backup(root, log=lambda _: None, register=None):
 
 
 def _redact_backup_safely(root, log):
-    """redact_backup during a move: a failure there never fails the move, and leaves no transcript in the backup."""
+    """redact_backup during a move: a failure there never fails the move, and leaves no transcript in the backup. Any
+    failure: an of_redact without the register (of_review on PR 492) failed every move with a backup transcript."""
     try:
         redact_backup(root, log)
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except Exception as e:  # noqa: BLE001
         gone = 0
         for dp, _, fs in os.walk(root):
             for f in fs:
