@@ -137,6 +137,19 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("ControlMaster=no", F.stream_argv("u@h", "/k"))
         self.assertEqual(F.master_argv("u@h", "/k")[:3], ["/usr/bin/ssh", "-M", "-N"])
 
+    def test_the_bridges_host_side_forwards_nothing_and_runs_one_stream(self):
+        """of_review on organic-framework PR 433: the host side was in no command, and the dry run printed the
+        reverse policy (command=/usr/bin/false, MaxSessions 0)."""
+        block = F.sshd_block("of-forward", mode="bridge")
+        for line in ("DisableForwarding yes", "AllowTcpForwarding no", "AllowStreamLocalForwarding no", "PermitTTY no",
+                     "ForceCommand /usr/bin/socat - UNIX-CONNECT:/srv/of-server/server.sock", "Match all"):
+            self.assertIn(line, block)
+        self.assertNotIn("MaxSessions 0", block)        # each stream is a session through the ControlMaster
+        line = F.authorized_line("ssh-ed25519 AAAA k", mode="bridge", laptop="192.0.2.20")
+        self.assertEqual(line, 'restrict,from="192.0.2.20",command="/usr/bin/socat - UNIX-CONNECT:'
+                               '/srv/of-server/server.sock" ssh-ed25519 AAAA k')
+        self.assertIn("/usr/bin/false", F.authorized_line("ssh-ed25519 AAAA k"))   # the reverse mode as before
+
     def test_each_connection_gets_its_own_stream_both_ways_and_the_socket_is_this_users(self):
         import socket
         import threading

@@ -89,9 +89,15 @@ class SystemdTest(unittest.TestCase):
             os.makedirs(os.path.join(chdir, "2026-11-01"))
             os.makedirs(os.path.join(state, "backups", "2026-11-02"))
             sent = []
-            cfg = {"state_dir": state, "orgs": {"acme": "of_acme"}, "clickhouse": {"url": "http://192.0.2.1:8123"},
-                   "backup": {"clickhouse_disk": "backups", "clickhouse_path": chdir}}
-            out = of_server.backup(cfg, ch_post=sent.append, today="2026-11-20")
+            cfg = {"state_dir": state, "orgs": {"acme": "of_acme"}, "plugins": {"storage": "clickhouse"},
+                   "backup": {"clickhouse_disk": "backups", "clickhouse_path": chdir}}   # the connection in ship.yaml
+            with mock.patch("of_ship.config", return_value={"url": "http://192.0.2.1:8123"}):
+                out = of_server.backup(cfg, ch_post=sent.append, today="2026-11-20")
+                self.assertEqual(sorted(os.listdir(os.path.join(state, "backups", "2026-11-20"))), ["server.db"])
+                with self.assertRaises(FileNotFoundError):   # no store: no empty one made and backed up
+                    of_server.backup(dict(cfg, state_dir=os.path.join(d, "none")), ch_post=sent.append,
+                                     today="2026-11-20")
+                self.assertFalse(os.path.exists(os.path.join(d, "none", "server.db")))
             copy = os.path.join(state, "backups", "2026-11-20", "server.db")
             self.assertEqual(os.stat(copy).st_mode & 0o777, 0o600)
             self.assertEqual(os.stat(os.path.dirname(copy)).st_mode & 0o777, 0o700)
@@ -103,7 +109,7 @@ class SystemdTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(state, "backups", "2026-11-02")))
             self.assertTrue(any("removed 2026-11-01" in x for x in out))
             cfg["backup"]["clickhouse_disk"] = "x'); DROP"
-            with self.assertRaises(ValueError):
+            with mock.patch("of_ship.config", return_value={}), self.assertRaises(ValueError):
                 of_server.backup(cfg, ch_post=sent.append, today="2026-11-20")
 
     def test_health_asks_the_plain_unix_socket(self):
