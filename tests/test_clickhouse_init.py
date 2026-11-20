@@ -13,11 +13,19 @@ import of_server  # noqa: E402
 
 class Client:
     seen = []
+    users = set()          # the users this fake ClickHouse already has
+    default_answers = False
 
     def __init__(self, cfg):
         self.cfg = cfg
 
     def post(self, query, **kw):
+        if kw.get("auth"):  # the default user's probe
+            if Client.default_answers:
+                return b"1\n"
+            raise RuntimeError("401")
+        if "system.users" in query:
+            return b"1\n" if kw["params"]["param_u"] in Client.users else b"0\n"
         Client.seen.append(query)
         return b"1\n"
 
@@ -33,7 +41,7 @@ class ClickHouseInitTest(unittest.TestCase):
                     "clickhouse": {"url": "https://127.0.0.1:18443", "ca": os.path.join(self.tmp, "ca.crt"),
                                    "user": "of_server", "password_file": self.pw}}
         self.runs = []
-        Client.seen = []
+        Client.seen, Client.users, Client.default_answers = [], set(), False
 
     def init(self):
         return of_server.clickhouse_init(self.cfg, run=lambda argv, **kw: self.runs.append(argv), client=Client,
@@ -62,6 +70,25 @@ class ClickHouseInitTest(unittest.TestCase):
         before = {n: open(os.path.join(pwdir, n), "rb").read() for n in os.listdir(pwdir)}
         self.init()                                                # a second run keeps every password
         self.assertEqual(before, {n: open(os.path.join(pwdir, n), "rb").read() for n in os.listdir(pwdir)})
+
+    def test_it_refuses_what_would_promote_or_outlive_a_user(self):
+        """of_review on organic-framework PR 435."""
+        Client.default_answers = True
+        with self.assertRaisesRegex(SystemExit, "default user answers"):
+            self.init()
+        Client.default_answers = False
+        self.cfg["clickhouse"]["user"] = "of_acme_ingest"          # a schema role named as the server's user
+        with self.assertRaisesRegex(SystemExit, "role of its own"):
+            self.init()
+        self.cfg["clickhouse"]["user"] = "of_server"
+        Client.users = {"of_server"}                               # ClickHouse has it, its password file is new
+        os.unlink(self.pw) if os.path.exists(self.pw) else None
+        with self.assertRaisesRegex(SystemExit, "already has the user of_server"):
+            self.init()
+        Client.users = set()
+        os.chmod(self.pw, 0o644)                                   # an existing file anyone can read
+        with self.assertRaisesRegex(SystemExit, "not this user's own 0600 file"):
+            self.init()
 
     def test_it_refuses_plain_http_and_a_missing_clickhouse_config(self):
         self.cfg["clickhouse"]["url"] = "http://127.0.0.1:8123"

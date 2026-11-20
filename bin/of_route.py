@@ -10,6 +10,20 @@ import os
 import urllib.error
 import urllib.request
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):  # a redirect would carry the Authorization header to another address
+        return None
+
+
+def open_url(req, timeout, context=None):
+    """ClickHouse's requests: no proxy from the environment, no redirect, and with CONTEXT that pinned certificate
+    alone (of_review on organic-framework PR 435: the Authorization header followed both)."""
+    handlers = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
+
+
 def tls_context(cfg):
     """A TLS context that trusts only the certificate `ca` names (the agent host's ClickHouse serves https only, with
     a certificate made there, 2026-11-20, of_agent-server), or None: the system's authorities, as before. A ca with
@@ -35,8 +49,7 @@ class ClickHouse:
         self.context = tls_context(cfg)
 
     def _urlopen(self, req, timeout):
-        return urllib.request.urlopen(req, timeout=timeout, context=self.context) if self.context else \
-            urllib.request.urlopen(req, timeout=timeout)
+        return open_url(req, timeout, self.context)
 
     @staticmethod
     def _auth(user, path):
