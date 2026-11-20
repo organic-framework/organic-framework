@@ -317,7 +317,8 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
         sub_resolve = org_resolver(docs, positions, org, fallback="own") if deep and doc.get("subagents") else None
         problems += [f"{org}:registry/positions.yaml: {pr}" if not pr.startswith(WARN) else
                      f"{WARN}{org}:registry/positions.yaml: {pr[len(WARN):]}"
-                     for pr in check_subagents(doc.get("subagents"), sub_resolve) if deep or not pr.startswith(WARN)]
+                     for pr in check_subagents(doc.get("subagents"), sub_resolve, _log_start)
+                     if deep or not pr.startswith(WARN)]
         works = doc.get("works")
         if any(doc.get(k) is not None for k in ("goals", "conditions")) or works is not None:
             import of_goals  # docs/registry.md, Goals and Conditions: the tree, and each work's goal or condition
@@ -346,8 +347,11 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
             problems.append(f"tools: the check could not run ({type(e).__name__}: {e})")
     known = {org for org, _, _ in org_registries(orgs_file)}
     for p in positions:
-        if p.get("serves") and p["serves"] not in known:
-            problems.append(f"{p['_file']}: {p['name']}: serves {p['serves']!r} is not an organization in orgs.yaml")
+        if p.get("serves") and p["serves"] not in known and deep:
+            # a warning: a machine may hold one organization's registry and not the one it serves (a contour host:
+            # of_agent-server, msg 01a1f826-3789), so absence here is no error; a typo still shows
+            problems.append(f"{WARN}{p['_file']}: {p['name']}: serves {p['serves']!r} is no organization in this "
+                            "machine's orgs.yaml (a typo, or one this machine does not hold)")
     return positions, problems
 
 
@@ -900,7 +904,7 @@ def subagents_yes(doc, resolve):
     return " ".join(str(s["words"]).split()), [str(i) for i in ids], typed
 
 
-def check_subagents(s, resolve=None):
+def check_subagents(s, resolve=None, log_start=None):
     """Problems of a top-level `subagents:` (docs/registry.md, "Subagents"): no words, no decided, or (with RESOLVE, `of
     registry check`) an id that does not resolve; a warning when the log cannot be read."""
     import of_loop
@@ -920,9 +924,42 @@ def check_subagents(s, resolve=None):
         if y == of_loop.UNREAD:
             out.append(f"{WARN}subagents: decided {i}: this machine's log cannot be read to resolve it")
         elif not y:
-            out.append(f"subagents: decided {i} does not resolve as the owner's yes (their own prompt in their "
-                       f"organization's conductor's session)")
+            start = log_start() if log_start else None
+            made = _uuid7_iso(str(i))
+            if start and made and made < start:
+                # this machine's log begins after the prompt: its absence proves nothing here (a contour host, whose
+                # log starts the day it was set up: of_agent-server, msg 01a1f826-3789)
+                out.append(f"{WARN}subagents: decided {i} is older than this machine's recorded prompts (from "
+                           f"{start[:10]}): it is checked where the owner's prompts are recorded")
+            else:
+                out.append(f"subagents: decided {i} does not resolve as the owner's yes (their own prompt in their "
+                           f"organization's conductor's session)")
     return out
+
+
+def _uuid7_iso(i):
+    """The time a UUIDv7 id (or its first two groups, `01a1e393-ded4`) was made, ISO, or None."""
+    h = re.sub(r"[^0-9a-f]", "", str(i).lower())[:12]
+    if len(h) < 12:
+        return None
+    import time as _t
+    ms = int(h, 16)
+    return _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(ms / 1000)) + "Z"
+
+
+def _log_start():
+    """The time of this machine's earliest recorded prompt (of.human_prompt), or None when it records none: prompts are
+    recorded only where their sessions run and are never shared on the coordination feed, so a host that mirrors
+    other events from before (the agent host's from 2026-11-10) still has no prompt older than its own sessions.
+    No prompt at all reads as this moment, so nothing can be proven absent here."""
+    try:
+        import of_fold
+        import of_events
+        c = of_fold.reader()
+        row = c.execute("SELECT min(ts) FROM event WHERE name = 'of.human_prompt'").fetchone() if c else None
+        return row[0] if row and row[0] else of_events.now_iso()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def registry_docs(orgs_file=None):
