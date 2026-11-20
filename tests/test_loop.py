@@ -387,6 +387,15 @@ class SubagentsYesTest(unittest.TestCase):
                          ["subagents: decided A1#1 is an ask's yes; decided names the owner's own prompts only"])
         self.assertEqual(of.check_subagents({"words": "w"}),
                          ["subagents: no decided: the owner's yes, the id of their own prompt"])
+        # a machine whose log begins after the prompt cannot prove its absence (a contour host: of_agent-server,
+        # msg 01a1f826-3789): a warning there, a problem where the log covers its time
+        old_id = "01a1e393-ded4"                                    # 2026-11-16
+        late = lambda: "2026-11-19T00:00:00Z"                       # noqa: E731
+        early = lambda: "2026-11-01T00:00:00Z"                      # noqa: E731
+        self.assertTrue(of.check_subagents({"decided": [old_id], "words": "w"}, resolve, late)[0].startswith(of.WARN))
+        self.assertFalse(of.check_subagents({"decided": [old_id], "words": "w"}, resolve, early)[0].startswith(of.WARN))
+        self.assertIsNone(of.subagents_yes({"subagents": {"decided": [old_id], "words": "w"}}, resolve))  # no authority
+        self.assertEqual(of._uuid7_iso(old_id)[:10], "2026-11-16")
 
 
     def test_another_organizations_conductor_prompt_never_counts(self):
