@@ -47,6 +47,15 @@ Each path today crosses organizations directly. Under contours each needs a new 
 | **The access map** | Unchanged: one map per organization, in its contour (docs/access.md). | None. |
 | **Grants between the organizations, and cross-organization replies** | None remain once the channel exists. They are revoked after the move. | Messages between contours go only through the channel. |
 
+**Between one organization's server cut and the channel.** A message between the two organizations lives only on its receiver's server, so a reply with no grant goes to a server that never saw the original, and is refused. This is by design, and nothing new is built around it (`of_architect`, 2026-11-20, on `of_server`'s message `01a1f8d0-9089`):
+- no new grant between the organizations;
+- no copy of sent messages kept on the sender's server for replies to be checked against.
+
+Both would rebuild the direct paths that the channel replaces, and the founder chose a conductor of each organization's own (card `OF-99`). Until then:
+- **An organization's matters raised in an OF session.** The OF position hands them to that organization's structure keeper, whose grant lets it answer (AGENTS.md, "The OF team organizes; each organization operates"). Once the organization's own conductor runs, the founder raises them there.
+- **What an organization's position has for the founder.** It goes to its own organization's queue (`of ask`) or its conductor, never as a reply across servers.
+- **Framework matters.** They go between the OF team and the organization's structure keeper, under their grants, until `of_customer-success`'s channel exists.
+
 ## 4. Order, and what waits on the founder
 
 1. **His yes on the target state**, in one card from `of_agent-server` (`OF-44`, amended): the OS users, the contours, the channel, and his choice of window, A or B.
