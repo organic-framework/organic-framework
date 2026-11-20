@@ -1078,6 +1078,27 @@ def copy_session(src, dst, sid, backup, dry_run=False):
     return acts
 
 
+def set_source_aside(src, sid, dest):
+    """After a move resumed on another account: the source account's copy of the session's transcript and its
+    subagents go to `dest` (the move's backup, on the same volume: a rename), so prune_move_backups frees them with
+    the rest of the backup after MOVE_BACKUP_KEEP_H. Until then a move gone wrong can still be undone from there.
+    2026-11-20: moves had left 36.1 GiB of older copies in the accounts they left (440 files), and the Mac's disk
+    fell from 66 to 40 GiB free in a day. Returns the relative paths set aside."""
+    t = find_transcript(src, sid)
+    if not t:
+        return []
+    key = os.path.basename(os.path.dirname(t))
+    out = []
+    for rel in (f"projects/{key}/{sid}.jsonl", f"projects/{key}/{sid}"):
+        p = os.path.join(src, rel)
+        if os.path.lexists(p) and not os.path.islink(p):
+            q = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(q), mode=0o700, exist_ok=True)
+            os.replace(p, q)
+            out.append(rel)
+    return out
+
+
 def _read(p):
     try:
         with open(p, "rb") as fh:
@@ -3082,6 +3103,13 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
         key = lambda k: _herdr("pane", "send-keys", new_pane, k.lower())  # noqa: E731
     new = start_session(sid, name, run_cwd, target, prompt, run, read, key, f"{what}: hand-over note", log=log)
     log(f"  resumed: pid {new['pid']}, session {new['session']}, pane {new_pane}")
+    if src != target:
+        try:
+            gone = set_source_aside(src, sid, os.path.join(work, "backup", "source"))
+            if gone:
+                log(f"  the old account's copy ({len(gone)} path(s)) is in the move's backup until it is pruned")
+        except OSError as e:
+            log(f"  the old account's copy stays where it was: {e}")
     if bypass and (runtime != "zellij" or place):  # a herdr pane: the footer can be read and keyed
         check_bypass_after_start(new_pane, log)
     # 5. record and rebind
@@ -3539,6 +3567,13 @@ def reboot_cancel(dry_run=False, log=print, expect_prepared_at=None):
         log("no restart prepared")
         return
     log(f"retired {description} to {short(retired)}")
+    # the kept /private/tmp is hard links: free while the sessions keep their files, but it holds every file they
+    # delete or replace afterwards (2026-11-20: a plan cancelled in the night held 5.8 GiB of such files by evening).
+    # A cancelled plan is never restored, so its copy goes; plan.json stays as the record.
+    kept = os.path.join(retired, "tmp")
+    if os.path.isdir(kept) and not os.path.islink(kept):
+        shutil.rmtree(kept, ignore_errors=True)
+        log(f"removed its kept {agent_tmp_root()} links")
     of_events.emit("capacity_reboot_cancelled", {"prepared_at": prepared_at, "sessions": sessions}, position=actor())
 
 
