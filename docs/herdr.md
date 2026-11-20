@@ -226,14 +226,18 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   - **Linger**, once per user, by the host's admin: `sudo loginctl enable-linger <user>`. Without it the unit starts
     only with a login and ends with the last one. The install and the status say which.
 - **What the unit sets, and why:**
-  - **`ExecStart=env -u OF_AUTOMATION herdr server`.** The unit sets `OF_AUTOMATION=1`, like every unit OF writes,
-    but herdr's panes inherit the server's environment (`src/pane.rs`), and a pane is a person's or an agent's
-    terminal. Under `OF_AUTOMATION=1`, the owner's own commands in a pane (`of diff approve`, `of access`) would
-    refuse him. `ExecStop=herdr server stop`.
+  - **`ExecStart=herdr server`, `ExecStop=herdr server stop`, and `OF_AUTOMATION=1`,** like every unit OF writes.
+    herdr's panes inherit it from the server (`src/pane.rs`), and that is wanted. Any agent of a herdr can type into
+    any of its panes (`herdr pane send-text`), so an owner-only command (`of diff approve`, `of access`) refuses in a
+    herdr pane on a host. The owner runs those over plain SSH as the host's admin user, as in the setup sittings
+    (`of_architect`, msg `01a1fab3-ecf5`; `of_server`, msg `01a1fab2-f750`).
   - **`SSH_AUTH_SOCK=` empty.** herdr still gives a pane the agent of a client that attached with one
     (`src/platform/ssh_agent.rs`).
-  - **`PATH` as `of init`'s services have it.** Linux panes start a non-login shell (`src/pane.rs`,
-    `shell_mode_uses_login_shell`): they read the shell's rc file and never its profile.
+  - **A fixed `PATH`:** herdr's folder, then `~/.local/bin` (where INSTALL.md puts `of` and Claude Code's installer
+    puts `claude`), then `/usr/local/bin:/usr/bin:/bin`. Linux panes start a non-login shell (`src/pane.rs`,
+    `shell_mode_uses_login_shell`): they read the shell's rc file and never its profile. The `PATH` does not depend
+    on the shell the install runs from. So a host's setup script that writes the same text and a later install
+    write the same file: one writer of one unit text (`of_architect`, msg `01a1fab3-ecf5`).
   - **`Restart=on-failure`, except on exit status 1.** herdr exits with 1 when another server holds its socket, and
     a restart could only fail again.
 - **Upgrades restart it.** A live handoff (`herdr update --handoff`) does not survive under the unit. It starts the
@@ -242,11 +246,12 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
   of-herdr.service`.
 - **A desktop is another case.** The user manager's environment may lack a desktop session's variables (`DISPLAY`,
   `WAYLAND_DISPLAY`), and a unit's panes inherit it. The unit is for a machine's contour users, who have no desktop.
-- **Checked on 2026-11-21 on the agent host, as `of`,** with the same unit text under another name and with its own
-  XDG folders, so the live server was not touched:
-  - the server started in `user@1001.service/app.slice/<unit>`, and neither it nor a pane had `OF_AUTOMATION`;
-  - the pane had `SSH_AUTH_SOCK` empty, no `SSH_CONNECTION`, `LANG`, and `PATH` with `~/.local/bin`, where it found
-    `of` and `claude`;
+- **Checked on 2026-11-21 on the agent host, as `of`,** with the unit text the install writes there, under another
+  name and with its own XDG folders, so the live server was not touched:
+  - the text was the same from a plain and from a login shell;
+  - the server started in `user@1001.service/app.slice/<unit>`;
+  - a pane had `OF_AUTOMATION=1`, `SSH_AUTH_SOCK` empty, no `SSH_CONNECTION`, `LANG`, and `PATH` with
+    `~/.local/bin`, where it found `of` and `claude`;
   - `systemctl --user stop` ended it through `ExecStop`.
 
   `of herdr service status` on the same host found the live server in `session-161.scope`, outside any unit. Not
