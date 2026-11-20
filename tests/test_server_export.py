@@ -13,6 +13,7 @@ import runpy
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
@@ -231,6 +232,37 @@ class ExportTest(unittest.TestCase):
             self.export(out=self.out + "-4")
         self.assertEqual(len(calls), 2)                                     # read at the start and before the index
         self.assertFalse(os.path.exists(os.path.join(self.out + "-4", "index.json")))   # never marked ready
+
+    def test_round_four_the_hold_sees_a_change_between_its_two_readings_and_a_young_flag(self):
+        """The user organization's sec_keeper, round 4 (through of_architect, msg 01a1f6ea-b786): the second reading
+        re-read the state, so a batch committed between the two, or the flag going off and on, passed unseen."""
+        state = tempfile.mkdtemp(prefix="ofs-")
+        cfg = {"state_dir": state}
+        snap = ex._hold(self.src, "acme", cfg, None, None)
+        insert_row(self.src, "batches", batch_id="new", machine_id="m", state="committed",
+                   by_org=json.dumps({"acme": 1}))
+        with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):
+            ex._hold(self.src, "acme", cfg, None, None, snap)
+        snap = ex._hold(self.src, "acme", cfg, None, None)
+        insert_row(self.src, "batches", batch_id="theirs", machine_id="m", state="committed",
+                   by_org=json.dumps({"other": 1}))
+        ex._hold(self.src, "acme", cfg, None, None, snap)                       # another organization's: no change
+        insert_row(self.src, "redactions", redaction_id="r9", batch_id="theirs", state="done")
+        with self.assertRaisesRegex(ex.ExportError, "redaction arrived"):
+            ex._hold(self.src, "acme", cfg, None, None, snap)
+        flag = os.path.join(state, "moving", "acme")
+        os.makedirs(os.path.dirname(flag))
+        open(flag, "w").close()
+        with self.assertRaisesRegex(ex.ExportError, "marked moving .* ago: wait"):
+            ex._hold(self.src, "acme", cfg, "bulk", "0" * 64)                   # a final delta on a fresh flag
+        old = time.time() - ex.MOVING_SETTLE_S - 5
+        os.utime(flag, (old, old))
+        snap = ex._hold(self.src, "acme", cfg, "bulk", "0" * 64)
+        os.unlink(flag)
+        open(flag, "w").close()
+        os.utime(flag, (old, old))                                              # off and on again
+        with self.assertRaisesRegex(ex.ExportError, "moving flag changed"):
+            ex._hold(self.src, "acme", cfg, "bulk", "0" * 64, snap)
 
     def test_records_travel_encrypted_unless_plaintext_is_said(self):
         with self.assertRaises(ex.ExportError) as e:
@@ -587,7 +619,11 @@ class ClickHouseExportTest(unittest.TestCase):
         kw.setdefault("recipient", FAKE_RECIPIENT)
         if kw.get("since") is not None:  # the final delta is made with the organization marked moving
             os.makedirs(os.path.join(self.state, "moving"), exist_ok=True)
-            open(os.path.join(self.state, "moving", self.org), "w").close()
+            flag = os.path.join(self.state, "moving", self.org)
+            if not os.path.exists(flag):
+                open(flag, "w").close()
+                old = time.time() - ex.MOVING_SETTLE_S - 5   # set long enough ago for every request to have seen it
+                os.utime(flag, (old, old))
         with self.connection("src"):
             return export_store(self.store, self.org, path or self.bulk, config=self.cfg, **kw)
 
@@ -740,7 +776,10 @@ class ClickHouseExportTest(unittest.TestCase):
                 self.assertEqual(cli(["server", "export", "--org", self.org, "--to", FAKE_RECIPIENT, str(self.bulk)]), 0)
                 bulk_sha = hashlib.sha256((self.bulk / "index.json").read_bytes()).hexdigest()
                 os.makedirs(os.path.join(self.state, "moving"), exist_ok=True)   # the final delta: marked moving
-                open(os.path.join(self.state, "moving", self.org), "w").close()
+                flag = os.path.join(self.state, "moving", self.org)
+                open(flag, "w").close()
+                old = time.time() - ex.MOVING_SETTLE_S - 5
+                os.utime(flag, (old, old))
                 self.src.add("src_vault.event", self.org, "ask", self.new, "new", "private")
                 self.assertEqual(cli(["server", "export", "--org", self.org, "--to", FAKE_RECIPIENT, "--since", str(self.bulk),
                                       "--since-sha", bulk_sha, str(self.delta)]), 0)
