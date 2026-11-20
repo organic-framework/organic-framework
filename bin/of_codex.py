@@ -156,7 +156,7 @@ def installed_of_bin(path=REQUIREMENTS_PATH):
 ENV_INCLUDE = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE",
                "LC_NUMERIC", "LC_TIME", "LC_MONETARY", "TERM", "TZ", "TMPDIR",
                "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "OF_POSITION", "OF_ORGS", "OF_STATE",
-               "GIT_CEILING_DIRECTORIES")
+               "GIT_CEILING_DIRECTORIES", "OF_DOOR")
 PROFILE = "of_position"
 # what the layer sets for the position, which no tool table (of_tools.codex_layer) may set
 PROTECTED_KEYS = frozenset({"permissions", "shell_environment_policy", "default_permissions", "approval_policy",
@@ -247,7 +247,13 @@ GUARD_INPUTS = ("index.json", "guard-credentials.json", "guard-grants.json", "pa
 GUARD_DIRS = ("sessions",)
 
 
-def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
+def door_dir(launch):
+    """The session's own folder in OF's state, where the listener serves its door (bin/of_door.py)."""
+    import of_door
+    return os.path.join(of_door.sessions_dir(), str(launch))
+
+
+def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None, launch=None):
     """The position's permission profile's filesystem map (W3 point 4, of_server's decision): the platform's minimal
     files read, its working folder and OF's state folder written, the live checkout's bin/ read only (so no command or
     patch of the session can break its hook: of_server, msg 01a1f989-0322), and denied (read and write) every path the
@@ -255,7 +261,10 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
     transcripts, OF's server and ClickHouse files, Muse's home), every Codex seat's CODEX_HOME, its own included,
     and the Claude temp root, where Claude Code sessions keep their scratch; CODEX_HOME, the session's own seat home,
     is denied whether or not it is a listed seat. Under each folder it writes, .codex and .agents are made and read
-    only, and the guard's index is read only. Without of_spawn's deny list it raises: never a map without it."""
+    only, and the guard's index is read only. Without of_spawn's deny list it raises: never a map without it.
+    With LAUNCH (the session's door, RFC 0008 §4.5; of_architect, msg 01a1f9ee-5080): OF's state folder and OF's
+    configuration, the machine's key in it, are denied whole, but for the session's own folder, read so its commands
+    reach the door's socket; `of` inside then runs every command through that door."""
     import of_scratch
     import of_spawn
     box = of_spawn.sandbox_settings(deny_rules or [], platform="linux") or {}
@@ -271,7 +280,13 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
     fs = {":minimal": "read"}
     fs.update({p: "deny" for p in _outermost(denied)})
     state = os.path.expanduser("~/.local/state/of")
-    writes = [_real(cwd), state]   # the state folder's server folder, more specific, stays denied
+    config = os.path.expanduser("~/.config/of")
+    if launch:
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", str(launch)):
+            raise ValueError(f"a launch id is letters, digits and dashes: {launch!r}")
+        fs[state] = fs[config] = "deny"
+        fs[door_dir(launch)] = "read"
+    writes = [_real(cwd)] if launch else [_real(cwd), state]   # the state folder's server folder stays denied
     for w in writes:
         fs[w] = "write"
         for name in PROTECTED:   # made, so the sandbox can bind it read only (bwrap binds only what exists)
@@ -282,7 +297,7 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
                 fs[p] = "deny"   # a link or a file there: hidden, never followed
             else:
                 fs[p] = "read"
-    if os.path.isdir(state):
+    if os.path.isdir(state) and not launch:
         for name in GUARD_INPUTS + GUARD_DIRS:
             p = os.path.join(state, name)
             if not os.path.lexists(p):
@@ -303,8 +318,9 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
     # wins), the user's bin folder with the of and herdr links, each organization's repository (its registry and
     # briefs), and the folders of the servers' sockets (~/.config/of/servers/*.socket): without the socket the client
     # falls back to TCP on loopback, which the proxy blocks and which holds ClickHouse (tried on the agent host)
-    for p in (os.path.expanduser("~/.config/of"), os.path.expanduser("~/.local/bin")) + tuple(server_socket_dirs()) + \
-            tuple(org_repos()):
+    reads = (os.path.expanduser("~/.local/bin"),) + tuple(org_repos()) if launch else \
+        (config, os.path.expanduser("~/.local/bin")) + tuple(server_socket_dirs()) + tuple(org_repos())
+    for p in reads:
         if os.path.exists(p) and _real(p) not in fs:
             fs[_real(p)] = "read"
     # Codex's own sandbox on Linux runs the Codex program again inside: its program files must be readable, each one
@@ -315,11 +331,17 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
             fs[part] = "read"
     except Exception:  # noqa: BLE001 - no Codex on this machine: nothing to read
         pass
+    # no deny inside another: bwrap cannot mask a path under a folder it already masked (tried on the agent host,
+    # 2026-11-20: "Can't create file ~/.config/of/clickhouse: Read-only file system" once the folder was denied whole)
+    denies = sorted(p for p, v in fs.items() if v == "deny")
+    for p in denies:
+        if any(p != q and p.startswith(q.rstrip("/") + "/") for q in denies):
+            del fs[p]
     return fs
 
 
 def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_rules=None, domains=DEFAULT_DOMAINS,
-          checkout_bin=None, codex_home=None):
+          checkout_bin=None, codex_home=None, launch=None):
     """The session layer's tables: the model, approvals never, workspace-write under the position's permission
     profile, its network through the proxy with the allowed domains and every Unix socket, interactive exec off, the
     command environment filtered to ENV_INCLUDE, the start context whole as developer_instructions (W5), and of_tools'
@@ -348,9 +370,12 @@ def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_r
     doc["web_search"] = tables.pop("web_search", "disabled")
     doc["features"] = feats
     doc["shell_environment_policy"] = {"inherit": "all", "include_only": list(ENV_INCLUDE)}
+    if launch:   # only the commands get the door; the hooks, outside the sandbox, run of as before
+        import of_door
+        doc["shell_environment_policy"]["set"] = {"OF_DOOR": os.path.join(door_dir(launch), of_door.SOCKET)}
     doc.update(tables)   # the tool tables, none of PROTECTED_KEYS; the position's protection is set after them
     doc["permissions"] = {PROFILE: {
-        "filesystem": filesystem(cwd, deny_rules, checkout_bin, codex_home or os.environ.get("CODEX_HOME")),
+        "filesystem": filesystem(cwd, deny_rules, checkout_bin, codex_home or os.environ.get("CODEX_HOME"), launch),
         "network": {"enabled": True, "dangerously_allow_all_unix_sockets": True,
                     "domains": {d: "allow" for d in domains}}}}
     return doc
