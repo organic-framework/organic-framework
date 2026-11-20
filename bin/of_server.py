@@ -161,6 +161,13 @@ def load_config(path=None):
             cfg.update(yaml.safe_load(fh) or {})
     cfg["state_dir"] = os.path.expanduser(cfg["state_dir"])
     cfg["tenant_key_file"] = os.path.expanduser(cfg["tenant_key_file"])
+    # Every other path a listener binds or loads, as server.yaml may write it with ~ (2026-11-20, of_agent-server: the
+    # agent host's server.yaml said socket: ~/.local/state/of/server/http.sock, and the bind got the literal tilde)
+    if cfg.get("socket"):
+        cfg["socket"] = os.path.expanduser(str(cfg["socket"]))
+    if isinstance(cfg.get("tls"), dict):
+        cfg["tls"] = {k: os.path.expanduser(str(v)) if k in ("socket", "cert", "key") and v else v
+                      for k, v in cfg["tls"].items()}
     return cfg
 
 
