@@ -174,6 +174,11 @@ class GuardBashTest(unittest.TestCase):
                   "import os; (lambda: os.system)()('" + P + "')",
                   "import os; compile('os.system(1)', 'f', 'exec'); print('" + P + "')"):
             self.assertTrue(deny(f'python3 -c "{c}"'), c)
+        # perl's and ruby's ordinary launches (of_review on PR 454 at e595205)
+        for c in ("perl -e 'system \"" + P + "\"'", "perl -e 'exec \"" + P + "\"'",
+                  "perl -e 'open(my $f, \"-|\", \"" + P + "\"); print <$f>'",
+                  "perl -e 'open(F, \"" + P + " |\"); print <F>'"):   # ruby's %x body: hand-over 7646c671
+            self.assertTrue(deny(c), c)
         # a `)(` or `](` inside a string calls nothing: the code still runs no process
         self.assertIsNone(deny("python3 - <<'EOF'\nimport re\nprint(re.findall(r'(a)(b)', 'ab'), '" + E + "')\nEOF"))
         for c in ("import subprocess; subprocess.run(['" + P + "'])", "import os; os.popen('" + P + "')",
