@@ -250,6 +250,7 @@ def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, 
     logged in already. The accounts found by name are listed too, so adding the first one hides none of them.
     `ask(title, steps)` -> (filed, output); when the task cannot be filed, the steps are printed for whoever runs this
     (in a plain terminal, the owner) and AccountError says so."""
+    import of_capacity
     if not NAME.fullmatch(name or ""):
         raise AccountError(f"an account name is lowercase letters, digits, - and _, at most 32 characters: {name!r}")
     default = f"~/.codex-{name}" if codex else ("~/.claude" if name == "default" else f"~/.claude-{name}")
@@ -275,9 +276,12 @@ def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, 
             save(seats=es)
         else:
             save(es)
+            try:
+                of_capacity.ensure_statusline(full, log=log)
+            except (OSError, ValueError) as e:
+                log(f"account {name}: could not configure statusLine: {e}")
     log(f"account {name}: {tilde(full, home)} listed in {tilde(path(), home)}")
     if logged_in is None:
-        import of_capacity
         logged_in = os.path.isfile(os.path.join(full, "auth.json")) if codex else bool(of_capacity.account_of(full, home))
     if logged_in:
         return None

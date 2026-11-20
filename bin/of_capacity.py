@@ -5,9 +5,8 @@ Each has a 5-hour and a 7-day window. When one runs out, the positions running o
 another: a Workplace change with the same holder (RFC 0001 v3 §5.6).
 
   status   per config dir: the account, logged in or not, both windows (utilization, reset), and
-           the positions and sessions running on it. The reading is a minimal `claude -p` probe on
-           the cheapest model, at most once per PROBE_EVERY_MIN minutes; each fresh reading is an
-           `of.capacity_snapshot` event with the probe's token cost.
+           the positions and sessions running on it. Active sessions report their windows through the
+           status line. Accounts without recent readings use a minimal `claude -p` probe on the cheapest model.
 
 Pure functions take their inputs; the CLI (`bin/of`) wires them to the registries and the disk.
 """
@@ -17,16 +16,22 @@ from datetime import datetime, timezone
 import glob
 import hashlib
 import json
+import math
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 import of_events
 
 STATE_DIR = of_events.STATE_DIR
 PROBE_EVERY_MIN = 30
+PASSIVE_MAX_AGE_S = 1800
+PASSIVE_FILE_LIMIT = 5
+PASSIVE_MAX_BYTES = 64 * 1024
 PROBE_MODEL = "haiku"
 PROBE_PROMPT = "Reply with the single word: ok"
 PROBE_TIMEOUT_S = 120
@@ -38,10 +43,16 @@ def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
+def _reading_iso(t):
+    """Keep subsecond precision when comparing a probe with a session file."""
+    return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _ts(iso):
     try:
-        return time.mktime(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
-    except Exception:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return None
 
 
@@ -243,8 +254,122 @@ def probe(d, now=None, runner=subprocess.run):
         r = parse_probe([], "claude not found", 127)
     except subprocess.TimeoutExpired:
         r = parse_probe([], f"probe timed out after {PROBE_TIMEOUT_S}s", 124)
-    r.update({"config_dir": d, "account": account_of(d), "observed_at": _iso(now)})
+    r.update({"config_dir": d, "account": account_of(d), "observed_at": _reading_iso(now)})
     return r
+
+
+# ------------------------------------------------------------- status line
+
+def ensure_statusline(config_dir, log=print):
+    """Install the capacity writer in a Claude account that has no status line."""
+    path = os.path.realpath(os.path.join(config_dir, "settings.json"))
+    command = os.path.join(os.path.dirname(os.path.realpath(__file__)), "of-statusline")
+    try:
+        with open(path) as fh:
+            settings = json.load(fh)
+            mode = stat.S_IMODE(os.fstat(fh.fileno()).st_mode)
+    except FileNotFoundError:
+        settings, mode = {}, 0o600
+    if not isinstance(settings, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    if "statusLine" in settings:
+        current = settings["statusLine"]
+        if not isinstance(current, dict) or current.get("command") != command or current.get("type") != "command":
+            log(f"{config_dir} keeps its own statusLine. Passive capacity readings are unavailable for this account.")
+        return False
+    settings["statusLine"] = {"type": "command", "command": command}
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".settings.")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(settings, fh, indent=2)
+            fh.write("\n")
+            os.fchmod(fh.fileno(), mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return True
+
+
+def _statusline_files():
+    """List completed status line files, including the default account's hidden files."""
+    root = os.path.join(STATE_DIR, "capacity", "statusline")
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                account, _, session = entry.name[:-5].rpartition("--")
+                if not account or not session:
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        yield account, (entry.stat(follow_symlinks=False).st_mtime_ns, session, entry.path)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def _passive_candidates(now, max_age_s):
+    by_account = {}
+    for account, file in _statusline_files():
+        if file[0] / 1e9 >= now - max_age_s:
+            by_account.setdefault(account, []).append(file)
+    return {account: sorted(files, reverse=True)[:PASSIVE_FILE_LIMIT] for account, files in by_account.items()}
+
+
+def _newest_passive(files, now):
+    for mtime_ns, session, path in files:
+        try:
+            with open(path, "rb") as fh:
+                st = os.fstat(fh.fileno())
+                if st.st_size > PASSIVE_MAX_BYTES or st.st_mtime_ns != mtime_ns:
+                    continue
+                data = json.loads(fh.read(PASSIVE_MAX_BYTES))
+        except (OSError, ValueError, RecursionError):
+            continue
+        limits = data.get("rate_limits") if isinstance(data, dict) else None
+        if not isinstance(limits, dict):
+            continue
+        windows = {}
+        for name in WINDOWS:
+            w = limits.get(name)
+            if not isinstance(w, dict):
+                continue
+            used, reset = w.get("used_percentage"), w.get("resets_at")
+            if type(used) not in (float, int) or type(reset) not in (float, int) or reset <= now:
+                continue
+            try:
+                if math.isfinite(used) and used >= 0:
+                    windows[name] = {"utilization": used, "resets_at": _iso(reset)}
+            except (OverflowError, OSError, ValueError):
+                continue
+        if windows:
+            return {"windows": windows, "observed_at": _reading_iso(mtime_ns / 1e9), "session": session}
+
+
+def passive_readings(dirs, now=None, max_age_s=PASSIVE_MAX_AGE_S):
+    """The most recent usable session reading for each config dir, timed by the writer's mtime."""
+    now = time.time() if now is None else now
+    files = _passive_candidates(now, max_age_s)
+    readings = {}
+    for d in dirs:
+        reading = _newest_passive(files.get(os.path.basename(os.path.normpath(d)), ()), now)
+        if reading:
+            readings[d] = reading
+    return readings
+
+
+def prune_statusline_files(now, keep_s=86400):
+    for _, (mtime_ns, _, path) in _statusline_files():
+        if mtime_ns / 1e9 < now - keep_s:
+            try:
+                # The writer may have replaced this session's file since the directory listing.
+                if os.stat(path, follow_symlinks=False).st_mtime_ns == mtime_ns:
+                    os.unlink(path)
+            except FileNotFoundError:
+                continue
 
 
 # ------------------------------------------------------------------ cache
@@ -286,17 +411,32 @@ def readings_behind(dirs=None, now=None, factor=2, home=None):
 def _stale(snap, now):
     """A reading is good for PROBE_EVERY_MIN minutes; a failed probe (no reading) is retried next time."""
     t = _ts(snap.get("observed_at") or "")
-    return t is None or snap.get("logged_in") is None or now - t >= PROBE_EVERY_MIN * 60
+    return (t is None or snap.get("logged_in") is None or now - t >= PROBE_EVERY_MIN * 60
+            or (snap.get("source") == "passive" and not snap["windows"]))
 
 
 # ----------------------------------------------------------------- status
 
+def _passive_status(windows, previous):
+    if any(w["utilization"] >= 100 for w in windows.values()):
+        return "rejected"
+    if windows:
+        return "allowed" if previous in (None, "rejected") else previous
+    return None
+
+
+def _record_week(cache, d, snap, observed, now):
+    week = (snap.get("windows") or {}).get("seven_day") or {}
+    history = cache.setdefault("_week_hist", {}).setdefault(d, [])
+    history.append([observed, week.get("utilization"), week.get("resets_at")])
+    history[:] = [point for point in history if point[0] >= now - WEEK_HIST_KEEP_S]
+
+
 def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=None, sessions_fn=live_sessions,
            emit=None, home=None):
-    """One row per config dir: the cached reading, or a fresh probe when it is older than PROBE_EVERY_MIN
-    minutes (or `fresh`); `probe=False` never probes. Live sessions and positions are always current.
-    Every fresh reading is emitted as `of.capacity_snapshot`."""
-    now = now or time.time()
+    """Use newer session readings and probe accounts that still need a reading. A forced probe refreshes
+    every account. Live sessions and positions are always current."""
+    now = time.time() if now is None else now
     dirs = dirs if dirs is not None else config_dirs(home)
     probe_fn = probe_fn or globals()["probe"]
     emit = emit if emit is not None else (lambda kind, payload: of_events.emit(kind, payload))
@@ -305,9 +445,35 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
     sessions = {d: sessions_fn(d) for d in dirs}
     by_dir = positions_by_dir(positions, sessions)
     rows, changed = [], False
+    passive = {} if probe and fresh else passive_readings(dirs, now)
+    due = []
+    for d in dirs:
+        snap = cache.get(d) or {}
+        if snap.get("source") == "passive":
+            # A cached passive window can reset between two reads of the same file.
+            live = {k: w for k, w in snap["windows"].items() if (_ts(w["resets_at"]) or 0) > now}
+            if live != snap["windows"]:
+                snap.update(windows=live, status=_passive_status(live, snap.get("status")))
+                changed = True
+        reading = passive.get(d)
+        seen = _ts(reading["observed_at"]) if reading else None
+        cached_at = _ts(snap.get("observed_at") or "")
+        newer = seen is not None and (cached_at is None or seen > cached_at)
+        if reading and (newer or (snap.get("source") == "passive" and not snap["windows"])):
+            if not snap:
+                snap = {"config_dir": d, "account": account_of(d, home), "logged_in": True, "probe": {}, "error": None}
+            windows = reading["windows"]
+            snap.update(windows=windows, status=_passive_status(windows, snap.get("status")),
+                        source="passive", observed_at=reading["observed_at"])
+            cache[d] = snap
+            if newer:
+                _record_week(cache, d, snap, seen, now)
+            changed = True
+        recent = seen is not None and now - seen < PROBE_EVERY_MIN * 60
+        if probe and (fresh or (not recent and _stale(snap, now))):
+            due.append(d)
     # the accounts due are probed at once, not one after another (of_platform, 2026-11-17, msg 01a1ea50-3a54: four
     # probes in a row took 37 s of a pulse at load 90); a probe only runs `claude -p` and parses it, the cache is ours
-    due = [d for d in dirs if probe and (fresh or cache.get(d) is None or _stale(cache.get(d), now))]
     fresh_snaps = {}
     if len(due) > 1:
         from concurrent.futures import ThreadPoolExecutor
@@ -317,21 +483,18 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
         fresh_snaps = {due[0]: probe_fn(due[0], now)}
     for d in dirs:
         snap = cache.get(d)
-        probed = False
-        if d in fresh_snaps:
+        probed = d in fresh_snaps
+        if probed:
             snap = fresh_snaps[d]
             cache[d] = snap
-            changed, probed = True, True
+            changed = True
+            if snap.get("logged_in"):
+                _record_week(cache, d, snap, now, now)
         row = dict(snap or {"config_dir": d, "account": account_of(d, home), "logged_in": None, "windows": {},
                             "observed_at": None, "probe": {}, "error": "not probed yet"})
         row.setdefault("tier", tier_of(d, pol))
         row.update(by_dir.get(d) or {"positions": [], "others": [], "sessions": 0, "busy": 0})
         rows.append(row)
-        if probed and snap and snap.get("logged_in"):  # the week's growth calibrates it (calibrate_week)
-            wk = (snap.get("windows") or {}).get("seven_day") or {}
-            h = (cache.setdefault("_week_hist", {})).setdefault(d, [])
-            h.append([now, wk.get("utilization"), wk.get("resets_at")])
-            h[:] = [x for x in h if x[0] >= now - WEEK_HIST_KEEP_S]
         if probed:
             emit("capacity_snapshot", {k: row.get(k) for k in (
                 "config_dir", "account", "logged_in", "status", "overage", "windows", "probe", "error",
@@ -430,10 +593,12 @@ def format_table(rows, home=None):
     out.extend(detail)
     obs = [r.get("observed_at") for r in rows if r.get("observed_at")]
     if obs:
-        t = _ts(min(obs))
+        oldest = min(obs, key=lambda stamp: _ts(stamp) or 0)
+        t = _ts(oldest)
         age = int((now - t) // 60) if t else None
         cost = sum((r.get("probe") or {}).get("cost_usd") or 0 for r in rows)
-        out.append(f"probed {_local(min(obs))} local ({age} min ago); next probe after {PROBE_EVERY_MIN} min, "
+        label = "oldest reading" if any(r.get("source") == "passive" for r in rows) else "probed"
+        out.append(f"{label} {_local(oldest)} local ({age} min ago); next probe after {PROBE_EVERY_MIN} min, "
                    f"`--fresh` now; last probes cost ${cost:.4f}")
     return "\n".join(out)
 
@@ -5165,7 +5330,7 @@ def burn_rates(dirs, now, index=None):
 
 def calibrate_week(row, now, index=None, hist=None, keep_s=SPEND_KEEP_S, min_delta=3):
     """$ at list per 1% of the account's week. The spend index holds only the last `keep_s` (6 h), so the spend
-    there is divided by the week's growth over the same hours, from the probe history `hist` ([epoch, util,
+    there is divided by the week's growth over the same hours, from the reading history `hist` ([epoch, util,
     resets_at], oldest first). Only when the week opened inside the index is the whole week used. 2026-11-09:
     dividing 6 hours of spend by the week since it opened put an Ultra at $5 per 1% instead of about $26, so the
     balancer saw weeks about to run out."""
@@ -5191,7 +5356,7 @@ WEEK_HIST_KEEP_S = SPEND_KEEP_S + 3600
 
 
 def week_history(cache, d, now):
-    """[epoch, util, resets_at] of the account's week, oldest first, from the probes kept in the cache."""
+    """[epoch, util, resets_at] of the account's week, oldest first, from the readings kept in the cache."""
     return [x for x in ((cache.get("_week_hist") or {}).get(d) or []) if x[0] >= now - WEEK_HIST_KEEP_S]
 
 
@@ -6401,6 +6566,17 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         return []
     rows = status(positions, now=now)
     dirs = run_dirs(rows)
+    if not dry_run:
+        for row in rows:
+            d = row["config_dir"]
+            try:
+                ensure_statusline(d, log=log)
+            except (OSError, ValueError) as e:
+                log(f"balance: could not configure statusLine for {d}: {e}")
+        try:
+            prune_statusline_files(now)
+        except OSError as e:
+            log(f"balance: status line files not pruned: {e}")
     try:  # agent sessions stay in bypass (founder, 2026-11-08)
         heal_permission_modes(log=log, dirs=dirs, dry_run=dry_run)
     except Exception as e:
@@ -6775,10 +6951,48 @@ def new_limit_stops(conn, stopped=None):
     return [sid for sid, path in dict(rows).items() if sid and path and stopped(path)]
 
 
+def passive_crossed(conn, now=None):
+    """Watch new session readings for policy crossings and resets, using the last value of each window."""
+    now = time.time() if now is None else now
+    candidates = _passive_candidates(now, PASSIVE_MAX_AGE_S)
+    if not candidates:
+        return False
+    key = "capacity_passive"
+    state = json.loads(_meta(conn, key) or "{}")
+    seen = state.get("mtimes", {})
+    mtimes = {path: stamp for files in candidates.values() for stamp, _, path in files}
+    if seen == mtimes:
+        return False
+    changed = {account: [f for f in files if seen.get(f[2]) != f[0]] for account, files in candidates.items()}
+    crossed = False
+    last = state.get("last", {})
+    if any(changed.values()):
+        policy = load_policy()
+        thresholds = [policy[k] for k in ("fill_to", "relief_at", "week_max")]
+        for d in config_dirs():
+            previous = last.get(d, {})
+            # Removing a session file can expose an older one among the newest five. Never replay it.
+            files = [f for f in changed.get(os.path.basename(os.path.normpath(d)), ())
+                     if f[0] / 1e9 >= previous.get("observed", 0)]
+            reading = _newest_passive(files, now)
+            if not reading:
+                continue
+            for name, window in reading["windows"].items():
+                used = window["utilization"]
+                old = previous.get(name)
+                if old is not None and (old - used >= 20 or any(old < threshold <= used for threshold in thresholds)):
+                    crossed = True
+                previous[name] = used
+            previous["observed"] = _ts(reading["observed_at"])
+            last[d] = previous
+    _meta(conn, key, json.dumps({"mtimes": mtimes, "last": last}))
+    return crossed
+
+
 class ListenerProcessor:
     """of_listen processor (duck-typed: name, version, tick_s, reset, handle, tick). It wakes every STOP_WATCH_S:
-    a usage-limit stop starts the balancer at once (new_limit_stops), and every TICK_EVERY_S the capacity tick runs
-    as before. A stop seen while a balance runs waits for its lock and starts the next run as soon as it is free."""
+    a usage-limit stop or a session reading crossing policy wakes the balancer. Every TICK_EVERY_S the capacity
+    tick runs. A pending balance waits for its lock and starts as soon as it is free."""
     name = "capacity"
     version = "2"  # 2: reads transcript_own, so a fork never takes its parent's responses (rebuilds the view)
     tick_s = STOP_WATCH_S
@@ -6804,6 +7018,11 @@ class ListenerProcessor:
                 self._pending = True
         except Exception:  # noqa: BLE001 - a store that cannot be read: the 5-minute tick still balances
             pass
+        try:
+            if passive_crossed(conn, now):
+                self._pending = True
+        except Exception:  # as for stop detection, the regular balance still runs if this input is unavailable
+            pass  # the next tick can retry the files
         if self._pending and load_policy().get("auto") and not _balance_busy():
             self._pending = False
             spawn_balance()

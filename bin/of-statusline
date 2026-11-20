@@ -1,0 +1,18 @@
+#!/bin/sh
+# Claude Code's status line command for OF's passive limit readings (docs/capacity.md, "Passive readings").
+# Claude Code passes the status line, after each API response, a JSON that carries the account's rate limits
+# (rate_limits.five_hour / seven_day: used_percentage, resets_at). This keeps that JSON, one file per account and
+# session, and prints nothing, so the screen does not change. It runs on every status update, so it parses nothing:
+# of_capacity reads the files. The founder's yes to reading limits from what the sessions receive: prompt
+# 01a1f8ec-7494 (2026-11-20).
+umask 077
+d="${OF_STATE:-$HOME/.local/state/of}/capacity/statusline"
+[ -d "$d" ] || mkdir -p "$d" 2>/dev/null || exit 0
+acct="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+acct="${acct%/}"
+acct="${acct##*/}"
+sid="${CLAUDE_CODE_SESSION_ID:-$PPID}"
+case "$acct$sid" in *[!A-Za-z0-9._-]*) exit 0 ;; esac
+f="$d/$acct--$sid.json"
+cat > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f" 2>/dev/null
+exit 0

@@ -154,6 +154,178 @@ def _row(d, five, seven, logged_in=True):
             "windows": {"five_hour": {"utilization": five}, "seven_day": {"utilization": seven}} if logged_in else {}}
 
 
+class PassiveCapacity(unittest.TestCase):
+    now = 1_795_200_000
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.files = os.path.join(tmp.name, "capacity", "statusline")
+        self.default = os.path.join(tmp.name, ".claude")
+        self.named = os.path.join(tmp.name, ".claude-max-1")
+        for d in (self.files, self.default, self.named):
+            os.makedirs(d)
+        for patch in (mock.patch.object(of_capacity, "STATE_DIR", tmp.name),
+                      mock.patch.object(of_capacity.of_events, "CONFIG_DIR", tmp.name)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write(self, d, session, age=0, **limits):
+        path = os.path.join(self.files, f"{os.path.basename(d)}--{session}.json")
+        with open(path, "w") as fh:
+            json.dump({"session_id": session, "rate_limits": {
+                w: {"used_percentage": used, "resets_at": self.now + reset_in}
+                for w, (used, reset_in) in limits.items()}}, fh)
+        os.utime(path, (self.now - age, self.now - age))
+        return path
+
+    def test_newest_usable_per_account_and_expired_windows(self):
+        self.write(self.default, "newer", age=1, five_hour=(34, 900), seven_day=(99, 0))
+        self.write(self.default, "older", age=2, five_hour=(7, 900), seven_day=(28, 900))
+        self.write(self.named, "stale", age=1801, seven_day=(35, 900))
+        self.write(self.named, "reset", five_hour=(100, -1))
+        for sid, raw in (("broken", "{"), ("first-turn", '{"session_id":"first-turn"}')):
+            path = self.write(self.default, sid)
+            with open(path, "w") as fh:
+                fh.write(raw)
+            os.utime(path, (self.now, self.now))
+        self.assertEqual(of_capacity.passive_readings([self.default, self.named], self.now), {
+            self.default: {"session": "newer", "observed_at": of_capacity._iso(self.now - 1), "windows": {
+                "five_hour": {"utilization": 34, "resets_at": of_capacity._iso(self.now + 900)}}}})
+        self.assertEqual(of_capacity.passive_readings([self.named], self.now, max_age_s=1801)[self.named]["session"],
+                         "stale")
+
+    def test_file_count_and_size_limits(self):
+        self.write(self.default, "sixth", age=6, five_hour=(34, 900))
+        for age in range(5):
+            self.write(self.default, str(age), age=age)
+        path = self.write(self.named, "oversize", five_hour=(35, 900))
+        with open(path, "ab") as fh:
+            fh.write(b" " * 65536)
+        os.utime(path, (self.now, self.now))
+        self.assertEqual(of_capacity.passive_readings([self.default, self.named], self.now), {})
+
+    def test_status_merges_newer_windows_and_records_each_sample_once(self):
+        d = self.named
+        cached = dict(_row(d, 7, 28), observed_at=of_capacity._iso(self.now - 1900), status="allowed_warning",
+                      account="paid@example.org", probe={"cost_usd": 0.004}, overage="disabled")
+        of_capacity.save_cache({d: cached})
+        self.write(d, "active", age=10, five_hour=(34, 900), seven_day=(35, 7200))
+        probe = mock.Mock(side_effect=lambda d, now: dict(_row(d, 1, 2), observed_at=of_capacity._iso(now)))
+
+        def status(now, **kwargs):
+            return of_capacity.status([], [d, self.default], now=now, probe_fn=probe, emit=lambda *a: None, **kwargs)
+
+        row, _ = status(self.now)
+        probe.assert_called_once_with(self.default, self.now)
+        self.assertEqual((row["source"], row["observed_at"], row["status"]),
+                         ("passive", of_capacity._iso(self.now - 10), "allowed_warning"))
+        self.assertEqual(of_capacity.headroom(row), 65)
+        for key in ("account", "overage", "probe", "logged_in"):
+            self.assertEqual(row[key], cached[key])
+        status(self.now + 1)
+        cache = of_capacity.load_cache()
+        self.assertEqual(cache[d]["windows"], row["windows"])
+        self.assertEqual(of_capacity.week_history(cache, d, self.now),
+                         [[self.now - 10, 35, of_capacity._iso(self.now + 7200)]])
+        probe.reset_mock()
+        fresh, _ = status(self.now + 2, fresh=True)
+        self.assertCountEqual([c.args[0] for c in probe.call_args_list], [d, self.default])
+        self.assertEqual(fresh["windows"]["seven_day"]["utilization"], 2)
+        self.assertEqual(status(self.now + 3)[0]["windows"], fresh["windows"])  # the probe is now newer
+        self.assertEqual(probe.call_count, 2)
+
+    def test_passive_status_and_resets_while_cached(self):
+        d = self.default
+
+        def row(t):
+            return of_capacity.status([], [d], now=t, probe=False)[0]
+
+        self.write(d, "s", five_hour=(100, 10), seven_day=(35, 900))
+        self.assertEqual((row(self.now)["status"], of_capacity.headroom(row(self.now))), ("rejected", 0))
+        reopened = row(self.now + 10)
+        self.assertEqual((reopened["status"], list(reopened["windows"])), ("allowed", ["seven_day"]))
+        self.write(d, "s", age=-11.25, seven_day=(101, 900))
+        self.assertEqual(row(self.now + 11.25)["status"], "rejected")
+        self.write(d, "s", age=-11.75, seven_day=(98, 900))
+        self.assertEqual(row(self.now + 11.75)["status"], "allowed")
+
+    def test_listener_policy_crossing_and_drop_use_last_seen_values(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE listener_meta (key TEXT PRIMARY KEY, value TEXT)")
+        p = of_capacity.ListenerProcessor()
+        policy = dict(POLICY, auto=True, relief_at=93)
+        with mock.patch.multiple(of_capacity, config_dirs=lambda: [self.named], load_policy=lambda: policy,
+                                 spawn_tick=mock.Mock(), spawn_balance=mock.Mock(), _balance_busy=lambda: True,
+                                 new_limit_stops=lambda conn: []):
+            for offset, used, pending in ((0, 91, False), (1, 92, False), (2, 93, True),
+                                          (3, 74, False), (4, 54, True)):
+                self.write(self.named, "s", age=-offset, five_hour=(used, 900))
+                p.tick(conn, self.now + offset)
+                self.assertEqual(p._pending, pending)
+                p = of_capacity.ListenerProcessor()  # each tick reads the baseline from listener_meta
+            self.write(self.named, "no-limits", age=-5)
+            with mock.patch("builtins.open", wraps=open) as opened:
+                p.tick(conn, self.now + 5)
+                self.assertEqual([os.path.basename(c.args[0]) for c in opened.call_args_list],
+                                 [".claude-max-1--no-limits.json"])
+                opened.reset_mock()
+                p.tick(conn, self.now + 6)
+                opened.assert_not_called()
+            self.assertFalse(p._pending)
+            self.write(self.named, "s", age=-7, seven_day=(96, 900))
+            p.tick(conn, self.now + 7)
+            self.assertFalse(p._pending)  # the first week observation establishes its own baseline
+            self.write(self.named, "s", age=-8, seven_day=(97, 900))
+            p.tick(conn, self.now + 8)
+            self.assertTrue(p._pending)
+
+    def test_ensure_statusline_preserves_settings_mode_and_custom_command(self):
+        path = os.path.join(self.named, "settings.json")
+        with open(path, "w") as fh:
+            json.dump({"language": "en"}, fh)
+        os.chmod(path, 0o640)
+        self.assertTrue(of_capacity.ensure_statusline(self.named))
+        command = os.path.join(os.path.dirname(os.path.realpath(of_capacity.__file__)), "of-statusline")
+        with open(path) as fh:
+            self.assertEqual(json.load(fh), {"language": "en", "statusLine": {"type": "command", "command": command}})
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)
+        self.assertFalse(of_capacity.ensure_statusline(self.named))
+        custom = '{"statusLine": {"type": "command", "command": "mine"}}\n'
+        with open(path, "w") as fh:
+            fh.write(custom)
+        log = mock.Mock()
+        self.assertFalse(of_capacity.ensure_statusline(self.named, log=log))
+        log.assert_called_once()
+        with open(path) as fh:
+            self.assertEqual(fh.read(), custom)
+        self.assertTrue(of_capacity.ensure_statusline(self.default))  # no settings file
+
+    def test_claude_account_add_installs_the_writer_in_the_new_folder(self):
+        import of_accounts
+        home = os.path.dirname(self.default)
+        with mock.patch.object(of_accounts, "save"):  # exercise account setup independently of the YAML registry
+            of_accounts.add("work", home=home, logged_in=True, log=lambda m: None)
+            of_accounts.add("code", home=home, logged_in=True, log=lambda m: None, codex=True)
+        with open(os.path.join(home, ".claude-work", "settings.json")) as fh:
+            self.assertEqual(os.path.basename(json.load(fh)["statusLine"]["command"]), "of-statusline")
+        self.assertFalse(os.path.exists(os.path.join(home, ".codex-code", "settings.json")))
+
+    def test_prune_only_old_statusline_files(self):
+        old = self.write(self.named, "old", age=86401)
+        keep = self.write(self.default, "boundary", age=86400)
+        other = os.path.join(self.files, "other.json")
+        with open(other, "w") as fh:
+            fh.write("{}")
+        os.utime(other, (self.now - 90000, self.now - 90000))
+        of_capacity.prune_statusline_files(self.now)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(keep))
+        self.assertTrue(os.path.exists(other))
+
+
 class StatusAndTarget(unittest.TestCase):
     def test_status_tier_from_profile_and_policy(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), \
