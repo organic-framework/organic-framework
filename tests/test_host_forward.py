@@ -15,14 +15,15 @@ spec.loader.exec_module(F)
 
 
 class Run:
-    def __init__(self, code=0):
-        self.calls, self.code = [], code
+    def __init__(self, code=0, codes=()):
+        self.calls, self.code, self.codes = [], code, list(codes)
 
     def __call__(self, argv, **kw):
         self.calls.append(argv)
+        code = self.codes.pop(0) if self.codes and argv[:2] == ["launchctl", "bootstrap"] else self.code
 
         class R:
-            returncode, stdout, stderr = self.code, "", "boom"
+            returncode, stdout, stderr = code, "", "boom"
         return R()
 
 
@@ -78,6 +79,16 @@ class ForwardTest(unittest.TestCase):
         with open(F.agent_path(self.home), "rb") as fh:
             self.assertEqual(plistlib.load(fh)["ProgramArguments"][-1], "alex@192.0.2.10")
         self.assertEqual([c[:2] for c in run.calls], [["launchctl", "bootout"], ["launchctl", "bootstrap"]])
+
+    def test_a_bootstrap_too_soon_after_bootout_is_tried_again(self):
+        """2026-11-20, the bridge install at the server's cut: launchd's error 5 right after bootout."""
+        run, waits = Run(codes=[5, 5, 0]), []
+        F.install("alex@192.0.2.10", self.key, home=self.home, run=run, out=lambda s: None, sleep=waits.append)
+        self.assertEqual([c[:2] for c in run.calls], [["launchctl", "bootout"]] + [["launchctl", "bootstrap"]] * 3)
+        self.assertEqual(waits, [1, 1])
+        with self.assertRaisesRegex(SystemExit, "bootstrap failed"):
+            F.install("alex@192.0.2.10", self.key, home=self.home, run=Run(code=5), out=lambda s: None,
+                      sleep=lambda s: None)
 
     def test_keygen_prints_only_the_public_half_and_pin_host_checks_the_fingerprint(self):
         key = os.path.join(self.home, "k", "id_ed25519")
