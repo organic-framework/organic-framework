@@ -1851,13 +1851,9 @@ def open_asks_note(sid, prompt, db=None):
 DENY_SECRETS_FLAG = False  # set from argv in main(); gates the UserPromptSubmit @mention block
 
 
-def _mandate_context(hook, index, sess):
-    """An enrolled position gets its mandate, brief, rules and team as additionalContext."""
-    global OUTPUT
-    name = ((index.get("sessions") or {}).get(hook.get("session_id")) or [None])[0]
-    if not name or name not in (index.get("enrolled") or []) or \
-            hook.get("source") not in ("startup", "resume", "clear", "compact", None):
-        return
+def _context_inputs(name):
+    """(positions, loops, resolve, runs, clocks, subagents) for of_context.build: what a position's start context
+    reads, shared by a Claude Code session's SessionStart and a Codex session's start (of_codex.start_context)."""
     import importlib.machinery
     import importlib.util
     import of_context
@@ -1899,6 +1895,30 @@ def _mandate_context(hook, index, sess):
                                       positions, me.get("_org"), fallback="all")
         except Exception:  # noqa: BLE001 - never costs the session its context
             resolve = of._decided_resolver(positions=positions)
+    return positions, loops, resolve, runs, clocks, subagents
+
+
+def position_context(name, cwd=None, cap=None):
+    """A position's start context, or None: for a Codex session's developer_instructions, which have no cap, the
+    whole text (W5 of hand-over 9ee1db9f; of_architect's research: developer_instructions has no size limit, where
+    Claude Code's hook output is cut at 10,000 characters, hand-over 83b08e7b)."""
+    import of_context
+    positions, loops, resolve, runs, clocks, subagents = _context_inputs(name)
+    return of_context.build(name, positions, loops, resolve, runs, clocks, subagents, info={}, cwd=cwd,
+                            cap=cap or 10 ** 7)
+
+
+def _mandate_context(hook, index, sess):
+    """An enrolled position gets its mandate, brief, rules and team as additionalContext."""
+    global OUTPUT
+    name = ((index.get("sessions") or {}).get(hook.get("session_id")) or [None])[0]
+    if not name or name not in (index.get("enrolled") or []) or \
+            hook.get("source") not in ("startup", "resume", "clear", "compact", None):
+        return
+    if CODEX[0]:
+        return   # a Codex session has its start context whole in its layer's developer_instructions (of_codex)
+    import of_context
+    positions, loops, resolve, runs, clocks, subagents = _context_inputs(name)
     info = {}
     ctx = of_context.build(name, positions, loops, resolve, runs,
                            clocks, subagents, info=info, cwd=hook.get("cwd"))

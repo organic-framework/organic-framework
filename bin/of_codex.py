@@ -81,3 +81,193 @@ def default_of_bin():
     link = os.path.expanduser("~/.local/bin/of")
     return os.path.realpath(link) if os.path.exists(link) else os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                                                             "of")
+
+
+# ---------- a Codex session's layer: $CODEX_HOME/of-<launch id>.config.toml (W4 of hand-over 9ee1db9f) ----------
+
+# The environment a Codex position's commands get: Codex's inherit "all" then include_only filters it, so only these
+# names reach them (W3, of_secrets-review's review via of_server, msg 01a1f8e9-aa9c). No SSH agent, no token, no
+# account variable: a command gets nothing it does not need to run of, git and herdr.
+ENV_INCLUDE = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_*", "TERM", "TZ", "TMPDIR",
+               "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "OF_POSITION", "OF_ORGS", "OF_STATE",
+               "GIT_CEILING_DIRECTORIES")
+PROFILE = "of_position"
+
+
+def seat_homes():
+    """Every Codex seat's CODEX_HOME on this machine (of_accounts.codex_seats), else the one under ~/.codex."""
+    try:
+        import of_accounts
+        homes = [os.path.expanduser(str(s.get("home") or s.get("codex_home") or "")) for s in of_accounts.codex_seats()]
+        homes = [h for h in homes if h]
+    except Exception:  # noqa: BLE001
+        homes = []
+    return sorted(set(homes or [os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")]))
+
+
+def _real(p):
+    """A path as the sandbox sees it: resolved when it exists, else as given."""
+    return os.path.realpath(p) if os.path.exists(p) else os.path.abspath(p)
+
+
+def server_socket_dirs(servers_dir=None):
+    """The folders of the Unix sockets OF's clients reach their servers by (each ~/.config/of/servers/<host>.socket
+    names one)."""
+    import glob
+    out = []
+    for f in glob.glob(os.path.join(servers_dir or os.path.expanduser("~/.config/of/servers"), "*.socket")):
+        try:
+            with open(f) as fh:
+                sock = fh.read().strip()
+        except OSError:
+            continue
+        if sock.startswith("/"):
+            out.append(os.path.dirname(sock))
+    return sorted(set(out))
+
+
+def org_repos(orgs_file=None):
+    """The repositories this machine's organizations name in orgs.yaml (path:, paths:)."""
+    try:
+        import yaml
+        path = orgs_file or os.environ.get("OF_ORGS") or os.path.expanduser("~/.config/of/orgs.yaml")
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        base = os.path.dirname(os.path.abspath(path))
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for o in doc.get("orgs") or []:
+        if isinstance(o, dict):
+            for p in [o.get("path")] + list(o.get("paths") or []):
+                if p:
+                    out.append(os.path.join(base, os.path.expanduser(str(p))))
+    return out
+
+
+def _outermost(paths):
+    """The denied paths Codex's bwrap can mask: those that exist, and none inside another denied one (tried on the agent
+    host, 2026-11-20: a key file inside the denied server folder made bwrap fail, "Can't mkdir parents ... Read-only
+    file system", and the session ran no command)."""
+    out = []
+    for p in sorted({os.path.abspath(x) for x in paths if x and os.path.lexists(x)}):
+        if not any(p == q or p.startswith(q.rstrip("/") + "/") for q in out):
+            out.append(p)
+    return out
+
+
+def filesystem(cwd, deny_rules=None, checkout_bin=None):
+    """The position's permission profile's filesystem map (W3 point 4, of_server's decision): the platform's minimal
+    files read, its working folder and OF's state folder written, the live checkout's bin/ read only (so no command or
+    patch of the session can break its hook: of_server, msg 01a1f989-0322), and denied (read and write) every path the
+    Claude Code sandbox denies (of_spawn.sandbox_settings: the catalogue's credential paths, sign-ins, keys,
+    transcripts, OF's server and ClickHouse files, Muse's home), every Codex seat's CODEX_HOME, its own included,
+    and the Claude temp root, where Claude Code sessions keep their scratch."""
+    import of_scratch
+    import of_spawn
+    box = of_spawn.sandbox_settings(deny_rules or [], platform="linux") or {}
+    denied = set((box.get("filesystem") or {}).get("denyRead") or [])
+    denied |= set(seat_homes())
+    denied.add(of_scratch.base_dir())
+    fs = {":minimal": "read"}
+    fs.update({p: "deny" for p in _outermost(denied)})
+    fs[_real(cwd)] = "write"
+    fs[os.path.expanduser("~/.local/state/of")] = "write"   # its server folder, more specific, stays denied
+    bin_dir = checkout_bin or os.path.dirname(default_of_bin())
+    fs[_real(bin_dir)] = "read"
+    # what of, herdr and git need to read: OF's configuration (its keys inside stay denied, the more specific path
+    # wins), the user's bin folder with the of and herdr links, each organization's repository (its registry and
+    # briefs), and the folders of the servers' sockets (~/.config/of/servers/*.socket): without the socket the client
+    # falls back to TCP on loopback, which the proxy blocks and which holds ClickHouse (tried on the agent host)
+    for p in (os.path.expanduser("~/.config/of"), os.path.expanduser("~/.local/bin")) + tuple(server_socket_dirs()) + \
+            tuple(org_repos()):
+        if os.path.exists(p) and _real(p) not in fs:
+            fs[_real(p)] = "read"
+    # Codex's own sandbox on Linux runs the Codex program again inside: its program files must be readable, each one
+    # alone (of_subagent.codex_parts; tried on the agent host, 2026-11-20: "bwrap: execvp …/bin/codex: No such file")
+    try:
+        import of_subagent
+        for part in of_subagent.codex_parts(of_subagent.codex_bin()):
+            fs[part] = "read"
+    except Exception:  # noqa: BLE001 - no Codex on this machine: nothing to read
+        pass
+    return fs
+
+
+def layer(position, cwd, model=None, instructions=None, tool_tables=None, deny_rules=None, domains=DEFAULT_DOMAINS,
+          checkout_bin=None):
+    """The session layer's tables: the model, approvals never, workspace-write under the position's permission
+    profile, its network through the proxy with the allowed domains and every Unix socket, interactive exec off, the
+    command environment filtered to ENV_INCLUDE, the start context whole as developer_instructions (W5), and of_tools'
+    tool tables (features, web_search, mcp_servers, apps, plugins; W7) merged in, W3's features last so no tool table
+    turns them back on."""
+    tables = dict(tool_tables or {})
+    feats = dict(tables.pop("features", None) or {})
+    feats.update({"hooks": True, "unified_exec": False, "unified_exec_tty": False, "network_proxy": True,
+                  "multi_agent_v2": False, "memories": False})
+    doc = {}
+    if model:
+        doc["model"] = model
+    doc.update({"approval_policy": "never", "sandbox_mode": "workspace-write", "default_permissions": PROFILE,
+                "project_doc_max_bytes": 0})
+    if instructions:
+        doc["developer_instructions"] = instructions
+    doc["web_search"] = tables.pop("web_search", "disabled")
+    doc["features"] = feats
+    doc["shell_environment_policy"] = {"inherit": "all", "include_only": list(ENV_INCLUDE)}
+    doc["permissions"] = {PROFILE: {
+        "filesystem": filesystem(cwd, deny_rules, checkout_bin),
+        "network": {"enabled": True, "dangerously_allow_all_unix_sockets": True,
+                    "domains": {d: "allow" for d in domains}}}}
+    doc.update(tables)
+    return doc
+
+
+def _key(k):
+    import re
+    return k if re.fullmatch(r"[A-Za-z0-9_-]+", k) else _q(k)
+
+
+def _val(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        if "\n" in v:
+            return '"""' + v.replace("\\", "\\\\").replace('"""', '\\"\\"\\"') + '"""'
+        return _q(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_val(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ", ".join(f"{_key(k)} = {_val(x)}" for k, x in v.items()) + "}"
+    raise ValueError(f"no TOML for {type(v).__name__}")
+
+
+def to_toml(doc, prefix=()):
+    """A small TOML writer for the layer: plain values first, then each table under its dotted, quoted name."""
+    plain = [(k, v) for k, v in doc.items() if not isinstance(v, dict)]
+    tables = [(k, v) for k, v in doc.items() if isinstance(v, dict)]
+    out = []
+    if prefix and (plain or not tables):
+        out.append("[" + ".".join(_key(k) for k in prefix) + "]")
+    out += [f"{_key(k)} = {_val(v)}" for k, v in plain]
+    for k, v in tables:
+        sub = to_toml(v, prefix + (k,))
+        if sub:
+            out += ([""] if out else []) + [sub]
+    return "\n".join(out)
+
+
+def layer_path(codex_home, launch_id):
+    return os.path.join(codex_home, f"of-{launch_id}.config.toml")
+
+
+def write_layer(codex_home, launch_id, doc):
+    """Write the layer, mode 600, whole or not at all."""
+    path = layer_path(codex_home, launch_id)
+    tmp = f"{path}.{os.getpid()}"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write(to_toml(doc) + "\n")
+    os.replace(tmp, path)
+    return path
