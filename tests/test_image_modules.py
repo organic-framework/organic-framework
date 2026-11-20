@@ -65,7 +65,10 @@ NOT_IN_IMAGE = {
     "of_systemd": {"of_server.install_systemd": "`of server install` on a Linux host; the image runs under compose or "
                                                 "Kubernetes, never under the user's systemd",
                    "of_server.systemd_units": "the same: written only by `of server install` on a Linux host"},
-    "of_client": {"of_ship._ship_server": "`of ship`'s client side; the server uses of_ship's batch code only"},
+    "of_client": {"of_ship._ship_server": "`of ship`'s client side; the server uses of_ship's batch code only",
+                  "of_events.card_ref": "a machine asks its organization's server for a card id; in the image no "
+                                        "orgs.yaml names a server, so the import is never reached, and it sits in a "
+                                        "try that files the ask without an id"},
     "of_guard": {"of_credentials.report": "`of credentials`, on a machine",
                  "of_grants.shape_warnings": "`of registry check`, on a machine"},
     "of_hook": {f"{m}.{f}": "inside a try that goes on without the collector"
