@@ -1,0 +1,15 @@
+[Unit]
+Description=Organic Framework ClickHouse (of-server's store), HTTPS on 127.0.0.1 only
+After=network.target
+
+[Service]
+ExecStart=%h/.local/bin/clickhouse server --config-file=%h/.config/of/clickhouse/config.xml
+Environment=OF_AUTOMATION=1
+UMask=0077
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+LimitNOFILE=262144
+
+[Install]
+WantedBy=default.target

@@ -3312,6 +3312,10 @@ def cmd_server(args):
             now = sorted(os.listdir(d)) if os.path.isdir(d) else []
         print("moving: " + (", ".join(now) or "none"))
         return 0
+    if args.action == "clickhouse-setup":  # once, as the server's user on a Linux host, before clickhouse-init
+        for line in of_server.clickhouse_setup():
+            print(line)
+        return 0
     if args.action == "clickhouse-init":  # once, as the server's user on its host, before ClickHouse's first start
         for line in of_server.clickhouse_init():
             print(line)
@@ -8080,7 +8084,7 @@ def main(argv=None):
     sv.add_argument("action", choices=["run", "start", "stop", "install", "uninstall", "watchdog", "enroll-machine",
                                        "tls-init",
                                        "revoke", "status", "export-secret-key", "export", "import",
-                                       "moving", "backup", "clickhouse-init"])
+                                       "moving", "backup", "clickhouse-init", "clickhouse-setup"])
     sv.add_argument("--daemon", action="store_true", help="run: detach (the same as `of server start`)")
     sv.add_argument("--log", help="start: the log file (default ~/.local/state/of/server.log)")
     sv.add_argument("path", nargs="?", help="export-secret-key: a new file (mode 600) for the derived masking key; "

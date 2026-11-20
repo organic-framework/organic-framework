@@ -1,0 +1,24 @@
+<!-- of-server's ClickHouse under its own OS user on a Linux host, written by `of server clickhouse-setup`. No secrets.
+     Listeners: config.d/https-only.xml (HTTPS on 127.0.0.1 only). Backups disk: config.d/backups.xml.
+     Users: none here and no default user. They come only from `of server clickhouse-init` (users.d/admin.xml with a
+     password hash, then SQL users in access/), so a start before it lets nobody in. -->
+<clickhouse>
+  <logger>
+    <level>warning</level>
+    <log>{HOME}/.local/state/of/clickhouse/clickhouse-server.log</log>
+    <errorlog>{HOME}/.local/state/of/clickhouse/clickhouse-server.err.log</errorlog>
+    <size>100M</size>
+    <count>5</count>
+  </logger>
+  <path>{HOME}/.local/share/of/clickhouse/</path>
+  <tmp_path>{HOME}/.local/share/of/clickhouse/tmp/</tmp_path>
+  <user_files_path>{HOME}/.local/share/of/clickhouse/user_files/</user_files_path>
+  <format_schema_path>{HOME}/.local/share/of/clickhouse/format_schemas/</format_schema_path>
+  <listen_host>127.0.0.1</listen_host>
+  <user_directories>
+    <users_xml><path>{HOME}/.config/of/clickhouse/users.xml</path></users_xml>
+    <local_directory><path>{HOME}/.local/share/of/clickhouse/access/</path></local_directory>
+  </user_directories>
+  <default_profile>default</default_profile>
+  <mlock_executable>false</mlock_executable>
+</clickhouse>

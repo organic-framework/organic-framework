@@ -2390,6 +2390,61 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
     return out
 
 
+CLICKHOUSE_HTTPS_PORT = 18443  # the host's ClickHouse, https only on 127.0.0.1
+
+
+def clickhouse_setup(home=None, run=None, port=CLICKHOUSE_HTTPS_PORT):
+    """`of server clickhouse-setup`, once, as the server's own user on a Linux host, before `clickhouse-init`: writes
+    ClickHouse's config from deploy/host/clickhouse (https only on 127.0.0.1, every plain listener removed, no user
+    at all, the backups disk) under ~/.config/of/clickhouse, its folders, and the user unit of-clickhouse.service,
+    left disabled for clickhouse-init to start. Its certificate is tls/server.crt and tls/server.key when they are
+    there (made on the host), else a pair `tls_init` makes. An existing file with other content refuses the whole
+    command, nothing written; the same content is left as it is (of_review on organic-framework PR 435: the config
+    the init relies on came from no command). Prints the certificate to pin as server.yaml's clickhouse ca."""
+    home = home or os.path.expanduser("~")
+    base = os.path.join(home, ".config", "of", "clickhouse")
+    for d in (base, os.path.join(base, "config.d"), os.path.join(base, "users.d"), os.path.join(base, "tls"),
+              os.path.join(home, ".local", "share", "of", "clickhouse"),
+              os.path.join(home, ".local", "state", "of", "clickhouse"),
+              os.path.join(home, ".local", "share", "of", "clickhouse-backups")):
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
+    cert, key = os.path.join(base, "tls", "server.crt"), os.path.join(base, "tls", "server.key")
+    if not (os.path.exists(cert) and os.path.exists(key)):
+        cert, key, _ = tls_init({"state_dir": base})
+    src = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "deploy", "host", "clickhouse")
+    targets = {rel: os.path.join(base, rel) for rel in ("config.xml", "users.xml", "config.d/https-only.xml",
+                                                        "config.d/backups.xml")}
+    targets["of-clickhouse.service"] = os.path.join(home, ".config", "systemd", "user", "of-clickhouse.service")
+    texts = {}
+    for rel, dest in targets.items():
+        with open(os.path.join(src, rel)) as fh:
+            texts[dest] = fh.read().replace("{HOME}", home).replace("{CERT}", cert).replace("{KEY}", key).replace(
+                "{PORT}", str(int(port)))
+    differ = []
+    for dest, text in texts.items():
+        if os.path.lexists(dest):
+            if os.path.islink(dest) or open(dest).read() != text:
+                differ.append(dest)
+    if differ:
+        raise SystemExit("of server clickhouse-setup: these files exist with other content: " + ", ".join(differ)
+                         + "; nothing written")
+    out = []
+    for dest, text in texts.items():
+        if os.path.exists(dest):
+            out.append(f"{dest}: unchanged")
+            continue
+        os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        out.append(f"{dest}: written")
+    (run or subprocess.run)(["systemctl", "--user", "daemon-reload"], capture_output=True, text=True, check=True)
+    out.append(f"ClickHouse's certificate, to pin as server.yaml's clickhouse ca: {cert}; https on 127.0.0.1:{port}")
+    out.append("next: of server clickhouse-init (it starts of-clickhouse.service and makes its users)")
+    return out
+
+
 def _own_private(path):
     """PATH is this user's own regular file, not a link, readable by nobody else (of_review on PR 435)."""
     import stat

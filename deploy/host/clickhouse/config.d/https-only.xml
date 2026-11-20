@@ -1,0 +1,21 @@
+<!-- of-server's ClickHouse serves HTTPS only, with a certificate made on this host and pinned by the server: a loopback
+     port any user could take while ClickHouse is down must not receive the Authorization header. Every plain listener
+     is removed. No secrets here; the key file is named, not included. -->
+<clickhouse>
+  <http_port remove="1"/>
+  <tcp_port remove="1"/>
+  <mysql_port remove="1"/>
+  <postgresql_port remove="1"/>
+  <interserver_http_port remove="1"/>
+  <listen_host>127.0.0.1</listen_host>
+  <https_port>{PORT}</https_port>
+  <openSSL>
+    <server>
+      <certificateFile>{CERT}</certificateFile>
+      <privateKeyFile>{KEY}</privateKeyFile>
+      <verificationMode>none</verificationMode>
+      <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+      <preferServerCiphers>true</preferServerCiphers>
+    </server>
+  </openSSL>
+</clickhouse>
