@@ -254,8 +254,16 @@ starts. The plugin is the folder `herdr-plugin/` (manifest `herdr-plugin.toml`, 
     `~/.local/bin`, where it found `of` and `claude`;
   - `systemctl --user stop` ended it through `ExecStop`.
 
-  `of herdr service status` on the same host found the live server in `session-161.scope`, outside any unit. Not
-  run yet: a reboot under linger and a restart after a crash (a Lab VM run).
+  `of herdr service status` on the same host found the live server in `session-161.scope`, outside any unit.
+- **Checked on 2026-11-21 on a Linux Lab VM by `of_lab`,** a position that did not build it, from INSTALL.md §2
+  and this section alone (hand-over `6759dc6d`; organic-framework-build report `lab-herdr-service-v0`):
+  - install with no server running, then status exited 0;
+  - after a reboot with nobody logged in, the server ran under the unit and status exited 0;
+  - a server started from an ssh login was named as outside the unit, and the two commands the install printed
+    moved it under the unit.
+
+  Status with no login session needs `XDG_RUNTIME_DIR` to reach the user manager. A cron or `runuser` has none,
+  so the command sets it to `/run/user/<uid>` when that folder exists. Not run yet: a restart after a crash.
 
 ## Resuming OF's sessions after a herdr restart
 

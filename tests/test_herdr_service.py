@@ -20,7 +20,7 @@ class Host:
     def __init__(self, running=False, starts=True, linger="yes"):
         self.running, self.starts, self.linger, self.calls = running, starts, linger, []
 
-    def __call__(self, cmd, capture_output=True, text=True, check=False, timeout=None):
+    def __call__(self, cmd, capture_output=True, text=True, check=False, timeout=None, env=None):
         self.calls.append(cmd)
         out = ""
         if cmd[:2] == ["systemctl", "--user"]:
@@ -173,6 +173,16 @@ class HerdrServiceTest(unittest.TestCase):
         lines, ok = hs.status(run=Host(running=True), units_dir=self.units, herdr="/usr/bin/herdr", proc=self.proc)
         self.assertFalse(ok)
         self.assertIn("outside the unit", lines[-1])
+
+    def test_with_no_login_systemctl_finds_the_lingering_user_manager(self):
+        """A cron or `runuser` has no XDG_RUNTIME_DIR (of_lab's Lab VM run, hand-over 6759dc6d)."""
+        runtime = os.path.join(self.tmp.name, "run", "user")
+        os.makedirs(os.path.join(runtime, "1001"))
+        env = hs._user_env({"HOME": "/home/alex"}, uid=1001, runtime_root=runtime)
+        self.assertEqual(env["XDG_RUNTIME_DIR"], os.path.join(runtime, "1001"))
+        kept = hs._user_env({"XDG_RUNTIME_DIR": "/run/user/1001"}, uid=1001, runtime_root=runtime)
+        self.assertEqual(kept["XDG_RUNTIME_DIR"], "/run/user/1001")  # a login's own value stays
+        self.assertNotIn("XDG_RUNTIME_DIR", hs._user_env({}, uid=1002, runtime_root=runtime))  # no folder, no guess
 
     def test_not_on_linux(self):
         with mock.patch.object(sys, "platform", "darwin"):
