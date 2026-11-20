@@ -705,6 +705,96 @@ def create_redaction(app, m, body, body_sha):
     return 202, {"redaction_id": rid, "state": "queued"}
 
 
+def relay_redact(app, msg_ids, mark, reason, ask, conn=None):
+    """`of_server.py relay-redact` on the server host: relay messages' text replaced by MARK everywhere this server
+    keeps it, a content redaction the owner approved (of_server, 2026-11-20: card OF-170, hand-over 7da5d129, where a
+    message carried a user organization's confidential matter and no path redacted it). The relay store's row keeps
+    its addresses and state (Relay.redact_text). The relay's own of.message_sent event, which carries the text, gets
+    a replacement with the mark through a redaction batch, queued as POST /v1/redactions queues one, from the server
+    itself as the tenant: the writer deletes the old row in every database, the coordination feed and dead batch
+    files, inserts the replacement and records of.redacted. Returns what it did, ids and counts only.
+
+    It is the owner's act, as the raw archive's register is (`of_secrets-review` on organic-framework PR 491: a
+    position could have erased what it sent): run in a terminal outside any agent's session, with ASK, the owner's
+    card, answered with its yes in this machine's event log (CONN, else the store read-only; of_redact.owner_yes).
+    The card is named in the reason the server's of.redacted carries, and in this machine's own of.redacted."""
+    import sqlite3
+    import of_asks_answer
+    import of_redact
+    import of_store
+    why = of_asks_answer.not_the_owner()
+    if why:
+        raise PermissionError(f"of_server.py relay-redact is the owner's: {why}")
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValueError("a reason is required")
+    ref = of_redact.ask_ref(ask)
+    if not ref:
+        raise ValueError("relay-redact's basis is the owner's card: --ask with its card id (OF-170) or its event id")
+    own = conn is None
+    try:
+        if own:
+            conn = sqlite3.connect(f"file:{of_store.db_path()}?mode=ro", uri=True, timeout=10)
+        ask_id = of_redact._ask_id(conn, {"ask": ref})
+        if not of_redact.owner_yes(conn, ask_id):
+            raise ValueError(f"{ref} has no yes of the owner's in this machine's event log")
+    except sqlite3.Error as e:
+        raise ValueError(f"this machine's event log cannot be read to check {ref} ({type(e).__name__})") from None
+    finally:
+        if own and conn is not None:
+            conn.close()
+    reason = f"{reason} (card {ref})"
+    ids = list(dict.fromkeys(str(i) for i in msg_ids))
+    with app.store.conn() as c:
+        since = c.execute(f"SELECT min(created_at) FROM messages WHERE msg_id IN ({', '.join('?' * len(ids))})",
+                          ids).fetchone()[0] if ids else None
+    changed, wal = app.relay.redact_text(ids, mark)
+    out = {"messages": [r[0] for r in changed], "wal_truncated": wal, "events": [], "redaction": None, "ask": ref}
+    if changed:
+        of_events.emit("redacted", {"table": "relay_messages", "ids": out["messages"], "count": len(changed),
+                                    "ask": ref, "ask_id": ask_id, "reason": reason, "scope": "server"})
+    if not since:
+        return out
+    import calendar   # created_at is UTC; the events are read from ten minutes before the earliest message
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                          time.gmtime(calendar.timegm(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S")) - 600))
+    try:
+        router = app.router()
+        rows = [r for db in dict.fromkeys(router.db_by_org.values())
+                for r in app.storage.message_events(db, ids, since)]
+    except NotImplementedError as e:
+        out["events_skipped"] = str(e)
+        return out
+    repl = {}
+    for r in rows:
+        d = dict(r)
+        try:
+            p = json.loads(d.get("payload") or "{}")
+            rec = json.loads(d.get("record") or "{}")
+        except ValueError:
+            continue
+        if not isinstance(p, dict) or "text" not in p or p["text"] == mark:
+            continue
+        p["text"] = mark
+        d["payload"] = json.dumps(p, ensure_ascii=False)
+        if isinstance(rec, dict) and isinstance(rec.get("of.payload"), dict) and "text" in rec["of.payload"]:
+            rec["of.payload"]["text"] = mark
+            d["record"] = json.dumps(rec, ensure_ascii=False)
+        repl[d["event_id"]] = {"type": "event", "data": d}
+    if not repl:
+        return out
+    eids = sorted(repl)
+    rid = "relay-" + hashlib.sha256(json.dumps([sorted(set(ids)), eids, mark]).encode()).hexdigest()[:32]
+    body = {"redaction_id": rid, "table": "event", "ids": eids, "records": [repl[i] for i in eids], "reason": reason}
+    sha = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    me = {"machine_id": "of-server", "tenant": 1, "orgs": "[]", "raw_orgs": "[]"}
+    status, receipt = create_redaction(app, me, body, sha)
+    if status not in (200, 202):
+        raise RuntimeError(f"the events' redaction was refused ({status}): {receipt.get('title')}")
+    out.update(events=eids, redaction=rid)
+    return out
+
+
 def redaction_state(app, rid, machine=None):
     with app.store.conn() as c:
         r = c.execute("SELECT r.machine_id, r.state, r.counts, r.error, b.state, b.error FROM redactions r"
@@ -3042,6 +3132,12 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
     rd = sub.add_parser("relay-drop", help="drop queued relay messages nobody can take (expired, reason dropped)")
     rd.add_argument("--msg-id", action="append", required=True)
     rd.add_argument("--reason", required=True)
+    rr = sub.add_parser("relay-redact", help="replace relay messages' text with a mark, here and in its events "
+                                             "(a content redaction the owner approved)")
+    rr.add_argument("--msg-id", action="append", required=True, help="a message's full id (repeat)")
+    rr.add_argument("--mark", required=True, help="the text that replaces each message's")
+    rr.add_argument("--reason", required=True, help="why")
+    rr.add_argument("--ask", required=True, help="the owner's card that approved it, answered yes (OF-170)")
     hw = sub.add_parser("host-watchdog", help="one check of the agent host's server and relays (root, every minute)")
     hw.add_argument("--domain", default="system")
     hw.add_argument("--relay", action="append", default=[], help="USER:LABEL:STATE_DIR (repeat)")
@@ -3100,6 +3196,9 @@ if __name__ == "__main__":  # the container entry point: python3 of_server.py --
             class _A:  # the relay needs only the store here
                 store = st
             print(f"queued again: {of_server_relay.Relay(_A).requeue(a.msg_id, a.state) or 'nothing'}")
+        elif a.cmd == "relay-redact":
+            # the full app (not started), as relay-drop: the events' redaction goes to the queue the running server drains
+            print(json.dumps(relay_redact(App(c, config_path=a.config), a.msg_id, a.mark, a.reason, a.ask)))
         elif a.cmd == "relay-drop":
             # the full app (not started): the drop's events go to the disk queue the running server drains
             dropped = App(c, config_path=a.config).relay.drop(a.msg_id, a.reason)
