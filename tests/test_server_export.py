@@ -120,16 +120,6 @@ class ExportTest(unittest.TestCase):
     def export(self, org="acme", out=None, **kw):
         return export_store(self.src, org, out or self.out, **kw)
 
-    def delta(self, out, org="acme"):
-        """A bulk, which takes a live organization as it is, then the final delta's hold over it (a store-only bundle
-        has no delta of its own), with the organization marked moving long enough ago."""
-        import of_server
-        cfg = {"state_dir": tempfile.mkdtemp(prefix="ofs-")}
-        _, sha = self.export(org, out + "-bulk", config=cfg)
-        of_server.set_moving(cfg, org, True)
-        old = time.time() - ex.MOVING_SETTLE_S - 5
-        os.utime(os.path.join(of_server.moving_dir(cfg), org), (old, old))
-        return ex._hold(self.src, org, cfg, out + "-bulk", sha)
 
     def test_an_export_holds_the_organizations_rows_alone_and_a_cross_message_in_both(self):
         m, sha = self.export(version="t")
@@ -207,9 +197,9 @@ class ExportTest(unittest.TestCase):
         self.src.execute(f"INSERT INTO batches ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                          list(row.values()))
         with self.assertRaises(ex.ExportError) as e:
-            self.delta(self.out + "-d")                       # the final delta waits; its bulk did not
+            self.export()                                     # no ClickHouse, no delta: its one bundle waits
         self.assertIn("still queued", str(e.exception))
-        self.delta(self.out + "-other", org="other")          # another organization's export is not held
+        self.export(org="other", out=self.out + "-other")     # another organization's export is not held
 
     def test_every_exported_table_shows_another_organizations_records(self):
         _, sha = self.export()
@@ -224,10 +214,10 @@ class ExportTest(unittest.TestCase):
         the hold was read only at the start."""
         insert_row(self.src, "batches", batch_id="dead", machine_id="m", state="dead", by_org=json.dumps({"acme": 1}))
         with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
-            self.delta(self.out + "-1")
+            self.export(out=self.out + "-1")
         self.src.execute("UPDATE batches SET by_org = NULL")                    # an org-less queued or dead batch
         with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
-            self.delta(self.out + "-1b")
+            self.export(out=self.out + "-1b")
         self.src.execute("DELETE FROM batches")
         insert_row(self.src, "batches", batch_id="del", machine_id="m", state="committed", by_org="{}")
         insert_row(self.src, "redactions", redaction_id="r", batch_id="del", state="queued")
@@ -257,13 +247,17 @@ class ExportTest(unittest.TestCase):
         os.utime(os.path.join(of_server.moving_dir(moving), "acme"), (old, old))
         final = (moving, "bulk", "0" * 64)
         snap = ex._hold(self.src, "acme", *final)
-        bulk = ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None)
+        live = {"state_dir": tempfile.mkdtemp(prefix="ofs-"), "plugins": {"storage": "clickhouse"}}
+        bulk = ex._hold(self.src, "acme", live, None, None)
+        sqlite = ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None)
         insert_row(self.src, "batches", batch_id="new", machine_id="m", state="committed",
                    by_org=json.dumps({"acme": 1}))
         with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):
             ex._hold(self.src, "acme", *final, snap)
-        ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None, bulk)   # a bulk: the
-        snap = ex._hold(self.src, "acme", *final)                               # final delta carries the batch
+        ex._hold(self.src, "acme", live, None, None, bulk)                      # a ClickHouse bulk: the final
+        with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):   # delta carries it; a server with
+            ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None, sqlite)   # none
+        snap = ex._hold(self.src, "acme", *final)                               # has no delta (PR 453)
         insert_row(self.src, "batches", batch_id="theirs", machine_id="m", state="committed",
                    by_org=json.dumps({"other": 1}))
         ex._hold(self.src, "acme", *final, snap)                                # another organization's: no change
@@ -742,6 +736,13 @@ class ClickHouseExportTest(unittest.TestCase):
         with mock.patch.object(self.src, "query", grow), self.assertRaisesRegex(
                 ex.ExportError, f"vault/event {self.last} changed while it was read"):
             self.export(self.delta.with_name("delta2"), since=self.bulk, since_sha=sha)
+
+    def test_a_queued_batch_holds_the_final_delta_not_the_bulk(self):
+        """With ClickHouse a final delta follows, so a bulk takes the live organization as it is (2026-11-20)."""
+        insert_row(self.store, "batches", batch_id="q", machine_id="m", state="queued", by_org=json.dumps({self.org: 1}))
+        _, sha = self.export()
+        with self.assertRaisesRegex(ex.ExportError, "still queued"):
+            self.export(self.delta, since=self.bulk, since_sha=sha)
 
     def test_failure_after_a_native_file_leaves_no_published_bundle(self):
         original = self.src.query
