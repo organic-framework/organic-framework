@@ -227,5 +227,21 @@ class PrefilterTest(unittest.TestCase):
         self.assertNotIn(secret, m.json_text(hidden))
 
 
+
+class FingerprintTest(unittest.TestCase):
+    """An OpenSSH fingerprint is a public key's hash, needed to check a host: the generic-key rule leaves it
+    (2026-11-20, of_server: a host key's fingerprint in a relay message was masked)."""
+
+    def test_a_fingerprint_passes_and_lookalikes_do_not(self):
+        import base64
+        import secrets as _s
+        d = of_mask.detector()
+        r43 = base64.b64encode(_s.token_bytes(32)).decode().rstrip("=")
+        r50 = base64.b64encode(_s.token_bytes(38)).decode().rstrip("=")[:50]
+        self.assertEqual(d.find(f"against the host key SHA256:{r43}; that key logs in"), [])
+        self.assertEqual(d.find(f"ED25519 key fingerprint is SHA256:{r43}."), [])
+        for t in (f"api key SHA256:{r50};", f"api key SHA256:{r43}x9;", f"api_key = {_s.token_urlsafe(30)}"):
+            self.assertIn("generic-api-key", [k for _, _, k in d.find(t)], t)
+
 if __name__ == "__main__":
     unittest.main()
