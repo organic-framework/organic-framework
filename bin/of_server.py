@@ -1811,9 +1811,11 @@ class StudioData:
     COLUMNS = "event_id, ts, name, session_id, position, org_id, source, harness_name, payload"
 
     def __init__(self, cfg, orgs, timeout=60):
+        import of_route
         ch = cfg["clickhouse"]
         self.url, self.orgs, self.timeout = ch["url"].rstrip("/"), dict(orgs), timeout
         self.dir = os.path.dirname(os.path.expanduser(ch["password_file"]))
+        self.context = of_route.tls_context(ch)  # the pinned certificate, as every ClickHouse call (PR 435)
 
     def _auth(self, db):
         import base64
@@ -1844,7 +1846,8 @@ class StudioData:
              + " ORDER BY ts FORMAT JSONEachRow")
         req = urllib.request.Request(f"{self.url}/?" + urllib.parse.urlencode(dict(params, query=q)),
                                      headers={"Authorization": self._auth(db)})
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+        import of_route
+        with of_route.open_url(req, self.timeout, self.context) as r:
             for line in r:
                 if line.strip():
                     yield json.loads(line)
@@ -2387,12 +2390,24 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
     return out
 
 
-def _secret_file(path):
-    """The password in PATH (0600, made with a random value when absent): bytes, never printed."""
-    if not os.path.exists(path):
+def _own_private(path):
+    """PATH is this user's own regular file, not a link, readable by nobody else (of_review on PR 435)."""
+    import stat
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+        raise SystemExit(f"of server clickhouse-init: {path} is not this user's own 0600 file; nothing done")
+
+
+def _secret_file(path, made=None):
+    """The password in PATH (0600, made with a random value when absent): bytes, never printed. MADE, a set, gets
+    PATH when this call made it."""
+    if not os.path.lexists(path):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write(secrets.token_urlsafe(32) + "\n")
+        if made is not None:
+            made.add(path)
+    _own_private(path)
     with open(path, "rb") as fh:
         return fh.read().strip()
 
@@ -2423,7 +2438,9 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
     admin_pw = _secret_file(admin_file)
     admin_xml = os.path.join(usersd, "admin.xml")
     out = []
-    if not os.path.exists(admin_xml):
+    if os.path.lexists(admin_xml):
+        _own_private(admin_xml)
+    else:
         digest = hashlib.sha256(admin_pw).hexdigest()
         fd = os.open(admin_xml, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as fh:
@@ -2446,6 +2463,15 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
             sleep(1)
     else:
         raise SystemExit("of server clickhouse-init: ClickHouse did not answer at its https url in 60 s")
+    import base64
+    try:  # the base config has no default user: one that answers would outlive every user made here (PR 435)
+        admin.post("SELECT 1", query_in_body=True, timeout=10, auth="Basic " + base64.b64encode(b"default:").decode())
+        raise SystemExit("of server clickhouse-init: ClickHouse's default user answers: its base config must have "
+                         "none; nothing provisioned")
+    except SystemExit:
+        raise
+    except Exception:
+        pass
     spec = importlib.util.spec_from_file_location(
         "ch_schema", schema_path or os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "deploy",
                                                  "clickhouse", "schema.py"))
@@ -2457,10 +2483,23 @@ def clickhouse_init(cfg=None, run=None, client=None, sleep=time.sleep, schema_pa
     unassigned = cfg.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]
     if not org_dbs or not all(_DB.fullmatch(d) for d in [*org_dbs, vault, unassigned]):
         raise SystemExit("of server clickhouse-init: the config's orgs name no plain database")
-    for u in schema.users(org_dbs, vault, unassigned):
-        _secret_file(os.path.join(pwdir, f"{u}.password"))
+    roles = schema.users(org_dbs, vault, unassigned)
+    if user in roles or user in ("admin", "default"):  # a schema role or an admin is never promoted (PR 435)
+        raise SystemExit(f"of server clickhouse-init: {user} is a role of its own; name another server user")
+    made = set()
+    for u in roles:
+        _secret_file(os.path.join(pwdir, f"{u}.password"), made)
     text = schema.schema(org_dbs, vault, unassigned, password_dir=pwdir)
-    own = _secret_file(os.path.expanduser(pwfile))
+    own = _secret_file(os.path.expanduser(pwfile), made)
+    # a user ClickHouse already has, with a password file made only now, is not one this command made: it would keep
+    # its old password (IF NOT EXISTS) or, for the server's user, be granted every database (of_review on PR 435)
+    for u, path in [(r, os.path.join(pwdir, f"{r}.password")) for r in roles] + [(user, os.path.expanduser(pwfile))]:
+        if path in made:
+            got = admin.post("SELECT count() FROM system.users WHERE name = {u:String} FORMAT TabSeparated",
+                             query_in_body=True, timeout=30, params={"param_u": u})
+            if (got or b"0").strip() not in (b"", b"0"):
+                raise SystemExit(f"of server clickhouse-init: ClickHouse already has the user {u}, but its password "
+                                 "file is new: restore the file or drop the user; nothing provisioned")
     salt = secrets.token_hex(16)
     text += (f"\nCREATE USER IF NOT EXISTS {user} IDENTIFIED WITH sha256_hash BY "
              f"'{hashlib.sha256(own + salt.encode()).hexdigest()}' SALT '{salt}';\n")
