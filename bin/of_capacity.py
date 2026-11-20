@@ -2627,7 +2627,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
             lines = _pane_lines(pane)
             if _exit_dialog(lines) is None and input_draft(lines) is not None:
                 break
-    if any(LIMIT_DIALOG in ANSI.sub("", x) for x in lines) and not dry_run:
+    if has_limit_dialog(lines) and not dry_run:
         # the old account's limit dialog: Enter only on "Stop and wait" (never usage credits, never "wait here"), read
         # again right before the key (of_server on PR 318)
         lines = _pane_lines(pane) if runtime == "herdr" else \
@@ -4186,19 +4186,52 @@ def without_auto_continue(lines):
     return [x for x in lines if not AUTO_CONTINUE.search(ANSI.sub("", x))]
 
 
+def has_limit_dialog(lines):
+    return LIMIT_DIALOG in " ".join(ANSI.sub("", line).strip() for line in lines)
+
+
 def live_dialog(lines):
     """The lines of the dialog drawn at the bottom of the screen, from its "What do you want to do?" to its footer
-    ("Enter to confirm · Esc to cancel"), which must be the screen's last non-blank line; None when there is none.
-    A copy printed higher up in the pane is not the live dialog (of_server on PR 318)."""
+    ("Enter to confirm · Esc to cancel"), which must end the screen's non-blank lines; None when there is none. A
+    copy printed higher up in the pane is not the live dialog (of_server on PR 318). A narrow pane wraps the dialog
+    (2026-11-20: a keeper's limit dialog went unread and its rescue refused "blocked"): the footer may span up to
+    three lines, and each option comes back as one line with its wrapped continuation joined to it."""
     plain = [ANSI.sub("", x).rstrip() for x in lines]
-    while plain and not plain[-1].strip():
-        plain.pop()
-    if not plain or "Enter to confirm" not in plain[-1]:
+    tail = []
+    for footer_at in reversed(range(len(plain))):
+        if not plain[footer_at]:
+            continue
+        tail.insert(0, plain[footer_at].strip())
+        footer = " ".join(tail)
+        if "Enter to confirm" in footer:
+            # Text below an already visible confirmation must complete the footer.
+            if "Enter to confirm" in " ".join(tail[:-1]) and not footer.endswith("Enter to confirm · Esc to cancel"):
+                return None
+            break
+        if len(tail) == 3:
+            return None
+    else:
         return None
-    for i in range(len(plain) - 2, max(-1, len(plain) - 16), -1):
-        if "What do you want to do?" in plain[i]:
-            return plain[i:]
-    return None
+
+    # the title within 24 lines above the footer (16 before wrapping was read; a narrow pane doubles a dialog's height)
+    for title_at in reversed(range(max(0, footer_at - 24), footer_at)):
+        if "What do you want to do?" in plain[title_at]:
+            break
+    else:
+        return None
+    block = [plain[title_at]]
+    option_at = None
+    for line in plain[title_at + 1:footer_at]:
+        if _re.match(r"^\s*(?:❯\s*)?\d+\.", line):
+            option_at = len(block)
+        elif line and option_at is not None:
+            block[option_at] += " " + line.lstrip()
+            continue
+        block.append(line)
+    if any("Enter to confirm" in line for line in block[1:]):
+        return None  # the dialog already ended above the candidate footer
+    block.append(plain[footer_at] if len(tail) == 1 else footer)
+    return block
 
 
 def limit_cursor(lines):
@@ -4305,14 +4338,13 @@ def wake_stopped(rows, sessions, positions, now=None, log=print, dry_run=False, 
                     continue
                 pane = a["pane_id"]
                 lines = read(pane)
-                plain = [ANSI.sub("", ln) for ln in lines]
                 step = None
-                if any(LIMIT_DIALOG in ln for ln in plain):
+                if has_limit_dialog(lines):
                     if not limit_cursor(lines):
                         log(f"balance: {name}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {pane}; left")
                         continue
                     step = "enter"
-                elif any(AUTO_CONTINUE.search(ln) for ln in plain[-12:]):
+                elif any(AUTO_CONTINUE.search(ANSI.sub("", ln)) for ln in lines[-12:]):
                     step = "esc"
                 if dry_run:
                     out.append((name, f"would wake ({step or 'type'})"))
@@ -4452,9 +4484,12 @@ def close(sid, position, reason, dry_run=False, log=print):
         screen = lines()
         log(f"{position}: {short(d)} pid {s['pid']} in {where} ({s['status']})")
         if dry_run:
-            log(f"  limit dialog: {any(LIMIT_DIALOG in ANSI.sub('', x) for x in screen)}; draft: {input_draft(screen)!r}")
+            log(f"  limit dialog: {has_limit_dialog(screen)}; draft: {input_draft(screen)!r}")
             return {"dry_run": True}
-        if any(LIMIT_DIALOG in ANSI.sub("", x) for x in screen):
+        if has_limit_dialog(screen):
+            if not limit_cursor(screen):  # Enter only with the cursor read on "Stop and wait", as a move does
+                raise MoveError(f"{position}: the limit dialog's cursor is not on {LIMIT_DIALOG!r} in {where}; "
+                                "left as it is")
             keys("Enter")  # option 1: stop and wait (never the paid one)
             time.sleep(2)
             screen = lines()
