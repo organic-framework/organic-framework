@@ -148,11 +148,11 @@ Until then, a Codex position holds no grant and no credential. The managed hook 
 `of_server`'s review of organic-framework PR 475 found what a sandboxed session would otherwise need to read or write. `of` writes its events to the store and reads hand-overs and asks there, so the profile had to leave OF's state folder readable: `of.db` and `raw/` hold every session's records, other positions' included. `of` also signs its server requests with the machine's key (`~/.config/of/machine_ed25519`). Inside an operating-system sandbox, a command the agent runs reads whatever `of` can read.
 
 So a sandboxed session reaches OF through one door, and the store and the key stay outside (`of_architect`, 2026-11-20, of the three ways in organic-framework-build `reports/codex-guard-w2-w3-2026-11-20.md`):
-- **One socket per session.** At start, the listener serves the session a Unix socket inside that session's own folder. The profile refuses every other session's folder, so a session reaches only its own socket. The listener takes the caller to be that socket's session, whatever a request says, and so is the caller G31 needs.
+- **One socket per session.** At start, the listener serves the session a Unix socket in a folder of that launch, `~/.local/state/of-doors/<launch>/`, beside OF's state folder rather than in it: bwrap cannot reach a folder inside one it masks. The listener takes the caller to be that launch's position, whatever a request says, and checks the connection: the peer process must run under that launch's Codex, started with its layer. That caller is the one G31 needs. The launch's files there can still be written by a session of the same user outside a sandbox, which docs/guard.md names as a gap; until a guard rule closes it, the W10 rule holds (`of_platform`, 2026-11-20).
 - **Writes** go through that socket, or into an append-only spool in the same folder that the listener drains. Either way the listener stamps each event with that session and its position.
 - **Reads** are the projections `of` shows: the asks, the hand-overs, the caller's own inbox, `of who`, and one event cited by its id, as a position checks an owner's answer. They are limited to the caller's organization, and never raw tables, transcripts or hook records.
 - **Signing.** The listener signs the session's server requests with the machine's key, which no sandboxed session holds. The relay's checks are unchanged.
-- **The profile** denies `~/.local/state/of` except the session's own folder, and denies the machine's key.
+- **The profile** denies OF's state folder (`~/.local/state/of`) and its config folder (`~/.config/of`, which holds the machine's key) whole.
 
 Not taken:
 - a signing broker alone, which leaves the store readable;
