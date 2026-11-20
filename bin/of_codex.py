@@ -219,9 +219,15 @@ def _outermost(paths):
 # load (W3 as of_server took of_secrets-review's change, organic-framework-build b0040a5 and f78bfbb)
 PROTECTED = (".codex", ".agents")
 # the guard's inputs in OF's state folder, written by the hook outside the session's sandbox, read only for its
-# commands: index.json maps a session to its position, and with it the position's credential rules (of_secrets-review
-# on organic-framework PR 475)
-GUARD_INPUTS = ("index.json",)
+# commands (of_secrets-review on organic-framework PR 475): index.json maps a session to its position and with it the
+# position's credential rules; guard-credentials.json is the catalogue the guard reads with no YAML (credentials per
+# position, protected code G21, keychain items G20, excluded plugins and connectors G22); injections.jsonl holds the
+# typing declarations G25 trusts; sessions/ the hook's state per session. Each is made when missing, so the sandbox
+# binds it from the start and a session cannot plant its own first. A Codex position's commands therefore cannot
+# declare an injected prompt (of event injected_prompt, of spawn): no position that types into another's pane runs on
+# Codex.
+GUARD_INPUTS = ("index.json", "guard-credentials.json", "injections.jsonl")
+GUARD_DIRS = ("sessions",)
 
 
 def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
@@ -255,10 +261,16 @@ def filesystem(cwd, deny_rules=None, checkout_bin=None, codex_home=None):
                 fs[p] = "deny"   # a link or a file there: hidden, never followed
             else:
                 fs[p] = "read"
-    for name in GUARD_INPUTS:
-        p = os.path.join(state, name)
-        if os.path.isfile(p) and not os.path.islink(p):
-            fs[p] = "read"
+    if os.path.isdir(state):
+        for name in GUARD_INPUTS + GUARD_DIRS:
+            p = os.path.join(state, name)
+            if not os.path.lexists(p):
+                if name in GUARD_DIRS:
+                    os.mkdir(p, 0o700)
+                else:   # an empty JSON object for the caches (each rebuilds a file without its keys), empty for the log
+                    with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+                        fh.write("" if name.endswith(".jsonl") else "{}")
+            fs[p] = "deny" if os.path.islink(p) else "read"
     bin_dir = checkout_bin or os.path.dirname(default_of_bin())
     fs[_real(bin_dir)] = "read"
     # what of, herdr and git need to read: OF's configuration (its keys inside stay denied, the more specific path

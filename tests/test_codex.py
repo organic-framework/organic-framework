@@ -187,6 +187,9 @@ class LayerTest(unittest.TestCase):
             fs = of_codex.filesystem(cwd, checkout_bin=cwd, codex_home=home)
             self.assertEqual(fs[os.path.abspath(home)], "deny")                # not a listed seat, denied all the same
             self.assertEqual(fs[os.path.join(state, "index.json")], "read")
+            for name in ("guard-credentials.json", "injections.jsonl", "sessions"):   # made when missing
+                self.assertEqual(fs[os.path.join(state, name)], "read", name)
+                self.assertTrue(os.path.exists(os.path.join(state, name)), name)
 
     def test_no_deny_list_no_profile(self):
         from unittest import mock
