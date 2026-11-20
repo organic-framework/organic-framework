@@ -171,6 +171,25 @@ def _muse_dir():
         return None
 
 
+def _server_keys(path=None):
+    """The of-server's own keys under this user, from its server.yaml as bin/of_server.py loads them: the tenant's
+    master key (the masking key derives from it), a secret_key_file, and the TLS private key. The guard denies *.key by
+    name only, and the sandbox is for the reads it does not see (of_server on organic-framework PR 457). What the
+    user's own of commands read stays open: machine_ed25519, the pins under servers, server.yaml itself."""
+    cfg = {}
+    path = path or os.path.expanduser("~/.config/of/server.yaml")
+    try:
+        import yaml
+        with open(path) as fh:
+            cfg = yaml.safe_load(fh) or {}
+    except (OSError, Exception):  # noqa: BLE001 - no server here: its default key path still counts
+        cfg = {}
+    out = [cfg.get("tenant_key_file") or "~/.config/of/tenant.key", cfg.get("secret_key_file")]
+    if isinstance(cfg.get("tls"), dict):
+        out.append(cfg["tls"].get("key"))
+    return [os.path.expanduser(str(x)) for x in out if x]
+
+
 def sandbox_settings(deny=None, platform=None, scratch=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
@@ -188,6 +207,7 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
         paths |= {os.path.join(d, ".credentials.json"), os.path.join(d, "projects")}
     if _muse_dir():
         paths.add(_muse_dir())   # Muse's own home and its keychain (of_server's list)
+    paths |= set(_server_keys())
     # the other sessions' scratch folders, each by name as they stand when this session starts: the temp root itself
     # must stay writable, since the sandbox writes its bridge sockets there and $TMPDIR points into it, and a writable
     # folder stays readable whatever denyRead says (tried on the agent host under of, 2026-11-20, in bypass mode:
