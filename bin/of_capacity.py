@@ -15,6 +15,7 @@ Pure functions take their inputs; the CLI (`bin/of`) wires them to the registrie
 import calendar
 from datetime import datetime, timezone
 import glob
+import hashlib
 import json
 import os
 import sqlite3
@@ -340,12 +341,14 @@ def status(positions, dirs=None, now=None, fresh=False, probe=True, probe_fn=Non
     return rows
 
 
+def _window_headroom(row):
+    used = [w["utilization"] for w in (row.get("windows") or {}).values() if w and w.get("utilization") is not None]
+    return 100 - max(used) if used else None
+
+
 def headroom(row):
     """The free share of the tightest window, in percent; None when the account gives no reading."""
-    if not row.get("logged_in") or not row.get("windows"):
-        return None
-    vals = [100 - (w.get("utilization") or 0) for w in row["windows"].values() if w.get("utilization") is not None]
-    return min(vals) if vals else None
+    return _window_headroom(row) if row.get("logged_in") else None
 
 
 def free_capacity(row, usd=None):
@@ -446,8 +449,11 @@ CODEX_WINDOWS = {300: "five_hour", 10080: "seven_day"}  # Codex names its window
 CODEX_PROBE_PROMPT = "Reply with the single word OK."
 
 
-def codex_home():
-    return os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
+def codex_home(home=None):
+    d = os.environ.get("CODEX_HOME") or "~/.codex"
+    if home and (d == "~" or d.startswith("~/")):
+        return os.fspath(home) + d[1:]
+    return os.path.expanduser(d)
 
 
 def codex_bin():
@@ -455,24 +461,49 @@ def codex_bin():
     return shutil.which("codex") or (CODEX_APP_BIN if os.access(CODEX_APP_BIN, os.X_OK) else None)
 
 
+def _codex_rollouts(home):
+    pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "*", "*.jsonl")
+    try:
+        return sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    except OSError:
+        return []
+
+
+def codex_seat_account(home):
+    """Identify the sign-in by its account hash in the newest rollout's session metadata."""
+    files = _codex_rollouts(home)
+    if not files:
+        return None
+    try:
+        with open(files[0], "rb") as fh:
+            meta = json.loads(fh.readline())
+        if isinstance(meta, dict) and meta.get("type") == "session_meta" and isinstance(meta.get("payload"), dict):
+            account = meta["payload"].get("creator_account_id")
+            if isinstance(account, str) and account:
+                return hashlib.sha256(account.encode()).hexdigest()[:12]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def codex_reading(home=None, newest=5):
     """The newest rate-limit reading Codex wrote into a session rollout (<home>/sessions/Y/M/D/*.jsonl, newest files
     first): {plan, windows: {five_hour|seven_day: {utilization, resets_at}}, observed_at, credits}, or None. Any
-    Codex session writes one with each turn's token count, the founder's own included."""
-    pattern = os.path.join(home or codex_home(), "sessions", "*", "*", "*", "*.jsonl")
-    try:
-        files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)[:newest]
-    except OSError:
-        return None
-    for f in files:
-        last = None
+    Codex session writes one with each turn's token count, the founder's own included. An account can carry several
+    limit buckets (`limit_id`); the "codex" bucket's newest reading is taken when there is one, else the newest of any
+    (organic-framework-build reports/research/codex-0.170-as-a-holder-2026-11-20.md §6)."""
+    for f in _codex_rollouts(home or codex_home())[:newest]:
+        last = codex_last = None
         try:
             with open(f, errors="replace") as fh:
                 for line in fh:
                     if '"rate_limits"' in line:
                         last = line
+                        if '"limit_id": "codex"' in line or '"limit_id":"codex"' in line:
+                            codex_last = line
         except OSError:
             continue
+        last = codex_last or last
         try:
             j = json.loads(last) if last else None
         except ValueError:
@@ -511,7 +542,7 @@ def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess
         work = os.path.join(STATE_DIR, "capacity", "probe", "codex")
         os.makedirs(work, mode=0o700, exist_ok=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
-        env.update(OF_AUTOMATION="1", OF_PROBE="1", SSH_AUTH_SOCK="")
+        env.update(OF_AUTOMATION="1", OF_PROBE="1", SSH_AUTH_SOCK="", CODEX_HOME=os.path.abspath(home))
         try:
             runner([exe, "exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "-c",
                     "model_reasoning_effort=low", CODEX_PROBE_PROMPT], cwd=work, env=env, capture_output=True,
@@ -520,6 +551,46 @@ def codex_status(now=None, probe=True, fresh=False, home=None, runner=subprocess
             return r or {"error": f"codex probe: {e}"[:120]}
         r = codex_reading(home) or r
     return r
+
+
+def codex_seat_rows(seats=None, now=None, probe=True, fresh=False, runner=subprocess.run):
+    import of_accounts
+    rows = []
+    for seat in of_accounts.codex_seats() if seats is None else seats:
+        home = seat["home"]
+        status = codex_status(now=now, probe=probe, fresh=fresh, home=home, runner=runner)
+        if status is not None:
+            rows.append(dict(status, seat=seat["name"], home=home, account=codex_seat_account(home)))
+    return rows
+
+
+def codex_headroom(row):
+    """Percent remaining in the most used window, or None without a utilization reading."""
+    return _window_headroom(row)
+
+
+def codex_seat_for(rows, public=True, training=None):
+    """Choose among the first usable rows for distinct accounts. Private runs require a verified off reading.
+    An injected training map has the shape returned by training_readings_by_seat."""
+    seen = set()
+    best, most = None, None
+    for row in rows:
+        account = row.get("account")
+        free = codex_headroom(row)
+        if row.get("error") or row.get("limit_reached") or free is None or account in seen:
+            continue
+        if account:
+            seen.add(account)
+        if not public:
+            if not account:
+                continue
+            if training is None:
+                training = training_readings_by_seat()
+            if training_verified("codex", readings=training, seat_account=account) != "off":
+                continue
+        if best is None or free > most:
+            best, most = row, free
+    return best
 
 
 def muse_status(path=None):
@@ -546,12 +617,36 @@ def training_readings(conn=None):
     out = {}
     for h in TRAINING_HARNESSES:
         row = conn.execute("SELECT ts, payload FROM event WHERE name = 'of.harness_training' "
-                           "AND json_extract(payload, '$.harness') = ? ORDER BY ts DESC LIMIT 1", (h,)).fetchone()
+                           "AND json_extract(payload, '$.harness') = ? ORDER BY ts DESC, rowid DESC LIMIT 1", (h,)).fetchone()
         if row:
             try:
                 out[h] = dict(json.loads(row[1] or "{}"), ts=row[0])
             except ValueError:
                 pass
+    return out
+
+
+def training_readings_by_seat(conn=None):
+    """Latest Codex reading per account, including legacy readings from this machine's default home."""
+    conn = conn or of_events._conn()
+    rows = conn.execute("SELECT ts, payload FROM event WHERE name = 'of.harness_training' "
+                        "AND json_extract(payload, '$.harness') = 'codex' "
+                        "AND (json_type(payload, '$.seat_account') = 'text' OR "
+                        "(json_type(payload, '$.seat_account') IS NULL AND host_id = ?)) "
+                        "ORDER BY ts DESC, rowid DESC", (of_events.machine_id(),))
+    out = {}
+    legacy = None
+    for ts, payload in rows:
+        r = json.loads(payload)
+        if "seat_account" not in r:
+            if legacy is None:
+                import of_accounts
+                main = of_accounts.codex_seat("main")
+                legacy = codex_seat_account(main["home"] if main else codex_home()) or ""
+            r["seat_account"] = legacy
+        account = r["seat_account"]
+        if account and account not in out:
+            out[account] = dict(r, ts=ts)
     return out
 
 
@@ -648,7 +743,7 @@ def owner_closed_card(source, cards=None, harness="codex", docs=None, org=None):
     return None
 
 
-def record_training(harness, training, account, source, emit=None, cards=None, docs=None):
+def record_training(harness, training, account, source, emit=None, cards=None, docs=None, seat_account=None):
     """Write of.harness_training: whether the provider may train on the harness account's runs, and the reading's
     source. Codex shows its data controls nowhere a program can read, so its `off` stands only on the owner's card
     named for that setting and closed by his own claim (owner_closed_card; of_review and of_secrets-review, PR 334:
@@ -657,6 +752,8 @@ def record_training(harness, training, account, source, emit=None, cards=None, d
     if harness not in TRAINING_HARNESSES or training not in ("off", "on") or not str(source or "").strip():
         raise ValueError(f"training: harness {'|'.join(TRAINING_HARNESSES)}, --set off|on and a --source are needed")
     payload = {"harness": harness, "training": training, "account": account or "?", "source": str(source).strip()}
+    if harness == "codex":
+        payload["seat_account"] = seat_account
     if harness == "codex" and training == "off":
         card = owner_closed_card(source, cards, harness, docs)
         if not card:
@@ -726,14 +823,17 @@ def training_registry_problems(docs=None, cards=None):
     return out
 
 
-def training_verified(harness, readings=None, cards=None, docs=None, org=None):
+def training_verified(harness, readings=None, cards=None, docs=None, org=None, seat_account=None):
     """The latest training reading for `harness` ('off', 'on' or None), with a Codex 'off' re-checked against its
     card on each read: it stands only while a registry's training_cards still names that card, closed by the owner's
     own claim. `org`: for that organization's runs, its own named entry must hold. With no `org`, every registry
     that names a card must name the same one and every such entry must hold, or the reading is unknown (of_review,
     PR 334). A reading written any other way, or with no card, reads as None (unknown), so a gate that sends only on
     'off' stays shut (of_secrets-review, PR 334)."""
-    r = (readings if readings is not None else training_readings()).get(harness) or {}
+    if harness == "codex" and seat_account is not None:
+        r = (readings if readings is not None else training_readings_by_seat()).get(seat_account) or {}
+    else:
+        r = (readings if readings is not None else training_readings()).get(harness) or {}
     v = r.get("training")
     if harness == "codex" and v == "off":
         docs = tool_docs_all() if docs is None else docs
@@ -766,21 +866,30 @@ def sync_muse_training(latest=None, path=None, emit=None):
 
 
 def format_other(codex, muse, training=None):
-    """The lines `of capacity status` prints for the other harnesses, under the Claude table."""
+    """Status lines under the Claude table. Training readings are keyed by Codex account hash or harness name."""
     out = []
-    if codex is not None:
-        w = (codex or {}).get("windows") or {}
-        if codex.get("error"):
-            line = f"no reading: {codex['error']}"
+    seen = {}
+    single = isinstance(codex, dict)
+    for row in [codex] if single else codex or []:
+        w = row.get("windows") or {}
+        if row.get("error"):
+            line = f"no reading: {row['error']}"
         else:
             parts = [f"{k} {_pct_text(w[k].get('utilization'))}, resets {_local(w[k].get('resets_at'), True)}"
                      for k in ("five_hour", "seven_day") if k in w]
             line = "; ".join(parts) or "no window reported"
-            line += f"  (read {_local(codex.get('observed_at'), True)} local)"
-            if codex.get("limit_reached"):
-                line += f"  LIMIT REACHED: {codex['limit_reached']}"
-        out.append(f"{'codex':<18} {'ChatGPT ' + str(codex.get('plan') or '?'):<36} {line}"
-                   + _training_text((training or {}).get("codex")))
+            line += f"  (read {_local(row.get('observed_at'), True)} local)"
+            if row.get("limit_reached"):
+                line += f"  LIMIT REACHED: {row['limit_reached']}"
+        seat = row.get("seat", "main")
+        account = row.get("account")
+        if account in seen:
+            line += f"  same account as {seen[account]}: one seat's limits"
+        elif account:
+            seen[account] = seat
+        key = "codex" if single and "seat" not in row else account
+        out.append(f"{'codex:' + seat:<18} {'ChatGPT ' + str(row.get('plan') or '?'):<36} {line}"
+                   + _training_text((training or {}).get(key)))
     if muse is not None:
         mode = {True: "contributor mode ON: its sessions go to Meta for training",
                 False: "contributor mode off"}.get(muse.get("contributor_mode"), "contributor mode unknown")

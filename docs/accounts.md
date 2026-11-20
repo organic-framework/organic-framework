@@ -32,6 +32,7 @@ Basis: the founder, through `of_conductor` (msg 01a1cc5f), about 20:48Z, transla
 2. **`of account add <name>`** creates the folder (mode 700) and adds the entry. It then files one owner task: in a plain terminal, open Claude Code on that account, log in, and accept the Bypass Permissions warning. Only the owner does this.
    - **`of account list`** shows each account's email, login state, week and 5-hour use, and the positions on it. The login check is the probe.
    - **`of account remove <name>`** takes the account out of spawn and the balancer and never deletes the folder.
+   - **Codex seats** (2026-11-20, W9): `of account add <name> --codex [--home DIR]` creates a Codex home (default `~/.codex-<name>`, mode 700), lists it under `codex_seats:` in the same file, and files the owner's task to sign in there in a plain terminal (`CODEX_HOME=<home> codex login --device-auth`). `of account list` shows the seats under the Claude accounts; `remove` takes a seat out the same way. With no `codex_seats:` key, the one seat is `main` at `CODEX_HOME` or `~/.codex`. docs/capacity.md, "Other harnesses", says how seats are read and chosen.
 3. **`of claude [--account NAME] [claude arguments]`** is the launcher that replaces the aliases.
    - It runs Claude Code with that account's folder.
    - Without `--account`, it takes the account with the most headroom among those that trust the current folder, the same choice `of spawn` makes.

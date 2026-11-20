@@ -12,8 +12,10 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import of_events
 
@@ -32,7 +34,7 @@ def path():
 
 
 def _home(home=None):
-    return home or os.path.expanduser("~")
+    return os.fspath(home) if home else os.path.expanduser("~")
 
 
 def expand(d, home=None):
@@ -61,32 +63,114 @@ def discovered(home=None):
     return sorted(out)
 
 
-def load(p=None):
-    """[{name, config_dir[, label]}] from accounts.yaml, or None when there is no file."""
-    p = p or path()
+def _read(p):
     try:
         with open(p) as fh:
-            text = fh.read()
+            return fh.read()
     except FileNotFoundError:
+        return None
+
+
+def _document(p=None):
+    text = _read(p or path())
+    if text is None:
         return None
     import yaml
     doc = yaml.safe_load(text) or {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def load(p=None):
+    """The configured Claude accounts, or None while they are discovered by folder name."""
+    doc = _document(p)
+    if doc is None or ("codex_seats" in doc and "accounts" not in doc):
+        return None
     out = []
-    for e in (doc.get("accounts") or []) if isinstance(doc, dict) else []:
+    for e in doc.get("accounts") or []:
         if isinstance(e, dict) and e.get("name") and e.get("config_dir"):
             out.append({k: str(e[k]) for k in ("name", "config_dir", "label") if e.get(k)})
     return out
 
 
-def save(entries, p=None):
+def _replace_list(text, key, entries):
+    """Edit one top-level list, preserving the other sections and their comments verbatim."""
     import yaml
+    root = yaml.compose(text)
+    if root is not None and not isinstance(root, yaml.MappingNode):
+        raise AccountError("accounts.yaml must contain a mapping of account lists")
+    flow = bool(root and root.flow_style)
+    body = yaml.safe_dump({key: entries}, sort_keys=False, allow_unicode=True, default_flow_style=bool(flow)).strip()
+    if flow:
+        body = body[1:-1]
+    indent = " " * root.start_mark.column if root and not flow else ""
+    body = body.replace("\n", "\n" + indent)
+    pairs = root.value if root else []
+    for i, (k, _) in enumerate(pairs):
+        if k.value == key:
+            # Only gaps between syntax tokens can hold comments. Keep them even when rewriting
+            # this list. The block's end mark alone can reach the following section's comments.
+            start = end = k.start_mark.index
+            stop = pairs[i + 1][0].start_mark.index if i + 1 < len(pairs) else root.end_mark.index - int(flow)
+            tokens = [t for t in yaml.scan(text) if start <= t.start_mark.index < t.end_mark.index <= stop]
+            if flow and isinstance(tokens[-1], yaml.tokens.FlowEntryToken):
+                tokens.pop()
+            comments = []
+            for token in tokens:
+                left, right = token.start_mark.index, token.end_mark.index
+                comments.extend(re.findall(r"#[^\n]*", text[end:left]))
+                end = right
+            replacement = ("\n" + indent).join([*comments, body])
+            return text[:start] + replacement + text[end:]
+    if flow:
+        at = root.start_mark.index + 1
+        return text[:at] + body + (", " if pairs else "") + text[at:]
+    # Insert before a YAML document end marker, if present.
+    at = root.end_mark.index if root else len(text)
+    prefix = text[:at]
+    return prefix + ("\n" if prefix and not prefix.endswith("\n") else "") + indent + body + "\n" + text[at:]
+
+
+def save(entries=None, p=None, *, seats=None):
     p = p or path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    body = yaml.safe_dump({"accounts": entries}, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    body = _read(p)
+    if body is None:
+        body = HEADER
+    if entries is not None:
+        body = _replace_list(body, "accounts", entries)
+    if seats is not None:
+        body = _replace_list(body, "codex_seats", seats)
     tmp = p + ".tmp"
     with open(tmp, "w") as fh:
-        fh.write(HEADER + body)
+        fh.write(body)
     os.replace(tmp, p)
+
+
+@contextmanager
+def _editing():
+    """Serialize account and seat changes across CLI processes."""
+    import fcntl
+    os.makedirs(os.path.dirname(path()), exist_ok=True)
+    with open(path() + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def codex_seats(home=None):
+    """Configured Codex sign-ins in list order, with their homes expanded."""
+    import of_capacity
+    doc = _document() or {}
+    if "codex_seats" not in doc:
+        return [{"name": "main", "home": of_capacity.codex_home(home)}]
+    return [{"name": e["name"], "home": expand(e["home"], home)} for e in doc["codex_seats"] or []
+            if isinstance(e, dict) and isinstance(e.get("name"), str) and NAME.fullmatch(e["name"]) and e.get("home")]
+
+
+def codex_seat(name=None):
+    """A named seat, defaulting to main or the first configured seat."""
+    seats = codex_seats()
+    default = seats[0] if name is None and seats else None
+    return next((s for s in seats if s["name"] == (name or "main")), default)
 
 
 def name_of(d, home=None):
@@ -127,9 +211,17 @@ def _host():
     return platform.node() or "this machine"
 
 
-def login_task(name, d, lang=None):
+def login_task(name, d, lang=None, codex=False):
     """(title, steps) of the owner's task to log in on a new account: one sitting, in a plain terminal."""
     from of_locale import tr
+    if codex:
+        folder = "~" if d == "~" else shlex.quote(d)
+        if d.startswith("~/"):
+            folder = "~/" + shlex.quote(d[2:])
+        return (tr("Sign in to {names} in the account {acct}", lang, names="Codex", acct=name),
+                tr("On {host}, open a plain terminal tab. Never run this command with \"!\" inside an agent's "
+                   "session. Run the command and follow the device sign-in instructions.\n{line}", lang, host=_host(),
+                   line=f"CODEX_HOME={folder} codex login --device-auth"))
     kw = dict(name=name, dir=d, host=_host(), line=f"of claude --account {name} --dangerously-skip-permissions")
     return (tr("Log in to Claude Code in the new account {name}", lang, **kw),
             tr("OF added the Claude Code account {name} (folder {dir}) on {host}. Sessions start on it only after "
@@ -153,33 +245,43 @@ def _file_task(title, steps, of_bin=None, run=subprocess.run):
     return r.returncode == 0, ((r.stdout if r.returncode == 0 else r.stderr or r.stdout) or "").strip()
 
 
-def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, log=print):
+def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, log=print, codex=False):
     """Add an account: create its folder (mode 700), list it, and file one owner task to log in there unless it is
     logged in already. The accounts found by name are listed too, so adding the first one hides none of them.
     `ask(title, steps)` -> (filed, output); when the task cannot be filed, the steps are printed for whoever runs this
     (in a plain terminal, the owner) and AccountError says so."""
-    if not NAME.match(name or ""):
+    if not NAME.fullmatch(name or ""):
         raise AccountError(f"an account name is lowercase letters, digits, - and _, at most 32 characters: {name!r}")
-    d = config_dir or ("~/.claude" if name == "default" else f"~/.claude-{name}")
+    default = f"~/.codex-{name}" if codex else ("~/.claude" if name == "default" else f"~/.claude-{name}")
+    d = config_dir or default
     full = expand(d, home)
-    es = entries(home)
-    for e in es:
-        same = expand(e["config_dir"], home) == full
-        if e["name"] == name and not same:
-            raise AccountError(f"the account {name} already exists, with the folder {e['config_dir']}")
-        if same and e["name"] != name:
-            raise AccountError(f"the folder {e['config_dir']} is already the account {e['name']}")
-    os.makedirs(full, mode=0o700, exist_ok=True)
-    if not any(e["name"] == name for e in es):
-        es.append({k: v for k, v in (("name", name), ("config_dir", tilde(full, home)), ("label", label)) if v})
-    save(es)
+    key = "home" if codex else "config_dir"
+    with _editing():
+        if codex:
+            full = os.path.abspath(full)
+            es = [dict(e, home=tilde(e["home"], home)) for e in codex_seats(home)]
+        else:
+            es = entries(home)
+        for e in es:
+            same = expand(e[key], home) == full
+            if e["name"] == name and not same:
+                raise AccountError(f"the account {name} already exists, with the folder {e[key]}")
+            if same and e["name"] != name:
+                raise AccountError(f"the folder {e[key]} is already the account {e['name']}")
+        os.makedirs(full, mode=0o700, exist_ok=True)
+        if not any(e["name"] == name for e in es):
+            es.append({k: v for k, v in (("name", name), (key, tilde(full, home)), ("label", label)) if v})
+        if codex:
+            save(seats=es)
+        else:
+            save(es)
     log(f"account {name}: {tilde(full, home)} listed in {tilde(path(), home)}")
     if logged_in is None:
         import of_capacity
-        logged_in = bool(of_capacity.account_of(full, home))
+        logged_in = os.path.isfile(os.path.join(full, "auth.json")) if codex else bool(of_capacity.account_of(full, home))
     if logged_in:
         return None
-    title, steps = login_task(name, tilde(full, home))
+    title, steps = login_task(name, tilde(full, home), codex=codex)
     try:
         filed, out = ask(title, steps) if ask else _file_task(title, steps)
     except Exception as e:  # noqa: BLE001 - a failed filing is reported below, never as filed
@@ -194,22 +296,27 @@ def add(name, config_dir=None, label=None, home=None, logged_in=None, ask=None, 
 
 def remove(name, home=None, log=print):
     """Stop using an account: OF no longer starts, moves or resumes sessions there. Its folder is never deleted."""
-    es = entries(home)
-    keep = [e for e in es if e["name"] != name]
-    if len(keep) == len(es):
-        raise AccountError(f"no account named {name} (of account list)")
-    save(keep)
-    gone = next(e for e in es if e["name"] == name)
-    log(f"account {name}: no longer used; its folder {gone['config_dir']} is kept as it is")
+    with _editing():
+        es = entries(home)
+        seats = codex_seats(home)
+        keep = [e for e in es if e["name"] != name]
+        keep_seats = [dict(e, home=tilde(e["home"], home)) for e in seats if e["name"] != name]
+        gone = [e for e in es + seats if e["name"] == name]
+        if not gone:
+            raise AccountError(f"no account named {name} (of account list)")
+        save(keep if len(keep) != len(es) else None, seats=keep_seats if len(keep_seats) != len(seats) else None)
+    for e in gone:
+        log(f"account {name}: no longer used; its folder {e.get('config_dir') or e['home']} is kept as it is")
 
 
 def adopt(home=None, log=print):
     """Write accounts.yaml from the accounts found by folder name, when there is no file yet."""
-    if load() is not None:
-        log(f"{tilde(path(), home)} exists already; nothing changed")
-        return entries(home)
-    es = entries(home)
-    save(es)
+    with _editing():
+        if load() is not None:
+            log(f"{tilde(path(), home)} exists already; nothing changed")
+            return entries(home)
+        es = entries(home)
+        save(es)
     log(f"{tilde(path(), home)}: {len(es)} account(s): {', '.join(e['name'] for e in es)}")
     return es
 
@@ -332,7 +439,7 @@ def claude(argv):
 
 def main(argv):
     import argparse
-    ap = argparse.ArgumentParser(prog="of account", description="The Claude Code accounts OF uses on this machine "
+    ap = argparse.ArgumentParser(prog="of account", description="The Claude Code accounts and Codex seats on this machine "
                                                                 "(docs/accounts.md)")
     sub = ap.add_subparsers(dest="action")
     ls = sub.add_parser("list", help="each account: email, login state, 5-hour and week use, live sessions")
@@ -340,6 +447,8 @@ def main(argv):
     ls.add_argument("--json", action="store_true")
     a = sub.add_parser("add", help="create an account's folder, list it, and file the owner's task to log in there")
     a.add_argument("name")
+    a.add_argument("--codex", action="store_true", help="add a Codex seat")
+    a.add_argument("--home", help="Codex seat folder (default: ~/.codex-<name>)")
     a.add_argument("--config-dir", dest="config_dir", help="default: ~/.claude-<name> (~/.claude for 'default')")
     a.add_argument("--label", help="a note shown in the list, for example whose subscription it is")
     r = sub.add_parser("remove", help="stop using an account; its folder is kept")
@@ -355,8 +464,14 @@ def main(argv):
                 show(rs)
                 if load() is None:
                     print(f"(found by folder name; `of account adopt` writes {tilde(path())})")
+                for seat in codex_seats():
+                    print(f"codex:{seat['name']}  {tilde(seat['home'])}")
         elif args.action == "add":
-            add(args.name, args.config_dir, args.label)
+            if args.codex and (args.config_dir or args.label):
+                ap.error("--config-dir and --label apply to Claude accounts")
+            if args.home and not args.codex:
+                ap.error("--home requires --codex")
+            add(args.name, args.home if args.codex else args.config_dir, args.label, codex=args.codex)
         elif args.action == "remove":
             remove(args.name)
         elif args.action == "adopt":
