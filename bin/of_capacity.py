@@ -4388,10 +4388,11 @@ def stuck_task(position, err):
 
 def watch(positions, ask, log=print, policy=None, **kw):
     """The `of pulse` hook: read capacity (probing at most every PROBE_EVERY_MIN minutes) and ask the
-    owner once per account, window and reset when a position's account passes a threshold. With the balancer
-    on (`auto`), only when no other account is under its thresholds: otherwise relief moves the positions
-    before the account stalls, and the ask had nothing left to decide (2026-11-14: the founder answered three
-    such asks with "is it everywhere?" and "no longer relevant?"). A contour whose capacity.yaml says
+    owner once per account, window and reset when a position's account passes a threshold, with the balancer off
+    (the owner moves them by hand). With it on (`auto`), never. While another account has room, relief moves the
+    positions (2026-11-14: the founder answered three such asks with "is it everywhere?" and "no longer
+    relevant?"). With none, the pool question asks the one decision left, money (2026-11-20: two cards asked him to
+    move sessions to an account with 0% free). A contour whose capacity.yaml says
     `account_cards: false` reads capacity and files none: with every account shared by two contours, an account's
     card comes from one balancer only (of_architect, message 01a1f0ab-c6bc, docs/contours.md)."""
     rows = status(positions, **kw)
@@ -4402,8 +4403,12 @@ def watch(positions, ask, log=print, policy=None, **kw):
     done = set(cache.get("_proposed") or [])
     asked = []
     for k, r, why, t in proposals(rows, done, now=kw.get("now"), policy=policy):
-        if auto and t and not over_threshold(t) and not exhausted(t):
-            continue  # not marked asked: should the room elsewhere run out within this window, it is asked then
+        if auto:
+            # With the balancer on there is nothing per account to decide. Where another account has room, relief
+            # moves the positions. Where none has, the pool question (pool_numbers, once per 5-hour window) asks the
+            # one thing left, money. 2026-11-20: two cards asked the founder to move sessions "to the account with
+            # the most headroom: 0% free" (OF-183, OF-184), beside the pool question.
+            continue
         if k in done:
             continue
         try:

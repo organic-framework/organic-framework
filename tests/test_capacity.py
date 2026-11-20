@@ -589,7 +589,7 @@ class PlanAndWatch(unittest.TestCase):
                 key, _, _, _ = of_capacity.proposals([row], set(), now=Balance.NOW, policy=POLICY)[0]
                 self.assertEqual(key, of_events.stable_id("capacity_threshold", account or "/g", window, reset))
 
-    def test_with_the_balancer_on_asks_only_when_no_account_has_room(self):
+    def test_with_the_balancer_on_no_account_card_is_filed(self):
         asked = []
 
         def ask(text, event_id):
@@ -610,7 +610,9 @@ class PlanAndWatch(unittest.TestCase):
             for r in rows[1:]:
                 r["windows"]["seven_day"]["utilization"] = 95
             of_capacity.watch(pos, ask, log=lambda m: None, policy=on, fresh=True, **kw)
-            self.assertEqual(len(asked), 2)  # no room anywhere: the owner decides, for /g and for /e
+            self.assertEqual(asked, [])  # no room anywhere: the pool question asks the money decision, not these
+            of_capacity.watch(pos, ask, log=lambda m: None, policy={"auto": False}, fresh=True, **kw)
+            self.assertEqual(len(asked), 2)  # with the balancer off the owner moves them: one card per account
             of_capacity.watch(pos, ask, log=lambda m: None, policy={"auto": False}, fresh=True, **kw)
             self.assertEqual(len(asked), 2)  # asked once per window and reset, as before
 
