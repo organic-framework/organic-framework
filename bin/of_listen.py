@@ -1881,6 +1881,8 @@ def working_beat(thread_id=None, every=None, frames=None, stop=None):
 
 
 def run(stop=None, log=print, rebuild=False):
+    if stop is None:   # the service: its asks get their card ids from the pulse, never a wait inside a write
+        of_events.CARD_REFS_LATER = True
     import threading
     import of_store
     if stop is None:  # the service: the watchdog asks for every thread's stack before it restarts a stuck one
