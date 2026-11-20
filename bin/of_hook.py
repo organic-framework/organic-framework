@@ -400,9 +400,18 @@ def _registry_index():
     except Exception:
         cache["systems"] = []
     tmp = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"  # unique: concurrent rebuilds must not collide
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(cache, fh)
-    os.replace(tmp, path)
+    try:
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+            json.dump(cache, fh)
+        os.replace(tmp, path)
+    except OSError:
+        # not writable here: an agent's shell in Claude Code's Linux sandbox, where the index is denyWrite (G36), runs
+        # of ask, of_derive, of_paste, of_route and ingest, which read it; they get the index built now, unwritten
+        # (of_review on organic-framework PR 482)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
     return cache
 
 

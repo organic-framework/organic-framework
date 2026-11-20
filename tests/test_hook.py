@@ -790,6 +790,32 @@ class HandleTest(unittest.TestCase):
         self.assertIsNone(self.events()[0]["gen_ai.agent.name"])
 
 
+
+class RegistryIndexUnwritableTest(unittest.TestCase):
+    """of_review on organic-framework PR 482: in Claude Code's Linux sandbox the index is denyWrite (G36), and the
+    commands an agent's shell runs that read it must get it built, unwritten, with no temporary file left behind."""
+
+    def test_an_index_that_cannot_be_replaced_is_returned_unwritten(self):
+        from unittest import mock
+        real = os.replace
+
+        def refuse(src, dst):
+            if dst.endswith("index.json"):
+                raise PermissionError(1, "Operation not permitted")
+            return real(src, dst)
+        os.makedirs(of_hook.STATE, exist_ok=True)
+        index = os.path.join(of_hook.STATE, "index.json")
+        if os.path.exists(index):
+            os.unlink(index)                                    # so this call builds it and tries the write
+        with mock.patch.object(of_hook.os, "replace", side_effect=refuse) as rep:
+            idx = of_hook._registry_index()
+        self.assertTrue(any(c.args[1] == index for c in rep.call_args_list))
+        self.assertFalse(os.path.exists(index))
+        self.assertIsInstance(idx, dict)
+        self.assertIn("sessions", idx)
+        left = [n for n in os.listdir(of_hook.STATE) if n.startswith("index.json.") and n.endswith(".tmp")]
+        self.assertEqual(left, [])
+
 if __name__ == "__main__":
     unittest.main()
 
