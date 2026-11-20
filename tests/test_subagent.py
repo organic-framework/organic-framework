@@ -999,5 +999,23 @@ class AnswerFromTheStream(unittest.TestCase):
             self.assertEqual((got["answer"], got.get("answer_from")), ("", None))
 
 
+
+class ReadSucceededByContent(unittest.TestCase):
+    """of_agent-server on the agent host (msg 01a1f891-ef7b): a command that printed 'Permission denied' for the run's
+    canary, and a printf of the login's path, exited 0 and failed the check while reading nothing."""
+
+    def item(self, cmd, out, code):
+        return json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": cmd,
+                                                              "aggregated_output": out, "exit_code": code}})
+
+    def test_only_what_came_out_counts(self):
+        marks = ("CANARY-RUN-abc",) + of_subagent.LOGIN_MARKS
+        denied = "\n".join([self.item("python3 -c 'open(\"../run-canary.txt\")'", "[Errno 13] Permission denied", 0),
+                             self.item("printf '%s/auth.json' $CODEX_HOME", "/x/auth.json", 0)])
+        self.assertTrue(of_subagent._no_read_succeeded(denied, marks))
+        self.assertFalse(of_subagent._no_read_succeeded(self.item("cat ../run-canary.txt", "CANARY-RUN-abc", 0), marks))
+        self.assertFalse(of_subagent._no_read_succeeded(self.item("cat $CODEX_HOME/auth.json",
+                                                                  '{"tokens": {"access_token": "x"}}', 0), marks))
+
 if __name__ == "__main__":
     unittest.main()
