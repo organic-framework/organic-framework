@@ -2648,14 +2648,37 @@ def _ps_env(head, args):
     return head == "ps" and any(re.fullmatch(r"[auxewfl]*e[auxewfl]*", a) for a in args)
 
 
+def _c_flag(args):
+    """The index of a shell's -c among ARGS: -c itself, or a cluster of short options that holds c (-lc, -ec, -xc;
+    Codex runs every command as bash -lc), before the first word that is no option; else None."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-o", "+o", "-O", "+O") and i + 1 < len(args):
+            i += 2              # an option's name (`-o pipefail`)
+            continue
+        if a == "--" or not (a.startswith("-") or a.startswith("+")) or a.startswith("--"):
+            return None
+        if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a):
+            return i
+        i += 1
+    return None
+
+
 def _nested(head, args):
     """Command lines a command runs: sh/bash -c, eval, ssh's remote command, `docker exec C cmd …`,
     `kubectl exec P -- cmd …`, and any `sh -c STRING` among the arguments (sudo, timeout, xargs …)."""
     import shlex
     out = []
     if head in _SHELLS:
-        if "-c" in args[:-1]:
-            out.append(args[args.index("-c") + 1])
+        i = _c_flag(args) if head != "eval" else None
+        if i is not None and i + 1 < len(args):
+            # the body: the next word after the cluster that is no option (`bash -lc -- 'cmd'` and `-o pipefail` too)
+            j = i + 1
+            while j < len(args) and args[j] == "--":
+                j += 1
+            if j < len(args):
+                out.append(args[j])
         elif head == "eval":
             out.append(" ".join(args))
     elif head == "ssh" and args:
@@ -2678,7 +2701,8 @@ def _nested(head, args):
         if rest:
             out.append(shlex.join(rest))
     for k, a in enumerate(args[:-1]):
-        if os.path.basename(a) in _SHELLS - {"eval"} and args[k + 1] == "-c" and k + 2 < len(args):
+        if os.path.basename(a) in _SHELLS - {"eval"} and k + 2 < len(args) and \
+                (args[k + 1] == "-c" or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", args[k + 1])):
             out.append(args[k + 2])
     return out
 
@@ -2873,7 +2897,7 @@ def _remote_shell(head, args):
     if not s or s[0] == "<read":
         return None
     h, a = s[0], s[1]
-    if h in _SHELLS - {"eval"} and "-c" not in a:
+    if h in _SHELLS - {"eval"} and _c_flag(a) is None:
         return "shell"
     if h in _INTERPRETERS and "-c" not in a and "-e" not in a and (not a or a[0] == "-"):
         return "code"
