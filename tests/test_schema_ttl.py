@@ -20,8 +20,10 @@ class RetentionTest(unittest.TestCase):
     def test_a_retention_on_one_organizations_database_alone_and_zero_removes_it(self):
         ttl = {("db_a", "transcript_record"): 30, ("db_a", "event"): 365, ("db_a", "hook_record"): 0}
         text = schema.schema(["db_a", "db_b"], "db_v", "db_u", ttl=ttl)
-        self.assertIn("ALTER TABLE db_a.transcript_record MODIFY TTL toDateTime(ts) + INTERVAL 30 DAY;", text)
-        self.assertIn("ALTER TABLE db_a.event MODIFY TTL toDateTime(ts) + INTERVAL 365 DAY;", text)
+        self.assertIn("ALTER TABLE db_a.transcript_record MODIFY TTL toDateTime(ts) + INTERVAL 30 DAY "
+                      "DELETE WHERE toUnixTimestamp(ts) >= 86400;", text)       # a row with no time never ages
+        self.assertIn("ALTER TABLE db_a.event MODIFY TTL toDateTime(ts) + INTERVAL 365 DAY "
+                      "DELETE WHERE toUnixTimestamp(ts) >= 86400;", text)
         self.assertIn("ALTER TABLE db_a.hook_record REMOVE TTL;", text)
         self.assertNotIn("ALTER TABLE db_a.runtime_record MODIFY TTL", text)        # not named: untouched
         for db in ("db_b", "db_v", "db_u"):                                        # another organization's, the
@@ -29,7 +31,7 @@ class RetentionTest(unittest.TestCase):
             self.assertNotIn(f"ALTER TABLE {db}.event MODIFY TTL", text)
             self.assertNotIn(f"ALTER TABLE {db}.hook_record REMOVE TTL", text)
         create = text.split("CREATE TABLE IF NOT EXISTS db_a.transcript_record\n", 1)[1].split(";", 1)[0]
-        self.assertTrue(create.endswith("TTL toDateTime(ts) + INTERVAL 30 DAY"))
+        self.assertTrue(create.endswith("TTL toDateTime(ts) + INTERVAL 30 DAY DELETE WHERE toUnixTimestamp(ts) >= 86400"))
         other = text.split("CREATE TABLE IF NOT EXISTS db_b.transcript_record\n", 1)[1].split(";", 1)[0]
         self.assertNotIn("TTL", other)
 
@@ -47,7 +49,7 @@ class RetentionTest(unittest.TestCase):
         base = [sys.executable, path, "--org", "db_a", "--vault", "db_v", "--unassigned", "db_u"]
         ok = subprocess.run(base + ["--ttl", "db_a.event=90"], capture_output=True, text=True)
         self.assertEqual(ok.returncode, 0)
-        self.assertIn("ALTER TABLE db_a.event MODIFY TTL toDateTime(ts) + INTERVAL 90 DAY;", ok.stdout)
+        self.assertIn("ALTER TABLE db_a.event MODIFY TTL toDateTime(ts) + INTERVAL 90 DAY DELETE WHERE", ok.stdout)
         for bad in ("event=90", "db_v.event=90", "db_a.event=x"):
             with self.subTest(bad=bad):
                 self.assertNotEqual(subprocess.run(base + ["--ttl", bad], capture_output=True).returncode, 0)
