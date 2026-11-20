@@ -5236,6 +5236,53 @@ def iter_usage(path, start=0):
 
 
 SPEND_KEEP_S = 6 * 3600  # covers a 5-hour window and the 2-hour burn rate
+SEEK_MIN_BYTES = 4 << 20  # a transcript read from its start past this size is searched for its first countable record
+SEEK_STEP_BYTES = 1 << 20
+SEEK_MARGIN_S = 1800      # records are written in time order but for a few seconds; the search starts this much earlier
+
+
+def seek_records(path, size, floor, min_bytes=None, step=None):
+    """A line start in `path` before every record of `floor` or later (epoch), found by halving the file on its
+    records' timestamps; 0 for a small file. The spend index reads a new transcript from its start: each move copies
+    the session's transcript and its cursor starts again, though only what the session writes after the copy counts
+    there (2026-11-20: after a wave of 60 moves a balance run spent 16 s of its 30 reading copies of up to 200 MB,
+    while sessions waited on a usage limit). The caller still drops each record older than `floor`."""
+    min_bytes = SEEK_MIN_BYTES if min_bytes is None else min_bytes
+    step = SEEK_STEP_BYTES if step is None else step
+    if size < min_bytes or floor <= 0:
+        return 0
+    floor -= SEEK_MARGIN_S
+
+    def first_ts(fh, at):
+        fh.seek(at)
+        if at:
+            fh.readline()  # the rest of a line cut in the middle
+        pos = fh.tell()
+        for _ in range(200):
+            ln = fh.readline()
+            if not ln:
+                return None, pos
+            m = _TS_FIELD.search(ln)
+            if m:
+                return _ts(m.group(1).decode("ascii", "replace")), pos
+        return None, pos
+
+    lo, hi = 0, size
+    with open(path, "rb") as fh:
+        while hi - lo > step:
+            mid = (lo + hi) // 2
+            t, _ = first_ts(fh, mid)
+            if t is not None and t < floor:
+                lo = mid
+            else:
+                hi = mid
+        if not lo:
+            return 0
+        _, pos = first_ts(fh, lo)
+        return pos
+
+
+_TS_FIELD = _re.compile(rb'"timestamp":\s*"([0-9T:.+Z-]+)"')
 _CONFIG_DIR_RE = _re.compile(r"^(.*/\.claude[^/]*)/projects/")
 
 
@@ -5266,7 +5313,10 @@ def spend_index(dirs, now=None, keep_s=SPEND_KEEP_S):
             start = prev[1] if prev and prev[0] == info.st_ino and prev[1] <= info.st_size else 0
             if start == info.st_size:
                 continue
+            since_copy = max([t for pfx, t in copied.items() if f == pfx or f.startswith(pfx + os.sep)] or [0])
             try:
+                if start == 0:
+                    start = seek_records(f, info.st_size, max(now - keep_s, since_copy))
                 recs, end = iter_usage(f, start)
             except OSError:
                 continue
@@ -5274,7 +5324,6 @@ def spend_index(dirs, now=None, keep_s=SPEND_KEEP_S):
             sid = _session_of(f)
             b = getattr(info, "st_birthtime", info.st_ctime)
             born[sid] = min(born.get(sid, b), b)
-            since_copy = max([t for pfx, t in copied.items() if f == pfx or f.startswith(pfx + os.sep)] or [0])
             sub = f"{os.sep}subagents{os.sep}" in f
             for mid, t, u in recs:
                 # a move copies a transcript: what it held before the copy was spent on the old account
@@ -6636,6 +6685,8 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     except OSError:
         log("balance: another run is in progress")
         return []
+    if not dry_run:
+        clear_replan()  # this run reads every stop so far; the stop watch names the later ones
     rows = status(positions, now=now)
     dirs = run_dirs(rows)
     if not dry_run:
@@ -6714,6 +6765,12 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
         log(f"balance: {m['position']} {short(m['from'])} -> {short(m['to'])} (${m['rate']:.0f}/h; {m['reason']})")
         if dry_run or offline:
             continue
+        if not str(m.get("reason") or "").startswith("rescue"):
+            late = replan_due(stopped)
+            if late:
+                log(f"balance: {len(late)} session(s) stopped on a usage limit during this run; it ends here, and the "
+                    "next run rescues them first")
+                break
         p = next((x for x in positions if x["name"] == m["position"]), None)
         why = balance_why(m.get("reason"))
         try:  # only idle holders are planned (no background shells); their scheduled tasks are in the note
@@ -6986,6 +7043,35 @@ STOP_WATCH_S = 15   # the stop watch: a usage-limit stop starts the balancer wit
 TICK_EVERY_S = 300  # the capacity tick: the spend view, loop costs, spend per goal, then a balance
 
 
+def _replan_path():
+    return os.path.join(STATE_DIR, "capacity", "balance.replan")
+
+
+def mark_replan(sessions):
+    """The stop watch names the sessions it saw stop, for a balance run already under way (replan_due)."""
+    os.makedirs(os.path.dirname(_replan_path()), mode=0o700, exist_ok=True)
+    with open(os.open(_replan_path(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "w") as fh:
+        fh.write("".join(f"{sid}\n" for sid in sessions if sid))
+
+
+def clear_replan():
+    try:
+        os.unlink(_replan_path())
+    except FileNotFoundError:
+        pass
+
+
+def replan_due(known):
+    """The sessions the stop watch saw stop since this run began that the run's plan does not know: a run yields to
+    them before its next move that is not a rescue (2026-11-20: twelve sessions stopped on ~/.claude-max-1's 5-hour
+    limit while a relief run moved others one by one; the first rescue came 5 to 10 minutes after the stops)."""
+    try:
+        with open(_replan_path()) as fh:
+            return {x.strip() for x in fh if x.strip()} - set(known)
+    except OSError:
+        return set()
+
+
 def _balance_busy():
     """True while a balance run holds its lock (taken and released at once when free)."""
     import fcntl
@@ -7086,8 +7172,10 @@ class ListenerProcessor:
             self._full_at = now
             spawn_tick()  # the work runs in its own process (run_tick): the listener's loop never waits on it
         try:
-            if new_limit_stops(conn):
+            stops = new_limit_stops(conn)
+            if stops:
                 self._pending = True
+                mark_replan(stops)
         except Exception:  # noqa: BLE001 - a store that cannot be read: the 5-minute tick still balances
             pass
         try:

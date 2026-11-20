@@ -1020,9 +1020,10 @@ class StopWatch(unittest.TestCase):
         busy = iter([True, False, False])
         with mock.patch.multiple(of_capacity, spawn_tick=mock.Mock(), spawn_balance=mock.Mock(),
                                  load_policy=lambda: {"auto": True}, new_limit_stops=lambda conn: next(stops),
-                                 _balance_busy=lambda: next(busy)):
-            p.tick(None, 1000.0)  # a stop while a balance runs: kept
+                                 _balance_busy=lambda: next(busy), mark_replan=mock.Mock()):
+            p.tick(None, 1000.0)  # a stop while a balance runs: kept, and named to that run
             of_capacity.spawn_balance.assert_not_called()
+            of_capacity.mark_replan.assert_called_once_with(["a"])
             p.tick(None, 1015.0)  # the lock is free: the run starts
             self.assertEqual(of_capacity.spawn_balance.call_count, 1)
             p.tick(None, 1030.0)  # nothing new: no run
@@ -1030,6 +1031,24 @@ class StopWatch(unittest.TestCase):
             self.assertEqual(of_capacity.spawn_tick.call_count, 1)  # the full tick only every TICK_EVERY_S
             p.tick(None, 1000.0 + of_capacity.TICK_EVERY_S)
             self.assertEqual(of_capacity.spawn_tick.call_count, 2)
+
+
+    def test_a_run_yields_only_to_stops_its_plan_does_not_know(self):
+        """2026-11-20: sessions stopped on ~/.claude-max-1's 5-hour limit while a relief run moved others; the first
+        rescue came 5 to 10 minutes later."""
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_capacity.STATE_DIR
+            of_capacity.STATE_DIR = d
+            try:
+                self.assertEqual(of_capacity.replan_due({"a"}), set())
+                of_capacity.mark_replan(["a", "b"])
+                of_capacity.mark_replan(["c"])
+                self.assertEqual(of_capacity.replan_due({"a"}), {"b", "c"})
+                of_capacity.clear_replan()
+                of_capacity.clear_replan()  # nothing to clear: no error
+                self.assertEqual(of_capacity.replan_due(set()), set())
+            finally:
+                of_capacity.STATE_DIR = saved
 
 
 class StoppedTasks(unittest.TestCase):
@@ -1575,6 +1594,43 @@ class Spend(unittest.TestCase):
             self._write(orig, [self.rec("m3", "2026-11-06T12:47:00Z")])
             idx = of_capacity.spend_index([d], now)
             self.assertEqual(sorted(k for k, v in idx.items() if v[1] == "s-orig"), ["m1", "m2", "m3"])
+
+    def test_a_long_new_transcript_is_read_from_its_first_countable_record(self):
+        """2026-11-20: each move restarts the spend index's cursor on the copied transcript; after a wave of moves a
+        balance run spent 16 s of its 30 reading copies whose records before the copy count nowhere there."""
+        with tempfile.TemporaryDirectory() as home:
+            of_capacity.STATE_DIR = os.path.join(home, "state")
+            d = os.path.join(home, ".claude-a")
+            f = os.path.join(d, "projects", "-w", "s1.jsonl")
+            now = of_capacity._ts("2026-11-06T20:00:00Z")
+            rows = []
+            for i in range(24 * 60):  # one response a minute for the day before
+                r = self.rec(f"m{i}", of_capacity._iso(now - 24 * 3600 + 60 * i))
+                r["pad"] = "x" * 300
+                rows.append(r)
+                if i % 7 == 0:
+                    rows.append({"type": "file-history-snapshot", "pad": "y" * 200})  # a line with no timestamp
+            self._write(f, rows)
+            size = os.path.getsize(f)
+            floor = now - of_capacity.SPEND_KEEP_S
+            pos = of_capacity.seek_records(f, size, floor, min_bytes=0, step=4096)
+            with open(f, "rb") as fh:
+                data = fh.read()
+            self.assertTrue(size // 2 < pos < size)  # the last six of 24 hours, less the margin
+            self.assertEqual(data[pos - 1:pos], b"\n")  # a line start
+            for ln in data[:pos].splitlines():  # nothing it skips would count
+                t = json.loads(ln).get("timestamp")
+                if t:
+                    self.assertLess(of_capacity._ts(t), floor)
+            self.assertEqual(of_capacity.seek_records(f, size, floor), 0)  # a small file is read whole
+            whole = of_capacity.spend_index([d], now)
+            os.unlink(of_capacity._spend_path())
+            with mock.patch.multiple(of_capacity, SEEK_MIN_BYTES=0, SEEK_STEP_BYTES=4096):
+                self.assertEqual(of_capacity.spend_index([d], now), whole)
+                # a move's copy: counted from its copy time, searched from there
+                of_capacity.mark_copied([f], now - 600)
+                idx = of_capacity.spend_index([d], now)
+            self.assertEqual(sorted(idx), sorted(k for k, v in whole.items() if v[0] >= now - 600))
 
     def test_a_moved_session_burns_on_both_accounts(self):
         # found by the Muse cross-review trial (2026-11-06): the last account's rate overwrote the first's
