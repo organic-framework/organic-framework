@@ -19,6 +19,22 @@ def bind(positions, agents):
 
 
 class LifecycleTest(unittest.TestCase):
+    def test_lookups_go_by_the_name_index(self):
+        """2026-11-20: by event_position_ts each lookup walked all of a position's events (up to 46,000), and `of apply`
+        passed the two minutes an account move gives it. Lifecycle events are few; the name index finds them."""
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            try:
+                conn = of_store.connect()
+                for sql, args in ((of_lifecycle.LAST_SQL, ("of.mandate_changed", "of_a")),
+                                  (of_lifecycle.HOLDER_SQL, ("of_a",))):
+                    plan = " ".join(str(r[-1]) for r in conn.execute("EXPLAIN QUERY PLAN " + sql, args))
+                    self.assertIn("event_name_ts", plan)
+                    self.assertNotIn("event_position_ts", plan)
+            finally:
+                of_events.STATE_DIR = saved
+
     def test_snapshot_diff_and_holders(self):
         with tempfile.TemporaryDirectory() as d:
             saved = of_events.STATE_DIR

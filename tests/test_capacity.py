@@ -2030,6 +2030,19 @@ class Resume(unittest.TestCase):
         self.assertIn([_sys.executable, "/x/bin/of", "apply"], ran)
         self.assertFalse([a for a in ran if a and a[0] == "/x/bin/of"])
 
+    def test_a_slow_of_apply_never_fails_a_finished_resume(self):
+        """2026-11-20: `of apply` passed its 120 s seven times in one relief wave; the timeout rose out of the finished
+        move and ended the balancer's run."""
+        from unittest import mock
+
+        def slow(argv, **k):
+            raise of_capacity.subprocess.TimeoutExpired(argv, k.get("timeout"))
+        said = []
+        with mock.patch.object(of_capacity.subprocess, "run", slow):
+            r = of_capacity.resume("runners_keeper", "s1", self.cfg, "w6:p18", log=said.append, of_bin="/x/bin/of")
+        self.assertEqual(r["position"], "runners_keeper")
+        self.assertTrue([s for s in said if "of apply: TimeoutExpired" in s])
+
     def test_refuses_a_busy_pane_a_live_session_and_an_untrusted_folder(self):
         self.fg, self.screen = [1], ["> working"]
         with self.assertRaises(of_capacity.MoveError):
