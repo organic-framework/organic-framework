@@ -66,6 +66,13 @@ class UnixSocketTest(unittest.TestCase):
                                            context=of_client.tls_context(url)) as r:
             self.assertEqual(json.loads(r.read()), {"ok": True, "forwarded": True})
         self.assertEqual(srv.seen[-1][0], "/v1/health")
+        # a proxy in the environment (Codex sets one for its commands) is never used for a socket-reached server
+        # (of_platform, msg 01a1f997-49af): the request still reaches the Unix socket, not the proxy's port
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",
+                                          "ALL_PROXY": "http://127.0.0.1:9"}):
+            with of_client.urlopen_no_redirect(urllib.request.Request(url + "/v1/health"), timeout=10,
+                                               context=of_client.tls_context(url)) as r:
+                self.assertEqual(json.loads(r.read()), {"ok": True, "forwarded": True})
 
     def test_the_plain_listener_is_this_users_alone(self):
         path = os.path.join(self.tmp, "plain.sock")
