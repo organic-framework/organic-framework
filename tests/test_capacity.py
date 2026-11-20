@@ -4288,6 +4288,8 @@ class ExitDialogComesBack(unittest.TestCase):
         self.assertFalse(e.exception.stuck)  # closed for good in the end
 
 
+# CI runs on Linux, where the settings carry the sandbox block (SandboxBlock tests it)
+@__import__("unittest.mock", fromlist=["patch"]).patch.object(__import__("of_spawn"), "PLATFORM", "darwin")
 class PositionMemory(unittest.TestCase):
     """RFC 0006: a position's memory lives in its own directory, seeded from every account's folder memory."""
 

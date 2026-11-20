@@ -134,8 +134,8 @@ def agent_env():
 # with no per-command escape. Bash's reads are denied for the session's credential deny paths (the same catalogue as
 # its Read deny rules, which bind the file tools only) and for what of_server listed (its message 01a1efa4-fddf:
 # sign-ins, keys, OF's own server and ClickHouse files); writes are allowed into OF's state folder, which of status,
-# of send and the recorder write; every Unix socket is reachable (of, herdr, the relay through the forward); no
-# network domain. of_agent-server tried exactly this block on the agent host on 2026-11-20 under of (its msg
+# of send and the recorder write; every Unix socket is reachable (of, herdr, the relay through the forward); the
+# network only to SANDBOX_DOMAINS, with strictAllowlist on. of_agent-server tried exactly this block on the agent host on 2026-11-20 under of (its msg
 # 01a1f88b-5471): the denied reads and writes failed, herdr, of who and of asks worked. macOS keeps running without it
 # until it is tried there. Known gap (docs/guard.md, Gaps): on Linux the sandbox opens every Unix socket or none
 # (allowUnixSockets is macOS-only), and of, herdr and the relay need theirs, so a command can reach the systemd user
@@ -145,14 +145,57 @@ SANDBOX_DENY_READ = ("~/.ssh", "~/.codex", "~/.config/of/service-accounts", "~/.
                      "~/.local/state/of/server")
 
 
-def sandbox_settings(deny=None, platform=None):
-    """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`)."""
-    if not (platform or sys.platform).startswith("linux"):
+# the hosts a sandboxed command may reach (of_review on organic-framework PR 457: agent sessions run in bypass mode,
+# where Claude Code lets every host through unless strictAllowlist is on): GitHub for gh and git, and OpenAI for a
+# Codex subagent; a proposal to be widened by what the host's trial shows missing
+SANDBOX_DOMAINS = ("github.com", "api.github.com", "codeload.github.com", "uploads.github.com",
+                   "objects.githubusercontent.com", "raw.githubusercontent.com",
+                   "api.openai.com", "chatgpt.com", "auth.openai.com")
+PLATFORM = sys.platform   # tests pin it: CI runs on Linux
+
+
+def _accounts_dirs():
+    try:
+        import of_accounts
+        return of_accounts.dirs()
+    except Exception:  # noqa: BLE001 - no list: the folders found by name
+        import glob
+        return sorted(glob.glob(os.path.expanduser("~/.claude*")))
+
+
+def _muse_dir():
+    try:
+        import of_subagent
+        return of_subagent.muse_login_dir()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def sandbox_settings(deny=None, platform=None, scratch=None):
+    """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
+    SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
+    are denied."""
+    if not (platform or PLATFORM).startswith("linux"):
         return None
     import glob
+    import of_scratch
     paths = {os.path.expanduser(x) for x in SANDBOX_DENY_READ}
-    # each Claude account's sign-in: Claude Code itself reads it outside the sandbox, a Bash command never needs it
-    paths |= set(glob.glob(os.path.expanduser("~/.claude*/.credentials.json")))
+    # every account's sign-in and every session's transcripts (of_server's list, msg 01a1efa4-fddf: transcripts hold
+    # whatever any session read), from OF's own account list: Claude Code reads them itself, outside the sandbox. So
+    # an `of` command that reads transcripts (of capacity, of resume-command) does not work from a sandboxed Bash; it
+    # runs from the listener or a person's terminal (of_review on organic-framework PR 457)
+    for d in _accounts_dirs():
+        paths |= {os.path.join(d, ".credentials.json"), os.path.join(d, "projects")}
+    if _muse_dir():
+        paths.add(_muse_dir())   # Muse's own home and its keychain (of_server's list)
+    base = of_scratch.base_dir()
+    paths.add(base)   # the other sessions' scratch folders; this session's own is allowed back below
+    allow = [os.path.join(base, "bundled-skills")]
+    if scratch:
+        cwd, sid = scratch
+        if cwd and sid:
+            allow.append(os.path.join(base, of_scratch._encode(cwd), sid))   # the folder as Claude Code names it
+        allow += of_scratch.folders(sid) if sid else []
     for r in deny or []:
         if r.startswith("Read(") and r.endswith(")"):
             q = r[5:-1]
@@ -171,12 +214,13 @@ def sandbox_settings(deny=None, platform=None):
     # review); every denied path is denied for writes too
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
-            "filesystem": {"denyRead": denied, "denyWrite": denied,
+            "filesystem": {"denyRead": denied, "denyWrite": denied, "allowRead": sorted(set(allow)),
                            "allowWrite": [os.path.expanduser("~/.local/state/of")]},
-            "network": {"allowAllUnixSockets": True, "allowedDomains": []}}
+            "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
+                        "allowedDomains": list(SANDBOX_DOMAINS)}}
 
 
-def session_settings(memory=None, deny=None, extra=None, platform=None):
+def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None):
     """The one --settings JSON: AGENT_SETTINGS, the memory directory (bin/of_memory.py, RFC 0006), the credential
     deny rules, on Linux the sandbox block (sandbox_settings), and extra keys such as the tool profile's
     allowedMcpServers and enabledPlugins (of_tools.launch_parts, docs/tools.md §4)."""
@@ -184,7 +228,7 @@ def session_settings(memory=None, deny=None, extra=None, platform=None):
     s.update(json.loads(memory) if memory else {})
     if deny:
         s.setdefault("permissions", {}).setdefault("deny", []).extend(deny)
-    box = sandbox_settings(deny, platform)
+    box = sandbox_settings(deny, platform, scratch)
     if box:
         s["sandbox"] = box
     for k, v in (extra or {}).items():
@@ -222,7 +266,7 @@ def launch_command(cwd, config_dir, sid, name, default_dir, model=None, bypass=T
         else [f"CLAUDE_CONFIG_DIR={shlex.quote(config_dir)}"]
     parts = ["cd", shlex.quote(cwd), "&&", *env, "OF_SPAWNED=1", "claude", "--session-id", sid, "-n", name]
     tool_argv, tool_settings = tools or ([], {})
-    settings = session_settings(memory, deny, tool_settings)
+    settings = session_settings(memory, deny, tool_settings, scratch=(cwd, sid))
     if settings:
         parts += ["--settings", shlex.quote(settings_file(settings, sid, state_dir))]
     parts += [shlex.quote(a) for a in tool_argv]

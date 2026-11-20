@@ -65,7 +65,7 @@ def command(sid, dirs=None, memory_dir=None, plan_root=None, deny=None, state_di
     argv = env + ["claude", "--resume", sid]
     tool_argv, tool_settings = tools or ([], {})
     settings = of_spawn.session_settings(json.dumps({"autoMemoryDirectory": memory_dir}) if memory_dir else None, deny,
-                                         tool_settings)
+                                         tool_settings, scratch=(None, sid))
     if settings:
         argv += ["--settings", of_spawn.settings_file(settings, sid, state_dir)]
     argv += list(tool_argv)
