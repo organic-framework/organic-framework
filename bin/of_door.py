@@ -45,12 +45,14 @@ ALLOW = {
 NO_PATHS = {
     "status": ("note",), "ask": ("question", "options", "task", "command", "reason", "tags"),
     "send": ("text",), "handover": ("title", "done_when", "basis", "context", "paths", "note", "result", "mandate"),
-    "loop": ("text", "result", "evidence", "note", "ref", "source"),
+    "loop": ("text", "result", "evidence", "note", "ref"),
 }
 # options that name another caller, a machine-wide view or a path: never through the door, whatever the subcommand
 NEVER = {"sender", "session", "pane", "prompt", "panel", "watch", "classic", "chat", "source"}
 MAX_REQUEST = 1 << 20      # one request: argv and stdin together
 MAX_OUTPUT = 4 << 20       # what the door returns of one command's stdout and stderr
+READ_S = 10                # a request is read within this, or the connection is dropped
+IN_FLIGHT = 4              # requests one door runs at once; more are refused, never queued
 
 
 class Refused(Exception):
@@ -74,8 +76,10 @@ def _parser():
 
 
 def _quiet(ap):
-    """The parser with errors raised, never printed with an exit, its subparsers too."""
+    """The parser with errors raised, never printed with an exit, its subparsers too, and no option taken by a prefix
+    of its name (of_server on 926562f5: `who --or other-org` was argparse's --org after the one the door put)."""
     ap.__class__ = _Quiet
+    ap.allow_abbrev = False
     for a in ap._actions:
         if isinstance(a, argparse._SubParsersAction):
             for sp in a.choices.values():
@@ -96,9 +100,10 @@ def check(argv, org, parser=None):
         raise Refused(f"of: `{argv[0] if argv else ''}` does not run inside a sandboxed session; it reaches OF only "
                       "through its door, which serves " + ", ".join(sorted(ALLOW)) + " (RFC 0008 §4.5)")
     if any(a in ("-h", "--help") for a in argv):
-        return argv, argv[0]
+        # help alone: after `--`, -h is a positional value and the command would run (of_server on 926562f5)
+        return [argv[0], "--help"], argv[0]
     ap = _quiet(parser or _parser())
-    args = ap.parse_args(argv)
+    args = _parse(ap, argv)
     cmd = args.cmd
     rule = ALLOW[cmd]
     sp = _sub(ap, cmd)
@@ -123,7 +128,19 @@ def check(argv, org, parser=None):
         if "org" not in defaults:
             raise Refused(f"of {cmd}: has no --org yet, so it cannot be limited to the caller's organization")
         argv = _set_org(argv, org)
+        again = vars(_parse(ap, argv))       # the argv that runs, read again: its org the caller's, the rest as checked
+        if again.get("org") != str(org) or {k: v for k, v in again.items() if k not in ("org", "fn")} != \
+                {k: v for k, v in vars(args).items() if k not in ("org", "fn")}:
+            raise Refused(f"of {cmd}: the request does not read the same with the caller's organization")
     return argv, cmd
+
+
+def _parse(ap, argv):
+    """ARGV as `of`'s parser reads it, abbreviations off; a help flag or an exit of argparse's is a refusal."""
+    try:
+        return ap.parse_args(argv)
+    except SystemExit:
+        raise Refused("of: the request does not parse as of's arguments") from None
 
 
 def _set_org(argv, org):
@@ -284,20 +301,35 @@ def run(argv, caller, stdin="", of_bin=None, timeout=120):
     return {"stdout": r.stdout[:MAX_OUTPUT], "stderr": r.stderr[:MAX_OUTPUT], "code": r.returncode}
 
 
-def serve_one(conn, door, parser=None, runner=run):
+def serve_one(conn, door, parser=None, runner=run, slots=None):
     """One request on CONN for the session DOOR describes ({position, org, cwd, launch, session, pid}): the peer
-    must run under that session's Codex process, the request must pass check(); then runner's answer."""
+    must run under that session's Codex process, the request must pass check(); then runner's answer. The request is
+    read within READ_S; with SLOTS (a semaphore), a request beyond them is refused. Every failure is answered
+    (of_server on 926562f5: a SystemExit from argparse, or a stdin that was no string, left the connection open)."""
+    took = False
     try:
+        conn.settimeout(READ_S)
         pid = peer_pid(conn)
         if pid is None or int(door.get("pid") or 0) not in _ancestors(pid):
             raise Refused("of: this door serves only the commands of its own Codex session")
         req = _recv(conn, MAX_REQUEST)
-        argv, _ = check(req.get("argv") or [], door["org"], parser)
-        out = runner(argv, door, req.get("stdin") or "")
+        argv, stdin = req.get("argv") if isinstance(req, dict) else None, req.get("stdin", "") if isinstance(req, dict) else None
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv) or not isinstance(stdin, str):
+            raise Refused("of: a request is {argv: [strings], stdin: a string}")
+        argv, _ = check(argv, door["org"], parser)
+        if slots is not None:
+            took = slots.acquire(blocking=False)
+            if not took:
+                raise Refused(f"of: this door runs {IN_FLIGHT} commands at once; try again when one ends")
+        conn.settimeout(None)
+        out = runner(argv, door, stdin)
     except Refused as e:
         out = {"stdout": "", "stderr": f"{e}\n", "code": 2}
-    except (OSError, ValueError, KeyError) as e:
+    except BaseException as e:  # noqa: BLE001 - every failure is answered, the connection closed
         out = {"stdout": "", "stderr": f"of: the door failed ({type(e).__name__})\n", "code": 2}
+    finally:
+        if took:
+            slots.release()
     try:
         _send(conn, out)
     except OSError:
@@ -367,6 +399,7 @@ class Doors:
                 self.log(f"door {launch}: cannot open ({e})")
                 continue
             stop = threading.Event()
+            door["slots"] = threading.BoundedSemaphore(IN_FLIGHT)
             t = threading.Thread(target=self._serve, args=(s, door, stop), daemon=True, name=f"door-{launch}")
             self.open[launch] = (s, stop, t)
             t.start()
@@ -381,7 +414,8 @@ class Doors:
                 continue
             except OSError:
                 break
-            threading.Thread(target=serve_one, args=(c, door), daemon=True).start()
+            threading.Thread(target=serve_one, args=(c, door), kwargs={"slots": door.get("slots")},
+                             daemon=True).start()
 
     def close(self, launch):
         s, stop, _ = self.open.pop(launch)
