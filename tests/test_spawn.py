@@ -362,6 +362,19 @@ class SandboxBlock(unittest.TestCase):
             self.assertFalse([x for x in f["denyRead"] if "bundled-skills" in x])
             self.assertFalse([x for x in f["denyWrite"] if own == x or own.startswith(x.rstrip("/") + "/")])
 
+    def test_the_servers_own_keys_are_denied(self):
+        """of_server on PR 457: the tenant's master key, a secret_key_file and the TLS key under the same user."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            y = os.path.join(d, "server.yaml")
+            with open(y, "w") as fh:
+                fh.write("secret_key_file: /home/alex/.config/of/secret.bin\ntls: {key: /home/alex/.config/of/tls.key}\n")
+            keys = of_spawn._server_keys(y)
+        self.assertEqual(keys, [os.path.expanduser("~/.config/of/tenant.key"), "/home/alex/.config/of/secret.bin",
+                                "/home/alex/.config/of/tls.key"])
+        box = of_spawn.sandbox_settings([], platform="linux")
+        self.assertIn(os.path.expanduser("~/.config/of/tenant.key"), box["filesystem"]["denyRead"])
+
     def test_a_glob_is_its_matches_when_the_session_starts(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
