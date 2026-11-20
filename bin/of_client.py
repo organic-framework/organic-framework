@@ -197,11 +197,21 @@ def _pinned_handler(context):
     return Handler(context=context)
 
 
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 def urlopen_no_redirect(req, timeout=None, context=None):
-    """urllib.request.urlopen with redirects refused."""
+    """urllib.request.urlopen with redirects refused. A server this machine reaches through a Unix socket, or on its
+    loopback, is never reached through a proxy from the environment: with HTTPS_PROXY set (Codex sets one for its
+    commands), urllib sent the request to the proxy over TCP, and socket_path's promise that no connection to that
+    address uses TCP broke (of_platform, msg 01a1f997-49af, traced on the agent host)."""
+    import urllib.parse
     pinned = context is not None and getattr(context, "of_pin_sha256", None) is not None
-    handlers = [_NoRedirect()] + ([_pinned_handler(context) if pinned else urllib.request.HTTPSHandler(context=context)]
-                                  if context is not None else [])
+    url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
+    local = socket_path(url) is not None or (urllib.parse.urlsplit(url).hostname or "").lower() in _LOOPBACK
+    handlers = ([urllib.request.ProxyHandler({})] if local else []) + [_NoRedirect()] + (
+        [_pinned_handler(context) if pinned else urllib.request.HTTPSHandler(context=context)]
+        if context is not None else [])
     return urllib.request.build_opener(*handlers).open(req, timeout=timeout)
 
 
