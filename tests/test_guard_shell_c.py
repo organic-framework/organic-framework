@@ -23,6 +23,16 @@ class ShellClusterTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertTrue(denied(cmd))
 
+    def test_long_options_and_options_after_c(self):
+        """of_review and of_secrets-review on PR 495: a long option before -c hid the body; options after it too."""
+        b = "env | grep TOKEN"
+        for cmd in (f"bash -c '{b}'", f"bash --noprofile -c '{b}'", f"bash --norc -c '{b}'", f"bash --login -c '{b}'",
+                    f"bash --posix -c '{b}'", f"bash --rcfile /dev/null -c '{b}'", f"bash --init-file x -c '{b}'",
+                    f"bash --noprofile -lc '{b}'", f"timeout 5 bash --norc -c '{b}'", f"env bash --norc -c '{b}'",
+                    f"zsh -f -c '{b}'", f"bash -l -c '{b}'", "bash -c -e 'printenv'", "bash -c -x -- 'printenv'"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(denied(cmd))
+
     def test_ordinary_bodies_and_scripts_pass(self):
         for cmd in ("bash -lc 'ls -la'", "bash -lc 'echo hi'", "bash script.sh -c x", "bash -l script.sh"):
             with self.subTest(cmd=cmd):

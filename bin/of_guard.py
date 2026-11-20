@@ -2654,14 +2654,34 @@ def _c_flag(args):
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("-o", "+o", "-O", "+O") and i + 1 < len(args):
-            i += 2              # an option's name (`-o pipefail`)
+        if a in _SHELL_VALUE_OPTS and i + 1 < len(args):
+            i += 2              # an option and its value (`-o pipefail`, `--rcfile FILE`)
             continue
-        if a == "--" or not (a.startswith("-") or a.startswith("+")) or a.startswith("--"):
+        if a == "--" or not (a.startswith("-") or a.startswith("+")):
             return None
         if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a):
             return i
-        i += 1
+        i += 1                  # another option: --norc, --noprofile, --login, --posix, -l, -e (of_review on PR 495)
+    return None
+
+
+# a shell's options that take a value, before or after its -c (bash's --rcfile and --init-file, -o, -O)
+_SHELL_VALUE_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+
+
+def _c_body(args, i):
+    """The body of a shell's -c at ARGS[I]: the first word after it that is no option, past -o/--rcfile values and `--`
+    (bash -c -e 'cmd', bash -c -x -- 'cmd': of_secrets-review on PR 495)."""
+    j = i + 1
+    while j < len(args):
+        a = args[j]
+        if a in _SHELL_VALUE_OPTS and j + 1 < len(args):
+            j += 2
+            continue
+        if a == "--" or (a.startswith("-") or a.startswith("+")) and a not in ("-", "+"):
+            j += 1
+            continue
+        return a
     return None
 
 
@@ -2672,13 +2692,9 @@ def _nested(head, args):
     out = []
     if head in _SHELLS:
         i = _c_flag(args) if head != "eval" else None
-        if i is not None and i + 1 < len(args):
-            # the body: the next word after the cluster that is no option (`bash -lc -- 'cmd'` and `-o pipefail` too)
-            j = i + 1
-            while j < len(args) and args[j] == "--":
-                j += 1
-            if j < len(args):
-                out.append(args[j])
+        body = _c_body(args, i) if i is not None else None
+        if body is not None:
+            out.append(body)
         elif head == "eval":
             out.append(" ".join(args))
     elif head == "ssh" and args:
@@ -2701,9 +2717,12 @@ def _nested(head, args):
         if rest:
             out.append(shlex.join(rest))
     for k, a in enumerate(args[:-1]):
-        if os.path.basename(a) in _SHELLS - {"eval"} and k + 2 < len(args) and \
-                (args[k + 1] == "-c" or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", args[k + 1])):
-            out.append(args[k + 2])
+        if os.path.basename(a) in _SHELLS - {"eval"}:
+            rest = args[k + 1:]
+            i = _c_flag(rest)
+            body = _c_body(rest, i) if i is not None else None
+            if body is not None and body not in out:
+                out.append(body)
     return out
 
 
