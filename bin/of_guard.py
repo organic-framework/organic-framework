@@ -968,6 +968,29 @@ def _owner_config_in_code(code, lits):
     return None
 
 
+def _guard_call_args(code):
+    """The string constants written directly in the arguments of a call to of_guard's own functions
+    (`of_guard.critical_deny("Bash", {"command": "…"})`, or a name imported from of_guard); empty when the code does not
+    parse."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return set()
+    names = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "of_guard"
+             for a in n.names}
+    out = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        if (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "of_guard") or \
+                (isinstance(f, ast.Name) and f.id in names):
+            for arg in list(n.args) + [k.value for k in n.keywords]:
+                out |= {c.value for c in ast.walk(arg) if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+    return out
+
+
 def _code_deny(code, lang=None):
     """Code an interpreter runs (a heredoc, a -c/-e string or a here-string): a string literal that is a
     secret path (open('.env')), a literal that is an env dump (subprocess.run(['printenv'])), or a dump of
@@ -1020,6 +1043,7 @@ def _code_deny(code, lang=None):
             return OWNER_CONFIG_DENY, owner_cfg
         _WARNINGS.append((OWNER_CONFIG_DENY, owner_cfg, "a warning now, a deny once the flows that write it have moved"))
     filters = None
+    guard_args = _guard_call_args(code) if lang == "python" and "of_guard" in code else set()
     for lit in lits:
         if _keychain_name(lit):  # G20: a keychain item an organization protects, named in code (Security framework)
             return KEYCHAIN_DENY, _keychain_name(lit)
@@ -1032,16 +1056,13 @@ def _code_deny(code, lang=None):
         if " " not in lit and _MEMORY_CODE.match(lit):
             return f"code that reads memory or a core dump ({lit})", lit
         first = lit.split()[0] if lit else ""
-        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched. A dump
-        # command named in code that can start no process is text: a test that hands command strings to the guard
-        # printed nothing (of_architect, msg 01a1f867-970c, on of_review's session of 2026-11-20 about 09:50Z)
-        if _launches(lang or "", code):
-            # the literal itself, and the strings quoted inside it: code handed to eval or exec runs them
-            # (`eval("__import__('os').system('printenv')")`: of_server on ddd8bb79)
-            for cand in [lit] + re.findall(r"""['"]([^'"]+)['"]""", lit):
-                w = cand.split()[0] if cand.split() else ""
-                if os.path.basename(w) == "printenv" or cand == "export -p" or re.match(r"env\s*\|", cand):
-                    return _prints(w)
+        # a bare 'env' or 'set' literal is a dict key or a word far more often than a command: not matched. A literal
+        # that is itself an argument of an of_guard call is text the guard judges, never a command the code runs (a
+        # test of the guard: of_architect, msg 01a1f867-970c; the narrow form, of_secrets-review on organic-framework
+        # PR 454: a list of what can launch a process always missed one)
+        if (os.path.basename(first) == "printenv" or lit == "export -p" or re.match(r"env\s*\|", lit)) and \
+                lit not in guard_args:
+            return _prints(first)
     return None
 
 
@@ -3328,26 +3349,10 @@ _LAUNCH_CODE = re.compile(r"subprocess|os\.(?:system|exec|spawn|posix_spawn|pope
 _LAUNCH_BACKTICK = re.compile(r"`|\bqx\b")   # a command in ruby, perl and php; in python or a document, text
 
 
-# a call whose callee the code computes can be anything, a process start among them (of_server on ddd8bb79, msg
-# 01a1f877-07d1: `getattr(os, 'sys'+'tem')('printenv')` passed): eval, exec, compile, getattr, setattr, globals, vars,
-# __import__, import_module, attrgetter, methodcaller, and a call through a subscript or another call's result
-_DYN_CALL = re.compile(r"\b(?:eval|exec|compile|getattr|setattr|globals|vars|__import__|import_module|attrgetter|"
-                       r"methodcaller)\s*\(|\]\s*\(|\)\s*\(")
-
-
-# perl's and ruby's ordinary launches, as words outside strings (`system "…"`, `exec "…"`, ruby's %x(…)) and a pipe
-# open (`open(my $f, "-|", "…")`, `open(F, "… |")`): of_review on organic-framework PR 454 at e595205
-_WORD_LAUNCH = re.compile(r"\b(?:system|exec|spawn|popen|fork)\b|%x\s*[^\w\s]")
-_PIPE_OPEN_CODE = re.compile(r"""\bopen\s*\(?[^;\n]*?['"]\s*(?:-\||\|-)\s*['"]|\bopen\s*\(?[^;\n]*?\|\s*['"]""")
-
-
 def _launches(head, code):
     """Can interpreter HEAD's CODE start a process?"""
-    # dynamic calls are read outside string literals: `(a)(b)` in a regex pattern calls nothing
-    unquoted = re.sub(r"'''.*?'''|\"\"\".*?\"\"\"|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"", "''", code, flags=re.S)
-    return bool(_LAUNCH_CODE.search(code)) or bool(_DYN_CALL.search(unquoted)) or \
-        bool(_WORD_LAUNCH.search(unquoted)) or bool(_PIPE_OPEN_CODE.search(code)) or \
-        (not str(head).startswith(("python", "pypy", "node")) and bool(_LAUNCH_BACKTICK.search(code)))
+    return bool(_LAUNCH_CODE.search(code)) or (not str(head).startswith(("python", "pypy", "node")) and
+                                               bool(_LAUNCH_BACKTICK.search(code)))
 
 
 def _without_code_text(cmd):

@@ -87,12 +87,13 @@ class GuardBashTest(unittest.TestCase):
             self.assertTrue(deny(cmd), cmd)
 
     def test_interpreter_code_prefers_a_false_positive(self):
-        # of_architect's rule of 2026-11-06: in code an interpreter runs, a string literal naming a secret file or an
-        # env dump is denied even when it is only text the code edits; the agent writes such code with the Edit tool.
-        # Since of_architect's msg 01a1f867-970c (2026-11-20) an env dump named in code that can start no process
-        # is text: it can print nothing. A secret file named in code stays the accepted false positive.
-        self.assertIsNone(deny(f"python3 - <<'EOF'\np='docs/rfc/0001.md'\n"
-                               f"s=open(p).read().replace('{ENV_DUMP}', 'the dump')\nEOF"))
+        # of_architect's rule: in code an interpreter runs, a string literal naming a secret file or an env dump
+        # is denied even when it is only text the code edits; the agent writes such code with the Edit tool.
+        accepted_false_positives = [
+            f"python3 - <<'EOF'\np='docs/rfc/0001.md'\ns=open(p).read().replace('{ENV_DUMP}', 'the dump')\nEOF",
+        ]
+        for cmd in accepted_false_positives:
+            self.assertTrue(deny(cmd), cmd)
         # since 2026-11-07 a triple-quoted block is carried text (replay: 31 old denies removed, all edits)
         self.assertIsNone(deny("python3 - <<'EOF'\nrep('''the tenant key lives in \"~/.config/of/tenant.key\"''', 'x')\nEOF"))
         self.assertTrue(deny(f"python3 -c 'import subprocess; subprocess.run([\"{ENV_DUMP}\"])'"))
@@ -149,41 +150,25 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("printenv AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(deny("kubectl -n x exec pod-0 -- bash -c 'env | grep -o \"^R2_[A-Z_]*\"; printenv'"))
 
-    def test_a_dump_named_in_code_that_runs_nothing_is_text(self):
-        """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused."""
-        E = "en" + "v | grep -o '^R2_'"
+    def test_a_dump_handed_to_the_guard_is_text(self):
+        """of_architect, msg 01a1f867-970c: a python heredoc handing command strings to the guard was refused. Only a
+        literal written straight into an of_guard call is text (of_secrets-review on PR 454: a list of what can start
+        a process always missed one, so the carve-out is this narrow)."""
+        E = "en" + "v | grep -o ^R2_"   # no inner quotes: the code must parse for the carve-out
         P = "print" + "env"
-        self.assertIsNone(deny(f"python3 - <<'EOF'\nimport of_guard\nfor c in ('{E}', '{P}'):\n"
-                               "    print(of_guard.critical_deny('Bash', {'command': c}))\nEOF"))
-        self.assertTrue(deny(f"python3 - <<'EOF'\nimport subprocess\nsubprocess.run('{E}', shell=True)\nEOF"))
-        self.assertTrue(deny(f"python3 -c \"import os; os.system('{P}')\""))
-        self.assertTrue(deny(f"node -e \"require('child_process').execSync('{P}')\""))
-        # a callee the code computes is a launch (of_server on ddd8bb79, msg 01a1f877-07d1)
-        for c in ("import os; getattr(os, 'sys'+'tem')('" + P + "')",
-                  "import os; vars(os)['sys'+'tem']('" + P + "')",
-                  "import os; os.__dict__['sys'+'tem']('" + P + "')",
-                  "__import__('o'+'s').system('" + P + "')",
-                  "import importlib; importlib.import_module('o'+'s').system('" + P + "')",
-                  "from operator import methodcaller; import os; methodcaller('sys'+'tem', '" + P + "')(os)",
-                  "from operator import attrgetter; import os; attrgetter('sys'+'tem')(os)('" + P + "')",
-                  "eval(\\\"__import__('os').system('" + P + "')\\\")",
-                  "exec(\\\"import os; os.system('" + P + "')\\\")",
-                  "globals()['__builtins__'].__import__('os').system('" + P + "')",
-                  "import os; setattr(os, 'x', os.system); os.x('" + P + "')",
-                  "import os; [os.system][0]('" + P + "')",
-                  "import os; (lambda: os.system)()('" + P + "')",
-                  "import os; compile('os.system(1)', 'f', 'exec'); print('" + P + "')"):
-            self.assertTrue(deny(f'python3 -c "{c}"'), c)
-        # perl's and ruby's ordinary launches (of_review on PR 454 at e595205)
-        for c in ("perl -e 'system \"" + P + "\"'", "perl -e 'exec \"" + P + "\"'",
-                  "perl -e 'open(my $f, \"-|\", \"" + P + "\"); print <$f>'",
-                  "perl -e 'open(F, \"" + P + " |\"); print <F>'"):   # ruby's %x body: hand-over 7646c671
+        self.assertIsNone(deny(f"python3 - <<'EOF'\nimport of_guard\n"
+                               f"print(of_guard.critical_deny('Bash', {{'command': '{E}'}}))\nEOF"))
+        self.assertIsNone(deny(f"python3 - <<'EOF'\nfrom of_guard import critical_deny as cd\n"
+                               f"print(cd('Bash', {{'command': '{P}'}}))\nEOF"))
+        # anywhere else a dump literal counts, as on main: in a loop's tuple, beside the call, or in code that runs
+        for c in (f"python3 - <<'EOF'\nimport of_guard\nfor c in ('{E}',):\n    of_guard.critical_deny('Bash', {{'command': c}})\nEOF",
+                  f"python3 - <<'EOF'\nimport of_guard, os\nof_guard.critical_deny('Bash', {{'command': 'ls'}})\nos.system('{P}')\nEOF",
+                  "python3 -c \"import os; getattr(os, 'sys'+'tem')('" + P + "')\"",
+                  "python3 -c \"import os as o; o.execvp('" + P + "', ['" + P + "'])\"",
+                  "python3 -c \"from os import *; execvp('" + P + "', ['" + P + "'])\"",
+                  "perl -e 'system \"" + P + "\"'", "perl -e 'print readpipe(\"" + P + "\")'",
+                  "perl -e 'open(my $f, \"-|\", \"" + P + "\"); print <$f>'"):
             self.assertTrue(deny(c), c)
-        # a `)(` or `](` inside a string calls nothing: the code still runs no process
-        self.assertIsNone(deny("python3 - <<'EOF'\nimport re\nprint(re.findall(r'(a)(b)', 'ab'), '" + E + "')\nEOF"))
-        for c in ("import subprocess; subprocess.run(['" + P + "'])", "import os; os.popen('" + P + "')",
-                  "import pty; pty.spawn('" + P + "')"):   # unchanged: denied before and after
-            self.assertTrue(deny(f'python3 -c "{c}"'), c)
 
     def test_grep_o_one_named_value(self):
         """Hand-over e280da4f (of_server; a user organization's structure keeper, msg 01a1f823-65a0): a bundled -o and
