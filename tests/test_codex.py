@@ -14,7 +14,7 @@ import of_codex  # noqa: E402
 
 class RequirementsTest(unittest.TestCase):
     def test_it_parses_and_pins_what_w3_names(self):
-        doc = tomllib.loads(of_codex.requirements_toml("/home/alex/.local/bin/of"))
+        doc = tomllib.loads(of_codex.requirements_toml())
         self.assertIs(doc["allow_managed_hooks_only"], True)
         self.assertEqual(doc["allowed_approval_policies"], ["never"])
         self.assertNotIn("danger-full-access", doc["allowed_sandbox_modes"])
@@ -25,16 +25,56 @@ class RequirementsTest(unittest.TestCase):
             (group,) = doc["hooks"][ev]
             self.assertNotIn("matcher", group)                     # the guard sees every tool call
             (h,) = group["hooks"]
-            self.assertEqual((h["type"], h["command"], h["timeout"]), ("command", f"/home/alex/.local/bin/of hook {ev}", 30))
+            self.assertEqual((h["type"], h["command"], h["timeout"]), ("command", of_codex.hook_command(ev), 30))
+            self.assertIn('"$HOME/.local/bin/of"', h["command"])   # each user's own, never one user's path
 
     def test_the_command_prints_it_and_names_what_is_not_pinned(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "..", "bin", "of"), "codex", "requirements",
                             "--of-bin", "/x/of"], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('command = "/x/of hook PreToolUse"', r.stdout)
+        self.assertIn("/x/of", tomllib.loads(r.stdout)["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+        self.assertIn("the owner's own Codex", r.stderr)
         self.assertIn("/etc/codex/requirements.toml", r.stderr)
         self.assertIn("allowed_web_search_modes", r.stderr)
 
+
+
+class HookCommandTest(unittest.TestCase):
+    """The managed hook's shell line, run as Codex runs it ($SHELL -lc), with a user's home of its own (of_review on
+    organic-framework PR 475: under contours another organization's user has no access to one user's of)."""
+
+    def run_line(self, event, of_body=None, payload='{"tool_name": "Bash"}'):
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            if of_body is not None:
+                os.makedirs(os.path.join(home, ".local", "bin"))
+                exe = os.path.join(home, ".local", "bin", "of")
+                with open(exe, "w") as fh:
+                    fh.write("#!/bin/sh\n" + of_body + "\n")
+                os.chmod(exe, 0o755)
+            env = {"HOME": home, "PATH": "/usr/bin:/bin", "SHELL": "/bin/sh"}
+            return subprocess.run(["/bin/sh", "-lc", of_codex.hook_command(event)], input=payload, env=env,
+                                  capture_output=True, text=True, timeout=30)
+
+    def test_a_user_with_no_of_has_the_call_refused(self):
+        r = self.run_line("PreToolUse")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("refused", r.stderr)
+        self.assertEqual(self.run_line("PermissionRequest").returncode, 2)
+
+    def test_a_broken_of_refuses_the_call(self):
+        r = self.run_line("PreToolUse", "echo boom >&2; exit 1")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("status 1", r.stderr)
+
+    def test_the_users_own_of_decides_and_reads_the_payload(self):
+        r = self.run_line("PreToolUse", 'cat; echo " $1 $2"')
+        self.assertEqual((r.returncode, r.stdout), (0, '{"tool_name": "Bash"} hook PreToolUse\n'))
+        self.assertEqual(self.run_line("PreToolUse", "echo denied >&2; exit 2").returncode, 2)
+
+    def test_a_recording_event_passes_without_of(self):
+        self.assertEqual(self.run_line("Stop").returncode, 0)
+        self.assertEqual(self.run_line("SessionStart", "exit 1").returncode, 1)   # Codex records the failure
 
 
 class LayerTest(unittest.TestCase):

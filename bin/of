@@ -2733,7 +2733,7 @@ def cmd_codex(args):
     import of_codex
     if args.action != "requirements":
         raise OfError("of codex requirements [--of-bin PATH]")
-    print(of_codex.requirements_toml(args.of_bin or of_codex.default_of_bin()), end="")
+    print(of_codex.requirements_toml(args.of_bin), end="")
     print(f"# install it as {of_codex.REQUIREMENTS_PATH} (owner root, mode 644). Not pinned there:", file=sys.stderr)
     for what, why in of_codex.NOT_PINNED:
         print(f"#   {what}: {why}", file=sys.stderr)
@@ -7827,7 +7827,8 @@ def main(argv=None):
     cx = sub.add_parser("codex", help="Codex as a position's harness: requirements prints the managed requirements file "
                                       "the machine's owner installs once with sudo (/etc/codex/requirements.toml)")
     cx.add_argument("action", choices=["requirements"])
-    cx.add_argument("--of-bin", help="the of the managed hooks run (default: ~/.local/bin/of, else this checkout's)")
+    cx.add_argument("--of-bin", help="one program for every user's hooks, for a machine with one OF install (default: each "
+                         "user's own ~/.local/bin/of)")
     cx.set_defaults(fn=cmd_codex)
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")

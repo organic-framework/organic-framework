@@ -570,6 +570,14 @@ class SubagentTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(d[0], "of_hook.py")))
         self.assertEqual(os.path.realpath(of_codex.default_of_bin()), of_codex.default_of_bin())   # never a link
 
+    def test_the_runs_home_links_the_users_of_for_the_managed_hooks(self):
+        import tempfile
+        import of_codex
+        with tempfile.TemporaryDirectory() as fresh:
+            link = of_subagent.hook_link(fresh)
+            self.assertEqual(link, os.path.join(fresh, ".local", "bin", "of"))
+            self.assertEqual(os.readlink(link), of_codex.default_of_bin())   # its real path, under hook_dirs()
+
     def test_codex_on_linux_runs_inside_bwrap(self):
         """The agent host move (of_agent-server, message 01a1efa2-919d): on Linux, Codex inside bwrap, with /home, /tmp
         and /run empty, the material read-only (a patch's snapshot writable) and its login bound in alone."""

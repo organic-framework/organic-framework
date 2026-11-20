@@ -28,8 +28,12 @@ NOT_PINNED = (
     ("the permission profile (filesystem deny list)", "it is the position's own (its folders, its credentials), so it "
                                                       "goes in the position's layer, in a CODEX_HOME the profile denies "
                                                       "to the session itself (W3 point 4)"),
-    ("shell_environment_policy", "not a requirements key at rust-v0.170.0: each position's layer sets inherit=none "
-                                 "with its include_only list"),
+    ("shell_environment_policy", "not a requirements key at rust-v0.170.0: each position's layer filters the "
+                                 "commands' environment to its include_only list"),
+    ("the hook's program", "each user's own ~/.local/bin/of: under contours every organization's user runs its own "
+                           "OF; a user with none has every tool call refused"),
+    ("the owner's own Codex", "this file governs every Codex run of every user on the machine, the owner's too: "
+                              "approvals never, OF's hooks on every event, the network to the allowed domains only"),
     ("mcp_servers, apps, plugins", "per position, from of_tools' codex_layer (W7)"),
     ("the model", "per position, in its layer"),
 )
@@ -39,14 +43,15 @@ def _q(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def requirements_toml(of_bin, domains=DEFAULT_DOMAINS):
+def requirements_toml(of_bin=None, domains=DEFAULT_DOMAINS):
     """The text of /etc/codex/requirements.toml: managed hooks only, OF's hooks on every event it records (the guard
     on every tool call, no matcher), interactive exec off (write_stdin skips the hook), approvals never, no
     full-access sandbox, the network through Codex's proxy with every Unix socket reachable (of, herdr, the relay) and
     only the allowed domains, the account's browser, computer use, appshots and remote control off."""
     lines = [
         "# Written by `of codex requirements` (Organic Framework); W3 of the Codex positions plan. The machine's owner",
-        "# installs it once with sudo; it holds every Codex run of every user here.",
+        "# installs it once with sudo; it holds every Codex run of every user here, the owner's own too. Each user's",
+        "# hooks run that user's own ~/.local/bin/of; a user with none has every tool call refused.",
         "allow_managed_hooks_only = true",
         'allowed_approval_policies = ["never"]',
         'allowed_sandbox_modes = ["read-only", "workspace-write"]',
@@ -70,8 +75,31 @@ def requirements_toml(of_bin, domains=DEFAULT_DOMAINS):
     lines += [f"{_q(d)} = \"allow\"" for d in domains]
     for ev in MANAGED_HOOK_EVENTS:
         lines += ["", f"[[hooks.{ev}]]", "", f"[[hooks.{ev}.hooks]]", 'type = "command"',
-                  f"command = {_q(f'{of_bin} hook {ev}')}", f"timeout = {HOOK_TIMEOUT_S}"]
+                  f"command = {_q(hook_command(ev, of_bin))}", f"timeout = {HOOK_TIMEOUT_S}"]
     return "\n".join(lines) + "\n"
+
+
+# The events whose hook decides a call: a failure there refuses the call (exit 2 is Codex's deny for both), where
+# Codex itself would let it through (of_server's W2). The other events only record, and a failure there passes.
+GUARD_EVENTS = ("PreToolUse", "PermissionRequest")
+USER_OF = "$HOME/.local/bin/of"
+
+
+def hook_command(event, of_bin=None):
+    """The shell line Codex runs for EVENT ($SHELL -lc, codex-rs hooks/src/engine/command_runner.rs at rust-v0.170.0).
+    It runs the calling user's own of (of_review on organic-framework PR 475: the file holds every user's Codex runs,
+    and under contours each organization's user has its own home, mode 0700, and its own OF install; one user's path
+    would be a hook other contours cannot start, so their calls would run unguarded). of_bin names one program instead,
+    for a test or a machine with one OF install. On a guard event, an of that is missing, cannot start, or ends other than allowing (0) or denying (2)
+    refuses the call, with the reason on stderr."""
+    exe = of_bin or USER_OF
+    if event not in GUARD_EVENTS:
+        return f'o="{exe}"; [ -x "$o" ] || exit 0; exec "$o" hook {event}'
+    why = ("OF: the guard did not run for this call ({}), so the call is refused. This user's of is "
+           + exe.replace("$HOME", "~") + " (organic-framework docs/guard.md, Codex).")
+    return (f'o="{exe}"; if [ ! -x "$o" ]; then echo "{why.format("no of there")}" >&2; exit 2; fi; '
+            f'"$o" hook {event}; r=$?; if [ "$r" -ne 0 ] && [ "$r" -ne 2 ]; then '
+            f'echo "{why.format("it ended with status $r")}" >&2; exit 2; fi; exit "$r"')
 
 
 def default_of_bin():

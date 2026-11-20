@@ -837,6 +837,19 @@ def codex_parts(exe):
     return parts
 
 
+def hook_link(fresh):
+    """The run's fresh home gets the user's of as .local/bin/of, a link to its real path in the checkout: the managed
+    hooks run $HOME/.local/bin/of (of_codex.hook_command), and with none a guard event refuses every call. The link
+    lies in the run's folder, which Codex's profile hides from the run's own commands (codex_filesystem)."""
+    import of_codex
+    d = os.path.join(fresh, ".local", "bin")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    link = os.path.join(d, "of")
+    if not os.path.lexists(link):
+        os.symlink(of_codex.default_of_bin(), link)
+    return link
+
+
 def hook_dirs():
     """The folders OF's managed Codex hooks run from, bound read-only into a run's bwrap: the machine's requirements file
     forces its hooks on every Codex run, this one's included (bin/of_codex.py), so the guard must resolve and judge
@@ -946,7 +959,7 @@ def command(harness, kind, run_dir, work_dir, prompt_file, answer_file, schema=N
         else:
             _link_login(login, os.path.join(codex_home, "auth.json"))
         exe = binary or codex_bin()
-        _private_dir(os.path.join(run_dir, "home"))
+        hook_link(_private_dir(os.path.join(run_dir, "home")))
         try:
             if os.stat(answer_file).st_nlink > 1:
                 os.unlink(answer_file)   # a hard link elsewhere: codex refuses to write it, so it is made anew
