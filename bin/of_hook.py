@@ -1253,9 +1253,14 @@ def codex_calls(hook):
     Write and Edit calls; any other call that holds a patch (`apply_patch <<'EOF'` through the shell, which Codex runs
     as a patch) as itself plus those calls; view_image as a Read of its path. An unreadable patch is one deny."""
     tool, ti = hook.get("tool_name"), hook.get("tool_input")
-    text = _patch_text(ti)
     calls = []
-    if tool == "apply_patch" or "Begin Patch" in text:
+    # only a Codex session's patch: Codex's apply_patch, or its shell running apply_patch with the begin marker alone on
+    # its line; a Claude Code call that quotes the markers (a document, a comment) is no patch (of_secrets-review on PR
+    # 469 at 6c41f7b: the working copy refused its gh pr comment)
+    text = _patch_text(ti) if is_codex(hook) or tool == "apply_patch" else ""
+    shell_patch = tool == "Bash" and is_codex(hook) and re.search(r"\bapply_?patch\b", text) and \
+        re.search(r"(?m)^\s*\*\*\*\s*Begin Patch\s*$", text)
+    if tool == "apply_patch" or shell_patch:
         bodies = _PATCH_BODY.findall(text) if tool != "apply_patch" else [text]
         try:
             for body in bodies:

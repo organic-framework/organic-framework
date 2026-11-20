@@ -105,6 +105,25 @@ class PatchFormsTest(unittest.TestCase):
         self.assertEqual(got[0]["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class ClaudeCallsQuotingAPatch(unittest.TestCase):
+    """of_secrets-review on PR 469 at 6c41f7b: a Claude Code call that quotes the patch markers is no patch."""
+
+    def claude(self, tool, ti):
+        of_hook.OUTPUT = None
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            of_hook.handle("PreToolUse", {"hook_event_name": "PreToolUse", "session_id": "claude-1", "cwd": "/w",
+                                          "transcript_path": "/home/alex/.claude/projects/-w/claude-1.jsonl",
+                                          "tool_name": tool, "tool_input": ti})
+        return out.getvalue()
+
+    def test_a_markdown_file_quoting_the_markers_is_written(self):
+        M = "*" * 3
+        doc = f"How Codex patches look:\n\n{M} Begin Patch\n{M} Add Fiel: x\n{M} End Patch\n"
+        self.assertEqual(self.claude("Write", {"file_path": "/w/notes.md", "content": doc}), "")
+        self.assertEqual(self.claude("Bash", {"command": f"gh pr comment 1 --body '{M} Begin Patch inline'"}), "")
+
+
 class CodexSessionToHerdr(unittest.TestCase):
     """W8 gap 3 (of_herdr's report; of_server's decision eb72245): the managed SessionStart hook reports a Codex pane's
     session to herdr, from herdr's official source, with a growing seq and no resume arguments."""
