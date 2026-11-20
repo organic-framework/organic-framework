@@ -2174,7 +2174,10 @@ def set_moving(cfg, org, on):
     os.makedirs(d, mode=0o700, exist_ok=True)
     path = os.path.join(d, org)
     if on:
-        os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+        if not os.path.exists(path):  # a new token for each setting; setting it again keeps the one there
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(secrets.token_hex(16) + "\n")  # not a secret: it tells one setting from the next
     elif os.path.exists(path):
         os.unlink(path)
     return sorted(os.listdir(d))
