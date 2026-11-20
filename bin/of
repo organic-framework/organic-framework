@@ -5889,8 +5889,10 @@ def _amend_ask(args, positions, me):
             new["tags"] = [] if args.tags.strip().lower() == "none" else of_classify.parse_tags(args.tags)
         except ValueError as e:
             raise OfError(str(e))
-    if args.due:
-        new["due"] = _due(args.due)
+    if args.due is not None:
+        # --due none (or empty) drops the due: a date with no source, or a passed one, goes without a replacement card
+        # (a user organization's unit owner, through its structure keeper, msg 01a1f8ea-76d5)
+        new["due"] = None if args.due.strip().lower() in ("", "none") else _due(args.due)
     if args.blocking is not None:
         new["blocking"] = bool(args.blocking)
     changed = [k for k in of_asks.AMENDABLE if k in new and new[k] != current[k]]
@@ -8082,7 +8084,8 @@ def main(argv=None):
                                     "irreversible,window_go:<system> (default: guessed from the text)")
     ak2.add_argument("--blocking", action=argparse.BooleanOptionalAction, default=None,
                      help="you cannot continue without the answer (with --amend, --no-blocking takes it back)")
-    ak2.add_argument("--due", help="when the answer is needed: an ISO time or +40m / +2h; the popup orders by it")
+    ak2.add_argument("--due", help="when the answer is needed: an ISO time or +40m / +2h; the popup orders by it; with "
+                     "--amend, none drops it")
     ak2.add_argument("--to", default=None, help="founder (default), or the owner of your unit when it is delegated; "
                      "from a delegated unit, --to founder goes to the unit owner unless a declared --tags matches "
                      "its escalate_when")
