@@ -320,21 +320,50 @@ def _passive_candidates(now, max_age_s):
     return {account: sorted(files, reverse=True)[:PASSIVE_FILE_LIMIT] for account, files in by_account.items()}
 
 
-def _reading_time(data, mtime):
+def _read_regular(path, limit, tail=False):
+    """At most `limit` bytes of a regular file (its last ones with `tail`), opened without following a link and
+    without blocking; None for anything else. A path can come from a file an agent session may write, and a FIFO
+    there would hold the listener's 15-second watch (of_review, PR 477: no return in 8 s)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except (OSError, ValueError, TypeError):
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if tail and st.st_size > limit:
+            os.lseek(fd, st.st_size - limit, os.SEEK_SET)
+        out, left = [], limit
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 16))
+            if not chunk:
+                break
+            out.append(chunk)
+            left -= len(chunk)
+        return b"".join(out), st
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _reading_time(data, mtime, projects=None):
     """When a status line file's rate_limits were current: its session's last transcript write, never later than the
     file's own time. The status line redraws an idle session too, with the rate_limits of its last API response, which
     can be days old (2026-11-20: an idle session on a spent account read its week at 0% while a probe read 100%), and
-    a session's transcript is written at each response. None when the transcript cannot be read."""
+    a session's transcript is written at each response. The transcript must be a regular file inside the account's own
+    `projects` folder (`projects`; of_review, PR 477). None when it cannot be read."""
     tp = data.get("transcript_path") if isinstance(data, dict) else None
-    if not isinstance(tp, str) or not tp:
+    if not isinstance(tp, str) or not tp or not projects:
         return None
-    try:
-        size = os.path.getsize(tp)
-        with open(tp, "rb") as fh:
-            fh.seek(max(0, size - PASSIVE_TAIL_BYTES))
-            lines = fh.read().decode("utf-8", "replace").splitlines()
-    except (OSError, ValueError):
+    real, root = os.path.realpath(tp), os.path.realpath(projects)
+    if os.path.commonpath([real, root]) != root or real == root or not real.endswith(".jsonl"):
         return None
+    got = _read_regular(real, PASSIVE_TAIL_BYTES, tail=True)
+    if not got:
+        return None
+    lines = got[0].decode("utf-8", "replace").splitlines()
     # the last response the API gave: a main-thread assistant record that is not the harness's synthetic error (a
     # session on a spent account gets typed-in prompts, writes records and gets only refusals, while its status line
     # keeps the rate_limits of its last real response; 2026-11-20, a week read at 4% on an account the probe read 100%)
@@ -353,16 +382,19 @@ def _reading_time(data, mtime):
     return None
 
 
-def _newest_passive(files, now, max_age_s=PASSIVE_MAX_AGE_S):
+def _newest_passive(files, now, max_age_s=PASSIVE_MAX_AGE_S, config_dir=None):
     best = None
+    projects = os.path.join(config_dir, "projects") if config_dir else None
     for mtime_ns, session, path in files:
+        got = _read_regular(path, PASSIVE_MAX_BYTES + 1)
+        if not got:
+            continue
+        raw, st = got
+        if len(raw) > PASSIVE_MAX_BYTES or st.st_mtime_ns != mtime_ns:
+            continue
         try:
-            with open(path, "rb") as fh:
-                st = os.fstat(fh.fileno())
-                if st.st_size > PASSIVE_MAX_BYTES or st.st_mtime_ns != mtime_ns:
-                    continue
-                data = json.loads(fh.read(PASSIVE_MAX_BYTES))
-        except (OSError, ValueError, RecursionError):
+            data = json.loads(raw)
+        except (ValueError, RecursionError):
             continue
         limits = data.get("rate_limits") if isinstance(data, dict) else None
         if not isinstance(limits, dict):
@@ -382,7 +414,7 @@ def _newest_passive(files, now, max_age_s=PASSIVE_MAX_AGE_S):
                 continue
         if not windows:
             continue
-        seen = _reading_time(data, mtime_ns / 1e9)  # read only for a file with a usable window
+        seen = _reading_time(data, mtime_ns / 1e9, projects)  # read only for a file with a usable window
         if seen is None or seen < now - max_age_s or (best and seen <= _ts(best["observed_at"])):
             continue
         best = {"windows": windows, "observed_at": _reading_iso(seen), "session": session}
@@ -395,7 +427,7 @@ def passive_readings(dirs, now=None, max_age_s=PASSIVE_MAX_AGE_S):
     files = _passive_candidates(now, max_age_s)
     readings = {}
     for d in dirs:
-        reading = _newest_passive(files.get(os.path.basename(os.path.normpath(d)), ()), now, max_age_s)
+        reading = _newest_passive(files.get(os.path.basename(os.path.normpath(d)), ()), now, max_age_s, d)
         if reading:
             readings[d] = reading
     return readings
@@ -7014,7 +7046,7 @@ def passive_crossed(conn, now=None):
             # Removing a session file can expose an older one among the newest five. Never replay it.
             files = [f for f in changed.get(os.path.basename(os.path.normpath(d)), ())
                      if f[0] / 1e9 >= previous.get("observed", 0)]
-            reading = _newest_passive(files, now)
+            reading = _newest_passive(files, now, config_dir=d)
             if not reading:
                 continue
             for name, window in reading["windows"].items():

@@ -173,7 +173,8 @@ class PassiveCapacity(unittest.TestCase):
     def write(self, d, session, age=0, answered=True, **limits):
         """A status line file and its session's transcript, whose last real response is at the file's time (or
         only a synthetic refusal there, when not `answered`)."""
-        transcript = os.path.join(self.files, "..", f"{session}.jsonl")
+        os.makedirs(os.path.join(d, "projects", "-x"), exist_ok=True)
+        transcript = os.path.join(d, "projects", "-x", f"{session}.jsonl")
         record = {"type": "assistant", "timestamp": of_capacity._reading_iso(self.now - age),
                   "message": {"model": "claude-opus-5-5"}}
         if not answered:
@@ -188,13 +189,35 @@ class PassiveCapacity(unittest.TestCase):
         os.utime(path, (self.now - age, self.now - age))
         return path
 
+    def test_a_transcript_path_outside_the_account_or_not_a_file_is_no_reading(self):
+        # of_review, PR 477: the path comes from a file an agent session may write; a FIFO blocked the reader
+        path = self.write(self.named, "s", five_hour=(30, 900))
+        with open(path) as fh:
+            data = json.load(fh)
+        outside = os.path.join(self.files, "elsewhere.jsonl")
+        with open(data["transcript_path"]) as src, open(outside, "w") as dst:
+            dst.write(src.read())
+        fifo = os.path.join(self.named, "projects", "-x", "fifo.jsonl")
+        os.mkfifo(fifo)
+        for target in (outside, fifo, os.path.join(self.named, "projects")):
+            with self.subTest(target=os.path.basename(target)):
+                with open(path, "w") as fh:
+                    json.dump(dict(data, transcript_path=target), fh)
+                os.utime(path, (self.now, self.now))
+                t0 = time.time()
+                self.assertEqual(of_capacity.passive_readings([self.named], self.now), {})
+                self.assertLess(time.time() - t0, 2)
+        os.unlink(path)
+        os.mkfifo(path)  # the status line file itself replaced by a FIFO
+        self.assertEqual(of_capacity.passive_readings([self.named], self.now), {})
+
     def test_an_idle_sessions_old_limits_are_no_reading(self):
         # 2026-11-20: idle sessions on spent accounts redrew their status line with their last real response's
         # rate_limits (a week at 0% and 4% where a probe read 100%); a reading is timed by that response
         self.write(self.default, "refused", answered=False, seven_day=(4, 900))
         self.assertEqual(of_capacity.passive_readings([self.default], self.now), {})
         path = self.write(self.named, "old-answer", seven_day=(0, 900))
-        transcript = os.path.join(self.files, "..", "old-answer.jsonl")
+        transcript = os.path.join(self.named, "projects", "-x", "old-answer.jsonl")
         with open(transcript, "w") as fh:
             fh.write(json.dumps({"type": "assistant", "timestamp": of_capacity._reading_iso(self.now - 7200),
                                  "message": {"model": "claude-opus-5-5"}}) + "\n")
@@ -291,7 +314,7 @@ class PassiveCapacity(unittest.TestCase):
                 self.assertEqual(p._pending, pending)
                 p = of_capacity.ListenerProcessor()  # each tick reads the baseline from listener_meta
             self.write(self.named, "no-limits", age=-5)
-            with mock.patch("builtins.open", wraps=open) as opened:
+            with mock.patch.object(of_capacity, "_read_regular", wraps=of_capacity._read_regular) as opened:
                 p.tick(conn, self.now + 5)
                 self.assertEqual([os.path.basename(c.args[0]) for c in opened.call_args_list],
                                  [".claude-max-1--no-limits.json"])
