@@ -1556,6 +1556,39 @@ class DeskEventTypeTest(unittest.TestCase):
 
 
 class ViewsTest(unittest.TestCase):
+    def test_a_view_moved_into_a_new_workspace_splits_around_the_first_panes_new_id(self):
+        """of_conductor (msg 01a1f8e6-18cb): a three-pane view applied into a missing workspace came out side by side,
+        since the first pane got a new id when it moved and the splits named the old one."""
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("of_cli_view_move", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_view_move", loader))
+        loader.exec_module(of)
+        names = ["a", "b", "c"]
+        ids = {"a": "w3:p1", "b": "w3:p2", "c": "w3:p3"}
+        ran = []
+        of._load_quiet = lambda: [{"name": n} for n in names]
+        of.live_agents = lambda: []
+        of.bind = lambda ps, ag: ([({"name": n}, {"pane_id": ids[n], "tab_id": "w9:t1"}) for n in names], [], [])
+
+        def herdr_do(args, dry):
+            ran.append(args)
+            if args[:3] == ["pane", "move", "w3:p1"] and "--new-workspace" in args:
+                ids["a"] = "w9:p1"   # herdr gives a moved pane a new id
+            return True
+        of.herdr_do = herdr_do
+        of.herdr_json = lambda *a: ({"workspaces": []} if a[:2] == ("workspace", "list") else
+                                    {"tabs": []} if a[:2] == ("tab", "list") else
+                                    {"pane": {"pane_id": a[2], "tab_id": "w9:t1"}} if a[:2] == ("pane", "get") else
+                                    {"layout": {"panes": []}})
+        v = {"name": "conductors", "workspace": "conductors", "tab": "conductors", "layout": "main-left-60",
+             "positions": names}
+        of.view_apply(v, quiet=True)
+        splits = [r for r in ran if "--split" in r]
+        self.assertTrue(splits)
+        self.assertEqual({r[r.index("--target-pane") + 1] for r in splits} & {"w3:p1"}, set())
+        self.assertIn("w9:p1", {r[r.index("--target-pane") + 1] for r in splits})
+
     def test_main_left_60_moves_and_match(self):
         import sys as _s
         _s.path.insert(0, os.path.join(HERE, "..", "bin"))

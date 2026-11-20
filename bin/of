@@ -4839,6 +4839,17 @@ def view_apply(v, dry_run=False, quiet=False):
             say("would run: herdr " + " ".join(c))
         return 0
     ok, tab_id = True, None
+    if cmds and ("--new-workspace" in cmds[0] or "--new-tab" in cmds[0]):
+        # a pane moved to another workspace gets a new id, so the splits planned with the old ones named panes that
+        # were gone: the view's tab came out side by side ("sizes differ"; of_conductor, msg 01a1f8e6-18cb). Move the
+        # first pane, read the ids again, and lay the rest out around it in its new tab
+        ok = herdr_do(cmds[0], False)
+        pane_of = {p["name"]: a["pane_id"] for p, a in bind(positions, live_agents())[0]}
+        if v.get("panels"):
+            pane_of.update({f"panel:{k}": x for k, x in _panel_panes(v, herdr_json("pane", "list")["panes"], True,
+                                                                      lambda m: None, start=False).items()})
+        panes = [pane_of[n] for n in v.get("positions") or [] if n in pane_of]
+        cmds = of_views.plan_moves(v, panes, in_tab=True)
     for c in cmds:
         if "{TAB}" in c:
             if not tab_id:
