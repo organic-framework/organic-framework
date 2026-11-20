@@ -90,6 +90,10 @@ class RelayTest(unittest.TestCase):
                     c._authed(method, path, body=body)
                 self.assertEqual(e.exception.status, 503)
                 self.assertIn("moving", e.exception.body)
+            for path, body in (("/v1/presence", []), ("/v1/messages/01a1-x/ack", {})):
+                with self.subTest(write=path), self.assertRaises(of_client.ServerError) as e:
+                    a._authed("PUT" if path == "/v1/presence" else "POST", path, body=body)
+                self.assertEqual(e.exception.status, 503)                         # every write of its machines
             self.assertIsNotNone(self.call(z, "GET", "/v1/messages?wait=0"))    # another organization goes on
             self.assertEqual(of_server.set_moving(self.app.cfg, "ofb", False), [])
             self.app._moving_cache = None

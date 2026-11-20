@@ -1336,6 +1336,8 @@ def make_handler(app):
                 m = self._machine()
                 if not m:
                     return self._problem(401, "unauthorized", "missing or expired token")
+                if self.command != "GET" and self._moving(self._machine_orgs_all(m)):
+                    return None  # every write of a machine joined to a moving organization waits (of_review, PR 433)
                 if u.path == "/v1/receipts":
                     after = int((parse_qs(u.query).get("after") or ["0"])[0])
                     with app.store.conn() as c:
@@ -1398,6 +1400,8 @@ def make_handler(app):
                 m = self._machine()
                 if not m:
                     return self._problem(401, "unauthorized", "missing or expired token")
+                if self.command != "GET" and self._moving(self._machine_orgs_all(m)):
+                    return None  # every write of a machine joined to a moving organization waits (of_review, PR 433)
                 if u.path == "/v1/presence":
                     return self._relay(lambda: app.relay.put_presence(m, json.loads(raw or b"{}")))
                 if u.path == "/v1/consent":
@@ -1416,6 +1420,8 @@ def make_handler(app):
                 m = self._machine()
                 if not m:
                     return self._problem(401, "unauthorized", "missing or expired token")
+                if self.command != "GET" and self._moving(self._machine_orgs_all(m)):
+                    return None  # every write of a machine joined to a moving organization waits (of_review, PR 433)
                 if not m["tenant"]:
                     return self._problem(403, "forbidden", "tenant only")
                 if u.path.startswith("/v1/machines/"):
@@ -1504,6 +1510,8 @@ def make_handler(app):
                 m = self._machine()
                 if not m:
                     return self._problem(401, "unauthorized", "missing or expired token")
+                if self.command != "GET" and self._moving(self._machine_orgs_all(m)):
+                    return None  # every write of a machine joined to a moving organization waits (of_review, PR 433)
                 if u.path.startswith("/v1/passkey/"):  # docs/remote.md §6: the tenant's terminal and `of diff link`
                     try:
                         b = json.loads(raw or b"{}") or {}
@@ -2315,11 +2323,12 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
     os.chmod(dest, 0o700)
     out = []
     target = os.path.join(dest, "server.db")
-    tmp = target + ".partial"
-    if os.path.exists(tmp):
-        os.unlink(tmp)
-    os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-    src = sqlite3.connect(os.path.join(cfg["state_dir"], "server.db"), timeout=30)
+    store = os.path.join(cfg["state_dir"], "server.db")
+    if not os.path.isfile(store):  # never made an empty store to back up (of_secrets-review on PR 433)
+        raise FileNotFoundError(f"no server store at {store}")
+    fd, tmp = tempfile.mkstemp(prefix="server.db.", suffix=".partial", dir=dest)  # one per run: two runs never share
+    os.close(fd)
+    src = sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=30)
     dst = sqlite3.connect(tmp)
     try:
         src.backup(dst)  # a consistent copy while the server writes
@@ -2329,14 +2338,19 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
     os.replace(tmp, target)
     out.append(f"{day}: server.db {os.path.getsize(target)} bytes")
     disk = b.get("clickhouse_disk")
-    if disk and cfg.get("clickhouse"):
+    import of_plugins
+    if disk and dict(of_plugins.DEFAULT_PLUGINS, **(cfg.get("plugins") or {})).get("storage") == "clickhouse":
         import of_route
+        import of_ship
         if not _DB.fullmatch(disk):
             raise ValueError("backup: clickhouse_disk is not a plain name")
-        post = ch_post or (lambda q: of_route.ClickHouse(cfg["clickhouse"]).post(q, timeout=3600, query_in_body=True))
-        dbs = sorted(set((cfg.get("orgs") or {}).values()) | {cfg.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
-                                                               cfg.get("unassigned_database") or
-                                                               ROUTE_DEFAULTS["unassigned_database"]})
+        ship = of_ship.config()  # as of_server.App takes it: ship.yaml, server.yaml's over it (of_secrets-review, PR 433)
+        ship.update(route_settings(cfg, ship))
+        ship.update(cfg.get("clickhouse") or {})
+        post = ch_post or (lambda q: of_route.ClickHouse(ship).post(q, timeout=3600, query_in_body=True))
+        orgs = cfg.get("orgs") or of_route.Router(ship).db_by_org
+        dbs = sorted(set(orgs.values()) | {ship.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
+                                           ship.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]})
         for db in dbs:
             if not _DB.fullmatch(db):
                 raise ValueError("a ClickHouse database name that is not a plain name")

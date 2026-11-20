@@ -23,6 +23,14 @@ import of_server_export as ex  # noqa: E402
 
 
 
+def insert_row(conn, table, **values):
+    """A row with VALUES and a plain value in each required column the test does not care about."""
+    row = {r[1]: (0 if "INT" in (r[2] or "").upper() or "REAL" in (r[2] or "").upper() else "")
+           for r in conn.execute(f"PRAGMA table_info({table})") if r[3] and r[4] is None and not r[5]}
+    row.update(values)
+    conn.execute(f"INSERT INTO {table} ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", list(row.values()))
+
+
 def export_store(*a, **k):
     """The tests not about encryption say --plaintext, as an operator must (sec_keeper, msg 01a1f638-5862)."""
     k.setdefault("plaintext", True)
@@ -79,20 +87,21 @@ def age_key(d):
     return ident, rec
 
 
-def rebuild(bundle, table, rows):
+def rebuild(bundle, table, rows, identity=None):
     """Rewrite one plain table file of BUNDLE with ROWS and make its manifest and index agree, as a bundle changed by
     someone who recomputed every hash would."""
-    m = ex.load_manifest(bundle)
-    rel = f"store/{table}.jsonl.gz"
+    m = ex.load_manifest(bundle, identity)
+    ext = ".age" if m["encrypted"] else ""
+    rel = f"store/{table}.jsonl.gz{ext}"
     path = os.path.join(bundle, rel)
     os.unlink(path)
     m["files"][rel] = ex._write_file(path, (json.dumps(r).encode() + b"\n" for r in rows))
     m["store"][table] = ex.summarize(table, rows)
-    mp = os.path.join(bundle, "manifest.json.gz")
+    mp = os.path.join(bundle, "manifest.json.gz" + ext)
     os.unlink(mp)
     w = ex._write_file(mp, [json.dumps(m, sort_keys=True).encode()])
     ix = ex.load_index(bundle)
-    ix["files"][rel], ix["files"]["manifest.json.gz"] = m["files"][rel]["sha256"], w["sha256"]
+    ix["files"][rel], ix["files"]["manifest.json.gz" + ext] = m["files"][rel]["sha256"], w["sha256"]
     ip = os.path.join(bundle, "index.json")
     os.unlink(ip)
     with open(ip, "w") as fh:
@@ -176,6 +185,26 @@ class ExportTest(unittest.TestCase):
             import_store(dst, self.out, "acme", sha)
         self.assertIn("another organization's records", str(e.exception))
         self.assertEqual(dst.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+
+    def test_an_export_waits_for_the_organizations_queued_batches(self):
+        info = list(self.src.execute("PRAGMA table_info(batches)"))
+        cols = [r[1] for r in info]
+        row = {r[1]: (0 if "INT" in (r[2] or "").upper() else "") for r in info if r[3] and r[4] is None and not r[5]}
+        row.update({c: v for c, v in (("batch_id", "b1"), ("machine_id", "m"), ("state", "queued"),
+                                      ("by_org", json.dumps({"acme": 3}))) if c in cols})
+        self.src.execute(f"INSERT INTO batches ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
+                         list(row.values()))
+        with self.assertRaises(ex.ExportError) as e:
+            self.export()
+        self.assertIn("still queued", str(e.exception))
+        self.export(org="other", out=self.out + "-other")     # another organization's export is not held
+
+    def test_every_exported_table_shows_another_organizations_records(self):
+        _, sha = self.export()
+        dst, _ = store()
+        insert_row(dst, "finance_facts", event_id="f", org="other")
+        with self.assertRaisesRegex(ex.ExportError, "another organization's records"):
+            import_store(dst, self.out, "acme", sha)
 
     def test_records_travel_encrypted_unless_plaintext_is_said(self):
         with self.assertRaises(ex.ExportError) as e:
@@ -409,9 +438,10 @@ class FakeClickHouse:
         if not sql.startswith("SELECT DISTINCT"):
             # FINAL models a ReplacingMergeTree selecting the last physical row for each sorting tuple.
             source = re.search(r"FROM (\w+\.(\w+)) FINAL", sql)
-            table, keys = source[1], self.schema[source[2].removesuffix("__import")][0]
-            final = f"(SELECT * FROM {table} WHERE rowid IN (SELECT max(rowid) FROM {table} GROUP BY {keys}))"
-            sql = sql.replace(f"FROM {table} FINAL", "FROM " + final, 1)
+            if source:
+                table, keys = source[1], self.schema[source[2].removesuffix("__import")][0]
+                final = f"(SELECT * FROM {table} WHERE rowid IN (SELECT max(rowid) FROM {table} GROUP BY {keys}))"
+                sql = sql.replace(f"FROM {table} FINAL", "FROM " + final, 1)
         rows = self.conn.execute(sql, params).fetchall()
         if fmt == "Native":
             yield b"\x00\xff"
@@ -471,6 +501,21 @@ class OrgColumnTest(unittest.TestCase):
         self.assertNotIn("vault/runtime_record", legacy)   # a vault with no org_id there: every runtime row stays
 
 
+FAKE_RECIPIENT = "age1" + "q" * 58
+REAL_AGE_PATHS = ex.AGE_PATHS
+
+
+def fake_age(folder):
+    """An `age` that copies: `-r R` passes stdin through, `-d -i I F` prints F."""
+    path = os.path.join(folder, "age")
+    with open(path, "w") as fh:
+        fh.write(f"#!{sys.executable}\nimport sys, shutil\na = sys.argv[1:]\n"
+                 "src = open(a[-1], 'rb') if '-d' in a else sys.stdin.buffer\n"
+                 "shutil.copyfileobj(src, sys.stdout.buffer)\n")
+    os.chmod(path, 0o700)
+    return path
+
+
 class ClickHouseExportTest(unittest.TestCase):
     org = "owner's org"
     early, last, new = "2026-11-17", "2026-11-18", "2026-11-19"
@@ -480,6 +525,10 @@ class ClickHouseExportTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.bulk = Path(tmp.name) / "bulk"
         self.delta = self.bulk.with_name("delta")
+        age = mock.patch.object(ex, "AGE_PATHS", (fake_age(tmp.name),))   # ClickHouse rows always travel encrypted
+        age.start()
+        self.addCleanup(age.stop)
+        self.ident = os.path.join(tmp.name, "identity")
         self.store, self.state = store()
         self.addCleanup(self.store.close)
         self.src, self.dst = FakeClickHouse("src"), FakeClickHouse("dst")
@@ -509,24 +558,28 @@ class ClickHouseExportTest(unittest.TestCase):
         return mock.patch.object(ex, "ClickHouseHTTP", return_value=self.src if prefix == "src" else self.dst)
 
     def export(self, path=None, **kw):
+        kw.setdefault("recipient", FAKE_RECIPIENT)
+        if kw.get("since") is not None:  # the final delta is made with the organization marked moving
+            os.makedirs(os.path.join(self.state, "moving"), exist_ok=True)
+            open(os.path.join(self.state, "moving", self.org), "w").close()
         with self.connection("src"):
             return export_store(self.store, self.org, path or self.bulk, config=self.cfg, **kw)
 
     def restore(self, sha, path=None, identity=None):
         with self.connection("dst"):
-            return import_store(self.store, path or self.bulk, self.org, sha, identity, config=self.cfg)
+            return import_store(self.store, path or self.bulk, self.org, sha, identity or self.ident, config=self.cfg)
 
     def test_native_files_follow_routing_and_vault_ownership(self):
         m, sha = self.export()
         self.assertEqual(ex.check_bundle(self.bulk, index_sha=sha), [])
-        self.assertEqual(m, ex.load_manifest(self.bulk))
+        self.assertEqual(m, ex.load_manifest(self.bulk, self.ident))
         ix = ex.load_index(self.bulk)
-        self.assertEqual(set(ix["files"]), set(m["files"]) | {"manifest.json.gz"})
+        self.assertEqual(set(ix["files"]), set(m["files"]) | {"manifest.json.gz.age"})
         for p in self.bulk.rglob("*"):
             self.assertEqual(p.stat().st_mode & 0o777, 0o700 if p.is_dir() else 0o600)
 
         def native(name, day):
-            rel = f"clickhouse/{name}/{day}.native.gz"
+            rel = f"clickhouse/{name}/{day}.native.gz.age"
             data = (self.bulk / rel).read_bytes()
             sha = hashlib.sha256(data).hexdigest()
             self.assertEqual((m["files"][rel], ix["files"][rel]), ({"sha256": sha, "plain_sha256": sha}, sha))
@@ -567,7 +620,7 @@ class ClickHouseExportTest(unittest.TestCase):
             self.assertEqual(len(self.dst.rows("dst_org.runtime_record")), 1)
         self.dst.conn.execute("UPDATE dst_vault.event SET event_id = 'changed' WHERE ts = ?", (self.new,))
         with self.connection("dst"):
-            self.assertEqual(check_import(self.store, self.delta, self.org, sha, config=self.cfg),
+            self.assertEqual(check_import(self.store, self.delta, self.org, sha, self.ident, config=self.cfg),
                              [f"vault/event: ClickHouse differs on {self.new}"])
 
     def test_failure_after_a_native_file_leaves_no_published_bundle(self):
@@ -582,16 +635,16 @@ class ClickHouseExportTest(unittest.TestCase):
         with mock.patch.object(self.src, "query", fail), self.assertRaisesRegex(
                 ex.ExportError, f"^org/event {self.last}: export failed$"):
             self.export()
-        self.assertTrue(list(self.bulk.rglob("*.native.gz")))
+        self.assertTrue(list(self.bulk.rglob("*.native.gz*")))
         self.assertFalse((self.bulk / "index.json").exists())
-        self.assertFalse((self.bulk / "manifest.json.gz").exists())
+        self.assertFalse((self.bulk / "manifest.json.gz.age").exists())
         with self.assertRaisesRegex(ex.ExportError, "index.json"):
             self.restore("0" * 64)
 
     def test_clickhouse_waits_for_both_hashes_and_the_store_transaction(self):
         m, sha = self.export()
         self.store.execute("INSERT INTO position_aliases (org, alias, position) VALUES (?, 'old', 'p')", (self.org,))
-        rel = f"clickhouse/vault/hook_record/{self.last}.native.gz"
+        rel = f"clickhouse/vault/hook_record/{self.last}.native.gz.age"
         path = self.bulk / rel
         original = path.read_bytes()
         path.write_bytes(original + b"changed")
@@ -601,11 +654,11 @@ class ClickHouseExportTest(unittest.TestCase):
         with self.assertRaisesRegex(ex.ExportError, "not the one the export printed"):
             self.restore("0" * 64)
         with self.connection("dst"), self.assertRaisesRegex(ex.ExportError, "not other's"):
-            import_store(self.store, self.bulk, "other", sha, config=self.cfg)
+            import_store(self.store, self.bulk, "other", sha, self.ident, config=self.cfg)
         with mock.patch.object(ex, "check_store", return_value=["messages: mismatch"]), self.assertRaises(ex.ExportError):
             self.restore(sha)
         m["files"][rel]["plain_sha256"] = "0" * 64
-        manifest = self.bulk / "manifest.json.gz"
+        manifest = self.bulk / "manifest.json.gz.age"
         manifest.write_bytes(gzip.compress(json.dumps(m).encode()))
         ix = ex.load_index(self.bulk)
         ix["files"][manifest.name] = hashlib.sha256(manifest.read_bytes()).hexdigest()
@@ -618,7 +671,7 @@ class ClickHouseExportTest(unittest.TestCase):
 
     def test_rehashed_foreign_store_row_prevents_clickhouse_import(self):
         self.export()
-        sha = rebuild(self.bulk, "position_aliases", [{"org": "other", "alias": "x", "position": "taken"}])
+        sha = rebuild(self.bulk, "position_aliases", [{"org": "other", "alias": "x", "position": "taken"}], self.ident)
         with self.assertRaisesRegex(ex.ExportError, "by the table's own rule"):
             self.restore(sha)
         self.assertFalse(self.dst.calls or self.dst.inserts)
@@ -626,7 +679,7 @@ class ClickHouseExportTest(unittest.TestCase):
     def test_index_cannot_omit_a_native_day(self):
         self.export()
         ix = ex.load_index(self.bulk)
-        del ix["files"][f"clickhouse/vault/hook_record/{self.last}.native.gz"]
+        del ix["files"][f"clickhouse/vault/hook_record/{self.last}.native.gz.age"]
         index = self.bulk / "index.json"
         index.write_text(json.dumps(ix))
         with self.assertRaisesRegex(ex.ExportError, "index.json omits a Native file"):
@@ -658,17 +711,20 @@ class ClickHouseExportTest(unittest.TestCase):
                 return_value=self.cfg), redirect_stdout(output), redirect_stderr(output):
             cli = runpy.run_path(str(Path(ex.__file__).with_name("of")))["main"]
             with self.connection("src"):
-                self.assertEqual(cli(["server", "export", "--org", self.org, "--plaintext", str(self.bulk)]), 0)
+                self.assertEqual(cli(["server", "export", "--org", self.org, "--to", FAKE_RECIPIENT, str(self.bulk)]), 0)
                 bulk_sha = hashlib.sha256((self.bulk / "index.json").read_bytes()).hexdigest()
+                os.makedirs(os.path.join(self.state, "moving"), exist_ok=True)   # the final delta: marked moving
+                open(os.path.join(self.state, "moving", self.org), "w").close()
                 self.src.add("src_vault.event", self.org, "ask", self.new, "new", "private")
-                self.assertEqual(cli(["server", "export", "--org", self.org, "--plaintext", "--since", str(self.bulk),
+                self.assertEqual(cli(["server", "export", "--org", self.org, "--to", FAKE_RECIPIENT, "--since", str(self.bulk),
                                       "--since-sha", bulk_sha, str(self.delta)]), 0)
             self.assertEqual(output.getvalue().count("index sha256 "), 2)
             self.assertEqual(cli(["server", "export", "--check", str(self.delta)]), 0)
             with self.connection("dst"):
                 for bundle in (self.bulk, self.delta):
                     sha = hashlib.sha256((bundle / "index.json").read_bytes()).hexdigest()
-                    args = ["server", "import", "--org", self.org, "--plaintext", "--index-sha", sha, str(bundle)]
+                    args = ["server", "import", "--org", self.org, "--identity", self.ident, "--index-sha", sha,
+                            str(bundle)]
                     self.assertEqual(cli(args), 0)
                     self.assertEqual(cli(args + ["--check"]), 0)
                 self.dst.conn.execute("DELETE FROM dst_org.runtime_record")
@@ -720,12 +776,70 @@ class ClickHouseExportTest(unittest.TestCase):
         self.assertEqual(left["vault/transcript_record"], {self.early: 1})        # the session-less row of no org
         self.assertGreaterEqual(sum(left["vault/hook_record"].values()), 2)      # unknown and the no-org session
 
+    def test_pr433_refusals_unscopable_tables_foreign_staged_rows_and_clear_clickhouse(self):
+        """of_review and of_secrets-review on organic-framework PR 433: a target vault runtime_record without org_id
+        was skipped while the import reported success; staged vault rows went in unjudged; and raw vault rows could
+        leave in clear with --plaintext."""
+        dbs = {"org": "dst_org", "vault": "dst_vault"}
+        empty = {f"{r}/{t}": {"rows": 0, "days": {}} for r in ("org", "vault") for t in ex.CH_TABLES}
+        m = {"org": self.org, "clickhouse": dict(empty, **{"vault/runtime_record": {
+            "rows": 1, "days": {self.last: [1, "a", "a", "1"]}}})}
+        with self.assertRaisesRegex(ex.ExportError, "cannot take vault/runtime_record"):
+            ex._target_tables(self.dst, dbs, m)
+        self.dst.conn.execute("CREATE TABLE dst_vault.event__import AS SELECT * FROM dst_vault.event WHERE 0")
+        self.dst.add("dst_vault.event__import", "other", "ask", self.last, "id", "theirs")
+        table = next(t for t in ex._ch_tables(dbs, self.org) if t.name == "vault/event")
+        self.assertEqual(ex._foreign_rows(self.dst, table, "dst_vault.event__import", self.org), 1)
+        with self.assertRaisesRegex(ex.ExportError, "always encrypted"):
+            self.export(recipient=None, plaintext=True)
+
+    def test_a_bundle_path_that_is_a_link_is_not_removed(self):
+        _, sha = self.export()
+        link = self.bulk.with_name("link")
+        link.symlink_to(self.bulk)
+        with self.assertRaisesRegex(ex.ExportError, "symbolic link"):
+            ex.delete_bundle(str(link), sha)
+        self.assertTrue((self.bulk / "index.json").exists())
+
+    def test_sec_keepers_second_round_redactions_moving_swap_and_links(self):
+        """The user organization's sec_keeper on d24d5bc8 (through of_architect, msg 01a1f645-eae4)."""
+        _, sha = self.export()
+        # 1: a redaction not done refuses the export, and the final delta needs the organization marked moving
+        insert_row(self.store, "batches", batch_id="rb", machine_id="m", state="committed",
+                   by_org=json.dumps({self.org: 1}))
+        self.store.execute("INSERT INTO redactions (redaction_id, batch_id, state) VALUES ('r1', 'rb', 'queued')")
+        with self.assertRaisesRegex(ex.ExportError, "redactions .* are not done"):
+            self.export(self.bulk.with_name("x1"))
+        self.store.execute("UPDATE redactions SET state = 'done'")
+        with self.connection("src"), self.assertRaisesRegex(ex.ExportError, "marked moving"):
+            export_store(self.store, self.org, self.bulk.with_name("x2"), config=self.cfg, recipient=FAKE_RECIPIENT,
+                         since=self.bulk, since_sha=sha)
+        # 2: a swap's insert that fails twice names the day and keeps the staging table
+        original = self.dst.query
+
+        def failing(sql, params):
+            if sql.startswith("INSERT INTO dst_vault.event SELECT"):
+                raise RuntimeError("private row")
+            yield from original(sql, params)
+        with mock.patch.object(self.dst, "query", failing), self.assertRaisesRegex(
+                ex.ExportError, "vault/event .* failed twice.*kept"):
+            self.restore(sha)
+        self.assertTrue(self.dst.rows("dst_vault.event__import"))
+        # 4: a link inside the bundle refuses --delete before any file goes
+        os.symlink(self.bulk / "store", self.bulk / "clickhouse" / "link")
+        with self.assertRaisesRegex(ex.ExportError, "symbolic link"):
+            ex.delete_bundle(str(self.bulk), sha)
+        self.assertTrue((self.bulk / "index.json").exists())
+
     def test_plain_http_only_on_the_loopback(self):
         with self.assertRaisesRegex(ex.ExportError, "loopback"):
             ex.ClickHouseHTTP({"url": "http://192.0.2.10:8123", "user": "u", "password_file": "/nonexistent"})
 
     @unittest.skipUnless(__import__("shutil").which("age") and __import__("shutil").which("age-keygen"), "age")
     def test_encrypted_native_and_bulk_manifest_streams(self):
+        real = mock.patch.object(ex, "AGE_PATHS", REAL_AGE_PATHS)
+        real.start()
+        self.addCleanup(real.stop)
         ident, rec = age_key(self.bulk.parent)
         m, sha = self.export(recipient=rec)
         for path in self.bulk.rglob("*"):
@@ -734,8 +848,8 @@ class ClickHouseExportTest(unittest.TestCase):
                 self.assertTrue(path.read_bytes().startswith(b"age-encryption.org/v1"))
         self.assertTrue(all(v["sha256"] != v["plain_sha256"] for v in m["files"].values()))
         self.assertEqual(ex.check_bundle(self.bulk, index_sha=sha), [])
-        with self.assertRaisesRegex(ex.ExportError, "--identity"):
-            self.restore(sha)
+        with self.connection("dst"), self.assertRaisesRegex(ex.ExportError, "--identity"):
+            import_store(self.store, self.bulk, self.org, sha, None, config=self.cfg)
         self.assertFalse(self.dst.calls or self.dst.inserts)
         self.restore(sha, identity=ident)
         self.src.add("src_vault.event", self.org, "ask", self.new, "new", "private")

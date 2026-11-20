@@ -222,6 +222,34 @@ def _file_sha(path):
     return h.hexdigest()
 
 
+def _pending_redactions(conn, org):
+    """Redactions not done (queued, running or failed) of batches that hold rows of ORG (the user organization's
+    sec_keeper, msg 01a1f645-eae4: a redaction at the cut applied on the laptop only)."""
+    if "redactions" not in _tables(conn) or "batches" not in _tables(conn):
+        return 0
+    n = 0
+    for (by_org,) in conn.execute("SELECT b.by_org FROM redactions r LEFT JOIN batches b ON b.batch_id = r.batch_id "
+                                  "WHERE coalesce(r.state, '') != 'done'"):
+        try:
+            n += by_org is None or org in (json.loads(by_org or "{}") or {})
+        except ValueError:
+            n += 1
+    return n
+
+
+def _queued_batches(conn, org):
+    """The server's queued batches that hold rows of ORG: an export before they are written would leave them behind."""
+    if "batches" not in _tables(conn):
+        return 0
+    n = 0
+    for (by_org,) in conn.execute("SELECT by_org FROM batches WHERE state = 'queued'"):
+        try:
+            n += org in (json.loads(by_org or "{}") or {})
+        except ValueError:
+            n += 1  # unreadable: counted, so the export waits rather than guesses
+    return n
+
+
 def _blob_count(cfg):
     """The files in the server's file blob store (of_plugins.FsBlobs), which a bundle does not carry yet."""
     d = os.path.join((cfg or {}).get("state_dir") or "", "blobs")
@@ -251,6 +279,20 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
     if since is not None and not (config and _uses_clickhouse(config)):
         raise ExportError("--since needs a ClickHouse export")
+    queued = _queued_batches(conn, org)
+    if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
+        raise ExportError(f"{queued} of {org}'s batches are still queued: wait for the writer, with the organization "
+                          "marked moving (of server moving)")
+    pending = _pending_redactions(conn, org)
+    if pending:  # it would apply on this server only, and the new one would keep the rows it removes (sec_keeper)
+        raise ExportError(f"{pending} redactions of {org}'s rows are not done: finish them before the export")
+    if since is not None:
+        import of_server
+        if not since_sha:
+            raise ExportError("--since needs --since-sha, the bulk's index sha256")
+        if not (config and os.path.exists(os.path.join(of_server.moving_dir(config), org))):
+            raise ExportError(f"the final delta is made with {org} marked moving (of server moving --org {org} on), "
+                              "so nothing reaches this server after it")
     blobs = _blob_count(config)
     if blobs:  # the laptop's blob store held none on 2026-11-19; carrying them comes when a server keeps some
         raise ExportError(f"this server's blob store holds {blobs} files, which this release does not carry yet")
@@ -277,6 +319,8 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
     finally:
         conn.execute("ROLLBACK")
     if config and _uses_clickhouse(config):
+        if not recipient:  # raw vault records in clear (of_secrets-review on organic-framework PR 433)
+            raise ExportError("a bundle with ClickHouse rows is always encrypted: name the receiving key with --to")
         ch, databases = clickhouse_connection(config, org)
         if base is not None:
             manifest["delta_of"] = since_sha
@@ -475,7 +519,7 @@ def check_import(conn, bundle, org, index_sha, identity=None, *, config=None, pl
         problems = check_store(conn, bundle, manifest=m)
     if not problems and "clickhouse" in m:
         ch, databases = clickhouse_connection(config, org)
-        problems = _check_clickhouse(ch, databases, m, load_index(bundle)["days"])
+        problems = _check_clickhouse(ch, databases, m, load_index(bundle, index_sha)["days"])
     return problems
 
 
@@ -484,7 +528,7 @@ def _serves_another(conn, org):
     bundles, would replace that organization's copy here (the user organization's sec_keeper, msg 01a1f638-5862)."""
     have = _tables(conn)
     checks = [("messages", "to_org != :org AND from_org != :org")] + \
-        [(t, "org != :org") for t in ("coord", "position_aliases", "presented")]
+        [(t, "org != :org") for t in STORE if t != "messages"]   # all seven (sec_keeper, msg 01a1f645-eae4)
     return any(conn.execute(f"SELECT 1 FROM {t} WHERE {w} LIMIT 1", {"org": org}).fetchone()
                for t, w in checks if t in have)
 
@@ -539,7 +583,7 @@ def import_store(conn, bundle, org, index_sha, identity=None, *, config=None, pl
         raise
     if "clickhouse" in m:
         _import_clickhouse(ch, databases, bundle, identity, m)
-        problems = _check_clickhouse(ch, databases, m, load_index(bundle)["days"])
+        problems = _check_clickhouse(ch, databases, m, load_index(bundle, index_sha)["days"])
         if problems:
             raise ExportError("; ".join(problems))
         counts.update({name: v["rows"] for name, v in m["clickhouse"].items()})
@@ -857,10 +901,23 @@ def _export_clickhouse(ch, databases, out, m, recipient, base=None):
     return current_all
 
 
+def _target_tables(ch, databases, m):
+    """The target's tables for the bundle's organization, refusing a bundle that carries rows of a table the target
+    cannot scope (a vault runtime_record without org_id: deploy/clickhouse/schema.py's ALTER not run there), which
+    would otherwise be skipped while the import reported success (of_review and of_secrets-review on PR 433)."""
+    tables = list(_ch_tables(databases, m["org"], _org_columns(ch, databases)))
+    names = {t.name for t in tables}
+    lost = sorted(n for n, v in m["clickhouse"].items() if n not in names and (v["rows"] or v["days"]))
+    if lost:
+        raise ExportError(f"the target cannot take {', '.join(lost)}: it has no org_id there; run "
+                          "deploy/clickhouse/schema.py's ALTER on it first")
+    return tables
+
+
 def _check_clickhouse(ch, databases, m, all_days):
     """Every current day of the source (ALL_DAYS, from the plain index) against the target's, by fingerprint."""
     problems = []
-    for table in _ch_tables(databases, m["org"], _org_columns(ch, databases)):
+    for table in _target_tables(ch, databases, m):
         cols = m.get("clickhouse_columns", {}).get(table.name) or _ch_columns(ch, table.source)
         got = {d: _fingerprint(v) for d, v in _ch_days(ch, table, cols).items()}
         want = all_days.get(table.name) or {}
@@ -870,13 +927,44 @@ def _check_clickhouse(ch, databases, m, all_days):
     return problems
 
 
+def _foreign_rows(ch, table, stage, org):
+    """Staged vault rows that are not ORG's by the table's own rule, as the SQLite side judges each row (of_secrets-
+    review on PR 433): org_id, or for a hook row naming none, a session whose transcript rows here or staged name ORG
+    alone. The organization's own database holds only its rows by routing: nothing to judge there."""
+    if not table.scope:
+        return 0
+    db = table.source.split(".", 1)[0]
+    if table.name == "vault/hook_record":
+        sessions = (f"SELECT session_id FROM (SELECT session_id, org_id FROM {db}.transcript_record UNION ALL "
+                    f"SELECT session_id, org_id FROM {db}.transcript_record__import) WHERE notEmpty(session_id) "
+                    "GROUP BY session_id HAVING min(org_id) = {org:String} AND max(org_id) = {org:String}")
+        has = "org_id" in _ch_columns(ch, stage)
+        rule = (f"(org_id = {{org:String}} OR (org_id = '' AND session_id IN ({sessions})))" if has
+                else f"session_id IN ({sessions})")
+    else:
+        rule = "org_id = {org:String}"
+    sql = f"SELECT count() FROM {stage} WHERE NOT {rule} FORMAT TabSeparated"
+    try:
+        return int(b"".join(ch.query(sql, {"org": org})) or b"0")
+    except Exception:
+        raise ExportError(f"{table.name}: cannot judge the staged rows") from None
+
+
 def _import_clickhouse(ch, databases, bundle, identity, m):
     """Load every carried day into a staging table first, hashing each stream on the way in and checking the staged
     days against the manifest; only then replace the target's days, server-side, from the staging table. A failure
     before the swap changes nothing in the target (the user organization's sec_keeper, msg 01a1f638-5862)."""
-    tables = list(_ch_tables(databases, m["org"], _org_columns(ch, databases)))
+    tables = _target_tables(ch, databases, m)
     staged = []
+    keep_stage = [False]  # set when a swap failed: the staging tables stay for the retry (sec_keeper)
     try:
+        vault_transcript = next((t for t in tables if t.name == "vault/transcript_record"), None)
+        if vault_transcript is not None:  # judged against by the hook rows even when no transcript day is carried
+            for sql in (f"CREATE TABLE IF NOT EXISTS {vault_transcript.source}__import AS {vault_transcript.source}",
+                        f"TRUNCATE TABLE {vault_transcript.source}__import"):
+                for _ in ch.query(sql, {}):
+                    pass
+            staged.append(vault_transcript.source + "__import")
         for table in tables:
             days = m["clickhouse"][table.name]["days"]
             if not days:
@@ -896,29 +984,44 @@ def _import_clickhouse(ch, databases, bundle, identity, m):
                         pass
                 if digest.hexdigest() != m["files"][rel]["plain_sha256"]:
                     raise ExportError(f"{table.name} {d}: the stream inserted is not the one the manifest names")
+            foreign = _foreign_rows(ch, table, stage, m["org"])
+            if foreign:
+                raise ExportError(f"{table.name}: {foreign} staged rows are not {m['org']}'s; the target is unchanged")
             got = _ch_days(ch, _CHTable(table.name, stage, table.date, table.keys, "", {}),
                            m["clickhouse_columns"][table.name])
             want = {d: v for d, v in days.items() if v[0]}
             if got != want:
                 raise ExportError(f"{table.name}: the staged rows differ from the bundle; the target is unchanged")
-        for table in reversed(tables):  # hook rows go before the transcript rows their scope reads
-            days = m["clickhouse"][table.name]["days"]
-            stage = table.source + "__import"
-            for d, (count, _, _, _) in sorted(days.items()):
+        carried = [(t, sorted(m["clickhouse"][t.name]["days"].items())) for t in tables]
+        for table, days in reversed(carried):  # hook rows go before the transcript rows their scope reads
+            for d, _ in days:
                 delete = (f"ALTER TABLE {table.source} DELETE{table.where(f'{table.date} = {{d:Date}}')} "
                           "SETTINGS mutations_sync = 2")
                 for _ in ch.query(delete, dict(table.params, d=d)):
                     pass
-                if count:
-                    for _ in ch.query(f"INSERT INTO {table.source} SELECT * FROM {stage} WHERE {table.date} = "
-                                      "{d:Date}", {"d": d}):
-                        pass
+        for table, days in carried:  # transcripts before the hooks their scope reads; each row by its table's rule
+            stage = table.source + "__import"
+            for d, (count, _, _, _) in days:
+                if not count:
+                    continue
+                insert = (f"INSERT INTO {table.source} SELECT * FROM {stage}"
+                          f"{_CHTable(table.name, stage, table.date, table.keys, table.scope, table.params).where(f'{table.date} = {{d:Date}}')}")
+                for attempt in (1, 2):  # once more from the kept staging table before the day is named
+                    try:
+                        for _ in ch.query(insert, dict(table.params, d=d)):
+                            pass
+                        break
+                    except Exception:
+                        if attempt == 2:
+                            keep_stage[0] = True
+                            raise ExportError(f"{table.name} {d}: the swap's insert failed twice; the day is empty "
+                                              f"there and {stage} is kept: run the import again") from None
     except ExportError:
         raise
     except Exception:
         raise ExportError("ClickHouse import failed; run the import again, it replaces each day") from None
     finally:
-        for stage in staged:
+        for stage in ([] if keep_stage[0] else staged):
             try:
                 for _ in ch.query(f"DROP TABLE IF EXISTS {stage}", {}):
                     pass
@@ -931,6 +1034,11 @@ def delete_bundle(bundle, index_sha):
     message 01a1f5ff-f009: nothing left in clear, and the deletion read back). Only a bundle whose index.json has the
     sha256 the export printed is removed, and only the files its index names: any other file refuses it, with nothing
     removed. Returns the number of files removed after reading back that the folder is gone."""
+    if os.path.islink(bundle.rstrip("/")):
+        raise ExportError("the bundle's path is a symbolic link; nothing removed")
+    for folder, dirs, names in os.walk(bundle):  # a link inside it: refused before any file goes (sec_keeper)
+        if any(os.path.islink(os.path.join(folder, n)) for n in dirs + names):
+            raise ExportError("the bundle holds a symbolic link; nothing removed")
     ix = load_index(bundle, index_sha)
     named = set(ix["files"]) | {"index.json"}
     found = set()

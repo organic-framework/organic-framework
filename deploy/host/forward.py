@@ -183,20 +183,45 @@ def unit(to, key, port=PORT, home=None, local_port=LOCAL_PORT, mode="reverse"):
             "StandardOutPath": log, "StandardErrorPath": log, "ProcessType": "Background"}
 
 
-def authorized_line(pubkey, port=PORT):
-    """The host's authorized_keys line for the forward's key: forwarding and no command; the sshd block allows only a
-    Unix-socket listen (permitlisten names TCP listens alone)."""
+SERVER_SOCKET = "/srv/of-server/server.sock"  # on the host, from the server's move: of:of-forward 2750, the socket 0660
+BRIDGE_COMMAND = f"/usr/bin/socat - UNIX-CONNECT:{SERVER_SOCKET}"
+
+
+def authorized_line(pubkey, port=PORT, mode="reverse", laptop=None):
+    """The host's authorized_keys line for the forward's key. reverse: forwarding and no command; the sshd block
+    allows only a Unix-socket listen (permitlisten names TCP listens alone). bridge: no forwarding at all and one
+    command, a stream into the server's socket, from the laptop's address when given (of_agent-server's test sshds,
+    msg 01a1f5f7-0d09; of_review on organic-framework PR 433: the bridge's host side was in no command)."""
+    if mode == "bridge":
+        frm = f'from="{laptop}",' if laptop else ""
+        return f'restrict,{frm}command="{BRIDGE_COMMAND}" {pubkey.strip()}'
     return f'restrict,port-forwarding,command="/usr/bin/false" {pubkey.strip()}'
 
 
-def sshd_block(user=HOST_USER, port=PORT):
+def sshd_block(user=HOST_USER, port=PORT, mode="reverse"):
     """The host's sshd Match block for the forward's user (sshd_config(5)): a remote Unix-socket listen and nothing
     else: no TCP forwarding (-L, -D, -W, -R to a port), no session; the socket at mode 0660 in its setgid folder, a
     stale one replaced. sshd limits no socket path, so the user's writable folders are the limit. A closing
     `Match all` ends it: a file under sshd_config.d is included near the top of sshd_config, and without it the main
     file's lines after the Include would apply to this user alone. OpenSSH 10.6 refuses a remote socket forward while
     AllowTcpForwarding is no (of_agent-server's test sshd, msg 01a1f58d-4954), so it is `remote`, with `PermitListen
-    none` keeping every remote TCP listen out and `PermitOpen none` every local one."""
+    none` keeping every remote TCP listen out and `PermitOpen none` every local one.
+
+    bridge (from the server's move to the host): every kind of forwarding off and one forced command, socat into the
+    server's socket, with sessions allowed, since each stream is a session through the laptop's ControlMaster."""
+    if mode == "bridge":
+        return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8, the bridge)\n"
+                f"Match User {user}\n"
+                f"    DisableForwarding yes\n"
+                f"    AllowTcpForwarding no\n"
+                f"    AllowStreamLocalForwarding no\n"
+                f"    PermitOpen none\n"
+                f"    PermitListen none\n"
+                f"    AllowAgentForwarding no\n"
+                f"    X11Forwarding no\n"
+                f"    PermitTTY no\n"
+                f"    ForceCommand {BRIDGE_COMMAND}\n"
+                f"Match all\n")
     return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8)\n"
             f"Match User {user}\n"
             f"    AllowTcpForwarding remote\n"
@@ -277,10 +302,11 @@ def install(to, key=KEY, port=PORT, dry_run=False, home=None, run=subprocess.run
     doc = unit(to, key, port, home, local_port, mode)
     if dry_run:
         out(plistlib.dumps(doc).decode())
-        out("on the host, the sshd block:\n" + sshd_block(to.split("@", 1)[0], port))
+        out("on the host, the sshd block:\n" + sshd_block(to.split("@", 1)[0], port, mode))
         pub = key + ".pub"
         if os.path.isfile(pub):
-            out(f"on the host, {to.split('@', 1)[0]}'s authorized_keys: " + authorized_line(open(pub).read(), port))
+            out(f"on the host, {to.split('@', 1)[0]}'s authorized_keys: "
+                + authorized_line(open(pub).read(), port, mode))
         return doc
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.makedirs(os.path.dirname(doc["StandardOutPath"]), exist_ok=True)
