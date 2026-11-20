@@ -536,6 +536,40 @@ class ListenTest(unittest.TestCase):
         self.assertIn("and every snapshot: every row projected again", out.getvalue())
         same()
 
+    def test_a_redaction_of_an_ask_redoes_the_view_from_before_it(self):
+        """of_server, msg 01a1fa1e-3ce2: redaction 7da5d129 rewrote three ask events in place, and the view kept their
+        text until a rebuild. of_redact.run records of.redacted with table event and the rows' rowids; the asks
+        processor redoes its projection from the earliest of them."""
+        import contextlib
+        import io
+        import time as _t
+
+        def at(s):
+            return _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() - s))
+        procs = [of_listen.AsksProcessor()]
+        procs[0].MIN_FLUSH_S, procs[0].SNAP_S = 0, 60
+        cur = of_listen.prepare(self.conn, procs)
+        out = io.StringIO()
+
+        def run():
+            with contextlib.redirect_stdout(out):
+                of_listen.step(self.conn, procs, cur)
+        self.ask("Merge PR 2349 now?", ts=at(6000))
+        run()
+        secret = self.ask("Wire the matter nobody else knows about?", position="b", ts=at(4000))
+        run()
+        self.ask("Open the gateway window?", position="c", ts=at(1000))
+        run()
+        text = {a["event_id"]: a["text"] for a in of_listen.read_asks(self.conn)}
+        self.assertIn("matter", text[secret] or "")
+        (rowid,) = self.conn.execute("SELECT rowid FROM event WHERE event_id = ?", (secret,)).fetchone()
+        self.conn.execute("UPDATE event SET payload = ? WHERE event_id = ?", (json.dumps({"of_redacted": "[x]"}), secret))
+        of_store.add_event(self.conn, of_events.record("redacted", {"table": "event", "ids": [rowid]}))
+        run()
+        text = {a["event_id"]: a["text"] for a in of_listen.read_asks(self.conn)}
+        self.assertNotIn("matter", text.get(secret) or "")
+        self.assertIn("Merge PR 2349", " ".join(t or "" for t in text.values()))     # the others as they were
+
     def test_another_versions_snapshots_are_deleted(self):
         """of_server on redaction 7da5d129 (msg 01a1fa0b-b0b3): the folders of versions 28 and 29 stayed, cut from
         events since rewritten, and no version deleted them."""

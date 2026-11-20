@@ -133,7 +133,8 @@ class AsksProcessor(Processor):
         import of_asks
         # a rebuild or a new version catches up on these names only (relevant() takes nothing else): a rebuild from
         # rowid 0 had read the whole log (the founder's read-path rule, 2026-11-14; seen on organic-framework PR 181)
-        self.catch_up_names = tuple(of_asks.READS)
+        # of.redacted: a redaction rewrote rows in place, which the projection then redoes (of_server, msg 01a1fa1e-3ce2)
+        self.catch_up_names = tuple(of_asks.READS) + ("of.redacted",)
 
     def _relevant(self, r):
         import of_asks
@@ -360,9 +361,36 @@ class AsksProcessor(Processor):
             self.suffix = ""
         return True
 
+    def _redacted(self, conn, row):
+        """A redaction of event rows (of_redact.run records of.redacted with table event and their rowids): the held
+        copies of those rows take their redacted payload, and the projection is redone from the earliest of them, as
+        for a correction (of_server, msg 01a1fa1e-3ce2, after redaction 7da5d129 left three asks' text in the view)."""
+        pl = row.get("payload") or {}
+        if not isinstance(pl, dict) or pl.get("table") != "event":
+            return
+        ids = [int(i) for i in pl.get("ids") or [] if str(i).isdigit()]
+        earliest = None
+        for k in range(0, len(ids), 500):
+            part = ids[k:k + 500]
+            for eid, ts, payload in conn.execute(
+                    f"SELECT event_id, ts, payload FROM event WHERE rowid IN ({','.join('?' * len(part))})", part):
+                if eid in self.rows:
+                    try:
+                        self.rows[eid]["payload"] = json.loads(payload) if payload else {}
+                    except ValueError:
+                        self.rows[eid]["payload"] = {}
+                earliest = ts if earliest is None or (ts or "") < earliest else earliest
+        if earliest is not None and self.state is not None:
+            self.rewind = earliest if self.rewind is None else min(self.rewind, earliest)
+        if earliest is not None:
+            self.dirty = True
+
     def handle(self, conn, rows):
         if rows:
             self.max_rowid = max(self.max_rowid, max(r.get("rowid") or 0 for r in rows))
+        for r in rows:
+            if r.get("name") == "of.redacted" and (r.get("rowid") or 0) > self.carried_upto:
+                self._redacted(conn, r)
         # a start carried on from the view (_carry_on): rows up to its checkpoint are in it or held already
         new = [r for r in rows if self._relevant(r) and (r.get("rowid") or 0) > self.carried_upto]
         if not new:
