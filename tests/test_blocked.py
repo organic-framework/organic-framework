@@ -164,6 +164,9 @@ class RestingPositionTest(unittest.TestCase):
 
 
 
+KEPT_PROMPT = ["⏺ Keeping 1m tokens · /autocompact to change", "", "─" * 40, "❯", "─" * 40, "  ⏵⏵ bypass permissions on"]
+
+
 def _offer(keep_first, cursor_on_keep):
     rows = ["Autocompact at ‹ 400k › tokens", "Keep 1m tokens"]
     if keep_first:
@@ -191,10 +194,10 @@ class KeepContextTest(unittest.TestCase):
 
     def test_either_order_reaches_keep_before_enter(self):
         for keep_first in (False, True):
-            ok, why, pressed = self.run_answer([_offer(keep_first, False), _offer(keep_first, True), ["❯ "]])
+            ok, why, pressed = self.run_answer([_offer(keep_first, False), _offer(keep_first, True), KEPT_PROMPT])
             self.assertTrue(ok, why)
             self.assertEqual(pressed, ["Up" if keep_first else "Down", "Enter"])
-        ok, _, pressed = self.run_answer([_offer(False, True), ["❯ "]])   # already on Keep
+        ok, _, pressed = self.run_answer([_offer(False, True), KEPT_PROMPT])   # already on Keep
         self.assertEqual((ok, pressed), (True, ["Enter"]))
 
     def test_no_enter_unless_the_cursor_is_on_keep(self):
@@ -222,6 +225,13 @@ class KeepContextTest(unittest.TestCase):
         self.assertEqual((ok, pressed), (False, []))
         ok, _, pressed = self.run_answer([_offer(False, False), quoted])   # the offer gone while moving: no Esc
         self.assertEqual((ok, pressed), (False, ["Down"]))
+
+    def test_an_empty_read_after_enter_is_no_keep(self):
+        """of_review's note on PR 431: an empty or partial read after Enter had counted as Keep."""
+        for after in ([], ["  partial"]):
+            ok, why, pressed = self.run_answer([_offer(False, True), after])
+            self.assertEqual((ok, pressed), (False, ["Enter"]))
+            self.assertIn("prompt was not seen", why)
 
     def test_a_failed_read_or_key_ends_with_no_answer(self):
         """of_review on PR 431: a failed read after Enter had counted as the dialog gone."""
