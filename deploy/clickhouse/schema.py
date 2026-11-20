@@ -90,7 +90,24 @@ def users(org_dbs, vault, unassigned):
         [f"{db}_read" for db in org_dbs]
 
 
-def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=None):
+# Each table's time column for an optional retention (`--ttl table=days`; 2026-11-20, of_server: a user
+# organization's store grew 1.3 to 1.7 GiB a day with none). Days are each deployment's own decision; none by default.
+TTL_COLUMNS = {"event": "ts", "transcript_record": "ts", "hook_record": "received_at", "runtime_record": "received_at"}
+
+
+def ttl_clause(table, days):
+    return f"TTL toDateTime({TTL_COLUMNS[table]}) + INTERVAL {int(days)} DAY"
+
+
+def check_ttl(ttl):
+    """{table: days} with every table one of TTL_COLUMNS and every value a whole number of days, 0 for none."""
+    for t, n in (ttl or {}).items():
+        if t not in TTL_COLUMNS or not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise SystemExit(f"schema.py: a retention is <table>=<days> for {', '.join(TTL_COLUMNS)}, got {t}={n!r}")
+    return dict(ttl or {})
+
+
+def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=None, ttl=None):
     if password_dir or read:
         # A missing file would leave its CREATE USER commented and the GRANT failing with
         # UNKNOWN_ROLE halfway through the script (found by the Lab, 2026-11-07): refuse up front.
@@ -99,11 +116,16 @@ def schema(org_dbs, vault, unassigned, password_dir=None, cluster=None, read=Non
             raise SystemExit(f"schema.py: no password {'file in ' + password_dir if password_dir else 'read'} for: "
                              f"{', '.join(missing)}")
     on = f" ON CLUSTER {cluster}" if cluster else ""
+    ttl = check_ttl(ttl)
     out = []
     for db in [*org_dbs, vault, unassigned]:
         out.append(f"CREATE DATABASE IF NOT EXISTS {db}{on};")
         for t, body in TABLES.items():
-            out.append(f"CREATE TABLE IF NOT EXISTS {db}.{t}{on}\n{body};")
+            days = ttl.get(t)
+            out.append(f"CREATE TABLE IF NOT EXISTS {db}.{t}{on}\n{body}{' ' + ttl_clause(t, days) if days else ''};")
+            if days is not None:  # a table made before: its retention set, or with 0 removed
+                out.append(f"ALTER TABLE {db}.{t}{on} MODIFY {ttl_clause(t, days)};" if days else
+                           f"ALTER TABLE {db}.{t}{on} REMOVE TTL;")
             if t in ADDED_ORG:  # a table made before the column: the vault mixes organizations, so each row names one
                 out.append(f"ALTER TABLE {db}.{t}{on} ADD COLUMN IF NOT EXISTS org_id LowCardinality(String) "
                            "DEFAULT '' AFTER tenant_id;")
@@ -137,8 +159,16 @@ def main():
     ap.add_argument("--unassigned", required=True)
     ap.add_argument("--password-dir")
     ap.add_argument("--cluster")
+    ap.add_argument("--ttl", action="append", default=[], metavar="TABLE=DAYS",
+                    help=f"a table's retention in days, 0 to remove it ({', '.join(TTL_COLUMNS)}; repeatable)")
     a = ap.parse_args()
-    print(schema(a.org, a.vault, a.unassigned, a.password_dir, a.cluster), end="")
+    ttl = {}
+    for item in a.ttl:
+        t, _, n = item.partition("=")
+        if not n.isdigit():
+            raise SystemExit(f"schema.py: --ttl {item!r}: TABLE=DAYS")
+        ttl[t] = int(n)
+    print(schema(a.org, a.vault, a.unassigned, a.password_dir, a.cluster, ttl=ttl), end="")
     if not a.password_dir:
         print("schema.py: without --password-dir the CREATE USER lines are comments; create these users "
               f"before running it: {', '.join(users(a.org, a.vault, a.unassigned))}", file=sys.stderr)
