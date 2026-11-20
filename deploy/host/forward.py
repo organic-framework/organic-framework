@@ -211,6 +211,8 @@ def sshd_block(user=HOST_USER, port=PORT, mode="reverse"):
     server's socket, with sessions allowed, since each stream is a session through the laptop's ControlMaster."""
     if mode == "bridge":
         return (f"# /etc/ssh/sshd_config.d/of-forward.conf (docs/server-several-machines.md 4.8, the bridge)\n"
+                f"# {user}'s shell must run -c: sshd runs ForceCommand as <shell> -c, and nologin refuses it\n"
+                f"#   usermod -s /bin/sh {user}   (restrict and ForceCommand run socat alone)\n"
                 f"Match User {user}\n"
                 f"    DisableForwarding yes\n"
                 f"    AllowTcpForwarding no\n"

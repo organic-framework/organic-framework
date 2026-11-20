@@ -145,6 +145,7 @@ class BridgeTest(unittest.TestCase):
                      "ForceCommand /usr/bin/socat - UNIX-CONNECT:/srv/of-server/server.sock", "Match all"):
             self.assertIn(line, block)
         self.assertNotIn("MaxSessions 0", block)        # each stream is a session through the ControlMaster
+        self.assertIn("usermod -s /bin/sh of-forward", block)   # nologin refuses ForceCommand's -c (of_review, PR 433)
         line = F.authorized_line("ssh-ed25519 AAAA k", mode="bridge", laptop="192.0.2.20")
         self.assertEqual(line, 'restrict,from="192.0.2.20",command="/usr/bin/socat - UNIX-CONNECT:'
                                '/srv/of-server/server.sock" ssh-ed25519 AAAA k')

@@ -1201,7 +1201,8 @@ def make_handler(app):
                 status, ctype, body = of_studio.handle(method, u.path, u.query, viewer)
             if status == 200 and (ctype or "").startswith("text/html"):
                 try:
-                    studio_viewed(app, viewer, u.path, q)
+                    if not app.moving():  # an event written while an organization's records are copied: none
+                        studio_viewed(app, viewer, u.path, q)
                 except Exception as e:  # recording a view never breaks the page
                     print(f"of-server: studio_viewed not recorded: {type(e).__name__}: {e}", flush=True)
             return self._raw(status, ctype, body if isinstance(body, bytes) else str(body).encode())
@@ -1217,6 +1218,11 @@ def make_handler(app):
                              "title": f"{', '.join(hit)} is moving to another server: send again later"},
                        headers=(("Retry-After", str(MOVING_RETRY_S)),))
             return True
+
+        def _msg_orgs(self, msg_id):
+            with app.store.conn() as c:
+                r = c.execute("SELECT to_org, from_org FROM messages WHERE msg_id = ?", (msg_id,)).fetchone()
+            return [o for o in (r or ()) if o]
 
         def _machine_orgs_all(self, m):
             return set(app.cfg.get("orgs") or {}) | app.moving() if m["tenant"] else set(json.loads(m["orgs"]))
@@ -1474,6 +1480,8 @@ def make_handler(app):
                         c.execute("INSERT INTO tokens VALUES (?,?,?)", (hashlib.sha256(token.encode()).hexdigest(), mid, expires))
                     return self._send(200, {"token": token, "expires": expires})
                 if u.path == "/v1/enroll":
+                    if self._moving(app.moving()):  # an enrolment writes consent events (sec_keeper, round 3)
+                        return None
                     ip = self.client_address[0]
                     if app.bad_codes.blocked(ip):
                         return self._problem(429, "too_many", "too many bad invite codes; wait")
@@ -1486,6 +1494,8 @@ def make_handler(app):
                         return self._problem(e.status, e.typ, e.title)
                 if u.path == "/v1/passkey/approve" or (u.path.startswith("/v1/passkey/windows/") and
                                                        u.path.endswith(("/register", "/test"))):
+                    if self._moving(app.moving()):  # they write the feed and passkey rows, before any machine
+                        return None
                     try:
                         b = json.loads(raw or b"{}") or {}
                     except ValueError:
@@ -1576,14 +1586,20 @@ def make_handler(app):
                     return self._relay(lambda: app.relay.post(m, json.loads(raw or b"{}")), status=202)
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/ack"):
                     msg_id = u.path[len("/v1/messages/"):-len("/ack")]
+                    if self._moving(self._msg_orgs(msg_id)):  # a message of a moving organization, from any machine
+                        return None
                     return self._relay(lambda: app.relay.ack(m, msg_id, json.loads(raw or b"{}")))
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/take"):
                     msg_id = u.path[len("/v1/messages/"):-len("/take")]
+                    if self._moving(self._msg_orgs(msg_id)):  # a message of a moving organization, from any machine
+                        return None
                     return self._relay(lambda: app.relay.take(m, msg_id, json.loads(raw or b"{}")))
                 if u.path == "/v1/messages/move":  # a structure keeper or a unit owner (docs/server.md, "Relay and presence")
                     return self._relay(lambda: app.relay.move(m, json.loads(raw or b"{}")))
                 if u.path.startswith("/v1/messages/") and u.path.endswith("/drop"):
                     msg_id = u.path[len("/v1/messages/"):-len("/drop")]
+                    if self._moving(self._msg_orgs(msg_id)):  # a message of a moving organization, from any machine
+                        return None
                     return self._relay(lambda: app.relay.drop_by(m, msg_id, json.loads(raw or b"{}")))
                 if u.path == "/v1/redactions":
                     try:
@@ -2328,14 +2344,19 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
         raise FileNotFoundError(f"no server store at {store}")
     fd, tmp = tempfile.mkstemp(prefix="server.db.", suffix=".partial", dir=dest)  # one per run: two runs never share
     os.close(fd)
-    src = sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=30)
-    dst = sqlite3.connect(tmp)
     try:
-        src.backup(dst)  # a consistent copy while the server writes
-    finally:
-        dst.close()
-        src.close()
-    os.replace(tmp, target)
+        src = sqlite3.connect(f"file:{store}?mode=ro", uri=True, timeout=30)
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)  # a consistent copy while the server writes
+        finally:
+            dst.close()
+            src.close()
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):  # a whole copy of the store: never left behind (sec_keeper, round 3)
+            os.unlink(tmp)
+        raise
     out.append(f"{day}: server.db {os.path.getsize(target)} bytes")
     disk = b.get("clickhouse_disk")
     import of_plugins

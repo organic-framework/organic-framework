@@ -94,6 +94,16 @@ class RelayTest(unittest.TestCase):
                 with self.subTest(write=path), self.assertRaises(of_client.ServerError) as e:
                     a._authed("PUT" if path == "/v1/presence" else "POST", path, body=body)
                 self.assertEqual(e.exception.status, 503)                         # every write of its machines
+            with self.assertRaises(of_client.ServerError) as e:   # an enrolment writes consent events (round 3)
+                of_client.Client(self.url)._request("POST", "/v1/enroll", body={"code": "x", "machine_id": "m-new",
+                                                                                 "pubkey": "ssh-ed25519 AAAA", "consent": {}})
+            self.assertEqual(e.exception.status, 503)
+            with self.app.store.conn() as c:
+                c.execute("INSERT INTO messages (seq, msg_id, to_org, to_position, from_org, from_position, state) "
+                          "VALUES (900, 'm-ofb', 'zeta', 'zeta_x', 'ofb', 'ofb_lead', 'queued')")
+            with self.assertRaises(of_client.ServerError) as e:   # another organization's machine, an ofb message
+                z._authed("POST", "/v1/messages/m-ofb/ack", body={})
+            self.assertEqual(e.exception.status, 503)
             self.assertIsNotNone(self.call(z, "GET", "/v1/messages?wait=0"))    # another organization goes on
             self.assertEqual(of_server.set_moving(self.app.cfg, "ofb", False), [])
             self.app._moving_cache = None
