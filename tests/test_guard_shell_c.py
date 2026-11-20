@@ -29,7 +29,9 @@ class ShellClusterTest(unittest.TestCase):
         for cmd in (f"bash -c '{b}'", f"bash --noprofile -c '{b}'", f"bash --norc -c '{b}'", f"bash --login -c '{b}'",
                     f"bash --posix -c '{b}'", f"bash --rcfile /dev/null -c '{b}'", f"bash --init-file x -c '{b}'",
                     f"bash --noprofile -lc '{b}'", f"timeout 5 bash --norc -c '{b}'", f"env bash --norc -c '{b}'",
-                    f"zsh -f -c '{b}'", f"bash -l -c '{b}'", "bash -c -e 'printenv'", "bash -c -x -- 'printenv'"):
+                    f"zsh -f -c '{b}'", f"bash -l -c '{b}'", "bash -c -e 'printenv'", "bash -c -x -- 'printenv'",
+                    f"bash --noprofile --norc -lc '{b}'", f"bash --restricted -c '{b}'", f"bash --verbose -c '{b}'",
+                    f"sh -ec '{b}'"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(denied(cmd))
 
