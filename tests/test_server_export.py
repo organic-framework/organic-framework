@@ -120,6 +120,17 @@ class ExportTest(unittest.TestCase):
     def export(self, org="acme", out=None, **kw):
         return export_store(self.src, org, out or self.out, **kw)
 
+    def delta(self, out, org="acme"):
+        """A bulk, which takes a live organization as it is, then the final delta's hold over it (a store-only bundle
+        has no delta of its own), with the organization marked moving long enough ago."""
+        import of_server
+        cfg = {"state_dir": tempfile.mkdtemp(prefix="ofs-")}
+        _, sha = self.export(org, out + "-bulk", config=cfg)
+        of_server.set_moving(cfg, org, True)
+        old = time.time() - ex.MOVING_SETTLE_S - 5
+        os.utime(os.path.join(of_server.moving_dir(cfg), org), (old, old))
+        return ex._hold(self.src, org, cfg, out + "-bulk", sha)
+
     def test_an_export_holds_the_organizations_rows_alone_and_a_cross_message_in_both(self):
         m, sha = self.export(version="t")
         self.assertEqual(len(sha), 64)
@@ -196,9 +207,9 @@ class ExportTest(unittest.TestCase):
         self.src.execute(f"INSERT INTO batches ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})",
                          list(row.values()))
         with self.assertRaises(ex.ExportError) as e:
-            self.export()
+            self.delta(self.out + "-d")                       # the final delta waits; its bulk did not
         self.assertIn("still queued", str(e.exception))
-        self.export(org="other", out=self.out + "-other")     # another organization's export is not held
+        self.delta(self.out + "-other", org="other")          # another organization's export is not held
 
     def test_every_exported_table_shows_another_organizations_records(self):
         _, sha = self.export()
@@ -213,10 +224,10 @@ class ExportTest(unittest.TestCase):
         the hold was read only at the start."""
         insert_row(self.src, "batches", batch_id="dead", machine_id="m", state="dead", by_org=json.dumps({"acme": 1}))
         with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
-            self.export(out=self.out + "-1")
+            self.delta(self.out + "-1")
         self.src.execute("UPDATE batches SET by_org = NULL")                    # an org-less queued or dead batch
         with self.assertRaisesRegex(ex.ExportError, "queued or dead"):
-            self.export(out=self.out + "-1b")
+            self.delta(self.out + "-1b")
         self.src.execute("DELETE FROM batches")
         insert_row(self.src, "batches", batch_id="del", machine_id="m", state="committed", by_org="{}")
         insert_row(self.src, "redactions", redaction_id="r", batch_id="del", state="queued")
@@ -239,25 +250,33 @@ class ExportTest(unittest.TestCase):
     def test_round_four_the_hold_sees_a_change_between_its_two_readings_and_a_young_flag(self):
         """The user organization's sec_keeper, round 4 (through of_architect, msg 01a1f6ea-b786): the second reading
         re-read the state, so a batch committed between the two, or the flag going off and on, passed unseen."""
-        state = tempfile.mkdtemp(prefix="ofs-")
-        cfg = {"state_dir": state}
-        snap = ex._hold(self.src, "acme", cfg, None, None)
+        import of_server
+        moving = {"state_dir": tempfile.mkdtemp(prefix="ofs-")}                 # a final delta's: flag set and settled
+        of_server.set_moving(moving, "acme", True)
+        old = time.time() - ex.MOVING_SETTLE_S - 5
+        os.utime(os.path.join(of_server.moving_dir(moving), "acme"), (old, old))
+        final = (moving, "bulk", "0" * 64)
+        snap = ex._hold(self.src, "acme", *final)
+        bulk = ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None)
         insert_row(self.src, "batches", batch_id="new", machine_id="m", state="committed",
                    by_org=json.dumps({"acme": 1}))
         with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):
-            ex._hold(self.src, "acme", cfg, None, None, snap)
-        snap = ex._hold(self.src, "acme", cfg, None, None)
+            ex._hold(self.src, "acme", *final, snap)
+        ex._hold(self.src, "acme", {"state_dir": tempfile.mkdtemp(prefix="ofs-")}, None, None, bulk)   # a bulk: the
+        snap = ex._hold(self.src, "acme", *final)                               # final delta carries the batch
         insert_row(self.src, "batches", batch_id="theirs", machine_id="m", state="committed",
                    by_org=json.dumps({"other": 1}))
-        ex._hold(self.src, "acme", cfg, None, None, snap)                       # another organization's: no change
+        ex._hold(self.src, "acme", *final, snap)                                # another organization's: no change
         insert_row(self.src, "batches", batch_id="nobody", machine_id="m", state="committed", by_org="{}")
         with self.assertRaisesRegex(ex.ExportError, "batch of acme arrived"):   # an org-less batch: every org's
-            ex._hold(self.src, "acme", cfg, None, None, snap)                    # (sec_keeper, round 5)
+            ex._hold(self.src, "acme", *final, snap)                             # (sec_keeper, round 5)
         self.src.execute("DELETE FROM batches WHERE batch_id = 'nobody'")
+        state = tempfile.mkdtemp(prefix="ofs-")
+        cfg = {"state_dir": state}
+        snap = ex._hold(self.src, "acme", cfg, None, None)
         insert_row(self.src, "redactions", redaction_id="r9", batch_id="theirs", state="done")
         with self.assertRaisesRegex(ex.ExportError, "redaction arrived"):
             ex._hold(self.src, "acme", cfg, None, None, snap)
-        import of_server
         flag = os.path.join(state, "moving", "acme")
         of_server.set_moving(cfg, "acme", True)
         with self.assertRaisesRegex(ex.ExportError, "marked moving .* ago: wait"):
@@ -692,6 +711,37 @@ class ClickHouseExportTest(unittest.TestCase):
         with self.connection("dst"):
             self.assertEqual(check_import(self.store, self.delta, self.org, sha, self.ident, config=self.cfg),
                              [f"vault/event: ClickHouse differs on {self.new}"])
+
+    def test_a_day_that_changes_while_read_waits_for_the_final_delta(self):
+        """2026-11-20, of_server: a live organization's bulk ran 27 minutes and was refused for a batch that arrived.
+        The bulk now takes the organization as it is, and a day written while it was read is left to the final
+        delta, which carries it; in the final delta, made with nothing writing, such a day refuses."""
+        original, hit, seen = self.src.query, [], []
+
+        def grow(sql, params):
+            yield from original(sql, params)
+            if sql.endswith("FORMAT Native") and "src_vault.event" in sql and params.get("d") == self.last and not hit:
+                hit.append(1)
+                self.src.add("src_vault.event", self.org, "ask", self.last, f"late{len(hit) + len(seen)}", "while read")
+
+        with mock.patch.object(self.src, "query", grow):
+            m, sha = self.export()
+        self.assertEqual(m["clickhouse_deferred"], {"vault/event": [self.last]})
+        self.assertNotIn(f"clickhouse/vault/event/{self.last}.native.gz.age", m["files"])
+        self.assertFalse((self.bulk / f"clickhouse/vault/event/{self.last}.native.gz.age").exists())
+        self.assertNotIn(self.last, m["clickhouse"]["vault/event"]["days"])
+        self.assertEqual(ex.check_bundle(self.bulk, index_sha=sha), [])
+        self.restore(sha)                                                       # the bulk imports without it
+        self.assertEqual({r[2] for r in self.dst.rows("dst_vault.event")}, {self.early})
+        md, shad = self.export(self.delta, since=self.bulk, since_sha=sha)
+        self.assertIn(self.last, md["clickhouse"]["vault/event"]["days"])      # and the final delta carries it
+        self.restore(shad, self.delta)
+        self.assertIn((self.org, "ask", self.last, "late1", "while read"), self.dst.rows("dst_vault.event"))
+        seen.append(1)
+        hit.clear()
+        with mock.patch.object(self.src, "query", grow), self.assertRaisesRegex(
+                ex.ExportError, f"vault/event {self.last} changed while it was read"):
+            self.export(self.delta.with_name("delta2"), since=self.bulk, since_sha=sha)
 
     def test_failure_after_a_native_file_leaves_no_published_bundle(self):
         original = self.src.query
