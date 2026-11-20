@@ -9,8 +9,10 @@ batch would make them (of_ship.plan_wire), grouped by session, at most 10,000 ro
 redaction_id is derived from the request, so a retry never doubles it.
 """
 
+import hashlib
 import json
 import os
+import re
 import sqlite3
 import uuid
 
@@ -455,3 +457,128 @@ def classify(fp, host=None, size=None):
         local = bool(host) and str(host).split(":")[0] in ("127.0.0.1", "localhost")
         return "(a) weak, local" if local else "weak real password"
     return None
+
+
+# ------------------------------------------------------- the raw archive's register of content redactions
+#
+# A content redaction (the founder's yes on card OF-170, 2026-11-20, hand-over 7da5d129: a user organization's
+# confidential matter replaced by a mark everywhere but the harness's own transcript file) leaves that file as it was,
+# so the raw archive brings the content back whenever it copies the file whole: a change other than an append, or the
+# same session in a new account's folder after a move (of_archive.plan: `new`). The register names, by ids only, the
+# records whose content every raw copy replaces with their mark; of_archive passes what it stores through
+# archive_filter. Its folder is OF's state; nothing in it holds content.
+
+ARCHIVE_REGISTER = "archive-register.jsonl"
+KEEP_RECORD = ("uuid", "parentUuid", "logicalParentUuid", "type", "timestamp", "sessionId", "isSidechain", "userType",
+               "version", "requestId", "subtype", "isMeta")
+KEEP_MESSAGE = ("role", "model", "id", "type", "usage", "stop_reason")
+_RECORD_ID = re.compile(rb'"(?:uuid|id)":\s*"([^"\\]{1,80})"')
+
+
+class RegisterError(OSError):
+    """The register cannot be read. An OSError, which of_archive already takes as "skip this file": a file the register
+    may name is not copied rather than copied with what it would mark."""
+
+
+def archive_register_path():
+    return os.path.join(of_events.STATE_DIR, "redaction", ARCHIVE_REGISTER)
+
+
+def archive_register(path=None):
+    """The register's entries, one JSON object a line: {"session", "keys", "mark", "reason", "basis", "at"}. KEYS name
+    records of SESSION: a record's uuid (or its top-level id), or, for a line with neither, the sha256 of its bytes as
+    the store took them (of_store.redact_keys first). A missing register is empty; anything else that does not read,
+    or a line that is no entry, raises RegisterError."""
+    p = path or archive_register_path()
+    try:
+        with open(p, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise RegisterError(f"the raw archive's redaction register cannot be read: {e.strerror}") from None
+    out = []
+    for n, line in enumerate(raw.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            e = None
+        if not (isinstance(e, dict) and isinstance(e.get("session"), str) and e["session"]
+                and isinstance(e.get("keys"), list) and e["keys"] and isinstance(e.get("mark"), str) and e["mark"]):
+            raise RegisterError(f"the raw archive's redaction register: line {n} is no entry")
+        out.append(e)
+    return out
+
+
+def mark_record(body, mark):
+    """A transcript line with its content replaced by MARK. The record keeps its ids, type and time, and a message its
+    role, model, id and usage with one text block, the mark, so the conversation's shape still reads. A line that is
+    no JSON object becomes {"of_redacted": MARK}."""
+    try:
+        rec = json.loads(body)
+    except ValueError:
+        rec = None
+    if not isinstance(rec, dict):
+        return json.dumps({"of_redacted": mark}, ensure_ascii=False).encode()
+    out = {k: rec[k] for k in KEEP_RECORD if k in rec}
+    msg = rec.get("message")
+    if isinstance(msg, dict):
+        m = {k: msg[k] for k in KEEP_MESSAGE if k in msg}
+        m["content"] = [{"type": "text", "text": mark}]
+        out["message"] = m
+    out["of_redacted"] = mark
+    return json.dumps(out, ensure_ascii=False).encode()
+
+
+def _named(body, keys):
+    """The mark KEYS gives the line BODY, or None. A record id is looked for in the bytes first and parsed only when
+    one is named, so an unnamed line costs a search and a hash."""
+    if not body.strip():
+        return None
+    ids = {c.decode("utf-8", "replace") for c in _RECORD_ID.findall(body)}
+    if ids & keys.keys():
+        try:
+            rec = json.loads(body)
+        except ValueError:
+            rec = None
+        if isinstance(rec, dict):
+            k = rec.get("uuid") or rec.get("id")
+            if isinstance(k, str) and k in keys:
+                return keys[k]
+    h = hashlib.sha256(body).hexdigest()
+    if h in keys:
+        return keys[h]
+    if not ids:   # a line with no id is named by its hash as the store took it; redact_keys is the costly part
+        h = hashlib.sha256(of_store.redact_keys(body)).hexdigest()
+        if h in keys:
+            return keys[h]
+    return None
+
+
+def archive_filter(rel, data, register=None):
+    """DATA, the bytes of the source REL (relative to the home folder) that the raw archive is about to store, with
+    every line the register names for REL's session replaced by its mark. REL names its session by its file name's
+    stem or by a folder (a subagent's transcript under the session's own). Returns DATA itself when no entry names the
+    session; raises RegisterError when the register does not read."""
+    entries = archive_register() if register is None else register
+    parts = rel.replace(os.sep, "/").split("/")
+    names = set(parts[:-1]) | {parts[-1].split(".", 1)[0]}
+    keys = {}
+    for e in entries:
+        if e["session"] in names:
+            keys.update({str(k): e["mark"] for k in e["keys"]})
+    if not keys:
+        return data
+    out, changed = [], False
+    for line in data.splitlines(keepends=True):
+        body = line.rstrip(b"\n")
+        mark = _named(body, keys)
+        if mark is None:
+            out.append(line)
+        else:
+            new = mark_record(body, mark)
+            changed = changed or new != body
+            out.append(new + line[len(body):])
+    return b"".join(out) if changed else data
