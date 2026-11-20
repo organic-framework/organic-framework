@@ -1904,6 +1904,72 @@ def _env_value_dump(head, args):
     return False
 
 
+# G3's one named value through grep -o (hand-over e280da4f, of_server; a user organization's structure keeper, msg
+# 01a1f823-65a0): exactly `^?NAME=VALUE`, VALUE one class that cannot cross a space ([^ ], [^[:space:]], \S, or a bracket
+# class with no space, \s, [:space:] or dot in it) with one quantifier, or nothing. `HOME=.*` and an alternation
+# (`A=[^ ]*\|SECRET=[^ ]*`) printed values that were never the one named.
+_G3_CLASS_INNER = r"(?:[A-Za-z0-9_+/:@%,~#!-]|\\[-\]_]|\[:(?:alnum|alpha|digit|upper|lower|xdigit|punct|graph):\])"
+_G3_CLASS = (r"(?:\[\^ \]|\[\^\[:space:\]\]|\\S|\[(?!\^)" + _G3_CLASS_INNER + r"(?:\^|" + _G3_CLASS_INNER + r")*\])")
+_G3_QUANT = r"(?:\*|\+|\?|\\\+|\\\?|\{\d+(?:,\d*)?\}|\\\{\d+(?:,\d*)?\\\})"
+# a name pattern may group and alternate name parts (`^[A-Z_]*\(R2\|CF\)[A-Z_]*`): none of them can match `=`
+_NAME_PATTERN = re.compile(r"\^?(?:[A-Za-z0-9_]|\[(?!\^)" + _G3_CLASS_INNER.replace("%,~#!", "") + r"+\]|" + _G3_QUANT
+                           + r"|\\\(|\\\)|\\\||[()|])+")
+_ONE_NAMED_VALUE = re.compile(r"\^?([A-Za-z_][A-Za-z0-9_]*)=(?:" + _G3_CLASS + _G3_QUANT + r"?)?\$?")
+
+
+def _grep_only_matching(args):
+    """Does this grep print only what matched: -o alone, in a short-flag bundle (-oE, -Eo, -ohE), or
+    --only-matching? Options that take a value end a bundle's flags (-e, -f, -m, -A, -B, -C, -d, -D)."""
+    for a in args:
+        if a == "--only-matching":
+            return True
+        if a == "--":
+            return False
+        if re.fullmatch(r"-[A-Za-z]+", a):
+            for c in a[1:]:
+                if c == "o":
+                    return True
+                if c in "efmABCdD":
+                    break
+    return False
+
+
+def _grep_patterns(args):
+    """The patterns of a grep call, quotes removed: each -e/--regexp value, else its first operand; None with -f or
+    --file (the patterns are not on the line)."""
+    pats, explicit, operand, i = [], False, None, 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            if not explicit and operand is None and i + 1 < len(args):
+                operand = args[i + 1]
+            break
+        if a in ("-f", "--file") or a.startswith("--file=") or (re.fullmatch(r"-[A-Za-z]*f.*", a)
+                                                                  and not a.startswith("--")):
+            if re.fullmatch(r"-[A-Za-z]*f.*", a) and "e" in a[1:a.index("f")]:
+                pass  # `-ef…`: f is -e's pattern, not the -f option
+            else:
+                return None
+        if a in ("-e", "--regexp"):
+            if i + 1 < len(args):
+                pats.append(args[i + 1])
+            explicit, i = True, i + 2
+            continue
+        if a.startswith("--regexp="):
+            pats.append(a.split("=", 1)[1])
+            explicit = True
+        elif re.fullmatch(r"-[A-Za-z]*e.+", a) and not a.startswith("--"):
+            pats.append(a[a.index("e") + 1:])
+            explicit = True
+        elif a in ("-m", "-A", "-B", "-C", "-d", "-D", "--max-count", "--context"):
+            i += 2
+            continue
+        elif not a.startswith("-") and operand is None:
+            operand = a
+        i += 1
+    return [x.strip("'\"") for x in (pats if explicit else ([operand] if operand is not None else []))]
+
+
 def _names_only(head, args):
     """A pipeline stage that reduces env lines to names, so no value reaches the agent (of_architect:
     env | cut -d= -f1, env | grep -o '^PREFIX[A-Z_]*', awk -F= '{print $1}', sed 's/=.*//')."""
@@ -1923,12 +1989,17 @@ def _names_only(head, args):
     if head == "awk":
         return bool(re.search(r"-F\s*'?=", joined) and re.search(r"print\s+\$1\b", joined) and "$2" not in joined)
     if head == "grep":
-        if "-o" in args:  # grep -o prints only what matched
-            pat = next((a for a in args if not a.startswith("-")), "").strip("'\"")
+        if _grep_only_matching(args):  # grep -o prints only what matched
+            pats = _grep_patterns(args)
+            if pats is None or len(pats) != 1:
+                return False  # -f, or several patterns: not one reading (hand-over e280da4f)
+            pat = pats[0]
             if "=" not in pat:
-                return True  # a name pattern, no value
-            left = pat.split("=", 1)[0].lstrip("^")  # `NAME=[^ ]*`: one named value, allowed iff NAME is not secret
-            return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", left)) and not _secret_name(left)
+                # a name pattern, no value: only when no part of it can match `=`, a dot or a space, so it cannot run
+                # on into a value (`[^ ]*`, `.*`, `\S+` printed whole lines; of_platform on hand-over e280da4f)
+                return bool(_NAME_PATTERN.fullmatch(pat))
+            m = _ONE_NAMED_VALUE.fullmatch(pat)   # `NAME=[^ ]*`: one named value, allowed iff NAME is not secret
+            return bool(m) and not _secret_name(m.group(1))
         # -c (a count), -q (nothing), -l/-L (filenames): the matched line's value never reaches the output
         return any(re.fullmatch(r"-[A-Za-z]*[cqlL][A-Za-z]*", a) for a in args)
     if head == "wc":
