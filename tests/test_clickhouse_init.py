@@ -16,6 +16,8 @@ class Client:
     users = set()          # the users this fake ClickHouse already has
     passwords = {}         # their passwords, as ClickHouse knows them
     default_answers = False
+    count_answer = None    # what the users count answers instead, when set
+    logs_in_as = {}        # a user whose login lands on another user
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -29,8 +31,12 @@ class Client:
         if u in Client.users and u != "admin":  # a login as an existing user, with its file
             if open(self.cfg["password_file"], "rb").read().strip() != Client.passwords.get(u):
                 raise RuntimeError("401")
-            return b"1\n"
+            return Client.logs_in_as.get(u, u).encode() + b"\n"
         if "system.users" in query:
+            if Client.count_answer is not None:
+                if isinstance(Client.count_answer, Exception):
+                    raise Client.count_answer
+                return Client.count_answer
             return b"1\n" if kw["params"]["param_u"] in Client.users else b"0\n"
         Client.seen.append(query)
         return b"1\n"
@@ -48,6 +54,7 @@ class ClickHouseInitTest(unittest.TestCase):
                                    "user": "of_server", "password_file": self.pw}}
         self.runs = []
         Client.seen, Client.users, Client.default_answers = [], set(), False
+        Client.count_answer, Client.logs_in_as = None, {}
 
     def init(self):
         return of_server.clickhouse_init(self.cfg, run=lambda argv, **kw: self.runs.append(argv), client=Client,
@@ -104,6 +111,35 @@ class ClickHouseInitTest(unittest.TestCase):
         os.chmod(self.pw, 0o644)                                   # an existing file anyone can read
         with self.assertRaisesRegex(SystemExit, "not this user's own 0600 file"):
             self.init()
+
+    def test_an_unreadable_count_or_a_login_as_another_user_refuses_and_leaves_no_file_made(self):
+        """of_review's notes on organic-framework PR 435 at its merge."""
+        pwdir = os.path.dirname(self.pw)
+        xml = os.path.join(self.tmp, "ch", "users.d", "admin.xml")
+        for answer in (b"", b"\n", RuntimeError("timed out"), b"Code: 497"):
+            Client.count_answer = answer
+            with self.subTest(answer=answer), self.assertRaisesRegex(SystemExit, "could not tell"):
+                self.init()
+            self.assertEqual(os.listdir(pwdir), [])               # the admin's file too
+            self.assertFalse(os.path.lexists(xml))
+        Client.count_answer = None
+        self.init()                                                # a first run, then the server's user
+        Client.users = {"of_server"}                              # exists, and its file logs in, but as another
+        Client.passwords = {"of_server": open(self.pw, "rb").read().strip()}
+        Client.logs_in_as = {"of_server": "admin"}
+        with self.assertRaisesRegex(SystemExit, "does not log in"):
+            self.init()
+        self.assertTrue(os.path.exists(self.pw))                  # a file this run did not make stays
+        Client.logs_in_as = {}
+        self.init()                                                # as itself: provisioned
+
+    def test_two_settings_of_the_moving_flag_at_once_keep_one_token(self):
+        """The user organization's sec_keeper on a5108c09: the second of two concurrent settings is no error."""
+        of_server.set_moving(self.cfg, "acme", True)
+        flag = os.path.join(of_server.moving_dir(self.cfg), "acme")
+        token = open(flag).read()
+        self.assertEqual(of_server.set_moving(self.cfg, "acme", True), ["acme"])   # O_EXCL alone decides: the
+        self.assertEqual(open(flag).read(), token)                                 # second keeps the first's
 
     def test_it_refuses_plain_http_and_a_missing_clickhouse_config(self):
         self.cfg["clickhouse"]["url"] = "http://127.0.0.1:8123"
