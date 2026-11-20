@@ -470,7 +470,9 @@ def _codex_rollouts(home):
 
 
 def codex_seat_account(home):
-    """Identify the sign-in by its account hash in the newest rollout's session metadata."""
+    """Identify the sign-in by its account hash in the newest rollout's session metadata. Any process of the OS user
+    can write a rollout, so this identity, and the training gate it keys, hold only while the guard and the sandbox
+    keep agent sessions out of the Codex homes (of_review, PR 468); it is never read from the login file."""
     files = _codex_rollouts(home)
     if not files:
         return None
@@ -626,14 +628,17 @@ def training_readings(conn=None):
     return out
 
 
+TRAINING_READINGS_MAX = 500  # training readings are a few per seat: the newest 500 hold every seat's latest by far
+
+
 def training_readings_by_seat(conn=None):
-    """Latest Codex reading per account, including legacy readings from this machine's default home."""
+    """Latest Codex reading per account, including legacy readings from this machine's default home. Reads the newest
+    TRAINING_READINGS_MAX readings only (tests/test_log_reads.py: no unbounded read of the event log)."""
     conn = conn or of_events._conn()
-    rows = conn.execute("SELECT ts, payload FROM event WHERE name = 'of.harness_training' "
-                        "AND json_extract(payload, '$.harness') = 'codex' "
-                        "AND (json_type(payload, '$.seat_account') = 'text' OR "
-                        "(json_type(payload, '$.seat_account') IS NULL AND host_id = ?)) "
-                        "ORDER BY ts DESC, rowid DESC", (of_events.machine_id(),))
+    rows = conn.execute("SELECT ts, payload FROM event WHERE name = 'of.harness_training' AND json_extract(payload, "
+                        "'$.harness') = 'codex' AND (json_type(payload, '$.seat_account') = 'text' OR (json_type(payload, "
+                        "'$.seat_account') IS NULL AND host_id = ?)) ORDER BY ts DESC, rowid DESC LIMIT ?",
+                        (of_events.machine_id(), TRAINING_READINGS_MAX))
     out = {}
     legacy = None
     for ts, payload in rows:
