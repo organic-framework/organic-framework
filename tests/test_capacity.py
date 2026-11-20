@@ -1583,6 +1583,17 @@ def exit_dialog(cursor=1):
             + ["", "   Enter to confirm · Esc to cancel"])
 
 
+def narrow_exit_dialog(cursor=1):
+    """The exit dialog as a narrow pane wraps it (2026-11-20)."""
+    opts = [["Exit and stop", "tasks"], ["Move to", "background and", "exit"], ["Stay"]]
+    out = ["▔▔▔▔▔▔▔▔", "  Background work is running", "  The following will stop when", "  you exit:", "",
+           "  scheduled task · Runs once in", "  5h · aws_keeper reminder…", ""]
+    for i, words in enumerate(opts, 1):
+        out.append(f"  {'❯' if i == cursor else ' '} {i}. {words[0]}")
+        out += [f"       {w}" for w in words[1:]]
+    return out + ["", "  Enter to confirm · Esc to", "  cancel"]
+
+
 def worktree_dialog(cursor=1):
     opts = ["Keep worktree", "Remove worktree"]
     return (["✻ Brewed for 2m 3s", "▔▔▔▔▔▔▔▔", "   Exiting worktree session",
@@ -1593,6 +1604,15 @@ def worktree_dialog(cursor=1):
 
 INPUT_BOX = ["⏺ earlier answer", "❯ an earlier prompt in the history", "──────── aws_keeper ─", "❯\xa0",
              "────────", "  ⏵⏵ bypass permissions on"]
+
+
+class NarrowExitDialog(unittest.TestCase):
+    def test_a_wrapped_option_is_read_whole(self):
+        self.assertEqual(of_capacity._exit_dialog(narrow_exit_dialog(1)), "Exit and stop tasks")
+        self.assertEqual(of_capacity._exit_dialog(narrow_exit_dialog(2)), "Move to background and exit")
+        self.assertTrue(of_capacity._exit_dialog(narrow_exit_dialog(1)).startswith(of_capacity.EXIT_STOP))
+        self.assertFalse(of_capacity._exit_dialog(narrow_exit_dialog(2)).startswith(of_capacity.EXIT_STOP))
+        self.assertEqual(of_capacity._exit_dialog(exit_dialog(1)), "Exit and stop tasks")  # a wide one as before
 
 
 class _ExitScreen(unittest.TestCase):

@@ -2311,12 +2311,22 @@ OPTION = _re.compile(r"^\s*❯\s*(\d+)\.\s*(.*)$")
 
 
 def _dialog_cursor(lines, title):
+    """The cursor's option in the dialog whose title is TITLE, its wrapped continuation lines joined (2026-11-20: a
+    keeper's narrow pane wrapped "Exit and stop tasks", the move read the cursor as on '' and gave up), or None."""
     plain = [ANSI.sub("", x) for x in lines]
     at = next((i for i, x in enumerate(plain) if title in x), None)
     if at is None:
         return None
-    m = next((OPTION.match(x) for x in plain[at:] if OPTION.match(x)), None)
-    return m.group(2).strip() if m else ""
+    j = next((i for i in range(at, len(plain)) if OPTION.match(plain[i])), None)
+    if j is None:
+        return ""
+    text = OPTION.match(plain[j]).group(2).strip()
+    for x in plain[j + 1:]:
+        x = x.strip()
+        if not x or _re.match(r"(?:❯\s*)?\d+\.", x) or "Enter to confirm" in x or DIALOG_FOOTER in x:
+            break
+        text = f"{text} {x}" if text else x
+    return text
 
 
 def _exit_dialog(lines):
