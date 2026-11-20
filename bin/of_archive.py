@@ -106,6 +106,14 @@ def _write(path, data, append=False):
     os.replace(tmp, path)
 
 
+def _redacted(rel, data, register):
+    """DATA with every record the redaction register names for REL's session replaced by its mark (of_redact,
+    of_server's d1b0a297 for redaction 7da5d129: the founder's yes on card OF-170), in the whole copy and in an
+    appended frame alike."""
+    import of_redact
+    return of_redact.archive_filter(rel, data, register)
+
+
 def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     """Copy what changed since the last run, within BUDGET_S seconds. PATHS: only these files (the hook's
     SessionEnd); default every source. Returns 0."""
@@ -130,6 +138,11 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     t0, done, bytes_in, bytes_out = time.time(), {"new": 0, "grown": 0, "changed": 0}, 0, 0
     todo = plan(index, paths if paths is not None else sources())
     left = 0
+    try:   # read once a run; one that does not read skips every file below (of_redact.RegisterError, an OSError)
+        import of_redact
+        register = of_redact.archive_register()
+    except OSError as e:
+        register = e
     for i, (src, rel, st, kind) in enumerate(todo):
         if budget_s is not None and time.time() - t0 > budget_s:
             left = len(todo) - i
@@ -141,10 +154,13 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
         dst = os.path.join(root, rel + ".zst")
         os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
         try:
+            if isinstance(register, Exception):
+                raise register          # a register that does not read: the file is skipped, never copied as it is
             with open(src, "rb") as fh:
                 if kind == "grown":
                     fh.seek(index[rel][0])
                 data = fh.read(st.st_size - (index[rel][0] if kind == "grown" else 0))
+            data = _redacted(rel, data, register)
             out = zstd.compress(data, level=LEVEL)
             if kind == "grown" and os.path.exists(dst):
                 _write(dst, out, append=True)   # one more frame: the copy decompresses to the whole file
@@ -153,7 +169,7 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
                     os.replace(dst, dst[:-4] + f".{index[rel][1]}.zst")
                 if kind == "grown":   # the copy is gone: copy whole
                     with open(src, "rb") as fh:
-                        data = fh.read(st.st_size)
+                        data = _redacted(rel, fh.read(st.st_size), register)
                     out = zstd.compress(data, level=LEVEL)
                 _write(dst, out)
         except OSError as e:
