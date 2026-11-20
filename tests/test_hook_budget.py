@@ -8,7 +8,6 @@ on 2026-11-14 a hook took 55 to 97 ms of CPU and 63 MB this way (through bin/of,
 
 import json
 import os
-import resource
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,15 @@ ENTRY = os.path.join(HERE, "..", "bin", "of-hook")
 CPU_S = 0.6
 RSS_MB = 150
 EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
+# Each hook runs under a child of its own, which prints its one child's CPU and peak memory: the test process's own
+# RUSAGE_CHILDREN holds the largest child any earlier test waited for, which CI read as 157 to 237 MB while the hooks
+# measured 25 to 73 MB (of_review on organic-framework PR 496, comment 7050471499)
+MEASURE = """
+import json, resource, subprocess, sys
+r = subprocess.run(sys.argv[1:], input=sys.stdin.read(), capture_output=True, text=True, timeout=60)
+u = resource.getrusage(resource.RUSAGE_CHILDREN)
+print(json.dumps({"cpu": u.ru_utime + u.ru_stime, "rss": u.ru_maxrss, "stderr": r.stderr[-2000:]}))
+"""
 
 
 class HookBudgetTest(unittest.TestCase):
@@ -32,19 +40,17 @@ class HookBudgetTest(unittest.TestCase):
                 payload = {"hook_event_name": ev, "session_id": "budget", "cwd": t, "prompt": "hi",
                            "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {"stdout": "x"},
                            "transcript_path": os.path.join(t, "none.jsonl")}
-                best = None
+                best, peak = None, 0
                 for _ in range(3):  # the best of three: a busy machine's noise is not the hook's cost
-                    before = resource.getrusage(resource.RUSAGE_CHILDREN)
-                    r = subprocess.run([sys.executable, ENTRY, ev], input=json.dumps(payload), capture_output=True,
-                                       text=True, env=env, timeout=60)
-                    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-                    self.assertNotIn("Traceback", r.stderr, ev)
-                    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
-                    best = cpu if best is None else min(best, cpu)
+                    r = subprocess.run([sys.executable, "-c", MEASURE, sys.executable, ENTRY, ev],
+                                       input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=90)
+                    got = json.loads(r.stdout.strip().splitlines()[-1])
+                    self.assertNotIn("Traceback", got["stderr"], ev)
+                    best = got["cpu"] if best is None else min(best, got["cpu"])
+                    peak = max(peak, got["rss"])
                 self.assertLess(best, CPU_S, f"{ev}: {best:.3f} s of CPU")
-            rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-            rss_mb = rss / (1024 * 1024) if sys.platform == "darwin" else rss / 1024  # bytes on macOS, KiB on Linux
-            self.assertLess(rss_mb, RSS_MB)
+                rss_mb = peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024  # bytes on macOS, KiB on Linux
+                self.assertLess(rss_mb, RSS_MB, f"{ev}: {rss_mb:.1f} MB")
 
     def test_the_installer_writes_the_small_entry(self):
         sys.path.insert(0, os.path.join(HERE, "..", "bin"))
