@@ -1924,6 +1924,11 @@ class LimitDialog(unittest.TestCase):
     SCREEN = ["  ⎿  You've hit your weekly limit · resets Nov 12 at 1am (Asia/Dubai)", "▔▔▔▔", "   What do you want to do?",
               "   ❯ 1. Stop and wait for limit to reset", "     2. Wait here, then continue automatically at Nov 12 at 1am",
               "     3. Switch to usage credits", "   Enter to confirm · Esc to cancel"]
+    WRAPPED = ["  ⎿  You've hit your weekly limit ·", "     resets Nov 26 at 1am", "     (Asia/Dubai)",
+               "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔",
+               "  What do you want to do?", "  ❯ 1. Stop and wait for limit to", "       reset",
+               "    2. Wait here, then continue", "       automatically at Nov 26 at", "       1am",
+               "    3. Switch to usage credits", "  Enter to confirm · Esc to", "  cancel"]
 
     def test_cursor_on_stop_and_wait_only(self):
         self.assertTrue(of_capacity.limit_cursor(self.SCREEN))
@@ -1940,6 +1945,30 @@ class LimitDialog(unittest.TestCase):
         self.assertFalse(of_capacity.limit_cursor(self.SCREEN + ["", "  ⏺ later output"] + live))
         self.assertFalse(of_capacity.limit_cursor(self.SCREEN + ["  ⏺ the dialog is gone; output below it"]))
         self.assertTrue(of_capacity.limit_cursor(["old output"] * 30 + self.SCREEN + ["", "  "]))  # trailing blanks
+
+    def test_wrapped_dialog(self):
+        self.assertTrue(of_capacity.limit_cursor(self.WRAPPED))
+        self.assertTrue(of_capacity.has_limit_dialog(self.WRAPPED))
+        self.assertEqual(of_capacity.live_dialog(self.WRAPPED), [
+            "  What do you want to do?", "  ❯ 1. Stop and wait for limit to reset",
+            "    2. Wait here, then continue automatically at Nov 26 at 1am",
+            "    3. Switch to usage credits", "Enter to confirm · Esc to cancel"])
+        self.assertEqual(of_capacity.live_dialog(self.SCREEN), self.SCREEN[2:])
+
+    def test_wrapped_cursor_on_another_option(self):
+        for option in ("2.", "3."):
+            with self.subTest(option=option):
+                moved = [x.replace("❯", " ").replace("    " + option, "  ❯ " + option) for x in self.WRAPPED]
+                self.assertFalse(of_capacity.limit_cursor(moved))
+
+    def test_wrapped_dialog_above_later_output(self):
+        self.assertFalse(of_capacity.limit_cursor(self.WRAPPED + ["  ⏺ later output"]))
+        self.assertFalse(of_capacity.limit_cursor(self.WRAPPED + ["  ⏺ later output mentions Enter to confirm"]))
+
+    def test_footer_wraps_over_at_most_three_nonblank_lines(self):
+        options = self.WRAPPED[:-2]
+        self.assertTrue(of_capacity.limit_cursor(options + ["  Enter to", "  confirm · Esc", "", "  to cancel", ""]))
+        self.assertFalse(of_capacity.limit_cursor(options + ["  Enter", "  to confirm", "  · Esc to", "  cancel"]))
 
 
 class ReliefTakesStoppedSessions(unittest.TestCase):
