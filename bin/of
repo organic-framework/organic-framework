@@ -956,7 +956,8 @@ def _log_start():
         import of_fold
         import of_events
         c = of_fold.reader()
-        row = c.execute("SELECT min(ts) FROM event WHERE name = 'of.human_prompt'").fetchone() if c else None
+        # one row through the (name, ts) index: bounded (tests/test_log_reads.py; of_review on organic-framework PR 447)
+        row = c.execute("SELECT ts FROM event WHERE name = 'of.human_prompt' ORDER BY ts LIMIT 1").fetchone() if c else None
         return row[0] if row and row[0] else of_events.now_iso()
     except Exception:  # noqa: BLE001
         return None
