@@ -76,6 +76,11 @@ NOT_IN_IMAGE = {
     "of_pulse": {"of_access.send_digests": "the listener's access digest, on a machine"},
     "of_relay_client": {"of_server.host_watchdog": "the agent host's watchdog, run from its checkout, not the image"},
 }
+# `of_server.py relay-redact`, the owner's command on a server host, run from its checkout (docs/server.md); in the image
+# it stops at these imports, its first lines, before it reads or changes anything
+for _m in ("of_asks_answer", "of_redact"):
+    NOT_IN_IMAGE[_m] = {"of_server.relay_redact": "the owner's relay-redact on a server host, from its checkout; in the "
+                                                  "image it stops at this import, before it reads or changes anything"}
 # Studio's pages (of_studio's decision which of them the image serves: of_server's message 01a1f369-887d).
 STUDIO_FAILS = ("imported outside a try, so a page that reaches it answers 500 in the image whenever it is built: every "
                 "page built on Data reaches of_loops (Data.loop_rows), so a Data page answers 500 on a cache miss, "
