@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from typing import NamedTuple
@@ -222,10 +223,18 @@ def _file_sha(path):
     return h.hexdigest()
 
 
-def _hold(conn, org, config, since, since_sha):
+MOVING_SETTLE_S = 1 + 30 + 30  # of_server.App.moving()'s cache, a long poll's MAX_WAIT, and a margin
+
+
+def _hold(conn, org, config, since, since_sha, snap=None):
     """What must hold for the export to be whole: no batch of ORG queued or dead, no redaction not done, and for the
     final delta the organization marked moving. Checked at the start and again just before index.json is written, so
-    a flag cleared mid-export, or a write that slipped in before the flag, is noticed (sec_keeper, round 3)."""
+    a flag cleared mid-export, or a write that slipped in before the flag, is noticed (sec_keeper, round 3). The first
+    call returns a snapshot (the newest batch and redaction, the flag's inode and mtime); the second, given it, refuses
+    any batch of ORG or redaction newer than it, in any state, and a flag changed since, so a change between the two
+    is seen, not only the state at the end. The final delta also waits until the flag is older than the server's
+    cache, a long poll and a margin, so no request that read it unset is still writing (sec_keeper, round 4, msg
+    01a1f6ea-b786)."""
     queued = _queued_batches(conn, org)
     if queued:  # accepted before the organization was marked moving, not yet written (of_review on PR 433)
         raise ExportError(f"{queued} of {org}'s batches are still queued or dead: wait for the writer, or replay or "
@@ -240,6 +249,43 @@ def _hold(conn, org, config, since, since_sha):
         if not (config and os.path.exists(os.path.join(of_server.moving_dir(config), org))):
             raise ExportError(f"the final delta is made with {org} marked moving (of server moving --org {org} on), "
                               "so nothing reaches this server after it")
+    flag = os.path.join(_moving_dir(config), org) if config else None
+    try:
+        st = os.stat(flag) if flag else None
+    except FileNotFoundError:
+        st = None
+    if since is not None and st is not None and time.time() - st.st_mtime < MOVING_SETTLE_S:
+        raise ExportError(f"{org} was marked moving {time.time() - st.st_mtime:.0f} s ago: wait until "
+                          f"{MOVING_SETTLE_S} s have passed, so no request that read it unset is still writing")
+    now = {"batch": _max(conn, "batches", "seq"), "redaction": _max(conn, "redactions", "rowid"),
+           "flag": (st.st_ino, st.st_mtime_ns) if st else None}
+    if snap is not None:
+        if any(_orgs(by) is None or org in _orgs(by) for (by,) in conn.execute(
+                "SELECT by_org FROM batches WHERE seq > ?", (snap["batch"],))) if "batches" in _tables(conn) else False:
+            raise ExportError(f"a batch of {org} arrived while the export ran: export again")
+        if now["redaction"] > snap["redaction"]:
+            raise ExportError("a redaction arrived while the export ran: export again")
+        if now["flag"] != snap["flag"]:
+            raise ExportError(f"{org}'s moving flag changed while the export ran: export again")
+    return now
+
+
+def _moving_dir(config):
+    import of_server
+    return of_server.moving_dir(config)
+
+
+def _max(conn, table, col):
+    if table not in _tables(conn):
+        return 0
+    return conn.execute(f"SELECT coalesce(max({col}), 0) FROM {table}").fetchone()[0]
+
+
+def _orgs(by_org):
+    try:
+        return json.loads(by_org or "{}") or {}
+    except ValueError:
+        return None  # unreadable: counted as every organization's
 
 
 def _pending_redactions(conn, org):
@@ -297,7 +343,7 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         raise ExportError("this is no server's store: nothing to export")  # the organization's rows (PR 425)
     if since is not None and not (config and _uses_clickhouse(config)):
         raise ExportError("--since needs a ClickHouse export")
-    _hold(conn, org, config, since, since_sha)
+    snap = _hold(conn, org, config, since, since_sha)
     blobs = _blob_count(config)
     if blobs:  # the laptop's blob store held none on 2026-11-19; carrying them comes when a server keeps some
         raise ExportError(f"this server's blob store holds {blobs} files, which this release does not carry yet")
@@ -334,7 +380,7 @@ def export_store(conn, org, out, version=None, recipient=None, *, config=None, s
         all_days = None
     # The manifest names rows (message ids, alias and position names, sightings' hmacs), so it is encrypted with the
     # rest; index.json, the one plain file, holds only the organization and each file's sha256 (PR 425, point 3).
-    _hold(conn, org, config, since, since_sha)  # again, before anything marks the bundle ready
+    _hold(conn, org, config, since, since_sha, snap)  # again, before anything marks the bundle ready
     mrel = f"manifest.json.gz{ext}"
     written = _write_file(os.path.join(out, mrel), [json.dumps(manifest, sort_keys=True).encode()], recipient)
     index = {"format": FORMAT, "org": org, "encrypted": bool(recipient), "code": _code(), "version": version,

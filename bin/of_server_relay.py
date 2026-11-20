@@ -566,6 +566,9 @@ class Relay:
         wait out a deferral (no failure counted) are leased with it, oldest first. A failed one keeps its
         back-off."""
         now = time.time()
+        moving = sorted(getattr(self.app, "moving", lambda: set())())
+        hold = (f" AND m.to_org NOT IN ({','.join('?' * len(moving))}) AND m.from_org NOT IN "
+                f"({','.join('?' * len(moving))})") if moving else ""  # a moving organization's rows stay as they are
         with self.app.store.tx() as c:
             rows = c.execute(
                 "SELECT m.seq, m.msg_id, m.to_org, m.to_position, m.from_org, m.from_position, m.text, m.reply_to,"
@@ -578,8 +581,8 @@ class Relay:
                 " OR (m.state = 'queued' AND m.leased_to IS NULL AND m.failures = 0 AND EXISTS (SELECT 1 FROM messages d"
                 " WHERE d.to_org = m.to_org AND d.to_position = m.to_position AND d.state IN ('queued', 'leased')"
                 " AND " + self._DUE.format(m="d") + " AND " + self._OFFERED.format(m="d") + ")))"
-                " ORDER BY m.seq LIMIT 100",
-                (machine_id, now - PRESENCE_TTL, now, machine_id, now, machine_id)).fetchall()
+                + hold + " ORDER BY m.seq LIMIT 100",
+                (machine_id, now - PRESENCE_TTL, now, machine_id, now, machine_id, *moving, *moving)).fetchall()
             for r in rows:
                 c.execute("UPDATE messages SET state = 'leased', leased_to = ?, lease_until = ?, attempts = attempts + 1"
                           " WHERE seq = ?", (machine_id, now + LEASE, r[0]))
@@ -908,9 +911,12 @@ class Relay:
     def expire(self):
         """Messages nobody received within MESSAGE_TTL."""
         cutoff = time.time() - MESSAGE_TTL
+        moving = sorted(getattr(self.app, "moving", lambda: set())())
+        hold = (f" AND to_org NOT IN ({','.join('?' * len(moving))}) AND from_org NOT IN "
+                f"({','.join('?' * len(moving))})") if moving else ""  # not while its records are copied (sec_keeper)
         with self.app.store.conn() as c:
             rows = c.execute("SELECT msg_id, to_org, to_position FROM messages WHERE state IN ('queued', 'leased')"
-                             " AND created < ?", (cutoff,)).fetchall()
+                             " AND created < ?" + hold, (cutoff, *moving, *moving)).fetchall()
             for msg_id, _, _ in rows:
                 c.execute("UPDATE messages SET state = 'expired', done_at = ? WHERE msg_id = ?",
                           (of_events.now_iso(), msg_id))

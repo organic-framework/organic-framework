@@ -2094,6 +2094,8 @@ class App:
         """docs/health.md §3: a check's owner told through this server's own relay, from of_server, typed in or --fyi.
         The message id, or None when the owner's organization is not served here."""
         import of_server_health
+        if of_server_health.OWNER_ORG in self.moving():  # its records are being copied: no new message for it
+            return None
         return self.relay.system_post(f"{of_server_health.OWNER_ORG}:{position}", text,
                                       priority="normal" if typed else "fyi")
 

@@ -104,9 +104,22 @@ class RelayTest(unittest.TestCase):
             with self.assertRaises(of_client.ServerError) as e:   # another organization's machine, an ofb message
                 z._authed("POST", "/v1/messages/m-ofb/ack", body={})
             self.assertEqual(e.exception.status, 503)
-            self.assertIsNotNone(self.call(z, "GET", "/v1/messages?wait=0"))    # another organization goes on
+            with self.app.store.conn() as c:                                     # z holds the receiver
+                c.execute("INSERT OR REPLACE INTO presence (machine_id, org, position, session_id, state, kind, updated)"
+                          " VALUES (?, 'zeta', 'zeta_x', 'S-x', 'idle', 'agent', ?)", (z.machine_id, time.time()))
+            got = self.call(z, "GET", "/v1/messages?wait=0")                   # another organization goes on,
+            self.assertNotIn("m-ofb", [x.get("msg_id") for x in got.get("messages", [])])  # but a moving one's row
+            with self.app.store.conn() as c:                                     # is not leased (round 4)
+                self.assertEqual(c.execute("SELECT state FROM messages WHERE msg_id = 'm-ofb'").fetchone()[0], "queued")
+                c.execute("UPDATE messages SET created = 0 WHERE msg_id = 'm-ofb'")
+            self.app.relay.expire()                                              # nor expired while it moves
+            with self.app.store.conn() as c:
+                self.assertEqual(c.execute("SELECT state FROM messages WHERE msg_id = 'm-ofb'").fetchone()[0], "queued")
+
             self.assertEqual(of_server.set_moving(self.app.cfg, "ofb", False), [])
             self.app._moving_cache = None
+            got = self.call(z, "GET", "/v1/messages?wait=0")                   # unmarked: the same row is delivered
+            self.assertIn("m-ofb", [x.get("msg_id") for x in got.get("messages", [])])
             self.assertIsNotNone(self.call(a, "GET", "/v1/messages?wait=0"))
             with self.assertRaises(ValueError):
                 of_server.set_moving(self.app.cfg, "../x", True)
