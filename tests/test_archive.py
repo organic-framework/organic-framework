@@ -83,6 +83,45 @@ class ArchiveTest(unittest.TestCase):
         self.assertIn("1 changed", out[-1])
         self.assertEqual(self.copy("m.jsonl"), changed)                    # the copy is the file, not a mix
 
+    def test_a_file_whose_time_alone_moved_is_not_copied_again(self):
+        """2026-11-21 (of_capacity): live sessions' transcripts got a new mtime every hour with no new byte, and each
+        hour kept one more whole copy: 4,273 copies, 23.5 GiB, each the size of the next."""
+        d = os.path.join(self.state, "raw", "files", ".claude-x", "projects", "p")
+        body = b'{"n": 1}\n' * 2000                                         # past both 4 KB spans
+        t = self.put("t.jsonl", body)
+        self.run_()
+        for hour in (1, 2):
+            os.utime(t, (time.time(), time.time() + 3600 * hour))         # the same bytes, a new time
+            out = self.run_()
+            self.assertIn("archived 0 files", out[-1])
+            self.assertIn("1 with only a new time, not copied", out[-1])
+            self.assertEqual((self.emitted[-1][0], self.emitted[-1][1]["files"], self.emitted[-1][1]["touched"]),
+                             ("raw_archived", 0, 1))                       # recorded with nothing else copied
+        self.assertEqual(sorted(os.listdir(d)), ["t.jsonl.zst"])           # no kept copy
+        self.assertEqual(self.copy("t.jsonl"), body)
+        index = json.load(open(os.path.join(self.state, "raw", "files.json")))[".claude-x/projects/p/t.jsonl"]
+        self.assertEqual(index[:2], [len(body), int(os.stat(t).st_mtime)])  # the index took the new time
+        self.assertEqual(self.run_(quiet=True), [])
+        self.put("t.jsonl", b"X" + body[1:])                               # the same size, its head changed
+        self.assertIn("1 changed", self.run_()[-1])
+        self.assertEqual(self.copy("t.jsonl"), b"X" + body[1:])
+        self.put("t.jsonl", b'{"n": 2}\n', mode="a")                       # then appended to: still an append
+        self.assertIn("1 grown", self.run_()[-1])
+
+    def test_a_same_length_edit_in_a_memory_file_is_copied(self):
+        """of_review on PR 499: a folder memory (projects/<p>/memory/) can take a same-length edit between its two 4 KB
+        spans; only a transcript's same size with a new time counts as touched."""
+        body = bytearray(b"".join(b"line %05d: reviewed on 2026-11-20, verdict approve\n" % i for i in range(240)))
+        os.makedirs(os.path.join(self.proj, "memory"))
+        self.put("memory/notes.md", bytes(body))
+        self.run_()
+        i = body.index(b"2026-11-20, verdict approve", len(body) // 2)
+        body[i:i + 27] = b"2026-11-21, verdict changes"                     # size, first and last 4 KB as they were
+        p = self.put("memory/notes.md", bytes(body))
+        os.utime(p, (time.time(), time.time() + 3600))                     # a new time, as an edit gives it
+        self.assertIn("1 changed", self.run_()[-1])
+        self.assertEqual(self.copy("memory/notes.md"), bytes(body))
+
     def test_new_files_first_within_a_budget_and_one_path(self):
         self.put("old.jsonl", b"x\n")
         self.run_()

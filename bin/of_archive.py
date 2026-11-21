@@ -2,9 +2,13 @@
 
 Each source file is zstd-compressed to ~/.local/state/of/raw/files/<path relative to home>.zst. A file that only grew
 (transcripts are appended to; its first 4 KB and the 4 KB before its old end unchanged) gets one more zstd frame with
-its new bytes, so the copy is never compressed again whole;
-concatenated frames decompress to the whole file. A file that changed otherwise is copied again whole, and the earlier
-copy is kept beside it as <name>.<its mtime>.zst: nothing is dropped. Files never copied go first. Runs at low CPU and
+its new bytes, so the copy is never compressed again whole; concatenated frames decompress to the whole file. A
+transcript (.jsonl) whose time alone moved (its size, first 4 KB and last 4 KB as at the last copy) is not copied
+again; any other file of the same size with a new time is (a folder memory can take a same-length edit in its middle):
+live sessions' transcripts get a new mtime every hour with no new byte (seen on 2026-11-21, by of_capacity; the writer
+not yet identified), and each such hour had kept one more whole copy (4,273 copies, 23.5 GiB, each the size of the copy
+after it). A file that changed otherwise is copied again whole, and the earlier copy is kept beside it as <name>.<its
+mtime>.zst: nothing is dropped. Files never copied go first. Runs at low CPU and
 IO priority, at most BUDGET seconds a run, one run at a time (raw/archive.lock): the listener runs it every hour (10
 minutes when the machine is idle, 1 minute otherwise) and the hook at SessionEnd for that session's file
 (of_architect, hand-over b097ba7c: from 2026-11-05 to 11-16 nothing was copied after the first run).
@@ -72,8 +76,9 @@ def _tail(path, n):
 
 
 def plan(index, paths):
-    """[(source, rel, stat, kind)] to copy: kind `new` (never copied), `grown` (appended to since) or `changed` (else);
-    new files first, oldest first within each kind."""
+    """[(source, rel, stat, kind)] to copy: kind `new` (never copied), `touched` (a .jsonl transcript whose time alone
+    moved: nothing to copy, the index takes its new time), `grown` (appended to since) or `changed` (else); new files
+    first, oldest first within each kind."""
     out = []
     for src in paths:
         try:
@@ -86,12 +91,15 @@ def plan(index, paths):
             continue
         if not was:
             kind = "new"
-        elif len(was) > 3 and st.st_size > was[0] and _head(src, was[0]) == was[2] and _tail(src, was[0]) == was[3]:
-            kind = "grown"
+        elif len(was) > 3 and (st.st_size > was[0] or (src.endswith(".jsonl") and st.st_size == was[0])) and \
+                _head(src, was[0]) == was[2] and _tail(src, was[0]) == was[3]:
+            # the same size counts as touched only for a transcript, which is appended to and never edited in place: a
+            # folder memory can take a same-length edit between its two 4 KB spans (of_review on PR 499)
+            kind = "grown" if st.st_size > was[0] else "touched"
         else:
             kind = "changed"
         out.append((src, rel, st, kind))
-    order = {"new": 0, "grown": 1, "changed": 2}
+    order = {"new": 0, "touched": 1, "grown": 2, "changed": 3}
     return sorted(out, key=lambda x: (order[x[3]], x[2].st_mtime))
 
 
@@ -128,12 +136,18 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     except FileNotFoundError:
         index = {}
     t0, done, bytes_in, bytes_out = time.time(), {"new": 0, "grown": 0, "changed": 0}, 0, 0
+    touched = 0
     todo = plan(index, paths if paths is not None else sources())
     left = 0
     for i, (src, rel, st, kind) in enumerate(todo):
         if budget_s is not None and time.time() - t0 > budget_s:
             left = len(todo) - i
             break
+        if kind == "touched":   # the same bytes under a new time: the copy holds them all already
+            if not dry_run:
+                index[rel] = [st.st_size, int(st.st_mtime)] + index[rel][2:4]
+            touched += 1
+            continue
         if dry_run:
             done[kind] += 1
             bytes_in += st.st_size - (index[rel][0] if kind == "grown" else 0)
@@ -168,15 +182,17 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     n = sum(done.values())
     if not dry_run:
         _save(index_path, index)
-        if n:
+        if n or touched:   # a run that only took new times records them too (of_platform on PR 499)
             of_events.emit("raw_archived", {"files": n, "new": done["new"], "grown": done["grown"],
-                                            "changed": done["changed"], "left": left, "bytes_in": bytes_in,
+                                            "changed": done["changed"], "touched": touched, "left": left,
+                                            "bytes_in": bytes_in,
                                             "bytes_out": bytes_out, "seconds": round(time.time() - t0, 1)})
     if not quiet or n:
         verb = "would archive" if dry_run else "archived"
         log(f"{verb} {n} files ({done['new']} new, {done['grown']} grown, {done['changed']} changed; "
             f"{bytes_in / 1e9:.2f} GB" + (f" -> {bytes_out / 1e9:.2f} GB" if not dry_run else "")
-            + f"), {left} left for the next run, {time.time() - t0:.0f}s")
+            + f"), {left} left for the next run, {time.time() - t0:.0f}s"
+            + (f"; {touched} with only a new time, not copied" if touched else ""))
     return 0
 
 
