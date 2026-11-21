@@ -106,6 +106,20 @@ class ArchiveTest(unittest.TestCase):
         self.put("t.jsonl", b'{"n": 2}\n', mode="a")                       # then appended to: still an append
         self.assertIn("1 grown", self.run_()[-1])
 
+    def test_a_same_length_edit_in_a_memory_file_is_copied(self):
+        """of_review on PR 499: a folder memory (projects/<p>/memory/) can take a same-length edit between its two 4 KB
+        spans; only a transcript's same size with a new time counts as touched."""
+        body = bytearray(b"".join(b"line %05d: reviewed on 2026-11-20, verdict approve\n" % i for i in range(240)))
+        os.makedirs(os.path.join(self.proj, "memory"))
+        self.put("memory/notes.md", bytes(body))
+        self.run_()
+        i = body.index(b"2026-11-20, verdict approve", len(body) // 2)
+        body[i:i + 27] = b"2026-11-21, verdict changes"                     # size, first and last 4 KB as they were
+        p = self.put("memory/notes.md", bytes(body))
+        os.utime(p, (time.time(), time.time() + 3600))                     # a new time, as an edit gives it
+        self.assertIn("1 changed", self.run_()[-1])
+        self.assertEqual(self.copy("memory/notes.md"), bytes(body))
+
     def test_new_files_first_within_a_budget_and_one_path(self):
         self.put("old.jsonl", b"x\n")
         self.run_()
