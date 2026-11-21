@@ -7883,8 +7883,12 @@ def main(argv=None):
     ar.add_argument("--path", action="append", help="only this transcript file (repeatable)")
     ar.add_argument("--budget", type=float, help="stop after this many seconds; the next run goes on")
     ar.add_argument("--quiet", action="store_true", help="print only when something was copied")
-    ar.set_defaults(fn=lambda a: __import__("of_archive").archive(a.dry_run, paths=a.path, budget_s=a.budget,
-                                                                   quiet=a.quiet))
+    ar.add_argument("--drop-identical", action="store_true",
+                    help="instead of copying: delete each kept copy whose bytes hash the same as the copy after it "
+                         "(no byte is dropped; with --dry-run, only count them)")
+    ar.set_defaults(fn=lambda a: __import__("of_archive").drop_identical(a.dry_run, budget_s=a.budget, quiet=a.quiet)
+                    if a.drop_identical else __import__("of_archive").archive(a.dry_run, paths=a.path,
+                                                                                budget_s=a.budget, quiet=a.quiet))
     ing = sub.add_parser("ingest", help="read new transcript lines into the local store")
     ing.add_argument("paths", nargs="*")
     ing.add_argument("--pending", action="store_true", help="the worker: drain the spool and queued transcripts")
