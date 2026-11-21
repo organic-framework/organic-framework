@@ -95,6 +95,8 @@ class ArchiveTest(unittest.TestCase):
             out = self.run_()
             self.assertIn("archived 0 files", out[-1])
             self.assertIn("1 with only a new time, not copied", out[-1])
+            self.assertEqual((self.emitted[-1][0], self.emitted[-1][1]["files"], self.emitted[-1][1]["touched"]),
+                             ("raw_archived", 0, 1))                       # recorded with nothing else copied
         self.assertEqual(sorted(os.listdir(d)), ["t.jsonl.zst"])           # no kept copy
         self.assertEqual(self.copy("t.jsonl"), body)
         index = json.load(open(os.path.join(self.state, "raw", "files.json")))[".claude-x/projects/p/t.jsonl"]
