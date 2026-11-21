@@ -2,11 +2,12 @@
 
 Each source file is zstd-compressed to ~/.local/state/of/raw/files/<path relative to home>.zst. A file that only grew
 (transcripts are appended to; its first 4 KB and the 4 KB before its old end unchanged) gets one more zstd frame with
-its new bytes, so the copy is never compressed again whole; concatenated frames decompress to the whole file. A file
-whose time alone moved (its size, first 4 KB and last 4 KB as at the last copy) is not copied again: live sessions'
-transcripts get a new mtime every hour with no new byte (seen on 2026-11-21, by of_capacity; the writer not yet
-identified), and each such hour had kept one more whole copy (4,273 copies, 23.5 GiB, each the size of the copy after
-it). A file that changed otherwise is copied again whole, and the earlier copy is kept beside it as <name>.<its
+its new bytes, so the copy is never compressed again whole; concatenated frames decompress to the whole file. A
+transcript (.jsonl) whose time alone moved (its size, first 4 KB and last 4 KB as at the last copy) is not copied
+again; any other file of the same size with a new time is (a folder memory can take a same-length edit in its middle):
+live sessions' transcripts get a new mtime every hour with no new byte (seen on 2026-11-21, by of_capacity; the writer
+not yet identified), and each such hour had kept one more whole copy (4,273 copies, 23.5 GiB, each the size of the copy
+after it). A file that changed otherwise is copied again whole, and the earlier copy is kept beside it as <name>.<its
 mtime>.zst: nothing is dropped. Files never copied go first. Runs at low CPU and
 IO priority, at most BUDGET seconds a run, one run at a time (raw/archive.lock): the listener runs it every hour (10
 minutes when the machine is idle, 1 minute otherwise) and the hook at SessionEnd for that session's file
@@ -75,9 +76,9 @@ def _tail(path, n):
 
 
 def plan(index, paths):
-    """[(source, rel, stat, kind)] to copy: kind `new` (never copied), `touched` (its time alone moved: nothing to copy,
-    the index takes its new time), `grown` (appended to since) or `changed` (else); new files first, oldest first within
-    each kind."""
+    """[(source, rel, stat, kind)] to copy: kind `new` (never copied), `touched` (a .jsonl transcript whose time alone
+    moved: nothing to copy, the index takes its new time), `grown` (appended to since) or `changed` (else); new files
+    first, oldest first within each kind."""
     out = []
     for src in paths:
         try:
@@ -90,7 +91,10 @@ def plan(index, paths):
             continue
         if not was:
             kind = "new"
-        elif len(was) > 3 and st.st_size >= was[0] and _head(src, was[0]) == was[2] and _tail(src, was[0]) == was[3]:
+        elif len(was) > 3 and (st.st_size > was[0] or (src.endswith(".jsonl") and st.st_size == was[0])) and \
+                _head(src, was[0]) == was[2] and _tail(src, was[0]) == was[3]:
+            # the same size counts as touched only for a transcript, which is appended to and never edited in place: a
+            # folder memory can take a same-length edit between its two 4 KB spans (of_review on PR 499)
             kind = "grown" if st.st_size > was[0] else "touched"
         else:
             kind = "changed"
