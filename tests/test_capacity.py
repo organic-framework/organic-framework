@@ -2957,6 +2957,22 @@ class Restore(unittest.TestCase):
                          "cloudflare (a tool your position uses) was missing on the old account; this one has it "
                          "signed in.")
 
+    def test_a_plugin_its_organization_holds_back_is_no_need(self):
+        """2026-11-21: a user organization held both Cloudflare plugins back (tools_excluded) from 11-19, so no
+        account's session could load them, and a restore still moved its cloud keeper for "cloudflare missing", read
+        from its calls before the hold."""
+        docs = {"acme": {"tools_excluded": [{"plugin": "cloudflare@claude-plugins-official", "basis": "card AS-9"},
+                                            {"url": "https://mcp.slack.com/*", "basis": "card AS-9"}],
+                         "positions": [{"name": "cf"}, {"name": "k8s_keeper"}]}}
+        self.assertEqual(of_capacity.held_back("cf", docs), {"plugin:cloudflare"})  # a url entry names no plugin
+        self.assertEqual(of_capacity.held_back("nobody", docs), set())
+        needs = {"cf": {"plugin:cloudflare#keys", "Slack"}, "k8s_keeper": {"plugin:linear"}}
+        of_capacity.drop_held_back(needs, self.POS, docs)
+        self.assertEqual(needs, {"cf": {"Slack"}, "k8s_keeper": {"plugin:linear"}})  # labelled or not
+        needs = {"cf": {"plugin:cloudflare"}}
+        of_capacity.drop_held_back(needs, self.POS, docs)
+        self.assertEqual(self.restores(self.plan(needs=needs)), [])               # nothing to restore it for
+
     def test_only_a_target_read_to_hold_every_tool(self):
         self.assertEqual(self.restores(self.plan(seen=self.seen(ez=None))), [])  # no reading at all
         unread = dict(self.seen(), **{"/ez": of_capacity.account_tools({"Slack"}, None)})  # plugins unreadable
