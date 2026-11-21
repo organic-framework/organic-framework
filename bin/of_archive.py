@@ -19,6 +19,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 
@@ -119,15 +120,10 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     SessionEnd); default every source. Returns 0."""
     if zstd is None:
         raise SystemExit("of archive needs Python 3.14+ (compression.zstd)")
-    import fcntl
     lower_priority()
     root = raw_root()
-    lock = open(os.open(os.path.join(os.path.dirname(root), "archive.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        if not quiet:
-            log("another of archive is running")
+    lock = _lock(root, log, quiet)
+    if lock is None:
         return 0
     index_path = os.path.join(os.path.dirname(root), "files.json")
     try:
@@ -193,6 +189,96 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
             f"{bytes_in / 1e9:.2f} GB" + (f" -> {bytes_out / 1e9:.2f} GB" if not dry_run else "")
             + f"), {left} left for the next run, {time.time() - t0:.0f}s"
             + (f"; {touched} with only a new time, not copied" if touched else ""))
+    return 0
+
+
+KEPT = re.compile(r"^(?P<base>.+)\.(?P<mtime>\d+)\.zst$")
+
+
+def _lock(root, log, quiet):
+    """The archive's one lock (raw/archive.lock), or None when another run holds it."""
+    import fcntl
+    lock = open(os.open(os.path.join(os.path.dirname(root), "archive.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        if not quiet:
+            log("another of archive is running")
+        return None
+    return lock
+
+
+def _file_hash(path):
+    """sha256 of the copy PATH's own bytes, read in pieces."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for piece in iter(lambda: fh.read(1 << 20), b""):
+            h.update(piece)
+    return h.hexdigest()
+
+
+def kept_chains(root):
+    """{current copy: [its kept copies, oldest first]}: a kept copy is <name>.<mtime>.zst beside <name>.zst."""
+    out = {}
+    for dirpath, _, files in os.walk(root):
+        names = set(files)
+        for f in files:
+            m = KEPT.match(f)
+            if m and m.group("base") + ".zst" in names:
+                out.setdefault(os.path.join(dirpath, m.group("base") + ".zst"), []).append(
+                    (int(m.group("mtime")), os.path.join(dirpath, f)))
+    return {cur: [p for _, p in sorted(kept)] for cur, kept in out.items()}
+
+
+def drop_identical(dry_run=False, log=print, budget_s=None, quiet=False):
+    """Delete each kept copy whose bytes are the same as the copy after it (the next kept copy, else the current one):
+    the same size and sha256, so that copy holds every byte of it and no byte of the raw tier is dropped. 2026-11-21
+    (of_capacity, message 01a1fc2a-8d57): a file whose time alone moved was copied whole every hour, and 4,273 kept copies
+    were the size of the copy after them. Every copy is one zstd compression of the whole file at LEVEL, so the same
+    content gives the same bytes; a copy the same in content alone (a current copy grown by frames never is) stays.
+    Only copies of the same size are read. One run at a time with the archive (its lock); within BUDGET_S seconds, the
+    next run goes on. Returns 0."""
+    lower_priority()
+    root = raw_root()
+    lock = _lock(root, log, quiet)
+    if lock is None:
+        return 0
+    t0, dropped, freed, kept_n, left = time.time(), 0, 0, 0, 0
+    try:
+        for cur, kept in sorted(kept_chains(root).items()):
+            hashes, after = {}, cur
+
+            def same(a, b):
+                try:
+                    if os.path.getsize(a) != os.path.getsize(b):
+                        return False
+                    for p in (a, b):
+                        if p not in hashes:
+                            hashes[p] = _file_hash(p)
+                except OSError as e:
+                    log(f"skip {os.path.relpath(a, root)}: {e}")
+                    return False
+                return hashes[a] == hashes[b]
+
+            for i in range(len(kept) - 1, -1, -1):   # newest first: each is compared with the copy after it
+                if budget_s is not None and time.time() - t0 > budget_s:
+                    left += i + 1
+                    break
+                path = kept[i]
+                if same(path, after):   # AFTER, the copy after it that stays, holds the same bytes
+                    size = os.path.getsize(path)
+                    if not dry_run:
+                        os.unlink(path)
+                    dropped, freed = dropped + 1, freed + size
+                else:
+                    kept_n, after = kept_n + 1, path
+    finally:
+        lock.close()
+    if not quiet or dropped:
+        verb = "would drop" if dry_run else "dropped"
+        log(f"{verb} {dropped} kept copies the same as the copy after them ({freed / 2 ** 30:.2f} GiB); {kept_n} "
+            f"differ and stay; {left} left for the next run, {time.time() - t0:.0f}s")
     return 0
 
 

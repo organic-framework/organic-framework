@@ -122,6 +122,35 @@ class ArchiveTest(unittest.TestCase):
         self.assertIn("1 changed", self.run_()[-1])
         self.assertEqual(self.copy("memory/notes.md"), bytes(body))
 
+    def test_kept_copies_identical_to_the_copy_after_them_are_dropped_and_no_other(self):
+        """2026-11-21 (of_capacity, message 01a1fc2a-8d57): 4,273 kept copies were the size of the copy after them."""
+        d = os.path.join(self.state, "raw", "files", ".claude-x", "projects", "p")
+        os.makedirs(d)
+        z = of_archive.zstd.compress
+
+        def put(name, data):
+            with open(os.path.join(d, name), "wb") as fh:
+                fh.write(data)
+
+        put("t.jsonl.100.zst", z(b"one\n"))                       # differs from the next: stays
+        put("t.jsonl.200.zst", z(b"two\n"))                       # the same as the next: dropped
+        put("t.jsonl.300.zst", z(b"two\n"))                       # the same as the current: dropped
+        put("t.jsonl.zst", z(b"two\n"))
+        put("u.jsonl.5.zst", z(b"same\n"))                        # a kept copy of a file with no current copy: stays
+        put("v.jsonl.7.zst", z(b"v") + z(b"\n"))                  # the same content in other bytes: stays
+        put("v.jsonl.6.zst", z(b"v\n"))                           # differs from the next in its bytes: stays
+        put("v.jsonl.zst", z(b"v\n"))
+        out = []
+        of_archive.drop_identical(dry_run=True, log=out.append)
+        self.assertIn("would drop 2 kept copies", out[-1])
+        self.assertEqual(len(os.listdir(d)), 8)                    # a dry run deletes nothing
+        out = []
+        of_archive.drop_identical(log=out.append)
+        self.assertIn("dropped 2 kept copies", out[-1])
+        self.assertEqual(sorted(os.listdir(d)), ["t.jsonl.100.zst", "t.jsonl.zst", "u.jsonl.5.zst", "v.jsonl.6.zst",
+                                                 "v.jsonl.7.zst", "v.jsonl.zst"])
+        self.assertEqual(self.copy("t.jsonl"), b"two\n")
+
     def test_new_files_first_within_a_budget_and_one_path(self):
         self.put("old.jsonl", b"x\n")
         self.run_()
