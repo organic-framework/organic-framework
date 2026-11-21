@@ -3170,7 +3170,7 @@ def move(p, target, dry_run=False, allow_shells=False, log=print, of_bin=None, r
     used, there = connectors_used(transcript), connectors_seen(target)
     missing = sorted(used - there) if there is not None else []
     plugs = sorted(x.split(":", 1)[1].split("#", 1)[0]
-                   for x in lacking(needs_with_labels(tools_used(transcript), granted_labels(name)),
+                   for x in lacking(needs_with_labels(tools_used(transcript) - held_back(name), granted_labels(name)),
                                     account_tools(None, with_labels(plugins_ready(target), target))))
     if plugs:  # plugins are installed and signed in per config dir (2026-11-11: aws_keeper lost Cloudflare twice)
         log(f"  plugins not installed, not signed in or kept for other positions on {short(target)}: {', '.join(plugs)}")
@@ -4587,12 +4587,13 @@ def plan(rows, positions, sessions=None):
             return (sess in busy, {"parked": 1, "finished": 2}.get(p.get("status"), 0),
                     priority_tier(p, pol), THROUGHPUT_ORDER.get(p.get("throughput"), 5), n)
         docs = tool_docs()
+        all_docs = tool_docs_all() if r["positions"] else {}
         for n in sorted(r["positions"], key=key):
             p = by_name.get(n) or {}
             sess = ((p.get("holder") or {}).get("session") or "").strip()
             tp, unsigned = t, []
             used = {x for x in tools_used(find_transcript(r["config_dir"], sess) or "") if x.startswith("plugin:")} \
-                if sess else set()
+                - held_back(n, all_docs) if sess else set()
 
             def gone(d, n=n, used=used):  # plugins it used and bound tools not signed in there (docs/tools.md §5)
                 return (sorted(x.split("#", 1)[0] for x in lacking(needs_with_labels(used, granted_labels(n, docs)),
@@ -5998,6 +5999,35 @@ def add_bound(needs, seen, positions, dirs, docs=None, now=None, run=None):
         seen[d] = (set(seen.get(d) or ()) | have) if seen.get(d) is not None else have
 
 
+def held_back(position_name, docs=None):
+    """{"plugin:<name>"} of the plugins the position's organization keeps out of every session it starts, whatever the
+    account holds (`tools_excluded`, of_tools.excluded_plugins): no account gives them, so none is a need that a move,
+    a restore or a veto can serve. 2026-11-21: a user organization held both Cloudflare plugins back from 11-19, and a
+    restore still moved its cloud keeper off an account for "cloudflare missing", on calls from before the hold."""
+    docs = tool_docs_all() if docs is None else docs
+    if not docs or not position_name:
+        return set()
+    try:
+        import of_tools
+        _, _, doc = of_tools.find_position(position_name, docs)
+        return {"plugin:" + str(x).split("@", 1)[0] for x in of_tools.excluded_plugins(doc)}
+    except Exception:  # noqa: BLE001 - not in a listed organization: nothing held back
+        return set()
+
+
+def drop_held_back(needs, positions, docs=None):
+    """Take each session's held-back plugins (held_back) out of what it needs. In place."""
+    docs = tool_docs_all() if docs is None else docs
+    if not docs:
+        return
+    for p in positions:
+        sid = ((p.get("holder") or {}).get("session") or "").strip()
+        if sid in needs:
+            gone = held_back(p.get("name"), docs)
+            if gone:
+                needs[sid] = {x for x in needs[sid] if x.split("#", 1)[0] not in gone}
+
+
 def tools_for(p, sid, target, log=print):
     """(argv, settings keys) of the position's tool profile for a session on `target` (of_tools.launch_parts:
     --mcp-config and allowedMcpServers / enabledPlugins), as of spawn passes them; ([], {}) without a catalogue."""
@@ -6755,6 +6785,7 @@ def balance(positions, dry_run=False, log=print, policy=None, now=None, ask=None
     # connectors from claude mcp list (None: unknown, no veto); plugins from the config dir's files, less those whose
     # server the same list shows signed out
     seen = {d: account_tools(connectors_seen(d), with_labels(plugins_ready(d), d)) for d in dirs}
+    drop_held_back(needs, positions)
     add_bound(needs, seen, positions, dirs)
     stopped = session_stops(sessions)
     woken = wake_history(cache, sessions)
