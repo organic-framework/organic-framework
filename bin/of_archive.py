@@ -182,7 +182,7 @@ def archive(dry_run=False, log=print, paths=None, budget_s=None, quiet=False):
     n = sum(done.values())
     if not dry_run:
         _save(index_path, index)
-        if n:
+        if n or touched:   # a run that only took new times records them too (of_platform on PR 499)
             of_events.emit("raw_archived", {"files": n, "new": done["new"], "grown": done["grown"],
                                             "changed": done["changed"], "touched": touched, "left": left,
                                             "bytes_in": bytes_in,
