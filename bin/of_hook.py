@@ -417,9 +417,9 @@ def _session_path(sid):
 
 
 def load_session(sid):
-    try:
-        with open(_session_path(sid)) as fh:
-            return json.load(fh)
+    try:   # read_own (of_server on PR 545)
+        d = json.loads(of_events.read_own(_session_path(sid)))
+        return d if isinstance(d, dict) else {}
     except Exception:
         return {}
 
@@ -1925,9 +1925,9 @@ def _memory_warning(hook, index, now=None):
         return
     import of_memory
     path = os.path.join(STATE, "memory-warned.json")
-    try:
-        with open(path) as fh:
-            warned = json.load(fh)
+    try:   # read_own (of_server on PR 545)
+        warned = json.loads(of_events.read_own(path))
+        warned = warned if isinstance(warned, dict) else {}
     except (OSError, ValueError):
         warned = {}
     today = time.strftime("%Y-%m-%d", time.gmtime(now or time.time()))

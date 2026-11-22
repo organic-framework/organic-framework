@@ -110,6 +110,14 @@ def connect(path=None, timeout=10.0):
         except FileExistsError:
             pass   # another process made it first
     conn = sqlite3.connect(path, timeout=timeout, isolation_level=None)
+    try:   # what SQLite opened is the file checked above, not one swapped in between (of_server on PR 545)
+        opened = conn.execute("PRAGMA database_list").fetchone()[2]
+        st, op = os.lstat(path), os.stat(opened)
+        if os.path.islink(path) or (st.st_dev, st.st_ino) != (op.st_dev, op.st_ino):
+            conn.close()
+            raise sqlite3.OperationalError(f"{path} changed while the store opened it: not opened")
+    except (OSError, TypeError):
+        pass
     conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -894,8 +902,10 @@ def _drain_spool(conn, until=None):
                 os.replace(src, work)  # new appends go to a fresh file
                 works.append(work)
         for work in works:
-            with open(work) as fh:
-                lines = fh.readlines()
+            try:   # read_own (of_server on PR 545); a refused file is left where it is, unread
+                lines = of_events.read_own(work, cap=1 << 30).splitlines(True)
+            except OSError:
+                continue
             done = 0
             try:
                 for line in lines:
@@ -916,9 +926,7 @@ def _drain_spool(conn, until=None):
                         pass  # a malformed line never holds the rest back
                     done += 1
             except (sqlite3.OperationalError, _Budget):  # busy or out of time: keep the rest of this file for next run
-                with open(work + ".tmp", "w") as fh:
-                    fh.writelines(lines[done:])
-                os.replace(work + ".tmp", work)
+                of_events.write_new(work, "".join(lines[done:]))
                 return n
             os.remove(work)
     return n

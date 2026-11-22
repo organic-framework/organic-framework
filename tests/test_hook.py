@@ -866,12 +866,35 @@ class NoWriteThroughALinkTest(unittest.TestCase):
                     of_store.connect(db)
                 with open(target) as fh:
                     self.assertEqual(fh.read(), "TARGET\n")
-                # a file replaced or unlinked after open has no link left (count 0): still ours, still written
-                # (of_review on PR 545: `!= 1` refused it, and read-then-write callers lost data)
-                gone = os.path.join(state, "gone.log")
-                fd = of_events.open_own(gone)
-                os.unlink(gone)
-                os.close(fd)
+                # read_own refuses a link (of_server on PR 545)
+                for n in ("ask-refs.json", os.path.join("sessions", "s9.json"), "machine_id", "memory-warned.json"):
+                    q = os.path.join(state, n)
+                    if os.path.lexists(q):
+                        os.remove(q)
+                    os.symlink(target, q)
+                    with self.assertRaises(OSError):
+                        of_events.read_own(q)
+                self.assertEqual(of_hook.load_session("s9"), {})
+                self.assertNotEqual(of_events.machine_id(wait_s=0.1), "TARGET")
+                of_events._with_refs(lambda c: c.update(x=1))                   # replaced, never read through
+                self.assertFalse(os.path.islink(os.path.join(state, "ask-refs.json")))
+                with open(target) as fh:
+                    self.assertEqual(fh.read(), "TARGET\n")
+                # a file unlinked between the open and the fstat (count 0) is still ours (of_review on PR 545, as
+                # organic-framework PR 540's test does it): `!= 1` refused it
+                from unittest import mock
+                race = os.path.join(state, "race.log")
+                with open(race, "w") as fh:
+                    fh.write("x")
+                real_fstat = os.fstat
+
+                def fstat_after_unlink(fd):
+                    if os.path.exists(race):
+                        os.unlink(race)
+                    return real_fstat(fd)
+                with mock.patch.object(of_events.os, "fstat", fstat_after_unlink):
+                    os.close(of_events.open_own(race))
+                # a second name (a hard link) is refused
                 fd = os.open(os.path.join(state, "again.log"), os.O_WRONLY | os.O_CREAT, 0o600)
                 os.close(fd)
                 os.link(os.path.join(state, "again.log"), os.path.join(d, "hard"))   # a second name: refused
