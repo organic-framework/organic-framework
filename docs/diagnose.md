@@ -349,7 +349,9 @@ Measures named in *italics* are defined in [`studio.md`](studio.md) §3.
 - **ΔT basis:** holder and owner time freed, plus ambiguity of ownership removed. *p* = 0.6. *m_decide* = 3 min.
 - **Note.** This rule reads the position's `mandate_exit` (`done_when`, `review`; [`registry.md`](registry.md)). The exit is met when `done_when` is observed or the `review` date has passed. Without the field, the rule is blocked, and history calibrates it only by owner labels.
 
-### 2.15 Inbound backlog — `ap.inbound-backlog@2`
+### 2.15 Inbound backlog — `ap.inbound-backlog@3`
+
+*v3 (2026-11-22): a parked position whose successor has a live holder gets part `successor`, of severity `medium`, in place of `unattended`. A user organization's structure keeper reported that one backlog reached its owner three times as a delegated unit's escalation (`issue.severity >= high`) on two parked positions, each with an active, held successor. One queue held its own successor's messages, sent by name as docs/guard.md R11 allowed until `of_server`'s change of 2026-11-22 (organic-framework PR 519) refused them. The keeper asked that neither reaches the owner and that the successor or its unit owner acts (the keeper's message `01a2034b-0114`, relayed by `of_platform` in `01a20350-75b9`). A successor cannot read another position's queue: its unit owner or the structure keeper moves the queue to it (`of inbox move`), and that needs no decision of the owner's. The keeper also asked that an empty queue not escalate. The rule cannot tell one: the relay records depth 0 both when a queue is emptied and when nobody presents the position any more, because its holder's session ended (`of_review` on organic-framework PR 518). The change adds a part and narrows `unattended` by it, so earlier labels carry over.*
 
 *v2 (2026-11-15): a queue kept under a position's older name (registry `aliases`) is that position's, as the relay delivers it. Queues of one position under several names add up, day by day, under the position's own issue, and the evidence names the aliases. The first user organization's structure keeper labelled two `unattended` issues false positive that day: two aliases of one keeper read as "not in the registry".*
 
@@ -369,6 +371,7 @@ A position receives more than it takes: peer messages wait in its queue on the s
 
   - **Overload.** The position has a live holder, has backlog ≥ 60 min on ≥ 3 days, and has an average depth ≥ 2 over the window.
   - **Unattended.** The position has no live holder (parked, finished, or no session), and messages for it waited ≥ 60 min on ≥ 2 days. Senders write to a position nobody holds.
+  - **Successor** (v3). The same, for a parked position whose `successor` (registry) has a live holder. Its unit owner or the structure keeper moves the queue to that successor. A queue's last recorded depth does not say whether messages still wait: the relay records 0 also when nobody presents the position any more.
 
   Exclusions and overlaps:
   - positions of kind `owner` are excluded: the owner's inbound load is §2.1's case;
@@ -378,7 +381,8 @@ A position receives more than it takes: peer messages wait in its queue on the s
     - a deputy, or a published interface for the most frequent request (as in §2.8);
     - for a unit owner, keepers decide routine within their grants instead of asking (the delegation's `escalate_when`).
   - *Unattended:* route the senders to the successor or to the unit owner, or give the position a holder.
-- **Severity.** Overload is `medium`. Unattended is `high`, because work waits on nobody.
+  - *Successor:* the unit owner or the structure keeper moves the queue to the successor (`of inbox move`); a stale message is dropped (`of inbox drop`).
+- **Severity.** Overload is `medium`. Unattended is `high`, because work waits on nobody. Successor is `medium`: the unit owner or the structure keeper moves the queue to a named, held successor with its own command, so a delegated unit's `issue.severity >= high` does not take it to the owner.
 - **ΔT basis:** sender waiting hours removed: the backlog minutes × the senders waiting, on *raise*/*sustain* positions. Owner minutes are 0 unless the owner relays around the queue (§2.2). *p* = 0.5. *m_decide* = 5 min.
 
 ### 2.16–2.22 and 2.28 Development-loop rules (RFC 0005 §6)

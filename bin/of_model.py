@@ -428,7 +428,7 @@ def _positions(doc):
             "owner": p.get("owner") or HUMAN, "status": p.get("status") or "active",
             "throughput": p.get("throughput"), "waiting_on": p.get("waiting_on"),
             "summary": p.get("summary"), "session": h.get("session"), "runtime": h.get("runtime"),
-            "aliases": list(p.get("aliases") or []), "holder": h,
+            "aliases": list(p.get("aliases") or []), "successor": p.get("successor"), "holder": h,
             "exit": p.get("mandate_exit") or p.get("exit"), "functions": p.get("mandate_functions") or p.get("functions"),
             "owns": _owns(p.get("owns")),
         }

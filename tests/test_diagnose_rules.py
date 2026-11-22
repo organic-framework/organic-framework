@@ -599,6 +599,13 @@ class RulesTest(unittest.TestCase):
         res = R.rule_inbound_backlog(m, rows, a, b, cat, spec)
         self.assertEqual([(i["affected"], i["part"], i["severity"], i["evidence"]["holder"]) for i in res],
                          [(["old_bot"], "unattended", "high", "status parked")])
+        # v3 (2026-11-22, a user organization's structure keeper): a parked position whose successor is held is for its
+        # unit owner or structure keeper to move to that successor: part successor, medium, so a unit's
+        # issue.severity >= high does not escalate it; a successor nobody holds leaves it unattended
+        for succ, want in (("bot_operator", ("successor", "medium", "bot_operator")), ("data_keeper", ("unattended", "high", None))):
+            ds = dict(doc, positions=[dict(p, successor=succ) if p["name"] == "old_bot" else p for p in doc["positions"]])
+            res = R.rule_inbound_backlog(of_model.build(ds, [], at=b, org="acme"), rows, a, b, cat, spec)
+            self.assertEqual([(i["part"], i["severity"], i["evidence"].get("successor")) for i in res], [want], succ)
         # the owner kind is excluded (owner-router's case)
         rows = self._queues("colleague", three, depth=400)
         self.assertEqual(R.rule_inbound_backlog(m, rows, a, b, cat, spec), [])

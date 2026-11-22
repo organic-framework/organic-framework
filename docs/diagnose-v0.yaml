@@ -197,16 +197,16 @@ rules:
     remedies: [close, merge into the permanent owner, formalize with a new mandate]
 
   inbound-backlog:
-    version: 2                   # v2 (2026-11-15): a queue under a position's alias is that position's (diagnose.md 2.15); v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides), and p from labels (§5.2); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
-    labels_carry_from: [0, 1]    # v1 changes only the decider; v2 reads an alias's queue as its position's
+    version: 3                   # v3 (2026-11-22): part successor (medium) for a parked position whose successor is held (diagnose.md 2.15); v2 (2026-11-15): a queue under a position's alias is that position's; v1 (2026-11-15): decided by the structure keeper (diagnose.md §1, Who decides), and p from labels (§5.2); v0 (2026-11-06): of.inbound_queue exists from 12:47Z; blocked until queues are observed on 3 days
+    labels_carry_from: [0, 1, 2] # v1 changes only the decider; v2 reads an alias's queue as its position's; v3 adds a part and narrows unattended by it
     decider: unit_owner_or_structure_keeper   # of_architect, 2026-11-15 (relay msg 01a1dc76-ed6e): the structure keeper, or the unit owner inside a delegated unit (of_diagnose.EITHER)
     p: 0.95   # 2026-11-15: 5 of 5 distinct labelled judgements true, held under certainty (diagnose.md §5.2); was 0.5
     m_decide: 5
     thresholds: {queue_observed_days_gte: 3, old_after_min: 30, backlog_min_per_day_gte: 60, overload_days_gte: 3, depth_avg_gte: 2, unattended_days_gte: 2, exclude_kinds: [owner], merge_into: bottleneck-broker}
-    severity: {overload: medium, unattended: high}
+    severity: {overload: medium, unattended: high, successor: medium}   # successor: its unit owner or structure keeper moves the queue to a named, held successor, so a delegated unit's issue.severity >= high does not take it to the owner
     needs: [of.inbound_queue]
     delta_m: "0 unless the owner relays around the queue (ap.owner-relay); dT: sender waiting hours removed"
-    remedies: {overload: [deputy or published interface for its most frequent request, keepers decide routine within their grants], unattended: [route senders to the successor or unit owner, give the position a holder]}
+    remedies: {overload: [deputy or published interface for its most frequent request, keepers decide routine within their grants], unattended: [route senders to the successor or unit owner, give the position a holder], successor: [the unit owner or structure keeper moves the queue to the successor (of inbox move), drop a stale message (of inbox drop)]}
 
   # ---- development-loop rules (RFC 0005 §6; diagnose.md 2.16-2.22, 2.28). v0 (2026-11-07): proposal, blocked until the loop
   # projection of diagnose.md 4.1 exists. Per work, affected [<work>]. The first remedy is a pulse nudge to the doer.
