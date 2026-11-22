@@ -1211,15 +1211,27 @@ def _mtime(path):
         return -1.0
 
 
-def _holds_last_record(path, other):
-    """Whether `path` holds `other`'s last record, so it continues `other` rather than being another history."""
+def _continues(path, other):
+    """Whether `path` continues `other` rather than being another history: it holds `other`'s last record that has a
+    uuid (looked for by that uuid), or, when none has one, its last line. A transcript seldom ends on a turn: of 194 on
+    one machine, 182 ended on a record with no uuid (cost-state, file-history-snapshot), a line another history can hold
+    too (of_review on PR 538)."""
     try:
         with open(other, "rb") as fh:
             lines = [x for x in fh.read().splitlines() if x.strip()]
         if not lines:
             return True
+        uid = None
+        for x in reversed(lines):
+            try:
+                uid = (json.loads(x) or {}).get("uuid")
+            except (ValueError, AttributeError):
+                uid = None
+            if uid:
+                break
         with open(path, "rb") as fh:
-            return lines[-1] in fh.read()
+            data = fh.read()
+        return (str(uid).encode() if uid else lines[-1]) in data
     except OSError:
         return False
 
@@ -4009,11 +4021,11 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
     # a carry knows the copy it brought: a newer copy stands for it only when it continues it (holds its last record).
     # Freshness alone is a proxy: a session that resumed from an older copy and wrote to it would win a second restore,
     # and the carried copy would go to the move's backup, deleted after 6 hours (of_review on PR 538)
-    carried = next((t for t in (transcript_sources or {}) if os.path.basename(t) == f"{sid}.jsonl"
+    brought = next((t for t in (transcript_sources or {}) if os.path.basename(t) == f"{sid}.jsonl"
                     and os.path.dirname(os.path.dirname(t)) == os.path.join(target, "projects")), None)
-    if carried and os.path.exists(carried) and transcript != carried and not _holds_last_record(transcript, carried):
+    if brought and os.path.exists(brought) and transcript != brought and not _continues(transcript, brought):
         raise MoveError(f"{name}: session {sid[:8]} has a copy on {short(target)} newer than the carried one that does "
-                        f"not continue it: {transcript} (newer) and {carried} (carried). Neither is taken; set aside "
+                        f"not continue it: {transcript} (newer) and {brought} (carried). Neither is taken; set aside "
                         f"the one that is not the session's history, then restore again")
     # the folder the process started in (its transcript's folder), not the transcript's last cwd: platform_owner
     # started in ~/acme and works in ~/acme/org, which its account does not trust (2026-11-10)
