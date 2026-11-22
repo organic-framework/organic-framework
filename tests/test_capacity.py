@@ -1933,8 +1933,11 @@ class Resume(unittest.TestCase):
         self.assertIn("--dangerously-skip-permissions", run[3])
         self.assertIn("--model claude-opus-5-5", run[3])
         self.assertTrue(os.path.exists(os.path.join(r["work"], "note.md")))
-        held = next(c for c in self.calls if c[0] == "emit")
-        self.assertEqual((held[1], held[2]["evidence"]), ("holder_changed", "of capacity resume"))
+        held = next(c for c in self.calls if c[:2] == ("emit", "holder_changed"))
+        self.assertEqual(held[2]["evidence"], "of capacity resume")
+        rec = next(i for i, c in enumerate(self.calls) if c[:2] == ("emit", "session_settings"))
+        self.assertEqual(self.calls[rec][2]["by"], "of capacity resume")      # of_server, message 01a20340-445c
+        self.assertLess(rec, kinds.index("pane run"))                        # recorded before the launch
 
     def test_move_updates_the_private_note_after_exit_and_copy_before_resume(self):
         target = os.path.join(self.home.name, ".claude-b")
@@ -1984,6 +1987,8 @@ class Resume(unittest.TestCase):
                              assume_empty_input=True, log=logs.append)
         self.assertEqual(scan.call_args.args[0], of_capacity.find_transcript(target, "s1"))
         self.assertTrue(any("1 stopped scheduled task" in msg for msg in logs))
+        rec = [c[2] for c in self.calls if c[:2] == ("emit", "session_settings")]
+        self.assertEqual([(r["session"], r["by"]) for r in rec], [("s1", "of capacity move")])  # msg 01a20340-445c
 
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
@@ -2919,6 +2924,38 @@ class ToolProfiles(unittest.TestCase):
         self.assertEqual(settings["allowedMcpServers"], [{"serverName": "grafana-read"}, {"serverUrl": self.SLACK}])
         self.assertEqual(settings["enabledPlugins"], {"slack@anthropic-plugin-directory": True})
         self.assertEqual((settings["permissions"]["deny"], settings["autoMemoryDirectory"]), (["Read(/k/**)"], "/m/aws"))
+
+    def test_a_launch_records_its_settings_file_and_a_dry_run_leaves_it(self):
+        """of_server, message 01a20340-445c: the bootstrap compares each running session's settings file with its
+        of.session_settings record; a moved session with none reads as not restarted, and a dry run that rewrote the
+        file would read as settings it never started on."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as t:
+            line = of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", deny=["Read(/k/**)"],
+                                              state_dir=t)
+            path = os.path.join(t, "spawn", "s1.settings.json")
+            with open(path, "rb") as fh:
+                was = fh.read()
+            got = []
+            digest = of_capacity.record_launch("s1", "aws", "acme", "of capacity move", state_dir=t,
+                                               emit=lambda *a, **k: got.append((a, k)))
+            self.assertEqual(digest, hashlib.sha256(was).hexdigest())
+            (name, payload), kw = got[0]
+            self.assertEqual((name, payload["by"], payload["file"], kw["position"], kw["org"]),
+                             ("session_settings", "of capacity move", "s1.settings.json", "aws", "acme"))
+            dry = of_capacity.launch_command("/w", "/h/.claude-b", "s1", "aws", "/n.md", deny=["Read(/k/**)", "x"],
+                                             state_dir=t, dry_run=True)
+            self.assertEqual(of_capacity._ARG_SETTINGS.search(dry).group(1), path)
+            self.assertEqual(of_capacity._ARG_SETTINGS.search(line).group(1), path)
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), was)                         # named, never rewritten
+            logged = []
+
+            def broken(*a, **k):
+                raise OSError("store full")
+            self.assertIsNone(of_capacity.record_launch("s1", "aws", "acme", "of capacity move", log=logged.append,
+                                                        state_dir=t, emit=broken))
+            self.assertIn("settings file not recorded", logged[0])       # a move never fails on the record
 
     def test_a_move_stops_where_a_bound_tool_is_signed_out_and_files_one_task(self):
         from unittest import mock
