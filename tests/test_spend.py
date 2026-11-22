@@ -200,12 +200,12 @@ class Store(unittest.TestCase):
         self.assertEqual(d1["total"]["cost_usd"], 4.0)
         self.assertEqual(d1["accounts"], {"/h/.claude-a": {"fresh": 1_000_000, "cost_usd": 4.0, "responses": 1,
                                                           "outside_fresh": 0, "outside_runs": 0}})
-        self.assertEqual(d1["works"]["w-retry"]["cost_usd"], 4.0)
-        self.assertEqual(d1["goals"]["g-orders"]["cost_usd"], 4.0)          # a work's spend counts to its goal
+        self.assertEqual(d1["works"]["acme/w-retry"]["cost_usd"], 4.0)
+        self.assertEqual(d1["goals"]["acme/g-orders"]["cost_usd"], 4.0)     # a work's spend counts to its goal
         self.assertEqual(d2["accounts"]["/h/.claude-b"]["cost_usd"], 4.0)
-        self.assertEqual(d2["positions"]["acme_b"]["cost_usd"], 1.0)        # Sonnet's price
+        self.assertEqual(d2["positions"]["acme/acme_b"]["cost_usd"], 1.0)   # Sonnet's price
         self.assertEqual(d2["positions"]["(no position)"]["responses"], 1)
-        self.assertEqual(day["positions"]["acme_a"]["cost_usd"], 8.0)
+        self.assertEqual(day["positions"]["acme/acme_a"]["cost_usd"], 8.0)
         self.assertEqual(day["total"]["responses"], 4)
         hour = of_spend.periods(DOCS, self.conn, T0 + 86400, T0 + 86400 + 7 * H, by="hour", now=now)
         self.assertEqual([(p["start"] - T0 - 86400) // H for p in hour["periods"]], [5, 6])
@@ -213,9 +213,28 @@ class Store(unittest.TestCase):
         only = of_spend.periods(DOCS, self.conn, T0, now, by="day", org="acme", now=now)
         self.assertNotIn("(no position)", only["positions"])                 # one organization's positions only
         text = of_spend.render_periods(day, top=1)
+        self.assertIn("2026-11-01 (part)  $4", text)                          # asked from 03:00
         self.assertIn("2026-11-02  $5", text)
         self.assertIn("positions: acme_a $4, 2 more $1", text)
         self.assertIn("by position: acme_a $8", text)
+
+    def test_two_organizations_rows_of_one_name_stay_apart(self):
+        """of_review on PR 558: positions, works and goals were keyed by bare name, so two organizations' rows of one
+        name printed as one sum."""
+        docs = dict(DOCS, beta={"organization": "beta", "positions": [{"name": "acme_a", "holder": {"session": "S7"}}],
+                                "works": {"w-retry": {"doers": ["acme_a"]}}})
+        now = T0 + 86400
+        self.ev(T0 + H, "of.hook", "S1", "acme_a")
+        self.ev(T0 + H, "of.state_declared", "S1", "acme_a", {"work": "w-retry"})
+        self.ev(T0 + H, "of.hook", "S7", "acme_a", org="beta")
+        self.rec("S1", "m1", T0 + 2 * H, inp=1_000_000, out=0)
+        self.rec("S7", "m2", T0 + 2 * H, inp=1_000_000, out=0)
+        of_spend.ingest(self.conn, now)
+        out = of_spend.periods(docs, self.conn, T0, now, by="day", now=now)
+        self.assertEqual({k: v["cost_usd"] for k, v in out["positions"].items()}, {"acme/acme_a": 4.0, "beta/acme_a": 4.0})
+        self.assertEqual({k: v["cost_usd"] for k, v in out["periods"][0]["works"].items()},
+                         {"acme/w-retry": 4.0, "beta/w-retry": 4.0})
+        self.assertIn("acme/acme_a $4", of_spend.render_periods(out))       # one name in two: both named in full
 
     def test_end_to_end_with_a_declaration_and_the_cache(self):
         now = T0 + 2 * 86400
@@ -293,6 +312,36 @@ class Store(unittest.TestCase):
 
 
 class Locked(unittest.TestCase):
+    def test_the_views_migration_waits_for_the_write_lock_and_is_one_transaction(self):
+        """of_review on PR 558: the version read, the drop and the reset ran with no lock across them, so the tick and
+        the command could leave the view empty and marked complete."""
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, "s.db")
+            a = sqlite3.connect(path, isolation_level=None, timeout=0.1)
+            a.executescript("""
+                CREATE TABLE transcript_record (id INTEGER PRIMARY KEY, source_path TEXT, session_id TEXT, message_id TEXT,
+                  timestamp TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
+                  cache_write_tokens INTEGER, cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER, model TEXT);
+                CREATE TABLE view_spend_month (message_id TEXT PRIMARY KEY, session_id TEXT, epoch REAL, fresh INTEGER,
+                  cost REAL);
+                CREATE TABLE listener_meta (key TEXT PRIMARY KEY, value TEXT);
+                INSERT INTO listener_meta VALUES ('spend_month_version', '1'), ('spend_month_cursor', '1'),
+                  ('spend_month_caught_up', '1');""")
+            a.execute("INSERT INTO transcript_record VALUES (1, '/h/.claude-a/projects/-w/S1.jsonl', 'S1', 'm1', ?, "
+                      "1000, 0, 0, NULL, 0, 0, 'claude-opus-5-5')", (iso(T0 + H),))
+            b = sqlite3.connect(path, isolation_level=None, timeout=0.1)
+            b.execute("BEGIN IMMEDIATE")  # another writer holds the store
+            self.assertEqual(of_spend.ingest(a, T0 + 86400, budget_s=0.5), (0, False))
+            self.assertEqual([r[1] for r in a.execute("PRAGMA table_info(view_spend_month)")][-1], "cost")  # untouched
+            b.execute("COMMIT")
+            n, done = of_spend.ingest(a, T0 + 86400, budget_s=2)
+            self.assertTrue(done)
+            self.assertEqual(a.execute("SELECT message_id, config_dir FROM view_spend_month").fetchall(),
+                             [("m1", "/h/.claude-a")])                    # read again from the first record
+        finally:
+            shutil.rmtree(d)
+
     def test_a_locked_store_ends_the_tick_without_an_error_and_keeps_the_cursor(self):
         """2026-11-14: a catch-up run stopped on 'database is locked' after the 10 s busy wait."""
         d = tempfile.mkdtemp()

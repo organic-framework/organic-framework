@@ -489,7 +489,7 @@ Rules:
 
 OF shows what each goal, sub-goal and condition costs a month, as a reading. No node carries a budget, and nothing warns, files a card or stops work on its spend.
 
-- **Counting.** As for a delegation's budget (Delegations, "Budget"): fresh tokens (input, cache writes and output, each response once by its message id), and the cost at list prices, cache reads included. A month is a calendar month in UTC.
+- **Counting.** Fresh tokens (input, cache writes and output, each response once by its message id), as for a delegation's budget (Delegations, "Budget"), and the cost at list prices, cache reads included. The cost is at each response's own model's prices (docs/capacity.md, "Spend per goal"), while a delegation's budget still prices every response at Opus 5.5's, so the two differ where other models ran (2026-11-22). A month is a calendar month in UTC.
 - **Attribution: session, position, work, goal.**
   - A response's tokens go to the position whose holder the session was at that moment (`holder.session` and its history).
   - From the position they go to a work: the work it last declared with `of status --work <id>`, until it declares another. An `of ask --work` does not move the attribution: an ask about a work is not the work being done. Without a declaration, they go to its one open work when it is a doer of exactly one; or to the goal when all its open works serve the same goal. Otherwise they are shown as unattributed under the position, which is a prompt to declare `--work`.

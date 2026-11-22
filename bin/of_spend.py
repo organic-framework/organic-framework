@@ -125,12 +125,23 @@ def ingest(conn, now, budget_s=TICK_BUDGET_S, batch=5000):
     responses from the start of the previous month. Returns (rows read, caught up)."""
     import of_capacity
     if _meta(conn, "spend_month_version") != VERSION:
-        conn.execute("DROP TABLE IF EXISTS view_spend_month")  # its columns changed: made again, read from the start
+        # its columns changed: dropped, made again and read from the start, in one transaction under the write lock,
+        # the version read again inside it. The tick and the command can both come here: read outside, the second
+        # dropped what the first had read and reset nothing, leaving the view empty and marked complete (of_review on
+        # PR 558)
+        own_tx = not conn.in_transaction
+        if own_tx and not _begin(conn, time.monotonic() + budget_s):
+            return 0, False  # the store stayed locked: the migration at the next tick
+        if _meta(conn, "spend_month_version") != VERSION:
+            conn.execute("DROP TABLE IF EXISTS view_spend_month")
+            for stmt in [x.strip() for x in MONTH_DDL.split(";") if x.strip()]:
+                conn.execute(stmt)
+            _meta(conn, "spend_month_cursor", 0)
+            _meta(conn, "spend_month_caught_up", 0)
+            _meta(conn, "spend_month_version", VERSION)
+        if own_tx:
+            conn.execute("COMMIT")
     conn.executescript(MONTH_DDL)
-    if _meta(conn, "spend_month_version") != VERSION:
-        _meta(conn, "spend_month_cursor", 0)
-        _meta(conn, "spend_month_caught_up", 0)
-        _meta(conn, "spend_month_version", VERSION)
     this_start, _ = month_bounds(now=now)
     keep_from = month_bounds(now=this_start - 1)[0]
     cur, n, t0 = int(_meta(conn, "spend_month_cursor") or 0), 0, time.monotonic()
@@ -587,7 +598,7 @@ def periods(docs, conn, since, until, by="day", org=None, now=None):
     import of_capacity
     now = now or time.time()
     step = STEPS[by]
-    since = since - since % step
+    asked, since = since, since - since % step
     conn.executescript(MONTH_DDL)
     spans, decl = _store_inputs(docs, conn)
     canon = canon_map(docs)
@@ -596,17 +607,19 @@ def periods(docs, conn, since, until, by="day", org=None, now=None):
     def bucket(k):
         return buckets.setdefault(k, {"total": _zero(), "accounts": {}, "positions": {}, "works": {}, "goals": {}})
 
+    def key(org, name):  # two organizations' rows never add up: a position, work or goal is its organization's
+        return f"{org}/{name}" if org else name
+
     def put(k, cd, s, pos=None, porg=None, work=None, goal=None):
         b = bucket(k)
         _add(b["total"], s)
         if cd is not None:
             _add(b["accounts"].setdefault(of_capacity.short(cd) if cd else "?", _zero()), s)
-        row = b["positions"].setdefault(pos or "(no position)", dict(_zero(), org=porg))
-        _add(row, s)
+        _add(b["positions"].setdefault(key(porg, pos) if pos else "(no position)", dict(_zero(), org=porg)), s)
         if work:
-            _add(b["works"].setdefault(work, dict(_zero(), org=porg)), s)
+            _add(b["works"].setdefault(key(porg, work), dict(_zero(), org=porg)), s)
         if goal:
-            _add(b["goals"].setdefault(goal, dict(_zero(), org=porg)), s)
+            _add(b["goals"].setdefault(key(porg, goal), dict(_zero(), org=porg)), s)
 
     sql = ("SELECT CAST((epoch - ?) / ? AS INTEGER), config_dir, COALESCE(SUM(fresh), 0), COALESCE(SUM(cost), 0), "
            "count(*) FROM view_spend_month WHERE session_id = ? AND epoch >= ? AND epoch < ? GROUP BY 1, 2")
@@ -645,9 +658,10 @@ def periods(docs, conn, since, until, by="day", org=None, now=None):
             _add(accounts.setdefault(name, _zero()), s)
         for name, s in b["positions"].items():
             _add(positions.setdefault(name, dict(_zero(), org=s.get("org"))), s)
+        # rows of one bare name in two organizations keep their organization in the text too
         rows.append(dict(b, start=since + k * step))
     keep_from = month_bounds(now=month_bounds(now=now)[0] - 1)[0]
-    return _round({"v": 1, "by": by, "from": since, "to": until, "computed_at": now, "org": org,
+    return _round({"v": 1, "by": by, "from": since, "asked_from": asked, "to": until, "computed_at": now, "org": org,
                    "kept_from": keep_from, "complete": _meta(conn, "spend_month_caught_up") == "1",
                    "periods": rows, "total": total, "accounts": accounts, "positions": positions})
 
@@ -665,14 +679,25 @@ def render_periods(out, top=10):
         lines.append(f"  nothing before {time.strftime('%Y-%m-%d', time.gmtime(out['kept_from']))}: the view keeps "
                      f"this and the previous month")
 
+    bare = {}
+    for k in out["positions"]:
+        bare.setdefault(k.split("/", 1)[-1], set()).add(k)
+
+    def label(k):  # a position's bare name, unless two organizations hold one of that name
+        b = k.split("/", 1)[-1]
+        return b if len(bare.get(b, ())) <= 1 else k
+
     def tops(d, n):
         items = sorted(d.items(), key=lambda x: -x[1]["cost_usd"])
-        shown = ", ".join(f"{k} ${v['cost_usd']:,.0f}" for k, v in items[:n])
+        shown = ", ".join(f"{label(k)} ${v['cost_usd']:,.0f}" for k, v in items[:n])
         rest = sum(v["cost_usd"] for _, v in items[n:])
         return shown + (f", {len(items) - n} more ${rest:,.0f}" if len(items) > n else "")
+    step = STEPS[out["by"]]
     for p in out["periods"]:
         t = p["total"]
-        lines.append(f"\n{time.strftime(fmt, time.gmtime(p['start']))}  ${t['cost_usd']:,.0f}  fresh {_num(t['fresh'])}"
+        part = p["start"] < out.get("asked_from", out["from"]) or p["start"] + step > min(out["to"], out["computed_at"])
+        lines.append(f"\n{time.strftime(fmt, time.gmtime(p['start']))}{' (part)' if part else ''}  "
+                     f"${t['cost_usd']:,.0f}  fresh {_num(t['fresh'])}"
                      f"  {t['responses']:,} responses"
                      + (f"  + {_num(t.get('outside_fresh'))} in {t['outside_runs']} outside run(s)"
                         if t.get("outside_runs") else ""))
