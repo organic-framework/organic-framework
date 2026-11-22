@@ -209,10 +209,19 @@ def clone_refused(clone, entries, base=None):
     guarded += [os.path.realpath(x) for x in (of_events.STATE_DIR, getattr(of_events, "LOG_DIR", None) or
                                               os.path.expanduser("~/.local/log/of"))]
     guarded += [os.path.realpath(x) for x in _accounts_dirs()]
+    roots = []
     for o in entries:
         for q in [o.get("path")] + list(o.get("paths") or []):
             if q:
                 guarded.append(os.path.realpath(os.path.join(base or "", os.path.expanduser(str(q)))))
+        roots += [os.path.realpath(os.path.join(base or "", os.path.expanduser(str(q)))) for q in o.get("paths") or []]
+    # a sibling of a checkout root: of spawn's work folder and the document paths look for a repository of the
+    # organization beside its checkouts, so a clone there would be adopted outside the sandbox (of_agent-server's
+    # check on the agent host, message 01a204aa-94a7, point C)
+    parent = os.path.dirname(clone)
+    hit = next((r for r in roots if os.path.dirname(r) == parent and r != clone), None)
+    if hit:
+        return f"it lies beside {hit}, where OF looks for the organization's repositories"
     for g in guarded:
         if clone == g or clone.startswith(g + os.sep) or g.startswith(clone + os.sep):
             return f"it is, holds or lies in {g}"

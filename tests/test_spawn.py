@@ -396,6 +396,7 @@ class WorkCloneTest(unittest.TestCase):
             self.assertTrue(of_spawn.clone_refused(clone, entries), clone)
         for x in ("~/.config/of", "~/.ssh", "~/.config/systemd/user", "~/.config"):   # the owner's own folders
             self.assertTrue(of_spawn.clone_refused(os.path.realpath(os.path.expanduser(x)), entries), x)
+        self.assertTrue(of_spawn.clone_refused("/srv/organic-framework-build", entries))   # beside the checkout /srv/code
         self.assertIsNone(of_spawn.clone_refused("/work/a-clone", entries))
 
     def test_a_refused_clone_keeps_its_copy_denied(self):
