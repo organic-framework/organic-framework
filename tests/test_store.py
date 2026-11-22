@@ -1,5 +1,6 @@
 """The local store (bin/of_store.py): connecting stays cheap while another process writes."""
 
+import json
 import os
 import sys
 import unittest
@@ -99,6 +100,30 @@ class LongLockLineTest(unittest.TestCase):
                 self.assertRegex(lines[2], r"held the write lock [\d.]+ s: ")                # no store given: as before
                 live.close()
                 other.close()
+            finally:
+                of_events.STATE_DIR = saved
+
+
+
+class SpoolSeparatorTest(unittest.TestCase):
+    def test_a_record_holding_a_unicode_line_separator_is_drained_whole(self):
+        """of_review on PR 545: str.splitlines broke a spooled record at U+2028, U+2029 or U+0085 and both halves were
+        lost with the work file."""
+        import tempfile
+        import of_events
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = d
+            try:
+                conn = of_store.connect(os.path.join(d, "of.db"))
+                for i, sep in enumerate(("\u2028", "\u2029", "\u0085")):
+                    rec = of_events.record("note", {"text": f"a{sep}b"}, position="p", session="s")
+                    of_store.spool_append("events.jsonl", rec)
+                self.assertEqual(of_store.drain_spool(conn), 3)
+                texts = [json.loads(p)["text"] for (p,) in conn.execute(
+                    "SELECT payload FROM event WHERE name = 'of.note' ORDER BY rowid")]
+                self.assertEqual(texts, ["a\u2028b", "a\u2029b", "a\u0085b"])
             finally:
                 of_events.STATE_DIR = saved
 

@@ -903,7 +903,10 @@ def _drain_spool(conn, until=None):
                 works.append(work)
         for work in works:
             try:   # read_own (of_server on PR 545); a refused file is left where it is, unread
-                lines = of_events.read_own(work, cap=1 << 30).splitlines(True)
+                # split at a newline only: str.splitlines also breaks at U+2028, U+2029 and U+0085, which a record
+                # written with ensure_ascii=False holds raw, and the halves were lost (of_review on PR 545)
+                import io
+                lines = io.StringIO(of_events.read_own(work, cap=1 << 30)).readlines()
             except OSError:
                 continue
             done = 0
