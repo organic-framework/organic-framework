@@ -174,12 +174,20 @@ def _pinned_handler(context):
 
     class Pinned(http.client.HTTPSConnection):
         def connect(self):
-            unix = socket_path(f"https://{self.host}:{self.port}")
-            if unix:
+            target = connect_target(f"https://{self.host}:{self.port}")
+            timeout = self.timeout if isinstance(self.timeout, (int, float)) else None
+            if target and target[0] == "unix":
                 raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                raw.settimeout(self.timeout if isinstance(self.timeout, (int, float)) else None)
+                raw.settimeout(timeout)
                 try:
-                    raw.connect(unix)
+                    raw.connect(target[1])
+                    self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+                except BaseException:
+                    raw.close()
+                    raise
+            elif target:  # another address under the same name: the TLS name and the pin stay this URL's
+                raw = socket.create_connection(target[1], timeout=timeout)
+                try:
                     self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
                 except BaseException:
                     raw.close()
@@ -208,7 +216,7 @@ def urlopen_no_redirect(req, timeout=None, context=None):
     import urllib.parse
     pinned = context is not None and getattr(context, "of_pin_sha256", None) is not None
     url = req.full_url if isinstance(req, urllib.request.Request) else str(req)
-    local = socket_path(url) is not None or (urllib.parse.urlsplit(url).hostname or "").lower() in _LOOPBACK
+    local = connect_target(url) is not None or (urllib.parse.urlsplit(url).hostname or "").lower() in _LOOPBACK
     handlers = ([urllib.request.ProxyHandler({})] if local else []) + [_NoRedirect()] + (
         [_pinned_handler(context) if pinned else urllib.request.HTTPSHandler(context=context)]
         if context is not None else [])
@@ -337,10 +345,16 @@ def _uuid7():
     return str(u7() if u7 else uuid.uuid4())
 
 
-def socket_path(url):
-    """The Unix socket this machine reaches URL's host and port through, or None: the file
-    ~/.config/of/servers/<host>_<port>.socket names it (`of enroll --socket`). Then no connection to that address
-    uses TCP, so whoever takes the port gets nothing (docs/server-several-machines.md 4.8; docs/contours.md §1)."""
+def connect_target(url):
+    """How this machine reaches URL's host and port, or None for that address itself: ("unix", path) through a Unix
+    socket, or ("tcp", (address, port)) to another address under the same name. The file
+    ~/.config/of/servers/<host>_<port>.socket names it: an absolute path (`of enroll --socket`; then no connection to
+    that address uses TCP, so whoever takes the port gets nothing: docs/server-several-machines.md 4.8; docs/contours.md
+    §1), or `tcp:<IP address>:<port>`, an address literal and never a name to look up (the Mac reaching the agent
+    host's server over its tailnet port instead of the SSH bridge: the founder through of_conductor, prompt
+    01a20389-14b4; hand-over c004dfc6). The connection keeps this URL's name for TLS and its pinned certificate, so the
+    file moves the route, not the trust; like the pin beside it, it is the owner's to write."""
+    import ipaddress
     import urllib.parse
     u = urllib.parse.urlsplit(url)
     if not u.hostname:
@@ -348,10 +362,28 @@ def socket_path(url):
     port = u.port or (443 if u.scheme.lower() == "https" else 80)
     try:
         with open(os.path.join(os.path.expanduser("~/.config/of/servers"), f"{u.hostname}_{port}.socket")) as fh:
-            path = fh.read().strip()
+            text = fh.read().strip()
     except OSError:
         return None
-    return path if path.startswith("/") else None
+    if text.startswith("/"):
+        return "unix", text
+    if text.startswith("tcp:"):
+        host, _, tport = text[4:].rpartition(":")
+        host = host.strip("[]")
+        try:
+            ipaddress.ip_address(host)
+            tport = int(tport)
+        except ValueError:
+            return None
+        if 0 < tport < 65536:
+            return "tcp", (host, tport)
+    return None
+
+
+def socket_path(url):
+    """The Unix socket this machine reaches URL's host and port through, or None (connect_target)."""
+    t = connect_target(url)
+    return t[1] if t and t[0] == "unix" else None
 
 
 def pinned_url(url):
