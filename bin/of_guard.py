@@ -3699,12 +3699,14 @@ def _server_route_act(words):
 
 
 def _org_path_act(words):
-    """`of org set <org> path <folder>`: the owner's, by the positive test (of_review on organic-framework PR 427)."""
+    """`of org set <org> path <folder>` and `of org set <org> work_clone <folder>`: the owner's, by the positive test
+    (of_review on organic-framework PR 427 and PR 542)."""
     # by position, so `of org set path hold on` (an organization named path) stays the agents' hold (of_server); a
     # double dash is no positional for argparse, so it is dropped before the places are read (of_review on PR 427 at
     # 0159efd: `of org -- set ofb path`, `of org set -- ofb path`, `of org set ofb -- path` ran the act)
     words = [w for w in words if w != "--"]
-    return words[:2] == ["org", "set"] and words[3:4] == ["path"]
+    # and `work_clone`, which makes a folder writable from every sandbox of its organization (of_review on PR 542)
+    return words[:2] == ["org", "set"] and words[3:4] in (["path"], ["work_clone"])
 
 
 def _actor_deny(head, args, stext, env):

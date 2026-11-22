@@ -69,6 +69,7 @@ Use is counted from the event log for the seven days 2026-11-05 to 2026-11-11, b
 | OF's herdr plugin: agents named by their positions when herdr sees them and after a restart; the Agents view with questions first; herdr resumes OF's sessions on their own account | `herdr-plugin/`; `of init` links it | Early | `test_herdr_plugin`; on one machine since 2026-11-11 |
 | Holding an organization's panes where they are, against `of apply` | `of org set <org> hold on\|off`, `of org show` | Early | `test_of` |
 | An organization's repository folder on this machine, set by the owner alone | `of org set <org> path <folder>` | Early | `test_of`, `test_guard_actor` |
+| A work clone of an organization's repository its sessions may write from their sandbox on Linux, set by the owner alone; `of diff` writes the registry there | `of org set <org> work_clone <folder>\|none` | Early | `test_spawn`, `test_diff`, `test_guard_actor` |
 
 ## Questions, messages and hand-overs
 
