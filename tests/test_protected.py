@@ -587,5 +587,82 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertIn("scripts/a#b.sh", P._listed("scripts/a#b.sh\n"))
 
 
+class ReaderAndLoginTest(unittest.TestCase):
+    """A machine with no gh reads a public repository without credentials, and a run another user's login started
+    is refused even when sudo's variables were cleared (of_agent-server, msg 01a202d5-1eeb)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.d]))
+        self.loginuid = P.LOGINUID
+        self.addCleanup(lambda: setattr(P, "LOGINUID", self.loginuid))
+
+    def login(self, value):
+        path = os.path.join(self.d, "loginuid")
+        with open(path, "w") as fh:
+            fh.write(value)
+        P.LOGINUID = path
+
+    def test_a_login_of_another_user_is_the_sudo_mode(self):
+        old = os.environ.pop("SUDO_UID", None)
+        self.addCleanup(lambda: old is not None and os.environ.__setitem__("SUDO_UID", old))
+        if os.geteuid() == 0:
+            self.skipTest("runs as root, which is refused anyway")
+        self.login(str(os.getuid() + 1))                                           # sudo -u <user> env -i …
+        self.assertTrue(P._under_sudo())
+        with self.assertRaises(P.Refused) as cm:
+            P.run(self.d, "0" * 40, orgs_file=os.path.join(self.d, "none.yaml"), api=green())
+        self.assertIn("sudo", str(cm.exception))
+        for own in (str(os.getuid()), "4294967295", "-1", "", "x"):                # this user's, unset, unreadable
+            self.login(own)
+            self.assertFalse(P._under_sudo(), own)
+        P.LOGINUID = os.path.join(self.d, "missing")                               # no such file: macOS
+        self.assertFalse(P._under_sudo())
+
+    def test_github_without_credentials(self):
+        import io
+        import urllib.error
+        import of_route
+        seen = []
+
+        class Answer(io.BytesIO):
+            status = 200
+
+        def opener(req, timeout, context=None):
+            seen.append(req)
+            if "protection" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+            if "broken" in req.full_url:
+                raise OSError("no route")
+            return Answer(b'[{"number": 7}]')
+        real = of_route.open_url
+        of_route.open_url = opener
+        self.addCleanup(lambda: setattr(of_route, "open_url", real))
+        self.assertEqual(P.public_api("repos/acme/vault/commits/abc/pulls"), (200, [{"number": 7}]))
+        self.assertEqual(seen[0].full_url, "https://api.github.com/repos/acme/vault/commits/abc/pulls")
+        self.assertEqual({k.lower() for k in seen[0].headers}, {"accept", "x-github-api-version", "user-agent"})
+        self.assertEqual(P.public_api("repos/acme/vault/branches/main/protection/required_status_checks"), (401, None))
+        self.assertEqual(P.public_api("repos/acme/broken"), (1, None))
+        import shutil
+        which = shutil.which
+        self.addCleanup(lambda: setattr(shutil, "which", which))
+        calls = []
+        real_gh, real_public = P.gh_api, P.public_api
+        self.addCleanup(lambda: (setattr(P, "gh_api", real_gh), setattr(P, "public_api", real_public)))
+        P.gh_api = lambda path: calls.append(("gh", path)) or (200, None)
+        P.public_api = lambda path: calls.append(("public", path)) or (200, None)
+        shutil.which = lambda name: None
+        P.default_api("x")
+        shutil.which = lambda name: "/usr/bin/gh" if name == "gh" else None
+        P.default_api("y")
+        self.assertEqual(calls, [("public", "x"), ("gh", "y")])
+
+    def test_a_registry_ff_with_no_valid_repo_is_refused_before_github(self):
+        for spec in (dict(SPEC, repo="acme/vault?x=1"), dict(SPEC, branch="../main"), dict(SPEC, repo=None)):
+            with self.assertRaises(P.Refused) as cm:
+                P._ff(self.d, spec, "0" * 40, api=lambda path: self.fail("GitHub asked"))
+            self.assertIn("no valid repo", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

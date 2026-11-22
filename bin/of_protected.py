@@ -505,11 +505,31 @@ def _trusted(path):
                       "user's to trust")
 
 
+LOGINUID = "/proc/self/loginuid"
+
+
+def _login_uid():
+    """The uid of the login this process descends from, on Linux: the audit login uid, which pam_loginuid sets at a
+    login and an unprivileged process cannot change, and which sudo, su and `env -i` keep. None when it is unset or
+    cannot be read (macOS, a container without it, a process systemd started outside any login)."""
+    try:
+        with open(LOGINUID) as fh:
+            v = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    return None if v < 0 or v == 4294967295 else v
+
+
 def _under_sudo():
-    """Run through sudo (or as root): the boundary mode, which needs a registry and a gh the caller cannot write. Not
-    built; until it is, the command refuses there (of_review on organic-framework PR 306: under sudo, the caller's HOME
-    named the registry and the human set)."""
-    return os.geteuid() == 0 or bool(os.environ.get("SUDO_UID"))
+    """Run through sudo or su, or as root: the boundary mode, which needs a registry and a gh the caller cannot write.
+    Not built; until it is, the command refuses there (of_review on organic-framework PR 306: under sudo, the caller's
+    HOME named the registry and the human set). SUDO_UID is the caller's to clear (`sudo -u <user> env -i …`, as a
+    sitting's wrapper starts a clean environment; of_agent-server, msg 01a202d5-1eeb), so on Linux a login uid other
+    than this user's counts too: another user's login started this process as this user."""
+    if os.geteuid() == 0 or os.environ.get("SUDO_UID"):
+        return True
+    login = _login_uid()
+    return login is not None and login != os.getuid()
 
 
 def _case_twins(paths):
@@ -611,7 +631,36 @@ def gh_api(path):
         return 1, None
 
 
-def github_proof(repo, sha, branch, api=gh_api, checks=None):
+GITHUB_API = "https://api.github.com/"
+
+
+def public_api(path):
+    """GET a GitHub API path with no credentials, for a public repository on a machine with no gh (the agent host,
+    whose checkout OF runs from moves by this command; of_agent-server, msg 01a202d5-1eeb): (status, json or None).
+    No proxy from the environment, no redirect (of_route.open_url), the system's authorities. A private repository
+    answers 404 and the branch protection 401, so a move then needs the registry's ff to name its checks."""
+    import urllib.error
+    import urllib.request
+    import of_route
+    req = urllib.request.Request(GITHUB_API + path.lstrip("/"), headers={
+        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "organic-framework-protected-ff"})
+    try:
+        with of_route.open_url(req, timeout=60) as r:
+            return r.status, json.loads(r.read().decode("utf-8") or "null")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (OSError, ValueError):
+        return 1, None
+
+
+def default_api(path):
+    """The session's own gh when it is on PATH, else GitHub with no credentials (public_api)."""
+    import shutil
+    return (gh_api if shutil.which("gh") else public_api)(path)
+
+
+def github_proof(repo, sha, branch, api=default_api, checks=None):
     """The PR whose merge commit SHA is, merged into BRANCH of REPO (owner/name, from the registry), that the branch
     still holds, with every required check green. Returns the PR number, or raises Refused with what is missing.
     The required checks are the branch protection's, with its app when it names one, when this access may read it,
@@ -659,7 +708,7 @@ def _remote_repo(tree):
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def ff(tree, ff_spec, target, api=gh_api, log=print):
+def ff(tree, ff_spec, target, api=default_api, log=print):
     """Fast-forward TREE to TARGET under FF_SPEC, holding the tree's lock; returns {from, to, pr, changed, human,
     human_lists}. Raises Refused, with the tree as it was (or saying plainly that it is not), when any check fails or a
     human path changed."""
@@ -679,6 +728,9 @@ def _ff(tree, ff_spec, target, api):
     if not SHA.fullmatch(target or ""):
         raise Refused("give the target as a commit id, not a branch or a name, so nothing moves between check and use")
     repo, branch = ff_spec["repo"], ff_spec["branch"]
+    if not (isinstance(repo, str) and REPO.fullmatch(repo) and isinstance(branch, str) and BRANCH.fullmatch(branch)
+            and ".." not in branch):
+        raise Refused("the registry's ff names no valid repo and branch (`of registry check` says what is wrong)")
     _owned(tree)
     remote = _remote_repo(tree)
     if not remote or remote.casefold() != repo.casefold():
@@ -746,7 +798,7 @@ def _ff(tree, ff_spec, target, api):
             "human_lists": list(ff_spec.get("human_lists") or [])}
 
 
-def run(entry, target, position=None, orgs_file=None, api=gh_api, emit=None):
+def run(entry, target, position=None, orgs_file=None, api=default_api, emit=None):
     """`of protected ff`: find ENTRY among the registries' protected_code entries with ff, move it, record it."""
     import of_events
     import of_credentials
