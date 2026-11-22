@@ -407,6 +407,32 @@ class UnreadCheckoutTest(unittest.TestCase):
                 of_events.STATE_DIR = saved
 
 
+class HistoryRewriteTest(unittest.TestCase):
+    def test_a_commit_under_a_new_hash_with_its_time_and_title_is_not_recorded_again(self):
+        """organic-framework-build's history rewrite of 2026-11-22: every commit got a new hash, its time and message
+        unchanged; the import must not read each as new work."""
+        import of_store
+        with tempfile.TemporaryDirectory() as root:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = os.path.join(root, "state")
+            try:
+                repo = os.path.join(root, "build")
+                os.makedirs(os.path.join(repo, ".git"))
+                conn = of_store.connect()
+
+                def lister(sha):
+                    return lambda r, since, branch: [{"sha": sha, "author": "t", "at": "2026-11-21T10:00:00Z",
+                                                      "title": "registry: x", "message": "registry: x", "paths": ["a"]}]
+                resolve = lambda r, o=None: ("main", "t")  # noqa: E731
+                n1 = of_github.import_local(conn, "ofb", {}, [repo], None, works={}, log=lambda m: None,
+                                            lister=lister("a" * 40), resolve=resolve)
+                n2 = of_github.import_local(conn, "ofb", {}, [repo], None, works={}, log=lambda m: None,
+                                            lister=lister("b" * 40), resolve=resolve)
+                self.assertEqual((n1, n2), (1, 0))
+            finally:
+                of_events.STATE_DIR = saved
+
+
 class DefaultBranchTest(unittest.TestCase):
     """The founder, 2026-11-11: of import git read only main; a repository's default may be another branch."""
 
