@@ -159,6 +159,30 @@ class JudgeTest(unittest.TestCase):
         of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 600, self.conn, prompt=lambda *a: typed.append(a) or True)
         self.assertEqual(len(typed), 1)                                        # once
 
+    def test_loop_wait_is_offered_only_to_a_position_with_a_loop(self):
+        """A structure keeper, message 01a2029e-969a: `of loop wait` refuses a work with no loop; most works are projects."""
+        items = [{"source": "message", "to": "platform_owner", "quote": "tomorrow"}]
+        bare = of_pulse.booking_note(items)
+        self.assertNotIn("of loop wait", bare)
+        self.assertIn('of status idle --note "<the wait and its source>"', bare)
+        self.assertIn("of status waiting --on <position>", bare)
+        self.assertIn("(your works with a loop: w-speed)", of_pulse.booking_note(items, ["w-speed"]))
+        works = [("acme", "w-speed", {"owner": "obs_keeper", "doers": ["k8s_keeper"]}, {"target": {}}),
+                 ("acme", "drills", {"owner": "k8s_keeper", "doers": ["k8s_keeper"]}, None),
+                 ("other", "w-x", {"owner": "obs_keeper"}, {"target": {}})]
+        mem, typed = {}, []
+        bind = lambda positions, agents: ([(p, {"pane_id": "w:" + p["name"], "agent_status": "idle"})  # noqa: E731
+                                           for p in positions], [])
+        of_pulse.booking_notes(POSITIONS, [], bind, mem, T0, self.conn, prompt=lambda *a: True)  # from now
+        for pos in ("k8s_keeper", "obs_keeper"):
+            self.ev("booking_judged", {"position": pos, "items": [dict(items[0], verdict="no_basis",
+                                                                       ts="2026-11-17T13:18:00Z")]}, pos, 1)
+        of_pulse.booking_notes(POSITIONS, [], bind, mem, T0 + 300, self.conn, works=works, log=lambda m: None,
+                               prompt=lambda pane, text, s: typed.append((pane, text)) or True)
+        got = dict(typed)
+        self.assertIn("(your works with a loop: w-speed)", got["w:k8s_keeper"])        # a doer: not drills, no loop
+        self.assertIn("(your works with a loop: w-speed)", got["w:obs_keeper"])        # the owner: not another org's
+
     def test_a_busy_pane_waits_a_person_gets_nothing_and_a_failed_call_is_judged_again(self):
         mem = {}
         busy = {"pane_id": "w:2", "agent_status": "working"}
