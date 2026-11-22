@@ -307,8 +307,11 @@ class WorkCloneApplyTest(unittest.TestCase):
                 with open(os.path.join(t, repo, "registry", "positions.yaml"), "w") as fh:
                     fh.write(REG)
             os.makedirs(os.path.join(t, "clone", ".git"))
+            with open(os.path.join(t, "clone", ".git", "commondir"), "w") as fh:
+                fh.write(".\n")
+            os.makedirs(os.path.join(t, "config"))
             os.makedirs(os.path.join(t, "state"))
-            orgs = os.path.join(t, "orgs.yaml")
+            orgs = os.path.join(t, "config", "orgs.yaml")   # OF's configuration folder, which no clone may hold
             diff_file = os.path.join(t, "sd.yaml")
             with open(diff_file, "w") as fh:
                 fh.write("diff:\n  id: sd-2026-11-22-clone\n  kind: mandate_rewrite\n  tier: low\n"
@@ -316,7 +319,7 @@ class WorkCloneApplyTest(unittest.TestCase):
                          "  predicted: [{metric: m, to: 0}]\n  review: {after: 7 days}\n  reversal: back\n"
                          "  changes:\n    registry:\n      - op: set\n        name: of_b\n        fields:\n"
                          "          mandate_exit: {done_when: done, review: 2026-12-01}\n")
-            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=orgs, OF_CONFIG_DIR=t,
+            env = dict(os.environ, OF_STATE=os.path.join(t, "state"), OF_ORGS=orgs, OF_CONFIG_DIR=os.path.join(t, "config"),
                        PATH="/usr/bin:/bin")
             env.pop("CLAUDE_CODE_SESSION_ID", None)
             run = lambda *a: subprocess.run([sys.executable, of, *a], env=env, capture_output=True, text=True,  # noqa: E731
@@ -339,9 +342,22 @@ class WorkCloneApplyTest(unittest.TestCase):
             cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_dc", loader))
             with mock.patch.dict(os.environ, {"OF_ORGS": orgs}):   # read as the module loads (org_registries' default)
                 loader.exec_module(cli)
-            with mock.patch.dict(os.environ, {"OF_ORGS": orgs, "CLAUDE_CODE_SESSION_ID": "s1"}), \
-                    mock.patch.object(cli.sys, "platform", "linux"):
+            inside = {"OF_ORGS": orgs, "CLAUDE_CODE_SESSION_ID": "s1", "SANDBOX_RUNTIME": "1",
+                      "OF_STATE": os.path.join(t, "state"), "OF_CONFIG_DIR": os.path.join(t, "config")}
+            with mock.patch.dict(os.environ, inside), mock.patch.object(cli.sys, "platform", "linux"):
                 self.assertEqual(cli._diff_registry("ofb"), os.path.join(t, "clone", "registry", "positions.yaml"))
+            with mock.patch.dict(os.environ, dict(inside, SANDBOX_RUNTIME="")), \
+                    mock.patch.object(cli.sys, "platform", "linux"), self.assertRaises(cli.OfError):
+                cli._diff_registry("ofb")                                           # a bare session: no sandbox
+            # the feature itself: an apply inside a session's sandbox writes the clone, never the copy
+            with mock.patch.dict(os.environ, inside), mock.patch.object(cli.sys, "platform", "linux"), \
+                    mock.patch.object(cli, "_asks_actor", lambda *a, **k: "of_a"):
+                self.assertEqual(cli.main(["diff", "propose", diff_file, "--from", "of_a"]), 0)
+                self.assertEqual(cli.main(["diff", "apply", "sd-2026-11-22-clone"]), 0)
+            clone_doc = yaml.safe_load(open(os.path.join(t, "clone", "registry", "positions.yaml")))
+            self.assertEqual(clone_doc["positions"][1]["mandate_exit"], {"done_when": "done", "review": "2026-12-01"})
+            with open(os.path.join(t, "copy", "registry", "positions.yaml")) as fh:
+                self.assertEqual(fh.read(), REG)
             with mock.patch.dict(os.environ, {"OF_ORGS": orgs}):
                 os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
                 with mock.patch.object(cli.sys, "platform", "linux"), self.assertRaises(cli.OfError):

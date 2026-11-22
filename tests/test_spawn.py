@@ -337,6 +337,9 @@ class WorkCloneTest(unittest.TestCase):
                     mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
                 absent = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb"))
                 os.makedirs(os.path.join(clone, ".git"))
+                bare = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb"))   # no commondir yet
+                with open(os.path.join(clone, ".git", "commondir"), "w") as fh:
+                    fh.write(".\n")
                 s = json.loads(of_spawn.session_settings(None, [], platform="linux", org="ofb"))
                 other = json.loads(of_spawn.session_settings(None, [], platform="linux", org="other"))
                 mac = json.loads(of_spawn.session_settings(None, [], platform="darwin", org="ofb") or "{}")
@@ -349,10 +352,11 @@ class WorkCloneTest(unittest.TestCase):
         self.assertIn(svc, f["denyWrite"])                                            # (2)
         self.assertIn(f"Edit(/{svc}/**)", rules)
         for x in (".git/config", ".git/hooks", ".git/info", ".git/modules", ".git/worktrees", ".git/config.worktree",
-                  ".claude", ".mcp.json"):                                            # (3), there or not yet
+                  ".git/commondir", ".claude", ".mcp.json"):                          # (3), there or not yet
             self.assertIn(os.path.join(clone, x), f["denyWrite"], x)
             self.assertIn(f"Edit(/{clone}/{x})", rules, x)
-        self.assertNotIn(os.path.join(clone, ".git/commondir"), f["denyWrite"])       # git dies on an empty one
+        self.assertIn(os.path.join(clone, ".git/commondir"), f["denyWrite"])          # it must exist, and is denied
+        self.assertNotIn(clone, bare["sandbox"]["filesystem"]["allowWrite"])          # without it: not writable
         of_ = other["sandbox"]["filesystem"]                                           # another organization's session
         self.assertNotIn(clone, of_["allowWrite"])
         self.assertNotIn(clone, other["permissions"].get("additionalDirectories", []))
@@ -365,7 +369,24 @@ class WorkCloneTest(unittest.TestCase):
         for clone in ("/srv/b", "/srv/b/sub", "/srv", "/srv/code/x", os.path.realpath(os.path.expanduser("~")),
                       of_spawn.of_checkouts()[0]):
             self.assertTrue(of_spawn.clone_refused(clone, entries), clone)
+        for x in ("~/.config/of", "~/.ssh", "~/.config/systemd/user", "~/.config"):   # the owner's own folders
+            self.assertTrue(of_spawn.clone_refused(os.path.realpath(os.path.expanduser(x)), entries), x)
         self.assertIsNone(of_spawn.clone_refused("/work/a-clone", entries))
+
+    def test_a_refused_clone_keeps_its_copy_denied(self):
+        """of_review on PR 542, second round, point 3: a later change can refuse a clone; its copy stays denied."""
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            orgs = os.path.join(d, "orgs.yaml")
+            with open(orgs, "w") as fh:   # the clone lies in another organization's path: refused
+                fh.write(f"orgs:\n  - name: a\n    path: {d}/a\n    work_clone: {d}/b/clone\n  - name: b\n    path: {d}/b\n")
+            with mock.patch.dict(os.environ, {"OF_ORGS": orgs}), \
+                    mock.patch.object(of_spawn, "_accounts_dirs", return_value=[]):
+                s = json.loads(of_spawn.session_settings(None, [], platform="linux", org="a"))
+        self.assertNotIn(f"{d}/b/clone", s["sandbox"]["filesystem"]["allowWrite"])
+        self.assertIn(f"{d}/a", s["sandbox"]["filesystem"]["denyWrite"])
 
     def test_nothing_outside_the_sandbox_adopts_the_clone(self):
         """(4): the key is read only by the sandbox block; the organization's paths, its registry and its work
@@ -410,6 +431,7 @@ class WorkCloneTest(unittest.TestCase):
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/build"]), 2)   # the services' copy
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", f"{d}/clone"]), 0)
                 self.assertEqual(of_spawn.work_clones(orgs), [("ofb", f"{d}/clone", f"{d}/build")])
+                self.assertTrue(of_spawn.clone_ready(f"{d}/clone"))                    # commondir written, holding "."
                 self.assertEqual(of.main(["org", "set", "ofb", "work_clone", "none"]), 0)
                 self.assertEqual(of_spawn.work_clones(orgs), [])
 
