@@ -40,10 +40,9 @@ def machine_id(wait_s=5.0):
     path = os.path.join(_state_dir(), "machine_id")
 
     def read():
-        try:
-            with open(path) as fh:
-                return fh.read().strip()
-        except (FileNotFoundError, IsADirectoryError):   # missing, a link to nothing, a folder in its place: no id
+        try:   # read_own (of_server on PR 545); two names while link_new's temporary file is still there
+            return read_own(path, cap=4096, max_links=2).strip()
+        except (FileNotFoundError, IsADirectoryError):   # missing, a folder in its place: no id
             return None
 
     def fallback():
@@ -149,6 +148,24 @@ def open_own(path, flags=os.O_WRONLY | os.O_CREAT | os.O_APPEND, mode=0o600):
     return fd
 
 
+def read_own(path, cap=1 << 20, max_links=1):
+    """The text of PATH in OF's state folder: no link, a regular file of this user with at most MAX_LINKS names (a file
+    replaced after open has 0, and stays readable), no wait on open, at most CAP bytes (of_server on PR 545).
+    FileNotFoundError when it is not there; OSError when it is refused."""
+    import stat
+    fd = os.open(path, os.O_RDONLY | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink > max_links:
+            raise OSError(f"{path} is not a regular file of ours")
+        if st.st_size > cap:
+            raise OSError(f"{path} is larger than {cap} bytes")
+        with os.fdopen(os.dup(fd), "rb") as fh:
+            return fh.read(cap).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
 def append_own(path, text):
     """Append TEXT to PATH through open_own."""
     with os.fdopen(open_own(path), "a") as fh:
@@ -170,7 +187,8 @@ def write_new(path, text, mode=0o600):
     """Replace PATH with TEXT through a new file beside it, made with O_EXCL and never through a link (whatever lies at
     the temporary name is removed first, and one planted meanwhile stops the write), then renamed over PATH: a link at
     PATH is replaced, never followed. The relay's _open_new is the model."""
-    tmp = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"
+    import threading
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"   # and the thread, as the relay names it
     try:
         os.unlink(tmp)
     except FileNotFoundError:
@@ -275,18 +293,15 @@ def _with_refs(fn):
     """FN(counters) under the counters' lock; it changes them in place; returns its result."""
     import fcntl
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-    with open(os.open(_refs_path() + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)) as lk:
+    with os.fdopen(open_own(_refs_path() + ".lock", os.O_WRONLY | os.O_CREAT), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
-        try:
-            with open(_refs_path()) as fh:
-                counters = json.load(fh)
+        try:   # read_own (of_server on PR 545)
+            counters = json.loads(read_own(_refs_path()))
+            counters = counters if isinstance(counters, dict) else {}
         except (OSError, ValueError):
             counters = {}
         out = fn(counters)
-        tmp = _refs_path() + ".tmp"
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            json.dump(counters, fh)
-        os.replace(tmp, _refs_path())
+        write_new(_refs_path(), json.dumps(counters))
         return out
 
 

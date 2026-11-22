@@ -574,7 +574,7 @@ class WaitsProcessor(Processor):
         if not self.dirty:
             return False
         lock_path = os.path.join(of_events.STATE_DIR, "waits-run.lock")
-        fh = open(os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600))
+        fh = os.fdopen(of_events.open_own(lock_path, os.O_WRONLY | os.O_CREAT), "w")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -628,8 +628,8 @@ def refresh_waits(conn, now):
 
 # The detached waits refresh: holds the lock for the whole run, so refreshes never overlap; a failure goes to listen.log.
 _WAITS_RUNNER = """
-import fcntl, sys, time
-fh = open(sys.argv[1], 'w')
+import fcntl, os, sys, time
+fh = os.fdopen(os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600), 'w')
 try:
     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -882,7 +882,7 @@ class PulseProcessor(Processor):
         import fcntl
         import subprocess
         lock_path = os.path.join(of_events.STATE_DIR, "pulse-run.lock")
-        fh = open(os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600))
+        fh = os.fdopen(of_events.open_own(lock_path, os.O_WRONLY | os.O_CREAT), "w")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -902,8 +902,8 @@ class PulseProcessor(Processor):
 # The detached pulse: holds the lock for the whole run, so pulses never overlap; its output goes to pulse.log only when
 # it fails (a quiet pulse prints its errors).
 _PULSE_RUNNER = """
-import fcntl, subprocess, sys, time
-fh = open(sys.argv[1], 'w')
+import fcntl, os, subprocess, sys, time
+fh = os.fdopen(os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600), 'w')
 try:
     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -965,7 +965,7 @@ class GithubProcessor(Processor):
         if self.busy() and now - last < self.MAX_WAIT_S:
             return False   # the next tick looks again
         lock_path = os.path.join(of_events.STATE_DIR, "github-import.lock")
-        fh = open(os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600))
+        fh = os.fdopen(of_events.open_own(lock_path, os.O_WRONLY | os.O_CREAT), "w")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -991,7 +991,7 @@ class GithubProcessor(Processor):
 # The detached runner: holds the lock for the whole import, so ticks never overlap.
 _GH_RUNNER = """
 import fcntl, os, subprocess, sys, time
-fh = open(sys.argv[1], 'w')
+fh = os.fdopen(os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600), 'w')
 try:
     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError:
@@ -1744,9 +1744,7 @@ def _save_ticks(ticks, processors):
     try:
         path = os.path.join(of_events.STATE_DIR, "listen-ticks.json")
         data = {p.name: {"at": ticks[p.name], "every": p.tick_s} for p in processors if p.tick_s}
-        with open(path + ".tmp", "w") as fh:
-            json.dump(data, fh)
-        os.replace(path + ".tmp", path)
+        of_events.write_new(path, json.dumps(data))   # never through a link (of_server on PR 545)
     except OSError:
         pass
 

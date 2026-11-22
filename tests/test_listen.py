@@ -1205,5 +1205,34 @@ class GithubBusyTest(unittest.TestCase):
         self.assertEqual(started[0][0][:3], ["nice", "-n", "15"])       # at background priority
 
 
+
+class RunnerStringsStartTest(unittest.TestCase):
+    """of_release, 2026-11-22: two runner strings called os before importing it, and the pulse's runner died at start on
+    the founder's Mac. Each runner string is started here, with a stand-in for `of` and for the listener's folder."""
+
+    def test_each_runner_string_starts_takes_its_lock_and_runs(self):
+        import subprocess
+        import tempfile
+        import of_listen
+        with tempfile.TemporaryDirectory() as d:
+            stub = os.path.join(d, "of")
+            with open(stub, "w") as fh:
+                fh.write("import sys\nprint('stub', *sys.argv[1:])\n")
+            mods = os.path.join(d, "mods")   # a stand-in for the listener's folder (the waits runner imports from it)
+            os.makedirs(mods)
+            with open(os.path.join(mods, "of_listen.py"), "w") as fh:
+                fh.write("def refresh_waits(conn, now):\n    print('refreshed')\n")
+            with open(os.path.join(mods, "of_store.py"), "w") as fh:
+                fh.write("def connect():\n    return None\n")
+            runs = {"_WAITS_RUNNER": [mods], "_PULSE_RUNNER": [stub, "30"], "_GH_RUNNER": [stub]}
+            for name, args in runs.items():
+                lock = os.path.join(d, name + ".lock")
+                r = subprocess.run([sys.executable, "-c", getattr(of_listen, name), lock, *args],
+                                   capture_output=True, text=True, timeout=60, env=dict(os.environ, OF_STATE=d))
+                self.assertNotIn("Traceback", r.stdout + r.stderr, name)
+                self.assertEqual(r.returncode, 0, name + ": " + r.stdout + r.stderr)
+                self.assertTrue(os.path.isfile(lock), name)
+
+
 if __name__ == "__main__":
     unittest.main()
