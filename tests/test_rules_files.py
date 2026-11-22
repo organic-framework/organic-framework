@@ -84,17 +84,28 @@ class RulesFileTest(unittest.TestCase):
             old = os.path.join(self.work, ".claude", "rules", "of-acme.md")
             of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={})
             self.assertTrue(os.path.exists(old))
-            other = {os.path.realpath(self.work): {"globex"}}                     # another organization's session
-            out = of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions=other)
+            # another organization's session that only started here takes nothing away; it is named as a stray
+            # (of_architect, message 01a204f7-ef0e: one such restart removed a user organization's rules file)
+            other = {os.path.realpath(self.work): {"globex"}}
+            said = []
+            of_context.write_rules(self.positions, {"acme": [self.work]}, log=said.append, sessions=other)
+            self.assertTrue(os.path.exists(old))
+            self.assertTrue(any("a session of globex started in" in x for x in said))
+            # two organizations' registries put positions in one folder: none there, and the earlier one removed
+            two = self.positions + [dict(self.positions[0], name="g_keeper", _org="globex", _orgid="globex")]
+            out = of_context.write_rules(two, {"acme": [self.work], "globex": [self.work]}, log=lambda m: None,
+                                         sessions={})
             self.assertEqual(out, [])
-            self.assertFalse(os.path.exists(old))                                 # the earlier one removed
+            self.assertFalse(os.path.exists(old))
             import importlib.machinery
             import importlib.util
             loader = importlib.machinery.SourceFileLoader("of_cli_rules2", os.path.join(HERE, "..", "bin", "of"))
             of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_rules2", loader))
             loader.exec_module(of)
-            warn = of.check_rules_files(self.positions, {"acme": [self.work]}, work_dir=self.wd, sessions=other)
+            warn = of.check_rules_files(two, {"acme": [self.work], "globex": [self.work]}, work_dir=self.wd,
+                                        sessions={}, starts={})
             self.assertIn("is shared by acme, globex", warn[0])
+            self.assertFalse(warn[0].startswith(of.WARN))                          # enrolled: a failure
         finally:
             of_spawn.work_dir = saved
 
@@ -125,10 +136,36 @@ class RulesFileTest(unittest.TestCase):
         loader = importlib.machinery.SourceFileLoader("of_cli_rules", os.path.join(HERE, "..", "bin", "of"))
         of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli_rules", loader))
         loader.exec_module(of)
-        warn = of.check_rules_files(self.positions, {"acme": [self.work]}, work_dir=self.wd, sessions={})
+        warn = of.check_rules_files(self.positions, {"acme": [self.work]}, work_dir=self.wd, sessions={}, starts={})
         self.assertEqual(len(warn), 1)
         self.assertIn("a_keeper", warn[0])
         self.assertIn("run of apply", warn[0])
+        self.assertFalse(warn[0].startswith(of.WARN))     # an enrolled position its rules do not reach: a failure
+        # the folder its last session started in is checked too, and named
+        other = os.path.join(os.path.dirname(self.work), "elsewhere")
+        warn = of.check_rules_files(self.positions, {"acme": [self.work]}, work_dir=self.wd, sessions={},
+                                    starts={"a_keeper": other})
+        self.assertTrue(any(f"its last session started in {other}" in x for x in warn))
+
+    def test_spawn_refuses_another_organizations_folder(self):
+        """of_architect, message 01a204f7-ef0e: a session of one organization must not start where another's
+        positions run, where it would load their rules."""
+        import of_spawn
+        folders = {"acme": [self.work]}
+        self.assertEqual(of_context.foreign_orgs("globex", os.path.join(self.work, "sub"), folders), {"acme"})
+        self.assertEqual(of_context.foreign_orgs("acme", self.work, folders), set())
+        p = {"name": "g_keeper", "_org": "globex", "status": "active"}
+        with self.assertRaisesRegex(of_spawn.SpawnError, "a folder of acme's positions"):
+            of_spawn.plan(p, [p], [], lambda ps, ag: ([], []), {}, [], "", lambda q: "w", cwd=self.work,
+                          config_dir="/nonexistent", folders=folders)
+
+    def test_the_start_context_says_loudly_when_the_rules_are_cut(self):
+        long_rules = "# Org\n\n## Rules\n\n" + "".join(f"- Rule {i}: " + "x" * 200 + "\n" for i in range(80))
+        with open(os.path.join(self.root, "AGENTS.md"), "w") as fh:
+            fh.write(long_rules)
+        text = of_context.build("a_keeper", self.positions, cwd=self.work)
+        self.assertTrue(text.startswith("OF WARNING: your organization's binding rules do not reach this session"))
+        self.assertIn(os.path.join(self.root, "AGENTS.md"), text.split("\n")[0])
 
 
 if __name__ == "__main__":

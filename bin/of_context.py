@@ -115,30 +115,93 @@ def session_orgs(conn=None, days=7):
             conn.close()
 
 
-def shared_folders(folders, sessions):
-    """{folder: {organizations}} of the folders where more than one organization's positions run, by the registry
-    (FOLDERS, from rules_folders) or by the sessions started there or below (SESSIONS, from session_orgs). Claude Code
-    loads every rules file of a folder into every session there, so such a folder gets none (of_review and
-    of_architect on organic-framework PR 320: a user organization's sessions in the framework's folder loaded the OF
-    team's rules)."""
+def position_starts(conn=None, days=7):
+    """{position: folder} where each position's latest session started in the last DAYS (of.session_start)."""
+    import time as _t
+    own = conn is None
+    try:
+        if own:
+            import of_fold
+            conn = of_fold.reader()
+        if conn is None:
+            return {}
+        since = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(_t.time() - days * 86400))
+        out = {}
+        for pos, cwd in conn.execute("SELECT position, cwd FROM event WHERE name = 'of.session_start' AND ts >= ? "
+                                     "AND cwd IS NOT NULL AND position IS NOT NULL ORDER BY ts", (since,)):
+            out[pos] = cwd
+        return out
+    except Exception:  # noqa: BLE001 - no store: the registry's folders alone
+        return {}
+    finally:
+        if own and conn is not None:
+            conn.close()
+
+
+def shared_folders(folders, sessions=None):
+    """{folder: {organizations}} of the folders where more than one organization's positions run by the registries
+    (FOLDERS, from rules_folders). Claude Code loads every rules file of a folder into every session there, so such a
+    folder gets none (of_review and of_architect on organic-framework PR 320). A session of another organization that
+    only started there takes nothing away: the folder keeps its organization's rules and the session is a stray
+    (stray_sessions). 2026-11-22: one restart of another organization's position into a user organization's root
+    folder removed that organization's rules file, and eight of its sessions would have started without their
+    binding rules (of_architect, message 01a204f7-ef0e). SESSIONS is no longer read; kept for callers."""
     by = {}
     for org, dirs in folders.items():
         for d in dirs:
             by.setdefault(os.path.realpath(d), set()).add(org)
-    for d in list(by):
-        for cwd, orgs in sessions.items():
-            if cwd == d or cwd.startswith(d + os.sep):
-                by[d] |= orgs
     return {d: orgs for d, orgs in by.items() if len(orgs) > 1}
+
+
+def folder_owners(folders):
+    """{folder: {organizations}} by the registries (FOLDERS, from rules_folders)."""
+    by = {}
+    for org, dirs in folders.items():
+        for d in dirs:
+            by.setdefault(os.path.realpath(d), set()).add(org)
+    return by
+
+
+def foreign_orgs(org, cwd, folders):
+    """The other organizations whose positions run in CWD or a folder above it by the registries: a session of ORG
+    started there would load their rules, and its start would make the folder look shared. of spawn refuses such a
+    folder (of_architect, message 01a204f7-ef0e)."""
+    if not cwd:
+        return set()
+    c = os.path.realpath(os.path.expanduser(cwd))
+    out = set()
+    for d, orgs in folder_owners(folders).items():
+        if c == d or c.startswith(d + os.sep):
+            out |= {o for o in orgs if o != org}
+    return out
+
+
+def stray_sessions(folders, sessions):
+    """{folder: {organizations}}: sessions started in another organization's folder (or below it), where they load
+    that organization's rules. Named by of apply, the pulse and of registry check, never acted on."""
+    out = {}
+    owners = folder_owners(folders)
+    for cwd, orgs in sessions.items():
+        for d, own in owners.items():
+            if cwd == d or cwd.startswith(d + os.sep):
+                extra = set(orgs) - own
+                if extra:
+                    out.setdefault(cwd, set()).update(extra)
+    return out
 
 
 def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessions=None):
     """Write each organization's rules file into each folder its positions run in, when it changed; in a folder shared
     by two organizations, none, and an earlier one is removed. Returns the paths written (or that would be)."""
     folders = rules_folders(positions, org_paths)
-    shared = shared_folders(folders, session_orgs() if sessions is None else sessions)
+    shared = shared_folders(folders)
     roots = {(p.get("_orgid") or p.get("_org")): p.get("_root") for p in positions}
     written = []
+    owners = folder_owners(folders)
+    for cwd, orgs in sorted(stray_sessions(folders, session_orgs() if sessions is None else sessions).items()):
+        own = sorted({o for d, os_ in owners.items() if cwd == d or cwd.startswith(d + os.sep) for o in os_})
+        log(f"  a session of {', '.join(sorted(orgs))} started in {cwd}, a folder of {', '.join(own)}: it loads "
+            f"{', '.join(own)}'s rules; restart it in its own organization's folder (the folder keeps its rules)")
     for d, orgs in shared.items():
         for org in orgs:
             old = os.path.join(d, RULES_FILE.format(org=org))
@@ -419,12 +482,21 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
     def note(cut):
         what = "; ".join(f"{n} cut to {k:,} of {w:,} characters" if k else f"{n} left out ({w:,} characters)"
                          for n, k, w in cut)
+        loud = ""
+        if any(n == "the binding rules" for n, _, _ in cut):
+            # said first and loudly: a session that runs on part of its organization's rules (of_architect, message
+            # 01a204f7-ef0e: 45,000 characters of a user organization's rules against this context's 9,500)
+            loud = (f"OF WARNING: your organization's binding rules do not reach this session whole: no current "
+                    f"{RULES_FILE.format(org=org)} in {cwd or 'this folder'} or a folder above it. Read the binding "
+                    f"sections of {os.path.join(root, 'AGENTS.md')} in full before anything else, and tell your "
+                    f"structure keeper: `of apply` writes the file. ")
         if unwritten:   # the hook could not write the file: point to the sources themselves (of_review on PR 254)
             src = (f"your brief ({os.path.join(root, p['mandate'])}) and " if p.get("mandate") else "") + \
                 f"your organization's rules ({os.path.join(root, 'AGENTS.md')})"
-            return (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output "
-                    f"({what}), and the whole could not be written to a file. Read {src} now, before anything else.")
-        return (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output ({what}). "
+            return loud + (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's "
+                           f"output ({what}), and the whole could not be written to a file. Read {src} now, before "
+                           f"anything else.")
+        return loud + (f"OF: this start context is cut to fit Claude Code's 10,000-character limit on a hook's output ({what}). "
                 f"Read the whole context now, before anything else: {path}")
     text, cut = fit(head, sections, cap, note)
     if info is not None:

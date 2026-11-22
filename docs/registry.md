@@ -426,11 +426,16 @@ in `orgs.yaml`. Claude Code loads the file at every session's start and again af
 `info/exclude` keeps the file out of every commit. OF writes it again whenever `AGENTS.md` changes; edit `AGENTS.md`,
 never the file.
 
-A folder where positions of two organizations run gets no rules file. OF tells such a folder by the registry or by
-the sessions started there in the last 7 days. Claude Code loads every rules file of a folder into every session in
-it. A position in such a folder, or with no folder, gets its rules only in the capped start context. `of registry
-check` warns on each such position. The start context names the rules file instead of the rules when the session's
-folder holds the current one.
+A folder where two organizations' registries put positions gets no rules file: Claude Code loads every rules file of
+a folder into every session in it. A session of another organization that only started in a folder takes nothing
+away: the folder keeps its organization's rules, and `of apply`, the pulse and `of registry check` name that session
+as a stray, to be restarted in its own organization's folder (2026-11-22: one such restart removed a user
+organization's root rules file, and its sessions there would have started without their binding rules; of_architect,
+message `01a204f7-ef0e`). `of spawn` refuses a folder of another organization's positions. A position in a shared
+folder, or with no folder, gets its rules only in the capped start context; `of registry check` fails on each enrolled
+one, for its registry folder and for the folder its last session started in, and warns on one not enrolled. The start
+context names the rules file instead of the rules when the session's folder holds the current one; when it has to
+carry the rules and cuts them, its first line says so loudly and points to `AGENTS.md`.
 
 ## Card ids (2026-11-17, `of_architect`; the founder, prompt `01a1ea59-aeb7`)
 
