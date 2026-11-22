@@ -2725,6 +2725,24 @@ def cmd_loop(args):
     return 0
 
 
+def _session_folders():
+    """The folders sessions write, resolved: OF's state folder, the temporary folders, and each organization's
+    folders in orgs.yaml (path, paths, work_clone, work_root)."""
+    import of_events
+    import tempfile
+    out = [of_events.STATE_DIR, tempfile.gettempdir(), "/tmp", "/private/tmp"]
+    try:
+        with open(ORGS_FILE) as fh:
+            for o in (yaml.safe_load(fh) or {}).get("orgs") or []:
+                if isinstance(o, dict):
+                    out += [str(x) for x in [o.get("path"), o.get("work_clone"), o.get("work_root")]
+                            + list(o.get("paths") or []) if x]
+    except OSError:
+        pass
+    base = os.path.dirname(os.path.abspath(ORGS_FILE))
+    return [os.path.realpath(os.path.join(base, os.path.expanduser(w))) for w in out]
+
+
 def cmd_owner(args):
     """`of owner show` and `of owner set language|surface <value>`: this machine's owner settings
     (~/.config/of/owner.yaml), set without an organization, since a laptop under contours holds none of its own and
@@ -2750,20 +2768,7 @@ def cmd_owner(args):
         folder = os.path.realpath(os.path.expanduser(args.value))
         if not os.path.isfile(os.path.join(folder, "bin", "bench.py")):
             raise OfError(f"{args.value}: no bin/bench.py there; give a checkout of organic-framework/bench")
-        import of_events
-        import tempfile
-        writable = [of_events.STATE_DIR, tempfile.gettempdir(), "/tmp", "/private/tmp"]
-        try:
-            with open(ORGS_FILE) as fh:
-                for o in (yaml.safe_load(fh) or {}).get("orgs") or []:
-                    if isinstance(o, dict):
-                        writable += [str(x) for x in [o.get("path"), o.get("work_clone"), o.get("work_root")]
-                                     + list(o.get("paths") or []) if x]
-        except OSError:
-            pass
-        base = os.path.dirname(os.path.abspath(ORGS_FILE))
-        for w in writable:
-            w = os.path.realpath(os.path.join(base, os.path.expanduser(w)))
+        for w in _session_folders():
             if folder == w or folder.startswith(w + os.sep):
                 # a folder sessions write, or one an organization's sessions work in (of_secrets-review on PR 575)
                 raise OfError(f"{args.value}: it lies in {w}, which sessions write; give a checkout of its own")
