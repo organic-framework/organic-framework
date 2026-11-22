@@ -141,6 +141,32 @@ class TLSTest(unittest.TestCase):
         self.assertEqual((status, body["ok"]), (200, True))
         self.assertIn(("/v1/x", "Bearer tok-s"), srv.seen)  # over the socket, with TLS and the pin
 
+    def test_a_server_named_with_a_tcp_target_is_reached_there_under_its_own_name(self):
+        """The founder through of_conductor (prompt 01a20389-14b4; hand-over c004dfc6): the Mac reaches the agent
+        host's server over its tailnet port, not the SSH bridge. The socket file then names `tcp:<address>:<port>`;
+        the TLS name and the pin stay the URL's, and a name to look up is never taken."""
+        url = "https://127.0.0.1:18297"  # nothing listens on that port: only the target answers
+        dest = of_client.pin_path(url)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy(self.cert, dest)
+        side = dest[:-len(".pem")] + ".socket"
+        with open(side, "w") as fh:
+            fh.write(f"tcp:127.0.0.1:{self.srv.server_address[1]}\n")
+        self.assertEqual(of_client.connect_target(url), ("tcp", ("127.0.0.1", self.srv.server_address[1])))
+        self.assertIsNone(of_client.socket_path(url))
+        status, body = of_client.Client("http://127.0.0.1:18297")._request("GET", "/v1/x", token="tok-t")
+        self.assertEqual((status, body["ok"]), (200, True))
+        self.assertIn(("/v1/x", "Bearer tok-t"), self.srv.seen)  # at the target, with TLS and the pin
+        for bad in ("tcp:example.invalid:443", "tcp:127.0.0.1:0", "tcp:127.0.0.1:x", "tcp:"):
+            with open(side, "w") as fh:
+                fh.write(bad + "\n")
+            self.assertIsNone(of_client.connect_target(url), bad)
+        with open(side, "w") as fh:                                      # another certificate there: refused
+            fh.write(f"tcp:127.0.0.1:{self.srv.server_address[1]}\n")
+        shutil.copy(self.other, dest)
+        with self.assertRaises(Exception):
+            of_client.Client("http://127.0.0.1:18297")._request("GET", "/v1/x")
+
     def test_the_server_keeps_its_error_handler(self):
         self.assertIn("handle_error", of_server.Server.__dict__)  # PR 350: it had been moved into tls_init
         self.assertTrue(issubclass(of_server.TLSServer, of_server.Server))
