@@ -1736,13 +1736,29 @@ class FolderTrust(unittest.TestCase):
             of_capacity.ensure_trust(self.src, self.dst, self.cwd)
         self.assertEqual(e.exception.untrusted, self.cwd)
 
-    def test_a_worktree_takes_its_main_repository_trust(self):
-        repo = os.path.join(self.home.name, "repo")
+    def test_the_trust_keys_are_the_folder_and_its_own_top_level_found_without_git(self):
+        """of_server, message 01a20540-997d (hand-over 4c70deab, condition 4): git was run in the session's folder,
+        outside the sandbox, under the folder's own configuration. The top level is found by names alone, never in
+        the home folder, and no key comes from a common dir a session can point."""
+        repo = os.path.join(self.home.name, "work", "repo")
+        os.makedirs(repo)
         git("init", "-q", repo)
         git("-C", repo, "commit", "-q", "--allow-empty", "-m", "x")
-        wt = os.path.join(self.home.name, "wt")
+        wt = os.path.join(self.home.name, "work", "wt")
         git("-C", repo, "worktree", "add", "-q", wt)
-        self.assertIn(os.path.realpath(repo), [os.path.realpath(c) for c in of_capacity.trust_candidates(wt)])
+        sub = os.path.join(repo, "a", "b")
+        os.makedirs(sub)
+        plain = os.path.join(self.home.name, "work", "plain")
+        os.makedirs(plain)
+        os.mkdir(os.path.join(self.home.name, ".git"))          # a stray .git in the home folder: never climbed into
+        real = os.path.realpath
+        with mock.patch.dict(os.environ, {"HOME": self.home.name}), \
+                mock.patch.object(of_capacity.subprocess, "run", lambda *a, **k: self.fail("git was run")):
+            self.assertEqual(of_capacity.trust_candidates(sub), [sub, real(repo)])
+            self.assertEqual(of_capacity.trust_candidates(wt), [wt] if real(wt) == wt else [wt, real(wt)])
+            self.assertNotIn(real(repo), [real(c) for c in of_capacity.trust_candidates(wt)])
+            self.assertEqual(of_capacity.trust_candidates(plain), [plain])
+            self.assertIsNone(of_capacity.git_top(self.home.name))
 
 
 class ListenerProcessor(unittest.TestCase):
