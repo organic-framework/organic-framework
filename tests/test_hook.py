@@ -580,8 +580,8 @@ class HandleTest(unittest.TestCase):
         # of_review on PR 254: an unwritable file is never pointed to; the note names the sources instead
         import unittest.mock as um
         real_open = os.open
-        def deny(path, *a, **k):
-            if path.endswith(os.path.join("context", "test-org", "of_a.md")):
+        def deny(path, *a, **k):   # the file and the temporary file beside it that replaces it (write_new)
+            if os.path.join("context", "test-org", "of_a.md") in path:
                 raise PermissionError("denied")
             return real_open(path, *a, **k)
         os.unlink(path)
@@ -815,6 +815,60 @@ class RegistryIndexUnwritableTest(unittest.TestCase):
         self.assertIn("sessions", idx)
         left = [n for n in os.listdir(of_hook.STATE) if n.startswith("index.json.") and n.endswith(".tmp")]
         self.assertEqual(left, [])
+
+
+class NoWriteThroughALinkTest(unittest.TestCase):
+    """of_server, hand-over 58681935 (docs/guard.md Gaps, "A process outside the sandbox follows a link"): on the agent
+    host a sandboxed session may write OF's state folder; the hook and the store, which run outside the sandbox, never
+    write through a link put at one of their names."""
+
+    def test_a_planted_link_at_each_name_leaves_its_target_unchanged(self):
+        import tempfile
+        import of_events
+        import of_hook
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            target = os.path.join(d, "target")
+            with open(target, "w") as fh:
+                fh.write("TARGET\n")
+            state = os.path.join(d, "state")
+            os.makedirs(os.path.join(state, "spool"))
+            saved = (of_hook.STATE, of_events.STATE_DIR)
+            of_hook.STATE = of_events.STATE_DIR = state
+            names = ("hook-errors.log", "hook-timing.jsonl", "deliver.log", "injections.jsonl", "index.lock",
+                     "ingest.lock", "ship.last", os.path.join("spool", "hooks.jsonl"), os.path.join("spool", "drain.lock"))
+            try:
+                for n in names:
+                    os.symlink(target, os.path.join(state, n))
+                of_hook._log_error("x", ValueError("boom"))
+                with self.assertRaises(OSError):
+                    of_events.append_own(os.path.join(state, "hook-timing.jsonl"), "x\n")
+                with self.assertRaises(OSError):
+                    of_events.open_own(os.path.join(state, "index.lock"), os.O_WRONLY | os.O_CREAT)
+                with self.assertRaises(OSError):
+                    of_store.spool_append("hooks.jsonl", {"a": 1})
+                self.assertFalse(of_hook.ship_detached_if_due(now=10 ** 10, spawn=lambda *a: None))
+                for n in ("index.json", os.path.join("sessions", "s1.json")):   # replaced: the link itself, never its target
+                    os.makedirs(os.path.dirname(os.path.join(state, n)), exist_ok=True)
+                    os.symlink(target, os.path.join(state, n))
+                    of_events.write_new(os.path.join(state, n), "{}")
+                    self.assertFalse(os.path.islink(os.path.join(state, n)))
+                of_hook.save_session("s2", {"x": 1})
+                os.symlink(os.path.join(d, "elsewhere"), os.path.join(state, "pending"))   # a folder replaced by a link
+                os.makedirs(os.path.join(d, "elsewhere"))
+                with self.assertRaises(OSError):
+                    of_events.own_dir(os.path.join(state, "pending"))
+                db = os.path.join(d, "db", "of.db")
+                os.makedirs(os.path.dirname(db))
+                os.symlink(target, db)
+                with self.assertRaises(Exception):
+                    of_store.connect(db)
+                with open(target) as fh:
+                    self.assertEqual(fh.read(), "TARGET\n")
+            finally:
+                of_hook.STATE, of_events.STATE_DIR = saved
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,8 +92,17 @@ def connect(path=None, timeout=10.0):
     to disk instead of waiting (they must stay within their latency budget)."""
     path = path or db_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    # the store never through a link a session put at its name: SQLite follows one at the database file itself (it
+    # refuses one at its -wal), and the processes that write it run outside the sandbox on the agent host (of_server,
+    # hand-over 58681935, docs/guard.md Gaps)
+    for p in (path, path + "-wal", path + "-shm", path + "-journal"):
+        if os.path.islink(p):
+            raise sqlite3.OperationalError(f"{p} is a link: the store is not opened through it")
     if not os.path.exists(path):
-        os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+        try:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600))
+        except FileExistsError:
+            pass   # another process made it first
     conn = sqlite3.connect(path, timeout=timeout, isolation_level=None)
     conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -242,8 +251,8 @@ def warn_long(t0, what="write transaction", conn=None):
         caller = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}"
                              for f in traceback.extract_stack()[-6:-2][::-1])
         where = f" in {store_label(conn)}" if conn is not None else ""
-        with open(os.path.join(of_events.STATE_DIR, "hook-errors.log"), "a") as fh:
-            fh.write(f"{of_events.now_iso()} store {what} held the write lock {took:.1f} s{where}: {caller}\n")
+        of_events.append_own(os.path.join(of_events.STATE_DIR, "hook-errors.log"),
+                             f"{of_events.now_iso()} store {what} held the write lock {took:.1f} s{where}: {caller}\n")
     except Exception:  # noqa: BLE001
         pass
 
@@ -820,14 +829,13 @@ def stats(conn):
 # When the database is busy, hooks append here instead of waiting; the ingest worker drains it.
 
 def spool_path(name):
-    d = os.path.join(of_events.STATE_DIR, "spool")
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    d = of_events.own_dir(os.path.join(of_events.STATE_DIR, "spool"))   # never a link (hand-over 58681935)
     return os.path.join(d, name)
 
 
 def spool_append(name, obj):
     import fcntl
-    fd = os.open(spool_path(name), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = of_events.open_own(spool_path(name))
     with os.fdopen(fd, "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -847,7 +855,7 @@ def drain_spool(conn, wait_s=0.0, budget_s=None):
     spool (of_conductor, message 01a1ea04-a399). WAIT_S: how long to wait for another drainer; 0 returns 0 at once.
     BUDGET_S: stop after it, the rest of the file kept for the next run (the listener's loop: of_review on PR 290)."""
     import fcntl
-    lock = open(os.open(spool_path("drain.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+    lock = os.fdopen(of_events.open_own(spool_path("drain.lock"), os.O_WRONLY | os.O_CREAT), "w")
     end = time.time() + wait_s
     while True:
         try:

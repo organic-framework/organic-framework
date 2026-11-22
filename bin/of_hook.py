@@ -320,7 +320,7 @@ def _registry_index():
     import fcntl
     lk = None
     try:
-        lk = open(os.open(os.path.join(STATE, "index.lock"), os.O_WRONLY | os.O_CREAT, 0o600))
+        lk = os.fdopen(of_events.open_own(os.path.join(STATE, "index.lock"), os.O_WRONLY | os.O_CREAT), "w")
         fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         if usable(cache):
@@ -342,9 +342,9 @@ def _registry_index():
         positions, _ = of.load_positions(orgs)
     except (SystemExit, Exception) as e:  # e.g. an interpreter without PyYAML: record without positions
         try:
-            with open(os.path.join(STATE, "hook-errors.log"), "a") as fh:
-                fh.write(f"{of_events.now_iso()} registry WARN {type(e).__name__}: {e}; "
-                         "index unavailable, events recorded without positions\n")
+            of_events.append_own(os.path.join(STATE, "hook-errors.log"),
+                                 f"{of_events.now_iso()} registry WARN {type(e).__name__}: {e}; "
+                                 "index unavailable, events recorded without positions\n")
         except Exception:
             pass
         return {"sessions": {}, "names": {}, "labels": {}, "paths": [], "systems": [], "enrolled": [],
@@ -399,27 +399,20 @@ def _registry_index():
         cache["systems"] = of_router.build_index(positions, org_paths)
     except Exception:
         cache["systems"] = []
-    tmp = f"{path}.{os.getpid()}.{time.time_ns()}.tmp"  # unique: concurrent rebuilds must not collide
-    try:
-        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            json.dump(cache, fh)
-        os.replace(tmp, path)
+    try:  # a new file beside it, renamed over it: concurrent rebuilds never collide, and no link is followed
+        of_events.write_new(path, json.dumps(cache))
     except OSError:
         # not writable here: an agent's shell in Claude Code's Linux sandbox, where the index is denyWrite (G36), runs
         # of ask, of_derive, of_paste, of_route and ingest, which read it; they get the index built now, unwritten
-        # (of_review on organic-framework PR 482)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        # (of_review on organic-framework PR 482); write_new leaves no temporary file behind
+        pass
     return cache
 
 
 # ------------------------------------------------------------ session cache
 
 def _session_path(sid):
-    d = os.path.join(STATE, "sessions")
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    d = of_events.own_dir(os.path.join(STATE, "sessions"))
     return os.path.join(d, re.sub(r"[^A-Za-z0-9_.-]", "_", sid or "none") + ".json")
 
 
@@ -432,9 +425,7 @@ def load_session(sid):
 
 
 def save_session(sid, data):
-    p = _session_path(sid)
-    with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-        json.dump(data, fh)
+    of_events.write_new(_session_path(sid), json.dumps(data))
 
 
 # -------------------------------------------------------------------- herdr
@@ -725,9 +716,7 @@ def _declare_typing(hook, sid):
     if not out:
         return
     try:
-        path = os.path.join(STATE, "injections.jsonl")
-        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as fh:
-            fh.write("".join(json.dumps(x) + "\n" for x in out))
+        of_events.append_own(os.path.join(STATE, "injections.jsonl"), "".join(json.dumps(x) + "\n" for x in out))
     except OSError:
         pass
 
@@ -992,14 +981,13 @@ def _deliver_without_listener(hook, index):
         if not row or time.time() - float(row[0]) < LISTENER_STALE_S:
             return
         mark = os.path.join(STATE, "deliver-hook", re.sub(r"[^A-Za-z0-9_.-]", "_", pos))
-        os.makedirs(os.path.dirname(mark), mode=0o700, exist_ok=True)
+        of_events.own_dir(os.path.dirname(mark))
         if os.path.exists(mark) and time.time() - os.path.getmtime(mark) < DELIVER_GAP_S:
             return
-        with open(mark, "w"):
-            pass
+        of_events.write_new(mark, "")
         here = os.path.dirname(os.path.realpath(__file__))
         env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and k != "CLAUDE_CODE_SESSION_ID"}
-        log = open(os.open(os.path.join(STATE, "deliver.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
+        log = os.fdopen(of_events.open_own(os.path.join(STATE, "deliver.log")), "a")
         try:
             subprocess.Popen([sys.executable, os.path.join(here, "of"), "asks", "deliver", pos],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
@@ -1907,9 +1895,8 @@ def _mandate_context(hook, index, sess):
         return
     if info.get("full"):  # cut to fit Claude Code's cap: the whole context where the first line says (hand-over b460c5ed)
         try:
-            os.makedirs(os.path.dirname(info["file"]), mode=0o700, exist_ok=True)
-            with open(os.open(info["file"], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-                fh.write(info["full"])
+            of_events.own_dir(os.path.dirname(info["file"]))
+            of_events.write_new(info["file"], info["full"])
         except OSError:  # never a pointer to a missing or an earlier session's file (of_review on PR 254)
             try:
                 os.unlink(info["file"])
@@ -1953,8 +1940,7 @@ def _memory_warning(hook, index, now=None):
     if not notes or not _runs_on_own_memory():
         return  # a session still on the folder memory reads none of these (of_capacity seeds them before the switch)
     try:
-        with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            json.dump(warned, fh)
+        of_events.write_new(path, json.dumps(warned))
     except OSError:
         pass
     prev = (((OUTPUT or {}).get("hookSpecificOutput") or {}).get("additionalContext") or "")
@@ -2072,9 +2058,8 @@ def ship_detached_if_due(now=None, force=False, spawn=None):
     except OSError:
         pass
     try:
-        with open(os.open(mark, os.O_WRONLY | os.O_CREAT, 0o600)):
-            pass
-        os.utime(mark, (now, now))
+        os.close(of_events.open_own(mark, os.O_WRONLY | os.O_CREAT))
+        os.utime(mark, (now, now), follow_symlinks=False)
         (spawn or _spawn_of)("ship")
     except Exception as e:  # noqa: BLE001 - the next due one tries again
         _log_error("ship", e)
@@ -2090,12 +2075,10 @@ def _ingest_detached(path):
     if _no_detach():
         return
     try:
-        pending = os.path.join(STATE, "pending")
-        os.makedirs(pending, mode=0o700, exist_ok=True)
+        pending = of_events.own_dir(os.path.join(STATE, "pending"))
         marker = os.path.join(pending, hashlib.sha256(path.encode()).hexdigest()[:24])
-        with open(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-            fh.write(path)
-        with open(os.open(os.path.join(STATE, "ingest.lock"), os.O_WRONLY | os.O_CREAT, 0o600)) as lk:
+        of_events.write_new(marker, path)
+        with os.fdopen(of_events.open_own(os.path.join(STATE, "ingest.lock"), os.O_WRONLY | os.O_CREAT), "w") as lk:
             try:
                 fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -2111,9 +2094,8 @@ def _ingest_detached(path):
 def _log_error(event, e, note=None):
     """hook-errors.log: real errors as `ERROR`, expected degradations (spooling) as `spooled`."""
     try:
-        with open(os.path.join(STATE, "hook-errors.log"), "a") as fh:
-            line = f"spooled: {note}" if note else f"ERROR {type(e).__name__}: {e}"
-            fh.write(f"{of_events.now_iso()} {event} {line}\n")
+        line = f"spooled: {note}" if note else f"ERROR {type(e).__name__}: {e}"
+        of_events.append_own(os.path.join(STATE, "hook-errors.log"), f"{of_events.now_iso()} {event} {line}\n")
     except Exception:
         pass
 
@@ -2131,8 +2113,7 @@ def _timing(event, hook, started):
             return
         line = {"ts": of_events.now_iso(), "event": event, "tool": hook.get("tool_name"), "position": name,
                 "ms": round((time.time() - started) * 1000, 1), "context_chars": len(json.dumps(OUTPUT)) if OUTPUT else 0}
-        with open(os.path.join(STATE, "hook-timing.jsonl"), "a") as fh:
-            fh.write(json.dumps(line) + "\n")
+        of_events.append_own(os.path.join(STATE, "hook-timing.jsonl"), json.dumps(line) + "\n")
     except Exception:
         pass
 
@@ -2158,8 +2139,8 @@ def main(argv):
             _archive_detached(hook["transcript_path"])
     except (SystemExit, Exception) as e:  # never fail the agent; leave a trace for debugging
         try:
-            with open(os.path.join(STATE, "hook-errors.log"), "a") as fh:
-                fh.write(f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
+            of_events.append_own(os.path.join(STATE, "hook-errors.log"),
+                                 f"{of_events.now_iso()} {event} {type(e).__name__}: {e}\n")
         except Exception:
             pass
         if event == "PreToolUse" and not GUARD_DECIDED:  # failed before the guard answered: the call is denied
