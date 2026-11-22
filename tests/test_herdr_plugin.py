@@ -239,6 +239,28 @@ class HookTest(unittest.TestCase):
             self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
             self.assertEqual(open(path).read(), before)  # once
 
+    def test_the_move_leaves_a_persons_own_binding_and_other_keys_alone(self):
+        """of_review on PR 540: 2>>/dev/null in a person's own binding must not turn every /dev/null into OF's log."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            own = ('[[keys.command]]\nkey = "prefix+a"\ntype = "popup"\n'
+                   'command = "sh -c \'my/bin/of asks --watch 2>>/dev/null; true\'"\n\n'
+                   '[[keys.command]]\nkey = "prefix+g"\ntype = "popup"\ncommand = "lazygit 2>/dev/null"\n')
+            with open(path, "w") as fh:
+                fh.write(own)
+            self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check())[0])
+            self.assertEqual(open(path).read(), own)
+            old = "/Users/alex/.local/state/of/asks-popup.err"
+            cmd = f"sh -c 'env OF_AUTOMATION=1 /py/python3 /of/bin/of asks --watch 2>>{old}; true'"
+            text = (f'[[keys.command]]\nkey = "prefix+a"\ntype = "popup"\ncommand = "{cmd}"\n\n'
+                    f'[[keys.command]]\nkey = "prefix+l"\ntype = "popup"\ncommand = "less {old}"\n')
+            with open(path, "w") as fh:
+                fh.write(text)
+            self.assertTrue(plugin.configure("/of", python="/py/python3", path=path, run=self._check(), now=0)[0])
+            after = open(path).read()
+            self.assertIn(f'command = "less {old}"', after)  # another key naming the path stays
+            self.assertNotIn(f"2>>{old}", after)  # OF's own binding moved
+
     def test_a_refused_change_puts_back_the_exact_bytes(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "config.toml")

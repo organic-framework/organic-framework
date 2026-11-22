@@ -283,8 +283,11 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
         notes.append(f"{QUESTIONS_KEY} opens the questions screen")
     elif "asks --watch" in str(keys[0].get("command")):
         old = re.search(r"bin/of asks --watch 2>>([^;'\"\\\s]+);", str(keys[0].get("command")))
-        if old and old.group(1) != log_file:  # OF's own binding, its log still where sessions write (PR 540 review)
-            new = text.replace(old.group(1), log_file)
+        # OF's own binding only (its log is named asks-popup.err), and only on that binding's command line: a person's
+        # own binding, or another key naming the same path (/dev/null), stays as it is (of_review, PR 540)
+        if old and old.group(1) != log_file and os.path.basename(old.group(1)) == "asks-popup.err":
+            mark = f"asks --watch 2>>{old.group(1)};"
+            new = "".join(ln.replace(old.group(1), log_file) if mark in ln else ln for ln in text.splitlines(True))
             notes.append(f"{QUESTIONS_KEY}: the questions screen's log moved from {old.group(1)} to {log_file}")
         else:
             notes.append(f"{QUESTIONS_KEY} already opens the questions screen")
