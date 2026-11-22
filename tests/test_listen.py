@@ -1175,3 +1175,26 @@ class PruneTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GithubBusyTest(unittest.TestCase):
+    def test_a_run_waits_out_a_high_load_for_at_most_two_hours(self):
+        """A user organization's structure keeper, message 01a20444-9136: 975 gh starts in an hour on a paging Mac."""
+        import of_listen
+        from unittest import mock
+        import tempfile
+        p = of_listen.GithubProcessor()
+        d = tempfile.mkdtemp()
+        saved = of_listen.of_events.STATE_DIR
+        of_listen.of_events.STATE_DIR = d
+        self.addCleanup(setattr, of_listen.of_events, "STATE_DIR", saved)
+        self.assertTrue(p.busy(load=25, cores=10))
+        self.assertFalse(p.busy(load=15, cores=10))
+        started = []
+        with mock.patch.object(p, "busy", lambda: True), mock.patch("subprocess.Popen", lambda *a, **k: started.append(a)):
+            self.assertFalse(p.tick(None, 1000.0))                       # busy at start: it waits
+            self.assertFalse(p.tick(None, 1000.0 + 3600))
+            self.assertEqual(started, [])
+            p.tick(None, 1000.0 + 7200)                                  # two hours: it runs anyway
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][0][:3], ["nice", "-n", "15"])       # at background priority

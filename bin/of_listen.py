@@ -941,13 +941,26 @@ class GithubProcessor(Processor):
     name = "github"
     version = "1"
     tick_s = 1800
+    # A run starts hundreds of gh processes across the organizations' repositories: 975 in one hour on 2026-11-22,
+    # 38% of the Mac's gh starts while it paged (a user organization's structure keeper, message 01a20444-9136). While
+    # the load stands above BUSY_LOAD x cores a run waits, for at most MAX_WAIT_S, and runs at background priority.
+    BUSY_LOAD = 2.0
+    MAX_WAIT_S = 7200
+    last_run = 0.0
 
     def handle(self, conn, rows):
         return False
 
+    def busy(self, load=None, cores=None):
+        load = os.getloadavg()[0] if load is None else load
+        return load > self.BUSY_LOAD * (cores or os.cpu_count() or 1)
+
     def tick(self, conn, now):
         import fcntl
         import subprocess
+        self.last_run = self.last_run or now   # a start under load waits too
+        if self.busy() and now - self.last_run < self.MAX_WAIT_S:
+            return False   # the next tick looks again
         lock_path = os.path.join(of_events.STATE_DIR, "github-import.lock")
         fh = open(os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600))
         try:
@@ -960,10 +973,11 @@ class GithubProcessor(Processor):
         here = os.path.dirname(os.path.realpath(__file__))
         log = open(os.open(os.path.join(of_events.STATE_DIR, "github-import.log"),
                            os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a")
-        subprocess.Popen([sys.executable, "-c", _GH_RUNNER, lock_path, os.path.join(here, "of")],
+        subprocess.Popen(["nice", "-n", "15", sys.executable, "-c", _GH_RUNNER, lock_path, os.path.join(here, "of")],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
                          env=dict(os.environ, OF_AUTOMATION="1", SSH_AUTH_SOCK=""))
         log.close()
+        self.last_run = now
         return False
 
 
