@@ -20,9 +20,10 @@ Bench is RubyGems and Bundler, and OF is Rails. The design is organic-framework-
 - **The reader's closedness.** OF evaluates an organization's `config/settings/*.lua` and `extensions/*/*.lua` through
   Bench's reader, outside any sandbox, the pulse included; those files come from the organization's repository, which
   agents write. Their safety rests on the reader: a Lua process of its own given no file, with no `io`, `os`, `load`,
-  `require` beyond the package's sources or `debug`, and budgets on instructions, memory and wall time. That is held
-  and tested in `organic-framework/bench` (its `docs/bench.md`, "The reader", and `tests/test_bench.py`'s hostile
-  set, one test per case).
+  `require` beyond the package's sources or `debug`, and budgets on instructions, memory and wall time. Those
+  controls and their tests live in `organic-framework/bench` (its `docs/bench.md`, "The reader", and
+  `tests/test_bench.py`'s hostile set, one test per case); the guard's keeper has not yet passed that set (11-first-slice.md,
+  part 1), so until then this rests on the tests alone.
 
 ## The commands
 
