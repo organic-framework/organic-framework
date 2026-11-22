@@ -429,6 +429,34 @@ class HistoryRewriteTest(unittest.TestCase):
                 n2 = of_github.import_local(conn, "ofb", {}, [repo], None, works={}, log=lambda m: None,
                                             lister=lister("b" * 40), resolve=resolve)
                 self.assertEqual((n1, n2), (1, 0))
+                # another organization's folder of the same name, second and title: its own commit, recorded
+                self.assertEqual(of_github.import_local(conn, "other", {}, [repo], None, works={}, log=lambda m: None,
+                                                        lister=lister("c" * 40), resolve=resolve), 1)
+            finally:
+                of_events.STATE_DIR = saved
+
+    def test_two_real_commits_of_one_second_and_title_are_both_kept_across_reads(self):
+        """of_review on PR 557: a record whose commit is still listed hides nothing, so a read that falls between
+        two commits of one second and title (a rebase of several) loses neither."""
+        import of_store
+        with tempfile.TemporaryDirectory() as root:
+            saved = of_events.STATE_DIR
+            of_events.STATE_DIR = os.path.join(root, "state")
+            try:
+                repo = os.path.join(root, "build")
+                os.makedirs(os.path.join(repo, ".git"))
+                conn = of_store.connect()
+
+                def c(sha):
+                    return {"sha": sha, "author": "t", "at": "2026-11-21T10:00:00Z", "title": "fixup",
+                            "message": "fixup", "paths": ["a"]}
+                resolve = lambda r, o=None: ("main", "t")  # noqa: E731
+                kw = dict(works={}, log=lambda m: None, resolve=resolve)
+                n1 = of_github.import_local(conn, "ofb", {}, [repo], None, lister=lambda r, s, branch: [c("a" * 40)],
+                                            **kw)
+                n2 = of_github.import_local(conn, "ofb", {}, [repo], None,
+                                            lister=lambda r, s, branch: [c("a" * 40), c("d" * 40)], **kw)
+                self.assertEqual((n1, n2), (1, 1))
             finally:
                 of_events.STATE_DIR = saved
 
