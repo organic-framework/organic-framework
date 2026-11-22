@@ -6242,6 +6242,29 @@ def blocked_until(r, now):
 RESTING = ("parked", "finished")  # a position's registry status under which its session is no balancer's work
 
 
+PARK_LEAD_S = 30 * 60  # how long before a park's planned end (parked_until) rescue counts its session as active
+
+
+def park_end(p):
+    """The epoch of a parked position's `parked_until` (docs/registry.md, positions), or None: unset, or no ISO time
+    (PyYAML gives an unquoted one as a datetime, a quoted one as a string)."""
+    v = (p or {}).get("parked_until")
+    if isinstance(v, datetime):
+        return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)).timestamp()
+    return _ts(v) if isinstance(v, str) and "T" in v else None
+
+
+def rests_from_rescue(p, now):
+    """resting(p), except a parked position within PARK_LEAD_S of its parked_until, or past it: rescue counts that
+    session as active, so it resumes onto an account that accepts work rather than its spent one. It is still never
+    woken nor moved by fill, relief or restore. 2026-11-22: a user organization had 27 positions parked to 11-23
+    and eight of their sessions on accounts spent past that date; two were found only by reading their panes."""
+    if not resting(p):
+        return False
+    end = park_end(p) if str((p or {}).get("status") or "").split("#")[0].strip() == "parked" else None
+    return end is None or now < end - PARK_LEAD_S
+
+
 def resting(p):
     """Whether position `p` is parked or finished: its session is not moved (fill, relief, restore, rescue) nor woken.
     2026-11-18: on the founder's OF-31 answer a user organization parked 27 positions to 11-23 whose sessions stayed
@@ -6325,7 +6348,7 @@ def rescue_plan(rows, sessions, positions, stopped, policy, now, skip=(), wcalib
             p = pos_by_session.get(s["session"])
             is_stopped = s["session"] in stopped
             if not (is_stopped or doomed) or not p or s.get("status") not in ("idle", "shell", "waiting") \
-                    or s["session"] in skip or resting(p):
+                    or s["session"] in skip or rests_from_rescue(p, now):
                 continue
             cands.append((not is_stopped, p["name"] not in policy["hold"], priority_tier(p, policy),
                           stopped.get(s["session"], until), p["name"], s["session"], d))
@@ -6374,7 +6397,7 @@ def stall_report(rows, sessions, positions, stopped, moves, now, woken=None):
             if m and m.get("done"):
                 continue
             p = pos_by_session.get(s["session"])
-            if resting(p):  # parked or finished: rescue leaves it, so it is no stall (of_review, PR 333)
+            if rests_from_rescue(p, now):  # parked or finished: rescue leaves it, so no stall (of_review, PR 333)
                 continue
             why = (f"move failed: {m.get('error')}" if m and m.get("done") is False
                    else "no position in any registry" if not p

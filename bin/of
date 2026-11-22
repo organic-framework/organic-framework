@@ -244,6 +244,7 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                     seen[key] = name
             positions.append(p)
     problems += [pr for pr in check_successors(positions) if deep or not pr.startswith(WARN)]
+    problems += [pr for pr in check_parked_until(positions) if deep or not pr.startswith(WARN)]
     problems += [pr for pr in check_enrolled(positions) if deep]
     if deep:   # the binding rules reach each position whole by a file (hand-over 83b08e7b)
         try:
@@ -486,6 +487,47 @@ def check_successors(positions):
         if (p.get("status") or "active") == "active":
             out.append(f"{WARN}{tag}: a successor on an active position: it is for a finished position, or a parked "
                        "one with no holder")
+    return out
+
+
+def parked_until_ts(v):
+    """The epoch of a `parked_until` value (docs/registry.md, positions), or None when it is no ISO time. PyYAML gives
+    an unquoted 2026-11-23T08:00:00Z as a datetime and a quoted one as a string, so both count; a bare date is no
+    time. A time with no offset is taken as UTC."""
+    import datetime as _dt
+    if isinstance(v, _dt.datetime):
+        t = v
+    elif isinstance(v, str) and "T" in v:
+        try:
+            t = _dt.datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return (t if t.tzinfo else t.replace(tzinfo=_dt.timezone.utc)).timestamp()
+
+
+def check_parked_until(positions, now=None):
+    """A position's `parked_until` (docs/registry.md, positions; of_architect, 2026-11-22): the planned end of a park,
+    which the capacity balancer reads to rescue the session onto an account with room just before it. A value that
+    is no ISO time is a problem; one on a position that is not parked (left over from the park), or one already past
+    on a position still parked (the park outlived its plan), is a warning."""
+    import time as _time
+    now = _time.time() if now is None else now
+    out = []
+    for p in positions:
+        if "parked_until" not in p:
+            continue
+        v, tag = p.get("parked_until"), f"{p.get('_file') or p.get('_org')}: {p['name']}"
+        t = parked_until_ts(v)
+        if t is None:
+            out.append(f"{tag}: parked_until {v!r} is no ISO 8601 time (e.g. 2026-11-23T08:00:00Z)")
+            continue
+        if (p.get("status") or "active") != "parked":
+            out.append(f"{WARN}{tag}: parked_until on a position that is not parked: drop it, it was the park's")
+        elif t < now:
+            out.append(f"{WARN}{tag}: parked_until {v} is past and the position is still parked: resume it (status: "
+                       "active) or set the park's new end")
     return out
 
 
