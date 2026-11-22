@@ -71,8 +71,9 @@ def _head(path):
 def _doc_commits(repo_path, minute):
     """{relative path: [commit epochs, newest first]} for docs/rfc over 60 days; cached per minute."""
     try:
-        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--since=60.days", "--name-only",
-                                "--format=@%cI", "--end-of-options", "origin/HEAD", "--", "docs/rfc", text=True).stdout
+        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--no-renames", "--since=60.days",
+                                "--name-only", "--format=@%cI", "--end-of-options", "origin/HEAD", "--", "docs/rfc",
+                                text=True, check=True).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     res, t = collections.defaultdict(list), None
@@ -235,7 +236,7 @@ def _branches(repo_path, minute):
     """{branch: last commit epoch} for the remote branches the checkout has fetched (refs/remotes/origin)."""
     try:
         out = of_model.git_read(repo_path, "for-each-ref", "--format=%(refname:short) %(committerdate:iso-strict)",
-                                "refs/remotes/origin", text=True).stdout
+                                "refs/remotes/origin", text=True, check=True).stdout
     except (OSError, subprocess.SubprocessError):
         return {}
     res = {}
@@ -248,10 +249,13 @@ def _branches(repo_path, minute):
 
 @functools.lru_cache(maxsize=32)
 def _mainline(repo_path, minute):
-    """[(commit epoch, [files])] on the default branch over 14 days."""
+    """[(commit epoch, [files])] on the default branch over 14 days. --no-renames: finding a rename reads blobs, which
+    a partial clone may lack, and git_read fetches nothing (of_review on organic-framework PR 510: a blobless clone's
+    log stopped at its first rename). A failed read is no answer: it gives none, never the commits read before it."""
     try:
-        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--since=14.days", "--name-only",
-                                "--format=@%cI", "--end-of-options", "origin/HEAD", "--", text=True, timeout=15).stdout
+        out = of_model.git_read(repo_path, "log", "--no-show-signature", "--no-renames", "--since=14.days",
+                                "--name-only", "--format=@%cI", "--end-of-options", "origin/HEAD", "--", text=True,
+                                timeout=15, check=True).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     res, cur = [], None
