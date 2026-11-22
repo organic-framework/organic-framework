@@ -50,9 +50,14 @@ def _open_own(path, flags):
     while these files are opened by herdr's hooks and by configure, outside any sandbox: a link planted there would
     make us write where it points (of_agent-server's finding, 2026-11-22, msg 01a20452-0396)."""
     fd = os.open(path, flags | NOFOLLOW | getattr(os, "O_NONBLOCK", 0), 0o600)  # a FIFO there would hang the open
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
+    st = os.fstat(fd)
+    # a hard link planted there is a regular file too: it must be this user's own, with no other name (of_server, PR 540)
+    why = ("is not a regular file" if not stat.S_ISREG(st.st_mode) else
+           "is not this user's" if st.st_uid != os.getuid() else
+           "has another name (a hard link)" if st.st_nlink != 1 else None)
+    if why:
         os.close(fd)
-        raise OSError(f"{path} is not a regular file")
+        raise OSError(f"{path} {why}")
     return fd
 
 

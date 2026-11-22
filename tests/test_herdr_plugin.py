@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -245,6 +246,25 @@ class HookTest(unittest.TestCase):
                 fh.write(b"onboarding = false\r\n")
             self.assertFalse(plugin.configure("/of", path=path, run=self._check(ok=False), now=0)[0])
             self.assertEqual(open(path, "rb").read(), b"onboarding = false\r\n")
+
+    def test_a_hard_link_is_refused(self):
+        """of_server on PR 540: a hard link to another file of this user's is a regular file with two names."""
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim")
+            with open(victim, "w") as fh:
+                fh.write("untouched\n")
+            os.link(victim, os.path.join(d, "herdr-plugin.log"))
+            with self.assertRaises(OSError):
+                plugin.log("x", state=d)
+            self.assertEqual(open(victim).read(), "untouched\n")
+
+    def test_a_file_of_another_user_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "herdr-plugin.log"), "w"):
+                pass
+            with mock.patch.object(plugin.os, "getuid", return_value=os.getuid() + 1):
+                with self.assertRaises(OSError):
+                    plugin.log("x", state=d)
 
     def test_a_fifo_is_refused_at_once(self):
         with tempfile.TemporaryDirectory() as d:
