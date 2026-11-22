@@ -10,23 +10,41 @@ import os
 DEFAULT = os.path.join("~", ".local", "share", "bench")
 
 
+_KEY = None
+
+
 def _plain(path):
-    """owner.yaml's `bench:` as the plain line `of owner set bench` writes, or None; ValueError when the file names
-    it in any other form, so OF and the guard, which reads that line itself, never read two values
-    (of_secrets-review on PR 575)."""
+    """owner.yaml's `bench:` as the guard reads it (of_guard._bench_home: the last top-level `bench:` line, a plain or
+    quoted scalar, an unquoted `#` comment dropped), or None; ValueError when YAML reads the file to another value,
+    so OF and the guard never read two (of_secrets-review on PR 575)."""
     import re
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read(1 << 16)
     except OSError:
         return None
-    lines = [m.group(1) for m in re.finditer(r"^bench:[ \t]*(.*?)[ \t]*$", text, re.M)]
-    mentions = len(re.findall(r"(?:^|[{,\s])['\"]?bench['\"]?\s*:", text))   # the key in any form
-    if not lines and not mentions:
-        return None
-    if len(lines) != 1 or mentions != 1 or not re.fullmatch(r"[^\s'\"&*!|>{}\[\]#,]+", lines[0] or ""):
-        raise ValueError(f"{path}: bench: is not the one plain line `of owner set bench` writes")
-    return None if lines[0] in ("null", "~", "") else lines[0]
+    key = re.compile(r"""^(?:bench|'bench'|"bench")[ \t]*:[ \t]*(.*?)[ \t]*$""")   # of_guard._BENCH_KEY
+    v = None
+    for line in text.splitlines():
+        m = key.match(line)
+        if m:
+            raw = m.group(1).strip()
+            if raw[:1] in ("'", '"'):
+                end = raw.find(raw[0], 1)
+                v = raw[1:end] if end > 0 else None
+            else:
+                v = re.split(r"\s#", raw, 1)[0].strip() or None
+    v = None if v in ("null", "~") else v
+    try:
+        import yaml
+        doc = yaml.safe_load(text)
+        y = doc.get("bench") if isinstance(doc, dict) else None
+    except Exception:  # noqa: BLE001 - a file YAML cannot read: the line alone, as the guard
+        return v
+    if (str(y) if y is not None else None) != v:
+        raise ValueError(f"{path}: bench: reads one way by line and another by YAML; write it as `of owner set "
+                         f"bench` does")
+    return v
 
 
 def home():
