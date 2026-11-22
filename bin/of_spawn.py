@@ -374,8 +374,10 @@ def sandbox_settings(deny=None, platform=None, scratch=None, org=None):
                            + of_checkouts() + [g for g in guarded if g not in of_checkouts()],
                            "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")] + writable},
+            # deniedDomains is empty but given: the sandbox runtime alone refuses a network block without it
+            # (srt 0.0.83; of_lab's guest check of the work clone, message 01a204eb-96d4)
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
-                        "allowedDomains": list(SANDBOX_DOMAINS)}}
+                        "allowedDomains": list(SANDBOX_DOMAINS), "deniedDomains": []}}
 
 
 def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=None, org=None):

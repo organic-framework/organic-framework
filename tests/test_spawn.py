@@ -484,6 +484,7 @@ class SandboxBlock(unittest.TestCase):
         self.assertEqual(box["filesystem"]["allowWrite"], [os.path.expanduser("~/.local/state/of")])
         self.assertEqual((box["network"]["allowAllUnixSockets"], box["network"]["strictAllowlist"]), (True, True))
         self.assertIn("github.com", box["network"]["allowedDomains"])                # bypass mode: the list binds
+        self.assertEqual(box["network"]["deniedDomains"], [])                        # the runtime needs the key
         self.assertIn("/home/alex/.claude/projects", box["filesystem"]["denyRead"])   # transcripts
         self.assertIn("/home/alex/.claude/.credentials.json", box["filesystem"]["denyRead"])   # the account's sign-in
         # the file tools, outside the sandbox: only the working folders, never the checkout OF runs from
