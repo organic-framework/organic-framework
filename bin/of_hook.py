@@ -417,14 +417,20 @@ def _session_path(sid):
 
 
 def load_session(sid):
-    try:   # read_own (of_server on PR 545)
+    try:   # read_own (of_server on PR 545); a refused file is never saved over (of_review on PR 545)
         d = json.loads(of_events.read_own(_session_path(sid)))
         return d if isinstance(d, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return {"_refused": True}
     except Exception:
         return {}
 
 
 def save_session(sid, data):
+    if data.get("_refused"):
+        return   # its file was refused on reading: never saved over
     of_events.write_new(_session_path(sid), json.dumps(data))
 
 

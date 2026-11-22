@@ -40,6 +40,8 @@ def machine_id(wait_s=5.0):
     path = os.path.join(_state_dir(), "machine_id")
 
     def read():
+        if os.path.islink(path):   # a link reads as no id, never through it: the repair below replaces it
+            return None
         try:   # read_own (of_server on PR 545); two names while link_new's temporary file is still there
             return read_own(path, cap=4096, max_links=2).strip()
         except (FileNotFoundError, IsADirectoryError):   # missing, a folder in its place: no id
@@ -295,10 +297,12 @@ def _with_refs(fn):
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     with os.fdopen(open_own(_refs_path() + ".lock", os.O_WRONLY | os.O_CREAT), "w") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
-        try:   # read_own (of_server on PR 545)
+        try:   # read_own (of_server on PR 545); absent is no counter yet, refused gives no number and writes nothing
             counters = json.loads(read_own(_refs_path()))
             counters = counters if isinstance(counters, dict) else {}
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            counters = {}
+        except ValueError:
             counters = {}
         out = fn(counters)
         write_new(_refs_path(), json.dumps(counters))
@@ -313,7 +317,10 @@ def next_ref(org):
     def take(c):
         c[prefix] = int(c.get(prefix) or 0) + 1
         return f"{prefix}-{c[prefix]}"
-    return _with_refs(take)
+    try:
+        return _with_refs(take)
+    except OSError:   # the counter's file refused: no id now (a number given again would cite another card); the
+        return None   # pulse backfills it (of_review on PR 545)
 
 
 CARD_REF_TIMEOUT_S = 3   # a filing waits this long for its server; past it the ask is filed without its id
@@ -321,7 +328,10 @@ CARD_REFS_LATER = False  # set by the listener, whose processors file asks insid
 
 
 def _local_highest(prefix):
-    return _with_refs(lambda c: int(c.get(prefix) or 0))
+    try:
+        return _with_refs(lambda c: int(c.get(prefix) or 0))
+    except OSError:
+        return 0
 
 
 def card_ref(org, event_id, timeout=CARD_REF_TIMEOUT_S, client=None):
