@@ -191,6 +191,16 @@ def _server_keys(path=None):
     return [os.path.expanduser(str(x)) for x in out if x]
 
 
+def of_checkout():
+    """The checkout OF itself runs from: the one `~/.local/bin/of` resolves into, where the units (of-server, of-relay,
+    of-listen) and bin/of-hook run outside any sandbox; else the one this file is in. A session that writes it, its
+    .git included, changes code that then runs unsandboxed (of_agent-server's finding on the agent host, message
+    01a202cd-f226; of_server's Gaps entry in docs/guard.md, message 01a202d3-e7c8)."""
+    link = os.path.expanduser("~/.local/bin/of")
+    real = os.path.realpath(link) if os.path.exists(link) else os.path.realpath(__file__)
+    return os.path.dirname(os.path.dirname(real))
+
+
 def sandbox_settings(deny=None, platform=None, scratch=None):
     """The session's `sandbox` block on Linux, else None. DENY: its Read/Edit deny rules (`Read(//abs/path/**)`).
     SCRATCH: (its working folder, its session id), so its own scratch folder stays readable while the other sessions'
@@ -240,11 +250,12 @@ def sandbox_settings(deny=None, platform=None, scratch=None):
     denied = sorted(paths)
     # Bash may not write what it may not read: OF's state folder is writable and holds its server folder (the same
     # review); every denied path is denied for writes too, and so is the guard's session index, which only the hook
-    # writes, outside the sandbox (docs/guard.md G36; hand-over a18341af)
+    # writes, outside the sandbox (docs/guard.md G36; hand-over a18341af), and the checkout OF runs from, whole, since
+    # its .git's objects and refs are code too (of_checkout; a host position works in its own clone, never in it)
     return {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
             "autoAllowBashIfSandboxed": True,
             "filesystem": {"denyRead": denied,
-                           "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json")],
+                           "denyWrite": denied + [os.path.expanduser("~/.local/state/of/index.json"), of_checkout()],
                            "allowRead": allow,
                            "allowWrite": [os.path.expanduser("~/.local/state/of")]},
             "network": {"allowAllUnixSockets": True, "strictAllowlist": True,
@@ -262,6 +273,12 @@ def session_settings(memory=None, deny=None, extra=None, platform=None, scratch=
     box = sandbox_settings(deny, platform, scratch)
     if box:
         s["sandbox"] = box
+        # the sandbox binds Bash only; the file tools, MCP servers and command hooks run outside it
+        # (code.claude.com/docs/en/sandboxing): the file tools write only inside the working folders, and never the
+        # checkout OF runs from (of_server, message 01a202d3-e7c8; Claude Code 2.1.314 and later)
+        perms = s.setdefault("permissions", {})
+        perms["blockWritesOutsideWorkingDirectories"] = True
+        perms.setdefault("deny", []).append(f"Edit(/{of_checkout()}/**)")
     for k, v in (extra or {}).items():
         if k == "env" and isinstance(v, dict):
             s["env"] = dict(s.get("env") or {}, **v)  # a tool profile's env joins the agents' own
