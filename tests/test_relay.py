@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -167,7 +168,8 @@ class RelayTest(unittest.TestCase):
                 if self.url == "a":
                     rounds["a"] += 1
                     if rounds["a"] == 1:
-                        return {"queued": {"ofa:of_a": {"n": 4, "oldest": "2026-11-22T10:00:00Z"}}}
+                        return {"queued": {"ofa:of_a": {"n": 4, "oldest": "2026-11-22T10:00:00Z"}},
+                                "unsent": {"ofa:of_a": {"n": 1, "items": [{"msg_id": "u1", "to": "ofb:x"}]}}}
                     release.wait(5)                                       # hangs from its second round on
                     raise ConnectionRefusedError("down")
                 sent["b"] += 1
@@ -183,13 +185,29 @@ class RelayTest(unittest.TestCase):
         try:
             of_relay.run(lambda: local, C, {"ofa": "a", "ofb": "b"}, "b", log=lambda m: None, stop=stop)
             stop.wait(0.6)
-            counts = of_relay.read_queues()
+            counts, unsent = of_relay.read_queues(), of_relay.read_unsent()
         finally:
             stop.set()
             release.set()
             of_relay.PRESENCE_EVERY, of_relay.PRESENCE_WAIT, of_relay.PRESENCE_CHECK = saved
         self.assertGreater(sent["b"], 3)                                  # b kept being told while a hung
         self.assertEqual(counts["ofa:of_a"]["n"], 4)                      # a's last count stands, never 0
+        self.assertLess(counts["ofa:of_a"]["at"], time.time() - 0.3)      # with its own reading time, not restamped
+        self.assertEqual(unsent["ofa:of_a"]["n"], 1)                      # and its holder's undelivered note stays
+
+    def test_a_failed_server_after_a_restart_keeps_the_record_and_declares_no_step(self):
+        """of_review on organic-framework PR 530: delivered messages read as waiting again, and the note vanished."""
+        of_relay._LAST_QUEUES.clear()
+        of_relay.record_queues({"ofa:of_a": {"n": 2, "oldest": "2026-11-22T10:00:00Z"}}, now=1000.0,
+                               unsent={"ofa:of_a": {"n": 1, "items": [{"msg_id": "u1", "to": "ofb:x"}]}})
+        of_relay._LAST_QUEUES.clear()                                     # the relay restarts; a's server is down
+        of_relay.record_queues({"ofb:of_b": {"n": 1, "oldest": "2026-11-22T10:05:00Z"}}, now=2000.0,
+                               keep_orgs={"ofa"})
+        self.assertEqual(of_relay.read_queues()["ofa:of_a"], {"n": 2, "oldest": "2026-11-22T10:00:00Z", "at": 1000.0})
+        self.assertEqual(of_relay.read_unsent()["ofa:of_a"]["n"], 1)
+        rows = self.conn.execute("SELECT payload FROM event WHERE name = 'of.inbound_queue' ORDER BY rowid").fetchall()
+        self.assertEqual([(json.loads(r[0])["position"], json.loads(r[0])["depth"]) for r in rows],
+                         [("of_a", 2), ("of_b", 1)])                      # no step to 0 for a
 
     def test_a_holder_change_is_published_at_once(self):
         """of_capacity, 2026-11-07: after an account move the server said not_holder for minutes; a changed
