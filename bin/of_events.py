@@ -99,7 +99,7 @@ def machine_id(wait_s=5.0):
             # and the others then read that id (of_review's note on organic-framework PR 414: os.replace per caller
             # gave six processes two ids)
             import fcntl
-            with open(os.path.join(d, ".machine_id.lock"), "a") as lock:
+            with os.fdopen(open_own(os.path.join(d, ".machine_id.lock")), "a") as lock:   # open_own (PR 545)
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
                     cur = read()

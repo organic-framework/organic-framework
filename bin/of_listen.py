@@ -43,14 +43,11 @@ def seq_path():
 def bump():
     """Tell the surfaces a view changed: one integer in a file (they watch its mtime)."""
     path = seq_path()
-    try:
-        n = int(open(path).read().strip() or 0) + 1
+    try:   # read_own and write_new (of_server on PR 545)
+        n = int(of_events.read_own(path, cap=64).strip() or 0) + 1
     except (OSError, ValueError):
         n = 1
-    tmp = f"{path}.{os.getpid()}"
-    with open(tmp, "w") as fh:
-        fh.write(str(n))
-    os.replace(tmp, path)
+    of_events.write_new(path, str(n))
     return n
 
 

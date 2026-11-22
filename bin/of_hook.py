@@ -306,9 +306,8 @@ def _registry_index():
             os.path.exists(f) and os.path.getmtime(f) == m for f, m in c["mtimes"].items())
 
     def read():
-        try:
-            with open(path) as fh:
-                return json.load(fh)
+        try:   # read_own (of_server on PR 545)
+            return json.loads(of_events.read_own(path, cap=64 << 20))
         except Exception:
             return None
     cache = read()
@@ -1152,8 +1151,7 @@ def _guard_index(sid=None):
     record a decision. It rebuilds only when `sid` is given and is not in the cache (a new holder must get its
     position's rules), and then only if the cache is stale. Other hooks rebuild the index as before."""
     try:
-        with open(os.path.join(STATE, "index.json")) as fh:
-            cache = json.load(fh)
+        cache = json.loads(of_events.read_own(os.path.join(STATE, "index.json"), cap=64 << 20))   # read_own
         if isinstance(cache.get("sessions"), dict) and (sid is None or sid in cache["sessions"]):
             return cache
     except Exception:
