@@ -588,6 +588,21 @@ def trusted_with_parents(config_dir, cwd, trusted_key, root_of=git_root):
     return None
 
 
+def carry_trust(pl, ensure, dry_run=False, default_dir=os.path.expanduser("~/.claude")):
+    """When the starting account does not trust the folder, carry the owner's earlier yes from the default account,
+    as a move does (ENSURE: of_capacity.ensure_trust; of_agent-server, message 01a20516-f7dd; hand-over 4c70deab):
+    sets pl["trusted"] and returns what was done, in words; None when it was trusted already or no account trusts
+    it (the owner's task follows, as before)."""
+    if pl.get("trusted"):
+        return None
+    try:
+        how, key = ensure(default_dir, pl["config_dir"], pl["cwd"], dry_run=dry_run)
+    except Exception:  # noqa: BLE001 - no account trusts it
+        return None
+    pl["trusted"] = key
+    return f"{'would carry' if dry_run and how == 'carried' else how} ({key})"
+
+
 def registry_line(pl, pane):
     return (f"  holder: {{runtime: claude-code, session: {pl['session']}, "
             f"workplace: \"herdr local, workspace {pl['workspace']}, tab {pl['tab']}, pane {pane}\"}}")

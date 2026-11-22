@@ -64,6 +64,31 @@ class SpawnPlanTest(unittest.TestCase):
         self.assertIn("/tmp/w", title)
         self.assertIn("CLAUDE_CONFIG_DIR=/x/.claude-b claude", steps)
 
+    def test_the_default_accounts_trust_is_carried_else_the_task_stands(self):
+        """of_review on PR 568: a start on an account that does not trust the folder carries the default account's
+        trust, as a move does; with no account trusting it the owner's task is filed as before."""
+        calls = []
+
+        def carried(src, dst, cwd, dry_run=False):
+            calls.append((src, dst, cwd, dry_run))
+            return "carried", cwd
+
+        def nobody(src, dst, cwd, dry_run=False):
+            raise RuntimeError("folder is trusted in no config")
+        pl = {"trusted": None, "config_dir": "/x/.claude-b", "cwd": "/tmp/w"}
+        self.assertEqual(of_spawn.carry_trust(dict(pl), carried, dry_run=True, default_dir="/x/.claude"),
+                         "would carry (/tmp/w)")
+        got = dict(pl)
+        self.assertEqual(of_spawn.carry_trust(got, carried, default_dir="/x/.claude"), "carried (/tmp/w)")
+        self.assertEqual(got["trusted"], "/tmp/w")
+        self.assertEqual(calls[-1], ("/x/.claude", "/x/.claude-b", "/tmp/w", False))
+        left = dict(pl)
+        self.assertIsNone(of_spawn.carry_trust(left, nobody))
+        self.assertIsNone(left["trusted"])                              # the owner's task follows
+        title, _ = of_spawn.trust_task(dict(left, position="of_x", session="S", workspace="w", tab="t"))
+        self.assertIn("/tmp/w", title)
+        self.assertIsNone(of_spawn.carry_trust(dict(pl, trusted="/tmp"), carried))   # trusted already: untouched
+
     def test_the_account_that_trusts_the_folder_is_chosen_first(self):
         rows = [{"config_dir": "/u/.claude-d", "free": 90}, {"config_dir": "/u/.claude-e", "free": 60},
                 {"config_dir": "/u/.claude", "free": 70}]
