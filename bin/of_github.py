@@ -664,15 +664,21 @@ def import_local(conn, org, systems, roots, since=None, works=None, log=print, l
             continue
         # a commit already recorded under another hash, after a history rewrite that kept its time and title
         # (organic-framework-build's of 2026-11-22: every commit got a new hash, dates and messages unchanged):
-        # never a second work record for it
+        # never a second work record for it. A rewrite is told without its map by a record of this organization's
+        # repository with the same time and title whose commit is no longer listed; a record whose commit is still
+        # listed hides nothing, so two real commits of one second and title are both kept (of_review on PR 557)
         first = min((c["at"] for c in commits), default=None)
-        seen = {(t, ti) for t, ti in conn.execute(
-            "SELECT json_extract(payload, '$.merged_at'), json_extract(payload, '$.title') FROM event "
-            "WHERE name = 'of.work_record' AND ts >= ? AND json_extract(payload, '$.source') = 'git' "
-            "AND json_extract(payload, '$.repo') = ?", (first or "9999", repo))} if commits else set()
+        listed = {c["sha"] for c in commits}
+        seen = {}
+        for t, ti, sha in (conn.execute(
+                "SELECT json_extract(payload, '$.merged_at'), json_extract(payload, '$.title'), "
+                "json_extract(payload, '$.sha') FROM event WHERE name = 'of.work_record' AND ts >= ? AND org = ? "
+                "AND json_extract(payload, '$.source') = 'git' AND json_extract(payload, '$.repo') = ?",
+                (first, org, repo)) if commits else ()):
+            seen.setdefault((t, ti), set()).add(sha)
         for c in commits:
             eid = str(uuid.uuid5(NS, f"{repo}@{c['sha']}:git"))
-            if (c["at"], of_hook.clip(c["title"] or "", 200)[0]) in seen:
+            if any(sha not in listed for sha in seen.get((c["at"], of_hook.clip(c["title"] or "", 200)[0]), ())):
                 continue
             if conn.execute("SELECT 1 FROM event WHERE event_id = ?", (eid,)).fetchone():
                 continue
