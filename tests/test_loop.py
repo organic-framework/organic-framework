@@ -954,6 +954,40 @@ class OwnersMeasureTest(unittest.TestCase):
         self.assertIsNone(of_loop.owners_yes(OWNED, unread))
         self.assertIn("unresolved", of_loop.target_line(OWNED, unread))
 
+    def test_1_a_bad_registry_or_loop_yaml_drops_only_its_own_organization_or_work(self):
+        """of_review on PR 504: the pulse reads every registry, checked or not; one bad file must not stop the rest."""
+        import importlib.machinery
+        import importlib.util
+        import json as _json
+        loader = importlib.machinery.SourceFileLoader("of_cli", os.path.join(HERE, "..", "bin", "of"))
+        of = importlib.util.module_from_spec(importlib.util.spec_from_loader("of_cli", loader))
+        loader.exec_module(of)
+        bad_regs = [["not", "a", "mapping"], {"works": ["a"]}, {"works": {"w2": "x"}}]
+        bad_loops = ["loop: [unclosed\n", "- a\n- b\n", "\xff\xfe"]
+        for n, (reg, ly) in enumerate([(r, None) for r in bad_regs] + [(None, y) for y in bad_loops]):
+            with tempfile.TemporaryDirectory() as root:
+                repo = os.path.join(root, "repo")
+                os.makedirs(os.path.join(repo, "w2"))
+                open(os.path.join(repo, "w2", "README.md"), "w").close()
+                if ly:
+                    with open(os.path.join(repo, "w2", "loop.yaml"), "wb") as fh:
+                        fh.write(ly.encode("latin-1"))
+                other = reg if reg is not None else {"works": {"w2": {"owner": "o", "doc": "repo:w2/README.md"},
+                                                              "w3": {"owner": "o", "loop": {"target": {}}}}}
+                for org, doc in (("good", {"works": {"w1": {"owner": "g", "loop": {"target": {}}}}}), ("other", other)):
+                    os.makedirs(os.path.join(root, org, "registry"))
+                    with open(os.path.join(root, org, "registry", "positions.yaml"), "w") as fh:
+                        fh.write(_json.dumps(doc))
+                orgs = os.path.join(root, "orgs.yaml")
+                with open(orgs, "w") as fh:
+                    fh.write(_json.dumps({"orgs": [{"name": "good", "path": "good"},
+                                                   {"name": "other", "path": "other", "paths": [repo]}]}))
+                got = [(o, w) for o, w, _, _ in of._loop_works(orgs)]
+                self.assertIn(("good", "w1"), got, n)
+                self.assertNotIn(("other", "w2"), got, n)
+                if ly:
+                    self.assertIn(("other", "w3"), got, n)                   # the organization's other works stay
+
     def test_2_an_absent_voi_ranks_as_med_by_voi_per_runner_hour(self):
         rows = [ev(1, "of.loop_hypothesis", 1, work="w", hypothesis="low", change="l", cost_h=1.0, voi="low"),
                 ev(2, "of.loop_hypothesis", 2, work="w", hypothesis="none", change="n", cost_h=1.0),
