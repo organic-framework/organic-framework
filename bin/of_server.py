@@ -2509,14 +2509,9 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
         import of_ship
         if not _DB.fullmatch(disk):
             raise ValueError("backup: clickhouse_disk is not a plain name")
-        ship = of_ship.config()  # as of_server.App takes it: ship.yaml, server.yaml's over it (of_secrets-review, PR 433)
-        ship.update(route_settings(cfg, ship))
-        ship.update(cfg.get("clickhouse") or {})
+        ship, dbs = _backup_dbs(cfg)
         post = ch_post or (lambda q: of_route.ClickHouse(ship).post(q, timeout=3600, query_in_body=True))
-        orgs = cfg.get("orgs") or of_route.Router(ship).db_by_org
-        dbs = sorted(set(orgs.values()) | {ship.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
-                                           ship.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]})
-        failed = []
+        failed, counts = [], {}
         for db in dbs:
             if not _DB.fullmatch(db):
                 raise ValueError("a ClickHouse database name that is not a plain name")
@@ -2531,6 +2526,7 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
             if state == "unfinished":
                 failed.append(f"{db} (an unfinished backup of the day is there)")
                 continue
+            before = _table_rows(post, db)
             try:
                 post(f"BACKUP DATABASE {db} TO Disk('{disk}', '{day}/{db}.zip')")  # names checked above: no quoting gap
             except Exception as e:  # noqa: BLE001 - told below, and the unit fails
@@ -2542,6 +2538,16 @@ def backup(cfg=None, keep=BACKUP_KEEP, ch_post=None, today=None):
                     failed.append(f"{db} ({_ch_error(e)})")
                 continue
             out.append(f"{day}: ClickHouse {db} backed up to its disk {disk}")
+            after = _table_rows(post, db)
+            counts[db] = {t: [before.get(t, 0), after.get(t, 0)] for t in sorted(set(before) | set(after))}
+        if any(counts.values()):   # what of server backup-check compares a restore with (agent-host_keeper)
+            cpath = os.path.join(dest, "clickhouse-counts.json")
+            try:   # an earlier run's counts that day stay, for the databases this run left as they were
+                with open(cpath) as fh:
+                    counts = dict(json.load(fh), **counts)
+            except (OSError, ValueError, TypeError):
+                pass
+            _write_private(cpath, json.dumps(counts, sort_keys=True))
         if failed:
             # a failed night removes nothing: pruning the old days then would leave fewer good backups each failed
             # night, until none (of_review on PR 554)
@@ -2582,6 +2588,131 @@ def _ch_error(e):
     type: the reason a failure was found by stays in what is printed (of_review on PR 554), and no data does."""
     m = re.search(r"\(([A-Z][A-Z0-9_]{2,})\)", str(e))
     return m.group(1) if m else type(e).__name__
+
+
+def _backup_dbs(cfg):
+    """(ship settings, the databases the nightly backup takes): each organization's, the vault and the unassigned one,
+    as of_server.App takes them (ship.yaml, server.yaml's over it; of_secrets-review, PR 433). backup-check walks the
+    same list, so a database the backup missed is a failure there, never silence (of_review on PR 559)."""
+    import of_route
+    import of_ship
+    ship = of_ship.config()
+    ship.update(route_settings(cfg, ship))
+    ship.update(cfg.get("clickhouse") or {})
+    orgs = cfg.get("orgs") or of_route.Router(ship).db_by_org
+    dbs = sorted(set(orgs.values()) | {ship.get("vault_database") or ROUTE_DEFAULTS["vault_database"],
+                                       ship.get("unassigned_database") or ROUTE_DEFAULTS["unassigned_database"]})
+    return ship, dbs
+
+
+def _table_rows(post, db):
+    """{table: rows} of one database, from ClickHouse's system.tables; {} when the client answers nothing (a test's)."""
+    try:   # a count that cannot be read stops no backup: the check then finds no counts for that database
+        got = post(f"SELECT name, total_rows FROM system.tables WHERE database = '{db}' FORMAT TabSeparated")
+    except Exception:  # noqa: BLE001
+        return {}
+    rows = {}
+    for line in (got or b"").decode("utf-8", "replace").splitlines() if isinstance(got, (bytes, bytearray)) else []:
+        name, _, n = line.partition("\t")
+        if name and n.strip().isdigit():
+            rows[name] = int(n)
+    return rows
+
+
+def _write_private(path, text):
+    """TEXT into PATH (0600) through a new file beside it and a rename, never through a link at either name."""
+    import threading
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600), "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def backup_check(cfg=None, day=None, admin=None):
+    """`of server backup-check`: that the newest day's backup (or DAY's) restores. The server.db copy must pass
+    SQLite's integrity check; each ClickHouse database is restored into a scratch database through the admin login,
+    each table's rows must lie between the counts backup() recorded before and after it, and the scratch database is
+    dropped. Prints names and counts only. Ends with SystemExit naming what failed (agent-host_keeper, 2026-11-22: no
+    restore had been exercised on the host)."""
+    import sqlite3
+    import of_route
+    cfg = cfg or load_config()
+    b = cfg.get("backup") or {}
+    root = os.path.expanduser(b.get("dir") or os.path.join(cfg["state_dir"], "backups"))
+    days = sorted(n for n in (os.listdir(root) if os.path.isdir(root) else []) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", n))
+    day = day or (days[-1] if days else None)
+    if not day or day not in days:
+        raise SystemExit(f"of server backup-check: no backup day {day or ''} under {root}")
+    out, failed, dest = [], [], os.path.join(root, day)
+    copy = os.path.join(dest, "server.db")
+    try:
+        c = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+        try:
+            ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            c.close()
+    except sqlite3.Error:
+        ok = False
+    out.append(f"{day}: server.db integrity {'ok' if ok else 'FAILED'}")
+    if not ok:
+        failed.append("server.db")
+    disk = b.get("clickhouse_disk")
+    counts_path = os.path.join(dest, "clickhouse-counts.json")
+    if disk and os.path.exists(counts_path):
+        if not _DB.fullmatch(disk):
+            raise SystemExit("of server backup-check: clickhouse_disk is not a plain name")
+        with open(counts_path) as fh:
+            counts = json.load(fh)
+        if admin is None:
+            ch = cfg.get("clickhouse") or {}
+            admin_file = os.path.join(os.path.dirname(os.path.expanduser(ch["password_file"])), "admin.password")
+            _own_private(admin_file)
+            admin = of_route.ClickHouse({"url": ch["url"], "ca": ch["ca"], "user": "admin",
+                                         "password_file": admin_file})
+
+        def post(q):
+            return admin.post(q, query_in_body=True, timeout=3600)
+        _, dbs = _backup_dbs(cfg)
+        for db in dbs:   # the databases the backup takes, not the counts file's: one it missed is a failure
+            if not _DB.fullmatch(db):
+                raise SystemExit("of server backup-check: a database name that is not a plain name")
+            if not counts.get(db):   # missing (its backup failed) or {} (its count was not read): never a pass
+                failed.append(f"{db} (no counts recorded that day)")
+                out.append(f"{day}: ClickHouse {db} not checked: no counts recorded that day")
+                continue
+            scratch = f"of_restore_check_{db}"
+            try:
+                post(f"DROP DATABASE IF EXISTS {scratch} SYNC")
+                post(f"RESTORE DATABASE {db} AS {scratch} FROM Disk('{disk}', '{day}/{db}.zip')")
+                got = _table_rows(post, scratch)
+                # rows fall as a ReplacingMergeTree's parts merge, so before may exceed after: between the smaller
+                # and the larger. Still approximate: a merge inside the restored copy, or a TTL, can lower it
+                bad = [t for t, (a, b) in counts[db].items() if not min(a, b) <= got.get(t, -1) <= max(a, b)]
+                if bad:
+                    failed.append(f"{db} ({len(bad)} tables off their counts)")
+                    out.append(f"{day}: ClickHouse {db} restored, {len(bad)} of {len(counts[db])} tables off their counts")
+                else:
+                    out.append(f"{day}: ClickHouse {db} restored, {len(counts[db])} tables within their counts")
+            except Exception as e:  # noqa: BLE001 - named, and the check fails
+                failed.append(f"{db} ({_ch_error(e)})")
+                out.append(f"{day}: ClickHouse {db} did not restore ({_ch_error(e)})")
+            finally:
+                try:
+                    post(f"DROP DATABASE IF EXISTS {scratch} SYNC")
+                except Exception:  # noqa: BLE001 - the next check drops it first
+                    pass
+    elif disk:
+        out.append(f"{day}: no ClickHouse counts recorded that day, so its databases were not restored")
+        failed.append("ClickHouse (no counts recorded)")
+    for line in out:
+        print(line)
+    if failed:
+        raise SystemExit(f"of server backup-check: {', '.join(failed)}")
+    return out
 
 
 CLICKHOUSE_HTTPS_PORT = 18443  # the host's ClickHouse, https only on 127.0.0.1
