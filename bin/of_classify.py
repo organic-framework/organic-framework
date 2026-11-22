@@ -572,6 +572,9 @@ SECRET_GLOBS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*
                 "*.kubeconfig", "kubeconfig*",
                 # private keys without the id_ prefix (the tenant grant key grant_ed25519), and OF's own secrets
                 "*_ed25519", "*_rsa", ".config/of/clickhouse/**", ".config/of/grant_ed25519",
+                # a private key named with a dot before its type (of_server, 2026-11-22): G1.13 refuses it by its
+                # content; by its name it counts too, in the native rules as well
+                "*.ed25519",
                 # of_platform's pre-redaction byte copies of transcripts (c90c161): 24 h of unredacted secrets
                 ".local/state/of/redact-backup/**",
                 # the secrets broker's service-account tokens (docs/agent-secrets.md §5.3, of_architect's review a):
@@ -639,7 +642,7 @@ DENY_READ_GLOBS = (".env", ".env.local", ".env.prod", ".env.production", ".env.d
                    "*.jks", "*.keystore", ".aws/credentials", ".netrc", "secrets/**",
                    "*.secret", "*.token", "token.txt", "*-token.txt", "*_token.txt", "*.token.txt",
                    "credentials.json", "service-account*.json",
-                   "*.kubeconfig", "kubeconfig*", "*_ed25519", "*_rsa", ".config/of/clickhouse/**",
+                   "*.kubeconfig", "kubeconfig*", "*_ed25519", "*.ed25519", "*_rsa", ".config/of/clickhouse/**",
                    ".config/of/grant_ed25519", ".local/state/of/redact-backup/**", ".config/of/service-accounts/**",
                    "executors.txt", *_CRED_SUFFIXES, *_CLOUD_CACHES,
                    *_HARNESS_LOGINS)  # G1.14 in the native rules too (of_secrets-review on organic-framework PR 387)

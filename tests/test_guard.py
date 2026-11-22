@@ -626,6 +626,13 @@ class GuardBashTest(unittest.TestCase):
         self.assertTrue(deny("cat ~/.local/state/of/redact-backup/2026-11-06/s.jsonl"))  # unredacted byte copies
         self.assertIsNone(deny("cat host_ed25519.pub"))             # public keys stay allowed
         self.assertIsNone(deny("cat app.json"))
+        # a private key named with a dot before its type (of_server, 2026-11-22), by its name: by Bash and by the Read tool
+        # (G1.13 refuses its content as well); its public half stays allowed
+        dotted = "repo-write" + ".ed25519"
+        self.assertTrue(deny("cat keys/" + dotted))
+        self.assertTrue(of_guard.critical_deny("Read", {"file_path": "/home/alex/keys/" + dotted}))
+        self.assertIsNone(deny("cat keys/" + dotted + ".pub"))
+        self.assertIn(dotted.replace("repo-write", "*"), of_guard.of_classify.DENY_READ_GLOBS)
 
     def test_credential_files_in_an_organization_config(self):
         """docs/guard.md G1.7, G1.8 (a user organization's sec_keeper, msg 01a1c87f, 2026-11-11): Grafana header
