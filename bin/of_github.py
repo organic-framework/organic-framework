@@ -568,8 +568,12 @@ def local_commits(root, since, git="git", branch="main"):
     default_branch), since the ISO date (oldest first). Read-only: no locks, no prompts, no user config."""
     env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
     fmt = GIT_SEP.join(["%H", "%an", "%ct", "%s", "%B"]) + REC_SEP
-    r = subprocess.run([git, "-C", root, "-c", "core.quotepath=false", "log", branch, "--reverse", f"--since={since}",
-                        f"--format={fmt}", "--name-only"], capture_output=True, text=True, timeout=120, env=env)
+    # --no-show-signature: a repository's own .git/config with log.showSignature and gpg.program would have the
+    # listener run that program, and any session's file tools can write a checkout's .git/config (of_server, message
+    # 01a202d3-e7c8, tried on a scratch repository)
+    r = subprocess.run([git, "-C", root, "-c", "core.quotepath=false", "log", "--no-show-signature", branch,
+                        "--reverse", f"--since={since}", f"--format={fmt}", "--name-only"], capture_output=True,
+                       text=True, timeout=120, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"git log {root}: {r.stderr.strip()[:200]}")
     out = []
