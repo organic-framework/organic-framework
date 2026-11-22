@@ -682,7 +682,9 @@ def _told(records, org):
 
 
 def _escalations_told(org, now=None):
-    """_told over the organization's of.escalation_due records of the last ESCALATION_KEEP_S. Never the whole log."""
+    """_told over the organization's of.escalation_due records of the last ESCALATION_KEEP_S. Never the whole log.
+    None when the store cannot be read: what was told is then unknown, not nothing (of_review on organic-framework
+    PR 522: one pass with the database locked recorded again a set that had only shrunk)."""
     try:
         import of_store
         conn = of_store.connect()
@@ -690,8 +692,8 @@ def _escalations_told(org, now=None):
         rows = conn.execute("SELECT ts, payload, org FROM event WHERE name = 'of.escalation_due' AND ts >= ?",
                             (since,)).fetchall()
         conn.close()
-    except Exception:  # noqa: BLE001 — no store: nothing recorded
-        return {}
+    except Exception:  # noqa: BLE001 — the store cannot be read: unknown
+        return None
     recs = []
     for ts, pl, o in rows:
         try:
@@ -878,17 +880,19 @@ def cmd_escalations(args):
                 _escalations_stale(org["name"], age, b)
             return 0
         _escalations_stale(org["name"], age, b, fresh=True)   # the episode, if any, is over
-        told = _escalations_told(org["name"], b)
     else:
         _, m, rows = _model(args, _rows(of_model.iso(b - 9 * 86400), names=of_studio.kinds()))
         diag = of_diagnose.diagnose(m, rows, b - 7 * 86400, b,
                                     context={"keeper_since": lambda sysid, k: of_model.keeper_since(org["repo"], sysid, k)})
         esc = of_diagnose.escalations(m, diag, of_studio.budget_used(m, rows, b, refresh_usage=True))
-        told = _told([(r["ts"], r.get("payload") or {}, r.get("org")) for r in rows
-                      if r["name"] == "of.escalation_due"], org["name"])
+    # both paths read what was told over ESCALATION_KEEP_S, not the 9 days --fresh loads (of_review on PR 522)
+    told = _escalations_told(org["name"], b) if args.write else {}
+    if told is None:
+        print(f"of model escalations: {org['name']}: the event store cannot be read, so what was escalated before is "
+              "unknown; nothing recorded on this pass", file=sys.stderr)
     written = 0
     for x in esc:
-        evidence = _to_escalate(x, told, args.at) if args.write else None
+        evidence = _to_escalate(x, told, args.at) if args.write and told is not None else None
         if evidence:
             import of_events
             rec = dict(x, evidence=evidence)

@@ -2678,6 +2678,46 @@ class EscalationsFromCacheTest(unittest.TestCase):
                 of_studio_cli.cmd_escalations(args)
         self.assertIn("acme are missing", tell.call_args.args[1])
 
+    def test_fresh_reads_what_was_told_and_an_unreadable_store_records_nothing(self):
+        """--fresh reads what was escalated over ESCALATION_KEEP_S, as the pulse's pass does, not its 9 days of rows;
+        a store that cannot be read means unknown, so nothing is recorded on that pass (of_review on PR 522)."""
+        import contextlib
+        import io
+        import sqlite3
+        import types
+        from unittest import mock
+        import of_store
+        import of_studio_cli
+        fired = {"delegation": "del-1", "unit": "platform", "to_owner": "plat_owner", "from_owner": "founder",
+                 "condition": "issue.severity >= high", "status": "fired", "evidence": ["i-1", "i-2"]}
+
+        def run(told, fresh):
+            emitted = []
+            args = types.SimpleNamespace(org="acme", write=True, json=False, fresh=fresh, at=None)
+            with mock.patch.object(of_studio_cli, "_org", return_value={"name": "acme", "repo": "/nonexistent"}), \
+                    mock.patch.object(of_studio_cli, "_escalations_told", return_value=told) as t, \
+                    mock.patch.object(of_studio_cli, "_rows", return_value=[]), \
+                    mock.patch.object(of_studio_cli, "_model", return_value=(None, {}, [])), \
+                    mock.patch.object(of_studio_cli.of_diagnose, "diagnose", return_value={"issues": []}), \
+                    mock.patch.object(of_studio_cli.of_diagnose, "escalations", return_value=[fired]), \
+                    mock.patch.object(of_studio, "budget_used", return_value={}), \
+                    mock.patch.object(of_studio, "read_escalations", return_value=([fired], 60.0)), \
+                    mock.patch.object(of_studio_cli, "_escalations_stale"), \
+                    mock.patch("of_events.emit", side_effect=lambda *a, **k: emitted.append(a[1]["evidence"])), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+                of_studio_cli.cmd_escalations(args)
+            self.assertEqual(t.call_args.args[0], "acme")
+            return emitted, err.getvalue()
+
+        for fresh in (True, False):
+            self.assertEqual(run({("del-1", "issue.severity >= high"): {"i-1", "i-2"}}, fresh)[0], [])
+            self.assertEqual(run({("del-1", "issue.severity >= high"): {"i-1"}}, fresh)[0], [["i-2"]])
+            emitted, err = run(None, fresh)
+            self.assertEqual(emitted, [])
+            self.assertIn("nothing recorded on this pass", err)
+        with mock.patch.object(of_store, "connect", side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertIsNone(of_studio_cli._escalations_told("acme"))
+
 
 class AsksViewTest(unittest.TestCase):
     """Studio's asks come from the listener's asks view (of_asks.current_asks), never a projection of the page's rows
