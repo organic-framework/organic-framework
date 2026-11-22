@@ -1608,8 +1608,12 @@ class JudgeTest(unittest.TestCase):
                 self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: founder"))
                 # acme_org, 2026-11-10: a card cited by the first 8 characters of its id, as the event store shows it
                 self.assertEqual(of_judge.only_filed_ids(conn, f"WAITING ON: карточка `{gw2[:8]}`"), [gw2[:8]])
-                self.assertIn(f"- {o} (also cited as {gw2[:8]}): gw2?",
+                ref = conn.execute("SELECT json_extract(payload, '$.ref') FROM event WHERE event_id = ?",
+                                   (gw2,)).fetchone()[0]
+                self.assertIn(f"- {o} (also cited as {gw2[:8]}, card {ref}): gw2?",
                               of_judge.user_prompt("x", "po", filed=of_judge.filed(conn, "po")))
+                self.assertIn(f"- {o} (also cited as {gw2[:8]}): gw2?", of_judge.user_prompt("x", "po", filed=[
+                    (gw2, "gw2?")]))  # the lab's older cases carry no card id
                 cand = add("agent_question", {"detected_by": "heuristic", "questions": [{"question": "x"}]})
                 called = []
                 v = of_judge.judge_one(conn, {"ask_id": cand, "position": "mto", "ts": of_events.now_iso(),
@@ -1620,6 +1624,81 @@ class JudgeTest(unittest.TestCase):
             finally:
                 of_events._CONN.clear()
                 of_events.STATE_DIR = saved
+
+    def test_a_message_naming_open_cards_by_their_card_ids_is_cleared_without_the_model(self):
+        # of_metamethod's reading, message 01a203ab-8a69, checked by of_asks on 2026-11-22: of the 32 cards j-v6 filed,
+        # 29 came from a closing message that named a card then open by its card id, as agents are told to cite cards
+        # (OF-230, OF-109); the judge knew only 8-character ids, and 29 of them were withdrawn or replaced
+        import of_judge
+        import of_store
+        with tempfile.TemporaryDirectory() as d:
+            saved, later = of_events.STATE_DIR, of_events.CARD_REFS_LATER
+            of_events.STATE_DIR = d
+            of_events._CONN.clear()
+            try:
+                conn = of_store.connect(os.path.join(d, "of.db"))
+
+                def add(kind, payload, position="srv"):
+                    rec = of_events.record(kind, payload, position=position, session="S", org="acme")
+                    of_store.add_event(conn, rec)
+                    return rec["of.event.id"]
+                card = add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
+                                              "ref": "AC-230", "questions": [{"question": "Which redesign?"}]})
+                done = add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
+                                              "ref": "AC-12", "questions": [{"question": "1Password?"}]})
+                add("agent_question_answered", {"ask_id": done, "ask_ids": [done], "answer": "да", "by": "owner",
+                                                "via": "asks-ui"})
+                copy = add("agent_question", {"detected_by": "declared", "source": "pane", "to": "founder",
+                                              "ref": "AC-231", "questions": [{"question": "Answer AC-230?"}]})
+                add("ask_withdrawn", {"ask_id": copy, "reason": "duplicate of AC-230", "by": "srv"})
+                # the closing message after the agent withdrew the judge's copy (OF-238, 2026-11-20, in the agent's
+                # words): it names the copy by its 8-character id and the open card by its card id
+                closing = (f"Я отозвал карточку {copy[-8:]}. OF создал её сам из строки моего прошлого ответа, где я "
+                           "написал, что жду AC-230, и она дублировала AC-230. Вопрос остаётся один, в карточке "
+                           "AC-230, а я жду твоего ответа на неё.")
+                self.assertEqual(of_judge.only_filed_ids(conn, closing), sorted([copy[-8:], "AC-230"]))
+                self.assertEqual(of_judge.only_filed_ids(conn, "WAITING ON: AC-230 (the redesign)."), ["AC-230"])
+                self.assertEqual(of_judge.only_filed_ids(conn, "Твоё «да» на AC-12. Жду AC-230."),
+                                 ["AC-12", "AC-230"])  # a decision cited by its card id, and an open card
+                self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: AC-12"))  # nothing open for him
+                self.assertIsNone(of_judge.only_filed_ids(conn, "Катить сегодня? Это рядом с AC-230"))  # a new question
+                self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: AC-230, AC-999"))  # a card OF never filed
+                self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: AC-230, вопрос про 1Password"))
+                # a token shaped like a card id under no card prefix is no card, and stops nothing
+                self.assertEqual(of_judge.only_filed_ids(conn, "WAITING ON: AC-230; the log is UTF-8, SHA-256 signed."),
+                                 ["AC-230"])
+                self.assertEqual(of_judge.cited("AC-230, UTF-8, sd-2026-11-16, ac-230, xAC-230", {"AC"}), {"AC-230"})
+                # a card that got its id later, from the pulse's backfill (of.ask_ref), is known by it too
+                of_events.CARD_REFS_LATER = True
+                late = add("agent_question", {"detected_by": "declared", "source": "declared", "to": "founder",
+                                              "questions": [{"question": "Rotate the key?"}]}, "keeper")
+                add("ask_ref", {"ask_id": late, "ref": "AC-240"}, "keeper")
+                self.assertEqual(of_judge.only_filed_ids(conn, "WAITING ON: AC-240"), ["AC-240"])
+                # replayed before the card was filed, nothing is known (lab-asks-v0)
+                self.assertIsNone(of_judge.only_filed_ids(conn, "WAITING ON: AC-230", until="2026-01-01T00:00:00Z",
+                                                          asks=[]))
+                cand = add("agent_question", {"detected_by": "heuristic", "questions": [{"question": "x"}]})
+                called = []
+                v = of_judge.judge_one(conn, {"ask_id": cand, "position": "srv", "ts": of_events.now_iso(),
+                                              "text": closing, "origin": "human"},
+                                       runner=lambda *x, **k: called.append(x), log=lambda m: None)
+                self.assertEqual((v["verdict"], v["rule"], called), ("not_a_question", "filed-ids", []))
+                self.assertEqual(conn.execute("SELECT count(*) FROM event WHERE name = 'of.agent_question' AND "
+                                              "json_extract(payload, '$.source') = 'pane'").fetchone()[0], 1)
+                # with something else asked, the model reads the named card with its card id, and its own cards too
+                asks = of_judge.open_founder_asks(conn)
+                self.assertEqual(of_judge.named_asks(asks, "Roll it today? Then AC-230.", "architect"),
+                                 [(card, "Which redesign?", "srv", "AC-230")])
+                said = "Roll it today? Then AC-230."
+                prompt = of_judge.user_prompt(said, "architect", named=of_judge.named_asks(asks, said, "architect"))
+                self.assertIn(f"- {card[-8:]} (also cited as {card[:8]}, card AC-230), filed by srv: Which redesign?",
+                              prompt)
+                self.assertIn("card AC-230): Which redesign?",
+                              of_judge.user_prompt("x", "srv", filed=of_judge.filed(conn, "srv")))
+                conn.close()
+            finally:
+                of_events._CONN.clear()
+                of_events.STATE_DIR, of_events.CARD_REFS_LATER = saved, later
 
     def test_a_message_naming_only_a_proposed_diff_is_cleared_without_the_model(self):
         # a user organization's structure keeper, message 01a1e0f6-0eab (2026-11-15): an architect closed its turn
@@ -1681,7 +1760,7 @@ class JudgeTest(unittest.TestCase):
                 asks = [{"event_id": card, "text": "Approve the second mandate?", "position": "keeper",
                          "diff_id": sd}]
                 self.assertEqual(of_judge.named_asks(asks, f"Roll it today? Then {sd}.", "architect"),
-                                 [(card, "Approve the second mandate?", "keeper")])
+                                 [(card, "Approve the second mandate?", "keeper", None)])
                 self.assertEqual(of_judge.named_asks(asks, "Roll it today?", "architect"), [])
                 conn.close()
             finally:

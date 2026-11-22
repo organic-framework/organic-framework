@@ -13,12 +13,13 @@ the panel" (ci_keeper; `reports/asks-losses-2026-11-07-10.md`).
 file holds no text; `run.py` reads the store and the transcripts on the Mac (docs/lab.md, Level 2) and prints only
 scores and event ids.
 
-126 cases, 35 positive. 116 were drawn on 2026-11-10 (`run.py sample --since 2026-11-08 --n 60 --seed 1110`): every
+147 cases, 35 positive. 116 were drawn on 2026-11-10 (`run.py sample --since 2026-11-08 --n 60 --seed 1110`): every
 candidate the judge called `owner_question` (41) or skipped (8) since 2026-11-08, 60 of its 465 `not_a_question`
 at random, and 7 messages from the founder's reports (5 he named, 2 later notes repeating ci_keeper's questions). `asks-117` was added on 2026-11-11: of_capacity's
 proposal that he reported lost (hand-over `cc2ed950`, `reports/asks-pane-questions-2026-11-11.md`).
 `asks-118` to `asks-126` were added on 2026-11-17: pane cards for decisions another position already carried (j-v6
-below). Positives are oversampled, so the scores
+below). `asks-127` to `asks-147` were added on 2026-11-22: pane cards whose closing message only named a decision
+already open for the founder, mostly by its card id (j-v7 below). Positives are oversampled, so the scores
 describe this set, not the daily stream; the results below were measured on the first 116.
 
 | Source | Cases | What it is |
@@ -29,6 +30,7 @@ describe this set, not the daily stream; the results below were measured on the 
 | silver | 89 | The recorded verdict and Opus (the j-v3 prompt) agree; no one checked |
 | a user organization's structure keeper | 6 | Pane cards for a decision its unit owner already carried to the founder, one of them its own (2026-11-17) |
 | of_asks | 3 | Three more cards of the same keeper, unit owner and hour; not checked by the keeper |
+| of_asks | 21 | The OF team's pane cards that their askers withdrew as copies of a decision already open (2026-11-18 to 2026-11-22), by each recorded reason; not checked by the founder |
 
 Labelling rule: `owner_question` when the agent waits on the founder's answer to something not filed with
 `of ask`, also when it only points at it ("a question about 1Password" in a WAITING ON line, a status note "awaiting
@@ -108,6 +110,20 @@ minutes. The reading replays `waits_on_receiver` on each judged candidate with a
 and takes each card's closing from the asks view (`closed_by`), where a unit owner's reply to the asker closes its
 card too (asks view version 6). A turn bounded by `of.continuation` events starts elsewhere and finds four
 (`of_review`, PR 299).
+
+j-v7 (2026-11-22): an ask is known by its card id too (`OF-230`, the form the popup shows and agents are told to cite
+since 2026-11-17), in the filed-ids rule and in the asks listed to the model, beside its 8-character ids. j-v6 knew
+only the 8-character ones. Of the 32 pane cards it filed for the OF team to 2026-11-22, 29 ended withdrawn or replaced,
+and 29 came from a closing message that named a card then open by its card id (`of_metamethod`'s reading, message
+`01a203ab-8a69`, checked card by card by `of_asks`). The 21 its askers withdrew as copies of a decision already open
+are `asks-127` to `asks-147`. On them the rules before the model clear 14 under j-v7 and none under j-v6. On the first
+126 cases the rules give the same results under both, since none names a card id, so no labelled question is cleared.
+Replayed on the 97 pane cards j-v6 filed in the two organizations of this machine, from each card's recorded closing
+message with the queue as the asks view records it at the card's time, the rule clears 34: 30 withdrawn or replaced,
+and 4 a unit owner answered. Three of those four were copies of the open card they name. The fourth is a wait list in
+which items with no card stand beside the named task, on lines of their own, and q-v5's patterns, which read the lines
+that name no ask, found no request to the owner in them, as they would beside an 8-character id. The model's part is
+not measured yet: the prompt now shows each listed ask's card id, and the 7 new cases the rules leave go to it.
 
 Two prompt changes were measured and dropped. With the turn's last `of status`, the open founder asks of the unit
 owner and of the waited-on position, an item "a decision another position already carries", and a line saying where
