@@ -2648,14 +2648,53 @@ def _ps_env(head, args):
     return head == "ps" and any(re.fullmatch(r"[auxewfl]*e[auxewfl]*", a) for a in args)
 
 
+def _c_flag(args):
+    """The index of a shell's -c among ARGS: -c itself, or a cluster of short options that holds c (-lc, -ec, -xc;
+    Codex runs every command as bash -lc), before the first word that is no option; else None."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _SHELL_VALUE_OPTS and i + 1 < len(args):
+            i += 2              # an option and its value (`-o pipefail`, `--rcfile FILE`)
+            continue
+        if a == "--" or not (a.startswith("-") or a.startswith("+")):
+            return None
+        if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a):
+            return i
+        i += 1                  # another option: --norc, --noprofile, --login, --posix, -l, -e (of_review on PR 495)
+    return None
+
+
+# a shell's options that take a value, before or after its -c (bash's --rcfile and --init-file, -o, -O)
+_SHELL_VALUE_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
+
+
+def _c_body(args, i):
+    """The body of a shell's -c at ARGS[I]: the first word after it that is no option, past -o/--rcfile values and `--`
+    (bash -c -e 'cmd', bash -c -x -- 'cmd': of_secrets-review on PR 495)."""
+    j = i + 1
+    while j < len(args):
+        a = args[j]
+        if a in _SHELL_VALUE_OPTS and j + 1 < len(args):
+            j += 2
+            continue
+        if a == "--" or (a.startswith("-") or a.startswith("+")) and a not in ("-", "+"):
+            j += 1
+            continue
+        return a
+    return None
+
+
 def _nested(head, args):
     """Command lines a command runs: sh/bash -c, eval, ssh's remote command, `docker exec C cmd …`,
     `kubectl exec P -- cmd …`, and any `sh -c STRING` among the arguments (sudo, timeout, xargs …)."""
     import shlex
     out = []
     if head in _SHELLS:
-        if "-c" in args[:-1]:
-            out.append(args[args.index("-c") + 1])
+        i = _c_flag(args) if head != "eval" else None
+        body = _c_body(args, i) if i is not None else None
+        if body is not None:
+            out.append(body)
         elif head == "eval":
             out.append(" ".join(args))
     elif head == "ssh" and args:
@@ -2678,8 +2717,12 @@ def _nested(head, args):
         if rest:
             out.append(shlex.join(rest))
     for k, a in enumerate(args[:-1]):
-        if os.path.basename(a) in _SHELLS - {"eval"} and args[k + 1] == "-c" and k + 2 < len(args):
-            out.append(args[k + 2])
+        if os.path.basename(a) in _SHELLS - {"eval"}:
+            rest = args[k + 1:]
+            i = _c_flag(rest)
+            body = _c_body(rest, i) if i is not None else None
+            if body is not None and body not in out:
+                out.append(body)
     return out
 
 
@@ -2873,7 +2916,7 @@ def _remote_shell(head, args):
     if not s or s[0] == "<read":
         return None
     h, a = s[0], s[1]
-    if h in _SHELLS - {"eval"} and "-c" not in a:
+    if h in _SHELLS - {"eval"} and _c_flag(a) is None:
         return "shell"
     if h in _INTERPRETERS and "-c" not in a and "-e" not in a and (not a or a[0] == "-"):
         return "code"
