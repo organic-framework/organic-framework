@@ -169,6 +169,15 @@ class RelayTest(unittest.TestCase):
         self.assertFalse(os.path.islink(tmp))
         with open(victim) as fh:
             self.assertEqual(fh.read(), "kept\n")
+        os.unlink(path)
+        os.mkfifo(path)                                               # a FIFO fails at once, never holds the relay
+        with self.assertRaises(OSError):
+            of_relay._open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        os.unlink(path)
+        os.link(victim, path)                                         # a second name of another file is refused
+        with self.assertRaises(OSError):
+            of_relay._open_own(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+        os.unlink(path)
         os.symlink(victim, path + ".2")
         of_relay.record_queues({"ofb:of_a": {"n": 1, "oldest": "2026-11-22T10:00:00Z"}}, now=1000.0)  # still works
         self.assertEqual(of_relay.read_queues()["ofb:of_a"]["n"], 1)

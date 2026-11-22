@@ -37,10 +37,11 @@ def _open_own(path, flags, mode=0o600):
     """A descriptor for PATH in OF's state folder, never through a link put at its name: on the agent host every
     sandboxed session may write that folder and the relay runs outside the sandbox, so a link there would make it write
     into any file of its user's (docs/guard.md, Gaps, "A process outside the sandbox follows a link"). Anything but a
-    regular file of ours is refused."""
-    fd = os.open(path, flags | NOFOLLOW, mode)
+    regular file of ours with one link is refused, and a FIFO put there fails at once instead of holding the relay
+    (O_NONBLOCK; on a regular file it changes nothing)."""
+    fd = os.open(path, flags | NOFOLLOW | getattr(os, "O_NONBLOCK", 0), mode)
     st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
         os.close(fd)
         raise OSError(f"{path} is not a regular file of ours")
     return fd
