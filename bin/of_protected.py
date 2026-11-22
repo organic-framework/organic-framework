@@ -131,9 +131,9 @@ def _env():
             "GIT_ALLOW_PROTOCOL": ""}
 
 
-# every hook event of githooks(5) at git 2.56: a hook a repository's configuration names (hook.<name>.command and
-# .event) runs whatever core.hooksPath says, and hook.<event>.enabled=false turns every hook of that event off
-# (git-config(1); of_architect, msg 01a202ea-781a)
+# every hook event of githooks(5), the same set at git 2.54 to 2.56: a hook a repository's configuration names
+# (hook.<name>.command and .event) runs whatever core.hooksPath says, and from git 2.55 hook.<event>.enabled=false
+# turns every hook of that event off (git-config(1); of_architect, msg 01a202ea-781a; of_review on PR 511)
 HOOK_EVENTS = ("applypatch-msg", "commit-msg", "fsmonitor-watchman", "p4-changelist", "p4-post-changelist",
                "p4-pre-submit", "p4-prepare-changelist", "post-applypatch", "post-checkout", "post-commit",
                "post-index-change", "post-merge", "post-receive", "post-rewrite", "post-update", "pre-applypatch",
@@ -379,10 +379,14 @@ def _no_filters(tree):
 
 
 def _no_config_hooks(tree):
-    """Refused when the configuration names a hook (hook.<name>.command). git runs such a hook whatever
-    core.hooksPath says, and hook.<event>.enabled=false (in _git_cmd) turns it off only from git 2.56: a git that runs
-    them without that switch (2.54 does) would run it during the checkout (of_architect, msg 01a202ea-781a)."""
+    """Refused when the configuration names a hook (hook.<name>.command), or cannot be read. git runs such a hook
+    whatever core.hooksPath says, and hook.<event>.enabled=false (in _git_cmd) turns it off only from git 2.55: a git
+    that runs them without that switch (2.54 does) would run it during the checkout (of_architect, msg 01a202ea-781a;
+    of_review on organic-framework PR 511). Called once before the checks and again right before the checkout, so a
+    hook written while GitHub is asked is seen too."""
     r = _git(tree, "config", "--null", "--name-only", "--get-regexp", r"^hook\.", check=False)
+    if r.returncode not in (0, 1):  # 1 is "no such key"; anything else is a check that could not be made
+        raise Refused("the repository's configuration could not be read for hooks: the owner's")
     named = sorted({k for k in r.stdout.split("\0") if k.startswith("hook.") and k.endswith(".command")})
     if named:
         raise Refused(f"the repository's configuration names a hook ({named[0]}), which git may run during the "
@@ -803,6 +807,7 @@ def _ff(tree, ff_spec, target, api):
         store = _private_store((old, new), blobs)  # from here git reads no object from the shared store
         if _git(tree, "rev-parse", "--verify", "HEAD").stdout.strip() != head:  # moved while it was checked
             raise Refused("the tree moved while it was checked; run the command again")
+        _no_config_hooks(tree)  # again: a hook written while GitHub was asked (of_review on organic-framework PR 511)
         _git(tree, "checkout", "--quiet", "--detach", to, extra=off, store=store)
         # the whole index is the verified target, and every file it wrote and every human file hashes on disk to the
         # target's ids (of_architect's third and fourth passes on PR 306)
