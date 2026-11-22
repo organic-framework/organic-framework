@@ -191,6 +191,9 @@ class ServerRouteAct(unittest.TestCase):
         self.assertTrue(of_guard._server_route_act(["server", "route", "https://h:1", "--via", "direct"]))
         self.assertTrue(of_guard._server_route_act(["server", "--", "route", "https://h:1"]))
         self.assertFalse(of_guard._server_route_act(["server", "status"]))
+        self.assertTrue(of_guard._server_route_act(["server", "--via", "direct", "route", "https://h:1"]))
+        self.assertTrue(deny("env -u OF_POSITION of server --via direct route https://h:1"))       # option first
+        self.assertTrue(deny("unset OF_POSITION; bash -c 'of server --via direct route https://h:1'"))  # a line act
         for cmd in ("env -u CLAUDE_CODE_SESSION_ID -u OF_POSITION of server route https://h:1 --via direct",
                     "OF_POSITION= CLAUDE_CODE_SESSION_ID= python3 bin/of server route https://h:1 --via tcp:192.0.2.1:9"):
             self.assertTrue(deny(cmd), cmd)
