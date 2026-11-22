@@ -193,6 +193,12 @@ class EnrollTest(unittest.TestCase):
         self.assertLess(len(calls), 30)                                    # bisected, not paged from the start
         self.assertEqual(len(cli._receipts_since(Client(), None)), 3500)   # --all pages through every one
         self.assertEqual(cli._receipts_since(Client(), "2026-12-01T00:00:00"), [])
+        # of_review on PR 539: --since is read as a time, in UTC, and what does not parse is refused
+        self.assertEqual(cli._since_utc("2026-11-08T04:00:00+04:00"), "2026-11-08T00:00:00")
+        self.assertEqual(cli._since_utc("2026-11-08 00:00:00Z"), "2026-11-08T00:00:00")
+        self.assertEqual(cli._since_utc("2026-11-08"), "2026-11-08T00:00:00")
+        self.assertIsNone(cli._since_utc("yesterday"))
+        self.assertIsNone(cli._since_utc("+1h"))
 
     def test_invite_consent_shipped(self):
         os.makedirs(os.path.join(self.tmp.name, "config"))
@@ -215,6 +221,9 @@ class EnrollTest(unittest.TestCase):
         r = self.of("shipped", "--all")
         self.assertIn("3 records", r.stdout)
         self.assertIn("in all", r.stdout)
+        r = self.of("shipped", "--since", "yesterday")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--since takes an ISO date or time", r.stderr)
         self.of("invite", "--server", self.url, "--org", "acme", "--person", "dana")
         self.assertEqual([b for p, b, _ in Fake.seen if p == "/v1/invites"][-1]["person"], "dana")
         r = self.of("machines", "revoke", "--server", self.url, "--person", "dana")

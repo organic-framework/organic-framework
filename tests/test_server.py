@@ -861,6 +861,13 @@ class AskClosureRoutingTest(unittest.TestCase):
             self.assertEqual(of_route.route_org("event", injected(relayed, session="S-acme"), r), "acme")  # its own first
             self.assertIsNone(of_route.route_org("event", injected(dict(relayed, target_session="S-gone")), r))
             self.assertIsNone(of_route.route_org("event", injected({"injector": "of_capacity"}), r))
+            mover = dict(injected(dict(relayed, injector="of_capacity")), org="acme")   # the mover's own organization
+            self.assertEqual(of_route.route_org("event", mover, r), "zeta")              # the target's wins
+            self.assertEqual(of_route.route_org("event", dict(mover, payload=json.dumps(
+                dict(relayed, target_session="S-gone"))), r), "acme")                   # an unknown target: its own
+            other = {"name": "of.other", "record": "{}", "payload": json.dumps({"target_session": "S-zeta"}),
+                     "session_id": "", "org": "acme"}
+            self.assertEqual(of_route.route_org("event", other, r), "acme")             # only an injected prompt
 
 
 class RedactionTest(unittest.TestCase):

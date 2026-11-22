@@ -302,14 +302,16 @@ def route_org(table, d, router):
     """The organization of one record (wire `data` dict), or None (unassigned)."""
     if table == "event":
         rec = json.loads(d["record"]) if isinstance(d.get("record"), str) else (d.get("record") or {})
-        org = router.org_of(d.get("org"), d.get("session_id"), rec.get("of.cwd"), serves=rec.get("of.serves"))
-        if org is None:
+        if d.get("name") == "of.injected_prompt" and not d.get("session_id"):
             # an injected prompt declared from outside the session it types into (the relay, the account mover) names
-            # that session in its payload only, and follows it (2026-11-22, of_server: the relay's deliveries went to
-            # the default server's unassigned database, not to their receiver's organization)
+            # that session in its payload only, and a known one wins over the declaring tool's own organization
+            # (2026-11-22, of_server: the relay's deliveries went to the default server's unassigned database; of_review
+            # on organic-framework PR 539: the mover's notes kept the mover's organization)
             target = _payload_field(d.get("payload"), "target_session")
-            if target:
-                org = router.org_of(None, target, None)
+            org = router.org_of(None, target, None) if target else None
+            if org is not None:
+                return org
+        org = router.org_of(d.get("org"), d.get("session_id"), rec.get("of.cwd"), serves=rec.get("of.serves"))
         if org is None and hasattr(router, "org_of_events"):
             # An ask's closure written with no organization, session or directory (a reconcile, an
             # owner's withdrawal) follows the ask it names (of_studio, 2026-11-06).
