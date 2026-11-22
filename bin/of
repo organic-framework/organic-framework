@@ -31,6 +31,10 @@ if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "hook":
     # the collector and the guard, never blocked by a missing PyYAML; only when run as the program:
     # of_hook loads this file as a module (of_cli) to read the registries, which must not re-enter here
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    try:  # the same YAML parser as every other process here, before anything parses (of_yaml); never a block
+        import of_yaml  # noqa: E402,F401
+    except Exception:  # noqa: BLE001 - no PyYAML: the hook still collects and guards
+        pass
     try:
         import of_hook  # noqa: E402
         _code = of_hook.main(sys.argv[2:])  # event, plus any flags (e.g. --deny-secrets for the @mention block)
@@ -259,6 +263,11 @@ def load_positions(orgs_file=ORGS_FILE, deep=False):
                 text = fh.read()
             problems += [f"{org}:registry/positions.yaml: line {ln}: key {k!r} appears twice in one mapping "
                          "(YAML keeps the last one)" for ln, k in duplicate_keys(text)]
+            import of_yaml
+            why = of_yaml.disagreement(text)
+            if why:   # a registry must read the same on every machine and in every process (of_review on PR 572)
+                problems.append(f"{org}:registry/positions.yaml: {why}: write it so both read it alike (an escape "
+                                f"such as \\ud800, a tab after a colon)")
             for ln, k, kept, com, cut in comment_cuts(text):
                 rel = f"{org}:registry/positions.yaml: line {ln}: {k}"
                 kept = kept if len(kept) <= 40 else "…" + kept[-40:].split(" ", 1)[-1]
