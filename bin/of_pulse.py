@@ -976,8 +976,13 @@ def studio_escalations(positions, conn, log=print, run=None):
         if eid in copied:
             continue
         p = _j.loads(pl or "{}")
+        # each issue in words when the producer gives them (rule, positions, the measure: `evidence_text`, one line per
+        # issue), else its ids: a card that named two hashes told the founder nothing (a user organization's
+        # structure keeper, message 01a2034b-0114)
+        said = [str(x) for x in p.get("evidence_text") or [] if str(x).strip()]
         q = (f"[escalated: {p.get('condition')} in unit {p.get('unit')}, owner {p.get('from_owner')}] "
-             f"evidence: {', '.join(p.get('evidence') or []) or '-'}. Look at it, or let the unit owner handle it?")
+             + (f"evidence: {'; '.join(said)}" if said else f"evidence: {', '.join(p.get('evidence') or []) or '-'}")
+             + ". Look at it, or let the unit owner handle it?")
         of_events.emit("agent_question", {
             "detected_by": "declared", "source": "escalated", "from_position": p.get("from_owner") or pos,
             "to": "founder", "escalated_from": eid, "delegation": p.get("delegation"), "blocking": False,
