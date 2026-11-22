@@ -442,17 +442,21 @@ def project(rows, state=None):
                 continue  # a popup answer names another ask: the session's open question stays open
         if name == "of.agent_message_in":
             # an ask to a position (a unit owner who is an agent) is answered by that position's message into
-            # the asker's session: the one ask its reply_to names (ask id or session), else the only open ask
-            # to that sender. A message from anyone else answers nothing (of_field-analyst, 2026-11-06).
+            # the asker's session that names it in reply_to (its id, the id's end as the routed note gives it, or
+            # its card). A message from anyone else answers nothing (of_field-analyst, 2026-11-06), and neither does
+            # one that names no ask: an unrelated message from the unit owner, sent before the ask and delivered
+            # after it, closed a pending card the founder never saw (a user organization's structure keeper,
+            # message 01a2051e-9a34)
             pl_ = r["payload"] or {}
             sender = str(pl_.get("from") or "").rpartition(":")[2]
             rt = str(pl_.get("reply_to") or "")
             mine = [a for a in declared.get(r.get("position"), []) if a["state"] == "open" and not a.get("task")
                     and a.get("to") not in OWNER_ADDRESSES and a.get("session_id") in (sid, None)]
             to_sender = [a for a in mine if sender and str(a.get("to") or "").rpartition(":")[2] == sender]
-            named = [a for a in to_sender if rt and (rt in (a["event_id"], a.get("session_id")) or len(rt) >= 8 and (
-                a["event_id"].endswith(rt) or a["event_id"].startswith(rt)))]
-            for ask in named or (to_sender if len(to_sender) == 1 else []):
+            named = [a for a in to_sender if rt and (rt == a["event_id"] or len(rt) >= 8 and (
+                a["event_id"].endswith(rt) or a["event_id"].startswith(rt))
+                or (a.get("ref") and rt.upper() == str(a["ref"]).upper()))]
+            for ask in named:
                 ask.update(state="answered", closed_by=r["event_id"], closed_at=r["ts"])
         if not cur or name in NEUTRAL:
             continue
