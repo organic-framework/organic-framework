@@ -346,30 +346,45 @@ def settings_file(settings, sid, state_dir=None):
     with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
         fh.write(settings)
     os.replace(tmp, path)
+    data = settings.encode()
+    WRITTEN[os.path.realpath(path)] = (__import__("hashlib").sha256(data).hexdigest(), len(data))
     return path
 
 
+WRITTEN = {}   # path -> (sha256, bytes) of what settings_file wrote in this process, for record_settings
+
+
 def record_settings(pl, state_dir=None, emit=None, by="of spawn"):
-    """Record the session's settings file as it is launched: of.session_settings with its sha256, size and time. The
-    event reaches the organization's server, which no sandbox reads or writes, so a session that rewrites its own or
-    another session's file under OF's state folder, or backdates it, shows against it (of_server, message
-    01a20337-fe93: the bootstrap's second run tells which sessions run on which settings; a deny would stop a structure
-    keeper spawning from its own session). `of resume-command` records it too (BY), since every restored pane resumes
-    through it. It shows a session started on settings other than those written for it, not one that forges both the
-    file and the event: the event is shipped from the same writable store (of_server, message 01a2033f-5402). Returns
-    the digest, or None when the session has no settings file."""
+    """Record the session's settings file as it is launched: of.session_settings with the sha256 and size of what this
+    process wrote (settings_file), and the file's name. The event reaches the organization's server, so a session
+    that rewrites its own or another session's file under OF's state folder, or backdates it, shows against it
+    (of_server, message 01a20337-fe93: the bootstrap's second run tells which sessions run on which settings; a deny
+    would stop a structure keeper spawning from its own session). The digest is of the bytes written, never of the
+    file read back: what another session wrote between the plan and the launch would read as this writer's own
+    (of_review on PR 516); when the file on disk differs at launch, its own digest is recorded beside, as disk_sha256.
+    `of resume-command` records it too (BY), for herdr's own resume. It shows a session started on settings other
+    than those written for it, not one that forges both the file and the event: the event is shipped from the same
+    writable store (of_server, message 01a2033f-5402). A record counts for a session only with a later
+    of.session_start of that session: resume-command only prints a line. Returns the digest, or None when the
+    session has no settings file."""
     import hashlib
     import of_events
     path = os.path.join(state_dir or of_events.STATE_DIR, "spawn", f"{pl['session']}.settings.json")
     try:
         with open(path, "rb") as fh:
-            data = fh.read()
+            disk = fh.read()
     except OSError:
+        disk = None
+    written = WRITTEN.get(os.path.realpath(path))
+    if written is None and disk is None:
         return None
-    digest = hashlib.sha256(data).hexdigest()
+    digest, size = written or (hashlib.sha256(disk).hexdigest(), len(disk))
+    on_disk = hashlib.sha256(disk).hexdigest() if disk is not None else None
     (emit or of_events.emit)("session_settings", {"session": pl["session"], "position": pl["position"],
-                                                  "sha256": digest, "bytes": len(data), "by": by,
-                                                  "file": os.path.basename(path)},
+                                                  "sha256": digest, "bytes": size, "by": by,
+                                                  "file": os.path.basename(path),
+                                                  "written": written is not None,
+                                                  **({"disk_sha256": on_disk} if on_disk != digest else {})},
                              position=pl["position"], session=pl["session"], org=pl.get("org"))
     return digest
 
