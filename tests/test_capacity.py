@@ -386,6 +386,42 @@ class StatusAndTarget(unittest.TestCase):
                 fh.write("tiers:\n  ~/.claude-a: default_claude_ai\n")
             self.assertEqual(of_capacity.status([], [d], probe=False)[0]["tier"], "default_claude_ai")
 
+    def test_a_failed_probe_keeps_the_reading_and_a_spent_week_is_probed_seldom(self):
+        """2026-11-22, load 190: seven probes passed their 120 s; each wrote an empty reading over a spent account's
+        week, and each pulse, every 5 minutes, started all seven again."""
+        calls, answer = [], {}
+
+        def probe_fn(d, now):
+            calls.append(now)
+            return answer["next"](d, now)
+
+        ok = lambda d, now: dict(_row(d, 0, 100), observed_at=of_capacity._iso(now), account="x", probe={},  # noqa: E731
+                                 error=None, status="rejected")
+        failed = lambda d, now: {"config_dir": d, "logged_in": None, "windows": {}, "status": None,  # noqa: E731
+                                 "observed_at": of_capacity._iso(now), "probe": {}, "error": "probe timed out after 120s"}
+        kw = dict(sessions_fn=lambda d: [], emit=lambda *a: None)
+        with tempfile.TemporaryDirectory() as state:
+            of_capacity.STATE_DIR = state
+            t0 = 1_800_000_000
+            answer["next"] = lambda d, now: dict(ok(d, now), windows={
+                "seven_day": {"utilization": 100, "resets_at": of_capacity._iso(t0 + 3 * 86400)}})
+            of_capacity.status([], ["/d1"], now=t0, probe_fn=probe_fn, **kw)
+            of_capacity.status([], ["/d1"], now=t0 + 31 * 60, probe_fn=probe_fn, **kw)
+            self.assertEqual(len(calls), 1)                  # spent until a reset 3 days on: not every 30 minutes
+            answer["next"] = failed
+            row, = of_capacity.status([], ["/d1"], now=t0 + 121 * 60, probe_fn=probe_fn, **kw)
+            self.assertEqual(len(calls), 2)                  # but within 2 hours (an owner's bought reset shows)
+            self.assertEqual(row["windows"]["seven_day"]["utilization"], 100)   # the failure kept the reading
+            self.assertEqual(row["error"], "probe timed out after 120s")
+            self.assertEqual(row["observed_at"], of_capacity._iso(t0))
+            of_capacity.status([], ["/d1"], now=t0 + 126 * 60, probe_fn=probe_fn, **kw)
+            self.assertEqual(len(calls), 2)                  # no retry at the next pulse
+            of_capacity.status([], ["/d2"], now=t0, probe_fn=probe_fn, **kw)
+            of_capacity.status([], ["/d2"], now=t0 + 5 * 60, probe_fn=probe_fn, **kw)
+            self.assertEqual(len(calls), 3)                  # a failure with nothing before: backs off too
+            of_capacity.status([], ["/d2"], now=t0 + 11 * 60, probe_fn=probe_fn, **kw)
+            self.assertEqual(len(calls), 4)
+
     def test_probe_cache_30_minutes(self):
         calls = []
 
