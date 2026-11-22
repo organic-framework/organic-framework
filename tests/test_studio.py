@@ -855,7 +855,8 @@ class DelegationTest(unittest.TestCase):
             {"detected_by": "declared", "source": "declared", "from_position": "k8s_keeper", "to": to,
              "questions": [{"question": "go?"}]}, **kw))
         rows = [decl(1, "2026-11-04T10:00Z", "plat_owner"),
-                ev(2, "2026-11-04T10:10Z", "of.agent_message_in", "s-k8s", {"from": "acme:plat_owner", "via": "relay"}),
+                ev(2, "2026-11-04T10:10Z", "of.agent_message_in", "s-k8s", {"from": "acme:plat_owner", "via": "relay",
+                                                                             "reply_to": "e1"}),   # names the ask
                 ev(3, "2026-11-04T11:00Z", "of.permission_request", "s-k8s", {"tool_name": "Bash"}),
                 ev(4, "2026-11-04T11:02Z", "of.turn_end", "s-k8s", {}),          # the tool ran: approved in the keeper's pane
                 ev(5, "2026-11-04T12:00Z", "of.agent_question", None,
@@ -867,6 +868,9 @@ class DelegationTest(unittest.TestCase):
         self.assertEqual(o["answer_delay_min"]["p50"], 10.0)
         self.assertEqual((f["asks"], f["escalated_copies"], f["by_position"]), (1, 1, {"k8s_keeper": 1}))
         self.assertEqual(f["escalated_by_position"], {"k8s_keeper": 1})
+        rows = rows[:1] + [dict(rows[1], event_id="e9", payload={"from": "acme:plat_owner", "via": "relay"})] + rows[2:]
+        o = M.delegation_review(m, rows, "2026-11-04T00:00Z", "2026-11-05T00:00Z", rec)["unit_owner_side"]
+        self.assertEqual((o["asks"], o["answered"], o["closed_otherwise"]), (2, 0, 1))   # names no ask: answers nothing
 
     def test_unit_owner_yes_rule(self):
         rec = self.DOC["delegations"][0]
