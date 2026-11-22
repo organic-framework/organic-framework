@@ -3287,11 +3287,10 @@ def _tell_denied(ask, card, by, send=None):
     text = _denied_note(ask, card, by)
     # the sender: the refuser's own session, or, when the owner refused in a plain terminal (no session to send from),
     # the position the prompt was routed to (of_review on PR 548)
-    sender = [] if by != "owner" else (["--from", ask["to"]] if ask.get("to") and ask["to"] not in ("founder", "owner")
-                                       else None)
-    if sender is None:
-        print(f"the refusal was not told to {who}: no position to send it from; tell it in its pane", file=sys.stderr)
-        return False
+    # the position the prompt was routed to, else the asker itself, qualified with the card's organization, so the
+    # server never reads the note as one across organizations (of_review on PR 548)
+    frm = ask["to"] if ask.get("to") and ask["to"] not in ("founder", "owner") else who
+    sender = [] if by != "owner" else ["--from", f"{ask['org']}:{frm}" if ask.get("org") else frm]
     try:
         if send:
             return bool(send(to, text))

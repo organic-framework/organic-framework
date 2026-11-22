@@ -166,6 +166,9 @@ class PermissionTest(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT json_extract(payload, '$.by') FROM event WHERE "
                                            "name = 'of.permission_resolved'").fetchone()[0], "owner")
         self.assertFalse(any(a["state"] in ("open", "escalated") for a in self.asks()))
+        # the owner's refusal is told, sent from the routed position under the card's organization (PR 548 review)
+        sent = [t for t in self.told if "--from" in t]
+        self.assertTrue(sent and sent[-1][sent[-1].index("--from") + 1].startswith("acme:"), self.told)
 
     def test_unrelated_caller_is_refused_before_reading_the_pane(self):
         self.positions.append({"name": "other", "holder": {"session": "OTHER"}})
