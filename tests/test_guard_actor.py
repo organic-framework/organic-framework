@@ -180,6 +180,9 @@ class OrgPathActByPosition(unittest.TestCase):
         import of_guard
         self.assertTrue(of_guard._org_path_act(["org", "set", "ofb", "path", "/r"]))
         self.assertFalse(of_guard._org_path_act(["org", "set", "path", "hold", "on"]))   # an organization named path
+        self.assertTrue(of_guard._org_path_act(["owner", "set", "bench", "/b"]))         # the code OF imports
+        self.assertTrue(of_guard._org_path_act(["owner", "--", "set", "bench", "/b"]))
+        self.assertFalse(of_guard._org_path_act(["owner", "set", "language", "en"]))     # the agents' to set
         self.assertFalse(of_guard._org_path_act(["org", "show", "path"]))
         for words in (["org", "--", "set", "ofb", "path", "/r"], ["org", "set", "--", "ofb", "path", "/r"],
                       ["org", "set", "ofb", "--", "path", "/r"], ["org", "set", "ofb", "path", "--", "/r"]):
