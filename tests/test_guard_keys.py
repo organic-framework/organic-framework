@@ -62,16 +62,25 @@ class KeyReadTest(unittest.TestCase):
         self.assertTrue(grep(self.d))                                                   # a folder above it
         self.assertTrue(grep())                                                         # the session's own folder
         self.assertTrue(grep(self.kit, glob="runner_*"))
-        self.assertIsNone(grep(self.kit, glob="*.sh"))                                  # the key is not searched
+        self.assertTrue(grep(self.kit, glob="*.{sh,txt}"))                              # ripgrep's braces: not fnmatch's
+        self.assertTrue(grep(self.kit, glob="*.sh"))                                    # the call's glob narrows nothing
         self.assertIsNone(grep(os.path.join(self.kit, "bin")))                          # nothing there
         self.assertIsNone(of_guard.critical_deny("Grep", {"pattern": ".", "path": self.kit}, cwd=self.d))  # names
         self.assertIsNone(of_guard.critical_deny("Grep", {"pattern": ".", "path": self.kit,
                                                           "output_mode": "count"}, cwd=self.d))
-        big = os.path.join(self.d, "big")                                               # a large file is not a key
-        os.makedirs(big)
-        with open(os.path.join(big, "dump"), "w") as fh:
-            fh.write(HEADER + "x" * (of_guard.GREP_KEY_MAX + 10))
-        self.assertIsNone(grep(big))
+        odd = os.path.join(self.d, "odd")                                               # any name, any size
+        os.makedirs(odd)
+        with open(os.path.join(odd, "notes.py"), "w") as fh:
+            fh.write(HEADER + "x" * 100000)
+        self.assertTrue(grep(odd))
+        wide = os.path.join(self.d, "wide")                                             # past the budget: refused
+        for i in range(6):
+            os.makedirs(os.path.join(wide, f"d{i}"))
+        from unittest import mock
+        with mock.patch.object(of_guard, "EXPAND_BUDGET", 4):
+            got = grep(wide)
+        self.assertTrue(got)
+        self.assertIn("narrower path", got[0])
 
     def test_a_key_by_its_content_whatever_its_name(self):
         notes = os.path.join(self.kit, "notes.txt")                                     # a copy under another name
