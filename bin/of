@@ -2737,13 +2737,33 @@ def cmd_org(args):
             print(f"{of_init.org_entry_name(o)}: hold {'on' if o.get('hold') else 'off'}, path "
                   f"{o.get('path') or '(none: joined through a server only)'}")
         return 0
-    usage = "of org set <org> hold on|off | of org set <org> path <its repository's folder>"
+    usage = ("of org set <org> hold on|off | of org set <org> path <its repository's folder> | "
+             "of org set <org> work_clone <a clone of it>|none")
     if not args.org or args.key not in of_init.ORG_KEYS or not args.value:
         raise OfError(usage)
     if args.key == "hold":
         if args.value not in ("on", "off"):
             raise OfError(usage)
         value, shown_value = (True if args.value == "on" else None), args.value
+    elif args.key == "work_clone":
+        # a clone sessions may write from their sandbox (card OF-265; hand-over ab9ed07b): the owner's alone, as path
+        import of_asks_answer
+        if of_asks_answer.not_the_owner():
+            raise OfError("an organization's work clone is the owner's to set: sessions may write it. The owner runs "
+                          "`of org set <org> work_clone <folder>` in a plain terminal")
+        if args.value == "none":
+            value, shown_value = None, "none"
+        else:
+            folder = os.path.realpath(os.path.expanduser(args.value))
+            if not os.path.exists(os.path.join(folder, ".git")):
+                raise OfError(f"{args.value}: not a git clone (no .git there)")
+            entry = next((o for o in (doc.get("orgs") or []) if of_init.org_entry_name(o) == args.org), {})
+            svc = os.path.realpath(os.path.expanduser(str(entry.get("path") or ""))) if entry.get("path") else None
+            if svc and (folder == svc or folder.startswith(svc + "/") or svc.startswith(folder + "/")):
+                raise OfError(f"{args.value} is, holds or lies in the organization's path ({svc}): give a clone of "
+                              "its own")
+            home = os.path.realpath(os.path.expanduser("~"))
+            value = shown_value = "~" + folder[len(home):] if folder.startswith(home + "/") else folder
     else:
         # the folder of the organization's repository, as the registry loader reads it (an entry the enrollment wrote
         # with server: alone has none until it is set: of_agent-server on the agent host, msg 01a1f5f7-1dee). The
@@ -8315,7 +8335,7 @@ def main(argv=None):
                         "<its repository's folder>")
     og.add_argument("action", choices=["show", "set"])
     og.add_argument("org", nargs="?")
-    og.add_argument("key", nargs="?", choices=["hold", "path"])
+    og.add_argument("key", nargs="?", choices=["hold", "path", "work_clone"])
     og.add_argument("value", nargs="?")
     og.set_defaults(fn=cmd_org)
     ow = sub.add_parser("owner", help="this machine's owner settings, without an organization: show | set "
