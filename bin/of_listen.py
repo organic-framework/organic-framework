@@ -524,11 +524,15 @@ def read_groups(conn):
 
 
 def read_asks(conn):
+    """The view's asks with the fields their readers use. The card id and the diff come from the whole ask the view
+    keeps (`ask`): the judge knows a cited ask by its card id (j-v7) and a diff's card by its diff, and without them a
+    machine with a fresh view knew neither (of_review on organic-framework PR 528)."""
     return [{"event_id": e, "ts": ts, "session_id": s, "position": p, "kind": k, "text": t, "state": st,
-             "closed_by": cb, "closed_at": ca, "to": to}
-            for e, ts, s, p, k, t, st, cb, ca, to in conn.execute(
-                "SELECT event_id, ts, session_id, position, kind, text, state, closed_by, closed_at, to_ FROM view_asks "
-                "ORDER BY ts")]
+             "closed_by": cb, "closed_at": ca, "to": to, "ref": ref, "ref_plain": plain, "diff_id": diff}
+            for e, ts, s, p, k, t, st, cb, ca, to, ref, plain, diff in conn.execute(
+                "SELECT event_id, ts, session_id, position, kind, text, state, closed_by, closed_at, to_, "
+                "json_extract(ask, '$.ref'), json_extract(ask, '$.ref_plain'), json_extract(ask, '$.diff_id') "
+                "FROM view_asks ORDER BY ts")]
 
 
 class WaitsProcessor(Processor):
