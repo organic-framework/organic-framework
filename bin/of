@@ -2843,6 +2843,35 @@ def cmd_org(args):
     return 0
 
 
+def cmd_post(args):
+    """`of post comment|review --pr N [--commit SHA] --body-file F`: through the posting unit (bin/of_post.py), which
+    holds the token; the session never does."""
+    import of_post
+    positions = _load_quiet()
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    me = next((p for p in positions if sid and session_of(p) == sid), None)
+    if not me:
+        raise OfError("of post runs from a position's own session (its session id names the position the unit "
+                      "appends)")
+    try:
+        with open(args.body_file, encoding="utf-8") as fh:
+            body = fh.read()
+        req = of_post.request(args.action, args.pr, body, me["name"], sid, commit=args.commit, repo=args.repo)
+        folder, kind = of_post.door()
+        state, res = of_post.submit(req, folder, kind, wait_s=args.wait)
+    except (OSError, of_post.PostError) as e:
+        raise OfError(str(e))
+    if state == "posted":
+        print(f"posted: {res.get('url')}")
+        return 0
+    if state == "refused":
+        print(f"refused by the posting unit: {res.get('why') or res.get('reason') or res}", file=sys.stderr)
+        return 1
+    print(f"no result within {args.wait} s; the request {res['id']} stays queued, and its result will be at "
+          f"{res['result']}", file=sys.stderr)
+    return 2
+
+
 def cmd_subagent(args):
     """`of subagent run|selftest`: a read-only run on another provider's harness (RFC 0008 §3; bin/of_subagent.py)."""
     import of_store
@@ -8309,6 +8338,15 @@ def main(argv=None):
     lp.add_argument("--org")
     lp.add_argument("--from", dest="sender")
     lp.set_defaults(fn=cmd_loop)
+    po = sub.add_parser("post", help="a pull request comment or review through the posting unit, which holds the token "
+                        "(bin/of_post.py)")
+    po.add_argument("action", choices=["comment", "review"])
+    po.add_argument("--pr", type=int, required=True)
+    po.add_argument("--commit", help="the pull request's head commit, 40 hex digits (a review needs it)")
+    po.add_argument("--body-file", required=True)
+    po.add_argument("--repo", default="organic-framework/organic-framework")
+    po.add_argument("--wait", type=int, default=120, help="seconds to wait for the unit's result (default 120)")
+    po.set_defaults(fn=cmd_post)
     sa = sub.add_parser("subagent", help="a read-only run on another provider's harness, Codex or Muse (RFC 0008 §3; "
                         "bin/of_subagent.py): run, or selftest (the live checks of its limits)")
     sa.add_argument("action", choices=["run", "selftest", "muse-login"])
