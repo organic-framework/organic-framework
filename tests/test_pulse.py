@@ -1344,7 +1344,8 @@ class AgentClosureLabelTest(unittest.TestCase):
                questions=[{"question": "rotate the key?"}])
         for by, prompt, label in (("ops_a", None, "closed by ops_a, no answer of the owner cited"),
                                   ("ops_a", "01a20301-a075-7000", "closed by ops_a, citing prompt 01a20301-a075"),
-                                  ("owner", None, "answered"), (None, None, "answered"), ("of", None, "answered")):
+                                  ("owner", None, "answered"), (None, None, "answered"), ("of", None, "answered"),
+                                  ("agent", None, "closed by agent, no answer of the owner cited")):   # PR 514
             done = ev(2, "of.agent_question_answered", "ops_a", 1, "S", ask_ids=["e01"],
                       **({"by": by} if by else {}), **({"prompt": prompt} if prompt else {}))
             self.assertEqual(of_asks.state_label(of_asks.project([q, done])[0]), label, by)

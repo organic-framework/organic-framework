@@ -914,6 +914,8 @@ class AsksCitedAnswerTest(AsksActorTest):
                       source="hook", eid="01a20330-2222-7000-8000-000000000002")
         early = add("human_prompt", {"origin": "human", "text": "hm"}, "2026-11-22T10:00:00Z", position="of_conductor",
                     source="hook", eid="01a20330-3333-7000-8000-000000000003")
+        popup = add("human_prompt", {"origin": "human", "channel": "asks-ui", "text": "Answer from the founder: no"},
+                    "2026-11-22T12:02:00Z", position="ops_a", source="hook", eid="01a20330-4444-7000-8000-000000000004")
 
         def run(*argv):
             out, err = io.StringIO(), io.StringIO()
@@ -931,7 +933,7 @@ class AsksCitedAnswerTest(AsksActorTest):
             rc, out = run("asks", "answered", "aaaa")
             self.assertEqual(rc, 2)
             self.assertIn("of asks show", out)
-            for bad in (relayed[:13], early[:13], "01a20330-9999"):              # relayed, too early, none
+            for bad in (relayed[:13], early[:13], popup[:13], "01a20330-9999"):  # relayed, early, the popup's, none
                 self.assertEqual(run("asks", "answered", "aaaa", "--prompt", bad)[0], 2, bad)
             self.assertEqual(run("asks", "answered", "aaaa", "--prompt", said[:13])[0], 0)
             p = json.loads(conn.execute("SELECT payload FROM event WHERE name = 'of.agent_question_answered'")
@@ -942,6 +944,12 @@ class AsksCitedAnswerTest(AsksActorTest):
         # exempt: the position the owner handed the card to, and a founder copy's routed asker
         q2 = add("agent_question", {"detected_by": "declared", "to": "founder", "questions": [{"question": "b?"}]},
                  "2026-11-22T11:10:00Z", eid="01a20301-b065-7000-8000-00000000bbbb")
+        add("ask_handed", {"ask_id": q2, "ask_ids": [q2], "to": "acme:ops_b", "by": "ops_c"}, "2026-11-22T11:15:00Z",
+            position=None)                                               # not the owner's: frees nobody
+        with mock.patch.object(self.of, "_asks_actor", lambda *a, **k: "ops_b"), \
+                mock.patch.object(self.of, "_reconcile_ask_tokens", lambda *a: None), \
+                mock.patch.object(self.of, "_load_quiet", lambda: []):
+            self.assertEqual(run("asks", "answered", "bbbb", "settled it")[0], 2)
         add("ask_handed", {"ask_id": q2, "ask_ids": [q2], "to": "acme:ops_b", "by": "owner"}, "2026-11-22T11:20:00Z",
             position=None)
         with mock.patch.object(self.of, "_asks_actor", lambda *a, **k: "ops_b"), \

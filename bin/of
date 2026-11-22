@@ -3240,7 +3240,8 @@ def _needs_owner_answer(conn, members, by, asks):
         row = conn.execute("SELECT payload FROM event WHERE name = 'of.ask_handed' AND ts >= ? AND "
                            "(json_extract(payload, '$.ask_id') = ? OR payload LIKE ?) ORDER BY ts DESC LIMIT 1",
                            (a["ts"], a["event_id"], f'%"{a["event_id"]}"%')).fetchone()
-        if row and (json.loads(row[0] or "{}").get("to") or "").split(":")[-1] == by:
+        h = json.loads(row[0] or "{}") if row else {}
+        if h.get("by") == "owner" and (h.get("to") or "").split(":")[-1] == by:   # only the owner's own hand-over
             continue
         out.append(a)
     return out
@@ -3256,9 +3257,10 @@ def _cited_answer(conn, ref, owners):
         p = of_asks_chat.prompt_row(conn, ref)
     except ValueError as e:
         raise OfError(str(e))
-    if p["name"] != "of.human_prompt" or p["source"] != "hook" or p["origin"] != "human":
+    if p["name"] != "of.human_prompt" or p["source"] != "hook" or p["origin"] != "human" or p["channel"] == "asks-ui":
         raise OfError(f"--prompt {p['event_id']} is not a prompt the person typed ({p['name']}, source {p['source']}, "
-                      f"origin {p['origin']}): cite the owner's own words")
+                      f"origin {p['origin']}" + (", the popup's answer typed into a pane, which closes its own card"
+                                                 if p["channel"] == "asks-ui" else "") + "): cite the owner's own words")
     ok = [a for a in owners if str(a.get("ts") or "") < p["ts"]
           and str((a.get("amended") or {}).get("at") or "") < p["ts"]]
     if not ok:
