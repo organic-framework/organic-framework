@@ -444,7 +444,7 @@ def check_rules_files(positions, org_paths, work_dir=None, sessions=None, starts
     only through the capped start context. For an enrolled position that is a failure, not a warning (a user
     organization's structure keeper through of_architect, message 01a204f7-ef0e: one organization's 45,000 characters
     of rules against a 9,500-character start context); the folder checked is the registry's and, when it differs,
-    the one its last session started in (STARTS: {position: folder}). A session started in another organization's
+    the one its last session started in (STARTS: {(organization, position): folder}). A session started in another organization's
     folder is named too."""
     import of_context
     import of_spawn
@@ -470,7 +470,7 @@ def check_rules_files(positions, org_paths, work_dir=None, sessions=None, starts
             out.append(f"{lvl}{where}: {p['name']}: no folder to run in, so no rules file reaches it: its binding rules "
                        f"come only through the capped start context")
             continue
-        last = os.path.expanduser(starts.get(p["name"]) or "")
+        last = os.path.expanduser(starts.get((p.get("_org"), p["name"])) or "")
         dirs = [d] + ([last] if last and os.path.realpath(last) != os.path.realpath(d) else [])
         for x in dirs:
             said = "its last session started in " if x != d else ""

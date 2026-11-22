@@ -144,8 +144,31 @@ class RulesFileTest(unittest.TestCase):
         # the folder its last session started in is checked too, and named
         other = os.path.join(os.path.dirname(self.work), "elsewhere")
         warn = of.check_rules_files(self.positions, {"acme": [self.work]}, work_dir=self.wd, sessions={},
-                                    starts={"a_keeper": other})
+                                    starts={("acme", "a_keeper"): other})
         self.assertTrue(any(f"its last session started in {other}" in x for x in warn))
+
+    def test_nested_registry_folders(self):
+        """of_review on PR 564: a folder above another organization's registry folder is shared (its sessions below
+        would load both rules files); the nearest registry folder decides who is foreign; one position name in two
+        organizations is two rows."""
+        up, low = "/w/alpha", "/w/alpha/beta"
+        folders = {"alpha": [up], "beta": [low]}
+        self.assertEqual(of_context.shared_folders(folders), {up: {"alpha", "beta"}})
+        self.assertEqual(of_context.foreign_orgs("beta", low, folders), set())         # its own folder, below another's
+        self.assertEqual(of_context.foreign_orgs("alpha", up + "/x", folders), set())
+        self.assertEqual(of_context.foreign_orgs("beta", up + "/x", folders), {"alpha"})
+        both = {"alpha": [up], "beta": [up]}
+        self.assertEqual(of_context.foreign_orgs("alpha", up, both), set())             # both named there
+        self.assertEqual(of_context.foreign_orgs("beta", up, both), set())
+        self.assertEqual(of_context.stray_sessions(folders, {low: {"beta"}, up: {"beta"}}), {up: {"beta"}})
+        import sqlite3
+        import time as _t
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE event (name TEXT, ts TEXT, org TEXT, position TEXT, cwd TEXT)")
+        iso = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime())
+        conn.executemany("INSERT INTO event VALUES ('of.session_start', ?, ?, 'keeper', ?)",
+                         [(iso, "alpha", up), (iso, "beta", low)])
+        self.assertEqual(of_context.position_starts(conn), {("alpha", "keeper"): up, ("beta", "keeper"): low})
 
     def test_spawn_refuses_another_organizations_folder(self):
         """of_architect, message 01a204f7-ef0e: a session of one organization must not start where another's
@@ -166,6 +189,17 @@ class RulesFileTest(unittest.TestCase):
         text = of_context.build("a_keeper", self.positions, cwd=self.work)
         self.assertTrue(text.startswith("OF WARNING: your organization's binding rules do not reach this session"))
         self.assertIn(os.path.join(self.root, "AGENTS.md"), text.split("\n")[0])
+        # with the rules file loaded, the section is a pointer: a cut of it is no warning
+        import of_spawn
+        saved = of_spawn.work_dir
+        of_spawn.work_dir = self.wd
+        try:
+            of_context.write_rules(self.positions, {"acme": [self.work]}, log=lambda m: None, sessions={})
+        finally:
+            of_spawn.work_dir = saved
+        info = {}
+        text = of_context.build("a_keeper", self.positions, cwd=self.work, cap=400, info=info)
+        self.assertFalse(text.startswith("OF WARNING"))
 
 
 if __name__ == "__main__":

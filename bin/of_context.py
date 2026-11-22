@@ -116,7 +116,8 @@ def session_orgs(conn=None, days=7):
 
 
 def position_starts(conn=None, days=7):
-    """{position: folder} where each position's latest session started in the last DAYS (of.session_start)."""
+    """{(organization, position): folder} where each position's latest session started in the last DAYS
+    (of.session_start); one name in two organizations is two rows (of_review on PR 564)."""
     import time as _t
     own = conn is None
     try:
@@ -127,9 +128,10 @@ def position_starts(conn=None, days=7):
             return {}
         since = _t.strftime("%Y-%m-%dT%H:%M:%S", _t.gmtime(_t.time() - days * 86400))
         out = {}
-        for pos, cwd in conn.execute("SELECT position, cwd FROM event WHERE name = 'of.session_start' AND ts >= ? "
-                                     "AND cwd IS NOT NULL AND position IS NOT NULL ORDER BY ts", (since,)):
-            out[pos] = cwd
+        for org, pos, cwd in conn.execute("SELECT org, position, cwd FROM event WHERE name = 'of.session_start' "
+                                          "AND ts >= ? AND cwd IS NOT NULL AND position IS NOT NULL ORDER BY ts",
+                                          (since,)):
+            out[(org, pos)] = cwd
         return out
     except Exception:  # noqa: BLE001 - no store: the registry's folders alone
         return {}
@@ -146,11 +148,24 @@ def shared_folders(folders, sessions=None):
     (stray_sessions). 2026-11-22: one restart of another organization's position into a user organization's root
     folder removed that organization's rules file, and eight of its sessions would have started without their
     binding rules (of_architect, message 01a204f7-ef0e). SESSIONS is no longer read; kept for callers."""
-    by = {}
-    for org, dirs in folders.items():
-        for d in dirs:
-            by.setdefault(os.path.realpath(d), set()).add(org)
-    return {d: orgs for d, orgs in by.items() if len(orgs) > 1}
+    by = folder_owners(folders)
+    out = {}
+    for d, orgs in by.items():
+        # a folder above another organization's registry folder is shared too: the sessions below would load both
+        # rules files, its own and this one's (of_review on organic-framework PR 564; PR 320's incident)
+        allof = set(orgs) | {o for e, os_ in by.items() if e.startswith(d + os.sep) for o in os_}
+        if len(allof) > 1:
+            out[d] = allof
+    return out
+
+
+def _nearest(cwd, by):
+    """The registry folder nearest above CWD (or CWD itself), or None."""
+    best = None
+    for d in by:
+        if (cwd == d or cwd.startswith(d + os.sep)) and (best is None or len(d) > len(best)):
+            best = d
+    return best
 
 
 def folder_owners(folders):
@@ -169,11 +184,12 @@ def foreign_orgs(org, cwd, folders):
     if not cwd:
         return set()
     c = os.path.realpath(os.path.expanduser(cwd))
-    out = set()
-    for d, orgs in folder_owners(folders).items():
-        if c == d or c.startswith(d + os.sep):
-            out |= {o for o in orgs if o != org}
-    return out
+    by = folder_owners(folders)
+    near = _nearest(c, by)
+    # the nearest registry folder decides, and an organization named there is not foreign (of_review on PR 564)
+    if near is None or org in by[near]:
+        return set()
+    return set(by[near])
 
 
 def stray_sessions(folders, sessions):
@@ -182,11 +198,10 @@ def stray_sessions(folders, sessions):
     out = {}
     owners = folder_owners(folders)
     for cwd, orgs in sessions.items():
-        for d, own in owners.items():
-            if cwd == d or cwd.startswith(d + os.sep):
-                extra = set(orgs) - own
-                if extra:
-                    out.setdefault(cwd, set()).update(extra)
+        near = _nearest(cwd, owners)
+        extra = set(orgs) - owners[near] if near else set()
+        if extra:
+            out.setdefault(cwd, set()).update(extra)
     return out
 
 
@@ -199,7 +214,7 @@ def write_rules(positions, org_paths, dry_run=False, log=print, run=None, sessio
     written = []
     owners = folder_owners(folders)
     for cwd, orgs in sorted(stray_sessions(folders, session_orgs() if sessions is None else sessions).items()):
-        own = sorted({o for d, os_ in owners.items() if cwd == d or cwd.startswith(d + os.sep) for o in os_})
+        own = sorted(owners.get(_nearest(cwd, owners)) or ())
         log(f"  a session of {', '.join(sorted(orgs))} started in {cwd}, a folder of {', '.join(own)}: it loads "
             f"{', '.join(own)}'s rules; restart it in its own organization's folder (the folder keeps its rules)")
     for d, orgs in shared.items():
@@ -483,7 +498,9 @@ def build(position, positions, loops=None, resolve=None, runs=None, clocks=None,
         what = "; ".join(f"{n} cut to {k:,} of {w:,} characters" if k else f"{n} left out ({w:,} characters)"
                          for n, k, w in cut)
         loud = ""
-        if any(n == "the binding rules" for n, _, _ in cut):
+        if not loaded and any(n == "the binding rules" for n, _, _ in cut):
+            # only when the section carries the rules themselves: with the file loaded it is a pointer to it, and its
+            # cut is no gap (a user organization's structure keeper, message 01a20519-c22a)
             # said first and loudly: a session that runs on part of its organization's rules (of_architect, message
             # 01a204f7-ef0e: 45,000 characters of a user organization's rules against this context's 9,500)
             loud = (f"OF WARNING: your organization's binding rules do not reach this session whole: no current "
