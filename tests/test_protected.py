@@ -198,7 +198,7 @@ class ProtectedFfTest(unittest.TestCase):
         self.assertEqual(self.head(), self.a)
         self.assertFalse(os.path.exists(marker))
         self.assertIn("hook.post-checkout.enabled=false", P._git_cmd(self.wt))     # 2.56's switch, a second layer
-        self.assertEqual(P._env()["GIT_ALLOW_PROTOCOL"], "none")
+        self.assertEqual(P._env()["GIT_ALLOW_PROTOCOL"], "")                          # no transport at all
 
     def test_a_value_does_not_name_a_filter_and_a_forged_blob_is_refused(self):
         """of_architect on organic-framework PR 306: a value holding ` x.clean ` made the parsing name another driver,

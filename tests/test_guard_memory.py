@@ -225,6 +225,22 @@ class RemoteStdinTest(unittest.TestCase):
                 git("config", k, v)
             self.assertFalse(of_guard._committed_clean(ok))
             self.assertFalse(os.path.exists(marker))                         # no fetch ran the repository's program
+            # a git that does not read GIT_NO_LAZY_FETCH (older than 2.44; stood in for by taking it out), and a
+            # repository that allows its own transport over protocol.allow=never: the empty GIT_ALLOW_PROTOCOL holds
+            # (of_review on organic-framework PR 510; of_agent-server, msg 01a20305-0958)
+            git("config", "protocol.ssh.allow", "always")
+            from unittest import mock
+            real = of_guard._committed_git_env
+            old_git = lambda: {k: v for k, v in real().items() if k != "GIT_NO_LAZY_FETCH"}
+            with mock.patch.object(of_guard, "_committed_git_env",
+                                   lambda: {k: v for k, v in old_git().items() if k != "GIT_ALLOW_PROTOCOL"}):
+                self.assertFalse(of_guard._committed_clean(ok))
+            if not os.path.exists(marker):
+                self.skipTest("this git runs no promisor remote for a missing tree")    # nothing to hold here
+            os.remove(marker)                                                # without both layers it ran
+            with mock.patch.object(of_guard, "_committed_git_env", old_git):
+                self.assertFalse(of_guard._committed_clean(ok))
+            self.assertFalse(os.path.exists(marker))
 
 
 if __name__ == "__main__":
