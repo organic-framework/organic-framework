@@ -2061,10 +2061,15 @@ class Resume(unittest.TestCase):
 
         r, args = restore(trusted=False)        # no account trusts it: where it ran, as a move does
         self.assertEqual(args[2], self.cwd)
+        self.assertEqual(r["untrusted_start"], work)                    # and the note says so (of_review, PR 524)
+        with open(os.path.join(r["work"], "note.md")) as fh:
+            self.assertIn(f"Your position's start folder is {work}, but no account here trusts it yet", fh.read())
         r, args = restore(trusted=True)
         self.assertEqual(args[2], work)
         held = next(c[2] for c in self.calls if c[:2] == ("emit", "holder_changed"))
         self.assertEqual((held["workplace"]["cwd"], held["trust"]["path"]), (work, work))
+        self.assertEqual((held["previous_workplace"]["cwd"], held["trust"]["state"]), (self.cwd, "trusted"))
+        self.assertNotIn("untrusted_start", r)
         self.assertTrue(os.path.exists(os.path.join(self.cfg, "projects", of_capacity.folder_key(work), "s1.jsonl")))
         self.assertEqual(of_capacity.find_transcript(self.cfg, "s1"),
                          os.path.join(self.cfg, "projects", of_capacity.folder_key(work), "s1.jsonl"))
@@ -2077,6 +2082,13 @@ class Resume(unittest.TestCase):
             r, args = restore(trusted=False)
         self.assertEqual(args[2], work)
         self.assertEqual(of_capacity.trusted_key(self.cfg, work), work)
+        held = next(c[2] for c in self.calls if c[:2] == ("emit", "holder_changed"))
+        self.assertEqual(held["trust"], {"state": "carried", "path": work,                # written for the owner
+                                         "from": os.path.join(self.home.name, ".claude")})
+        # the old folder need not exist on this machine: the start folder is looked up first (of_review, PR 524)
+        shutil.rmtree(self.cwd)
+        r, args = restore(trusted=True)
+        self.assertEqual(args[2], work)
 
     def test_carry_note_recovers_a_one_shot_even_when_install_rewrites_its_stop_notice(self):
         import of_carry
