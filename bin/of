@@ -3076,7 +3076,8 @@ def _asks_actor(require_position=False):
             return "agent"
     if os.environ.get("CLAUDECODE") or not sys.stdin.isatty():
         raise OfError("only the owner closes or withdraws an ask with no position: in a plain terminal or the popup. "
-                      "An agent closes its own with `of status working --answered <id>`, from its own session; a unit "
+                      "An agent closes its own with `of status working --answered <id>` (on a question to the owner with "
+                      "--prompt <his prompt>), from its own session; a unit "
                       "owner answers a routed ask from its session. Nothing was recorded.")
     return "owner"
 
@@ -3219,6 +3220,77 @@ def _asks_deny(args):
     return 0
 
 
+def _needs_owner_answer(conn, members, by, asks):
+    """The asks among MEMBERS that BY may close as answered only citing the owner's answer: a question to the owner,
+    unless BY is the owner, a founder copy of an escalated routed ask whose routed ask BY may settle (its unit owner or
+    asker), or the position the owner handed that card to in his window (of.ask_handed; it settles it for him).
+    A user organization's structure keeper, message 01a20320-debb: an agent closed two founder cards meaning to read
+    them; of_review on PR 514, points 4 and 5."""
+    import of_asks
+    if by == "owner":
+        return []
+    by_id = {a["event_id"]: a for a in asks}
+    out = []
+    for a in members:
+        if a.get("to") not in of_asks.OWNER_ADDRESSES:
+            continue
+        src = by_id.get(a.get("escalated_from"))
+        if src and of_asks.may_settle(src, by):
+            continue
+        row = conn.execute("SELECT payload FROM event WHERE name = 'of.ask_handed' AND ts >= ? AND "
+                           "(json_extract(payload, '$.ask_id') = ? OR payload LIKE ?) ORDER BY ts DESC LIMIT 1",
+                           (a["ts"], a["event_id"], f'%"{a["event_id"]}"%')).fetchone()
+        if row and (json.loads(row[0] or "{}").get("to") or "").split(":")[-1] == by:
+            continue
+        out.append(a)
+    return out
+
+
+def _cited_answer(conn, ref, owners):
+    """The owner's prompt REF cited to close OWNERS as answered: (its full id, the asks it can answer). It must be a
+    prompt the hook recorded as typed by a person (origin human after any of.prompt_origin correction), later than
+    each ask it closes and than that ask's newest version; an ask filed or amended after it stays open (of_review on
+    PR 514, point 3, as of_asks_chat.check reads a conductor's --prompt). Raises OfError when it answers none."""
+    import of_asks_chat
+    try:
+        p = of_asks_chat.prompt_row(conn, ref)
+    except ValueError as e:
+        raise OfError(str(e))
+    if p["name"] != "of.human_prompt" or p["source"] != "hook" or p["origin"] != "human":
+        raise OfError(f"--prompt {p['event_id']} is not a prompt the person typed ({p['name']}, source {p['source']}, "
+                      f"origin {p['origin']}): cite the owner's own words")
+    ok = [a for a in owners if str(a.get("ts") or "") < p["ts"]
+          and str((a.get("amended") or {}).get("at") or "") < p["ts"]]
+    if not ok:
+        raise OfError(f"--prompt {p['event_id']} was typed before the question or its newest version: it cannot answer it")
+    return p["event_id"], ok
+
+
+def _show_ask(conn, a):
+    """`of asks show <id>`: one card and its answer, read-only."""
+    import of_asks
+    import of_asks_chat
+    print(f"{a.get('ref') or a['event_id'][-8:]}  {a['event_id']}")
+    print(f"  from {a.get('position') or a.get('session_id')} to {a.get('to') or 'founder'}, filed {a['ts']}"
+          + (f", amended v{a['amended']['version']}" if isinstance(a.get("amended"), dict) else ""))
+    print(f"  state: {of_asks.state_label(a)}" + (f" at {a['closed_at']}" if a.get("closed_at") else ""))
+    print(f"  question: {a.get('text')}")
+    try:
+        opts = of_asks_chat._options_of(conn, a)
+    except Exception:  # noqa: BLE001 - a card whose payload does not read shows no options
+        opts = []
+    for i, o in enumerate(opts, 1):
+        print(f"    {i}. {o}")
+    if a.get("reopened"):
+        print(f"  reopened: {a['reopened']}")
+    if a.get("closed_by"):
+        row = conn.execute("SELECT payload FROM event WHERE event_id = ?", (a["closed_by"],)).fetchone()
+        p = json.loads(row[0] or "{}") if row else {}
+        for k in ("by", "answer", "answers", "option", "text", "note", "prompt", "via"):
+            if p.get(k) not in (None, "", []):
+                print(f"  {k}: {p[k]}")
+
+
 def cmd_asks(args):
     if args.action == "deny":
         try:
@@ -3323,6 +3395,15 @@ def cmd_asks(args):
         import of_asks_chat
         print(of_asks_chat.chat_view(conn, asks))
         return 0
+    if args.action == "show":
+        if not args.id:
+            raise OfError("usage: of asks show <card or ask id>")
+        hits = [a for a in asks if args.id in (a.get("ref"), a["event_id"]) or a["event_id"].startswith(args.id)
+                or a["event_id"].endswith(args.id)]
+        if len(hits) != 1:
+            raise OfError(f"{len(hits)} asks match {args.id!r}")
+        _show_ask(conn, hits[0])
+        return 0
     if args.action == "answered":
         import of_events
         if not args.id:
@@ -3349,9 +3430,22 @@ def cmd_asks(args):
         # who answers: the founder in his own terminal is "owner"; an agent (a unit owner answering a routed
         # question) is recorded by its position, never as the owner (2026-11-07, task bd12d0)
         by = _asks_actor()
-        of_events.emit("agent_question_answered", {"ask_id": g["ask_ids"][0], "ask_ids": g["ask_ids"], "by": by,
-                                                   "note": " ".join(args.reason) or None})
-        print(f"answered: {len(g['ask_ids'])} ask(s) from {', '.join(g['who'])}")
+        members = [a for a in asks if a["event_id"] in g["ask_ids"]]
+        need = _needs_owner_answer(conn, members, by, asks)
+        ids, cited = list(g["ask_ids"]), None
+        if need:   # an agent closes the owner's question only with his answer cited
+            if not args.prompt:
+                raise OfError(f"{need[0].get('ref') or need[0]['event_id'][-8:]} is the owner's question: this closes "
+                              "it as answered. To read it and its answer: of asks show <id>. To close it with his "
+                              "answer: add --prompt <his prompt's event id> (of prompts --mine)")
+            cited, ok = _cited_answer(conn, args.prompt, need)
+            ids = [i for i in ids if i not in {a["event_id"] for a in need} or i in {a["event_id"] for a in ok}]
+        of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": by,
+                                                   "note": " ".join(args.reason) or None,
+                                                   **({"prompt": cited} if cited else {})})
+        print(f"answered: {len(ids)} ask(s) from {', '.join(g['who'])}"
+              + (f"; {len(g['ask_ids']) - len(ids)} filed or amended after that prompt stay open"
+                 if len(ids) < len(g["ask_ids"]) else ""))
         _reconcile_ask_tokens(_load_quiet())
         return 0
     if args.action == "withdraw":
@@ -4812,7 +4906,8 @@ def cmd_ask(args):
         return 0
     print(f"asked {to}{' (blocking)' if args.blocking else ''} ({name or 'ask ?'}); it shows in `of asks` "
           "and stays open until answered. Meanwhile carry on with other work. When the answer reaches you elsewhere, "
-          f"run `of status working --answered {name or '<id>'}`.")
+          f"run `of status working --answered {name or '<id>'}`" + (" --prompt <his prompt's event id> (of prompts --mine)"
+                                                                     if to in ("founder", "owner") else "") + ".")
     return 0
 
 
@@ -6208,8 +6303,19 @@ def cmd_status(args):
             [a["event_id"] for a in mine if a["event_id"].endswith(args.answered) or a["event_id"].startswith(args.answered)]
         if not ids:
             raise OfError(f"no open declared ask of {me['name']} matches {args.answered!r}")
+        conn = of_store.connect()
+        need = _needs_owner_answer(conn, [a for a in mine if a["event_id"] in ids], me["name"], _asks_now())
+        cited = None
+        if need:   # the owner's question closes only with his answer cited (message 01a20320-debb)
+            if not getattr(args, "prompt", None):
+                raise OfError(f"{need[0].get('ref') or need[0]['event_id'][-8:]} is the owner's question: close it "
+                              "with his answer, --prompt <his prompt's event id> (of prompts --mine); to read it: "
+                              "of asks show <id>")
+            cited, ok = _cited_answer(conn, args.prompt, need)
+            ids = [i for i in ids if i not in {a["event_id"] for a in need} or i in {a["event_id"] for a in ok}]
         of_events.emit("agent_question_answered", {"ask_id": ids[0], "ask_ids": ids, "by": me["name"], "via": "status",
-                                                   "note": note or None}, position=me["name"])
+                                                   "note": note or None, **({"prompt": cited} if cited else {})},
+                       position=me["name"])
         print(f"{me['name']}: {len(ids)} ask(s) closed as answered")
     if getattr(args, "done_task", None) or getattr(args, "reopen_task", None):
         tid = args.done_task or args.reopen_task
@@ -7982,8 +8088,11 @@ def main(argv=None):
     imp.add_argument("--since", help="github: merged on or after this date (default: the day before the last import)")
     imp.set_defaults(fn=cmd_import)
     ak = sub.add_parser("asks", help="open asks waiting on the owner, oldest first (read-only)")
-    ak.add_argument("action", nargs="?", choices=["list", "withdraw", "answered", "answer", "deny", "judge", "deliver", "refs"],
-                    default="list", help="refs: give the open asks filed before card ids existed their ids (once); "
+    ak.add_argument("action", nargs="?", choices=["list", "show", "withdraw", "answered", "answer", "deny", "judge",
+                                                  "deliver", "refs"],
+                    default="list", help="show <id>: one card and its answer, read-only; answered <id>: closes it, and "
+                    "an agent closing the owner's question cites his answer with --prompt; "
+                    "refs: give the open asks filed before card ids existed their ids (once); "
                     "deny <id>: cancel the asking session's permission prompt with Esc; "
                     "deliver [<position>]: type the founder's answers not yet in the pane; "
                     "answer <id> --option N | --text \"<words>\" --prompt <event id>: the person's answer given in "
@@ -8008,7 +8117,7 @@ def main(argv=None):
     ak.add_argument("--version", type=int, help="answer: the version of an amended card the person was shown, as "
                     "--chat prints it (none: the first); an answer to an earlier version than the newest is refused")
     ak.add_argument("--prompt", help="answer: the event id of the person's prompt in the conductor's session "
-                    "(of prompts --mine prints it)")
+                    "(of prompts --mine prints it); answered: the owner's prompt that answered his question")
     ak.add_argument("--pending", action="store_true", help="judge: the candidates the Stop hook queued")
     ak.add_argument("--pane", help="judge: the asking agent's pane, for the correction")
     ak.add_argument("--dry-run", action="store_true", help="judge: print the verdicts; deny: show the key without pressing it")
@@ -8321,6 +8430,8 @@ def main(argv=None):
     st.add_argument("--on")
     st.add_argument("--note")
     st.add_argument("--answered", help="close your own declared ask(s) answered elsewhere: an id (or its end) or all")
+    st.add_argument("--prompt", help="with --answered on a question to the owner: his prompt that answered it (its event "
+                    "id; of prompts --mine)")
     st.add_argument("--done-task", help="close your own task for the owner after checking its result: an id (or its end)")
     st.add_argument("--work", help="the work (registry works:) you are on now (docs/works.md)")
     st.add_argument("--reopen-task", help="the owner said done but the result is not there: reopen, with --note saying what you see")

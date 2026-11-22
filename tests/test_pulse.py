@@ -1335,6 +1335,25 @@ class FreeTextSeenTest(unittest.TestCase):
         self.assertEqual(of_asks.project(old)[0]["state"], "answered")
 
 
+class AgentClosureLabelTest(unittest.TestCase):
+    """A user organization's structure keeper, message 01a20320-debb: an agent closed two founder cards; a listing now
+    tells an agent's closure of the owner's question from his answer."""
+
+    def test_only_a_named_agents_closure_is_labelled(self):
+        q = ev(1, "of.agent_question", "ops_a", 0, "S", detected_by="declared", to="founder",
+               questions=[{"question": "rotate the key?"}])
+        for by, prompt, label in (("ops_a", None, "closed by ops_a, no answer of the owner cited"),
+                                  ("ops_a", "01a20301-a075-7000", "closed by ops_a, citing prompt 01a20301-a075"),
+                                  ("owner", None, "answered"), (None, None, "answered"), ("of", None, "answered")):
+            done = ev(2, "of.agent_question_answered", "ops_a", 1, "S", ask_ids=["e01"],
+                      **({"by": by} if by else {}), **({"prompt": prompt} if prompt else {}))
+            self.assertEqual(of_asks.state_label(of_asks.project([q, done])[0]), label, by)
+        routed = ev(1, "of.agent_question", "ops_a", 0, "S", detected_by="declared", to="ops_lead",
+                    questions=[{"question": "x?"}])
+        done = ev(2, "of.agent_question_answered", "ops_lead", 1, "S", ask_ids=["e01"], by="ops_lead")
+        self.assertEqual(of_asks.state_label(of_asks.project([routed, done])[0]), "answered")   # not the owner's
+
+
 class OpenAsksNoteTest(unittest.TestCase):
     def test_the_hook_names_the_open_asks_and_how_to_close_one(self):
         import sqlite3

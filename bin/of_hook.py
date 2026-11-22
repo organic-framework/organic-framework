@@ -1847,7 +1847,8 @@ def open_asks_note(sid, prompt, db=None):
         return None
     items = "; ".join(f"{e[-8:]} «{(t or '').strip()[:70]}»" for e, t in rows[:5])
     return (f"Your open asks to the founder in this session: {items}. His words here close none of them. If they "
-            "answered one, run `of status working --answered <id>`; an ask they did not answer stays in his list.")
+            "answered one, run `of status working --answered <id> --prompt <his prompt's event id>` (of prompts --mine); "
+            "an ask they did not answer stays in his list.")
 DENY_SECRETS_FLAG = False  # set from argv in main(); gates the UserPromptSubmit @mention block
 
 

@@ -246,6 +246,9 @@ def project(rows, state=None):
                     continue
                 if ask and ask["state"] in ("open", "candidate"):  # a candidate too: the popup's n, of asks answered
                     ask.update(state=st, closed_by=r["event_id"], closed_at=r["ts"])
+                    if st == "answered":   # who closed it, and the person's prompt it cites: a listing tells an
+                        # agent's closure of the owner's question from his answer (message 01a20320-debb)
+                        ask.update(closed_by_who=p_.get("by"), closed_cites=p_.get("prompt"))
                     if st == "answered":
                         settle_copy(ask, by_id, r, p_.get("by"))
                     if open_by_session.get(ask["session_id"]) is ask:
@@ -550,9 +553,21 @@ def may_settle(ask, by):
     return bool(by) and by in OWNER_BY + (ask.get("to"), ask.get("position"))
 
 
+def closed_by_agent(ask):
+    """An answered question to the owner that a named agent closed, not his own answer. Only a closure that names its
+    position counts: the owner's own paths record `owner`, `founder`, nothing or `of`, and the rows folded before this
+    field have none, so none of those reads as an agent's (of_review on PR 514)."""
+    who = ask.get("closed_by_who")
+    return ask.get("state") == "answered" and isinstance(who, str) and who not in ("owner", "founder", "of", "agent") \
+        and ask.get("to") in OWNER_ADDRESSES
+
+
 def state_label(ask):
     """An ask's state as a listing shows it: a settled escalated ask names who settled it, so a unit's closure is never
-    retold as the owner's decision."""
+    retold as the owner's decision; an agent's closure of the owner's question says so, with the prompt it cites."""
+    if closed_by_agent(ask):
+        return (f"closed by {ask['closed_by_who']}, citing prompt {str(ask['closed_cites'])[:13]}"
+                if ask.get("closed_cites") else f"closed by {ask['closed_by_who']}, no answer of the owner cited")
     return ask["state"] + (f" by {ask['settled_by']}" if ask["state"] in ("answered_upstream", "settled_in_unit")
                            and ask.get("settled_by") else "")
 

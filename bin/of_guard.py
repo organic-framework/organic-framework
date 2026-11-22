@@ -3169,7 +3169,8 @@ PERSON_ACT_NOTE = ("code that writes what only a person does (an answer to an as
                    "code in an isolated HOME. This is noted now and will be denied (docs/guard.md G24)")
 PERSON_ACT_DENY = ("code that writes what only a person does: an answer to an ask, a prompt or its origin, a diff's "
                    "approval, or text typed as a person's (docs/guard.md G24). The person answers in the popup or in "
-                   "their conductor's chat; a position closes its own ask with `of status working --answered <id>`, "
+                   "their conductor's chat; a position closes its own ask with `of status working --answered <id>` "
+                   "(on a question to the owner with --prompt <his prompt's event id>), "
                    "and messages another with `of send`")
 TOOL_TOKEN_DENY = ("a shared tool server's access token, which only Claude Code reads, through the helper it runs "
                    "itself when it connects (docs/guard.md G23; docs/tools.md §4a)")
@@ -4267,7 +4268,7 @@ OWNER_CONFIG_MODE = "deny"
 ASKS_OUTBOX_DIR = "~/.local/state/of/asks-outbox"
 ASKS_OUTBOX_DENY = ("the owner's ask folders, the outbox and the drafts, which only his screens write: a draft there is "
                     "what he sends as his answer (docs/guard.md G35). An agent asks the owner with `of ask`, and closes an ask they "
-                    "answered with `of status working --answered <id>`")
+                    "answered with `of status working --answered <id> --prompt <his prompt's event id>`")
 ASKS_OUTBOX_MODE = "deny"
 
 
