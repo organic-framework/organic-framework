@@ -556,8 +556,14 @@ def run_check(check, folder, org_root, popen=subprocess.run):
         path, cwd = os.path.join(org_root or "", name), org_root
         if not org_root or not os.path.isfile(path):
             return f"the organization's check {name!r} is not found in its repository"
-    return popen([sys.executable, path, folder], capture_output=True, text=True, cwd=cwd,
-                 env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
+    try:   # a check that does not end refuses the run (message 01a20384-b7a8: scans hung 80 to 100 minutes)
+        return popen([sys.executable, path, folder], capture_output=True, text=True, cwd=cwd, stdin=subprocess.DEVNULL,
+                     timeout=CHECK_TIMEOUT_S, env={k: v for k, v in os.environ.items() if k != "SSH_AUTH_SOCK"})
+    except subprocess.TimeoutExpired:
+        return f"the check {name!r} did not finish within {CHECK_TIMEOUT_S} s; nothing left"
+
+
+CHECK_TIMEOUT_S = 360   # above of_gitleaks_check.SCAN_TIMEOUT_S, so its own fail-closed line is the one said
 
 
 def prompt_checks(prompt_file, schema, registry, org_root, harness, reading, popen=subprocess.run):

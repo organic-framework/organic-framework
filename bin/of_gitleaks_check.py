@@ -222,6 +222,12 @@ def held(run, path):
     return go
 
 
+# a scan that does not end fails closed (a user organization's structure keeper, message 01a20384-b7a8: five scans of
+# a snapshot sat at 0% CPU for 80 to 100 minutes on the laptop, each run waiting on it); the snapshot's size is capped
+# before it (max_snapshot_mb), so a scan within its cap ends well inside this
+SCAN_TIMEOUT_S = 300
+
+
 def check(folder, exe=None, run=subprocess.run, out=sys.stdout):
     """0 when FOLDER is clean by the pinned gitleaks, else 1 (printed: why, or each finding's file, line, rule). The
     program comes from OF_GITLEAKS when set (a runner whose root filesystem is read-only puts it in its own folder),
@@ -275,7 +281,11 @@ def _check(folder, exe, run=subprocess.run, out=sys.stdout):
             r = run([exe, "dir", root, "--config", cfg, "--gitleaks-ignore-path", t, "--ignore-gitleaks-allow",
                      "--max-archive-depth", "3", "--no-banner", "--redact", "--log-level", "error",
                      "--report-format", "json", "--report-path", report, "--exit-code", "0"],
-                    cwd=t, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    cwd=t, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                    timeout=SCAN_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            print(f"gitleaks did not finish within {SCAN_TIMEOUT_S} s: fail closed", file=out)
+            return 1
         except OSError as e:
             print(f"gitleaks: {e}: fail closed", file=out)
             return 1
