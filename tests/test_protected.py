@@ -630,6 +630,13 @@ class ProtectedFfTest(unittest.TestCase):
         said = []
         P.run(self.wt, b, orgs_file=orgs, api=green({b: 9}), emit=lambda name, data, **k: said.append(data))
         self.assertEqual((said[0]["repo"], said[0]["branch"]), ("acme/vault", "main"))
+        import of_credentials                                                # G21 keeps the owner's path too
+        self.assertIn(os.path.realpath(self.wt), [os.path.realpath(x) for x in
+                                                  of_credentials.load(orgs)["acme"]["protected_code"]])
+        with open(os.path.join(reg, "positions.yaml"), "w") as fh:           # a registry that drops it drops nothing
+            fh.write("positions: []\n")
+        self.assertIn(os.path.realpath(self.wt), [os.path.realpath(x) for x in
+                                                  of_credentials.load(orgs)["acme"]["protected_code"]])
         with open(orgs, "w") as fh:                                          # an empty list: no ff entry at all
             fh.write(f"orgs:\n  - name: acme\n    path: {os.path.join(self.d, 'org')}\n    protected_code: []\n")
         self.assertEqual(P.entries(orgs), [])
