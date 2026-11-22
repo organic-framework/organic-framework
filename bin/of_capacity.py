@@ -1194,8 +1194,11 @@ DIM = ("\x1b[2m", "38;2;153;153;153", "38;2;136;136;136", "38;5;8m", "\x1b[90m")
 
 
 def find_transcript(d, sid):
+    """The session's transcript in config dir `d`: of several copies under different folder keys, the freshest (by
+    its modification time). The first one glob listed was taken until 2026-11-22: a session carried back from the agent
+    host resumed from the laptop's older copy, losing its turns there."""
     hits = glob.glob(os.path.join(d, "projects", "*", f"{sid}.jsonl"))
-    return hits[0] if hits else None
+    return max(hits, key=lambda t: (os.path.getmtime(t), t)) if hits else None
 
 
 def session_paths(d, sid):
@@ -1281,7 +1284,7 @@ def resume_folder(name, cur, src, target, cwd=None, policy=None, log=print, trus
 
 def rekey_session(d, sid, new_key, backup):
     """Leave one copy of a session in config dir `d`, under project key `new_key`: Claude Code finds a session to
-    resume by its folder's key, and find_transcript takes the first copy it sees. The freshest transcript (by its
+    resume by its folder's key, whichever copy is there. The freshest transcript (by its
     modification time) is the session; every other copy, with its subagents folder, goes under `backup` (of_review,
     PR 330: a session moved back to an account that held it under its start folder's key had two copies there, and
     the stale one could win). Returns the paths the freshest copy now has, [] when it did not move."""
@@ -4073,10 +4076,14 @@ def _restore_one(e, p, plan, ts, log=print, dry_run=False, home=None, claimed=No
                  f"once the owner trusts the folder, `of capacity move <you> --restart` takes you there.\n")
     _write_handover_note(note_path, note, stopped, log)
     trust = ("trusted", trusted_key(target, cwd))
-    if run_cwd != cwd:  # the trust carried and the transcript under the folder's key, as a move does
+    if run_cwd != cwd:  # the trust carried, as a move does
         trust = ensure_trust(target, target, run_cwd)
         log(f"  start folder {run_cwd}: {trust[0]} ({trust[1]})")
-        rekey_session(target, sid, folder_key(run_cwd), os.path.join(work, "backup"))
+    # the freshest copy under the key of the folder it starts in, the others set aside, whether the folder changed or
+    # not: `claude --resume` finds a session by that key, and an older copy left there wins (2026-11-22, of_lab carried
+    # back from the agent host resumed from the laptop's copy of its 17:12Z close, without its turns on the host)
+    if rekey_session(target, sid, folder_key(run_cwd), os.path.join(work, "backup")):
+        log(f"  transcript: the freshest copy, under {folder_key(run_cwd)}")
     cmd = launch_command(run_cwd, target, sid, name, note_path, **launch)  # the settings file, now (of_review, PR 516)
     record_launch(sid, e.get("position") or (p or {}).get("name") or name, (p or {}).get("_org"),
                   "of capacity carry restore" if carried else "of capacity reboot restore", log)
