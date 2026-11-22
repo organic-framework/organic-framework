@@ -301,6 +301,19 @@ class SettingsTest(_Project):
                 self.install()
             self.assertFalse(os.path.exists(os.path.join(self.org, bench.LOCK)))   # nothing locked
 
+class SettingsTypeTest(_Project):
+    def test_only_a_duration_setting_reads_as_seconds(self):
+        """of_bench on PR 575: a text setting whose value looks like a duration stays a text."""
+        spec = PKG["main.lua"].replace('setting "language"       { type = "language", default = "en" }',
+                                       'setting "language"       { type = "language", default = "en" }\n'
+                                       '        setting "label" { type = "string", default = "5m" }')
+        write(self.upstream, {"main.lua": spec})
+        git(self.upstream, "commit", "-qam", "a text setting")
+        self.install()
+        got = of_method.settings(self.org, "demo-asks")
+        self.assertEqual((got["label"], got["escalate_after"]), ("5m", 7200))
+
+
 class HookTest(_Project):
     """The mechanism of part 5: a hook before a module returns a decision, and the record can name the hook."""
 
