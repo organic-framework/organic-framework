@@ -231,6 +231,42 @@ class RegistryTest(unittest.TestCase):
             self.assertIn("acme_live: a successor on an active position", deep)
             self.assertNotIn("successor acme_old is itself finished", quick)    # warnings: of registry check only
 
+    def test_parked_until_is_an_iso_time_on_a_parked_position(self):
+        """docs/registry.md, positions, parked_until (of_architect, 2026-11-22, message 01a20234-979a)."""
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_bare, system: acme, role: b, status: parked, parked_until: 2999-11-23T00:00:00Z}
+                  - {name: acme_quoted, system: acme, role: q, status: parked, parked_until: "2999-11-23T08:00:00Z"}
+                  - {name: acme_day, system: acme, role: d, status: parked, parked_until: 2999-11-23}
+                  - {name: acme_word, system: acme, role: w, status: parked, parked_until: "next week"}
+                  - {name: acme_left, system: acme, role: l, status: active, parked_until: 2999-11-23T00:00:00Z}
+                  - {name: acme_past, system: acme, role: p, status: parked, parked_until: 2020-01-01T00:00:00Z}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/org}\n" % root)
+            orgs = os.path.join(root, "conf/orgs.yaml")
+            deep = "\n".join(of.load_positions(orgs, deep=True)[1])
+            quick = "\n".join(of.load_positions(orgs)[1])
+            for ok in ("acme_bare", "acme_quoted"):                             # PyYAML's datetime and a string alike
+                self.assertNotIn(f"{ok}: parked_until", deep)
+            self.assertIn("acme_day: parked_until 2999-11-23 is no ISO 8601 time", quick)
+            self.assertIn("acme_word: parked_until 'next week' is no ISO 8601 time", quick)
+            self.assertIn("warning: acme:registry/positions.yaml: acme_left: parked_until on a position that is not "
+                          "parked", deep)
+            self.assertIn("acme_past: parked_until 2020-01-01", deep)
+            self.assertNotIn("acme_left: parked_until", quick)                  # warnings: of registry check only
+        self.assertEqual(of.parked_until_ts("2026-11-23T00:00:00Z"), 1795392000.0)
+        # of_review on PR 506: an impossible unquoted time was a ValueError, so a traceback, in every reader
+        with tempfile.TemporaryDirectory() as root:
+            self.write(root, "org/registry/positions.yaml", """
+                positions:
+                  - {name: acme_typo, system: acme, role: t, status: parked, parked_until: 2026-11-31T08:00:00Z}
+                """)
+            self.write(root, "conf/orgs.yaml", "orgs:\n  - {name: acme, path: %s/org}\n" % root)
+            problems = "\n".join(of.load_positions(os.path.join(root, "conf/orgs.yaml"), deep=True)[1])
+            self.assertIn("not valid YAML", problems)
+        self.assertEqual(of.parked_until_ts("2026-11-23T04:00:00+04:00"), 1795392000.0)
+
     def test_org_agents_reads_the_entry(self):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "orgs.yaml")

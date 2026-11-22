@@ -3620,6 +3620,61 @@ class Resting(unittest.TestCase):
         m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW)
         self.assertNotIn("st1", [x["position"] for x in m])
 
+    def test_rescue_takes_a_parked_session_from_shortly_before_its_parked_until(self):
+        """of_architect's parked_until (docs/registry.md, 2026-11-22): a park's planned end, from PARK_LEAD_S before
+        which rescue counts its session as active, so it resumes onto an account with room. Fill, relief, restore and
+        the wake still leave it."""
+        import datetime as dt
+        r = Rescue()
+        lead = of_capacity.PARK_LEAD_S
+        for until, moved in ((r.NOW + lead + 60, False), (r.NOW + lead - 60, True), (r.NOW - 3600, True),
+                             (dt.datetime.fromtimestamp(r.NOW + 600, dt.timezone.utc), True),       # PyYAML's form
+                             (dt.datetime.fromtimestamp(r.NOW + 600, dt.timezone.utc).replace(tzinfo=None), True),
+                             ("2026-11-23", False), ("soon", False), (None, False)):
+            v = of_capacity._iso(until) if isinstance(until, (int, float)) else until
+            pos = [dict(p, status="parked", parked_until=v) if p["name"] == "st1" else p for p in r.POS]
+            m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, {"st1": r.NOW - 600}, r.STOPS_ONLY, r.NOW)
+            self.assertEqual("st1" in [x["position"] for x in m], moved, until)
+            stalls = of_capacity.stall_report(r.rows(), r.SESS, pos, {"st1": r.NOW - 600}, [], r.NOW)
+            self.assertEqual("st1" in [x["position"] for x in stalls], moved, until)  # a stall only when rescue's
+        near = {"name": "st1", "status": "parked", "parked_until": of_capacity._iso(r.NOW + 60)}
+        self.assertTrue(of_capacity.resting(near))                          # fill, relief, restore and the wake
+        self.assertFalse(of_capacity.rests_from_rescue(near, r.NOW))
+        self.assertTrue(of_capacity.rests_from_rescue(dict(near, status="finished"), r.NOW))
+        # of_review on PR 506: spaces around it read as `of registry check` reads them
+        self.assertEqual(of_capacity.park_end(dict(near, parked_until=f" {near['parked_until']} ")), r.NOW + 60)
+
+    def test_a_parked_session_waits_behind_working_ones_for_a_rescue_slot(self):
+        """of_review on PR 506: a parked session's stop is nearly always the oldest, so by the stop alone it took the
+        one slot from a working session stopped later."""
+        r = Rescue()
+        pos = [dict(p, status="parked", parked_until=of_capacity._iso(r.NOW + 60)) if p["name"] == "st1" else p
+               for p in r.POS]
+        stops = {"st1": r.NOW - 7200, "st2": r.NOW - 600}
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, stops, dict(r.STOPS_ONLY, rescue_moves=1), r.NOW)
+        self.assertEqual([x["position"] for x in m], ["st2"])
+        m = of_capacity.rescue_plan(r.rows(), r.SESS, pos, stops, r.STOPS_ONLY, r.NOW)
+        self.assertEqual([x["position"] for x in m], ["st2", "st1"])        # with room, it still goes
+
+    def test_a_parked_sessions_note_asks_for_no_work(self):
+        """of_review on PR 506: the note ended "carry on", so a rescue near a park's end ended the park in practice."""
+        note = of_capacity.handover_note("p", "sid", "/a", "/b", "b@x", {"session_crons": [{"cron": "0 * * * *"}]},
+                                         "t", bg=["watch.sh"], parked="2026-11-23T00:00:00Z")
+        self.assertIn("Your position is parked until 2026-11-23T00:00:00Z", note)
+        self.assertIn("Start no work, run no command and re-create nothing now", note)
+        self.assertIn("then run `of status idle` and wait", note)
+        self.assertIn("when your park ends, re-attach", note)
+        self.assertNotIn("carry on", note)
+        self.assertNotIn("re-attach or close those first", note)
+        self.assertLess(note.index("## Your position is parked"), note.index("## First: your background work"))
+        self.assertIn("Your position is parked (its", of_capacity.handover_note("p", "s", "/a", "/b", "b@x", {}, "t",
+                                                                               parked=""))
+        self.assertIn("carry on", of_capacity.handover_note("p", "s", "/a", "/b", "b@x", {}, "t"))
+        self.assertEqual(of_capacity.parked_note({"status": "active"}), None)
+        self.assertEqual(of_capacity.parked_note({"status": "parked   # to 11-23"}), "")
+        self.assertEqual(of_capacity.parked_note({"status": "parked", "parked_until": "2026-11-23T00:00:00Z"}),
+                         "2026-11-23T00:00:00Z")
+
     def test_a_parked_session_stopped_on_a_spent_account_is_no_stall(self):
         # of_review, PR 333: rescue leaves it, so the stall report must too, or invariant_step escalates it
         r = Rescue()
