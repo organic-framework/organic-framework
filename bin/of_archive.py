@@ -218,16 +218,24 @@ def _file_hash(path):
     return h.hexdigest()
 
 
-def kept_chains(root):
-    """{current copy: [its kept copies, oldest first]}: a kept copy is <name>.<mtime>.zst beside <name>.zst."""
+def kept_chains(root, index):
+    """{current copy: [its kept copies, oldest first]}: a kept copy is <name>.<mtime>.zst beside <name>.zst, where
+    <name> is a source the index knows and <name>.<mtime> is not: a source may itself be named so, beside another one,
+    and its copy is no kept copy (of_review on PR 502)."""
     out = {}
     for dirpath, _, files in os.walk(root):
         names = set(files)
+        here = os.path.relpath(dirpath, root)
         for f in files:
             m = KEPT.match(f)
-            if m and m.group("base") + ".zst" in names:
-                out.setdefault(os.path.join(dirpath, m.group("base") + ".zst"), []).append(
-                    (int(m.group("mtime")), os.path.join(dirpath, f)))
+            if not m or m.group("base") + ".zst" not in names:
+                continue
+            rel = os.path.normpath(os.path.join(here, f[:-4]))
+            base = os.path.normpath(os.path.join(here, m.group("base")))
+            if rel in index or base not in index:
+                continue
+            out.setdefault(os.path.join(dirpath, m.group("base") + ".zst"), []).append(
+                (int(m.group("mtime")), os.path.join(dirpath, f)))
     return {cur: [p for _, p in sorted(kept)] for cur, kept in out.items()}
 
 
@@ -246,7 +254,13 @@ def drop_identical(dry_run=False, log=print, budget_s=None, quiet=False):
         return 0
     t0, dropped, freed, kept_n, left = time.time(), 0, 0, 0, 0
     try:
-        for cur, kept in sorted(kept_chains(root).items()):
+        try:   # the archive's index tells a kept copy from a source's own copy; with none, nothing is dropped
+            with open(os.path.join(os.path.dirname(root), "files.json")) as fh:
+                index = json.load(fh)
+        except (OSError, ValueError) as e:
+            log(f"of archive --drop-identical: the index does not read ({type(e).__name__}); nothing dropped")
+            return 0
+        for cur, kept in sorted(kept_chains(root, index).items()):
             hashes, after = {}, cur
 
             def same(a, b):
