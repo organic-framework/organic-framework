@@ -56,11 +56,15 @@ def clone_guard(orgs_file=None):
 
     def hit(path):
         # the whole way there, not only where it ends: the path as written, and each step of it resolved
-        a = os.path.abspath(os.path.expanduser(str(path)))
-        if near(a) or near(os.path.realpath(a)):
+        # absolute but not normalised: a parent step after a link goes where the link leads, as the open goes, so
+        # the resolve and the steps take the path as given; its lexical form is one more check (of_review on PR 551)
+        raw = os.path.expanduser(str(path))
+        if not os.path.isabs(raw):
+            raw = os.path.join(os.getcwd(), raw)
+        if near(os.path.abspath(raw)) or near(os.path.realpath(raw)):
             return True
         step = os.sep
-        for part in a.strip(os.sep).split(os.sep):   # a step on the way that lies in a clone (a folder above holds one)
+        for part in [x for x in raw.split(os.sep) if x]:   # a step on the way that lies in a clone
             step = os.path.join(step, part)
             r = os.path.realpath(step)
             if any(r == c or r.startswith(c + os.sep) for c in clones):

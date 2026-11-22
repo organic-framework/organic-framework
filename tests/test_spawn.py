@@ -428,6 +428,12 @@ class WorkCloneTest(unittest.TestCase):
                 os.symlink(f"{d}/out", f"{d}/build/link-out")
                 self.assertTrue(of_spawn.clone_guard()(f"{d}/build/link-out"))
                 self.assertFalse(of_spawn.clone_guard()(f"{d}/out"))
+                # a parent step after a link goes where the link leads: judged as opened, through work_dir too
+                os.makedirs(f"{d}/build/inner")
+                os.symlink(f"{d}/build/inner", f"{d}/fw/lnk")
+                self.assertTrue(of_spawn.clone_guard()(f"{d}/fw/lnk/.."))
+                with self.assertRaises(of_spawn.SpawnError):
+                    of_spawn.work_dir(p, {"s": {"repos": []}}, [f"{d}/fw/lnk/.."])
             # with no clone named, the sibling is taken as before
             self.assertEqual(of_spawn.work_dir(p, {"s": {"repos": ["build"]}}, [f"{d}/fw"]), f"{d}/build")
 
