@@ -280,8 +280,18 @@ def configure(of_home=None, python=None, path=None, run=None, backups=None, now=
     if text:
         bdir = backups or own_dir(path)
         os.makedirs(bdir, mode=0o700, exist_ok=True)
-        backup = os.path.join(bdir, time.strftime("config.toml.%Y%m%dT%H%M%SZ", time.gmtime(now)) + ".before-of-init")
-        with open(_open_own(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL), "w") as fh:  # a fresh file, never a link
+        stem = os.path.join(bdir, time.strftime("config.toml.%Y%m%dT%H%M%SZ", time.gmtime(now)))
+        for n in range(100):  # a second run within the same second takes the next free name
+            backup = stem + (f".{n}" if n else "") + ".before-of-init"
+            try:
+                fd = _open_own(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL)  # a fresh file, never a link
+                break
+            except FileExistsError:
+                if os.path.islink(backup):
+                    raise
+        else:
+            return False, f"no free backup name in {bdir}; left alone"
+        with open(fd, "w") as fh:
             fh.write(text)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:

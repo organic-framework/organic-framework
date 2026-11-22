@@ -194,6 +194,17 @@ class HookTest(unittest.TestCase):
             self.assertIn(os.path.join(d, "of-state", "asks-popup.err"), key["command"])
             self.assertEqual(os.listdir(os.path.join(d, "of-state")), ["config.toml.19700101T000000Z.before-of-init"])
 
+    def test_configure_twice_in_one_second_takes_the_next_backup_name(self):
+        """of_agent-server's run of 90b67355 (msg 01a20454-84a5): a refused change, then a retry in the same second."""
+        with tempfile.TemporaryDirectory() as d:
+            path, bdir = os.path.join(d, "config.toml"), os.path.join(d, "b")
+            with open(path, "w") as fh:
+                fh.write("onboarding = false\n")
+            self.assertFalse(plugin.configure("/of", path=path, run=self._check(ok=False), backups=bdir, now=0)[0])
+            self.assertTrue(plugin.configure("/of", path=path, run=self._check(), backups=bdir, now=0)[0])
+            self.assertEqual(sorted(os.listdir(bdir)), ["config.toml.19700101T000000Z.1.before-of-init",
+                                                        "config.toml.19700101T000000Z.before-of-init"])
+
     def test_configure_never_writes_through_a_planted_link(self):
         with tempfile.TemporaryDirectory() as d:
             path, victim, bdir = os.path.join(d, "config.toml"), os.path.join(d, "victim"), os.path.join(d, "b")
