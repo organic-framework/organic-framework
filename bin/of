@@ -2390,16 +2390,9 @@ def cmd_spawn(args):
           f"  credentials: {len(pl['deny']) // 2} paths and roots denied in the session's own rules\n"
           f"  brief: {pl['brief']}")
     stop = None
-    if not pl["trusted"]:
-        # the owner's earlier yes, as a move carries it: the folder (or a parent that counts) trusted in the default
-        # account is copied to the starting one (of_capacity.ensure_trust; of_agent-server, message 01a20516-f7dd)
-        try:
-            how, key = of_capacity.ensure_trust(os.path.expanduser("~/.claude"), pl["config_dir"], pl["cwd"],
-                                                dry_run=args.dry_run)
-            pl["trusted"] = key
-            print(f"  trust: {how} ({key})")
-        except Exception:  # noqa: BLE001 - no account trusts it: the owner's task below
-            pass
+    said = of_spawn.carry_trust(pl, of_capacity.ensure_trust, dry_run=args.dry_run)
+    if said:
+        print(f"  trust: {said}")
     if not pl["trusted"]:
         stop = (of_spawn.trust_task(pl), f"stopped: {pl['cwd']} is not trusted in {pl['config_dir']}; Claude Code "
                 f"would show the trust dialog, and trusting a folder is the owner's act.")
