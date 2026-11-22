@@ -588,9 +588,21 @@ def _redirect_key(target):
     return _reader_key(target, here, _LOOPS[0], shvars)
 
 
-def _prints(token):
-    """Every deny names what it matched (of_architect, 2026-11-06)."""
+def _prints(token, set_here=False):
+    """Every deny names what it matched (of_architect, 2026-11-06). For a variable (G4) the guard reads only its name;
+    when the same command sets it, every time from no variable, the reason says what to do if what it sets is no secret
+    at all (a user organization's CI watcher, 2026-11-22: a status line in `$key`; of_review on PR 556)."""
+    if str(token).startswith("$") and set_here:
+        return (f"a command that would print secrets ({token}): the guard reads the variable's name only. This command "
+                "sets it: if what it sets is no secret at all (a status line, a count), give it a name that says so. A "
+                "value that may be a secret is never printed, under any name"), token
     return f"a command that would print secrets ({token})", token
+
+
+def _set_here(cmd, name):
+    """Does CMD set NAME, every time it does, from no variable at all? Unsure reads as no (of_review on PR 556)."""
+    vals = re.findall(r"(?:^|[\s;&|(`])" + re.escape(name) + r"=([^;&|\n]*)", cmd or "")
+    return bool(vals) and not any(re.search(r"\$(?!\()|`", v) for v in vals)
 
 
 def _loose_secret_path(text):
@@ -5691,8 +5703,8 @@ def _bash_deny(cmd, depth=0, reaches_agent=True):
                     if hit:
                         return hit
             if head in ("echo", "printf") and stage_reaches:
-                hit = next((_prints(m.group(0)) for w in words for m in _VAR_REF.finditer(w)
-                            if m.group(0) in expandable), None)
+                hit = next((_prints(m.group(0), _set_here(cmd, m.group(1))) for w in words
+                            for m in _VAR_REF.finditer(w) if m.group(0) in expandable), None)
                 if hit:
                     return hit
             if herestr is not None:
