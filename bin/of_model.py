@@ -136,6 +136,18 @@ def git_read(repo, *args, timeout=10, **kw):
     return subprocess.run(cmd + list(args), capture_output=True, timeout=timeout, env=of_protected._env(), **kw)
 
 
+def file_at(repo, rev, rel):
+    """REL's text at commit REV (a commit id git gave), or "" when REV holds no such file. A read git cannot make
+    raises (subprocess.CalledProcessError): a partial clone that lacks the object, since git_read fetches nothing.
+    Its empty output is never taken for an empty file (of_review on organic-framework PR 510: on a blobless clone an
+    old registry read as no positions, and a tenure was kept on disk wrong)."""
+    entry = git_read(repo, "ls-tree", "-z", "--full-tree", rev, "--", rel, text=True, check=True).stdout
+    meta = entry.split("\t", 1)[0].split()
+    if len(meta) != 3 or meta[1] != "blob":
+        return ""
+    return git_read(repo, "cat-file", "blob", meta[2], text=True, check=True).stdout
+
+
 # ------------------------------------------------------------------ registry at t
 
 def registry_at(repo, at=None, rel="registry/positions.yaml"):
@@ -145,10 +157,9 @@ def registry_at(repo, at=None, rel="registry/positions.yaml"):
     if at is not None:
         try:
             rev = git_read(repo, "rev-list", "-1", f"--before={iso(epoch(at))}", "HEAD", "--", rel,
-                           text=True).stdout.strip()
+                           text=True, check=True).stdout.strip()
             if rev:
-                text = git_read(repo, "cat-file", "blob", f"{rev}:{rel}", text=True).stdout
-                return yaml.safe_load(text) or {}, rev
+                return yaml.safe_load(file_at(repo, rev, rel)) or {}, rev
         except (OSError, subprocess.SubprocessError):
             pass
     path = os.path.join(repo, rel)
@@ -204,12 +215,11 @@ def _save_json(path, obj):
 def _registry_history(repo, head, rel="registry/positions.yaml"):
     """[(commit time, {system: keeper})] of the registry, oldest first (cached per HEAD in the process). A commit never
     changes, so each revision's keepers are kept on disk by commit id: a run parses only the revisions it has not seen
-    (a user organization's 179 took 72 s per run, 2026-11-11). Progress is saved every 10 s, so a killed run still keeps it."""
-    try:
-        revs = git_read(repo, "log", "--no-show-signature", "--reverse", "--format=%H %ct", "--", rel, text=True,
-                        timeout=20).stdout.split("\n")
-    except (OSError, subprocess.SubprocessError):
-        return ()
+    (a user organization's 179 took 72 s per run, 2026-11-11). Progress is saved every 10 s, so a killed run still
+    keeps it. A read git cannot make raises, nothing is kept for its revision, and the process cache keeps no answer
+    either: the tenure is unknown until the objects are there (of_review on organic-framework PR 510)."""
+    revs = git_read(repo, "log", "--no-show-signature", "--reverse", "--format=%H %ct", "--", rel, text=True,
+                    timeout=20, check=True).stdout.split("\n")
     path = _keepers_cache_path(repo, rel)
     try:
         with open(path) as fh:
@@ -217,37 +227,40 @@ def _registry_history(repo, head, rel="registry/positions.yaml"):
     except (OSError, ValueError):
         cache = {}
     out, dirty, saved = [], False, time.time()
-    for line in revs:
-        if not line.strip():
-            continue
-        rev, ct = line.split()
-        if rev not in cache:
-            try:
-                text = git_read(repo, "cat-file", "blob", f"{rev}:{rel}", text=True).stdout
-                cache[rev] = _keepers_of(text)
-            except Exception:  # noqa: BLE001 — an unparseable old revision is skipped, and remembered as such
-                cache[rev] = None
-            dirty = True
-            if time.time() - saved > 10:
-                _save_json(path, cache)
-                dirty, saved = False, time.time()
-        if cache[rev] is not None:
-            out.append((float(ct), cache[rev]))
-    if dirty:
-        _save_json(path, cache)
+    try:
+        for line in revs:
+            if not line.strip():
+                continue
+            rev, ct = line.split()
+            if rev not in cache:
+                text = file_at(repo, rev, rel)
+                try:
+                    cache[rev] = _keepers_of(text)
+                except Exception:  # noqa: BLE001 — an unparseable old revision is skipped, and remembered as such
+                    cache[rev] = None
+                dirty = True
+                if time.time() - saved > 10:
+                    _save_json(path, cache)
+                    dirty, saved = False, time.time()
+            if cache[rev] is not None:
+                out.append((float(ct), cache[rev]))
+    finally:
+        if dirty:
+            _save_json(path, cache)
     return tuple(out)
 
 
 def keeper_since(repo, system, keeper):
     """When `keeper` became the keeper of `system` in the registry's history (the first commit of its current run);
-    None when unknown (no git history)."""
+    None when unknown (no git history, or a revision git cannot read)."""
     repo = os.path.expanduser(repo)
     try:
-        head = git_read(repo, "rev-parse", "HEAD", text=True, timeout=5).stdout.strip()
+        head = git_read(repo, "rev-parse", "HEAD", text=True, timeout=5, check=True).stdout.strip()
+        history = _registry_history(repo, head)
     except (OSError, subprocess.SubprocessError):
         return None
     since = None
-    for ct, keepers in _registry_history(repo, head):
+    for ct, keepers in history:
         if keepers.get(system) == keeper:
             since = since or ct
         else:

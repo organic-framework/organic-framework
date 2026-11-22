@@ -3517,6 +3517,69 @@ class CheckoutReadTest(unittest.TestCase):
         self.reads(self.promisor("lazy2"))
         self.assertFalse(self.ran())
 
+    def test_a_repositorys_own_protocol_setting_runs_no_promisor_either(self):
+        """A git that does not know GIT_NO_LAZY_FETCH (stood in for by taking it out) still fetches nothing, though
+        the repository allows its own protocol over protocol.allow=never (of_review on organic-framework PR 510)."""
+        import subprocess
+        import of_protected
+        from unittest import mock
+        r = self.promisor("own")
+        with open(os.path.join(r, ".git", "config"), "a") as fh:
+            fh.write('[protocol "file"]\n\tallow = always\n')
+        env = {k: v for k, v in of_protected._env().items() if k not in ("GIT_NO_LAZY_FETCH", "GIT_ALLOW_PROTOCOL")}
+        subprocess.run(of_protected._git_cmd(r) + ["log", "-1", "--name-only", "origin/HEAD"], capture_output=True,
+                       env=env, timeout=20)
+        if not self.ran():
+            self.skipTest("this git runs no promisor remote for a missing tree")
+        real = of_protected._env
+        with mock.patch.object(of_protected, "_env", lambda: {k: v for k, v in real().items()
+                                                              if k != "GIT_NO_LAZY_FETCH"}):
+            self.reads(r)
+        self.assertFalse(self.ran())
+
+    def test_a_blobless_clone_answers_unknown_never_wrong(self):
+        """A partial clone lacks old blobs, and git_read fetches nothing: a read git cannot make is no answer, and
+        nothing of it is kept on disk (of_review on organic-framework PR 510)."""
+        import of_works
+        up = os.path.join(self.top, "up")
+        os.makedirs(os.path.join(up, "registry"))
+        self.git(up, "init", "-q", "-b", "main")
+        now = int(time.time())
+        t = [now - 3 * 86400, now - 2 * 86400, now - 86400]
+        body = "".join(f"line {i}\n" for i in range(200))
+        for i in range(3):
+            with open(os.path.join(up, of_studio.REGISTRY_FILE), "w") as fh:
+                fh.write("systems:\n  web: {keeper: web_ops}\npositions:\n"
+                         + "".join(f"  - {{name: web_p{n}}}\n" for n in range(i + 1)))
+            if i == 0:
+                with open(os.path.join(up, "a.txt"), "w") as fh:
+                    fh.write(body)
+            if i == 1:                                           # a rename: finding it reads both blobs
+                self.git(up, "mv", "a.txt", "b.txt")
+                with open(os.path.join(up, "b.txt"), "w") as fh:
+                    fh.write(body.replace("line 7\n", "line seven\n"))
+            self.git(up, "add", "-A")
+            self.env.update(GIT_AUTHOR_DATE=f"{t[i]} +0000", GIT_COMMITTER_DATE=f"{t[i]} +0000")
+            self.git(up, "commit", "-q", "-m", f"c{i}")
+        self.git(up, "config", "uploadpack.allowFilter", "true")
+        part = os.path.join(self.top, "part")
+        self.git(self.top, "clone", "-q", "--filter=blob:none", f"file://{up}", part)
+        revs = self.git(part, "rev-list", "--reverse", "HEAD").split()
+
+        def answers():
+            of_model._registry_history.cache_clear()
+            doc, rev = of_model.registry_at(part, t[0] + 3600)
+            return (len(doc.get("positions") or []), rev, of_model.keeper_since(part, "web", "web_ops"),
+                    len(of_works._mainline(part, object())))
+
+        n, rev, since, mainline = answers()
+        self.assertEqual((n, rev[:8]), (3, "undated:"))          # the working file, marked so, not commit 0 as empty
+        self.assertIsNone(since)                                   # unknown, not commit 2
+        self.assertEqual(mainline, 3)
+        for r in revs:                                             # the objects arrive
+            self.git(part, "cat-file", "blob", f"{r}:{of_studio.REGISTRY_FILE}")
+        self.assertEqual(answers(), (1, revs[0], float(t[0]), 3))
+
     def test_it_runs_the_system_git_without_the_users_configuration(self):
         import of_protected
         from unittest import mock
