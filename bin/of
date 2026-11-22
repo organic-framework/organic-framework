@@ -3259,9 +3259,39 @@ def _asks_deny(args):
                           position=ask.get("position"), org=ask.get("org"), session=sid):
         raise OfError(f"pressed No in {pane}, but could not record the denial for {card}")
     print(f"denied {card} in {pane}")
+    _tell_denied(ask, card, by)
     return 0
 
 
+def _denied_note(ask, card, by):
+    cmd = " ".join(str(ask.get("text") or "").split())[:300]
+    return (f"Your Claude Code permission prompt ({card}) was refused by {by}: «{cmd}». It and every part of it stand "
+            "refused, as a guard deny does: do not run the command, or any of its parts inside another line or in "
+            "another form, and tell any subagent of yours working on it now. If you still need it, ask "
+            f"{by} with the reason.")
+
+
+def _tell_denied(ask, card, by, send=None):
+    """A refused permission prompt reaches its position, which tells its subagents (a user organization's structure
+    keeper, message 01a2048e-27d8: a subagent ran parts of a refused command inside other lines before its position
+    heard of the refusal). One `of send` from the refuser to the asker, typed in when it is idle; a failure is said,
+    the refusal stands all the same. SEND: (to, text) -> bool, for tests."""
+    who = ask.get("position")
+    if not who:
+        return False
+    to = f"{ask['org']}:{who}" if ask.get("org") else who
+    text = _denied_note(ask, card, by)
+    try:
+        if send:
+            return bool(send(to, text))
+        r = subprocess.run([sys.executable, os.path.realpath(__file__), "send", to, text], capture_output=True,
+                           text=True, timeout=60, env=dict(os.environ, SSH_AUTH_SOCK=""))
+        if r.returncode:
+            print(f"the refusal was not told to {who}: {(r.stderr or r.stdout).strip()[-200:]}", file=sys.stderr)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"the refusal was not told to {who}: {e}", file=sys.stderr)
+        return False
 def _needs_owner_answer(conn, members, by, asks):
     """The asks among MEMBERS that BY may close as answered only citing the owner's answer: a question to the owner,
     unless BY is the owner, a founder copy of an escalated routed ask whose routed ask BY may settle (its unit owner or
