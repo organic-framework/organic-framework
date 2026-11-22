@@ -4123,9 +4123,10 @@ def _parked_cover(to, positions):
 def _parked_refusal(to, positions, sender):
     """Why `of send` refuses TO, or None: parked on purpose, still held, and its `successor` is active, so its queue
     piles up unread while the successor does its work (a user organization's structure keeper, msg 01a1f3a8-b16b: three
-    positions, 16 to 60 hours of mail; docs/guard.md R11). Its successor, its unit's owner and its organization's
-    structure keeper still reach it by name (a unit owner wakes a parked holder for a single task); anyone else names
-    `--to-parked`."""
+    positions, 16 to 60 hours of mail; docs/guard.md R11). Its unit's owner and its organization's structure keeper
+    still reach it by name (a unit owner wakes a parked holder for a single task); anyone else names `--to-parked`.
+    Its successor is refused too: it does that position's work, and its own messages sat in the parked queue unread
+    until they raised a backlog card (a user organization through its structure keeper, msg 01a2034b-a102)."""
     got = _parked_cover(to, positions)
     if not got or got[2] != "its successor":
         return None
@@ -4133,7 +4134,11 @@ def _parked_refusal(to, positions, sender):
     org = p["_org"]
     import of_pulse
     keeper = of_pulse.structure_keeper([x for x in positions if x.get("status") != "finished"], org)
-    if sender in {f"{org}:{x}" for x in (succ, p.get("_unit_owner"), keeper) if x}:
+    if sender == f"{org}:{succ}" and succ not in (p.get("_unit_owner"), keeper):
+        return (f"not sent: {to} is parked on purpose and you, its successor, do its work now, so its holder would "
+                f"read this only when it resumes; for a single task its parked holder must do, send again with "
+                f"--to-parked")
+    if sender in {f"{org}:{x}" for x in (p.get("_unit_owner"), keeper) if x}:
         return None
     return (f"not sent: {to} is parked on purpose (its registry status) and {org}:{succ}, its successor, does its work "
             f"now, so its holder would read this only when it resumes: send it there, `of send {org}:{succ} \"…\"`; "
